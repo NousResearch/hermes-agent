@@ -10,6 +10,7 @@ import pytest
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
+from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
 
 
 ROOM_ID = "room-1"
@@ -174,6 +175,52 @@ def test_deferred_member_allows_next_mentioned_member_and_later_terminal_result(
     assert decision.status == "task"
     assert decision.task is not None
     assert decision.task.member.member_id == second.member.member_id
+
+
+def test_replay_defers_missing_frozen_member_without_blocking_healthy_members(
+    room_db,
+):
+    db, room = room_db
+    remaining_profiles = tuple(
+        profile for profile in LOCAL_PROFILES if profile != "research"
+    )
+    with pytest.raises(discussion.DiscussionValidationError, match="not local"):
+        discussion.validate_roster(
+            room["members"],
+            local_profiles=remaining_profiles,
+        )
+    _append_user(db, event_id="user-1", text="Report.")
+
+    missing = discussion.plan_next_task(
+        room,
+        _events(db),
+        local_profiles=remaining_profiles,
+    )
+    assert missing.status == "task"
+    assert missing.task is not None
+    assert missing.task.member.profile == "research"
+
+    deferred = discussion.plan_publication(
+        room,
+        _events(db),
+        missing.task,
+        status="deferred",
+        result={"reason": "member_unavailable"},
+        execution_generation=1,
+        local_profiles=remaining_profiles,
+    )
+    assert deferred.terminal_kind == "turn.deferred"
+    assert deferred.events[-1].payload["reason"] == "member_unavailable"
+    _append_publication(db, deferred)
+
+    healthy = discussion.plan_next_task(
+        room,
+        _events(db),
+        local_profiles=remaining_profiles,
+    )
+    assert healthy.status == "task"
+    assert healthy.task is not None
+    assert healthy.task.member.profile == "build"
 
 
 def test_distinct_threads_are_planned_fifo_without_skipping(room_db):
@@ -697,6 +744,48 @@ def test_malformed_or_remote_roster_is_rejected(members: list[dict], match: str)
         discussion.validate_roster(members, local_profiles=LOCAL_PROFILES)
 
 
+def test_frozen_roster_replay_survives_deleted_member_profile(room_db):
+    db, room = room_db
+    available_profiles = LOCAL_PROFILES[1:]
+    _append_user(db, event_id="user-1", text="Report.")
+
+    first = discussion.plan_next_task(
+        room,
+        _events(db),
+        local_profiles=available_profiles,
+    )
+    assert first.status == "task"
+    assert first.task is not None
+    assert first.task.member.profile == LOCAL_PROFILES[0]
+
+    deferred = discussion.plan_publication(
+        room,
+        _events(db),
+        first.task,
+        status="deferred",
+        result={"reason": "member_unavailable"},
+        execution_generation=1,
+        local_profiles=available_profiles,
+    )
+    _append_publication(db, deferred)
+
+    second = discussion.plan_next_task(
+        room,
+        _events(db),
+        local_profiles=available_profiles,
+    )
+    assert second.status == "task"
+    assert second.task is not None
+    assert second.task.member.profile == LOCAL_PROFILES[1]
+
+
+def test_validate_room_remains_strict_for_current_policy_inputs(room_db):
+    _db, room = room_db
+
+    with pytest.raises(discussion.DiscussionValidationError, match="is not local"):
+        discussion.validate_room(room, local_profiles=LOCAL_PROFILES[1:])
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -710,6 +799,168 @@ def test_malformed_or_remote_roster_is_rejected(members: list[dict], match: str)
 def test_user_payload_is_exact_and_text_only(payload: dict):
     with pytest.raises(discussion.DiscussionValidationError):
         discussion.validate_user_payload(payload)
+
+
+def test_promoted_room_replays_historical_authority_lineage(room_db):
+    db, room = room_db
+    user = _append_user(
+        db,
+        event_id="user-before-promotion",
+        text="@research answer before promotion",
+    )
+    task = _next_task(room, db)
+    publication = discussion.plan_publication(
+        room,
+        _events(db),
+        task,
+        status="settled",
+        result={"text": "Answer from the original authority."},
+        local_profiles=LOCAL_PROFILES,
+    )
+    _append_publication(db, publication)
+    before_claim_seq = int(
+        hosted_rooms.room_state(db, room_id=ROOM_ID)["latest_seq"]
+    )
+    hosted_rooms.claim_authority(
+        db,
+        room_id=ROOM_ID,
+        expected_gateway_id=GATEWAY_ID,
+        expected_epoch=1,
+        new_gateway_id="gateway-b",
+        event_id="claim-gateway-b",
+    )
+    current_room = hosted_rooms.room_state(db, room_id=ROOM_ID)
+    events = _events(db)
+
+    decision = discussion.plan_next_task(
+        current_room,
+        events,
+        local_profiles=LOCAL_PROFILES,
+    )
+    assert decision.status == "settled"
+
+    checkpoint = HostedRoomPolicyCheckpoint(db)
+    stale_snapshot = checkpoint.snapshot(
+        room_id=ROOM_ID,
+        latest_seq=before_claim_seq,
+    )
+    assert all(event["seq"] <= before_claim_seq for event in stale_snapshot.events)
+    snapshot = checkpoint.snapshot(
+        room_id=ROOM_ID,
+        latest_seq=int(current_room["latest_seq"]),
+    )
+    assert [event["kind"] for event in snapshot.events][-1] == "authority.claimed"
+    assert discussion.plan_next_task(
+        current_room,
+        snapshot.events,
+        local_profiles=LOCAL_PROFILES,
+    ).status == "settled"
+    task_events = checkpoint.events_for_task(
+        room_id=ROOM_ID,
+        source_event_seq=int(user["seq"]),
+    )
+    assert task_events[-1]["kind"] == "authority.claimed"
+
+    promoted_replica_events = list(events)
+    claim_index = next(
+        index
+        for index, event in enumerate(promoted_replica_events)
+        if event["kind"] == "authority.claimed"
+    )
+    promoted_replica_events[claim_index] = {
+        **promoted_replica_events[claim_index],
+        "payload": {
+            **promoted_replica_events[claim_index]["payload"],
+            "promoted_from_replica": True,
+            "reason": "authority-unreachable",
+        },
+    }
+    assert discussion.plan_next_task(
+        current_room,
+        promoted_replica_events,
+        local_profiles=LOCAL_PROFILES,
+    ).status == "settled"
+
+    hosted_rooms.claim_authority(
+        db,
+        room_id=ROOM_ID,
+        expected_gateway_id="gateway-b",
+        expected_epoch=2,
+        new_gateway_id="gateway-c",
+        event_id="claim-gateway-c",
+    )
+    latest_room = hosted_rooms.room_state(db, room_id=ROOM_ID)
+    assert discussion.plan_next_task(
+        latest_room,
+        _events(db),
+        local_profiles=LOCAL_PROFILES,
+    ).status == "settled"
+
+
+def test_promoted_room_rejects_missing_or_tampered_authority_lineage(room_db):
+    db, room = room_db
+    _append_user(db, event_id="user-before-promotion", text="@research answer")
+    task = _next_task(room, db)
+    _append_publication(
+        db,
+        discussion.plan_publication(
+            room,
+            _events(db),
+            task,
+            status="settled",
+            result={"text": "Original answer."},
+            local_profiles=LOCAL_PROFILES,
+        ),
+    )
+    hosted_rooms.claim_authority(
+        db,
+        room_id=ROOM_ID,
+        expected_gateway_id=GATEWAY_ID,
+        expected_epoch=1,
+        new_gateway_id="gateway-b",
+        event_id="claim-gateway-b",
+    )
+    current_room = hosted_rooms.room_state(db, room_id=ROOM_ID)
+    events = _events(db)
+
+    without_claim = [
+        event for event in events if event["kind"] != "authority.claimed"
+    ]
+    with pytest.raises(discussion.DiscussionValidationError, match="lineage"):
+        discussion.plan_next_task(
+            current_room,
+            without_claim,
+            local_profiles=LOCAL_PROFILES,
+        )
+
+    tampered = list(events)
+    claim_index = next(
+        index
+        for index, event in enumerate(tampered)
+        if event["kind"] == "authority.claimed"
+    )
+    tampered[claim_index] = {
+        **tampered[claim_index],
+        "payload": {
+            **tampered[claim_index]["payload"],
+            "previous_gateway_id": "gateway-tampered",
+        },
+    }
+    with pytest.raises(discussion.DiscussionValidationError):
+        discussion.plan_next_task(
+            current_room,
+            tampered,
+            local_profiles=LOCAL_PROFILES,
+        )
+
+    wrong_side = list(events)
+    wrong_side[0] = {**wrong_side[0], "authority_epoch": 2}
+    with pytest.raises(discussion.DiscussionValidationError, match="lineage"):
+        discussion.plan_next_task(
+            current_room,
+            wrong_side,
+            local_profiles=LOCAL_PROFILES,
+        )
 
 
 def test_malformed_log_and_task_reconstruction_fail_closed(

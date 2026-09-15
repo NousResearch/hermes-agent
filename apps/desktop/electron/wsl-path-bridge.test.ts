@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 
-import { afterEach, test } from 'vitest'
+import { afterEach, test, vi } from 'vitest'
+
+// UNC availability is an external dependency, not a property of translation.
+vi.mock('node:fs', () => ({ default: { existsSync: vi.fn(() => false) } }))
 
 import {
   isWslBridgeActive,
@@ -55,6 +59,18 @@ test('wslPosixToWindowsAccessible resolves a distro only for paths that need a U
     '\\\\wsl.localhost\\Ubuntu\\home\\alex\\proj'
   )
   assert.equal(distroProbes, 1)
+})
+
+test('UNC resolution keeps each distro and its legacy fallback independent', () => {
+  const exists = vi.mocked(fs.existsSync)
+  exists.mockImplementation(p => String(p) === '\\\\wsl$\\LegacyDistro')
+  try {
+    assert.equal(wslPosixToWindowsAccessible('/home/a', 'LegacyDistro'), '\\\\wsl$\\LegacyDistro\\home\\a')
+    assert.equal(wslPosixToWindowsAccessible('/home/b', 'ModernDistro'), '\\\\wsl.localhost\\ModernDistro\\home\\b')
+    assert.equal(wslPosixToWindowsAccessible('/home/c', 'LegacyDistro'), '\\\\wsl$\\LegacyDistro\\home\\c')
+  } finally {
+    exists.mockImplementation(() => false)
+  }
 })
 
 test('wslPosixToWindowsAccessible leaves non-absolute / already-Windows paths alone', () => {

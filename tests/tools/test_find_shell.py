@@ -15,7 +15,7 @@ import pytest
 from tools.environments.local import _find_bash, _find_shell
 
 
-class TestFindShellPrefersUserShell:
+class _PosixShellPreferenceChecks:
     """_find_shell should prefer $SHELL over bash on POSIX."""
 
     def test_returns_shell_env_when_set_and_exists(self, tmp_path):
@@ -60,6 +60,16 @@ class TestFindShellPrefersUserShell:
         """When $SHELL is empty string, _find_shell delegates."""
         with patch.dict(os.environ, {"SHELL": ""}):
             assert _find_shell() == _find_bash()
+
+
+@pytest.mark.linux_only
+class TestFindShellPrefersUserShell(_PosixShellPreferenceChecks):
+    """Run POSIX executable and login-shell checks on native Linux."""
+
+
+@pytest.mark.macos_only
+class TestFindShellPrefersUserShellOnMacOS(_PosixShellPreferenceChecks):
+    """Run the same contract on native macOS, including its CI marker lane."""
 
 
 class TestFindShellWindowsBehavior:

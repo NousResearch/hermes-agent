@@ -28,7 +28,6 @@ import {
   type McpTransport,
 } from "@/lib/mcp-server-create";
 import { completeMcpDashboardOAuth } from "@/lib/mcp-dashboard-oauth";
-import { errorMessage } from "@/lib/api-error";
 
 function isHttpUrl(value: string): boolean {
   return /^https?:\/\//i.test(value.trim());
@@ -99,7 +98,7 @@ export default function McpPage() {
     return api
       .getMcpServers()
       .then((res) => setServers(res.servers))
-      .catch((e) => showToast(`Could not load MCP servers: ${errorMessage(e)}`, "error"));
+      .catch((e) => showToast(`Error: ${e}`, "error"));
   }, [showToast]);
 
   const loadCatalog = useCallback(() => {
@@ -109,7 +108,7 @@ export default function McpPage() {
         setCatalog(res.entries);
         setDiagnostics(res.diagnostics);
       })
-      .catch((e) => showToast(`Could not load the MCP catalog: ${errorMessage(e)}`, "error"));
+      .catch((e) => showToast(`Error: ${e}`, "error"));
   }, [showToast]);
 
   useEffect(() => {
@@ -159,7 +158,7 @@ export default function McpPage() {
       setCreateModalOpen(false);
       loadServers();
     } catch (e) {
-      showToast(`Could not add MCP server: ${errorMessage(e)}`, "error");
+      showToast(`Failed to add: ${e}`, "error");
     } finally {
       setCreating(false);
     }
@@ -176,7 +175,7 @@ export default function McpPage() {
         showToast(`${server.name}: ${result.error ?? "Failed"}`, "error");
       }
     } catch (e) {
-      showToast(`Could not test the MCP server: ${errorMessage(e)}`, "error");
+      showToast(`Error: ${e}`, "error");
     } finally {
       setTesting(null);
     }
@@ -197,7 +196,7 @@ export default function McpPage() {
       }));
       showToast(`${server.name}: OAuth authentication complete`, "success");
     } catch (e) {
-      showToast(`Could not sign in to the MCP server: ${errorMessage(e)}`, "error");
+      showToast(`OAuth error: ${e}`, "error");
     } finally {
       setAuthenticating(null);
     }
@@ -215,7 +214,7 @@ export default function McpPage() {
         "Enable/disable takes effect on the next gateway restart.",
       );
     } catch (e) {
-      showToast(`Could not update the MCP server: ${errorMessage(e)}`, "error");
+      showToast(`Error: ${e}`, "error");
     } finally {
       setTogglingName(null);
     }
@@ -234,7 +233,7 @@ export default function McpPage() {
           });
           loadServers();
         } catch (e) {
-          showToast(`Could not remove the MCP server: ${errorMessage(e)}`, "error");
+          showToast(`Error: ${e}`, "error");
           throw e;
         }
       },
@@ -257,7 +256,7 @@ export default function McpPage() {
         setInstallEnv({});
         await Promise.all([loadServers(), loadCatalog()]);
       } catch (e) {
-        showToast(`Could not install from the catalog: ${errorMessage(e)}`, "error");
+        showToast(`Failed to install: ${e}`, "error");
       } finally {
         setInstallingName(null);
       }
@@ -604,22 +603,8 @@ export default function McpPage() {
 
         {servers.length === 0 && (
           <Card>
-            <CardContent className="flex flex-col items-center gap-3 py-8 text-center text-sm text-muted-foreground">
-              <p>
-                No MCP servers yet. MCP servers give the agent extra tools (GitHub, databases,
-                browsers…). Pick one from the catalog below, or click Add Server at the top of the page.
-              </p>
-              <Button
-                size="sm"
-                onClick={() =>
-                  document
-                    .getElementById("mcp-catalog")
-                    ?.scrollIntoView({ behavior: "smooth", block: "start" })
-                }
-                prefix={<Package className="h-3.5 w-3.5" />}
-              >
-                Browse catalog
-              </Button>
+            <CardContent className="py-8 text-center text-sm text-muted-foreground">
+              No MCP servers configured.
             </CardContent>
           </Card>
         )}
@@ -762,7 +747,7 @@ export default function McpPage() {
             className="flex items-center gap-2 text-muted-foreground"
           >
             <Package className="h-4 w-4" />
-            <span id="mcp-catalog">Catalog ({catalog.length})</span>
+            Catalog ({catalog.length})
           </H2>
         </div>
 

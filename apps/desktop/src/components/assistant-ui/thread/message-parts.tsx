@@ -21,8 +21,9 @@ import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { useI18n } from '@/i18n'
-import { connectorCalls, mcpTargets } from '@/lib/connector-tools'
+import { connectorCalls } from '@/lib/connector-tools'
 import { generatedImageFromResult } from '@/lib/generated-images'
+import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
 import { isTodoToolName } from '@/lib/todos'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
@@ -31,11 +32,6 @@ import { $reasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 
 type TimelineToolCallProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number }
 
-// A call sealed without a result (turn stopped, completion event lost) is
-// neither pending nor successful; only the generic row can say so.
-const settledWithoutResult = ({ completedAt, result }: TimelineToolCallProps): boolean =>
-  result === undefined && completedAt !== undefined
-
 const ImageGenerateTool: FC<TimelineToolCallProps> = props => {
   const { args, completedAt, result, timestamp } = props
   const aspectRatio = typeof args?.aspect_ratio === 'string' ? args.aspect_ratio : undefined
@@ -43,7 +39,7 @@ const ImageGenerateTool: FC<TimelineToolCallProps> = props => {
   // The image card owns successful generations. Failed or malformed results
   // still need the normal tool row: it extracts the error text and gives the
   // user an honest, expandable failure rather than silently dropping the call.
-  if (settledWithoutResult(props) || (result !== undefined && !generatedImageFromResult(result))) {
+  if (result !== undefined && !generatedImageFromResult(result)) {
     return <ToolFallback {...props} />
   }
 
@@ -58,7 +54,7 @@ const ImageGenerateTool: FC<TimelineToolCallProps> = props => {
 const DelegateToolPart: FC<TimelineToolCallProps> = props => {
   // A call that failed outright dispatched nothing — there are no children to
   // list, only an error. The generic row extracts and expands it properly.
-  if (props.isError || settledWithoutResult(props)) {
+  if (props.isError) {
     return <ToolFallback {...props} />
   }
 
@@ -80,7 +76,7 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
   // compact "Messaged X" / "Message from X" notices, not a transcript row
   // (Grok-bots parity; the receiving side already renders notices via
   // AGENT_MESSAGE_RE). Non-delivery terminal calls fall through unchanged.
-  if (props.toolName === 'terminal' && !props.isError && !settledWithoutResult(props)) {
+  if (props.toolName === 'terminal' && !props.isError) {
     const command = typeof props.args?.command === 'string' ? props.args.command : ''
 
     if (deliveryTargetFromCommand(command)) {
@@ -104,13 +100,6 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
   }
 
   if (props.toolName === 'clarify') {
-    // Stopped on this question, never answered: history. ClarifyTool reads
-    // the session's live clarify request, so a later turn's question would
-    // otherwise paint onto this row as a second live card.
-    if (settledWithoutResult(props)) {
-      return <ToolFallback {...props} />
-    }
-
     return (
       <>
         <TimelineTimestamp className="mb-0.5 block" completedAt={props.completedAt} timestamp={props.timestamp} />
@@ -119,16 +108,16 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     )
   }
 
-  if (mcpTargets(props.toolName, props.args).length > 0) {
-    return <McpSetupTool {...props} />
-  }
-
-  if (props.toolName === 'manage_connections') {
+  if (isOnboardingEnabled() && props.toolName === 'manage_connections') {
     return <ConnectorTool {...props} />
   }
 
-  if (connectorCalls(props.toolName, props.args).length > 0) {
+  if (isOnboardingEnabled() && connectorCalls(props.toolName, props.args).length > 0) {
     return <ConnectorExecution {...props} />
+  }
+
+  if (props.toolName === 'setup_mcp') {
+    return <McpSetupTool {...props} />
   }
 
   return <ToolFallback {...props} />

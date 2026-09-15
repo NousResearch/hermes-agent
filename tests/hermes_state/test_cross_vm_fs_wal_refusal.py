@@ -5,13 +5,17 @@ WAL over a VM-boundary filesystem (Docker Desktop / OrbStack / Podman host bind 
 while never live-downgrading an on-disk WAL database and never flagging an ordinary filesystem.
 """
 
-import logging
 import sqlite3
 
 import pytest
 
 import hermes_state_wal
-from hermes_state_wal import WalUnsupportedError, _detect_cross_vm_fs, apply_wal_with_fallback
+from hermes_state_wal import (
+    WalUnsupportedError,
+    _detect_cross_vm_fs,
+    _mountinfo_fstype,
+    apply_wal_with_fallback,
+)
 
 
 def _mountinfo(tmp_path, lines):
@@ -26,21 +30,34 @@ BIND_VIRTIOFS = "612 25 0:53 / /data rw,relatime shared:300 - fuse.virtiofs moun
 BIND_9P = "613 25 0:54 / /mnt/host rw,relatime - 9p host0 rw,trans=virtio"
 NESTED_EXT4 = "614 612 8:2 / /data/native rw,relatime - ext4 /dev/sdb1 rw"
 SPACE_VIRTIOFS = "615 25 0:55 / /mnt/my\\040share rw,relatime - virtiofs share rw"
+UNICODE_SPACE_VIRTIOFS = "616 25 0:56 / /mnt/共有\\040share rw,relatime - virtiofs share rw"
 
 
 class TestDetectCrossVmFs:
-    @pytest.mark.parametrize("path,expected", [
-        ("/data/agent", True),          # fuse.virtiofs bind mount
-        ("/mnt/host/db", True),         # 9p bind mount
-        ("/mnt/my share/db", True),     # octal-escaped mount point
-        ("/home/user/.hermes", False),  # ext4 root
-        ("/data/native/db", False),     # ext4 mounted over the virtiofs tree — longest prefix wins
-        ("/datastore", False),          # sibling path sharing a prefix string, not a mount prefix
+    @pytest.mark.parametrize("path,expected_fstype", [
+        ("/data/agent", "fuse.virtiofs"),  # cross-VM bind mount
+        ("/mnt/host/db", "9p"),            # other cross-VM bind mount
+        ("/mnt/my share/db", "virtiofs"),  # octal-escaped mount point
+        ("/home/user/.hermes", "ext4"),    # ordinary root
+        ("/data/native/db", "ext4"),       # nested mount wins over the virtiofs parent
+        ("/datastore", "ext4"),            # sibling path does not match the /data mount
     ])
-    def test_only_virtiofs_and_9p_mounts_are_flagged(self, tmp_path, path, expected):
+    def test_mountinfo_parser_resolves_the_longest_mount(self, tmp_path, path, expected_fstype):
         mi = _mountinfo(tmp_path, [ROOT_EXT4, BIND_VIRTIOFS, BIND_9P, NESTED_EXT4, SPACE_VIRTIOFS])
-        assert _detect_cross_vm_fs(path, mountinfo_path=mi) is expected
+        assert _mountinfo_fstype(path, mountinfo_path=mi) == expected_fstype
 
+    def test_mountinfo_octal_decoding_preserves_unicode_mount_points(self, tmp_path):
+        mi = _mountinfo(tmp_path, [ROOT_EXT4, UNICODE_SPACE_VIRTIOFS])
+
+        assert _mountinfo_fstype("/mnt/共有 share/db", mountinfo_path=mi) == "virtiofs"
+
+    @pytest.mark.linux_only
+    @pytest.mark.parametrize("path", ["/data/agent", "/mnt/host/db", "/mnt/my share/db"])
+    def test_linux_guard_flags_cross_vm_mounts(self, tmp_path, path):
+        mi = _mountinfo(tmp_path, [ROOT_EXT4, BIND_VIRTIOFS, BIND_9P, SPACE_VIRTIOFS])
+        assert _detect_cross_vm_fs(path, mountinfo_path=mi) is True
+
+    @pytest.mark.linux_only
     @pytest.mark.parametrize("fstype", [
         "ext4", "xfs", "btrfs", "zfs", "tmpfs", "overlay", "nfs", "nfs4", "cifs", "fuse.sshfs", "apfs", "f2fs",
     ])
@@ -49,6 +66,7 @@ class TestDetectCrossVmFs:
         mi = _mountinfo(tmp_path, [f"25 1 8:1 / / rw,relatime shared:1 - {fstype} /dev/sda1 rw"])
         assert _detect_cross_vm_fs("/home/user/.hermes", mountinfo_path=mi) is False
 
+    @pytest.mark.linux_only
     def test_missing_mountinfo_conservative_false(self, tmp_path):
         assert _detect_cross_vm_fs("/data", mountinfo_path=str(tmp_path / "nope")) is False
 
@@ -61,7 +79,6 @@ class TestWalRefusalOnCrossVmFs:
         monkeypatch.setattr(hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda *a, **k: False)
         monkeypatch.setattr(hermes_state_wal, "resolve_journal_mode", lambda: "wal")
         hermes_state_wal._cross_vm_warned_paths.clear()
-        hermes_state_wal._cross_vm_existing_wal_warned_paths.clear()
 
     def test_fresh_db_on_cross_vm_fs_gets_delete_and_without_detection_gets_wal(self, tmp_path, monkeypatch):
         monkeypatch.setattr(hermes_state_wal, "_path_on_cross_vm_fs", lambda p: True)
@@ -96,29 +113,3 @@ class TestWalRefusalOnCrossVmFs:
         conn = sqlite3.connect(str(db))
         assert apply_wal_with_fallback(conn, db_label=str(db)) == "wal"
         conn.close()
-
-    @pytest.mark.parametrize("wal_reset_vulnerable", [False, True])
-    def test_existing_wal_db_on_cross_vm_fs_warns_operator_once(self, tmp_path, monkeypatch, caplog,
-                                                                wal_reset_vulnerable):
-        # #110848: the fresh-DB refusal cannot help a database that is already WAL, and staying silent left the
-        # reporter with a corrupting state.db and no signal. Keep WAL (never live-downgrade) but say so, once.
-        # The WAL-reset-vulnerable SQLite path (Debian/Ubuntu system Pythons) returns early too and must not be silent.
-        monkeypatch.setattr(hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda *a, **k: wal_reset_vulnerable)
-        db = tmp_path / "already-wal.db"
-        seed = sqlite3.connect(str(db))
-        if str(seed.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower() != "wal":
-            seed.close()
-            pytest.skip("environment refuses WAL")
-        seed.execute("CREATE TABLE t (x)")
-        seed.commit()
-        seed.close()
-        monkeypatch.setattr(hermes_state_wal, "_path_on_cross_vm_fs", lambda p: True)
-        with caplog.at_level(logging.ERROR, logger=hermes_state_wal.logger.name):
-            for _ in range(2):
-                conn = sqlite3.connect(str(db))
-                assert apply_wal_with_fallback(conn, db_label="state.db") == "wal"
-                conn.close()
-        errors = [r for r in caplog.records if r.levelno == logging.ERROR and "cross-VM" in r.getMessage()]
-        assert len(errors) == 1
-        assert "PRAGMA journal_mode=DELETE" in errors[0].getMessage()
-        assert "native volume" in errors[0].getMessage()

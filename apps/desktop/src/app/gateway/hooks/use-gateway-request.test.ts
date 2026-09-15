@@ -270,7 +270,11 @@ describe('useGatewayRequest', () => {
     })
 
     expect(desktop.getConnectionFor).toHaveBeenCalledTimes(2)
-    expect(desktop.getConnectionFor).toHaveBeenCalledWith({ connectionId: 'ssh-source', profile: 'research' })
+    expect(desktop.getConnectionFor).toHaveBeenCalledWith({
+      connectionId: 'ssh-source',
+      profile: 'research',
+      priority: 'foreground'
+    })
     expect(desktop.getGatewayWsUrlFor).toHaveBeenCalledTimes(2)
     expect(desktop.getGatewayWsUrlFor).toHaveBeenCalledWith({ connectionId: 'ssh-source', profile: 'research' })
     expect(desktop.getConnection).not.toHaveBeenCalled()
@@ -303,7 +307,11 @@ describe('useGatewayRequest', () => {
 
     await expectSecondaryRecoveryFailure(gateway, result.current.requestGateway)
 
-    expect(desktop.getConnectionFor).toHaveBeenCalledWith({ connectionId: 'ssh-source', profile: 'research' })
+    expect(desktop.getConnectionFor).toHaveBeenCalledWith({
+      connectionId: 'ssh-source',
+      profile: 'research',
+      priority: 'foreground'
+    })
     expect(desktop.getGatewayWsUrlFor).toHaveBeenCalled()
     expect(desktop.getConnection).not.toHaveBeenCalled()
     expect(desktop.getGatewayWsUrl).not.toHaveBeenCalled()
@@ -317,7 +325,11 @@ describe('useGatewayRequest', () => {
 
     await expectSecondaryRecoveryFailure(gateway, result.current.requestGateway)
 
-    expect(desktop.getConnectionFor).toHaveBeenCalledWith({ connectionId: 'ssh-source', profile: 'research' })
+    expect(desktop.getConnectionFor).toHaveBeenCalledWith({
+      connectionId: 'ssh-source',
+      profile: 'research',
+      priority: 'foreground'
+    })
     expect(desktop.getConnection).not.toHaveBeenCalled()
     expect(desktop.getGatewayWsUrl).not.toHaveBeenCalled()
   })
@@ -330,7 +342,11 @@ describe('useGatewayRequest', () => {
 
     await expectSecondaryRecoveryFailure(gateway, result.current.requestGateway)
 
-    expect(desktop.getConnectionFor).toHaveBeenCalledWith({ connectionId: 'ssh-source', profile: 'research' })
+    expect(desktop.getConnectionFor).toHaveBeenCalledWith({
+      connectionId: 'ssh-source',
+      profile: 'research',
+      priority: 'foreground'
+    })
     expect(desktop.getConnection).not.toHaveBeenCalled()
     expect(desktop.getGatewayWsUrl).not.toHaveBeenCalled()
   })

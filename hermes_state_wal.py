@@ -9,6 +9,7 @@ import contextlib
 import functools
 import logging
 import os
+import re
 import sqlite3
 import sys
 import threading
@@ -185,8 +186,6 @@ _cross_vm_fs_cache: Dict[str, bool] = {}  # per DB directory; kanban_db.connect(
 _cross_vm_fs_cache_lock = threading.Lock()
 _cross_vm_warned_paths: set[str] = set()
 _cross_vm_warned_lock = threading.Lock()
-_cross_vm_existing_wal_warned_paths: set[str] = set()
-_cross_vm_existing_wal_warned_lock = threading.Lock()
 
 
 def _mountinfo_fstype(directory: str, mountinfo_path: str = "/proc/self/mountinfo") -> str:
@@ -203,9 +202,9 @@ def _mountinfo_fstype(directory: str, mountinfo_path: str = "/proc/self/mountinf
         parts = fields.split()
         if len(parts) < 5 or not tail:
             continue
-        mount_point = parts[4]
-        if "\\" in mount_point:  # octal escapes (\040 = space)
-            mount_point = mount_point.encode("latin-1", "ignore").decode("unicode_escape")
+        # proc(5) escapes whitespace and backslashes as octal. Decode only those escape
+        # sequences: a latin-1 roundtrip drops non-Latin characters in the same field.
+        mount_point = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), parts[4])
         if directory == mount_point or directory.startswith(mount_point.rstrip("/") + "/"):
             if len(mount_point) > best_len:
                 best_len, best_fstype = len(mount_point), tail.split()[0]
@@ -285,7 +284,6 @@ def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.
         if configured == "delete":
             # Never-live-downgrade keeps WAL; tell the operator their delete did not apply.
             _log_configured_delete_overridden_once(db_label)
-        _warn_existing_wal_on_cross_vm_fs(conn)
         _apply_wal_companions(conn)
         return "wal"
 
@@ -414,16 +412,6 @@ def _set_journal_mode_no_wait(conn: sqlite3.Connection, mode: str) -> str:
             conn.execute(f"PRAGMA busy_timeout={previous_timeout}")
 
 
-def _warn_existing_wal_on_cross_vm_fs(conn: sqlite3.Connection) -> None:
-    """#110848: the fresh-DB cross-VM refusal never sees a DB that was already WAL before the check existed (or was
-    created on a native volume and then moved). Keeping WAL is right (never live-downgrade); staying silent is not.
-    Both the vulnerable-SQLite and the regular already-WAL paths return early, so both must call this."""
-    db_file = _connection_db_file(conn)
-    if db_file and _path_on_cross_vm_fs(db_file):
-        # Keyed (and labelled) by path, not db_label: a gateway serving several profiles must hear about each one.
-        _log_once("cross_vm_fs_existing_wal", db_file)
-
-
 def _apply_delete_for_wal_reset_bug(conn: sqlite3.Connection, *, db_label: str, require_delete: bool = False) -> str:
     """Avoid enabling WAL when the linked SQLite has the WAL-reset bug.
 
@@ -437,7 +425,6 @@ def _apply_delete_for_wal_reset_bug(conn: sqlite3.Connection, *, db_label: str, 
         if require_delete:
             # Upgrading SQLite doesn't help here; emit the actionable message last.
             _log_configured_delete_overridden_once(db_label)
-        _warn_existing_wal_on_cross_vm_fs(conn)
         _apply_wal_companions(conn)
         return "wal"
     if current is None:
@@ -534,16 +521,6 @@ _ONCE_LOGS = {
         "corrupt the database, so journal_mode=DELETE is used instead. To restore WAL concurrency, move the database "
         "onto a native volume (e.g. a named Docker volume) instead of a host bind mount. This message fires once per "
         "process per database."),
-    "cross_vm_fs_existing_wal": (_cross_vm_existing_wal_warned_lock, "_cross_vm_existing_wal_warned_paths", logging.ERROR,
-        # ERROR, unlike the fresh-DB refusal: this database IS running WAL on the corrupting filesystem and only the
-        # operator can fix it (a live downgrade under other openers would destroy their uncheckpointed commits).
-        "%s: existing WAL-mode database is on a cross-VM filesystem (virtiofs/9p — typical for Docker Desktop / "
-        "OrbStack / Podman host bind mounts). SQLite WAL shared-memory is not coherent across the VM boundary and "
-        "concurrent writers can silently corrupt the database. Hermes does not live-downgrade an on-disk WAL database. "
-        "Fix one of two ways: stop every Hermes process using this database and run a one-time offline "
-        "'PRAGMA journal_mode=DELETE' on the file (set `database.journal_mode: delete` in config.yaml to keep it), "
-        "or move the database onto a native volume (e.g. a named Docker volume). This message fires once per process "
-        "per database."),
 }
 
 

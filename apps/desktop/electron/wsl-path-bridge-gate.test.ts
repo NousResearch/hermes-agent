@@ -3,30 +3,23 @@
  *
  * The behavioural tests in wsl-path-bridge.test.ts prove the no-op contract
  * (paths pass through unchanged when the bridge is inactive). This file goes
- * one rung further: with `process.platform` stubbed to `win32` and
- * `child_process.execFileSync` mocked, it proves the actual `wsl.exe` spawn is
+ * one rung further: on a real Windows host with process and UNC probes
+ * mocked, it proves the actual `wsl.exe` spawn is
  * suppressed — not just that the return value looks right.
  *
- * Each test re-imports the module fresh (vi.resetModules) so IS_WINDOWS is
- * re-evaluated against the stubbed platform.
+ * Each test re-imports the module fresh to reset the distro and UNC caches.
  */
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { beforeEach, describe, expect, test, vi } from 'vitest'
 
-const execFileSyncMock = vi.fn(() => 'Ubuntu\n')
+const { execFileSyncMock } = vi.hoisted(() => ({ execFileSyncMock: vi.fn(() => 'Ubuntu\n') }))
 
 vi.mock('node:child_process', () => ({ execFileSync: execFileSyncMock }))
+vi.mock('node:fs', () => ({ default: { existsSync: vi.fn(() => false) } }))
 
-describe('WSL bridge gate on Windows (#66433)', () => {
-  const realPlatform = process.platform
-
+describe.runIf(process.platform === 'win32')('WSL bridge gate on Windows (#66433)', () => {
   beforeEach(() => {
-    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
     vi.resetModules()
     execFileSyncMock.mockClear()
-  })
-
-  afterEach(() => {
-    Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true })
   })
 
   test('wsl.exe IS probed for a POSIX path when the bridge is active (control)', async () => {

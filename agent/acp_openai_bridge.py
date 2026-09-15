@@ -13,9 +13,10 @@ from __future__ import annotations
 import json
 import re
 from types import SimpleNamespace
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
-from openai.types.chat.chat_completion_message_tool_call import ChatCompletionMessageToolCall, Function
+if TYPE_CHECKING:
+    from openai.types.chat.chat_completion_message_tool_call import ChatCompletionMessageToolCall
 
 TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 TOOL_CALL_JSON_RE = re.compile(
@@ -73,6 +74,12 @@ def completion_to_stream_chunks(completion: SimpleNamespace) -> StreamChunks:
 
 def build_openai_tool_call(*, call_id: str, name: str, arguments: str) -> ChatCompletionMessageToolCall:
     """Build an OpenAI-compatible tool-call object for downstream handling."""
+    # Finish the SDK's top-level initialization before touching its chat leaf. Model-catalog
+    # discovery can import this bridge beside primary-client startup, and a leaf-first import can
+    # otherwise observe the SDK's mutually-referencing chat/responses packages half-initialized.
+    import openai  # noqa: F401
+    from openai.types.chat.chat_completion_message_tool_call import ChatCompletionMessageToolCall, Function
+
     return ChatCompletionMessageToolCall(
         id=call_id, call_id=call_id, response_item_id=None, type="function",
         function=Function(name=name, arguments=arguments),

@@ -9,6 +9,8 @@ encrypted entries stay discrete.
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agent.reasoning_summaries import append_streamed_reasoning_detail
 
 
@@ -32,6 +34,23 @@ def test_fragments_merge_per_block_and_backfill_signature():
         "reasoning.text", "reasoning.encrypted", "reasoning.encrypted", "reasoning.summary"]
     assert acc[0] == {"type": "reasoning.text", "text": "The user wants X.", "signature": "sig1"}
     assert acc[3]["summary"] == "s1 s2"
+
+
+@pytest.mark.parametrize("detail_type,text_key", [
+    ("reasoning.text", "text"),
+    ("reasoning.summary", "summary"),
+])
+@pytest.mark.parametrize("identity_key", ["index", "id", "signature"])
+def test_conflicting_detail_identity_starts_a_distinct_block(detail_type, text_key, identity_key):
+    first_identity, second_identity = ((1, 2) if identity_key == "index" else ("one", "two"))
+    first = {"type": detail_type, text_key: "first", identity_key: first_identity}
+    second = {"type": detail_type, text_key: "second", identity_key: second_identity}
+    acc = []
+
+    append_streamed_reasoning_detail(acc, first)
+    append_streamed_reasoning_detail(acc, second)
+
+    assert acc == [first, second]
 
 
 def _agent():

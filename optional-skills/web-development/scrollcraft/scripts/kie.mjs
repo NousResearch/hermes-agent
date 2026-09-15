@@ -33,11 +33,17 @@ const MODELS = {
 };
 
 // ---------------------------------------------------------------- key ----
-function findEnv(start) {
+function findKey(start) {
   let dir = path.resolve(start);
   for (let i = 0; i < 8; i++) {
     const p = path.join(dir, ".env");
-    if (fs.existsSync(p)) return p;
+    if (fs.existsSync(p)) {
+      for (const line of fs.readFileSync(p, "utf8").split(/\r?\n/)) {
+        const m = line.match(/^\s*KIE_AI_API_KEY\s*=\s*(.+?)\s*$/);
+        const value = m?.[1].replace(/^["']|["']$/g, "").trim();
+        if (value) return value;
+      }
+    }
     const up = path.dirname(dir);
     if (up === dir) break;
     dir = up;
@@ -46,13 +52,9 @@ function findEnv(start) {
 }
 function loadKey() {
   if (process.env.KIE_AI_API_KEY) return process.env.KIE_AI_API_KEY;
-  const envPath = findEnv(process.cwd());
-  if (!envPath) throw new Error("KIE_AI_API_KEY not set and no .env found walking up from " + process.cwd());
-  for (const line of fs.readFileSync(envPath, "utf8").split(/\r?\n/)) {
-    const m = line.match(/^\s*KIE_AI_API_KEY\s*=\s*(.+?)\s*$/);
-    if (m) return m[1].replace(/^["']|["']$/g, "");
-  }
-  throw new Error("KIE_AI_API_KEY not found in " + envPath);
+  const key = findKey(process.cwd());
+  if (key) return key;
+  throw new Error("KIE_AI_API_KEY not set or found walking up from " + process.cwd());
 }
 const KEY = loadKey();
 const H = { "Content-Type": "application/json", Authorization: `Bearer ${KEY}` };

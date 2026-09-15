@@ -48,17 +48,16 @@ def _profile_scoped_rpc(
                     return err
                 args = (rid, params, session)
             scope = contextlib.nullcontext()
-            if scoped:
-                # _profile_home is the ONE resolver: it registers the served home (flipping this
-                # process to fail-closed multi-profile hosting) and answers None for the launch
-                # profile, which then binds its own scope once multiplexing is active.
-                profile = _str_arg(params, "profile")
+            if profile := _str_arg(params, "profile") if scoped else "":
                 try:
                     try:
-                        home = _profile_home(profile)
-                    except ProfileUnavailableError:
+                        profile_dir = _tools_mod("hermes_cli.profiles").get_profile_dir(profile)
+                    except ValueError:  # traversal-shaped name: same answer as a missing dir
+                        profile_dir = None
+                    if not profile_dir or not profile_dir.is_dir():
                         return _err(rid, 4064, f"profile '{profile}' not found")
-                    scope = _session_profile_runtime_scope({"profile_home": str(home) if home else None})
+                    _tools_mod("hermes_cli.env_loader").hydrate_profile_secret_sources(profile_dir)
+                    scope = _session_profile_runtime_scope({"profile_home": str(profile_dir)})
                 except Exception as e:
                     if not catch_resolve:
                         raise
@@ -119,7 +118,7 @@ def _mcp_named_server(rid, params):
 
 def _busy_error(rid, session, cmd: str):
     if session.get("running"):
-        return _err(rid, 4009, busy_message(cmd))
+        return _err(rid, 4009, f"session busy — /interrupt the current turn before /{cmd}")
     return None
 
 
@@ -270,6 +269,78 @@ def _mcp_reload_confirm_required() -> bool:
         return True
 
 
+_MCP_RELOAD_PENDING_GENERATION = "_mcp_reload_pending_generation"
+
+
+def _mcp_refresh_session_agent_locked(sid: str, session: dict, generation: int, mcp_agent=None):
+    """Refresh one idle session or record the latest generation for its turn boundary.
+
+    The caller owns ``_mcp_reload_lock`` and the session's ``history_lock`` in that order.  Keeping
+    the running check and tool publication under the history lock prevents a prompt admission from
+    racing between them; ``refresh_agent_mcp_tools`` supplies the registry-generation stale-writer
+    guard for the actual snapshot publish.
+    """
+    generation = max(1, int(generation or 0))
+    pending = max(int(session.get(_MCP_RELOAD_PENDING_GENERATION, 0) or 0), generation)
+    session[_MCP_RELOAD_PENDING_GENERATION] = pending
+    if session.get("running"):
+        return None
+    agent = session.get("agent")
+    if agent is None or session.get("_closing"):
+        session.pop(_MCP_RELOAD_PENDING_GENERATION, None)
+        return None
+    try:
+        with _session_profile_runtime_scope(session):
+            (mcp_agent or _tools_mod("tools.mcp_tool_agent")).refresh_agent_mcp_tools(
+                agent, enabled_override=_load_enabled_toolsets(), quiet_mode=True)
+        info = _session_info(agent, session)
+    except Exception as exc:
+        # Keep the generation pending: the next idle boundary retries against the latest registry.
+        logger.warning("Failed to refresh cached agent tools after /reload-mcp (session %s): %s", sid, exc)
+        return None
+    if int(session.get(_MCP_RELOAD_PENDING_GENERATION, 0) or 0) <= generation:
+        session.pop(_MCP_RELOAD_PENDING_GENERATION, None)
+    return info
+
+
+def _mcp_refresh_or_defer_session_agent(sid: str, session: dict, generation: int, mcp_agent=None) -> bool:
+    """Reload-lock-owned path used by ``reload.mcp``; emit only after releasing history_lock."""
+    with session["history_lock"]:
+        info = _mcp_refresh_session_agent_locked(sid, session, generation, mcp_agent)
+    if info is not None:
+        _emit("session.info", sid, info)
+        return True
+    return False
+
+
+def _apply_pending_mcp_reload(sid: str, session: dict) -> bool:
+    """Apply a deferred MCP snapshot at an idle turn boundary; never disrupt turn settlement.
+
+    Lock order is always global reload lock then session history lock, matching ``reload.mcp``.
+    A prompt that wins the history-lock race sets ``running`` first and leaves the latest generation
+    pending for the following boundary.
+    """
+    # Ordinary turns must not queue behind an unrelated, potentially slow rediscovery.  This first
+    # read is only a fast-path hint; release history_lock before the authoritative global→history
+    # acquisition below so the process has one lock order everywhere.
+    with session["history_lock"]:
+        if int(session.get(_MCP_RELOAD_PENDING_GENERATION, 0) or 0) <= 0:
+            return False
+    try:
+        with _mcp_reload_lock:
+            with session["history_lock"]:
+                generation = int(session.get(_MCP_RELOAD_PENDING_GENERATION, 0) or 0)
+                if generation <= 0:
+                    return False
+                info = _mcp_refresh_session_agent_locked(sid, session, generation)
+        if info is not None:
+            _emit("session.info", sid, info)
+            return True
+    except Exception as exc:
+        logger.warning("Deferred MCP tool refresh failed for session %s: %s", sid, exc)
+    return False
+
+
 @_rpc("reload.mcp", 5015)
 def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
@@ -295,23 +366,18 @@ def _(rid, params: dict) -> dict:
     # (generation-only coalescing).
     req_rev = str(params.get("rev") or "")
 
-    def _refresh_session_agent() -> None:
+    def _refresh_session_agent(generation: int) -> None:
         """Rebuild EVERY live session's cached tool snapshot + push session.info (agents never
         re-read the registry). The MCP pool is process-global, so refreshing only the requester
         would leave sibling sessions on stale tools until /new — and a request without a
         resolvable session_id (desktop passes ``activeSessionId ?? undefined``) would refresh
-        nothing while still answering "reloaded". Runs under _mcp_reload_lock so a concurrent
-        reload can't tear the registry down mid-refresh."""
+        nothing while still answering "reloaded". A running sibling is stamped for the latest
+        generation and refreshed only after its turn releases admission. Runs under
+        _mcp_reload_lock so a concurrent reload can't tear the registry down mid-refresh."""
         with _sessions_lock:
             live = [(sid, sess) for sid, sess in _sessions.items() if sess.get("agent") is not None]
         for sid, sess in live:
-            agent = sess["agent"]
-            try:  # enabled_override re-resolves toolsets so a server enabled in config this session is picked up
-                with _session_profile_runtime_scope(sess):
-                    _mcp_agent.refresh_agent_mcp_tools(agent, enabled_override=_load_enabled_toolsets(), quiet_mode=True)
-            except Exception as _exc:
-                logger.warning("Failed to refresh cached agent tools after /reload-mcp (session %s): %s", sid, _exc)
-            _emit("session.info", sid, _session_info(agent, sess))
+            _mcp_refresh_or_defer_session_agent(sid, sess, generation, _mcp_agent)
 
     def _do_full_reload() -> None:
         """shutdown+discover+refresh under the lock, then mark a completed generation. Config
@@ -338,9 +404,10 @@ def _(rid, params: dict) -> dict:
                     _mcp_discovery.discover_mcp_tools()
             except Exception as _exc:
                 logger.warning("MCP rediscovery failed for profile %s: %s", home, _exc)
-        _refresh_session_agent()
+        completed_generation = _mcp_reload_gen + 1
+        _refresh_session_agent(completed_generation)
         _mcp_reload_loaded_rev = loaded
-        _mcp_reload_gen += 1
+        _mcp_reload_gen = completed_generation
 
     # LEADER (won the non-blocking acquire) runs the full reload. FOLLOWER waits, then — still
     # holding the lock — coalesces only if a reload COMPLETED meanwhile (generation advanced
@@ -354,7 +421,7 @@ def _(rid, params: dict) -> dict:
     gen_before = _mcp_reload_gen
     with _mcp_reload_lock:
         coalesced = _mcp_reload_gen > gen_before and (not req_rev or req_rev == _mcp_reload_loaded_rev)
-        _refresh_session_agent() if coalesced else _do_full_reload()
+        _refresh_session_agent(_mcp_reload_gen) if coalesced else _do_full_reload()
     return _finish_reload(rid, params, coalesced=coalesced)
 
 
@@ -515,28 +582,18 @@ def _run_plugin_command(handler, arg: str) -> str:
     return str(_tools_mod("hermes_cli.plugins").resolve_plugin_command_result(handler(arg)) or "")
 
 
-@contextlib.contextmanager
-def _session_home_scope(session):
-    """Bind HERMES_HOME to the session's profile for the block (no-op for the launch profile).
-
-    Skill/bundle/quick-command resolution is home-keyed (``skills.external_dirs``, ``skill-bundles/``,
-    ``quick_commands`` all live in the profile's config/home); nothing upstream of these RPC handlers
-    binds it, so an unscoped call resolves against the launch profile (#110695)."""
-    hc = _tools_mod("hermes_constants")
-    profile_home = session.get("profile_home") if session else None
-    token = hc.set_hermes_home_override(profile_home) if profile_home else None
-    try:
-        yield
-    finally:
-        if token is not None:
-            hc.reset_hermes_home_override(token)
-
-
 def _is_profile_skill_command(session: dict, base: str) -> bool:
-    """True when ``/base`` is a skill command of the session's profile. False on failure."""
+    """True when ``/base`` is a skill command of the session's profile (HERMES_HOME bound to it so
+    get_skill_commands() sees its skills.external_dirs; nothing upstream binds it). False on failure."""
     try:
-        with _session_home_scope(session):
+        hc = _tools_mod("hermes_constants")
+        profile_home = session.get("profile_home")
+        token = hc.set_hermes_home_override(profile_home) if profile_home else None
+        try:
             return f"/{base}" in _tools_mod("agent.skill_commands").get_skill_commands()
+        finally:
+            if token is not None:
+                hc.reset_hermes_home_override(token)
     except Exception:
         return False
 
@@ -582,7 +639,7 @@ def _dispatch_bundle(rid, params, session, name, arg):
 def _dispatch_skill(rid, params, session, name, arg):
     with contextlib.suppress(Exception):
         sc = _tools_mod("agent.skill_commands")
-        cmds, key = sc.get_skill_commands(), f"/{name}"
+        cmds, key = sc.scan_skill_commands(), f"/{name}"
         if key in cmds:
             msg = sc.build_skill_invocation_message(key, arg, task_id=session.get("session_key", "") if session else "")
             if msg:  # UIs render `display`, never `message`.
@@ -836,18 +893,14 @@ def _(rid, params: dict) -> dict:
     name, arg = _resolve_name(params.get("name", "").lstrip("/")), params.get("arg", "")
     session = _sessions.get(params.get("session_id", ""))
 
-    # Stage order is load-bearing: quick > plugin > bundle > skill > built-in. One home binding
-    # around the whole loop: the routing guard (``_is_profile_skill_command``) and the stages
-    # must resolve against the SAME profile or a secondary-only skill is routed here and then
-    # not found (#110695).
+    # Stage order is load-bearing: quick > plugin > bundle > skill > built-in.
     stages = (_dispatch_quick, _dispatch_plugin, _dispatch_bundle, _dispatch_skill, _SLASH_BUILTINS.get(name))
-    with _session_home_scope(session):
-        for stage in filter(None, stages):
-            res = stage(rid, params, session, name, arg)
-            if res is not None:
-                if name in _SESSION_CONTROL_SLASHES and "error" not in res:
-                    _publish_session_control_snapshot(params.get("session_id", ""), session)
-                return res
+    for stage in filter(None, stages):
+        res = stage(rid, params, session, name, arg)
+        if res is not None:
+            if name in _SESSION_CONTROL_SLASHES and "error" not in res:
+                _publish_session_control_snapshot(params.get("session_id", ""), session)
+            return res
     return _err(rid, 4018, f"not a quick/plugin/bundle/skill command: {name}")
 
 
@@ -872,8 +925,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4018, "snapshot restore mutates live config/state; use command.dispatch for /snapshot restore")
     # Pending-input built-ins route straight to command.dispatch (some clients fail the
     # error-then-retry fallback); bundles go the same way under their resolved key.
-    with _session_home_scope(session):  # a secondary-only bundle must route too (#110695)
-        target = base if base in _PENDING_INPUT_COMMANDS else _bundle_key_for(base)
+    target = base if base in _PENDING_INPUT_COMMANDS else _bundle_key_for(base)
     if target is not None:
         return _methods["command.dispatch"](rid, {"name": target.lstrip("/"), "arg": arg, "session_id": sid})
     if _is_profile_skill_command(session, base):
@@ -946,7 +998,7 @@ def _(rid, params: dict, session) -> dict:
     # Full-history rollback mutates session history → rejected mid-turn (prompt.submit
     # would drop the agent's output or clobber it). File-scoped only touches disk.
     if not file_path and session.get("running"):
-        return _err(rid, 4009, busy_message("rollback restore"))
+        return _err(rid, 4009, "session busy — /interrupt the current turn before full rollback.restore")
 
     def go(mgr, cwd):
         result = mgr.restore(cwd, _resolve_checkpoint_hash(mgr, cwd, target), file_path=file_path or None)
@@ -1036,11 +1088,12 @@ def _(rid, params: dict) -> dict:
             return err
     # The client sends session_id, not profile; the live session is authoritative.
     home = (session or {}).get("profile_home")
-    scopes = _bind_build_profile_scopes(home)
+    scopes = _bind_build_profile_scopes(home) if home else None
     try:
         return _configure_session_tools(rid, params, sid, session)
     finally:
-        _release_build_profile_scopes(scopes)
+        if scopes is not None:
+            _release_build_profile_scopes(scopes)
 
 
 def _configure_session_tools(rid, params: dict, sid: str, session) -> dict:
@@ -1365,12 +1418,11 @@ def _(rid, params: dict) -> dict:
 
 @_mcp_rpc("oauth.callback", _NAME_SESSION)
 def _(rid, params: dict) -> dict:
-    """Relay a client-captured redirect (``code``/``state``/``error``/``iss``) into a ``client_redirect_uri`` flow."""
-    code, state, error, iss = (str(params.get(k) or "") or None for k in ("code", "state", "error", "iss"))
+    """Relay a client-captured redirect (``code``/``state``/``error``) into a ``client_redirect_uri`` flow."""
+    code, state, error = (str(params.get(k) or "") or None for k in ("code", "state", "error"))
     deliver = _tools_mod("tui_gateway.mcp_oauth_sessions").deliver_callback_flow
     return _ok(rid, deliver(
-        _str_arg(params, "session_id"), _str_arg(params, "name"), code=code, state=state, error=error,
-        iss=iss))
+        _str_arg(params, "session_id"), _str_arg(params, "name"), code=code, state=state, error=error))
 
 
 # ─── Plugins ─────────────────────────────────────────────────────────────────

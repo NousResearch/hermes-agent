@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import os
 import time
 from types import SimpleNamespace
 import pytest
@@ -182,6 +183,20 @@ class TestSymlinkAliasNormalization:
             str(a)
         ) != acp_session._normalize_cwd_for_compare(str(b))
 
+    def test_windows_drive_stays_native_outside_wsl(self, monkeypatch):
+        path = r"C:\Users\alice\project"
+        monkeypatch.setattr(acp_session, "is_wsl", lambda: False)
+
+        assert acp_session._normalize_cwd_for_compare(path) == os.path.realpath(path)
+
+    def test_windows_drive_uses_mount_spelling_inside_wsl(self, monkeypatch):
+        monkeypatch.setattr(acp_session, "is_wsl", lambda: True)
+
+        assert acp_session._normalize_cwd_for_compare(r"C:\Users\alice\project") == os.path.realpath(
+            "/mnt/c/Users/alice/project"
+        )
+
+    @pytest.mark.linux_only
     def test_missing_path_keeps_lexical_normalization(self):
         # realpath(strict=False) is lexical for nonexistent paths, so cwds
         # that don't exist on this host (e.g. WSL-translated drives) behave

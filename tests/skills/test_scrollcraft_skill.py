@@ -32,8 +32,31 @@ def test_description_length_and_period():
 
 def test_platforms_present():
     fm = _frontmatter()
-    assert "platforms" in fm
-    assert isinstance(fm["platforms"], list) and fm["platforms"]
+    assert fm["platforms"] == ["linux", "macos"]
+
+
+def test_modern_heading_sequence():
+    headings = [
+        line
+        for line in SKILL_MD.read_text(encoding="utf-8").splitlines()
+        if line.startswith("# ") or line.startswith("## ")
+    ]
+    assert headings == [
+        "# Scrollcraft Skill",
+        "## When to Use",
+        "## Prerequisites",
+        "## How to Run",
+        "## Quick Reference",
+        "## Procedure",
+        "## Pitfalls",
+        "## Verification",
+    ]
+
+
+def test_native_tool_names_are_code_formatted():
+    text = SKILL_MD.read_text(encoding="utf-8")
+    for tool in ("browser_exec", "image_generate", "vision_analyze", "write_file"):
+        assert not re.search(rf"(?<!`)\b{tool}\b(?!`)", text), tool
 
 
 def test_license_is_mit():
@@ -74,7 +97,7 @@ def test_no_foreign_agent_residue():
 
 def test_scripts_present_and_nonempty():
     scripts_dir = SKILL_DIR / "scripts"
-    mjs = sorted(scripts_dir.glob("*.mjs"))
+    mjs = sorted(p for p in scripts_dir.glob("*.mjs") if not p.name.endswith(".test.mjs"))
     expected = {
         "doctor.mjs",
         "kie.mjs",

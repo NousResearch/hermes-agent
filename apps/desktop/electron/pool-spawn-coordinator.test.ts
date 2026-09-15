@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'vitest'
 
 import {
+  LocalBackendBackgroundCapacityError,
   LocalBackendSlotWaitTimeoutError,
   LocalBackendSpawnCoordinator,
   releaseLocalBackendSlotAfterExit
@@ -110,10 +111,14 @@ test('a queued start times out with a clear error and frees its queue position',
   assert.equal(coordinator.activeCount, 0)
 })
 
+// Spawning 100 native Node processes can exceed Vitest's 5s default on Windows.
+// The assertions below still prove concurrency and full cleanup, not wall time.
 test('100 real child processes never exceed twelve simultaneous local slots', async () => {
   const limit = 12
   const coordinator = new LocalBackendSpawnCoordinator(limit)
-  const livePids = new Set<number>()
+  // Windows may reuse a PID after a child exits. Track child lifetimes and
+  // successful exits, rather than requiring 100 globally distinct PID values.
+  const liveChildren = new Set<ReturnType<typeof spawn>>()
   let completedChildren = 0
   let maxLive = 0
 
@@ -127,8 +132,8 @@ test('100 real child processes never exceed twelve simultaneous local slots', as
         })
 
         assert.ok(child.pid)
-        livePids.add(child.pid)
-        maxLive = Math.max(maxLive, livePids.size)
+        liveChildren.add(child)
+        maxLive = Math.max(maxLive, liveChildren.size)
 
         await new Promise<void>((resolve, reject) => {
           child.once('error', reject)
@@ -142,7 +147,7 @@ test('100 real child processes never exceed twelve simultaneous local slots', as
         })
 
         completedChildren += 1
-        livePids.delete(child.pid)
+        liveChildren.delete(child)
       } finally {
         release()
       }
@@ -153,10 +158,10 @@ test('100 real child processes never exceed twelve simultaneous local slots', as
   // count, not PID uniqueness, is the invariant this concurrency test owns.
   assert.equal(completedChildren, 100)
   assert.equal(maxLive, limit)
-  assert.equal(livePids.size, 0)
+  assert.equal(liveChildren.size, 0)
   assert.equal(coordinator.activeCount, 0)
   assert.equal(coordinator.queuedCount, 0)
-})
+}, 30_000)
 
 test('failed start keeps its slot until the child has actually exited', async () => {
   const coordinator = new LocalBackendSpawnCoordinator(1)
@@ -338,6 +343,42 @@ test('cap 3: two background leases leave a reserved slot for foreground', async 
   assert.equal(coordinator.activeCount, 0)
 })
 
+test('a speculative background request skips saturation without joining the queue', async () => {
+  const coordinator = new LocalBackendSpawnCoordinator(3)
+
+  const background = await Promise.all(
+    ['bg-1', 'bg-2'].map(key => coordinator.request(key, { priority: 'background' }).acquired)
+  )
+
+  const skipped = coordinator.tryRequest('roster-hydration', { priority: 'background' })
+
+  assert.equal(skipped, undefined)
+  assert.equal(coordinator.activeCount, 2)
+  assert.equal(coordinator.queuedCount, 0)
+
+  const foreground = coordinator.tryRequest('user-click', { priority: 'foreground' })
+
+  assert.ok(foreground)
+  assert.equal(foreground.queued, false)
+  const releaseForeground = await foreground.acquired
+
+  releaseForeground()
+
+  for (const release of background) {
+    release()
+  }
+
+  assert.equal(coordinator.activeCount, 0)
+})
+
+test('background capacity skips are typed and quiet', () => {
+  const error = new LocalBackendBackgroundCapacityError('roster-hydration')
+
+  assert.equal(error.name, 'LocalBackendBackgroundCapacityError')
+  assert.equal(error.silent, true)
+  assert.match(error.message, /no background slot is currently free/)
+})
+
 test('untagged acquire still fills the cap (foreground default)', async () => {
   const coordinator = new LocalBackendSpawnCoordinator(3)
   const releases = await Promise.all(['a', 'b', 'c'].map(key => coordinator.acquire(key)))
@@ -517,6 +558,9 @@ test('promoting a queued background waiter lets it take the reserved foreground 
     .readFileSync(path.join(here, '..', 'src', 'lib', 'with-timeout.ts'), 'utf8')
     .replace(/\r\n/g, '\n')
 
+  const backendReadySource = fs.readFileSync(path.join(here, 'backend-ready.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const backendHealthSource = fs.readFileSync(path.join(here, 'backend-health.ts'), 'utf8').replace(/\r\n/g, '\n')
+
   test('main.ts bounds the slot wait below the renderer backend-boot budget', () => {
     const slotWait = Number(/const POOL_SLOT_WAIT_MS = ([\d_]+)/.exec(mainSource)?.[1]?.replace(/_/g, ''))
 
@@ -532,6 +576,28 @@ test('promoting a queued background waiter lets it take the reserved foreground 
       /localBackendSpawnCoordinator\.request\(poolKey, \{\s*timeoutMs: POOL_SLOT_WAIT_MS,\s*priority: spawnPriority\s*\}\)/
     )
     assert.doesNotMatch(mainSource, /request\(poolKey, \{ timeoutMs: POOL_IDLE_MS \}\)/)
+  })
+
+  test('renderer boot budget leaves headroom for post-port readiness', () => {
+    const bootBudget = Number(
+      /export const BACKEND_BOOT_WAIT_TIMEOUT_MS = ([\d_]+)/.exec(withTimeoutSource)?.[1]?.replace(/_/g, '')
+    )
+
+    const portBudget = Number(
+      /const DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS = ([\d_]+)/.exec(backendReadySource)?.[1]?.replace(/_/g, '')
+    )
+
+    const readinessBudget = Number(
+      /export const DEFAULT_BACKEND_READY_TIMEOUT_MS = ([\d_]+)/.exec(backendHealthSource)?.[1]?.replace(/_/g, '')
+    )
+
+    assert.ok(Number.isFinite(bootBudget), 'BACKEND_BOOT_WAIT_TIMEOUT_MS must be a literal')
+    assert.ok(Number.isFinite(portBudget), 'DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS must be a literal')
+    assert.ok(Number.isFinite(readinessBudget), 'DEFAULT_BACKEND_READY_TIMEOUT_MS must be a literal')
+    assert.ok(
+      bootBudget > portBudget + readinessBudget,
+      `boot budget ${bootBudget}ms must exceed port ${portBudget}ms + readiness ${readinessBudget}ms`
+    )
   })
 
   test('main.ts pushes the live pool max into the coordinator when the preference changes', () => {

@@ -36,8 +36,47 @@ interface ReadableStore<T> {
 }
 
 /**
- * Subscribe to a SCALAR derived from a hot store, re-rendering only when that
- * scalar changes by `Object.is` — not on every write to the store it came from.
+ * React requires getSnapshot to return the same reference while the visible
+ * value has not changed. Most selector call sites return scalars, but a
+ * plugin or future call site can reasonably project a small array/object.
+ * Retain the prior reference for shallow-equal projections so such a selector
+ * cannot turn an external-store update into a render loop.
+ */
+function sameSnapshot(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) {
+    return true
+  }
+
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return left.length === right.length && left.every((value, index) => Object.is(value, right[index]))
+  }
+
+  if (
+    left === null ||
+    right === null ||
+    typeof left !== 'object' ||
+    typeof right !== 'object' ||
+    Object.getPrototypeOf(left) !== Object.prototype ||
+    Object.getPrototypeOf(right) !== Object.prototype
+  ) {
+    return false
+  }
+
+  const leftRecord = left as Record<string, unknown>
+  const rightRecord = right as Record<string, unknown>
+  const leftKeys = Object.keys(leftRecord)
+  const rightKeys = Object.keys(rightRecord)
+
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(key => Object.prototype.hasOwnProperty.call(rightRecord, key) && Object.is(leftRecord[key], rightRecord[key]))
+  )
+}
+
+/**
+ * Subscribe to a narrowly derived value from a hot store, re-rendering only
+ * when it changes. Prefer scalars; small arrays and plain records are also
+ * reference-stabilized when their shallow contents have not changed.
  *
  * `useStore($someHotStore)` bails out on reference equality alone, so a store
  * republished per streaming token re-renders every consumer even when the two
@@ -56,10 +95,23 @@ export function useStoreSelector<T, S>(store: ReadableStore<T>, select: (value: 
   // each render anyway, so the latest selector is always applied.
   const selectRef = useRef(select)
   selectRef.current = select
+  const cache = useRef<S | undefined>(undefined)
+  const hasCache = useRef(false)
 
   const subscribe = useCallback((onChange: () => void) => store.listen(onChange), [store])
 
-  return useSyncExternalStore(subscribe, () => selectRef.current(store.get()))
+  return useSyncExternalStore(subscribe, () => {
+    const next = selectRef.current(store.get())
+
+    if (hasCache.current && sameSnapshot(cache.current, next)) {
+      return cache.current as S
+    }
+
+    cache.current = next
+    hasCache.current = true
+
+    return next
+  })
 }
 
 /**
@@ -74,6 +126,8 @@ export function useStoreSelector<T, S>(store: ReadableStore<T>, select: (value: 
 export function useStoresSelector<S>(stores: readonly ReadableStore<unknown>[], select: () => S): S {
   const selectRef = useRef(select)
   selectRef.current = select
+  const cache = useRef<S | undefined>(undefined)
+  const hasCache = useRef(false)
 
   // Hold the array identity steady: call sites pass an inline literal of
   // module-level singletons, so only a genuine store swap should resubscribe.
@@ -98,5 +152,16 @@ export function useStoresSelector<S>(stores: readonly ReadableStore<unknown>[], 
     [stable]
   )
 
-  return useSyncExternalStore(subscribe, () => selectRef.current())
+  return useSyncExternalStore(subscribe, () => {
+    const next = selectRef.current()
+
+    if (hasCache.current && sameSnapshot(cache.current, next)) {
+      return cache.current as S
+    }
+
+    cache.current = next
+    hasCache.current = true
+
+    return next
+  })
 }

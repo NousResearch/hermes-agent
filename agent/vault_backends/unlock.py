@@ -2,8 +2,8 @@
 
 An unlock is a session token minted by the manager's CLI from the master
 password (``op signin --raw`` / ``bw unlock --raw``). The token lives in
-process memory only, keyed by backend, and expires after an idle TTL or an
-explicit lock. The master password itself is consumed by the CLI call and
+process memory only, keyed by profile, backend and owning session, and expires
+after an idle TTL or an explicit lock. The master password is consumed by the CLI call and
 dropped; nothing is written to disk or env.
 
 The surface owns the prompt: ``set_unlock_prompt_callback`` is installed by
@@ -17,12 +17,16 @@ from __future__ import annotations
 
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
 _IDLE_TTL_S = 30 * 60
 
 _lock = threading.Lock()
-_sessions: Dict[tuple[str, str], tuple[str, float]] = {}   # (profile home, backend) → (token, last_used)
+_CacheKey = tuple[str, str, str, str]  # profile home, backend, owner namespace, session id
+_sessions: Dict[_CacheKey, tuple[str, float]] = {}
 _callback_tls = threading.local()
 
 UnlockPrompt = Callable[[str, str], str]  # (backend_name, display_name) -> master password ("" = cancelled)
@@ -62,31 +66,66 @@ def get_save_login_prompt_callback() -> Optional[SaveLoginPrompt]:
     return getattr(_callback_tls, "save_login", None)
 
 
-def _key(backend: str) -> tuple[str, str]:
-    # Tokens are profile-scoped: a Desktop gateway hosts several profiles in one process and
-    # profile B must never reuse (or lock) profile A's manager session.
+def _session_identity() -> Optional[tuple[str, str]]:
+    from agent.delegation_context import is_delegated_child_context
+
+    if is_delegated_child_context():
+        # Delegates have no human-owned unlock surface or matching vault teardown hook. Do not
+        # borrow the parent's token or retain a new interactive unlock after the child finishes.
+        # Local vault access and separately configured service-account auth do not use this cache.
+        return None
+    identity = _current_session.get()
+    if identity is not None:
+        return identity
+    # CLI turns and their copied tool-worker contexts bind this value. The public getter's
+    # legacy os.environ fallback is NOT authority to borrow another turn's token.
+    from tools.approval_context import _approval_session_key
+    sid = _approval_session_key.get()
+    return ("session", sid) if sid and sid != "default" else None
+
+
+def _key(backend: str) -> Optional[_CacheKey]:
     from hermes_constants import get_hermes_home
-    return (str(get_hermes_home()), backend)
+    identity = _session_identity()
+    return (str(get_hermes_home()), backend, *identity) if identity is not None else None
 
 
 # Lock generation per key: ``lock()`` bumps it, and an unlock that started before the bump must
 # not commit its token afterwards (a slow `bw unlock` child would otherwise silently undo an
 # acknowledged Lock).
-_generation: Dict[tuple[str, str], int] = {}
-# Which gateway session performed the unlock; the token is released when THAT session ends,
-# not when any sibling session in the profile is torn down.
-_owner_session: Dict[tuple[str, str], Optional[str]] = {}
-_current_session_tls = threading.local()
+_generation: Dict[_CacheKey, int] = {}
+# A queued worker must not recreate an ended owner, even if no unlock had started at teardown.
+_released_sessions: set[tuple[str, str]] = set()
+_current_session: ContextVar[Optional[tuple[str, str]]] = ContextVar("vault_current_session", default=None)
+
+
+@dataclass(frozen=True)
+class _UnlockAttempt:
+    key: _CacheKey
+    generation: int
 
 
 def set_current_session_id(session_id: Optional[str]) -> None:
-    """Gateway surfaces bind the session running on this thread so an unlock records its owner."""
-    _current_session_tls.sid = session_id
+    """Bind the owning conversation; copied tool-worker contexts retain this identity."""
+    _current_session.set(("session", session_id) if session_id and session_id != "default" else None)
+
+
+@contextmanager
+def settings_session_scope(owner_id: Optional[str]):
+    """RPC adapter only: Settings has a server-derived owner, never a conversation's authority."""
+    # An empty explicit identity suppresses a possibly inherited conversation/CLI context.
+    token = _current_session.set(("settings", owner_id or ""))
+    try:
+        yield
+    finally:
+        _current_session.reset(token)
 
 
 def _live(backend: str, *, touch: bool) -> Optional[str]:
     key = _key(backend)
     with _lock:
+        if key is None or not key[3] or key[2:] in _released_sessions:
+            return None
         entry = _sessions.get(key)
         if entry is None:
             return None
@@ -104,53 +143,57 @@ def get_session_token(backend: str) -> Optional[str]:
     return _live(backend, touch=True)
 
 
-def begin_unlock(backend: str) -> int:
-    """Snapshot the lock generation before spawning the manager CLI; pass it to ``store_session_token``."""
+def begin_unlock(backend: str) -> _UnlockAttempt:
+    """Bind an in-flight unlock to its exact owner and lock generation before spawning the CLI."""
+    key = _key(backend)
     with _lock:
-        return _generation.get(_key(backend), 0)
+        if key is None or not key[3] or key[2:] in _released_sessions:
+            raise RuntimeError("Unlock requires an active owning session; retry from the current surface")
+        return _UnlockAttempt(key, _generation.setdefault(key, 0))
 
 
-def store_session_token(backend: str, token: str, generation: Optional[int] = None) -> bool:
+def store_session_token(backend: str, token: str, generation: Optional[_UnlockAttempt] = None) -> bool:
     """Commit an unlock. Returns False (and drops the token) when a Lock happened since ``begin_unlock``."""
     key = _key(backend)
     with _lock:
-        if generation is not None and generation != _generation.get(key, 0):
+        if key is None or not key[3] or key[2:] in _released_sessions:
+            return False
+        if generation is not None and generation != _UnlockAttempt(key, _generation.get(key, 0)):
             return False
         _sessions[key] = (token, time.monotonic())
-        _owner_session[key] = getattr(_current_session_tls, "sid", None)
         return True
 
 
 def lock(backend: Optional[str] = None) -> None:
-    """Forget the current profile's session for one backend (or all of them when None)."""
-    home = _key("")[0]
+    """Explicit Lock revokes ALL owners in the current profile, including pending unlocks."""
+    from hermes_constants import get_hermes_home
+    home = str(get_hermes_home())
     with _lock:
         # Bump the generation for every key the lock names (not only the ones holding a token):
         # an unlock that is still running for this backend must see the lock when it returns.
         keys = {k for k in list(_sessions) + list(_generation) if k[0] == home and (backend is None or k[1] == backend)}
-        if backend is not None:
-            keys.add((home, backend))
         for key in keys:
             _forget(key)
 
 
-def release_session(session_id: str) -> None:
-    """A gateway session ended: drop only the tokens that session unlocked."""
+def release_session(session_id: str, *, namespace: str = "session") -> None:
+    """An owner ended: revoke its tokens and pending/queued unlocks, not its siblings'."""
+    identity = (namespace, session_id)
     with _lock:
-        for key in [k for k, sid in _owner_session.items() if sid == session_id]:
+        _released_sessions.add(identity)
+        for key in {k for k in list(_sessions) + list(_generation) if k[2:] == identity}:
             _forget(key)
 
 
-def _forget(key: tuple[str, str]) -> None:
+def _forget(key: _CacheKey) -> None:
     _sessions.pop(key, None)
-    _owner_session.pop(key, None)
     _generation[key] = _generation.get(key, 0) + 1
 
 
 def lock_all_profiles() -> None:
     """Process shutdown: drop every token."""
     with _lock:
-        for key in list(_sessions):
+        for key in set(_sessions) | set(_generation):
             _forget(key)
 
 

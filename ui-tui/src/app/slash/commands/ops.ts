@@ -17,7 +17,6 @@ import type { PanelSection } from '../../../types.js'
 import { applyDelegationStatus, getDelegationState } from '../../delegationStore.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { getSpawnHistory, pushDiskSnapshot, setDiffPair, type SpawnSnapshot } from '../../spawnHistoryStore.js'
-import { NO_SKILLS_INSTALLED } from '../../userMessages.js'
 import type { SlashCommand } from '../types.js'
 
 interface SkillInfo {
@@ -530,7 +529,7 @@ export const opsCommands: SlashCommand[] = [
               const cats = Object.entries(r.skills ?? {}).sort()
 
               if (!cats.length) {
-                return sys(NO_SKILLS_INSTALLED)
+                return sys('no skills available')
               }
 
               panel(

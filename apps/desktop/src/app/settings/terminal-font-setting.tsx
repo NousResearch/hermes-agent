@@ -88,9 +88,7 @@ export function TerminalFontSetting() {
     const timeout = window.setTimeout(() => {
       const next = setNested(loadedConfig, 'terminal.font_family', value)
 
-      // Sparse patch: PUT /api/config deep-merges, and echoing the cached
-      // snapshot would overwrite keys other surfaces changed since it loaded.
-      void saveHermesConfig(setNested({}, 'terminal.font_family', value))
+      void saveHermesConfig(next)
         .then(result => {
           if (!result.ok) {
             throw new Error(t.settings.config.autosaveFailed)

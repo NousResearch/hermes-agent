@@ -1,7 +1,4 @@
-"""Connector UI payload redaction.
-
-Preserve authorization links while redacting credentials.
-"""
+"""Connector metadata egress, preserving authorization links and future fields."""
 
 from agent.redact import _key_has_secret_keyword, redact_sensitive_text
 

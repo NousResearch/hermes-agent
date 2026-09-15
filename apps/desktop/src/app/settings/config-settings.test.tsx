@@ -26,14 +26,10 @@ vi.mock('../hooks/use-on-profile-switch', () => ({
 
 // The real stores pull in the gateway/profile stack, which needs a live
 // backend connection. This page only reads the "applies to" scope override
-// and the repo-discovery signature, neither of which this test touches. The
-// scope chip it renders also reads the selected profile and the loud-note
-// selector, so those are stubbed to the single-profile default shape.
+// and the repo-discovery signature, neither of which this test touches.
 vi.mock('@/store/settings-scope', () => ({
   $settingsRequestProfile: atom<string | undefined>(undefined),
-  $settingsScopeEditsNonDefault: atom(false),
-  $settingsScopeOverride: atom<null | string>(null),
-  $settingsScopeProfile: atom<string>('default')
+  $settingsScopeOverride: atom<null | string>(null)
 }))
 
 vi.mock('@/store/projects', () => ({
@@ -62,14 +58,14 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-function renderConfigSettings(activeSectionId = 'safety') {
+function renderConfigSettings() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const importInputRef = createRef<HTMLInputElement>()
 
   render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <ConfigSettings activeSectionId={activeSectionId} importInputRef={importInputRef} />
+        <ConfigSettings activeSectionId="safety" importInputRef={importInputRef} />
       </QueryClientProvider>
     </MemoryRouter>
   )
@@ -78,35 +74,6 @@ function renderConfigSettings(activeSectionId = 'safety') {
 }
 
 describe('ConfigSettings autosave', () => {
-  it('renders and saves the Codex compression auto-raise setting', async () => {
-    getHermesConfigRecord.mockResolvedValue({
-      compression: { codex_gpt55_autoraise: true }
-    })
-    getHermesConfigSchema.mockResolvedValue({
-      fields: {
-        'compression.codex_gpt55_autoraise': { type: 'boolean' }
-      }
-    })
-
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-
-    try {
-      renderConfigSettings('memory')
-
-      expect(await screen.findByText('Codex Compression Auto-Raise')).toBeTruthy()
-      expect(screen.getByText('Raise compression to 85% for supported ChatGPT Codex OAuth models.')).toBeTruthy()
-
-      screen.getByRole('switch').click()
-      await vi.advanceTimersByTimeAsync(700)
-
-      await vi.waitFor(() =>
-        expect(saveHermesConfig).toHaveBeenCalledWith({ compression: { codex_gpt55_autoraise: false } }, undefined)
-      )
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
   it('sends a later revert instead of diffing it away against the stale page-load baseline', async () => {
     getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false }, other: 'untouched' })
 

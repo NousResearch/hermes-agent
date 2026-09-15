@@ -1,6 +1,5 @@
 import { firstStringField, normalize } from '@/lib/text'
 import { isTodoToolName, parseTodos } from '@/lib/todos'
-import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 import type { SessionMessage } from '@/types/hermes'
 
 import type { ChatMessage, ChatMessagePart, GatewayEventPayload } from './types'
@@ -88,9 +87,9 @@ function toolPayloadMatchValues(payload: GatewayEventPayload | undefined): strin
   // `clarify.request` (a fresh request id) must correlate with the `tool.start`
   // row (the model's tool_call_id) so the two ids don't produce a duplicate
   // clarify card — same correlation ClarifyToolPending uses for request↔args.
-  // A connection request carries the model's tool_call_id itself, so it needs no arg match.
+  // `server` is setup_mcp's identifying arg, for the identical reason.
   const query =
-    firstStringField(payloadArgs, ['search_term', 'query', 'question', 'command', 'code', 'path']) ||
+    firstStringField(payloadArgs, ['search_term', 'query', 'question', 'server', 'command', 'code', 'path']) ||
     batchClarifyMatchValue(payloadArgs.questions)
 
   const context = typeof payload?.context === 'string' ? payload.context.trim() : ''
@@ -185,25 +184,7 @@ function findToolPartIndex(
   for (let index = 0; index < parts.length; index += 1) {
     const part = parts[index]
 
-    if (
-      part.type === 'tool-call' &&
-      part.toolName === name &&
-      part.result === undefined &&
-      part.completedAt === undefined
-    ) {
-      // Interactive request IDs differ from provider call IDs and correlate by identifying arguments.
-      const requestBacked = name === 'clarify' || name === 'setup_mcp'
-
-      if (
-        !requestBacked &&
-        stableId &&
-        phase === 'running' &&
-        part.toolCallId &&
-        !part.toolCallId.startsWith('live-tool:')
-      ) {
-        continue
-      }
-
+    if (part.type === 'tool-call' && part.toolName === name && part.result === undefined) {
       pendingIndices.push(index)
     }
   }
@@ -283,21 +264,22 @@ function toolArgs(payload: GatewayEventPayload | undefined, prevArgs?: unknown):
   }
 }
 
-function toolResultMetadata(
+function toolResult(
   payload: GatewayEventPayload | undefined,
-  previous: ToolResultMetadata | undefined,
   prevResult?: unknown,
   prevArgs?: unknown
-): ToolResultMetadata {
+): Record<string, unknown> {
+  const parsedResult = parseMaybeJsonObject(payload?.result)
+
   return {
-    ...previous,
-    ...(payload?.inline_diff !== undefined ? { inline_diff: payload.inline_diff } : {}),
-    ...(payload?.summary !== undefined ? { summary: payload.summary } : {}),
-    ...(payload?.message !== undefined ? { message: payload.message } : {}),
-    ...(payload?.preview !== undefined ? { preview: payload.preview } : {}),
+    ...parsedResult,
+    ...(payload?.inline_diff ? { inline_diff: payload.inline_diff } : {}),
+    ...(payload?.summary ? { summary: payload.summary } : {}),
+    ...(payload?.message ? { message: payload.message } : {}),
+    ...(payload?.preview ? { preview: payload.preview } : {}),
     ...(payload?.duration_s !== undefined ? { duration_s: payload.duration_s } : {}),
     ...carryTodos(payload, prevResult, prevArgs),
-    ...(payload?.error !== undefined ? { error: payload.error } : {})
+    ...(payload?.error ? { error: payload.error } : {})
   }
 }
 
@@ -348,10 +330,8 @@ export function upsertToolPart(
     timestamp: prev?.timestamp ?? occurredAt,
     ...(phase === 'complete' && {
       completedAt: occurredAt,
-      result: payload?.result !== undefined ? payload.result : prevResult,
-      toolResultMetadata: toolResultMetadata(payload, prev?.toolResultMetadata, prevResult, prevArgs),
-      isError:
-        payload?.error !== undefined ? Boolean(payload.error) : Boolean(prev && 'isError' in prev && prev.isError)
+      result: toolResult(payload, prevResult, prevArgs),
+      isError: Boolean(payload?.error)
     })
   } satisfies ChatMessagePart
 
@@ -381,8 +361,7 @@ interface PendingClarifyLocation {
 
 function findPendingClarifyLocation(
   messages: ChatMessage[],
-  payload: GatewayEventPayload,
-  toolName = 'clarify'
+  payload: GatewayEventPayload
 ): PendingClarifyLocation | null {
   const stableId = toolId(payload)
   const matchValues = toolPayloadMatchValues(payload)
@@ -395,9 +374,12 @@ function findPendingClarifyLocation(
     for (let partIndex = message.parts.length - 1; partIndex >= 0; partIndex -= 1) {
       const part = message.parts[partIndex]
 
-      if (part.type !== 'tool-call' || part.toolName !== toolName || part.result !== undefined) {
+      if (part.type !== 'tool-call' || part.toolName !== 'clarify' || part.result !== undefined) {
         continue
       }
+
+      pendingCount += 1
+      solePending = { messageIndex, partIndex }
 
       const exactId = Boolean(stableId && part.toolCallId === stableId)
       const contextual = hasToolMatchOverlap(matchValues, toolPartMatchValues(part))
@@ -405,17 +387,6 @@ function findPendingClarifyLocation(
       if (exactId || contextual) {
         return { messageIndex, partIndex }
       }
-
-      // A sealed call (settle-time `completedAt`, no result) is a clarify the
-      // turn stopped on without an answer. It is history, not the session's
-      // open question, so it may only be re-armed by a genuine correlation
-      // above, never adopted as the fallback for an uncorrelated request.
-      if (part.completedAt !== undefined) {
-        continue
-      }
-
-      pendingCount += 1
-      solePending = { messageIndex, partIndex }
     }
   }
 
@@ -540,39 +511,18 @@ export function restorePendingClarifyToolCall(
   payload: GatewayEventPayload,
   occurredAt = Date.now() / 1000
 ): PendingClarifyProjection {
-  return restorePendingBlockingToolCall(messages, { ...payload, name: 'clarify' }, occurredAt)
-}
-
-/** Restore a blocking tool row (clarify, connection card) from a resume snapshot: mark the
- *  existing pending part's message live, or append a row when the transcript has none. */
-export function restorePendingBlockingToolCall(
-  messages: ChatMessage[],
-  clarifyPayload: GatewayEventPayload & { name: string },
-  occurredAt = Date.now() / 1000
-): PendingClarifyProjection {
-  const location = findPendingClarifyLocation(messages, clarifyPayload, clarifyPayload.name)
+  const clarifyPayload = { ...payload, name: 'clarify' }
+  const location = findPendingClarifyLocation(messages, clarifyPayload)
 
   if (location) {
     const message = messages[location.messageIndex]
-    const part = message.parts[location.partIndex]
-    // A correlated row that settle sealed (stop, lost completion) is live
-    // again: drop the seal so the card renders as pending, not as history.
-    const sealed = part.type === 'tool-call' && part.completedAt !== undefined && part.result === undefined
 
-    if (message.pending && !sealed) {
+    if (message.pending) {
       return { messages, streamId: message.id }
     }
 
     const next = [...messages]
-
-    if (sealed) {
-      const { completedAt: _completedAt, ...unsealed } = part
-      const parts = [...message.parts]
-      parts[location.partIndex] = unsealed as ChatMessagePart
-      next[location.messageIndex] = { ...message, parts, pending: true }
-    } else {
-      next[location.messageIndex] = { ...message, pending: true }
-    }
+    next[location.messageIndex] = { ...message, pending: true }
 
     return { messages: next, streamId: message.id }
   }
@@ -592,7 +542,7 @@ export function restorePendingBlockingToolCall(
     return { messages: next, streamId: tail.id }
   }
 
-  const streamId = nextLiveToolId(`${clarifyPayload.name}-message`)
+  const streamId = nextLiveToolId('clarify-message')
 
   return {
     messages: [
@@ -629,13 +579,13 @@ export function sealOpenToolParts(messages: ChatMessage[]): ChatMessage[] {
     let partChanged = false
 
     const parts = message.parts.map(part => {
-      if (part.type !== 'tool-call' || part.completedAt !== undefined || Object.hasOwn(part, 'result')) {
+      if (part.type !== 'tool-call' || Object.hasOwn(part, 'result')) {
         return part
       }
 
       partChanged = true
 
-      return { ...part, completedAt: part.timestamp ?? 0 }
+      return { ...part, result: {} }
     })
 
     if (!partChanged) {

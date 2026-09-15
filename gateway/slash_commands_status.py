@@ -68,9 +68,8 @@ async def _quiet(call, default=None):
         return default
 
 
-HISTORY_UNREADABLE = ("⚠️ I can't read this conversation's history right now (your earlier messages "
-                      "exist but cannot be loaded). Run `hermes doctor --fix` on the host, or use /new "
-                      "to start fresh.")
+HISTORY_UNREADABLE = ("⚠️ Conversation history is unreadable (state.db). "
+                      "This is not a new conversation — earlier messages exist but cannot be loaded.")
 
 
 def _quiet_sync(call, default=None):
@@ -489,9 +488,7 @@ class GatewayStatusCommandsMixin:
             if not (payload.get("categories") or []):
                 return []
             details = _quiet_sync(lambda: compute_context_details(agent), {"skills": [], "toolsets": []}) if expanded else None
-            from agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
-            file_lines = _quiet_sync(lambda: render_context_file_lines(context_file_sources_for_agent(agent)), [])
-            return render_context_breakdown_lines(payload, details=details, grid=False) + ([""] + file_lines if file_lines else [])
+            return render_context_breakdown_lines(payload, details=details, grid=False)
         except Exception:
             return []
 

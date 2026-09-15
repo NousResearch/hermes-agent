@@ -11,6 +11,7 @@ name: Nix flake check
 # fast required jobs beside it. A separate run reruns and cancels on its own.
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches: [main]
@@ -18,9 +19,9 @@ on:
 permissions:
   contents: read
 
-# PR runs collapse to the newest commit. A push to main is never cancelled:
-# each one saves the store cache that later PRs restore from, so cancelling a
-# merge would leave the next PR to build from nothing.
+# PR runs collapse to the newest commit. An upstream push to main is never
+# cancelled: each one saves the store cache that later PRs restore from. Fork
+# pushes skip the build that already passed on the PR.
 concurrency:
   group: nix-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -33,12 +34,13 @@ jobs:
   # flake inputs. On push the classifier fails open and every lane is true.
   detect:
     name: Detect affected areas
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
       nix: ${{ steps.classify.outputs.nix }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Detect affected areas
         id: classify
@@ -50,18 +52,17 @@ jobs:
     name: nix flake check
     needs: [detect]
     if: needs.detect.outputs.nix == 'true'
-    # The build compiles the package and its whole dependency closure, so this
-    # takes minutes and not seconds when the cache misses. `nix flake check`
-    # builds 21 checks, and --max-jobs defaults to the core count. It uses the
-    # wider runner with no more configuration.
-    runs-on: ubuntu-latest-32-core
-    timeout-minutes: 60
+    # This fork does not have access to the upstream private 32-core label.
+    # Use the standard GitHub-hosted runner and bound Nix parallelism so the
+    # dependency closure does not exhaust the smaller host.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Nix
-        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
@@ -96,7 +97,7 @@ jobs:
           # 10 GB quota of the repository and helps no later run. A PR still
           # restores: it reads the cache that the merge to main wrote. This is
           # the same rule that docker.yml applies to `cache-to`.
-          save: ${{ github.event_name != 'pull_request' }}
+          save: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
 
           # Collect garbage before the save, so the store stays inside the
           # 10 GB quota of the repository. Without a limit the store grows at
@@ -105,15 +106,11 @@ jobs:
           # size of the compressed archive.
           gc-max-store-size-linux: 5G
 
-          # Delete the caches that this key replaces. GitHub removes caches by
-          # least recent use across the whole repository, so a Nix store that
-          # is never purged pushes out the caches of the other workflows.
-          purge: true
-          purge-prefixes: nix-${{ runner.os }}-
-          purge-created: 0
-          purge-primary-key: never
+          # Validation has read-only Actions permissions. Leave repository
+          # cache deletion to GitHub retention or separately authorized upkeep.
+          purge: false
 
       - name: nix flake check
         # --print-build-logs: a check that fails then prints the assertion
         # that failed, and not only the derivation that failed to build.
-        run: nix flake check --print-build-logs
+        run: nix flake check --print-build-logs --max-jobs 2

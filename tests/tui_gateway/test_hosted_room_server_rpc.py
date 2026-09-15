@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import asdict
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,7 @@ from tui_gateway.hosted_room_server_rpc import (
     HostedRoomServerRPC,
     HostedRoomSessionError,
 )
+from tui_gateway.transport import bind_transport, current_transport, reset_transport
 
 
 def _server():
@@ -67,7 +69,14 @@ def test_routes_exact_hidden_session_and_internal_task_proof():
     )
 
     create = next(params for method, params in calls if method == "session.create")
+    lookup = next(params for method, params in calls if method == "session.list")
     submit = next(params for method, params in calls if method == "prompt.submit")
+    assert lookup == {
+        "profile": "ops",
+        "title": "Group: room",
+        "source": "bot_room",
+        "include_hidden": True,
+    }
     assert create["hidden"] is True
     assert create["room_plumbing"] is True
     assert create["follow_profile_config"] is True
@@ -87,28 +96,58 @@ def test_routes_exact_hidden_session_and_internal_task_proof():
     assert resume["source"] == "bot_room"
 
 
+def test_handler_calls_use_a_private_drop_transport_and_restore_the_caller():
+    server, _calls = _server()
+    seen = []
+
+    def create(rid, _params):
+        seen.append(current_transport())
+        return {"id": rid, "result": {"session_id": "runtime"}}
+
+    server._methods["session.create"] = create
+    caller = SimpleNamespace(write=lambda _obj: True, close=lambda: None)
+    token = bind_transport(caller)
+    try:
+        rpc = HostedRoomServerRPC(server)
+        rpc.create(profile="ops", title="Group: room", source="bot_room")
+        assert current_transport() is caller
+    finally:
+        reset_transport(token)
+
+    assert len(seen) == 1
+    assert seen[0] is not caller
+    assert seen[0].write({"private": "room text"}) is True
+
+
 def test_info_and_interrupt_are_exact_task_scoped():
     server, calls = _server()
     lock = threading.Lock()
+    task = TaskIdentity("room", "task-a", "thread", "turn")
+    proof = {**asdict(task), "execution_generation": 2, "member_id": "ops-member"}
     server._sessions["runtime"] = {
         "history_lock": lock,
         "running": True,
-        "_hosted_room_task": {"task_id": "task-a"},
+        "_hosted_room_task": proof,
     }
     rpc = HostedRoomServerRPC(server)
 
     assert rpc.info(profile="ops", session_id="runtime", source="bot_room") == {
         "active": True,
         "task_id": "task-a",
+        "hosted_task": proof,
     }
     rpc.interrupt(
         profile="ops",
         session_id="runtime",
         source="bot_room",
         expected_task_id="task-a",
+        expected_task=task,
+        expected_execution_generation=2,
+        expected_member_id="ops-member",
     )
     params = next(params for method, params in calls if method == "session.interrupt")
     assert params["expected_hosted_task_id"] == "task-a"
+    assert params["_expected_hosted_task"] == proof
 
 
 def test_local_approval_snapshot_and_response_use_exact_request():

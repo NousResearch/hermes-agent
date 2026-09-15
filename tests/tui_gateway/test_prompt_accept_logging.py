@@ -181,3 +181,85 @@ def test_finished_record_fires_on_returned_error(turn_env, caplog):
     finished = _records(caplog, "tui turn finished")
     assert len(finished) == 1
     assert "status=error" in finished[0].getMessage()
+
+
+def test_blocked_context_reference_completes_hosted_terminal_callback(
+    turn_env,
+    monkeypatch,
+):
+    from agent import context_references, model_metadata
+
+    run_calls = []
+    callbacks = []
+    persisted = []
+    retired = []
+    agent = types.SimpleNamespace(
+        session_id="agent-sid-1",
+        model="test-model",
+        base_url="",
+        api_key="",
+        provider="test",
+        clear_interrupt=lambda: None,
+        run_conversation=lambda *a, **k: run_calls.append((a, k)),
+    )
+    session = _session(
+        agent=agent,
+        running=True,
+        _hosted_room_task={
+            "room_id": "room-1",
+            "task_id": "task-1",
+            "thread_id": "thread-1",
+            "turn_id": "turn-1",
+            "execution_generation": 1,
+        },
+    )
+    monkeypatch.setattr(
+        model_metadata,
+        "get_model_context_length",
+        lambda *a, **k: 100,
+    )
+    monkeypatch.setattr(
+        context_references,
+        "preprocess_context_references",
+        lambda *a, **k: types.SimpleNamespace(
+            blocked=True,
+            warnings=["Context reference exceeds the safe limit."],
+            message="",
+        ),
+    )
+
+    def persist(_session, receipt, *, task):
+        assert task == session["_hosted_room_task"]
+        persisted.append(receipt)
+        return ({**receipt, "settlement_id": "reply:task-1:1"}, True)
+
+    monkeypatch.setattr(server, "_persist_hosted_terminal_receipt", persist)
+    monkeypatch.setattr(
+        server,
+        "_retire_turn_marker",
+        lambda _session, marker_key: retired.append(marker_key),
+    )
+
+    server._run_prompt_submit(
+        "rid",
+        "ui-sid",
+        session,
+        "inspect @file",
+        terminal_callback=callbacks.append,
+    )
+
+    assert run_calls == []
+    assert persisted == [
+        {
+            "status": "failed",
+            "text": "",
+            "error": "Context reference exceeds the safe limit.",
+        }
+    ]
+    assert callbacks == [
+        {
+            **persisted[0],
+            "settlement_id": "reply:task-1:1",
+        }
+    ]
+    assert retired == ["gw-session-key"]

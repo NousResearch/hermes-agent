@@ -14,7 +14,7 @@ const WIN_DRIVE_RE = /^([A-Za-z]):[\\/]/
 const WSL_MOUNT_RE = /^\/mnt\/([a-z])(?:\/(.*))?$/i
 
 let cachedDistro: null | string = null
-let cachedUncBase: null | string = null
+const cachedUncBases = new Map<string, string>()
 
 /**
  * WSL path eligibility belongs to the backend profile that produced the path.
@@ -104,8 +104,10 @@ export function resolveDefaultWslDistro(): string {
 }
 
 // `\\wsl.localhost\<distro>` (Win11 / Win10 >= 21364) with a `\\wsl$\<distro>`
-// fallback for older builds. Probed once; defaults to wsl.localhost.
+// fallback for older builds. Probed once per distro; defaults to wsl.localhost.
 function wslUncBase(distro: string): string {
+  const cachedUncBase = cachedUncBases.get(distro)
+
   if (cachedUncBase) {
     return cachedUncBase
   }
@@ -115,17 +117,17 @@ function wslUncBase(distro: string): string {
 
   try {
     if (!fs.existsSync(modern) && fs.existsSync(legacy)) {
-      cachedUncBase = legacy
+      cachedUncBases.set(distro, legacy)
 
-      return cachedUncBase
+      return legacy
     }
   } catch {
     // Network-path probe failed — prefer the modern form.
   }
 
-  cachedUncBase = modern
+  cachedUncBases.set(distro, modern)
 
-  return cachedUncBase
+  return modern
 }
 
 /**

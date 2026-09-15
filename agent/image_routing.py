@@ -31,11 +31,12 @@ _VALID_MODES = frozenset({"auto", "native", "text"})
 # the gateway routes them via send_document and a PDF must never become a vision part.
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".heic")
 _IMAGE_EXT_PATTERN = "|".join(e.lstrip(".") for e in _IMAGE_EXTS)
-# Local path: same shape as gateway extract_local_files() — anchored to ``~/`` or
-# ``/``, lookbehind skips matches inside URLs. URL: strict ``http(s)://`` so
+# Local path: same shape as gateway extract_local_files() — anchored to ``~/``,
+# ``/``, or a Windows drive. The lookbehind skips matches inside URLs. URL: strict ``http(s)://`` so
 # ``file://`` and other schemes are not grabbed; optional query string.
 _LOCAL_IMAGE_PATH_RE = re.compile(
-    r"(?<![/:\w.])(?:~/|/)(?:[\w.\-]+/)*[\w.\-]+\.(?:" + _IMAGE_EXT_PATTERN + r")\b", re.IGNORECASE,
+    r"(?<![/:\w.])(?:~/|/|[A-Za-z]:[\\/])(?:[\w.\-]+[\\/])*[\w.\-]+\.(?:" + _IMAGE_EXT_PATTERN + r")\b",
+    re.IGNORECASE,
 )
 _IMAGE_URL_RE = re.compile(
     r"https?://[^\s<>\"']+?\.(?:" + _IMAGE_EXT_PATTERN + r")(?:\?[^\s<>\"']*)?", re.IGNORECASE,
@@ -51,7 +52,7 @@ def _matches_outside_code(pattern: re.Pattern, text: str) -> Iterable[str]:
 
 def _existing_file(candidate: str) -> Optional[str]:
     """Expanded path when it is a regular file; None otherwise (incl. OSError on pathological input)."""
-    expanded = os.path.expanduser(candidate)
+    expanded = os.path.normpath(os.path.expanduser(candidate))
     try:
         return expanded if os.path.isfile(expanded) else None
     except OSError:

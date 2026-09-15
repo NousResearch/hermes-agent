@@ -3,7 +3,6 @@ import { atom, batch, computed } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
 import { getProfiles, hermesApi, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
-import { sortByProfileOrder as sortProfilesByOrder } from '@/lib/profile-order'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import {
   arraysEqual,
@@ -24,7 +23,7 @@ import {
   ensureGatewayForProfile,
   openGatewayForAgent,
   openGatewayForProfile,
-  openSecondaryCount
+  openLocalSecondaryCount
 } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $poolLimits } from '@/store/pool-limits'
@@ -57,25 +56,7 @@ export const $activeProfile = atom<string>('default')
 
 // Cached profile list for the picker. Refreshed lazily; the dropdown also
 // re-fetches on open so a profile created elsewhere shows up.
-const NO_PROFILES: ProfileInfo[] = []
-export const $profiles = atom<ProfileInfo[]>(NO_PROFILES)
-
-// Successful lists belong to their source, not whichever gateway is active
-// when a rail renders. A re-home repaints from this cache until the incoming
-// source serves its own list, so a failed incoming read can neither borrow the
-// outgoing source's profiles nor blank a source we already know.
-export const $profilesByConnection = atom<ReadonlyMap<string, ProfileInfo[]>>(new Map())
-
-// Registry descriptors carry their connection id (a slug, so it never contains
-// ':'); legacy primaries are keyed by endpoint. Null is a reconnect blip (see
-// setConnection), not a source.
-function profileListSource(connection: HermesConnection | null): null | string {
-  if (!connection) {
-    return null
-  }
-
-  return connection.connectionId ?? `${connection.mode ?? 'local'}:${connection.baseUrl}`
-}
+export const $profiles = atom<ProfileInfo[]>([])
 
 export function setActiveProfile(name: string): void {
   $activeProfile.set(name || 'default')
@@ -114,7 +95,6 @@ export function refreshProfiles(): Promise<ProfileInfo[]> {
 
   const flight = (async () => {
     const epoch = profileListEpoch
-    const source = profileListSource($connection.get())
     const MAX_RETRIES = 2
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -122,13 +102,7 @@ export function refreshProfiles(): Promise<ProfileInfo[]> {
         const { profiles } = await getProfiles()
 
         if (epoch === profileListEpoch) {
-          batch(() => {
-            if (source !== null) {
-              $profilesByConnection.set(new Map($profilesByConnection.get()).set(source, profiles))
-            }
-
-            $profiles.set(profiles)
-          })
+          $profiles.set(profiles)
         }
 
         return profiles
@@ -146,12 +120,6 @@ export function refreshProfiles(): Promise<ProfileInfo[]> {
         // a window to finish routing after WebSocket-ready but pre-HTTP-proxy
         // states (global remote mode, #70679).
         await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)))
-
-        // A switch during backoff must not send this old flight to the new
-        // ambient REST route, even if its eventual cache write is guarded.
-        if (epoch !== profileListEpoch) {
-          throw error
-        }
       }
     }
 
@@ -167,30 +135,6 @@ export function refreshProfiles(): Promise<ProfileInfo[]> {
 
   return flight
 }
-
-// Source changes can keep the same profile name (default → default), including
-// direct agent activations that never run the connection-switch wipe. The
-// first published descriptor adopts whatever list is already loaded; a null
-// descriptor is a reconnect blip and keeps the current owner (setConnection).
-let profileListOwner: null | string = null
-
-$connection.subscribe(connection => {
-  const source = profileListSource(connection)
-
-  if (source === null || source === profileListOwner) {
-    return
-  }
-
-  const adopting = profileListOwner === null
-  profileListOwner = source
-
-  if (adopting) {
-    return
-  }
-
-  invalidateProfileListFetches()
-  $profiles.set($profilesByConnection.get().get(source) ?? NO_PROFILES)
-})
 
 // ── Rail order ─────────────────────────────────────────────────────────────
 // User-defined order for the named (non-default) profile squares in the rail.
@@ -210,7 +154,18 @@ export function setProfileOrder(names: string[]): void {
 
 // Sort items by the stored order; unordered names alphabetise at the tail.
 export function sortByProfileOrder<T extends { name: string }>(items: T[], order: string[]): T[] {
-  return sortProfilesByOrder(items, order, item => item.name)
+  const rank = new Map(order.map((name, index) => [name, index]))
+
+  return [...items].sort((a, b) => {
+    const ra = rank.get(a.name)
+    const rb = rank.get(b.name)
+
+    if (ra != null && rb != null) {
+      return ra - rb
+    }
+
+    return ra != null ? -1 : rb != null ? 1 : a.name.localeCompare(b.name)
+  })
 }
 
 // ── Rail colors ────────────────────────────────────────────────────────────
@@ -462,39 +417,97 @@ export const $hydrationSyncProfile = atom<string | null>(null)
 const PREWARM_MIN_INTERVAL_MS = 60_000
 
 const prewarmedAt = new Map<string, number>()
+// `openLocalSecondaryCount()` only rises once Electron has finished opening a
+// backend. A rapid pointer sweep can therefore observe the same free capacity
+// repeatedly and queue every profile before the first spawn settles. Keep
+// tentative reservations in the renderer so speculative hover work never
+// floods the main-process coordinator.
+const prewarmingTargets = new Set<string>()
+
+function backgroundPrewarmCapacity(maxBackends: number): number {
+  // The coordinator reserves one slot for a real user action whenever the
+  // pool has more than one slot. Hover pre-warm requests are background work,
+  // so they must leave that foreground slot free.
+  return maxBackends >= 2 ? maxBackends - 1 : maxBackends
+}
+
+function prewarmTarget(key: string, open: () => Promise<void>, reserveLocalPool: boolean): void {
+  const now = Date.now()
+
+  if (now - (prewarmedAt.get(key) ?? 0) < PREWARM_MIN_INTERVAL_MS) {
+    return
+  }
+
+  if (reserveLocalPool) {
+    // Prewarm/cap harmony (#91545): the local pool caps spawned backends at
+    // the configured max, and a spawn over the cap LRU-evicts the warmest idle
+    // backend. A hover sweep across the rail therefore evicted backends for
+    // profiles the user was about to click — prewarming caused the exact churn
+    // it exists to prevent. Remote and cloud sockets do not consume this pool.
+    const capacity = backgroundPrewarmCapacity($poolLimits.get().maxBackends)
+
+    if (openLocalSecondaryCount() + prewarmingTargets.size + 1 > capacity) {
+      return
+    }
+  }
+
+  prewarmedAt.set(key, now)
+
+  if (reserveLocalPool) {
+    prewarmingTargets.add(key)
+  }
+
+  void open()
+    .catch(() => undefined)
+    .finally(() => {
+      if (reserveLocalPool) {
+        prewarmingTargets.delete(key)
+      }
+    })
+}
 
 export function prewarmProfileBackend(name: string, connectionId: null | string = null): void {
-  const key = normalizeProfileKey(name)
   const connection = (connectionId ?? '').trim() || null
-  const scope = registryBackendScopeKey(connection, key)
+
+  if (connection) {
+    prewarmGatewayAgent(connection, name)
+    return
+  }
+
+  const profile = normalizeProfileKey(name)
+
+  if (profile === normalizeProfileKey($activeGatewayProfile.get())) {
+    return
+  }
+
+  prewarmTarget(`profile:${profile}`, () => openGatewayForProfile(profile, { speculative: true }), true)
+}
+
+/**
+ * The source-qualified counterpart of `prewarmProfileBackend`. Bot roster
+ * rows use this path when their owner is known as `(connectionId, profile)`.
+ * Local rows share the same reservation set and foreground headroom as local
+ * profile hovers. Remote and cloud rows only share the throttle: their socket
+ * does not consume a local backend slot, so the local pool guard must not
+ * delay their next click.
+ */
+export function prewarmGatewayAgent(connectionId: null | string | undefined, profile: string): void {
+  const source = String(connectionId ?? '').trim() || 'local'
+  const target = normalizeProfileKey(profile)
+  const isLocal = connectionId == null || source === 'local'
 
   if (
-    key === normalizeProfileKey($activeGatewayProfile.get()) &&
-    (!connection || connection === activeGatewayConnectionId())
+    target === normalizeProfileKey($activeGatewayProfile.get()) &&
+    source === (activeGatewayConnectionId() || 'local')
   ) {
     return
   }
 
-  const now = Date.now()
-
-  if (now - (prewarmedAt.get(scope) ?? 0) < PREWARM_MIN_INTERVAL_MS) {
-    return
-  }
-
-  // Prewarm/cap harmony (#91545): the pool caps spawned backends at the
-  // configured max, and a spawn over the cap LRU-evicts the warmest idle
-  // backend. A hover sweep across the rail therefore evicted backends for
-  // profiles the user was about to click — prewarming caused the exact churn
-  // it exists to prevent. Skip speculative spawns once every pool slot is
-  // occupied by an open socket; the real click still spawns on demand, it
-  // just doesn't get a head start.
-  if (openSecondaryCount() + 1 > $poolLimits.get().maxBackends) {
-    return
-  }
-
-  prewarmedAt.set(scope, now)
-  const dial = connection ? openGatewayForAgent(connection, key) : openGatewayForProfile(key)
-  dial.catch(() => undefined)
+  prewarmTarget(
+    registryBackendScopeKey(source, target),
+    () => openGatewayForAgent(connectionId ?? null, target, { speculative: true }),
+    isLocal
+  )
 }
 
 let gatewaySwitch: Promise<void> | null = null
@@ -530,7 +543,11 @@ async function resolveConnectionForProfile(profile: string): Promise<HermesConne
 
   try {
     return await withTimeout(
-      getConnection(profile),
+      // Profile activation is a direct user navigation. Give the descriptor
+      // lookup the same foreground priority as the concurrently-started
+      // gateway activation, otherwise it can join a stale background claim
+      // and make the selected bot appear to have no access.
+      getConnection(profile, { priority: 'foreground' }),
       DESCRIPTOR_LOOKUP_TIMEOUT_MS,
       `Timed out resolving the connection descriptor for profile "${profile}"`
     )
@@ -682,7 +699,10 @@ async function resolveConnectionForAgent(connectionId: string, profile: string):
 
   try {
     return await withTimeout(
-      getConnectionFor({ connectionId, profile }),
+      // Same rule for a source-qualified bot: the user selected this exact
+      // route, so descriptor resolution must not be downgraded to a background
+      // spawn while the activation is foreground.
+      getConnectionFor({ connectionId, profile, priority: 'foreground' }),
       DESCRIPTOR_LOOKUP_TIMEOUT_MS,
       `Timed out resolving the connection descriptor for agent "${connectionId}:${profile}"`
     )
@@ -705,7 +725,11 @@ async function resolveConnectionForAgent(connectionId: string, profile: string):
 // activates it synchronously, which lets the caller sever the previous
 // backend's session bindings and publish the new source in the same tick
 // (#93937). An already-open target is a no-op.
-export async function openGatewayAgent(connectionId: string, profile: string): Promise<void> {
+export async function openGatewayAgent(
+  connectionId: string,
+  profile: string,
+  { signal }: { signal?: AbortSignal } = {}
+): Promise<void> {
   const connection = connectionId.trim()
 
   if (!connection) {
@@ -714,6 +738,7 @@ export async function openGatewayAgent(connectionId: string, profile: string): P
 
   await openGatewayForAgent(connection, normalizeProfileKey(profile), {
     activationLease: true,
+    ...(signal ? { signal } : {}),
     spawnPriority: 'foreground'
   })
 }
@@ -909,7 +934,8 @@ export function selectProfile(name: string): void {
   // is made on the source the user is looking at (activateOnCurrentSource
   // dials exactly that pair), so the draft's exact owner is that pair — or the
   // legacy profile-only path when that is the door the pick takes.
-  captureNewChatSource(profilePickConnectionId(target))
+  const pickedConnectionId = profilePickConnectionId(target)
+  captureNewChatSource(pickedConnectionId)
 
   if (switching) {
     requestFreshSession()
@@ -928,13 +954,28 @@ export function selectProfile(name: string): void {
   // IPC instead (#79886). Registry-source picks name ANOTHER source's
   // profiles, so only a primary-backend activation updates the startup
   // preference.
-  const onPrimary = activeGatewayConnectionId() == null
+  // A named pick on the explicit local source intentionally uses the legacy
+  // profile door so Electron can honor a per-profile remote override before
+  // falling back to a local backend. Default on that source stays on the
+  // reserved local registry route and is explicitly local; only the legacy
+  // door needs isLocalDesktopProfile to exclude a per-profile remote override.
+  const onPrimary = pickedConnectionId === null || pickedConnectionId === LOCAL_CONNECTION_ID
 
-  const shouldRememberStartupProfile = onPrimary ? isLocalDesktopProfile(target) : Promise.resolve(false)
+  const shouldRememberStartupProfile =
+    pickedConnectionId === LOCAL_CONNECTION_ID
+      ? Promise.resolve(true)
+      : onPrimary
+        ? isLocalDesktopProfile(target)
+        : Promise.resolve(false)
 
   void Promise.all([activateOnCurrentSource(target), shouldRememberStartupProfile])
     .then(([, shouldRemember]) => {
-      if (shouldRemember) {
+      const localDefaultActivationLanded =
+        pickedConnectionId !== LOCAL_CONNECTION_ID ||
+        (activeGatewayConnectionId() === LOCAL_CONNECTION_ID &&
+          normalizeProfileKey($activeGatewayProfile.get()) === target)
+
+      if (shouldRemember && localDefaultActivationLanded) {
         return window.hermesDesktop?.profile?.remember(target)
       }
 

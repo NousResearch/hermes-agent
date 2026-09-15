@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import os
-import stat
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -51,19 +51,34 @@ sys.exit(2)
 '''
 
 
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="fake bw is a shebang script; the backend under test is host-agnostic")
-
-
 @pytest.fixture
 def fake_bw(tmp_path, monkeypatch):
-    exe = tmp_path / "bw"
+    from agent.vault_backends import bitwarden
+
+    exe = tmp_path / "bw.py"
     exe.write_text(_FAKE_BW, encoding="utf-8")
-    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    # Only translate the fake executable to this interpreter. Production helpers
+    # still own the real child process, allowlisted env, stdin and secret channel
+    # on every host; Windows does not need shebang support or a shell wrapper.
+    run_cli = bitwarden.run_cli
+    run_with_secret_env = bitwarden.run_with_secret_env
+
+    def native_argv(argv):
+        assert argv[0] == str(exe)
+        return [sys.executable, str(exe), *argv[1:]]
+
+    monkeypatch.setattr(bitwarden, "run_cli", lambda argv, **kw: run_cli(native_argv(argv), **kw))
+    monkeypatch.setattr(bitwarden, "run_with_secret_env",
+                        lambda argv, **kw: run_with_secret_env(native_argv(argv), **kw))
     log = tmp_path / "bw.log"  # the backend runs bw with an allowlisted env, so the fake logs beside itself
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    unlock_mod.set_current_session_id("fixture-vault-session")
     unlock_mod.lock()
-    yield exe, log
-    unlock_mod.lock()
+    try:
+        yield exe, log
+    finally:
+        unlock_mod.lock()
+        unlock_mod.set_current_session_id(None)
 
 
 def _enabled(exe):
@@ -168,56 +183,3 @@ def test_lock_during_unlock_wins_and_only_the_owning_session_release_drops_a_tok
         unlock_mod.release_session("sess-A")
         assert not backend.is_unlocked()
         unlock_mod.set_current_session_id(None)
-
-
-def test_bitwarden_multi_uri_item_binds_every_saved_web_origin():
-    """A Bitwarden login with several URIs binds all of them (deduped, first stays
-    primary); non-web URIs and URIs marked match=Never (5) never widen the fill set."""
-    backend = BitwardenLoginBackend({"enabled": True})
-    items_json = json.dumps([{
-        "id": "multi", "type": 1, "name": "Amazon", "creationDate": "2026-01-01T00:00:00Z",
-        "login": {"username": "jane@example.com", "uris": [
-            {"uri": "https://amazon.co.uk/signin"},
-            {"uri": "https://www.amazon.co.uk"},
-            {"uri": "https://eu.account.amazon.com"},
-            {"uri": "androidapp://com.amazon.shopping"},
-            {"uri": "not a url"},
-            {"uri": "https://never.amazon.co.uk", "match": 5},
-        ]},
-    }])
-    with patch.object(BitwardenLoginBackend, "is_unlocked", return_value=True), \
-         patch.object(backend, "_run", return_value=items_json):
-        metas = backend.list_items()
-    assert len(metas) == 1
-    assert metas[0].origin == "https://amazon.co.uk"
-    assert list(metas[0].allowed_origins) == ["https://amazon.co.uk", "https://www.amazon.co.uk",
-                                              "https://eu.account.amazon.com"]
-
-
-def test_onepassword_multi_url_item_binds_every_saved_web_origin():
-    """A 1Password login with several websites binds all of them; the app URI is kept
-    out of the fill set and a single-URL item is unchanged."""
-    from agent.vault_backends.onepassword import OnePasswordLoginBackend, _all_origins, _web_origins
-
-    backend = OnePasswordLoginBackend({"enabled": True})
-    items_json = json.dumps([{
-        "id": "multi", "title": "Amazon", "created_at": "2026-01-01T00:00:00Z",
-        "additional_information": "jane@example.com",
-        "urls": [{"href": "https://amazon.co.uk"}, {"href": "https://www.amazon.co.uk"},
-                 {"href": "https://eu.account.amazon.com"}, {"href": "androidapp://com.amazon.shopping"},
-                 {"href": "::not parseable::"}],
-    }, {
-        "id": "single", "title": "Shop", "created_at": "2026-01-01T00:00:00Z",
-        "urls": [{"href": "https://shop.example.com"}],
-    }])
-    with patch.object(OnePasswordLoginBackend, "is_unlocked", return_value=True), \
-         patch.object(backend, "_run", return_value=items_json):
-        metas = {m.id: m for m in backend.list_items()}
-    assert metas["op:multi"].origin == "https://amazon.co.uk"
-    assert list(metas["op:multi"].allowed_origins) == ["https://amazon.co.uk", "https://www.amazon.co.uk",
-                                                       "https://eu.account.amazon.com"]
-    assert metas["op:single"].origin == "https://shop.example.com"
-    assert list(metas["op:single"].allowed_origins) == ["https://shop.example.com"]
-    # helpers: dedupe keeps first occurrence; app-only items keep their single origin
-    assert _all_origins(["https://a.com/x", "https://a.com/y"]) == ["https://a.com"]
-    assert _web_origins(["androidapp://com.x"]) == ("androidapp://com.x",)

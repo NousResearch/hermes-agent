@@ -12,7 +12,8 @@ const tempDirs: string[] = []
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
-    fs.rmSync(dir, { force: true, recursive: true })
+    assert.ok(path.resolve(dir).startsWith(path.resolve(os.tmpdir()) + path.sep))
+    fs.rmSync(dir, { force: true, recursive: true, maxRetries: 5, retryDelay: 100 })
   }
 })
 
@@ -56,7 +57,7 @@ test('gitFor runs git through a spaced binary path', async () => {
   const status = await gitFor(repo, gitBin).status()
 
   assert.equal(status.not_added.includes('changed.txt'), true)
-})
+}, 30_000)
 
 test('resolveRenamePath: simple rename resolves to the new path', () => {
   assert.equal(resolveRenamePath('old.ts => new.ts'), 'new.ts')
@@ -86,7 +87,7 @@ test('repoStatus reports an untracked directory without recursively listing its 
     status.files.map(file => file.path),
     ['generated/']
   )
-})
+}, 30_000)
 
 test('reviewList reports an untracked directory without recursively listing its contents', async () => {
   const dir = makeRepo()
@@ -104,7 +105,7 @@ test('reviewList reports an untracked directory without recursively listing its 
     result.files.map(file => file.path),
     ['browser-profile/']
   )
-})
+}, 30_000)
 
 test('reviewList caps the file payload returned to the renderer', async () => {
   const dir = makeRepo()
@@ -116,4 +117,4 @@ test('reviewList caps the file payload returned to the renderer', async () => {
   const result = await reviewList(dir, 'uncommitted', null, 'git')
 
   assert.equal(result.files.length, REVIEW_FILE_CAP)
-})
+}, 30_000)

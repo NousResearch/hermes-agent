@@ -3,7 +3,7 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import type * as ReactRouterDom from 'react-router'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
 import { queryClient } from '@/lib/query-client'
@@ -80,13 +80,13 @@ function toolset(overrides: Record<string, unknown> = {}) {
   }
 }
 
-async function renderSkills() {
+async function renderSkills(tab = 'toolsets') {
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(
       // SkillsView reads skills/toolsets via useQuery, so it needs a provider.
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/skills?tab=toolsets']}>
+        <MemoryRouter initialEntries={[`/skills?tab=${tab}`]}>
           <SkillsView />
         </MemoryRouter>
       </QueryClientProvider>
@@ -95,6 +95,12 @@ async function renderSkills() {
 
   return result!
 }
+
+// Keep cold module transforms outside the first test and its React act scope.
+// Setup failure then stops the suite instead of cascading into empty renders.
+beforeAll(async () => {
+  await import('./index')
+}, 120_000)
 
 beforeEach(() => {
   getSkills.mockResolvedValue([])
@@ -311,15 +317,9 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
   })
 
   it('mounts the hub iframe lazily and keeps it (hidden) across tab switches', async () => {
-    // On a non-Skills tab the docs-site iframe must not exist at all — an
+    // In embedded mode the Skills tab is the initial non-Hub tab, so the
+    // docs-site iframe must not exist at all — an
     // eagerly mounted hub is exactly the Capabilities lag bug.
-    await renderSkills() // ?tab=toolsets
-    await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
-    expect(document.querySelector('iframe')).toBeNull()
-    cleanup()
-
-    // Embedded mode drives tabs through local state (the route hooks are
-    // mocked here), starting on Skills: the picker mounts with the tab.
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -329,20 +329,49 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
         </QueryClientProvider>
       )
     })
+    expect(document.querySelector('iframe')).toBeNull()
 
-    const iframe = document.querySelector('iframe')
-    expect(iframe).toBeTruthy()
-    expect(iframe!.closest('section')!.classList.contains('hidden')).toBe(false)
-
-    // Switch to Tools → the iframe STAYS mounted (no docs-site reload on the
-    // next visit) but its section is fully hidden, so nothing from the hub
-    // can paint over the toolsets UI.
+    // Hub is a page-local tab. The first visit creates the iframe and the
+    // standalone layout owns the whole content column.
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /Tools/ }))
+      fireEvent.click(document.querySelector('[data-tour="tab-hub"]')!)
+    })
+
+    const iframe = await waitFor(() => {
+      const node = document.querySelector('iframe')
+      expect(node).toBeTruthy()
+
+      return node
+    })
+
+    expect(iframe!.closest('section')!.classList.contains('hidden')).toBe(false)
+    expect(iframe!.closest('section')!.className).toContain('flex-1')
+
+    // Switch to Skills → the iframe STAYS mounted (no docs-site reload on the
+    // next visit) but its section is fully hidden, so nothing from the hub
+    // can paint over the installed-skills UI.
+    await act(async () => {
+      fireEvent.click(document.querySelector('[data-tour="tab-skills"]')!)
     })
     const kept = document.querySelector('iframe')
     expect(kept).toBeTruthy()
+    expect(kept).toBe(iframe)
     expect(kept!.closest('section')!.classList.contains('hidden')).toBe(true)
+
+    await act(async () => {
+      fireEvent.click(document.querySelector('[data-tour="tab-hub"]')!)
+    })
+    expect(document.querySelector('iframe')).toBe(iframe)
+    expect(iframe!.closest('section')!.classList.contains('hidden')).toBe(false)
+  })
+
+  it('opens the standalone Hub from a deep link without rendering the Skills list', async () => {
+    await renderSkills('hub')
+
+    expect(screen.getAllByRole('button', { name: 'Browse Hub' })[0]).toBeTruthy()
+    expect(document.querySelector('iframe')).toBeTruthy()
+    expect(screen.queryByRole('textbox')).toBeNull()
+    expect(screen.queryByRole('switch')).toBeNull()
   })
 
   it('shows a vision explainer that deep-links to Settings → Models', async () => {

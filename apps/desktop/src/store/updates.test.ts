@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopUpdateStatus } from '@/global'
 
+import type * as SessionModule from './session'
+import type * as UpdatesModule from './updates'
+
 const storage = new Map<string, string>()
 
 vi.mock('@/lib/storage', () => ({
@@ -62,11 +65,15 @@ vi.mock('@/store/connections', () => ({
 const checkHermesUpdateSpy = vi.fn()
 const updateHermesSpy = vi.fn()
 const getActionStatusSpy = vi.fn()
+const getHermesConfigRecordSpy = vi.fn()
+const saveHermesConfigRecordSpy = vi.fn()
 
 vi.mock('@/hermes', () => ({
   checkHermesUpdate: (...args: unknown[]) => checkHermesUpdateSpy(...args),
   updateHermes: (...args: unknown[]) => updateHermesSpy(...args),
-  getActionStatus: (...args: unknown[]) => getActionStatusSpy(...args)
+  getActionStatus: (...args: unknown[]) => getActionStatusSpy(...args),
+  getHermesConfigRecord: (...args: unknown[]) => getHermesConfigRecordSpy(...args),
+  saveHermesConfigRecord: (...args: unknown[]) => saveHermesConfigRecordSpy(...args)
 }))
 
 // A successful backend apply must nudge the gateway reconnect handler — the
@@ -85,7 +92,6 @@ const {
   $backendUpdateStatus,
   applyBackendUpdate,
   $backendUpdateApply,
-  REQUIRED_BACKEND_CONTRACT,
   reportBackendContract,
   applyUpdates,
   applyEverythingUpdate,
@@ -98,6 +104,8 @@ const {
   $updateOverlayTarget,
   requestActiveUpdate,
   resetUpdateApplyState,
+  $automaticUpdateChecksEnabled,
+  setAutomaticUpdateChecksEnabled,
   startUpdatePoller,
   stopUpdatePoller,
   $updateStatus,
@@ -195,7 +203,7 @@ describe('reportBackendContract', () => {
   })
 
   it('dismisses the toast when the backend meets the contract', () => {
-    reportBackendContract(REQUIRED_BACKEND_CONTRACT)
+    reportBackendContract(6)
     expect(dismissSpy).toHaveBeenCalledWith('backend-contract-skew')
     expect(notifySpy).not.toHaveBeenCalled()
   })
@@ -235,7 +243,7 @@ describe('reportBackendContract', () => {
     lastToast().onDismiss()
     notifySpy.mockClear()
 
-    reportBackendContract(REQUIRED_BACKEND_CONTRACT) // backend updated → satisfied, snooze cleared
+    reportBackendContract(6) // backend updated → satisfied, snooze cleared
     reportBackendContract(5) // a later regression must warn immediately
     expect(notifySpy).toHaveBeenCalledTimes(1)
   })
@@ -343,6 +351,7 @@ describe('requestActiveUpdate', () => {
     getActionStatusSpy.mockReset().mockResolvedValue({ lines: [], running: false, exit_code: 0 })
     resetUpdateApplyState()
     $updateStatus.set(null)
+    setAutomaticUpdateChecksEnabled(true)
     $backendUpdateStatus.set(null)
     $updateOverlayOpen.set(false)
     ;(globalThis as unknown as { window: unknown }).window = {
@@ -1330,6 +1339,8 @@ describe('startUpdatePoller', () => {
     storage.clear()
     checkMock.mockReset()
     onProgressMock.mockReset()
+    getHermesConfigRecordSpy.mockReset()
+    saveHermesConfigRecordSpy.mockReset()
     Object.keys(listeners).forEach(k => delete listeners[k])
     checkMock.mockResolvedValue({
       supported: true,
@@ -1337,9 +1348,12 @@ describe('startUpdatePoller', () => {
       targetSha: 'sha-abc',
       fetchedAt: 0
     })
+    getHermesConfigRecordSpy.mockResolvedValue({ desktop: { automatic_update_checks: true } })
+    saveHermesConfigRecordSpy.mockResolvedValue({ ok: true })
     $updateStatus.set(null)
+    setAutomaticUpdateChecksEnabled(true)
     ;(globalThis as unknown as { window: unknown }).window = {
-      hermesDesktop: { updates: { check: checkMock, onProgress: onProgressMock } },
+      hermesDesktop: { api: vi.fn(), updates: { check: checkMock, onProgress: onProgressMock } },
       addEventListener: vi.fn((event: string, handler: Function) => {
         listeners[event] = handler
       }),
@@ -1393,5 +1407,287 @@ describe('startUpdatePoller', () => {
     listeners['focus']?.()
     await vi.advanceTimersByTimeAsync(0)
     expect(checkMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('exposes a persistent switch that pauses and resumes background checks', async () => {
+    setAutomaticUpdateChecksEnabled(false)
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect($automaticUpdateChecksEnabled.get()).toBe(false)
+    expect(checkMock).not.toHaveBeenCalled()
+    await vi.waitFor(() =>
+      expect(saveHermesConfigRecordSpy).toHaveBeenCalledWith(
+        { desktop: { automatic_update_checks: false } }
+      )
+    )
+
+    setAutomaticUpdateChecksEnabled(true)
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect($automaticUpdateChecksEnabled.get()).toBe(true)
+    expect(checkMock).toHaveBeenCalled()
+    await vi.waitFor(() => expect(saveHermesConfigRecordSpy).toHaveBeenCalled())
+    expect(saveHermesConfigRecordSpy).toHaveBeenLastCalledWith({ desktop: { automatic_update_checks: true } })
+  })
+})
+
+describe('automatic update preference recovery', () => {
+  let updates: typeof UpdatesModule
+  let session: typeof SessionModule
+  const checkMock = vi.fn()
+  const listeners: Record<string, () => void> = {}
+
+  beforeEach(async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(10 * 60 * 1000)
+    vi.resetModules()
+    getHermesConfigRecordSpy.mockReset().mockResolvedValue({ desktop: { automatic_update_checks: false } })
+    saveHermesConfigRecordSpy.mockReset().mockResolvedValue({ ok: true })
+    checkMock.mockReset().mockResolvedValue(status({ behind: 0 }))
+    checkHermesUpdateSpy.mockReset()
+    notifySpy.mockClear()
+    Object.keys(listeners).forEach(key => delete listeners[key])
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: { api: vi.fn(), updates: { check: checkMock, onProgress: vi.fn() } },
+      addEventListener: vi.fn((event: string, handler: () => void) => {
+        listeners[event] = handler
+      }),
+      removeEventListener: vi.fn()
+    }
+    updates = await import('./updates')
+    session = await import('./session')
+    session.setConnection(null)
+  })
+
+  afterEach(() => {
+    updates.stopUpdatePoller()
+    delete (globalThis as unknown as { window?: unknown }).window
+    vi.useRealTimers()
+  })
+
+  it('does not activate the default after a failed boot read and recovers the saved opt-out', async () => {
+    getHermesConfigRecordSpy.mockRejectedValueOnce(new Error('backend is starting'))
+    updates.startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(checkMock).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(getHermesConfigRecordSpy).toHaveBeenCalledTimes(2)
+    expect(updates.$automaticUpdateChecksEnabled.get()).toBe(false)
+    expect(checkMock).not.toHaveBeenCalled()
+  })
+
+  it('recovers even when the initial bridge call throws synchronously', async () => {
+    getHermesConfigRecordSpy.mockImplementationOnce(() => {
+      throw new Error('bridge not ready')
+    })
+    updates.startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(getHermesConfigRecordSpy).toHaveBeenCalledTimes(2)
+    expect(updates.$automaticUpdateChecksEnabled.get()).toBe(false)
+    expect(checkMock).not.toHaveBeenCalled()
+  })
+
+  it('bounds retries during an outage and retries again when a connection becomes ready', async () => {
+    getHermesConfigRecordSpy.mockRejectedValue(new Error('offline'))
+    updates.startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(getHermesConfigRecordSpy).toHaveBeenCalledTimes(4)
+    expect(checkMock).not.toHaveBeenCalled()
+
+    getHermesConfigRecordSpy.mockResolvedValue({ desktop: { automatic_update_checks: true } })
+    session.setConnection({
+      baseUrl: 'http://localhost:9000',
+      mode: 'local',
+      isFullscreen: false,
+      nativeOverlayWidth: 0,
+      token: '',
+      wsUrl: 'ws://localhost:9000',
+      logs: [],
+      windowButtonPosition: null
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getHermesConfigRecordSpy).toHaveBeenCalledTimes(5)
+    expect(checkMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('bounds a hung config read and ignores the value returned after its timeout', async () => {
+    let resolveLate!: (value: unknown) => void
+    getHermesConfigRecordSpy.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          resolveLate = resolve
+        })
+    )
+    updates.startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(getHermesConfigRecordSpy).toHaveBeenCalledTimes(2)
+    expect(updates.$automaticUpdateChecksEnabled.get()).toBe(false)
+    resolveLate({ desktop: { automatic_update_checks: true } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(checkMock).not.toHaveBeenCalled()
+    expect(updates.$automaticUpdateChecksEnabled.get()).toBe(false)
+  })
+
+  it('retries an exhausted read on a throttled focus event', async () => {
+    getHermesConfigRecordSpy.mockRejectedValue(new Error('offline'))
+    updates.startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(60_000)
+    getHermesConfigRecordSpy.mockResolvedValue({ desktop: { automatic_update_checks: false } })
+    listeners.focus?.()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getHermesConfigRecordSpy).toHaveBeenCalledTimes(5)
+    expect(checkMock).not.toHaveBeenCalled()
+  })
+
+  it('stops pending read retries when the poller stops', async () => {
+    getHermesConfigRecordSpy.mockRejectedValue(new Error('offline'))
+    updates.startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+    updates.stopUpdatePoller()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(getHermesConfigRecordSpy).toHaveBeenCalledTimes(1)
+    expect(checkMock).not.toHaveBeenCalled()
+  })
+
+  it('does not let a slow boot read overwrite a newer explicit choice', async () => {
+    let resolveBoot!: (value: unknown) => void
+    getHermesConfigRecordSpy.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          resolveBoot = resolve
+        })
+    )
+    updates.startUpdatePoller()
+    updates.setAutomaticUpdateChecksEnabled(true)
+    await vi.advanceTimersByTimeAsync(0)
+    resolveBoot({ desktop: { automatic_update_checks: false } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(updates.$automaticUpdateChecksEnabled.get()).toBe(true)
+    expect(saveHermesConfigRecordSpy).toHaveBeenLastCalledWith({ desktop: { automatic_update_checks: true } })
+  })
+
+  it('ignores a stopped poller read after a new poller recovers the saved choice', async () => {
+    let resolveStopped!: (value: unknown) => void
+    getHermesConfigRecordSpy.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          resolveStopped = resolve
+        })
+    )
+    updates.startUpdatePoller()
+    updates.stopUpdatePoller()
+    updates.startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+    resolveStopped({ desktop: { automatic_update_checks: true } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(updates.$automaticUpdateChecksEnabled.get()).toBe(false)
+    expect(checkMock).not.toHaveBeenCalled()
+  })
+
+  it('invalidates a pending old-source read when the active connection changes', async () => {
+    let resolveOldSource!: (value: unknown) => void
+    getHermesConfigRecordSpy.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          resolveOldSource = resolve
+        })
+    )
+    updates.startUpdatePoller()
+    session.setConnection({
+      baseUrl: 'http://localhost:9000',
+      mode: 'local',
+      isFullscreen: false,
+      nativeOverlayWidth: 0,
+      token: '',
+      wsUrl: 'ws://localhost:9000',
+      logs: [],
+      windowButtonPosition: null
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getHermesConfigRecordSpy).toHaveBeenCalledTimes(2)
+    resolveOldSource({ desktop: { automatic_update_checks: true } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(updates.$automaticUpdateChecksEnabled.get()).toBe(false)
+    expect(checkMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps automatic checks off when saving fails before any setting can be confirmed', async () => {
+    getHermesConfigRecordSpy.mockRejectedValue(new Error('offline'))
+    updates.startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+    updates.setAutomaticUpdateChecksEnabled(true)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(updates.$automaticUpdateChecksEnabled.get()).toBe(false)
+    expect(saveHermesConfigRecordSpy).not.toHaveBeenCalled()
+    expect(notifySpy).toHaveBeenCalledWith(expect.objectContaining({ kind: 'error' }))
+    checkMock.mockClear()
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000)
+    expect(checkMock).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])(
+    'rolls back to the confirmed setting and notifies on failed save (reject=%s)',
+    async reject => {
+      updates.startUpdatePoller()
+      await vi.advanceTimersByTimeAsync(0)
+
+      if (reject) {
+        saveHermesConfigRecordSpy.mockRejectedValueOnce(new Error('write failed'))
+      } else {
+        saveHermesConfigRecordSpy.mockResolvedValueOnce({ ok: false })
+      }
+
+      updates.setAutomaticUpdateChecksEnabled(true)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(updates.$automaticUpdateChecksEnabled.get()).toBe(false)
+      expect(notifySpy).toHaveBeenCalledWith(expect.objectContaining({ kind: 'error' }))
+      checkMock.mockClear()
+      await vi.advanceTimersByTimeAsync(30 * 60 * 1000)
+      expect(checkMock).not.toHaveBeenCalled()
+    }
+  )
+
+  it('does not roll back a newer choice when an older save fails', async () => {
+    let rejectOlder!: (error: Error) => void
+    updates.startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+    saveHermesConfigRecordSpy.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectOlder = reject
+        })
+    )
+    updates.setAutomaticUpdateChecksEnabled(true)
+    await vi.advanceTimersByTimeAsync(0)
+    updates.setAutomaticUpdateChecksEnabled(false)
+    rejectOlder(new Error('old write failed'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(updates.$automaticUpdateChecksEnabled.get()).toBe(false)
+    expect(notifySpy).not.toHaveBeenCalled()
+    expect(saveHermesConfigRecordSpy).toHaveBeenLastCalledWith({ desktop: { automatic_update_checks: false } })
+  })
+
+  it('rolls back to a successfully saved older choice if the newer save fails', async () => {
+    let resolveOlder!: (value: { ok: boolean }) => void
+    updates.startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+    saveHermesConfigRecordSpy
+      .mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            resolveOlder = resolve
+          })
+      )
+      .mockRejectedValueOnce(new Error('new write failed'))
+    updates.setAutomaticUpdateChecksEnabled(true)
+    await vi.advanceTimersByTimeAsync(0)
+    updates.setAutomaticUpdateChecksEnabled(false)
+    resolveOlder({ ok: true })
+    getHermesConfigRecordSpy.mockResolvedValue({ desktop: { automatic_update_checks: true } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(updates.$automaticUpdateChecksEnabled.get()).toBe(true)
+    expect(notifySpy).toHaveBeenCalledWith(expect.objectContaining({ kind: 'error' }))
   })
 })

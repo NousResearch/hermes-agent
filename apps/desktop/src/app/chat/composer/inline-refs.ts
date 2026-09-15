@@ -38,15 +38,11 @@ export function dragHasAttachments(transfer: DataTransfer | null, pathsMime: str
     return false
   }
 
-  const types = Array.from(transfer.types || [])
-
-  // A browser link drag carries `text/uri-list` (on Windows also a virtual
-  // shortcut File); accept it so the link lands as an `@url:` chip.
-  if (types.includes(pathsMime) || types.includes('text/uri-list')) {
+  if (Array.from(transfer.types || []).includes(pathsMime)) {
     return true
   }
 
-  if (types.includes('Files')) {
+  if (Array.from(transfer.types || []).includes('Files')) {
     return true
   }
 
@@ -54,10 +50,6 @@ export function dragHasAttachments(transfer: DataTransfer | null, pathsMime: str
 }
 
 export function droppedFileInlineRef(candidate: DroppedFile, cwd: string | null | undefined) {
-  if (candidate.url) {
-    return `@url:${formatRefValue(candidate.url)}`
-  }
-
   if (!candidate.path) {
     return null
   }

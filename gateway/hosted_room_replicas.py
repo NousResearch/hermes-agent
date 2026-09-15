@@ -16,7 +16,9 @@ from functools import partial
 from typing import Any, Iterator
 
 from gateway.hosted_rooms import (
-    MAX_ACTOR_ID_CHARS, HostedRoomError, RoomConflictError, _actor_json, _connect, _payload_json, _room_id,
+    MAX_ACTIVE_ROOMS, MAX_ACTOR_ID_CHARS, HostedRoomError, RoomConflictError, _actor_json, _connect, _payload_json, _room_id,
+    _CRITICAL_CONTROL_EVENT_KINDS, _assert_event_capacity, _closing_discussion_liability_keys,
+    _correlated_terminal_task_ids, _is_terminal_recovery_plan, _terminal_publication_liabilities,
     _transaction, _validate_identifier, _validate_members, _validate_room_name, local_authority_gateway_id)
 from gateway.hosted_rooms_common import DbPath, bounded_int, clock, utf8_len
 
@@ -154,6 +156,8 @@ def ingest_page(
         row, stored_epoch, last_seq, stored_bytes = _replica_row_state(conn, room_id)
         if authority["epoch"] < stored_epoch:
             raise ReplicaEpochRegressionError("page authority epoch is older than the stored replica epoch")
+        if row is not None and authority["epoch"] == stored_epoch and authority["gateway_id"] != row["authority_gateway_id"]:
+            raise ReplicaError("page authority owner conflicts with the stored epoch")
         new_events = [e for e in events if int(e["seq"]) > last_seq]
         if new_events and int(new_events[0]["seq"]) != last_seq + 1:
             raise ReplicaGapError("page skips sequences the replica has not stored")
@@ -173,12 +177,13 @@ def ingest_page(
         latest_seq = page.get("latest_seq")
         if isinstance(latest_seq, bool) or not isinstance(latest_seq, int):
             latest_seq = new_last
+        observed_latest_seq = max(int(row["latest_seq"]) if row is not None else 0, latest_seq, new_last)
         _store_replica(
             conn, is_new=row is None, room_id=room_id, room_name=room_name, members_json=members_json,
-            authority=authority, new_last=new_last, latest_seq=latest_seq, added_bytes=added_bytes, now=now)
+            authority=authority, new_last=new_last, latest_seq=observed_latest_seq, added_bytes=added_bytes, now=now)
     return {
         "room_id": room_id, "stored_seq": new_last, "ingested": len(new_events), "authority": authority,
-        "caught_up": new_last >= max(latest_seq, new_last)}
+        "caught_up": new_last >= observed_latest_seq}
 
 
 def replica_state(db_path: DbPath, *, room_id: Any) -> dict[str, Any]:
@@ -193,6 +198,49 @@ def replica_state(db_path: DbPath, *, room_id: Any) -> dict[str, Any]:
         "authority": {"gateway_id": row["authority_gateway_id"], "epoch": int(row["authority_epoch"])},
         "last_seq": int(row["last_seq"]), "latest_seq": int(row["latest_seq"]), "event_bytes": int(row["event_bytes"]),
         "created_at": float(row["created_at"]), "updated_at": float(row["updated_at"])}
+
+
+def _replay_replica_events(
+    conn: sqlite3.Connection, room_id: str, *, now: float) -> tuple[int, int]:
+    """Replay in sequence, preserving the reserve of each atomic terminal publication."""
+    rows = iter(conn.execute(
+        f"SELECT {_EVENT_COLUMNS[1:-1]} FROM hosted_room_replica_events WHERE room_id=? ORDER BY seq", (room_id,)))
+    replay_bytes, next_seq = 0, 1
+    event = next(rows, None)
+    while event is not None:
+        batch = [event]
+        following = next(rows, None)
+        if following is not None and event["kind"] == "message.member":
+            if _is_terminal_recovery_plan([(0, dict(event)), (1, dict(following))]):
+                batch.append(following)
+                following = next(rows, None)
+        batch_bytes = []
+        for item in batch:
+            if int(item["seq"]) != next_seq + len(batch_bytes):
+                raise ReplicaGapError("replica history is not contiguous")
+            batch_bytes.append(utf8_len(*(str(item[key]) for key in ("event_id", "kind", "actor_json", "payload_json"))))
+        replay_events = [dict(item) for item in batch]
+        terminal_recovery = _is_terminal_recovery_plan(list(enumerate(replay_events)))
+        closing_keys = _closing_discussion_liability_keys(conn, room_id=room_id, events=replay_events)
+        room = conn.execute("SELECT next_seq, event_bytes FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone()
+        _assert_event_capacity(
+            conn, room_id=room_id, room=room, additional_bytes=sum(batch_bytes), additional_events=len(batch),
+            allow_control=all(item["kind"] in _CRITICAL_CONTROL_EVENT_KINDS for item in batch),
+            allow_stop=all(item["kind"] == "room.stop_requested" for item in batch),
+            allow_terminal_recovery=terminal_recovery or bool(closing_keys),
+            released_task_ids=(
+                _correlated_terminal_task_ids(conn, room_id=room_id, events=replay_events)
+                if terminal_recovery else frozenset()),
+            released_liability_keys=closing_keys)
+        for item, size in zip(batch, batch_bytes, strict=True):
+            conn.execute(_INSERT_ROOM_EVENT, tuple(item))
+            replay_bytes += size
+            next_seq += 1
+        conn.execute(
+            "UPDATE hosted_rooms SET next_seq=?, event_bytes=?, updated_at=? WHERE room_id=?",
+            (next_seq, replay_bytes, now, room_id))
+        event = following
+    return next_seq, replay_bytes
 
 
 def promote_replica(
@@ -219,6 +267,10 @@ def promote_replica(
             raise RoomConflictError("room_id already exists in the local authoritative store")
         if conn.execute("SELECT 1 FROM hosted_room_retired_ids WHERE room_id=?", (room_id,)).fetchone():
             raise RoomConflictError("room_id belongs to a disbanded room")
+        if int(conn.execute("SELECT COUNT(*) FROM hosted_rooms WHERE disbanded_at IS NULL").fetchone()[0]) >= MAX_ACTIVE_ROOMS:
+            raise HostedRoomError("This host has too many active Group Chats. Delete one and try again.")
+        if int(replica["last_seq"]) < int(replica["latest_seq"]):
+            raise ReplicaError("replica is not caught up; ingest every remaining log page before promotion")
         previous_gateway, previous_epoch = str(replica["authority_gateway_id"]), int(replica["authority_epoch"])
         target_epoch, claim_seq = previous_epoch + 1, int(replica["last_seq"]) + 1
         claim = _control_event("claimed", target_epoch, {
@@ -229,19 +281,33 @@ def promote_replica(
                 revision, created_at, updated_at, disbanded_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL)""",
             (
-                room_id, replica["name"], replica["members_json"], local_gateway, target_epoch, claim_seq + 1,
-                int(replica["event_bytes"]) + utf8_len(*claim), now, now))
-        conn.execute(
-            f"""INSERT INTO hosted_room_events {_EVENT_COLUMNS}
-               SELECT room_id, seq, event_id, kind, actor_json, authority_epoch, payload_json, created_at
-                 FROM hosted_room_replica_events WHERE room_id=?""", (room_id,))
+                room_id, replica["name"], replica["members_json"], local_gateway, target_epoch, 1, 0, now, now))
+        next_seq, replay_bytes = _replay_replica_events(conn, room_id, now=now)
+        if next_seq != claim_seq or replay_bytes != int(replica["event_bytes"]):
+            raise ReplicaError("replica history metadata does not match stored events")
+        promoted_room = conn.execute(
+            "SELECT next_seq, event_bytes FROM hosted_rooms WHERE room_id=?", (room_id,)).fetchone()
+        claim_bytes = utf8_len(*claim)
+        _assert_event_capacity(
+            conn, room_id=room_id, room=promoted_room, additional_bytes=claim_bytes, allow_control=True)
         _append_control_event(conn, room_id, claim_seq, target_epoch, claim, now)
+        conn.execute(
+            "UPDATE hosted_rooms SET next_seq=?, event_bytes=?, updated_at=? WHERE room_id=?",
+            (claim_seq + 1, replay_bytes + claim_bytes, now, room_id))
         conn.execute("DELETE FROM hosted_room_replica_events WHERE room_id=?", (room_id,))
         conn.execute("DELETE FROM hosted_room_replicas WHERE room_id=?", (room_id,))
     return {
         "room_id": room_id, "authority_gateway_id": local_gateway, "authority_epoch": target_epoch,
         "previous_gateway_id": previous_gateway, "previous_epoch": previous_epoch, "claim_seq": claim_seq,
         "latest_seq": claim_seq}
+
+def validate_demotion_observation(
+    *, room_id: Any, observed_gateway_id: Any, observed_epoch: Any) -> tuple[str, str, int]:
+    """Normalize one externally observed authority lineage."""
+    return (
+        _room_id(room_id),
+        _validate_identifier(observed_gateway_id, label="observed_gateway_id", max_chars=MAX_ACTOR_ID_CHARS),
+        _positive_int(observed_epoch, message="observed_epoch must be a positive integer"))
 
 
 def demote_room(
@@ -253,14 +319,12 @@ def demote_room(
     gateway owns the room at a higher epoch, append ``authority.lost`` and adopt the observed lineage so no
     local send can commit at the stale epoch. Idempotent per lineage.
     """
-    room_id = _room_id(room_id)
-    observed_gateway_id = _validate_identifier(
-        observed_gateway_id, label="observed_gateway_id", max_chars=MAX_ACTOR_ID_CHARS)
-    observed_epoch = _positive_int(observed_epoch, message="observed_epoch must be a positive integer")
+    room_id, observed_gateway_id, observed_epoch = validate_demotion_observation(
+        room_id=room_id, observed_gateway_id=observed_gateway_id, observed_epoch=observed_epoch)
     now = clock(now)
     local_gateway = local_authority_gateway_id()
     with _transaction(db_path, immediate=True) as conn:
-        row = conn.execute("""SELECT authority_gateway_id, authority_epoch, next_seq
+        row = conn.execute("""SELECT authority_gateway_id, authority_epoch, next_seq, event_bytes
                  FROM hosted_rooms WHERE room_id=? AND disbanded_at IS NULL""", (room_id,)).fetchone()
         if row is None:
             raise ReplicaError("room not found in the local authoritative store")
@@ -273,14 +337,21 @@ def demote_room(
             raise ReplicaEpochRegressionError("observed epoch does not supersede the stored authority")
         if current_gateway != local_gateway:
             raise ReplicaError("room is not locally authoritative; nothing to demote")
+        if any(liability_room_id == room_id for liability_room_id, _ in _terminal_publication_liabilities(conn)):
+            raise ReplicaError("room has unpublished terminal work; publish it before demotion")
         lost = _control_event("lost", observed_epoch, {
             "previous_gateway_id": current_gateway, "authority_gateway_id": observed_gateway_id,
             "authority_epoch": observed_epoch})
+        lost_bytes = utf8_len(*lost)
+        _assert_event_capacity(
+            conn, room_id=room_id, room=row, additional_bytes=lost_bytes,
+            allow_control=True, remaining_demotion_control_events=0)
         _append_control_event(conn, room_id, int(row["next_seq"]), observed_epoch, lost, now)
         conn.execute("""UPDATE hosted_rooms
-                  SET authority_gateway_id=?, authority_epoch=?, next_seq=next_seq+1, revision=revision+1, updated_at=?
+                  SET authority_gateway_id=?, authority_epoch=?, next_seq=next_seq+1, event_bytes=event_bytes+?,
+                      revision=revision+1, updated_at=?
                 WHERE room_id=?""",
-            (observed_gateway_id, observed_epoch, now, room_id))
+            (observed_gateway_id, observed_epoch, lost_bytes, now, room_id))
     return {
         "room_id": room_id, "authority_gateway_id": observed_gateway_id, "authority_epoch": observed_epoch,
         "idempotent": False}

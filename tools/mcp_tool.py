@@ -24,7 +24,12 @@ from typing import Any, Callable, Dict, List, Optional, Set
 logger = logging.getLogger(__name__)
 
 from tools.mcp_tool_common import _DEFAULT_TOOL_TIMEOUT, mcp_field
-from tools.mcp_tool_config import _get_mcp_stderr_log, _npx_cached_bin
+from tools.mcp_tool_config import (
+    _effective_npx_cache_env,
+    _get_mcp_stderr_log,
+    _npx_cached_bin,
+    _npx_cached_invocation,
+)
 from tools.mcp_tool_sampling import ElicitationHandler, SamplingHandler
 from tools.mcp_tool_transport import MCPServerTransportMixin
 from tools.mcp_tool_server_run import MCPServerRunMixin
@@ -36,11 +41,15 @@ from tools.mcp_tool_health import MCPServerHealthMixin
 _OSV_MALWARE_CHECK_TIMEOUT_S = 12.0
 
 
-async def _preflight_stdio_command(server_name: str, command: str, args: list) -> tuple[str, list]:
+async def _preflight_stdio_command(
+    server_name: str, command: str, args: list, env: Optional[dict] = None, cwd: Optional[str] = None,
+) -> tuple[str, list]:
     """OSV malware preflight (off-loop, wall-clock bound, fail-open on timeout), THEN the
     cached-npx swap. The preflight must see the REAL command/args: anything that rewrites argv to a
     wrapper or resolved binary has to happen after it, or the check silently inspects the wrapper
-    and becomes a no-op (``_infer_ecosystem`` keys off the command basename being npx/uvx/pipx)."""
+    and becomes a no-op (``_infer_ecosystem`` keys off the command basename being npx/uvx/pipx).
+    When a cache-backed direct launch succeeds, its resolved npm cache is pinned in the child
+    environment before that replacement command is spawned."""
     from tools.osv_check import check_package_for_malware
     try:
         malware_error = await asyncio.wait_for(
@@ -56,9 +65,26 @@ async def _preflight_stdio_command(server_name: str, command: str, args: list) -
     # npx resolves the package and then FORKS, staying resident as the real server's parent for
     # nothing (~48 MB per server, measured). Hermes already supervises the child (shared death
     # supervisor), so a cached package is spawned directly; a cache miss leaves npx untouched.
-    if os.path.basename(command).lower().startswith("npx"):
-        cached = _npx_cached_bin(args)
+    if os.path.basename(command).lower().startswith("npx") and _npx_cached_invocation(args) is not None:
+        # npm can select its cache through a project/user .npmrc.  Establish that effective
+        # configuration before looking at _npx; otherwise a stale platform-default cache could
+        # launch a binary that the original npx invocation would not have selected.  Both the
+        # small npm config subprocess stays off the shared MCP event loop.
+        cache_env = await asyncio.to_thread(_effective_npx_cache_env, command, env, cwd)
+        cached = (
+            await asyncio.to_thread(
+                _npx_cached_bin, args, env=cache_env, cwd=cwd,
+            )
+            if cache_env
+            else None
+        )
         if cached:
+            if cache_env is not None and env is not None and cache_env is not env:
+                # The direct launcher and its server must share npm's resolved cache value.
+                # Keep the original child environment untouched unless the direct replacement
+                # actually happens, so npx can still honor its own CLI config flags on fallback.
+                env.clear()
+                env.update(cache_env)
             direct_command, direct_args = cached
             logger.debug("MCP server '%s': using cached npx binary %s (skipping the "
                          "resident `npm exec` parent)", server_name, direct_command)
@@ -213,7 +239,7 @@ def sdk_httpx():
 def _client_session_accepts(kwarg: str) -> bool:
     """Whether this SDK's ``ClientSession.__init__`` takes ``kwarg`` (older SDKs lack
     ``message_handler`` and ``logging_callback``)."""
-    if not _MCP_AVAILABLE:
+    if not _MCP_AVAILABLE or ClientSession is None:
         return False
     try:
         return kwarg in inspect.signature(ClientSession).parameters
@@ -532,11 +558,14 @@ def _spawn_death_supervisor():
     """Start the shared supervisor, or None if it cannot be started."""
     import subprocess
     supervisor = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp_death_supervisor.py")
+    getpgid = getattr(os, "getpgid", None)
+    if getpgid is None:
+        return None
     try:
         # start_new_session=True is load-bearing: shutdown paths killpg this process's own group,
         # which would kill the supervisor before it could reap anything.
         return subprocess.Popen(
-            [sys.executable, supervisor, "--parent-pgid", str(os.getpgid(0))],
+            [sys.executable, supervisor, "--parent-pgid", str(getpgid(0))],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=_get_mcp_stderr_log(),
             start_new_session=True, close_fds=True, text=True)
     except Exception:
@@ -637,14 +666,9 @@ def _update_death_supervisor(verb: str, pgids) -> None:
 
 
 def _mcp_registry_scope() -> Optional[str]:
-    """Registry scope for MCP registrations: a profile overlay when this process serves profiles,
-    else None. Under ``gateway.multiplex_profiles`` every turn runs scoped; a process that serves a
-    routed profile through the HERMES_HOME override (dashboard/desktop backend, per-profile cron
-    ticker) is a multiplexer too, even with the flag off — keying its connections by the bare name
-    would hand one profile's credentialed connection to every other served profile (#111151).
-    Single-profile processes (no override, or an override naming their own home) keep bare names."""
-    from agent.secret_scope import serves_routed_profile
-    if not serves_routed_profile():
+    """Registry scope for MCP registrations: a profile overlay under a multiplexer, else None."""
+    from agent.secret_scope import is_multiplex_active
+    if not is_multiplex_active():
         return None
     from tools.registry import registry
     return registry.current_scope_key()

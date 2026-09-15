@@ -1,5 +1,3 @@
-import type { ConnectionRequestPayload } from '@hermes/shared'
-
 export interface ConfigFieldSchema {
   category?: string
   description?: string
@@ -415,7 +413,7 @@ export interface HermesConfig {
     timestamps?: boolean
   }
   desktop?: {
-    font_family?: string
+    automatic_update_checks?: boolean
     repo_scan_enabled?: boolean
     repo_scan_roots?: string[]
     repo_scan_exclude_paths?: string[]
@@ -631,7 +629,7 @@ export interface SessionMessagesResponse {
   session_id: string
 }
 
-export interface SessionResumeResult {
+export interface SessionResumeResponse {
   /** Present when the backend found a fresh crash-interrupted turn and
    *  scheduled its automatic continuation; the turn arrives as a normal
    *  message.start stream right after this resume. */
@@ -676,13 +674,17 @@ export interface SessionResumeResult {
     request_id?: string
     smart_denied?: boolean
   }
-  // Server→client requests still unanswered for this session (clarify, sudo,
-  // vault prompts, …). The shared channel re-delivers them to the request
-  // handlers before this response resolves; listed here so resume can tell an
-  // authoritative "nothing pending" from a request the handler declined.
-  open_requests?: Array<{ id: string; method: string; params: Record<string, unknown> & { session_id?: string } }>
-  // The connection operation still blocking this session; resume restores the backend-owned card projection.
-  pending_connection?: ConnectionRequestPayload
+  // The clarify question still blocking this session, if any. Same replay
+  // class as pending_approval: emitted-while-detached prompts are restored
+  // from the resume snapshot instead of being lost until server-side timeout.
+  pending_clarify?: {
+    answers?: Record<string, unknown>
+    choices?: null | string[]
+    multi_select?: boolean
+    question?: string
+    questions?: unknown
+    request_id?: string
+  }
   info?: SessionRuntimeInfo
   message_count: number
   messages: SessionMessage[]
@@ -790,15 +792,6 @@ export interface ContextUsageCategory {
   tokens: number
 }
 
-export interface ContextFileSource {
-  label: string
-  path: string
-  chars: number
-  est_tokens: number
-  loaded: boolean
-  status: string
-}
-
 export interface ContextBreakdown {
   categories: ContextUsageCategory[]
   context_max: number
@@ -808,7 +801,6 @@ export interface ContextBreakdown {
   context_used: number
   estimated_total: number
   model?: string
-  context_files?: ContextFileSource[]
 }
 
 export interface AnalyticsDailyEntry {
@@ -1639,6 +1631,8 @@ export interface MemoryStatusResponse {
   active: string
   providers: { name: string; description: string; configured: boolean }[]
   builtin_files: { memory: number; user: number }
+  /** Resolved local paths for opening the existing built-in files. */
+  builtin_paths?: { memory?: string; user?: string }
 }
 
 /** `GET /api/curator` — background skill-curator status. */

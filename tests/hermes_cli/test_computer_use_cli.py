@@ -46,8 +46,7 @@ def test_computer_use_rejects_removed_browser_approve_command() -> None:
     result = _run("browser-approve", "--pid", "123")
 
     assert result.returncode == 2
-    assert "'browser-approve' is not a `hermes computer-use` command" in result.stderr
-    assert "choose from" not in result.stderr
+    assert "invalid choice: 'browser-approve'" in result.stderr
 
 
 def test_computer_use_status_returns_zero_for_compatible_driver(

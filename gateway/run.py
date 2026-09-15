@@ -189,15 +189,18 @@ def hygiene_compaction_recovered(
 
 def _hygiene_compression_timeout_message(
     *, total_exhausted: bool, elapsed: float, idle_timeout: float, progress_observed: bool) -> str:
-    """Describe the host timeout that actually ended hygiene compression. Chat users cannot edit
-    model config, so the copy names /compress, /new and `hermes doctor`, never a config key or the
-    raw second counts (those stay in the gateway log)."""
-    lead = (
-        "⚠️ Shortening the conversation history took too long, so I skipped it and kept "
-        "everything as-is. Run /compress to try again or /new to start fresh.")
+    """Describe the host timeout that actually ended hygiene compression."""
     if total_exhausted:
-        return lead
-    return lead + " If this keeps happening, run `hermes doctor` on the host."
+        progress = " after summary output was observed" if progress_observed else ""
+        return (
+            "⚠️ Context compression reached its total ceiling after "
+            f"{elapsed:.1f}s{progress}. No messages were dropped — continuing "
+            "without compression. Run /compress to retry or /reset for a clean session.")
+    return (
+        f"⚠️ Context compression timed out after {idle_timeout:.1f}s with no "
+        "output from the summary model. No messages were dropped — continuing "
+        "without compression. Run /compress to retry, /reset for a clean "
+        "session, or check your auxiliary.compression model configuration.")
 
 
 def _cached_agent_for_hygiene(gateway, session_key: str):
@@ -559,44 +562,30 @@ def _redact_approval_command(cmd: "str | None") -> str:
 def _format_exec_approval_fallback(
     command: str, description: str, command_prefix: str, *, allow_permanent: bool = True,
     allow_session: bool = True, smart_denied: bool = False) -> str:
-    """Render the text fallback from approval capabilities, not platform names. Same words as
-    the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
-    steps a surface without buttons needs."""
-    from gateway.platforms.base_exec_approval import (
-        EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
+    """Render the text fallback from approval capabilities, not platform names."""
     cmd_preview = command[:200] + "..." if len(command) > 200 else command
     heading = ("⚠️ **Smart DENY — owner override for one operation:**" if smart_denied
-               else f"⚠️ **{EA_HEADER_TEXT}**")
+               else "⚠️ **Dangerous command requires approval:**")
 
-    choices = [f"Reply `{command_prefix}approve` to run it once"]
+    choices = [f"Reply `{command_prefix}approve` to execute this one operation"]
     if not smart_denied and allow_session:
-        choices.append(f"`{command_prefix}approve session` to allow this pattern for the rest of this session")
+        choices.append(f"`{command_prefix}approve session` to approve this pattern for the session")
         if allow_permanent:
-            choices.append(f"`{command_prefix}approve always` to allow it permanently")
+            choices.append(f"`{command_prefix}approve always` to approve permanently")
     choices.append(f"`{command_prefix}deny` to cancel")
     return (
-        f"{heading}\n```\n{cmd_preview}\n```\n{EA_REASON_LABEL_TEXT}: {description}\n\n"
-        + ", ".join(choices[:-1]) + f", or {choices[-1]}.\n"
-        + format_approval_deadline_line(approval_timeout_seconds()))
+        f"{heading}\n```\n{cmd_preview}\n```\nReason: {description}\n\n"
+        + ", ".join(choices[:-1]) + f", or {choices[-1]}.")
 
-# Ordered: auth beats policy beats rate-limit beats connection; first match wins. Copy names the
-# slash command the chat user can run; raw provider text stays in the gateway log (`hermes logs`).
+# Ordered: auth beats policy beats rate-limit beats connection; first match wins.
 _PROVIDER_ERROR_REPLIES = (
-    (_GATEWAY_AUTH_ERROR_RE, "⚠️ Sign-in to the AI model service failed. Use /login to sign in again, "
-                             "or ask whoever runs this bot to run `hermes doctor` on the host."),
-    (_GATEWAY_PROVIDER_POLICY_RE, "⚠️ The AI model service rejected this request. Try rephrasing your "
-                                  "message, or use /model to switch models."),
-    (_GATEWAY_RATE_LIMIT_RE, "⏱️ The AI model service is rate-limiting requests. Wait a moment, then use /retry."),
-    (_GATEWAY_CONNECTION_ERROR_RE, "⚠️ The AI model service isn't reachable right now — the configured model "
-                                   "endpoint is not running or is unreachable. Wait a moment and use /retry; "
-                                   "if it persists, run `hermes doctor` on the host."))
-
-
-# Shared by the failed-turn normalizer and ``run_turn._hmwa_agent_error_reply``; canonical
-# commands (/compress, /new) — the /compact and /reset aliases are absent from /help.
-_CONTEXT_OVERFLOW_REPLY = (
-    "⚠️ This conversation has grown too long for me to read all at once. "
-    "Use /compress to shorten the history, or /new to start a fresh conversation.")
+    (_GATEWAY_AUTH_ERROR_RE, "⚠️ Provider authentication failed. Check the configured credentials; "
+                             "raw provider details are in the gateway logs."),
+    (_GATEWAY_PROVIDER_POLICY_RE, "⚠️ The model provider rejected the request. I kept the raw provider "
+                                  "error out of chat; check gateway logs for details or try rephrasing."),
+    (_GATEWAY_RATE_LIMIT_RE, "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."),
+    (_GATEWAY_CONNECTION_ERROR_RE, "⚠️ The model server is not responding — it looks like the configured "
+                                   "model endpoint is not running or is unreachable."))
 
 
 def _gateway_provider_error_reply(text: str) -> str:
@@ -605,8 +594,8 @@ def _gateway_provider_error_reply(text: str) -> str:
         if pattern.search(text):
             return reply
     return (
-        "⚠️ The AI model service kept failing. Use /retry to try again, or /model to switch "
-        "models. Details are in the gateway log (`hermes logs`).")
+        "⚠️ The model provider failed after retries. I kept raw provider details "
+        "out of chat; check gateway logs for diagnostics.")
 
 
 # Provider/API failure envelope preambles (not ordinary assistant prose), anchored at line start.
@@ -786,19 +775,16 @@ def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> "str | N
     return None
 
 
-def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_mod) -> tuple[str, bool]:
-    """Resolve a clarify prompt: send disposition, then the bounded wait.
-
-    Returns ``(response, answered)``. ``answered`` is the only signal that a user reply arrived;
-    callers must not infer it from the text (a real answer may start with '[' like a sentinel)."""
+def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_mod) -> str:
+    """Resolve a clarify prompt: send disposition, then the bounded wait."""
     abort = _clarify_send_disposition(fut, session_key=session_key, clarify_mod=clarify_mod)
     if abort is not None:
-        return abort, False
+        return abort
     timeout = clarify_mod.get_clarify_timeout()
     response = clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
     if response is None or response == "":
-        return f"[user did not respond within {int(timeout / 60)}m]", False
-    return response, True
+        return f"[user did not respond within {int(timeout / 60)}m]"
+    return response
 
 
 def _resolve_progress_thread_id(
@@ -2922,23 +2908,20 @@ def _format_concise_process_notification(
     """One-line completion message for ``concise`` display mode; failure appends a short output tail."""
     ok = exit_code in {0, None}
     icon = "✅" if ok else "❌"
-    parts = [f"{icon} Background task {'finished' if ok else 'failed'}"]
+    verb = "finished" if ok else f"failed (exit {exit_code})"
+    parts = [f"{icon} Background task {verb}"]
     short_cmd = _shorten_command_for_display(command)
     if short_cmd:
         parts.append(f"— `{short_cmd}`")
-    details = []
     if isinstance(duration_seconds, (int, float)) and duration_seconds >= 0:
         secs = int(duration_seconds)
         if secs >= 3600:
-            details.append(f"{secs // 3600}h {(secs % 3600) // 60}m")
+            dur = f"{secs // 3600}h {(secs % 3600) // 60}m"
         elif secs >= 60:
-            details.append(f"{secs // 60}m {secs % 60}s")
+            dur = f"{secs // 60}m {secs % 60}s"
         else:
-            details.append(f"{secs}s")
-    if not ok:
-        details.append(f"exit {exit_code}")
-    if details:
-        parts.append(f"({', '.join(details)})")
+            dur = f"{secs}s"
+        parts.append(f"({dur})")
     text = " ".join(parts)
     if not ok and output:
         tail_lines = [ln for ln in output.strip().splitlines() if ln.strip()][-5:]
@@ -2946,9 +2929,7 @@ def _format_concise_process_notification(
         if len(tail) > 500:
             tail = tail[-500:]
         if tail:
-            text += f". Last output:\n```\n{tail}\n```"
-    if not ok:
-        text += "\nAsk me to rerun it or show the full log."
+            text += f"\n```\n{tail}\n```"
     return text
 
 
@@ -3046,13 +3027,12 @@ def _normalize_empty_agent_response(
                 "turn was stopped to protect your conversation history. "
                 "Your message should already be saved — please send it again in a moment.")
         if is_overflow:
-            return _CONTEXT_OVERFLOW_REPLY
-        # Raw exception text (class names, JSON bodies, URLs) stays in the gateway log.
-        logger.warning("Agent turn failed; reply sanitized for chat. Detail: %s", str(error_detail)[:500])
+            return (
+                "⚠️ Session too large for the model's context window.\n"
+                "Use /compact to compress the conversation, or /reset to start fresh.")
         return (
-            "⚠️ Something went wrong and I couldn't finish this reply. Use /retry to try again, "
-            "or /new to start a fresh conversation. Technical details are in the gateway log "
-            "(`hermes logs`).")
+            f"The request failed: {str(error_detail)[:300]}\n"
+            "Try again or use /reset to start a fresh session.")
 
     api_calls = int(agent_result.get("api_calls", 0) or 0)
     if agent_result.get("interrupted"):
@@ -3081,24 +3061,8 @@ def _normalize_empty_agent_response(
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
             return ""
         if agent_result.get("partial"):
-            # ``error`` mirrors the loop's own final text (curated, e.g. "Response truncated due to
-            # output length limit") and is kept; a raw provider envelope goes to the log instead.
-            err = str(agent_result.get("error") or "processing incomplete")
-            # A loop site code (truncated, context_overflow, ...) already wrote the full
-            # what-happened / what-to-do sentence: deliver it verbatim. Wrapping it would cut it
-            # mid-sentence at 200 chars and append a second, conflicting set of instructions.
-            from agent.turn_failure_copy import SITE_FAILURE_CODES
-            if (str(agent_result.get("failure_reason") or "") in SITE_FAILURE_CODES
-                    and err.strip() and not _looks_like_gateway_provider_error(err)):
-                return err if err.startswith("⚠️") else f"⚠️ {err}"
-            if _looks_like_gateway_provider_error(err):
-                logger.warning("Agent turn ended partially; reply sanitized for chat. Detail: %s", err[:500])
-                reason = ""
-            else:
-                reason = f": {err[:200]}"
-            return (
-                f"⚠️ I had to stop before finishing{reason}. Use /retry to try again, or /compress "
-                "if this conversation has grown very long.")
+            err = agent_result.get("error", "processing incomplete")
+            return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
         return (
             "⚠️ Processing completed but no response was generated. "
             "This may be a transient error — try sending your message again.")
@@ -4583,7 +4547,6 @@ def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
 
 def _start_gateway_housekeeping(
     stop_event: threading.Event, adapters=None, loop=None, interval: int = 60, cron_provider=None, runner=None,
-    cron_thread=None,
 ):
     """Background thread for gateway-only periodic chores (NOT cron). Separate from the cron trigger
     so chores run under any ``CronScheduler`` provider (external scale-to-zero has no 60s loop).
@@ -4601,10 +4564,6 @@ def _start_gateway_housekeeping(
         (60, "Paste sweep", _housekeeping_paste_sweep)]
     if cron_provider is not None:
         chores.append((5, "Misfire catch-up sweep", lambda: _housekeeping_misfire_catch_up(cron_provider, adapters, loop)))
-    if cron_thread is not None:
-        # The ticker's own guards keep its loop alive; this is the outer layer for a thread that has
-        # already ended (#111010). Runs every tick so the outage is bounded by one housekeeping interval.
-        chores.append((1, "Cron ticker supervisor", cron_thread.restart_if_dead))
     chores += [
         (60, "Curator tick", _housekeeping_curator),
         (60, "Sync pull tick", _housekeeping_skill_sync),
@@ -4707,6 +4666,19 @@ def _gateway_stderr_formatter() -> logging.Formatter:
     """Return the redacting formatter used by the gateway stderr stream."""
     from agent.redact import RedactingFormatter
     return RedactingFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+
+def _build_gateway_stderr_handler(
+    level: int, *, stream=None
+) -> logging.StreamHandler:
+    """Build gateway stderr with the same routine-noise policy as file logs."""
+    from hermes_logging import _RoutineTransportNoiseFilter, _safe_stderr
+
+    handler = logging.StreamHandler(stream if stream is not None else _safe_stderr())
+    handler.setLevel(level)
+    handler.setFormatter(_gateway_stderr_formatter())
+    handler.addFilter(_RoutineTransportNoiseFilter())
+    return handler
 
 
 # ownership guard inserted below (PR #93084)
@@ -4961,9 +4933,7 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
     # Optional stderr handler from -v/-q: None (quiet) = none; 0 = WARNING; 1 = INFO; 2+ = DEBUG.
     if verbosity is not None:
         _stderr_level = {0: logging.WARNING, 1: logging.INFO}.get(verbosity, logging.DEBUG)
-        _stderr_handler = logging.StreamHandler(_safe_stderr())
-        _stderr_handler.setLevel(_stderr_level)
-        _stderr_handler.setFormatter(_gateway_stderr_formatter())
+        _stderr_handler = _build_gateway_stderr_handler(_stderr_level)
         root = logging.getLogger()
         root.addHandler(_stderr_handler)
         if _stderr_level < root.level:  # so DEBUG records can reach the handler
@@ -5008,7 +4978,10 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
             def _log_context() -> None:
                 # The most useful line for "gateway keeps dying" tickets.
                 from gateway.shutdown_forensics import format_context_for_log
-                logger.warning("Shutdown context: %s", format_context_for_log(_shutdown_ctx))
+                logger.log(
+                    logging.INFO if planned_takeover or planned_stop else logging.WARNING,
+                    "Shutdown context: %s", format_context_for_log(_shutdown_ctx),
+                )
 
             def _diagnostic() -> None:
                 # Heavyweight (ps auxf, pstree, dmesg), detached so it finishes even if our cgroup is torn
@@ -5154,10 +5127,9 @@ def _start_gateway_start_cron_and_housekeeping(runner):
     if isinstance(cron_provider, InProcessCronScheduler):
         cron_start_kwargs["can_dispatch"] = lambda: not (
             runner._draining or runner._external_drain_active)
-    # Supervised: a ticker that dies without a stop request is respawned by housekeeping (#111010).
-    from cron.scheduler_thread import SupervisedTickerThread
-    cron_thread = SupervisedTickerThread(
-        cron_provider.start, args=(cron_stop,), kwargs=cron_start_kwargs, stop_event=cron_stop)
+    cron_thread = threading.Thread(
+        target=cron_provider.start, args=(cron_stop,), kwargs=cron_start_kwargs, daemon=True,
+        name="cron-scheduler")
     cron_thread.start()
 
     # External providers fire over loopback HTTP to THIS process's api_server; if it never came up (usually
@@ -5182,7 +5154,7 @@ def _start_gateway_start_cron_and_housekeeping(runner):
     housekeeping_thread = threading.Thread(
         target=_start_gateway_housekeeping, args=(cron_stop,),
         kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop(),
-                "cron_provider": cron_provider, "runner": runner, "cron_thread": cron_thread},
+                "cron_provider": cron_provider, "runner": runner},
         daemon=True, name="gateway-housekeeping")
     housekeeping_thread.start()
     return cron_stop, cron_provider, cron_thread, housekeeping_thread
@@ -5190,7 +5162,7 @@ def _start_gateway_start_cron_and_housekeeping(runner):
 
 async def _start_gateway_shutdown_tail(
     runner, _control_server, cron_stop: threading.Event, cron_provider,
-    cron_thread: Any, housekeeping_thread: threading.Thread,
+    cron_thread: threading.Thread, housekeeping_thread: threading.Thread,
     _planned_stop_watcher_stop: threading.Event, _planned_stop_watcher_thread: threading.Thread,
     _signal_initiated_shutdown: list) -> bool:
     """Post-``wait_for_shutdown`` teardown; returns the process exit verdict (True = exit 0)."""

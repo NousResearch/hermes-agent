@@ -6,6 +6,7 @@ import contextlib
 import os
 import threading
 import time
+import uuid
 from collections import Counter
 from collections.abc import Iterator, Mapping
 from dataclasses import replace
@@ -93,6 +94,7 @@ class HostedRoomService:
             transport_resolver=self._resolve_member_transport, turn_lock=self._turn_lock,
             prepare_room=self.prepare_room, publish_terminal=self.publish_terminal,
             pending_action=self._set_pending_action,
+            profile_available=lambda profile: profile in self.local_profiles(),
             poll_interval_seconds=_HOSTED_ROOM_IDLE_FALLBACK_SECONDS,
             active_poll_interval_seconds=_HOSTED_ROOM_ACTIVE_POLL_SECONDS,
             turn_timeout_seconds=_hosted_room_turn_timeout_seconds())
@@ -301,12 +303,122 @@ class HostedRoomService:
             self.db_path, room_id=room_id, member_id=member_id, status=status)
 
     def _set_pending_action(
-        self, room_id: str, member_id: str, action: Mapping[str, Any] | None) -> None:
+        self,
+        room_id: str,
+        member_id: str,
+        action: Mapping[str, Any] | None,
+    ) -> None:
+        key = (room_id, member_id)
+        is_peer = key in self.peer_routes
+        if action is None:
+            if not is_peer:
+                driver.clear_member_approval_requests(
+                    self.db_path,
+                    room_id=room_id,
+                    member_id=member_id,
+                )
+            with self._policy_lock:
+                self._pending_actions.pop(key, None)
+            return
+
+        durable_action = {**action, "member_id": member_id}
+        if is_peer:
+            # Peer approvals remain scoped to their remote receipt and are
+            # intentionally excluded from the local task foreign key table.
+            with self._policy_lock:
+                self._pending_actions[key] = durable_action
+            return
+
+        task_id = str(action.get("task_id") or "")
+        execution_generation = int(action.get("execution_generation") or 0)
+        request_id = str(action.get("request_id") or "")
+        task = next(
+            (
+                candidate
+                for candidate in driver.list_tasks(
+                    self.db_path,
+                    room_id=room_id,
+                )
+                if candidate["identity"].task_id == task_id
+                and int(candidate.get("execution_generation") or 0)
+                == execution_generation
+            ),
+            None,
+        )
+        if task is None:
+            raise driver.InvalidTaskTransitionError(
+                "approval request task is unavailable"
+            )
+        identity = task["identity"]
+
+        existing = next(
+            (
+                request
+                for request in driver.list_pending_approval_requests(
+                    self.db_path,
+                    room_id=room_id,
+                )
+                if request["identity"] == identity
+                and int(request["execution_generation"])
+                == execution_generation
+                and request["member_id"] == member_id
+                and request["request_id"] == request_id
+            ),
+            None,
+        )
+        if existing is None:
+            # A genuinely newer request retires the previous member-scoped
+            # callback. Re-observing the same request must preserve any durable
+            # dashboard decision until the session owner acknowledges it.
+            driver.clear_member_approval_requests(
+                self.db_path,
+                room_id=room_id,
+                member_id=member_id,
+            )
+
+        if existing is None:
+            request = driver.publish_approval_request(
+                self.db_path,
+                identity,
+                execution_generation=execution_generation,
+                member_id=member_id,
+                request_id=request_id,
+                session_id=str(action.get("session_id") or ""),
+                action=durable_action,
+                clock=time.time,
+            )
+        else:
+            # The request id is immutable. A later observation can include
+            # richer transient metadata, but it must not mutate the durable
+            # approval row or erase the dashboard decision already recorded.
+            request = existing
         with self._policy_lock:
-            if action is None:
-                self._pending_actions.pop((room_id, member_id), None)
-            else:
-                self._pending_actions[(room_id, member_id)] = {**action, "member_id": member_id}
+            self._pending_actions[key] = durable_action
+        choice = request.get("choice")
+        if choice not in {"once", "deny"}:
+            return
+        result = self.rpc.approve(
+            session_id=str(request["session_id"]),
+            request_id=str(request["request_id"]),
+            choice=str(choice),
+        )
+        if not isinstance(result, Mapping) or not bool(result.get("resolved")):
+            return
+        if not driver.mark_approval_consumed(
+            self.db_path,
+            identity,
+            execution_generation=int(request["execution_generation"]),
+            member_id=member_id,
+            request_id=str(request["request_id"]),
+            choice=str(choice),
+            clock=time.time,
+        ):
+            raise RuntimeError(
+                "room approval decision changed before acknowledgement"
+            )
+        with self._policy_lock:
+            self._pending_actions.pop(key, None)
+        self.runtime.wakeup()
 
     def _rotate_route_grant(
         self, room_id: str, member_id: str, grant: str, catalog: GatewayRoomCatalog | None = None
@@ -364,12 +476,26 @@ class HostedRoomService:
                 raise RuntimeError("hosted room replay cursor did not advance")
             cursor = next_cursor
 
+    def _append_plan(
+        self,
+        room_id: str,
+        plan: discussion.PublicationPlan,
+        *,
+        expected_latest_seq: int | None = None,
+    ) -> list[dict[str, Any]]:
+        return hosted_rooms.append_events(
+            self.db_path,
+            events=[event.append_kwargs(room_id) for event in plan.events],
+            allow_terminal_recovery=True,
+            expected_latest_seq=expected_latest_seq,
+        )
     def _policy_snapshot(self, room: Mapping[str, Any]) -> PolicySnapshot:
         return self.policy_checkpoint.snapshot(
             room_id=str(room["room_id"]), latest_seq=int(room["latest_seq"]))
 
     def _publish_terminal_tasks(self, room: Mapping[str, Any]) -> bool:
         changed, room_id, local_profiles = False, str(room["room_id"]), self.local_profiles()
+        expected_latest_seq = int(room["latest_seq"])
         for task in self._list_tasks(room_id, _TERMINAL_STATUSES):
             status, execution_generation = task["status"], int(task["execution_generation"])
             if self.policy_checkpoint.publication_exists(
@@ -384,8 +510,10 @@ class HostedRoomService:
                 room, task_events, plan, status=status, result=task.get("result"),
                 execution_generation=execution_generation if status == "deferred" else None,
                 local_profiles=local_profiles)
-            for event in publication.events:
-                hosted_rooms.append_event(self.db_path, **event.append_kwargs(room_id))
+            appended = self._append_plan(
+                room_id, publication, expected_latest_seq=expected_latest_seq)
+            expected_latest_seq = max(
+                [expected_latest_seq, *(int(event["seq"]) for event in appended)])
             changed = True
         return changed
 
@@ -393,21 +521,96 @@ class HostedRoomService:
         self, room: Mapping[str, Any], decision: discussion.DiscussionDecision) -> None:
         if decision.discussion_event_id is None:
             return
-        gateway_id, epoch = _authority(room)
-        hosted_rooms.append_event(
-            self.db_path, room_id=str(room["room_id"]),
-            event_id=f"dactivity:{decision.discussion_event_id}:{decision.reason}",
-            kind="room.activity", actor={"kind": "gateway", "id": gateway_id},
-            payload={
-                "status": decision.status, "reason_code": decision.reason,
-                "thread_id": decision.thread_id,
-                "discussion_event_id": decision.discussion_event_id},
-            authority_gateway_id=gateway_id, authority_epoch=epoch)
+        hosted_rooms.append_events(
+            self.db_path,
+            events=[
+                {
+                    "room_id": str(room["room_id"]),
+                    "event_id": (
+                        f"dactivity:{decision.discussion_event_id}:{decision.reason}"
+                    ),
+                    "kind": "room.activity",
+                    "actor": {
+                        "kind": "gateway",
+                        "id": str(room["authority_gateway_id"]),
+                    },
+                    "payload": {
+                        "status": decision.status,
+                        "reason_code": decision.reason,
+                        "thread_id": decision.thread_id,
+                        "discussion_event_id": decision.discussion_event_id,
+                    },
+                    "authority_gateway_id": str(room["authority_gateway_id"]),
+                    "authority_epoch": int(room["authority_epoch"]),
+                }
+            ],
+            expected_latest_seq=int(room["latest_seq"]),
+        )
+
+    def _finish_room_demotion(self, intent: Mapping[str, Any]) -> dict[str, Any]:
+        from gateway.hosted_room_replicas import demote_room
+
+        room_id = str(intent["room_id"])
+        gateway_id = str(intent["gateway_id"])
+        authority_epoch = int(intent["authority_epoch"])
+        stopped_locally = True
+        try:
+            self.stop_room(
+                room_id,
+                cancel_id=str(intent["cancel_id"]),
+                require_acknowledged=True,
+            )
+        except hosted_rooms.AuthorityConflictError:
+            # Another process may have completed the same durable intent after
+            # this runtime read it. The replica primitive verifies that the
+            # current lineage exactly matches the intended target.
+            stopped_locally = False
+        if stopped_locally:
+            room = hosted_rooms.room_state(
+                self.db_path,
+                room_id=room_id,
+            )
+            if (
+                str(room["authority_gateway_id"]) == gateway_id
+                and int(room["authority_epoch"]) == authority_epoch
+            ):
+                try:
+                    published = self._publish_terminal_tasks(room)
+                except hosted_rooms.AuthorityConflictError:
+                    # A competing process crossed the authority CAS after our
+                    # old-lineage snapshot. The replica primitive below still
+                    # verifies that it reached this exact intended target.
+                    pass
+                else:
+                    if published:
+                        refreshed = hosted_rooms.room_state(
+                            self.db_path,
+                            room_id=room_id,
+                        )
+                        self._policy_snapshot(refreshed)
+        return demote_room(
+            self.db_path,
+            room_id=room_id,
+            observed_gateway_id=str(intent["observed_gateway_id"]),
+            observed_epoch=int(intent["observed_epoch"]),
+        )
 
     def prepare_room(self, binding: HostedRoomBinding) -> None:
         with self._policy_lock:
-            room = self._room(binding.room_id)
-            snapshot = self._policy_snapshot(room)  # sync() side effect feeds the publish below
+            pending_demotion = driver.pending_room_demotion(
+                self.db_path,
+                room_id=binding.room_id,
+            )
+            if pending_demotion is not None:
+                self._finish_room_demotion(pending_demotion)
+                return
+            room = hosted_rooms.room_state(self.db_path, room_id=binding.room_id)
+            driver.reconcile_stop_fenced_inactive_tasks(
+                self.db_path,
+                room_id=binding.room_id,
+                clock=self.runtime.clock,
+            )
+            snapshot = self._policy_snapshot(room)
             if self._publish_terminal_tasks(room):
                 room = self._room(binding.room_id)
                 snapshot = self._policy_snapshot(room)
@@ -455,7 +658,7 @@ class HostedRoomService:
         event = hosted_rooms.append_event(
             self.db_path, room_id=room_id, event_id=event_id, kind="message.user",
             actor={"kind": "user", "id": "desktop"}, payload=normalized,
-            authority_gateway_id=gateway_id, authority_epoch=epoch)
+            authority_gateway_id=gateway_id, authority_epoch=epoch, require_open_admissions=True)
         binding = next((b for b in self.bindings() if b.room_id == room_id), None)
         if binding is None:
             raise hosted_rooms.RoomNotFoundError("hosted room not found")
@@ -466,14 +669,16 @@ class HostedRoomService:
     def stop_room(
         self, room_id: str, *, cancel_id: str, require_acknowledged: bool = False) -> int:
         gateway_id, epoch = self._owned_authority(room_id)
-        hosted_rooms.request_room_stop(
+        stop_event = hosted_rooms.request_room_stop(
             self.db_path, room_id=room_id, cancel_id=cancel_id, expected_gateway_id=gateway_id,
             expected_epoch=epoch)
+        stop_seq = int(stop_event["seq"])
         pending = 0
         with self._policy_lock:
             tasks = {
                 (task["identity"].room_id, task["identity"].task_id): task
-                for task in self._list_tasks(room_id, _STOPPABLE_STATUSES)}
+                for task in self._list_tasks(room_id, _STOPPABLE_STATUSES)
+                if int(task["payload"]["source_event_seq"]) <= stop_seq}
             for task in tasks.values():
                 own_cancel_id = (
                     task.get("status") == "stopping" and str(task.get("cancel_id") or ""))
@@ -484,6 +689,69 @@ class HostedRoomService:
             raise RuntimeError("room work is still stopping; retry deletion after Stop completes")
         self.runtime.wakeup()
         return len(tasks)
+
+    def demote_room(
+        self,
+        room_id: Any,
+        *,
+        observed_gateway_id: Any,
+        observed_epoch: Any,
+    ) -> dict[str, Any]:
+        """Stop accepted local work before committing a newer authority."""
+
+        from gateway.hosted_room_replicas import (
+            demote_room,
+            validate_demotion_observation,
+        )
+
+        with self._policy_lock:
+            room_id, observed_gateway_id, observed_epoch = (
+                validate_demotion_observation(
+                    room_id=room_id,
+                    observed_gateway_id=observed_gateway_id,
+                    observed_epoch=observed_epoch,
+                )
+            )
+            room = hosted_rooms.room_state(self.db_path, room_id=room_id)
+            current_gateway = str(room["authority_gateway_id"])
+            current_epoch = int(room["authority_epoch"])
+            local_gateway = hosted_rooms.local_authority_gateway_id()
+
+            # Preserve the primitive's idempotent/error semantics without
+            # stopping work for a rejected or already-applied observation.
+            if current_gateway != local_gateway or observed_epoch <= current_epoch:
+                return demote_room(
+                    self.db_path,
+                    room_id=room_id,
+                    observed_gateway_id=observed_gateway_id,
+                    observed_epoch=observed_epoch,
+                )
+
+            pending_demotion = driver.pending_room_demotion(
+                self.db_path,
+                room_id=room_id,
+            )
+            if pending_demotion is not None:
+                if (
+                    pending_demotion["observed_gateway_id"] != observed_gateway_id
+                    or int(pending_demotion["observed_epoch"]) != observed_epoch
+                ):
+                    raise driver.TaskConflictError(
+                        "room already has a different pending demotion intent"
+                    )
+                return self._finish_room_demotion(pending_demotion)
+
+            intent = driver.begin_room_demotion(
+                self.db_path,
+                room_id=room_id,
+                expected_gateway_id=current_gateway,
+                expected_epoch=current_epoch,
+                observed_gateway_id=observed_gateway_id,
+                observed_epoch=observed_epoch,
+                cancel_id=f"authority-demote:{observed_epoch}:{uuid.uuid4().hex}",
+                clock=time.time,
+            )
+            return self._finish_room_demotion(intent)
 
     def retry_room_task(self, room_id: str, *, task_id: str) -> dict[str, Any]:
         """Retry one uncertain or deferred task only after explicit user action."""
@@ -497,37 +765,62 @@ class HostedRoomService:
         self, room_id: str, *, member_id: str, task_id: str, execution_generation: int,
         choice: str, request_id: str | None = None) -> Mapping[str, Any]:
         """Resolve one exact local or peer approval and wake room observation."""
-        key = (room_id, member_id)
-        route, client = self.peer_routes.get(key), self.peer_clients.get(key)
-        with self._policy_lock:
-            action = self._pending_actions.get(key)
         requested_approval_id = str(request_id or "")
-
-        def matches(pending: Mapping[str, Any] | None) -> bool:
-            return pending is not None and (
-                str(pending.get("request_id") or ""), pending.get("task_id"),
-                int(pending.get("execution_generation") or 0),
-            ) == (requested_approval_id, task_id, execution_generation)
-        if not requested_approval_id or not matches(action):
+        if not requested_approval_id:
             raise RuntimeError("room approval is no longer pending")
         if choice not in {"once", "deny"}:
             raise RuntimeError("room approval choice must be once or deny")
-        approve = _hook(client, "approve_receipt")
-        if route is not None and approve is not None:
+        key = (room_id, member_id)
+        route = self.peer_routes.get(key)
+        client = self.peer_clients.get(key)
+        if route is not None:
+            with self._policy_lock:
+                action = self._pending_actions.get(key)
+            pending_approval_id = str((action or {}).get("request_id") or "")
+            if (
+                action is None or action.get("task_id") != task_id
+                or int(action.get("execution_generation") or 0) != execution_generation
+                or requested_approval_id != pending_approval_id
+            ):
+                raise RuntimeError("room approval is no longer pending")
+            approve = getattr(client, "approve_receipt", None)
+            if not callable(approve):
+                raise RuntimeError("room approval target is unavailable")
             result = approve(
                 task_id=task_id, execution_generation=execution_generation,
-                request_id=requested_approval_id, choice=choice, grant=route.grant)
+                request_id=requested_approval_id, choice=choice, grant=route.grant,
+            )
+            if result is None:
+                raise RuntimeError("room approval target is unavailable")
+            with self._policy_lock:
+                current = self._pending_actions.get(key)
+                if (
+                    current is not None
+                    and str(current.get("request_id") or "") == requested_approval_id
+                    and current.get("task_id") == task_id
+                    and int(current.get("execution_generation") or 0) == execution_generation
+                ):
+                    self._pending_actions.pop(key, None)
         else:
-            session_id = str(action.get("session_id") or "")
-            if not session_id:
-                raise RuntimeError("local room approval identity is unavailable")
-            result = self.rpc.approve(
-                session_id=session_id, request_id=requested_approval_id, choice=choice)
-        if result is None:
-            raise RuntimeError("room approval target is unavailable")
-        with self._policy_lock:
-            if matches(self._pending_actions.get(key)):
-                self._pending_actions.pop(key, None)
+            pending = next(
+                (
+                    request for request in driver.list_pending_approval_requests(
+                        self.db_path, room_id=room_id,
+                    )
+                    if request["identity"].task_id == task_id
+                    and request["execution_generation"] == execution_generation
+                    and request["member_id"] == member_id
+                    and request["request_id"] == requested_approval_id
+                ),
+                None,
+            )
+            if pending is None:
+                raise RuntimeError("room approval is no longer pending")
+            result = driver.decide_approval_request(
+                self.db_path, pending["identity"],
+                execution_generation=execution_generation, member_id=member_id,
+                request_id=requested_approval_id, choice=choice, clock=time.time,
+            )
         self.runtime.wakeup()
         return result
 
@@ -540,19 +833,44 @@ class HostedRoomService:
         tasks = driver.list_tasks(self.db_path, room_id=room_id)
         counts = Counter(str(task["status"]) for task in tasks)
         pending_actions = [
-            {"kind": "retry", "task_id": task["identity"].task_id}
-            for task in tasks if task["status"] in _RETRYABLE_STATUSES]
+            {
+                "kind": "retry",
+                "task_id": task["identity"].task_id,
+            }
+            for task in tasks
+            if task["status"] in {"indeterminate", "deferred"}
+        ]
+        pending_actions.extend(
+            {
+                **request["action"],
+                **(
+                    {"decision": request["choice"]}
+                    if request.get("choice") is not None
+                    else {}
+                ),
+            }
+            for request in driver.list_pending_approval_requests(
+                self.db_path,
+                room_id=room_id,
+            )
+        )
         with self._policy_lock:
-            pending_actions.extend(
-                dict(action) for (action_room_id, _member_id), action
-                in self._pending_actions.items() if action_room_id == room_id)
+            peer_actions = [
+                dict(action)
+                for (action_room_id, member_id), action in sorted(
+                    self._pending_actions.items(),
+                    key=lambda item: item[0],
+                )
+                if action_room_id == room_id
+                and (action_room_id, member_id) in self.peer_routes
+            ]
+        pending_actions.extend(peer_actions)
         return {
             "running": runtime["running"], "working": any(counts.get(s) for s in _LIVE_STATUSES),
             "blocked": room_id in runtime["blocked_rooms"]
             or bool(counts.get("indeterminate") or counts.get("stopping")),
             "counts": dict(counts), "pending_actions": pending_actions,
             "peer_routes": self._route_statuses(room_id)}
-
 
 class _RouteStatusPeerClient:
     """Classify scoped-auth failures without exposing route credentials."""

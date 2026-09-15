@@ -226,6 +226,9 @@ class TestMemoryEndpoints:
     def test_status_and_select(self):
         data = self.client.get("/api/memory").json()
         assert "active" in data and "providers" in data and "builtin_files" in data
+        paths = {key: value.replace("\\", "/") for key, value in data["builtin_paths"].items()}
+        assert paths["memory"].endswith("memories/MEMORY.md")
+        assert paths["user"].endswith("memories/USER.md")
 
         r = self.client.put("/api/memory/provider", json={"provider": "built-in"})
         assert r.status_code == 200 and r.json()["active"] == ""

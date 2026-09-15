@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import threading
 import time
+import traceback
 from types import SimpleNamespace
 
 import pytest
@@ -67,13 +69,30 @@ def _service(db_path, *, profiles=("default",)):
     return service, rpc
 
 
-def _wait_for(predicate, timeout=3.0):
+def _runtime_diagnostics(service, db):
+    runtime = service.runtime
+    with runtime._status_lock:
+        threads = [runtime._thread, *runtime._room_threads.values()]
+    frames = sys._current_frames()
+    stacks = "\n".join(
+        f"{thread.name}:\n{''.join(traceback.format_stack(frames[thread.ident], limit=18))}"
+        for thread in threads if thread and thread.ident in frames
+    )
+    tasks = [
+        (row["identity"].task_id, row["status"], row["execution_generation"])
+        for row in hosted_room_driver.list_tasks(db, room_id="room-1")
+    ]
+    return f"status={runtime.status()!r}; submits={service.rpc.submits!r}; tasks={tasks!r}\n{stacks}"
+
+
+def _wait_for(predicate, timeout=3.0, diagnostics=None):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
             return
         time.sleep(0.01)
-    raise AssertionError("condition did not settle before timeout")
+    detail = diagnostics() if diagnostics else ""
+    raise AssertionError(f"condition did not settle before timeout\n{detail}")
 
 
 @pytest.mark.asyncio
@@ -91,7 +110,8 @@ async def test_messaging_gateway_supervisor_starts_without_dashboard(monkeypatch
     def get_service():
         return service if state["running"] else None
 
-    def start_service():
+    def start_service(*, start_allowed=None):
+        assert start_allowed is not None and start_allowed.is_set()
         state["starts"] += 1
         state["running"] = True
         return service
@@ -118,7 +138,8 @@ async def test_dead_room_worker_is_restarted_by_gateway_task_supervision(monkeyp
 
     starts = {"count": 0}
 
-    def fail_start():
+    def fail_start(*, start_allowed=None):
+        assert start_allowed is not None and start_allowed.is_set()
         starts["count"] += 1
         raise RuntimeError("worker unavailable")
 
@@ -182,7 +203,8 @@ def test_gateway_restart_resumes_queued_room_for_multiplexed_profile(tmp_path):
                 for event in hosted_rooms.read_events(
                     db, room_id="room-1", since_seq=0
                 )["events"]
-            )
+            ),
+            diagnostics=lambda: _runtime_diagnostics(resumed, db),
         )
     finally:
         assert resumed.stop(timeout=5.0)

@@ -26,7 +26,7 @@ jobs:
     timeout-minutes: 50
     environment: trusted-automation
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Get GitHub App token
         id: app-token
@@ -35,7 +35,7 @@ jobs:
           client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
@@ -49,21 +49,11 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: python scripts/build_skills_index.py
 
-      # Plugin-catalog star counts follow the same rule as the index: GitHub is consulted
-      # only here, on the schedule (one GraphQL request for every catalog repo), and docs
-      # deploys reuse the artifact / live copy without touching the API.
-      - name: Probe plugin catalog stars
-        env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: python website/scripts/fetch-plugin-stars.py --probe
-
       - name: Upload index artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: skills-index
-          path: |
-            website/static/api/skills-index.json
-            website/static/api/plugin-stars.json
+          path: website/static/api/skills-index.json
           retention-days: 7
 
   # Re-trigger the docs deploy so the refreshed index lands on the live site.
@@ -80,7 +70,7 @@ jobs:
       # (./.github/actions/get-app-token) and cannot resolve without the repo
       # checked out. `build-index` above already does this; this job did not,
       # so the scheduled deploy re-trigger never fired.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Get GitHub App token
         id: app-token

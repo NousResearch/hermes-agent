@@ -2,8 +2,8 @@ import type { UsageModelData } from '@hermes/shared/billing'
 import type {
   GatewayEvent,
   GatewayEventName,
-  InflightTurn,
-  TranscriptMessage,
+  GatewayTranscriptMessage,
+  SessionInflightTurn,
   Usage
 } from '@hermes/shared/gateway-events'
 import type { HermesSkin } from '@hermes/shared/skin'
@@ -201,10 +201,10 @@ export interface SessionActiveListResponse {
 }
 
 export interface SessionActivateResponse {
-  inflight?: null | InflightTurn
+  inflight?: null | SessionInflightTurn
   info?: SessionInfo
   message_count?: number
-  messages: TranscriptMessage[]
+  messages: GatewayTranscriptMessage[]
   running?: boolean
   session_id: string
   session_key?: string
@@ -273,7 +273,7 @@ export interface SessionCompressResponse {
   before_messages?: number
   before_tokens?: number
   info?: SessionInfo
-  messages?: TranscriptMessage[]
+  messages?: GatewayTranscriptMessage[]
   removed?: number
   summary?: {
     headline?: string
@@ -316,10 +316,20 @@ export interface BackgroundStartResponse {
   task_id?: string
 }
 
-/** `clarify.lock` — one batch-clarify answer locked; `expired` when the request already ended. */
-export interface ClarifyLockResponse {
-  remaining?: string[]
-  status: 'expired' | 'ok'
+export interface ClarifyRespondResponse {
+  ok?: boolean
+}
+
+export interface ApprovalRespondResponse {
+  ok?: boolean
+}
+
+export interface SudoRespondResponse {
+  ok?: boolean
+}
+
+export interface SecretRespondResponse {
+  ok?: boolean
 }
 
 // ── Shell / clipboard / input ────────────────────────────────────────

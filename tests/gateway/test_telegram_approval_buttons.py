@@ -8,8 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.platforms.base import unauthorized_action_notice
-
 # ---------------------------------------------------------------------------
 # Ensure the repo root is importable
 # ---------------------------------------------------------------------------
@@ -295,7 +293,7 @@ class TestTelegramApprovalCallback:
                 await adapter._handle_callback_query(update, context)
 
         query.answer.assert_called_once()
-        assert query.answer.call_args[1]["text"] == unauthorized_action_notice("telegram")
+        assert "not authorized" in query.answer.call_args[1]["text"].lower()
         query.edit_message_text.assert_not_called()
         assert not (tmp_path / ".update_response").exists()
 
@@ -325,10 +323,9 @@ class TestTelegramApprovalCallback:
                 await adapter._handle_callback_query(update, context)
 
         query.answer.assert_called_once()
-        assert query.answer.call_args[1]["text"] == unauthorized_action_notice("telegram")
+        assert "not authorized" in query.answer.call_args[1]["text"].lower()
         query.edit_message_text.assert_not_called()
         assert not (tmp_path / ".update_response").exists()
         assert runner.last_source is not None
         assert runner.last_source.platform == Platform.TELEGRAM
         assert runner.last_source.user_id == "222"
-

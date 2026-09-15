@@ -742,16 +742,10 @@ class SessionMessagesMixin:
             for row in rows:
                 key = self._display_dedupe_key(row)
                 first_id[key] = min(first_id.get(key, row["id"]), row["id"])
-                keyed_rows.append((row, key))
-            updates = []
-            for row, key in keyed_rows:
-                order = first_id[key]
-                identity = self._display_identity(key)
-                if order != row["display_order"] or identity != row["display_identity"]:
-                    updates.append((order, identity, row["id"]))
+                keyed_rows.append((row["id"], key))
             conn.executemany(
                 "UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?",
-                updates)
+                [(first_id[key], self._display_identity(key), row_id) for row_id, key in keyed_rows])
             return True
 
         return bool(self._execute_write(_do))

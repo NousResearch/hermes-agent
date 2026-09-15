@@ -13,7 +13,8 @@ JSON-RPC channel every other Settings surface uses. Contracts:
   scrubbed with ``scrub_secret_from_text`` before they leave the handler.
 - ``vault.remove`` → {removed: bool}.
 - ``vault.sources`` / ``vault.source.set`` → external password-manager status and enable toggle.
-- ``vault.unlock`` / ``vault.lock`` → per-session unlock of a manager from Settings; the master
+- ``vault.unlock`` → unlock for this Settings client's transport only, never for a conversation;
+  ``vault.lock`` → explicit profile-wide revocation. The master
   password is consumed by the manager CLI through its non-interactive channel and never stored
   or logged.
 
@@ -25,23 +26,60 @@ Handlers are rebound onto server.py's globals at install time (see
 method_ctx.py) and may reference server module globals (``_ok``, ``_err``).
 """
 
-from .method_ctx import HandlerRegistry
+import threading
+
+from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
+_vault_transport_owners: dict[object, str] = {}
+_vault_transport_owners_lock = threading.Lock()
+
+
+def _vault_transport_owner() -> str | None:
+    """Server-derived Settings authority: no caller-supplied session/owner field is trusted."""
+    import uuid
+
+    transport = current_transport()
+    if transport is None:
+        return None
+    # Serialize admission with unregister_live_transport: a queued disconnected RPC cannot
+    # mint a replacement owner after its original one was revoked. Stdio owns its process.
+    with _live_transports_lock:
+        if transport is not _stdio_transport and transport not in _live_transports:
+            return None
+        with _vault_transport_owners_lock:
+            if transport not in _vault_transport_owners:
+                _vault_transport_owners[transport] = uuid.uuid4().hex
+            return _vault_transport_owners[transport]
+
+
+def _release_vault_transport_owner(transport) -> None:
+    """Disconnect revokes committed, in-flight and not-yet-started Settings unlocks."""
+    from agent.vault_backends.unlock import release_session
+
+    with _vault_transport_owners_lock:
+        owner = _vault_transport_owners.pop(transport, None)
+    if owner is not None:
+        release_session(owner, namespace="settings")
 
 
 def method(name: str):
     """``@method(name)`` with ``params.profile`` bound (home + secret scope) around the handler."""
     def deco(fn):
         def scoped(rid, params: dict) -> dict:
+            from agent.vault_backends.unlock import settings_session_scope
+
             try:
                 home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
             except FileNotFoundError as e:
                 return _err(rid, 5095, str(e))
-            if home is None:
-                return fn(rid, params)
-            with _session_profile_runtime_scope({"profile_home": str(home)}):
-                return fn(rid, params)
+            # Settings can manage external logins without a chat, but its unlock does not
+            # authorize any chat (even one using the same socket). Chats prompt separately.
+            with settings_session_scope(_vault_transport_owner()):
+                if home is None:
+                    return fn(rid, params)
+                with _session_profile_runtime_scope({"profile_home": str(home)}):
+                    return fn(rid, params)
         return _registry.method(name)(scoped)
     return deco
 
@@ -185,5 +223,5 @@ def _(rid, params: dict) -> dict:
 
 
 def register(server) -> None:
-    """Bind this module's handlers onto ``server``'s globals and registry."""
-    _registry.install(server)
+    """Bind handlers and transport-ownership helpers onto the server's globals."""
+    bind_module(globals(), server, skip=("_",))

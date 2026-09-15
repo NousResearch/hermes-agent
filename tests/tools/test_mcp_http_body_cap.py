@@ -8,6 +8,7 @@ traffic is unlimited.
 """
 
 import httpx
+import httpx2
 import pytest
 
 from tools.mcp_tool_errors import _MCP_HTTP_MAX_BODY_BYTES, _make_mcp_body_cap_transport
@@ -130,3 +131,78 @@ async def test_sse_event_split_across_chunks_counts_prefix():
             async with client.stream("GET", "http://mcp.test/sse") as resp:
                 async for _ in resp.aiter_bytes():
                     pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("httpx_mod", [httpx, httpx2], ids=["httpx", "httpx2"])
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n", b"\r"], ids=["lf", "crlf", "cr"])
+@pytest.mark.parametrize("chunk_size", [None, 1, 11], ids=["coalesced", "bytes", "split"])
+@pytest.mark.parametrize("declared_length", [False, True], ids=["streamed", "content-length"])
+async def test_sse_budget_is_independent_of_wire_chunks(httpx_mod, newline, chunk_size, declared_length):
+    # Each event is at or below 64 bytes, but arbitrary network chunking and the stream's
+    # total length must not change the per-event verdict. Include empty lines and
+    # multi-line events, with every SSE line-ending form accepted by the protocol.
+    event = b"data: one" + newline + b"data: " + b"x" * (64 - 15 - 3 * len(newline)) + newline + newline
+    assert len(event) == 64
+    mixed_event = b"data: one\rdata: two\ndata: three\r\n\r\n"
+    payload = (newline + b": keepalive" + newline + newline + event + mixed_event) * 64
+    chunks = [payload] if chunk_size is None else [payload[i:i + chunk_size] for i in range(0, len(payload), chunk_size)]
+
+    class Stream(httpx_mod.AsyncByteStream):
+        async def __aiter__(self):
+            for chunk in chunks:
+                yield chunk
+
+    async def handler(request):
+        headers = {"content-type": "Text/Event-Stream; charset=utf-8"}
+        if declared_length:
+            headers["content-length"] = str(len(payload))
+        return httpx_mod.Response(200, stream=Stream(), headers=headers)
+
+    transport = _make_mcp_body_cap_transport(httpx_mod, httpx_mod.MockTransport(handler), limit=64)
+    async with httpx_mod.AsyncClient(transport=transport) as client:
+        response = await client.get("http://mcp.test/sse")
+        assert response.content == payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("httpx_mod", [httpx, httpx2], ids=["httpx", "httpx2"])
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n", b"\r"], ids=["lf", "crlf", "cr"])
+@pytest.mark.parametrize("chunk_size", [None, 1, 11], ids=["coalesced", "bytes", "split"])
+async def test_sse_budget_rejects_one_oversized_event_after_small_events(httpx_mod, newline, chunk_size):
+    payload = (b": ok" + newline + newline) * 32
+    payload += b"data: " + b"x" * 65 + newline + newline
+    chunks = [payload] if chunk_size is None else [payload[i:i + chunk_size] for i in range(0, len(payload), chunk_size)]
+
+    class Stream(httpx_mod.AsyncByteStream):
+        async def __aiter__(self):
+            for chunk in chunks:
+                yield chunk
+
+    async def handler(request):
+        return httpx_mod.Response(200, stream=Stream(), headers={"content-type": "text/event-stream"})
+
+    transport = _make_mcp_body_cap_transport(httpx_mod, httpx_mod.MockTransport(handler), limit=64)
+    async with httpx_mod.AsyncClient(transport=transport) as client:
+        with pytest.raises(httpx_mod.ReadError, match="SSE event exceeds 64 bytes"):
+            await client.get("http://mcp.test/sse")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("httpx_mod", [httpx, httpx2], ids=["httpx", "httpx2"])
+async def test_non_sse_content_type_does_not_reset_body_budget(httpx_mod):
+    class Stream(httpx_mod.AsyncByteStream):
+        async def __aiter__(self):
+            for _ in range(32):
+                yield b"small\n\n"
+
+    async def handler(request):
+        return httpx_mod.Response(
+            200, stream=Stream(),
+            headers={"content-type": "application/x-text/event-stream"},
+        )
+
+    transport = _make_mcp_body_cap_transport(httpx_mod, httpx_mod.MockTransport(handler), limit=64)
+    async with httpx_mod.AsyncClient(transport=transport) as client:
+        with pytest.raises(httpx_mod.ReadError, match="HTTP response exceeds 64 bytes"):
+            await client.get("http://mcp.test/rpc")

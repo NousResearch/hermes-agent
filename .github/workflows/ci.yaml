@@ -15,6 +15,7 @@ name: CI
 # main-only automation uses protected environments in its own workflows.
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches: [main]
@@ -32,11 +33,12 @@ concurrency:
 jobs:
   # ─────────────────────────────────────────────────────────────────────
   # detect: run the classifier once. Every downstream job reads its outputs
-  # to decide whether to run. On push/dispatch the classifier fails open
-  # (all lanes true) so post-merge validation is never weakened.
+  # to decide whether to run. Manual runs and upstream pushes fail open,
+  # while fork pushes skip the validation that already passed on the PR.
   # ─────────────────────────────────────────────────────────────────────
   detect:
     name: Detect affected areas
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
     timeout-minutes: 1
     outputs:
@@ -57,13 +59,11 @@ jobs:
       ci_review_files: ${{ steps.classify.outputs.ci_review_files }}
       event_name: ${{ github.event_name }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Detect affected areas
         id: classify
         uses: ./.github/actions/detect-changes
         with:
-          sparse-checkout: scripts/ci/classify_changes.py
-          sparse-checkout-cone-mode: false
           github-token: ${{ github.token }}
 
   # ─────────────────────────────────────────────────────────────────────
@@ -217,6 +217,7 @@ jobs:
 
   osv-scanner:
     name: OSV scan
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.repository == 'NousResearch/hermes-agent'
     uses: ./.github/workflows/osv-scanner.yml
 
   # ─────────────────────────────────────────────────────────────────────
@@ -244,22 +245,19 @@ jobs:
       - history-check
       - contributor-check
       - uv-lockfile
+      - infographic-check
       - case-collision-check
       - lockfile-diff
       - docker-lint
       - profile-artifact-check
       - supply-chain
       - review-labels
-      # osv-scanner is deliberately NOT a dependency: osv-scanner.yml is
-      # detection-only (fail-on-vuln: false, findings go to the Security tab)
-      # and its SARIF upload trips GitHub's per-installation API rate limit
-      # during merge trains, which turned an advisory scan into a merge
-      # blocker for whole batches of unrelated PRs.
+      - osv-scanner
       # The image build runs in its own workflow (docker.yml) and reports
       # its own check. It was never required here, because it is too slow
       # to block a merge. A separate run also stops it from holding this
       # run open. That is what blocked ``gh run rerun``.
-    if: always()
+    if: always() && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.repository == 'NousResearch/hermes-agent')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -278,13 +276,16 @@ jobs:
           print(f'needs-json={json.dumps(compact)}')
           with open('$GITHUB_OUTPUT', 'a') as f:
               f.write(f'needs-json={json.dumps(compact)}\n')
-          failed = [name for name, info in needs.items() if info['result'] == 'failure']
+          blocked = [
+              name for name, info in needs.items()
+              if info['result'] not in ('success', 'skipped')
+          ]
           for name, info in sorted(needs.items()):
               result = info['result']
               icon = '✅' if result in ('success', 'skipped') else '❌'
               print(f'{icon} {name}: {result}')
-          if failed:
-              print(f'::error::{len(failed)} job(s) failed: {\", \".join(failed)}')
+          if blocked:
+              print(f'::error::{len(blocked)} job(s) did not complete: {\", \".join(blocked)}')
               sys.exit(1)
           print('All checks passed (or were skipped)')
           "
@@ -302,16 +303,16 @@ jobs:
   ci-timings:
     name: CI timing report
     needs: [all-checks-pass]
-    if: always()
+    if: always() && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.repository == 'NousResearch/hermes-agent')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Restore baseline cache (PR only)
         if: github.event_name == 'pull_request'
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ci-timings-baseline.json
           # Prefix-match: exact key will never hit (run_id differs), so
@@ -383,7 +384,7 @@ jobs:
 
       - name: Upload baseline to cache (main only)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('ci-timings-baseline.json') != ''
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ci-timings-baseline.json
           key: ci-timings-baseline-${{ github.run_id }}

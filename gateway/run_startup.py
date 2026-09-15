@@ -13,6 +13,7 @@ import faulthandler
 import logging
 import os
 import signal
+import threading
 import time
 from contextlib import suppress
 from datetime import datetime
@@ -662,14 +663,16 @@ class GatewayStartupMixin:
         return exact, fallback
 
     @staticmethod
-    def _start_hosted_room_worker_sync():
+    def _start_hosted_room_worker_sync(start_allowed: threading.Event):
         """Start the local Group Chat worker without importing the dashboard."""
         import tui_gateway.server  # noqa: F401
         from tui_gateway import methods_groups
         service = methods_groups.get_hosted_room_service()
         if service is None:
-            service = methods_groups.start_hosted_room_service()
+            service = methods_groups.start_hosted_room_service(start_allowed=start_allowed)
         if service is None:
+            if not start_allowed.is_set():
+                return None
             raise RuntimeError("Group Chat worker has no bound session backend")
         status = service.runtime.status()
         if not status.get("running") or status.get("stopping"):
@@ -677,12 +680,22 @@ class GatewayStartupMixin:
         return service
 
     async def _ensure_hosted_room_worker(self):
-        return await asyncio.to_thread(self._start_hosted_room_worker_sync)
+        start_allowed = getattr(self, "_hosted_room_start_allowed", None)
+        if start_allowed is None:
+            start_allowed = threading.Event()
+            if getattr(self, "_running", True):
+                start_allowed.set()
+            self._hosted_room_start_allowed = start_allowed
+        return await asyncio.to_thread(self._start_hosted_room_worker_sync, start_allowed)
 
     async def _hosted_room_worker_watcher(self, interval: float = 1.0) -> None:
         """Keep the room worker alive for the messaging gateway lifetime."""
         while self._running:
             await self._ensure_hosted_room_worker()
+            # Recovery can complete after shutdown's first stop observed no service.
+            if not self._running:
+                await self._stop_hosted_room_worker()
+                return
             await asyncio.sleep(interval)
 
     async def _stop_hosted_room_worker(self, timeout: float = 5.0) -> bool:
@@ -731,13 +744,11 @@ class GatewayStartupMixin:
             with _log_suppressed(logging.DEBUG, "faulthandler.enable() unavailable", exc_info=True):
                 faulthandler.enable(file=self._open_faulthandler_log(), all_threads=True)
         # SIGUSR2 stack dump to file for service managers that drop stderr; POSIX-only.
-        # chain=False: SIGUSR2's default disposition is "terminate", so chaining to it
-        # dumps the stacks and then kills the gateway the operator was trying to inspect.
         _sigusr2 = getattr(signal, "SIGUSR2", None)
         if _sigusr2 is not None and hasattr(faulthandler, "register"):
             with _log_suppressed(logging.DEBUG, "Could not set up faulthandler file logging", exc_info=True):
                 faulthandler.register(
-                    _sigusr2, file=self._open_faulthandler_log(), all_threads=True, chain=False,
+                    _sigusr2, file=self._open_faulthandler_log(), all_threads=True, chain=True,
                 )
 
     def _start_log_startup_environment(self) -> None:
@@ -893,26 +904,7 @@ class GatewayStartupMixin:
                 send_relay_policy()
         except Exception:
             logger.warning("relay adapter registration failed at gateway startup", exc_info=True)
-        GatewayStartupMixin._register_launch_profile_config_hooks()
-
-    @staticmethod
-    def _register_launch_profile_config_hooks() -> None:
-        """The launch profile's ``hooks:`` block, registered under ITS runtime scope when multiplexing.
-
-        Startup runs before any turn scope exists and ``get_secret`` fails closed outside a scope
-        while multiplexing is on, so the launch profile needs the scope secondaries already get
-        (``_start_secondary_profile_adapters``) or its ``secret_env`` targets cannot resolve.
-        """
-        from agent.secret_scope import is_multiplex_active
-        if not is_multiplex_active():
-            GatewayStartupMixin._register_config_hooks(
-                "shell-hook/webhook registration failed at gateway startup", level=logging.WARNING)
-            return
-        from gateway.run import _profile_runtime_scope
-        from hermes_constants import get_process_hermes_home
-        with _profile_runtime_scope(get_process_hermes_home()):
-            GatewayStartupMixin._register_config_hooks(
-                "shell-hook/webhook registration failed at gateway startup", level=logging.WARNING)
+        GatewayStartupMixin._register_config_hooks("shell-hook registration failed at gateway startup")
 
     @staticmethod
     def _register_config_hooks(fail_fmt: str, *fail_args, level: int = logging.DEBUG) -> None:
@@ -1180,7 +1172,8 @@ class GatewayStartupMixin:
             # Startup authority is one phase: from here on every adapter retry is non-evicting.
             self._platform_lock_takeover_on_start = False
         # A platform skipped on the primary should have been picked up by a secondary owning the token;
-        # if none did, the platform is enabled in config.yaml yet silently unserved — surface it loudly so
+        # if none did it is enabled yet silently unserved — say so loudly.
+        # If none did, the platform is enabled in config.yaml yet silently unserved — surface it loudly so
         # the operator sees a config problem instead of a quiet dead channel (#64674 follow-up).
         for _skipped in _multiplex_skipped_platforms:
             if not any(_skipped in _profile_map for _profile_map in self._profile_adapters.values()):
@@ -1189,9 +1182,6 @@ class GatewayStartupMixin:
                     "the platform is not being served. Add its token to the profile that should "
                     "own it, or disable the platform.", _skipped.value,
                 )
-        # The mirror image: a SECONDARY enabled shared ingress (WhatsApp/Relay) that only the default can run.
-        for _line in self._unserved_shared_ingress_warnings():
-            logger.warning(_line)
         return False, connected_count
 
     def _start_handle_no_connections(

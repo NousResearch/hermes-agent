@@ -113,6 +113,23 @@ def _shared_store(tmp_path) -> dict:
 
 
 class TestIdentityLifecycle:
+    def test_configured_opt_in_provisions_without_a_launcher_flag(self, portal, monkeypatch):
+        monkeypatch.delenv("HERMES_GUEST_ONBOARDING", raising=False)
+        _write_config(monkeypatch, guest=True)
+        assert anon_auth.guest_enabled() is True
+        state = anon_auth.ensure_portal_identity(explicit=True)
+        assert anon_auth.is_guest_state(state)
+        assert portal.minted == 1
+
+    @pytest.mark.parametrize("choice", [False, "false", "true", 1])
+    def test_explicit_non_opt_in_cannot_be_enabled_by_a_launcher(self, portal, monkeypatch, choice):
+        from hermes_cli import config as cfg_mod
+
+        monkeypatch.setattr(cfg_mod, "load_config_readonly", lambda: {"nous": {"guest": choice}})
+        assert anon_auth.guest_enabled() is False
+        assert anon_auth.ensure_portal_identity(explicit=True) is None
+        assert portal.calls == []
+
     def test_fresh_install_mints_once_and_is_the_active_provider(self, portal, tmp_path):
         state = anon_auth.ensure_portal_identity(explicit=True)
         assert anon_auth.is_guest_state(state)
@@ -157,10 +174,11 @@ class TestIdentityLifecycle:
         with pytest.raises(anon_auth.AuthError):
             resolve_provider("auto")
 
-    def test_launch_gate_off_means_no_free_tier_at_all(self, portal, monkeypatch):
-        """Without ``HERMES_GUEST_ONBOARDING=1`` the free tier does not exist: no mint, no portal
-        traffic, ``nous.guest``'s default is never consulted, and an identity already on disk is
-        not treated as enabled. The env var is the only lever; ``0``/``true``/anything but ``1`` is off."""
+    def test_unset_profile_retains_legacy_launcher_opt_in(self, portal, monkeypatch):
+        """An unset profile stays off unless an older launcher explicitly opts in.
+
+        Configured profiles are covered separately and do not need this hint.
+        """
         monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
         for raw in ("", "0", "true", "yes", "new"):
             monkeypatch.setenv("HERMES_GUEST_ONBOARDING", raw)
@@ -171,6 +189,15 @@ class TestIdentityLifecycle:
             resolve_provider("auto")
         monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
         assert anon_auth.guest_enabled() is True
+
+    @pytest.mark.parametrize("hint, enabled", [("", False), ("0", False), ("1", True)])
+    def test_null_profile_choice_retains_legacy_onboarding(self, portal, monkeypatch, hint, enabled):
+        from hermes_cli import config as cfg_mod
+
+        monkeypatch.setattr(cfg_mod, "load_config_readonly", lambda: {"nous": {"guest": None}})
+        monkeypatch.setenv("HERMES_GUEST_ONBOARDING", hint)
+        assert anon_auth.guest_enabled() is enabled
+        assert portal.calls == []
 
 
 class TestExplicitProvision:

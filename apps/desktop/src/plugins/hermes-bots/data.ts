@@ -631,6 +631,86 @@ interface UnionRoster {
   sources?: GatewaySource[]
 }
 
+/**
+ * Recover source ownership for rich rows when `host.agents()` is unavailable
+ * or cannot identify the active source. The route inventory is credential-free
+ * and is read before the union roster, so it is safe as a bounded fallback.
+ * Match the live connection first;
+ * when the legacy local window reports no connection id, use its sole local
+ * route. Ambiguous remote matches stay unscoped rather than guessing a
+ * same-named bot on another machine.
+ */
+export function annotateLocalRosterRoutes(
+  profiles: RosterRow[] | null | undefined,
+  routes: ProfileRoute[] | null | undefined,
+  activeConnectionId?: null | string
+): RosterRow[] {
+  const rows = Array.isArray(profiles) ? profiles : []
+  const candidatesByProfile = new Map<string, ProfileRoute[]>()
+
+  for (const route of Array.isArray(routes) ? routes : []) {
+    const profile = String(route?.profile || '').trim()
+    const connectionId = String(route?.connectionId || '').trim()
+
+    if (!profile || !connectionId) {
+      continue
+    }
+
+    const candidates = candidatesByProfile.get(profile) || []
+    candidates.push({
+      connectionId,
+      mode: route.mode === 'local' || connectionId === 'local' ? 'local' : 'remote',
+      profile,
+      targetProfile: String(route.targetProfile || profile).trim() || profile
+    })
+    candidatesByProfile.set(profile, candidates)
+  }
+
+  const liveId = String(activeConnectionId || '').trim()
+
+  return rows.map(row => {
+    if (row?.sourceScoped || row?.remoteSource) {
+      return row
+    }
+
+    const name = String(row?.name || '').trim()
+    const candidates = candidatesByProfile.get(name) || []
+
+    if (!name || candidates.length === 0) {
+      return row
+    }
+
+    const live = liveId ? candidates.find(candidate => candidate.connectionId === liveId) : undefined
+    const local = candidates.filter(candidate => candidate.mode === 'local')
+    // Once an active connection is known, never silently retarget its row to
+    // a same-named route on another connection. Leaving it unscoped is safer
+    // than presenting a live remote bot as local (or vice versa).
+
+    const route = liveId
+      ? live
+      : candidates.length === 1
+        ? candidates[0]
+        : local.length === 1
+          ? local[0]
+          : undefined
+
+    if (!route) {
+      return row
+    }
+
+    const active = live ? true : !liveId && route.mode === 'local'
+
+    return {
+      ...row,
+      connectionId: route.connectionId,
+      connectionKind: route.mode,
+      route,
+      sourceScoped: true,
+      ...(active ? {} : { remoteSource: true })
+    }
+  })
+}
+
 export function useRoster() {
   const activeConnectionId = useValue(host.state.connectionId)
 
@@ -652,11 +732,14 @@ export function useRoster() {
       // keep its configured friendly identity after activation (#89131).
       // Best-effort and feature-detected — a failed read keeps the last
       // good index rather than dropping identities mid-session.
+      let profileRoutes: ProfileRoute[] = []
+
       if (typeof host.profileRoutes === 'function') {
         const epoch = beginAliasRouteIndex()
 
         try {
-          indexAliasRoutes(await host.profileRoutes(), epoch)
+          profileRoutes = await host.profileRoutes()
+          indexAliasRoutes(profileRoutes, epoch)
         } catch {
           /* keep the previous alias index */
         }
@@ -685,10 +768,11 @@ export function useRoster() {
           const previous: RosterRow[] = $lastRoster.get().filter(row => !row?.ghost)
           const merged = mergeMultiSourceRoster(local, union, activeConnectionId, previous)
           const sources = Array.isArray(union?.sources) ? union.sources : []
+          const routed = annotateLocalRosterRoutes(merged?.profiles, profileRoutes, activeConnectionId)
 
           return {
             ...merged,
-            profiles: (merged?.profiles || []).map(row => annotateBotSource(row, sources)),
+            profiles: routed.map(row => annotateBotSource(row, sources)),
             sources,
             fetchedAt: issuedAt
           }
@@ -699,6 +783,12 @@ export function useRoster() {
 
       return {
         ...(local && typeof local === 'object' ? local : {}),
+        // A union read can fail independently of profiles.list (startup,
+        // reconnect, or an older Electron shell). Keep the rich local rows
+        // source-scoped when the credential-free route inventory is already
+        // available; otherwise a click on `Hermes/default` falls back to the
+        // ambient `localgeneral` gateway and opens the wrong Bot Chat.
+        profiles: annotateLocalRosterRoutes(local?.profiles, profileRoutes, activeConnectionId),
         fetchedAt: issuedAt
       }
     },

@@ -18,8 +18,8 @@ inputs:
     description: Path to the plugin directory (containing plugin.yaml).
     default: "."
   hermes-ref:
-    description: hermes-agent git ref (branch/tag/sha) to install and validate with.
-    default: "main"
+    description: Optional hermes-agent git ref (branch/tag/sha) to install and validate with. Empty uses the action checkout.
+    default: ""
 
 runs:
   using: composite
@@ -33,11 +33,21 @@ runs:
       shell: bash
       env:
         _HERMES_REF: ${{ inputs.hermes-ref }}
+        _ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
-        # CI-context install from git; the ref lets plugin authors validate
-        # against a pinned hermes release instead of main.
-        pip install "git+https://github.com/NousResearch/hermes-agent@${_HERMES_REF}"
+        if [[ -n "${_HERMES_REF}" ]]; then
+          # An explicit ref remains supported for plugin authors who need to
+          # validate against a pinned Hermes release or branch.
+          pip install "git+https://github.com/NousResearch/hermes-agent@${_HERMES_REF}"
+        else
+          # The default must validate against the immutable action checkout,
+          # not moving upstream/main. github.action_path is the action's
+          # .github/actions/plugin-validate directory; three parents reach the
+          # repository root containing pyproject.toml.
+          _HERMES_ROOT="$(cd "${_ACTION_PATH}/../../.." && pwd)"
+          pip install "${_HERMES_ROOT}"
+        fi
 
     - name: Validate plugin
       shell: bash

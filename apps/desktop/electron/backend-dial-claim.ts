@@ -56,3 +56,28 @@ export class BackendDialClaims {
     return pending
   }
 }
+
+/**
+ * A real click can arrive while it is coalesced onto a speculative pre-warm.
+ * If that pre-warm was deliberately rejected because every background slot was
+ * occupied, retry the user's foreground dial once after the rejected claim has
+ * been released. Other errors remain the original dial's error: this is not a
+ * generic retry loop.
+ */
+export async function runForegroundRetryingDialClaim<T>(
+  claims: BackendDialClaims,
+  key: string,
+  priority: 'foreground' | 'background',
+  dial: () => Promise<T> | T,
+  isSpeculativeCapacitySkip: (error: unknown) => boolean
+): Promise<T> {
+  try {
+    return await claims.run(key, dial)
+  } catch (error) {
+    if (priority !== 'foreground' || !isSpeculativeCapacitySkip(error)) {
+      throw error
+    }
+
+    return claims.run(key, dial)
+  }
+}

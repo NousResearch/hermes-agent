@@ -88,6 +88,8 @@ vi.mock('@/store/profile', async () => {
     newSessionInAgent: vi.fn(),
     newSessionInProfile: vi.fn(),
     normalizeProfileKey: (value: null | string | undefined) => (value ?? '').trim() || 'default',
+    prewarmGatewayAgent: vi.fn(),
+    prewarmProfileBackend: vi.fn(),
     refreshProfiles: vi.fn(async () => profiles.get()),
     selectProfile: vi.fn(),
     setActiveProfile: vi.fn(),
@@ -98,7 +100,6 @@ vi.mock('@/store/gateway', async () => {
   const { atom } = await import('nanostores')
 
   return {
-    $activeGatewayRoute: atom('default'),
     $gateway: atom(null),
     activeGateway: vi.fn(() => null),
     activeGatewayConnectionId: vi.fn(() => 'local'),
@@ -142,6 +143,8 @@ const {
   $hydrationSyncProfile,
   $profiles,
   ensureGatewayProfile,
+  prewarmGatewayAgent,
+  prewarmProfileBackend,
   refreshProfiles,
   setShowAllProfiles
 } = await import('@/store/profile')
@@ -201,6 +204,20 @@ afterEach(() => {
 })
 
 describe('connection-aware plugin host APIs', () => {
+  it('uses the pool-aware prewarm seam for bot roster hints', () => {
+    host.warmProfile('worker')
+
+    expect(prewarmProfileBackend).toHaveBeenCalledWith('worker')
+    expect(openGatewayForProfile).not.toHaveBeenCalled()
+  })
+
+  it('uses the same pool-aware seam for source-qualified bot hints', () => {
+    host.warmAgent('local', 'worker')
+
+    expect(prewarmGatewayAgent).toHaveBeenCalledWith('local', 'worker')
+    expect(openGatewayForAgent).not.toHaveBeenCalled()
+  })
+
   it('retires a profile gateway before deleting it', async () => {
     const order: string[] = []
 

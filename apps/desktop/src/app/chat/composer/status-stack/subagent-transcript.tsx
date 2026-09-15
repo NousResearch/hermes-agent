@@ -17,7 +17,6 @@ export function SubagentTranscript({ sessionId, subagentId }: { sessionId: strin
   useEffect(() => {
     let cancelled = false
     let pending = false
-    const owner = JSON.stringify(knownOwnerForSession(sessionId))
 
     const refresh = async () => {
       if (pending || document.visibilityState === 'hidden') {
@@ -25,6 +24,7 @@ export function SubagentTranscript({ sessionId, subagentId }: { sessionId: strin
       }
 
       pending = true
+      const owner = JSON.stringify(knownOwnerForSession(sessionId))
 
       try {
         const result = await requestForOwnedSession<Tail>(sessionId, rejectUnownedSubagentRequest, 'subagent.tail', {
@@ -40,7 +40,7 @@ export function SubagentTranscript({ sessionId, subagentId }: { sessionId: strin
           })
         }
       } catch {
-        if (!cancelled) {
+        if (!cancelled && owner === JSON.stringify(knownOwnerForSession(sessionId))) {
           setTail({ available: false, text: '', truncated: false })
         }
       } finally {

@@ -258,13 +258,12 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 
 from gateway.platforms.helpers import (
-    MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
+    MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets,
 )
 from gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
-from gateway.platforms.base_exec_approval import EA_HEADER_TEXT, EA_REASON_LABEL_TEXT
 from gateway.platforms.base import (
-    BasePlatformAdapter, ExecApprovalPrompt, SendResult, unauthorized_action_notice,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     cache_image_from_url, cache_image_from_bytes_async, cache_audio_from_url, cache_audio_from_bytes_async,
     cache_document_from_bytes_async, SUPPORTED_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS,
     _prefix_within_utf16_limit, utf16_len, validate_inbound_media_size,
@@ -275,9 +274,6 @@ from gateway.platforms._shared import (
     env_is_connected as _env_is_connected, extra_or_secret as _extra_or_secret,
     platform_gate_env as _scoped_gate_env, send_error, yaml_env_setter as _yaml_env_setter
 )
-
-# Every refusal (slash command, approval button, picker, prompt) says the same thing.
-_UNAUTHORIZED = unauthorized_action_notice(Platform.DISCORD)
 
 
 async def _read_url_image_with_redirect_guard(
@@ -992,6 +988,7 @@ def _read_discord_prompt_timeout() -> int:
 
 
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
+from plugins.platforms.discord.client_lifecycle import close_discord_client
 
 
 class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
@@ -1075,22 +1072,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._max_latency_seconds = self._finite_positive_config_float(
             "websocket_max_latency_seconds", 30.0,
         )
-        # Dispatch-side liveness bound (#109521; rationale on ``on_socket_event_type``).
-        # 0 disables this dimension alone; ack-age/latency still guard. Default 4h mirrors the
-        # field-proven operator bound from the incident report; quiet guilds can go hours
-        # without a single DISPATCH event, so a short bound would force reconnect loops on
-        # healthy-but-idle installs (#109782).
-        self._event_max_silence_seconds = self._finite_positive_config_float(
-            "websocket_event_max_silence_seconds", 14400.0,
-        )
         self._liveness_task: Optional[asyncio.Task] = None
         self._liveness_notification_task: Optional[asyncio.Task] = None
         # True while disconnect() intentionally closes discord.py (done callback: shutdown vs crash).
         self._disconnecting = False
-        # Last DISPATCH frame's monotonic stamp, ticked by ``on_socket_event_type`` (see its
-        # rationale) and read by ``_read_websocket_health``. ``None`` = no event yet on this
-        # connection, which is not silence.
-        self._last_dispatched_event_monotonic: Optional[float] = None
         self._missed_message_backfill_task: Optional[asyncio.Task] = None
         from hermes_constants import get_hermes_home
         from plugins.platforms.discord.recovery import DiscordRecoveryStore
@@ -1128,17 +1113,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         watchdog off with no log line — indistinguishable from "the watchdog missed it".
         An explicit ``0`` is an intentional opt-out and stays silent.
         """
-        # This knob gates one dimension inside the health check, not the probe's startup
-        # guard, so an unusable value leaves ack-age/latency guarding (see _read_websocket_health).
-        scope = (
-            "the event-silence dimension of the websocket liveness probe"
-            if key == "websocket_event_max_silence_seconds"
-            else "the websocket liveness probe"
-        )
         logger.warning(
             "[%s] Discord liveness knob %s=%r is not a usable positive number; "
-            "%s is disabled by this value",
-            self.name, key, raw, scope,
+            "the websocket liveness probe is disabled by this value",
+            self.name, key, raw,
         )
 
     def _liveness_knob(self, key: str, default: Any, cast: type, *, env_key: Optional[str] = None):
@@ -1252,7 +1230,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if self._client is not None:
                 try:
                     if not self._client.is_closed():
-                        await self._client.close()
+                        await close_discord_client(self._client)
                 except Exception:
                     logger.debug("[%s] Failed to close previous Discord client", self.name)
                 finally:
@@ -1264,10 +1242,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 allowed_mentions=_build_allowed_mentions(getattr(self.config, "extra", None)),
                 **proxy_kwargs_for_bot(proxy_url),
             )
-            # Fresh connection, fresh dispatch-side silence window: the previous client's last
-            # DISPATCH stamp must not leak into this connection's liveness samples (#109521).
-            # READY itself is a DISPATCH event, so a healthy connection stamps almost immediately.
-            self._last_dispatched_event_monotonic = None
             adapter_self = self  # capture for closure
 
             @self._client.event
@@ -1282,20 +1256,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 )
                 if adapter_self._missed_message_backfill_enabled():
                     adapter_self._ensure_missed_message_backfill_task()
-
-            @self._client.event
-            async def on_socket_event_type(event_type: str):
-                # Dispatch-side liveness stamp (#109521 incident 2): an ESTAB socket can keep
-                # ACKing heartbeats (op 11, no event type) while zero DISPATCH events are parsed,
-                # so every transport-side sample reads healthy for hours. discord.py dispatches
-                # ``socket_event_type`` for every parsed DISPATCH frame on every connection and it
-                # is NOT gated behind ``enable_debug_events`` (unlike ``on_socket_raw_receive`` —
-                # verified against discord.py 2.7.1 ``gateway.py``: ``received_message`` calls
-                # ``self._dispatch('socket_event_type', event)`` before the op-code switch, gated
-                # on a non-null ``t``). Heartbeat ACK frames carry ``t: null`` and skip that
-                # dispatch, so an ACKing-but-deaf socket leaves this stamp frozen while every
-                # transport-side check reads healthy.
-                adapter_self._last_dispatched_event_monotonic = time.perf_counter()
 
             @self._client.event
             async def on_message(message: DiscordMessage):
@@ -1346,8 +1306,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         guild_id,
                     )
             if self._slash_commands:
-                # Registration walks the skill catalog on disk (#110707); keep the loop free.
-                await asyncio.to_thread(self._register_slash_commands)
+                self._register_slash_commands()
             self._disconnecting = False
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
             self._bot_task.add_done_callback(self._handle_bot_task_done)
@@ -1357,9 +1316,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 self._ready_event, self._bot_task,
                 timeout=None if ready_timeout <= 0 else ready_timeout,
             )
-            # _mark_connected() clears a prior fatal stamp; a bare ``_running = True`` left a transient
-            # startup failure reported as ``fatal`` for the life of the process (#102554).
-            self._mark_connected()
+            self._running = True
             self._start_liveness_probe()
             # Plugin-registered native handlers (discord.py Bot — add_listener()/event hooks).
             self._wire_plugin_handlers(self._client)
@@ -1694,20 +1651,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return False, "latency_non_finite"
         if latency > self._max_latency_seconds:
             return False, "latency_exceeded"
-        # Dispatch-side dimension (#109521 incident 2): transport-green + event-starved is the
-        # connected-but-deaf fingerprint. Gated HERE only — never in _start_liveness_probe — so an
-        # explicit 0 disables this dimension alone and ack-age/latency keep guarding (the #109782
-        # regression put the knob in the probe's all-or-nothing startup guard, killing the whole
-        # watchdog). ``None`` = no DISPATCH event yet on this connection: not silence (the
-        # not_ready check above still covers the pre-ready window). Why the stamp is trustworthy:
-        # see ``on_socket_event_type``. No finiteness guard here: both operands are our own
-        # perf_counter floats (``ack_age`` differs — ``_last_ack`` is discord.py's).
-        if self._event_max_silence_seconds > 0:
-            last_event = self._last_dispatched_event_monotonic
-            if last_event is not None:
-                event_silence = time.perf_counter() - last_event
-                if event_silence > self._event_max_silence_seconds:
-                    return False, "event_silence"
         return True, "healthy"
 
     async def _liveness_loop(self) -> None:
@@ -1759,7 +1702,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         await itself via ``disconnect()``); the runner owns the bounded teardown."""
         failed_websocket = getattr(client, "ws", None)
         try:
-            close_task = asyncio.create_task(client.close())
+            close_task = asyncio.create_task(close_discord_client(client))
             try:
                 done, _pending = await asyncio.wait({close_task}, timeout=1.0)
                 if close_task not in done:
@@ -1873,7 +1816,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         await self._cancel_bot_task()
         if self._client:
             try:
-                await self._client.close()
+                await close_discord_client(self._client)
             except Exception as e:  # pragma: no cover - defensive logging
                 logger.warning("[%s] Error during disconnect: %s", self.name, e, exc_info=True)
         for task in (self._post_connect_task, self._missed_message_backfill_task):
@@ -2301,10 +2244,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         logger.debug("[%s] Cannot fetch backfill channel %s: %s", self.name, channel_id, exc)
                         continue
                 candidate_channels.append(channel)
-        # Obfuscated placeholders (bot lost VIEW_CHANNEL) fail every history read — drop them
-        # from both the wildcard and the explicit-id branch (#90154).
-        candidate_channels = [ch for ch in candidate_channels if not is_discord_channel_obfuscated(ch)]
-
         iterators = [
             self._iter_channel_and_thread_messages(
                 channel, limit=limit, after=after, seen_channels=seen,
@@ -3976,7 +3915,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         )
         try:
             await interaction.response.send_message(
-                _UNAUTHORIZED, ephemeral=True,
+                "You're not authorized to use this command.", ephemeral=True,
             )
         except Exception as e:
             # Interaction may already be responded to (caller deferred, Discord retry).
@@ -4487,11 +4426,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._skill_lookup = {n: (d, k) for n, d, k in entries}
         self._skill_group_hidden_count = hidden
 
-    async def refresh_skill_group(self) -> tuple[int, int]:
+    def refresh_skill_group(self) -> tuple[int, int]:
         """Rescan skills and refresh live ``/skill`` autocomplete; returns ``(new_count, hidden_count)``.
         Called after ``reload_skills``; no ``tree.sync()`` since autocomplete options are dynamic."""
         try:
-            await asyncio.to_thread(self._refresh_skill_catalog_state)
+            self._refresh_skill_catalog_state()
         except Exception as exc:
             logger.warning(
                 "[%s] Failed to refresh /skill autocomplete after reload: %s", self.name, exc,
@@ -5307,19 +5246,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return text if len(text) <= limit else text[: limit - 3] + "..."
 
     # Payload lives in plain content: embeds can be invisible/detached on web/mobile.
-    _EA_HEADER = (f"⚠️ **{EA_HEADER_TEXT}**\n\n"
+    _EA_HEADER = ("⚠️ **Command Approval Required**\n\n"
                   "Do you want Hermes to run this command?\n\n"
                   "**Requested command:**\n")
     _EA_CODE_OPEN = "```bash\n"
     _EA_CODE_CLOSE = "\n```\n"
-    _EA_REASON_LABEL = f"**{EA_REASON_LABEL_TEXT}:** "
+    _EA_REASON_LABEL = "**Reason:** "
     _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
     _EA_REASON_BUDGET = 300
 
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         # Mentions ride in front of the content and count against the 2000-char message cap too.
         fixed = (len(self._EA_HEADER) + len(self._EA_CODE_OPEN) + len(self._EA_CODE_CLOSE)
-                 + len(self._EA_REASON_LABEL) + len(description) + len("...") + len(self._ea_deadline_line())
+                 + len(self._EA_REASON_LABEL) + len(description) + len("...")
                  + (len(self._EA_SMART_DENY_LINE) if smart_denied else 0)
                  + len(self._approval_mention_content() or "") + 1)
         return max(0, self.MAX_MESSAGE_LENGTH - fixed)
@@ -5332,11 +5271,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if mention_content:
                 content = f"{mention_content}\n{content}"
             embed = discord.Embed(
-                title=f"⚠️ {EA_HEADER_TEXT}",
+                title="⚠️ Command Approval Required",
                 description=f"```\n{self._embed_body(prompt.command)}\n```",
                 color=discord.Color.orange(),
             )
-            embed.add_field(name=EA_REASON_LABEL_TEXT, value=self._truncate_preview(prompt.description, self._EA_REASON_BUDGET), inline=False)
+            embed.add_field(name="Reason", value=self._truncate_preview(prompt.description, self._EA_REASON_BUDGET), inline=False)
             require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
             choices = set(prompt.choices)
             view = ExecApprovalView(
@@ -6128,7 +6067,7 @@ def _define_discord_view_classes() -> None:
             """Resolve the approval via the gateway approval queue and update the embed."""
             if not await self._gate(
                 interaction, resolved_msg="This approval has already been resolved~",
-                unauth_msg=_UNAUTHORIZED,
+                unauth_msg="You're not authorized to approve commands~",
             ):
                 return
             self.resolved = True
@@ -6178,7 +6117,7 @@ def _define_discord_view_classes() -> None:
         async def _resolve(self, interaction: discord.Interaction, choice: str, color: discord.Color, label: str):
             if not await self._gate(
                 interaction, resolved_msg="This prompt has already been resolved~",
-                unauth_msg=_UNAUTHORIZED,
+                unauth_msg="You're not authorized to answer this prompt~",
             ):
                 return
             await self._finalize_embed(interaction, color, f"{label} by {interaction.user.display_name}")
@@ -6217,7 +6156,7 @@ def _define_discord_view_classes() -> None:
             self.session_key = session_key
 
         async def _respond(self, interaction: discord.Interaction, answer: str, color: discord.Color, label: str):
-            if not await self._gate(interaction, resolved_msg="Already answered~", unauth_msg=_UNAUTHORIZED):
+            if not await self._gate(interaction, resolved_msg="Already answered~", unauth_msg="You're not authorized~"):
                 return
             await self._finalize_embed(interaction, color, f"{label} by {interaction.user.display_name}")
             try:
@@ -6339,7 +6278,7 @@ def _define_discord_view_classes() -> None:
             return discord.Embed(title=title, description=description, color=discord.Color.blue() if color is None else color)
 
         async def _on_provider_selected(self, interaction: discord.Interaction):
-            if not await self._gate(interaction, resolved_msg=None, unauth_msg=_UNAUTHORIZED):
+            if not await self._gate(interaction, resolved_msg=None, unauth_msg="You're not authorized~"):
                 return
             provider_slug = interaction.data["values"][0]
             self._selected_provider = provider_slug
@@ -6353,7 +6292,7 @@ def _define_discord_view_classes() -> None:
             await self._edit(interaction, f"Provider: **{pname}**\nSelect a model:{extra}")
 
         async def _switch_selected_model(self, interaction: discord.Interaction, model_id: str):
-            if not await self._gate(interaction, resolved_msg="Already resolved~", unauth_msg=_UNAUTHORIZED):
+            if not await self._gate(interaction, resolved_msg="Already resolved~", unauth_msg="You're not authorized~"):
                 return
             self.resolved = True
             self.clear_items()
@@ -6368,7 +6307,7 @@ def _define_discord_view_classes() -> None:
             )
 
         async def _on_model_selected(self, interaction: discord.Interaction):
-            if not await self._gate(interaction, resolved_msg="Already resolved~", unauth_msg=_UNAUTHORIZED):
+            if not await self._gate(interaction, resolved_msg="Already resolved~", unauth_msg="You're not authorized~"):
                 return
             model_id = interaction.data["values"][0]
             warning = await self._expensive_warning_for(model_id)
@@ -6379,7 +6318,7 @@ def _define_discord_view_classes() -> None:
             await self._switch_selected_model(interaction, model_id)
 
         async def _on_expensive_confirm(self, interaction: discord.Interaction):
-            if not await self._gate(interaction, resolved_msg=None, unauth_msg=_UNAUTHORIZED):
+            if not await self._gate(interaction, resolved_msg=None, unauth_msg="You're not authorized~"):
                 return
             if not self._pending_expensive_model:
                 await interaction.response.send_message("Model selection expired.", ephemeral=True)
@@ -6387,7 +6326,7 @@ def _define_discord_view_classes() -> None:
             await self._switch_selected_model(interaction, self._pending_expensive_model)
 
         async def _on_back(self, interaction: discord.Interaction):
-            if not await self._gate(interaction, resolved_msg=None, unauth_msg=_UNAUTHORIZED):
+            if not await self._gate(interaction, resolved_msg=None, unauth_msg="You're not authorized~"):
                 return
             self._build_provider_select()
             try:
@@ -6439,7 +6378,7 @@ def _define_discord_view_classes() -> None:
 
         async def _on_select(self, interaction: discord.Interaction):
             if not self._check_auth(interaction):
-                await interaction.response.send_message(_UNAUTHORIZED, ephemeral=True)
+                await interaction.response.send_message("⛔ You are not authorized to change this setting.", ephemeral=True)
                 return
             if self.resolved:
                 await interaction.response.defer()
@@ -6540,7 +6479,7 @@ def _define_discord_view_classes() -> None:
             """Resolve the clarify with a chosen option."""
             if not await self._gate(
                 interaction, resolved_msg="This prompt has already been answered~",
-                unauth_msg=_UNAUTHORIZED,
+                unauth_msg="You're not authorized to answer this prompt~",
             ):
                 return
             display_name = getattr(getattr(interaction, "user", None), "display_name", "user")
@@ -6571,7 +6510,7 @@ def _define_discord_view_classes() -> None:
             """Flip the clarify entry into text-capture mode."""
             if not await self._gate(
                 interaction, resolved_msg="This prompt has already been answered~",
-                unauth_msg=_UNAUTHORIZED,
+                unauth_msg="You're not authorized to answer this prompt~",
             ):
                 return
             # Don't pop: the gateway text-intercept needs the entry until the user types.
@@ -7004,7 +6943,6 @@ _YAML_WEBSOCKET_LIVENESS_KEYS = (
     ("websocket_liveness_failure_threshold", "liveness_failure_threshold", "HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD"),
     ("websocket_heartbeat_ack_max_age_seconds", None, None),
     ("websocket_max_latency_seconds", None, None),
-    ("websocket_event_max_silence_seconds", None, None),
 )
 
 

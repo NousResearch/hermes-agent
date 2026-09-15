@@ -77,4 +77,3 @@ class StreamingWaitMonitor:
             if self.agent._interrupt_requested:
                 self._abort_for_interrupt(_stale_elapsed)
                 return
-

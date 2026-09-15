@@ -1,6 +1,13 @@
 import type { GatewayEventPayload } from '@/lib/chat-messages'
-import { $clarifyRequests, type ClarifyRequest, clearClarifyRequest } from '@/store/clarify'
-import type { SessionResumeResult } from '@/types/hermes'
+import {
+  $clarifyRequests,
+  type ClarifyRequest,
+  clearClarifyRequest,
+  normalizeChoices,
+  normalizeQuestions,
+  setClarifyRequest
+} from '@/store/clarify'
+import type { SessionResumeResponse } from '@/types/hermes'
 
 export interface PendingClarifyResumeState {
   authoritativeAbsent: boolean
@@ -9,26 +16,28 @@ export interface PendingClarifyResumeState {
 }
 
 /**
- * Reconcile the parked clarify for `sessionId` against a resume/activate
- * snapshot.
+ * Restore a pending clarify from a resume/activate snapshot onto `sessionId`.
  *
- * The snapshot's `open_requests` names every server→client request still
- * blocking the session. The shared channel has ALREADY re-delivered those to
- * the request handlers (which parked the clarify card) before the caller sees
- * the response, so this only has to (a) report the parked request when the
- * snapshot confirms it and (b) treat a snapshot WITHOUT a clarify as
- * authoritative for requests that already existed when the RPC began — a
- * newer request that arrived while the response was in flight is left alone.
+ * The snapshot mirrors the live clarify.request wire shape: single-question
+ * payloads carry `question`/`choices`/`multi_select`; batch (multi-question)
+ * ones carry `questions` (+ any answers already locked server-side) and no
+ * top-level `question`. Multi-select locks arrive as JSON-encoded arrays
+ * inside a string — never a bare array — so `lockedAnswers` keeps string
+ * values only.
+ *
+ * A missing snapshot is authoritative only for requests that already existed
+ * when the RPC began. A newer clarify.request that arrives while the response
+ * is in flight is left alone.
  */
 export function restorePendingClarifyFromSnapshot(
-  response: Pick<SessionResumeResult, 'open_requests'>,
+  response: Pick<SessionResumeResponse, 'pending_clarify'>,
   sessionId: string,
   resumeStartedAt: number,
   requestIdAtStart?: string
 ): PendingClarifyResumeState {
-  const pending = (response.open_requests ?? []).find(entry => entry.method === 'clarify')
+  const pending = response.pending_clarify
 
-  if (!pending) {
+  if (!pending || typeof pending.request_id !== 'string') {
     const current = $clarifyRequests.get()[sessionId]
 
     const existedAtStart = Boolean(current && requestIdAtStart && current.requestId === requestIdAtStart)
@@ -44,12 +53,36 @@ export function restorePendingClarifyFromSnapshot(
     return { authoritativeAbsent: true, cleared: null, request: null }
   }
 
-  // The request handler parked it under this session when the channel
-  // re-delivered `open_requests`; a card the handler declined (empty
-  // question) is simply not there.
-  const parked = $clarifyRequests.get()[sessionId]
+  const questions = normalizeQuestions(pending.questions)
+  const question = typeof pending.question === 'string' ? pending.question : ''
 
-  return { authoritativeAbsent: false, cleared: null, request: parked?.requestId === pending.id ? parked : null }
+  if (!question && questions.length === 0) {
+    return { authoritativeAbsent: false, cleared: null, request: null }
+  }
+
+  const choices = normalizeChoices(pending.choices)
+
+  const lockedAnswers =
+    typeof pending.answers === 'object' && pending.answers !== null
+      ? Object.fromEntries(
+          Object.entries(pending.answers).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+        )
+      : undefined
+
+  const request: ClarifyRequest = {
+    choices: choices.length > 0 ? choices : null,
+    lockedAnswers,
+    multiSelect: pending.multi_select === true,
+    question,
+    receivedAt: Date.now() / 1000,
+    requestId: pending.request_id,
+    sessionId,
+    ...(questions.length > 0 ? { questions } : {})
+  }
+
+  setClarifyRequest(request)
+
+  return { authoritativeAbsent: false, cleared: null, request }
 }
 
 export function pendingClarifyToolPayload(request: ClarifyRequest): GatewayEventPayload {

@@ -265,7 +265,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     if (generation === getBotOpenGeneration()) {
       $openBotChat.set(null)
       restorePreviousGroup()
-      notifyBotOpenFailure(error, bot, 'reach')
+      notifyBotOpenFailure(error, bot, `Could not reach ${bot.connectionLabel || 'the gateway'}`)
     }
 
     return false
@@ -302,7 +302,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     if (generation === getBotOpenGeneration()) {
       $openBotChat.set(null)
       restorePreviousGroup()
-      notifyBotOpenFailure(error, bot, 'open', displayName(bot, meta))
+      notifyBotOpenFailure(error, bot, `Could not open ${displayName(bot, meta)}'s chat — try again`)
     }
 
     return false

@@ -240,8 +240,13 @@
     } else if (state.status === 'error') {
       settle('error')
       glyphEl.textContent = '\u2715'
-      titleEl.textContent = 'Failed to update'
-      lineEl.innerHTML = 'Run <code>hermes debug share</code> in a terminal to send a report.'
+      const message = state.message || 'Update failed. Run `hermes debug share` in a terminal to send a report.'
+      const skipped = /^Update skipped:/i.test(message)
+      titleEl.textContent = skipped ? 'Update skipped' : 'Failed to update'
+      // Status text comes from a detached process/log. Keep it as text rather
+      // than HTML so an unexpected log fragment cannot become markup here,
+      // while still showing the actionable reason.
+      lineEl.textContent = message
     }
   }
 

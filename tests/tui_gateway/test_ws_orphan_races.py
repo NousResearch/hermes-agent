@@ -199,10 +199,9 @@ def test_reconnect_cannot_cross_orphan_interrupt_claim(monkeypatch, path, claim)
     elif path == "reuse":
         response = server._resume_reuse_live(ctx, sid, session)
     else:
-        name, extra = {"activate": ("session.activate", {"omit_messages": True}),
-                       "prompt": ("prompt.submit", {"text": "continue"})}[path]
+        name = {"activate": "session.activate", "prompt": "prompt.submit"}[path]
         response = server.handle_request({"jsonrpc": "2.0", "id": 1, "method": name,
-                                          "params": {"session_id": sid, **extra}})
+                                          "params": {"session_id": sid, "text": "continue", "omit_messages": True}})
     assert response.get("error", {}).get("code") == (4007 if claim == "retired" else 4009)
     assert session["transport"] is server._detached_ws_transport
     assert sid in server._pending_ws_reaps

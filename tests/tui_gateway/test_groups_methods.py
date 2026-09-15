@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -463,6 +465,90 @@ def test_create_list_send_and_log_roundtrip(home):
     }
 
 
+def test_groups_stop_generates_fresh_fences_but_preserves_explicit_idempotency(home):
+    from gateway import hosted_rooms
+
+    _create_room()
+    service = methods_groups.get_hosted_room_service()
+    assert service is not None
+
+    _result(srv._methods["groups.stop"](2, {"room_id": "room-1"}))
+    room = hosted_rooms.room_state(service.db_path, room_id="room-1")
+    hosted_rooms.append_event(
+        service.db_path,
+        room_id="room-1",
+        event_id="between-stops",
+        kind="message.user",
+        actor={"kind": "user", "id": "desktop"},
+        payload={"text": "new work", "thread_id": "thread-1"},
+        authority_gateway_id=room["authority_gateway_id"],
+        authority_epoch=room["authority_epoch"],
+    )
+    _result(srv._methods["groups.stop"](4, {"room_id": "room-1"}))
+    _result(
+        srv._methods["groups.stop"](
+            5,
+            {"room_id": "room-1", "cancel_id": "explicit-stop"},
+        )
+    )
+    _result(
+        srv._methods["groups.stop"](
+            6,
+            {"room_id": "room-1", "cancel_id": "explicit-stop"},
+        )
+    )
+
+    events = hosted_rooms.read_events(service.db_path, room_id="room-1")["events"]
+    stops = [event for event in events if event["kind"] == "room.stop_requested"]
+    generated = [
+        event for event in stops if event["payload"]["cancel_id"].startswith("desktop-stop:")
+    ]
+    explicit = [
+        event for event in stops if event["payload"]["cancel_id"] == "explicit-stop"
+    ]
+    message = next(event for event in events if event["event_id"] == "between-stops")
+
+    assert len(generated) == 2
+    assert generated[0]["event_id"] != generated[1]["event_id"]
+    assert generated[0]["payload"]["cancel_id"] != generated[1]["payload"]["cancel_id"]
+    assert generated[0]["seq"] < message["seq"] < generated[1]["seq"]
+    assert len(explicit) == 1
+
+
+def test_groups_disband_generates_a_fresh_fence_for_each_attempt(home, monkeypatch):
+    _create_room()
+    service = methods_groups.get_hosted_room_service()
+    assert service is not None
+    cancel_ids = []
+
+    def reject_pending_stop(_room_id, *, cancel_id, require_acknowledged):
+        cancel_ids.append(cancel_id)
+        assert require_acknowledged is True
+        raise RuntimeError("stop is still pending")
+
+    monkeypatch.setattr(service, "stop_room", reject_pending_stop)
+
+    first = srv._methods["groups.disband"](2, {"room_id": "room-1"})
+    second = srv._methods["groups.disband"](3, {"room_id": "room-1"})
+    explicit_first = srv._methods["groups.disband"](
+        4,
+        {"room_id": "room-1", "cancel_id": "explicit-disband"},
+    )
+    explicit_second = srv._methods["groups.disband"](
+        5,
+        {"room_id": "room-1", "cancel_id": "explicit-disband"},
+    )
+
+    assert all(
+        result["error"]["code"] == 5114
+        for result in (first, second, explicit_first, explicit_second)
+    )
+    assert cancel_ids[0].startswith("desktop-disband:")
+    assert cancel_ids[1].startswith("desktop-disband:")
+    assert cancel_ids[0] != cancel_ids[1]
+    assert cancel_ids[2:] == ["explicit-disband", "explicit-disband"]
+
+
 def test_groups_list_returns_bounded_pages(home):
     _create_room()
     _result(
@@ -909,6 +995,170 @@ def test_pruned_room_send_and_log_report_expired_history(home, monkeypatch):
     )
     assert created["room"]["room_id"] == "room-new"
 
+
+def test_groups_disband_blocks_a_second_service_before_stop_and_tombstone(
+    home, monkeypatch
+):
+    from gateway import hosted_room_driver as driver
+    from gateway import hosted_rooms
+    from tui_gateway.hosted_room_service import HostedRoomService
+
+    _create_room()
+    service = methods_groups.get_hosted_room_service()
+    assert service is not None
+    competing_service = HostedRoomService(srv, db_path=service.db_path)
+    original_stop = service.stop_room
+    observed = {}
+
+    def stop_after_competing_send(room_id, *, cancel_id, require_acknowledged):
+        with pytest.raises(hosted_rooms.RoomAdmissionBlockedError) as blocked:
+            competing_service.send(
+                room_id=room_id,
+                event_id="racing-send",
+                payload={"text": "must not land", "thread_id": "thread-race"},
+            )
+        observed["reason"] = blocked.value.reason
+        observed["events"] = hosted_rooms.read_events(
+            service.db_path,
+            room_id=room_id,
+        )["events"]
+        observed["tasks"] = driver.list_tasks(service.db_path, room_id=room_id)
+        return original_stop(
+            room_id,
+            cancel_id=cancel_id,
+            require_acknowledged=require_acknowledged,
+        )
+
+    monkeypatch.setattr(service, "stop_room", stop_after_competing_send)
+
+    result = _result(srv._methods["groups.disband"](2, {"room_id": "room-1"}))
+
+    assert observed == {
+        "reason": "room_admissions_blocked",
+        "events": [],
+        "tasks": [],
+    }
+    assert result["tombstone"]["idempotent"] is False
+    events = hosted_rooms.read_events(
+        service.db_path,
+        room_id="room-1",
+        include_disbanded=True,
+    )["events"]
+    assert [event["kind"] for event in events] == [
+        "room.stop_requested",
+        "room.disbanded",
+    ]
+
+def test_groups_disband_is_idempotent_across_concurrent_services(home, monkeypatch):
+    from gateway import hosted_room_driver as driver
+    from gateway import hosted_rooms
+    from tui_gateway.hosted_room_service import HostedRoomService
+
+    _create_room()
+    seed_service = methods_groups.get_hosted_room_service()
+    assert seed_service is not None
+    db_path = seed_service.db_path
+    assert methods_groups.stop_hosted_room_service(timeout=1.0) is True
+    first_service = HostedRoomService(srv, db_path=db_path)
+    second_service = HostedRoomService(srv, db_path=db_path)
+    thread_state = threading.local()
+    initial_reads = threading.Barrier(2)
+    second_waiting = threading.Event()
+    first_finished = threading.Event()
+    original_room_state = hosted_rooms.room_state
+    original_block = driver.block_room_admissions
+
+    def service_for_thread():
+        return thread_state.service
+
+    def synchronized_room_state(*args, **kwargs):
+        state = original_room_state(*args, **kwargs)
+        if (
+            state.get("disbanded_at") is None
+            and not getattr(thread_state, "initial_room_read_complete", False)
+        ):
+            thread_state.initial_room_read_complete = True
+            initial_reads.wait(timeout=20.0)
+        return state
+
+    def ordered_block(*args, **kwargs):
+        if thread_state.role == "second":
+            second_waiting.set()
+            assert first_finished.wait(timeout=20.0)
+        else:
+            assert second_waiting.wait(timeout=20.0)
+        return original_block(*args, **kwargs)
+
+    def disband(role, service, rid):
+        thread_state.role = role
+        thread_state.service = service
+        try:
+            return srv._methods["groups.disband"](rid, {"room_id": "room-1"})
+        finally:
+            if role == "first":
+                first_finished.set()
+
+    monkeypatch.setitem(
+        srv._methods["groups.disband"].__globals__,
+        "get_hosted_room_service",
+        service_for_thread,
+    )
+    monkeypatch.setattr(hosted_rooms, "room_state", synchronized_room_state)
+    monkeypatch.setattr(driver, "block_room_admissions", ordered_block)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_future = pool.submit(disband, "first", first_service, 2)
+        second_future = pool.submit(disband, "second", second_service, 3)
+        results = [
+            _result(first_future.result(timeout=30.0)),
+            _result(second_future.result(timeout=30.0)),
+        ]
+
+    assert {result["tombstone"]["idempotent"] for result in results} == {
+        False,
+        True,
+    }
+    events = hosted_rooms.read_events(
+        first_service.db_path,
+        room_id="room-1",
+        include_disbanded=True,
+    )["events"]
+    assert [event["kind"] for event in events] == [
+        "room.stop_requested",
+        "room.disbanded",
+    ]
+
+def test_groups_disband_rejects_an_existing_barrier_for_a_different_reason(
+    home, monkeypatch
+):
+    from gateway import hosted_room_driver as driver
+    from gateway.hosted_rooms import room_state
+
+    _create_room()
+    service = methods_groups.get_hosted_room_service()
+    assert service is not None
+    room = room_state(service.db_path, room_id="room-1")
+    driver.block_room_admissions(
+        service.db_path,
+        room_id="room-1",
+        reason="authority-demotion",
+        expected_gateway_id=room["authority_gateway_id"],
+        expected_epoch=room["authority_epoch"],
+        clock=lambda: 1.0,
+    )
+    stop_called = False
+
+    def record_stop(*_args, **_kwargs):
+        nonlocal stop_called
+        stop_called = True
+
+    monkeypatch.setattr(service, "stop_room", record_stop)
+
+    result = srv._methods["groups.disband"](2, {"room_id": "room-1"})
+
+    assert result["error"]["code"] == 4113
+    assert "different reason" in result["error"]["message"]
+    assert stop_called is False
 
 def test_disband_stops_and_revokes_before_tombstoning(home, monkeypatch):
     _create_room()

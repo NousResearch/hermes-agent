@@ -56,7 +56,7 @@ def home(tmp_path, monkeypatch):
     (root / ".env").write_text(_SOURCE_ENV, encoding="utf-8")
     (root / "config.yaml").write_text(yaml.safe_dump(_SOURCE_CONFIG), encoding="utf-8")
     (root / "SOUL.md").write_text("Be helpful.", encoding="utf-8")
-    monkeypatch.setattr(gm, "_installed_services", lambda home: [])
+    monkeypatch.setattr(gm, "_installed_service", lambda home: None)
     monkeypatch.setattr(gm, "_live_gateway_pid", lambda home: None)
     return root
 
@@ -203,6 +203,69 @@ def test_ownership_inventory_strips_policy_relay_and_aliases_but_keeps_tool_cred
             if "=" in line and not line.startswith("#")}
     assert keys == {"OPENAI_API_KEY", "HASS_TOKEN", "HASS_URL",
                     "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"}
+
+
+def test_string_false_adapter_flag_keeps_shared_tool_credentials(home):
+    """Quoted false is the same disabled state the gateway applies at runtime, so HASS credentials
+    remain tool-owned instead of being stripped as Home Assistant channel identity."""
+    (home / ".env").write_text(_SHARED_ENV, encoding="utf-8")
+    (home / "config.yaml").write_text(
+        'model:\n  default: gpt-5\nplatforms:\n  homeassistant:\n    enabled: "false"\n',
+        encoding="utf-8",
+    )
+
+    profile_dir = create_profile("tool-home", clone_config=True, no_alias=True)
+
+    env_text = (profile_dir / ".env").read_text(encoding="utf-8")
+    assert "HASS_TOKEN=hass-tool-token" in env_text
+    assert "HASS_URL=http://ha.local" in env_text
+
+
+@pytest.mark.parametrize(
+    ("source_enabled", "ambient_enabled", "credentials_survive"),
+    [("true", "false", False), ("false", "true", True), (None, None, False)],
+    ids=["source-true", "source-false", "unresolved-conservative"],
+)
+def test_clone_resolves_shared_adapter_flag_in_the_source_secret_scope(
+    home, monkeypatch, source_enabled, ambient_enabled, credentials_survive,
+):
+    """A source-local ref wins over a conflicting ambient value; an unresolved ref strips
+    conservatively so a later resolution cannot make the clone reuse channel credentials."""
+    source_env = _SHARED_ENV
+    if source_enabled is not None:
+        source_env += f"HA_CHANNEL_ENABLED={source_enabled}\n"
+        monkeypatch.setenv("HA_CHANNEL_ENABLED", ambient_enabled)
+    else:
+        monkeypatch.delenv("HA_CHANNEL_ENABLED", raising=False)
+    (home / ".env").write_text(source_env, encoding="utf-8")
+    (home / "config.yaml").write_text(
+        "model:\n  default: gpt-5\nplatforms:\n  homeassistant:\n"
+        "    enabled: ${HA_CHANNEL_ENABLED}\n",
+        encoding="utf-8",
+    )
+
+    profile_dir = create_profile("scoped-home", clone_config=True, no_alias=True)
+
+    env_text = (profile_dir / ".env").read_text(encoding="utf-8")
+    assert ("HASS_TOKEN=hass-tool-token" in env_text) is credentials_survive
+    if not credentials_survive:
+        assert not {claim for claim in _fingerprints(profile_dir) if claim[0] == "homeassistant"}
+
+
+@pytest.mark.parametrize(("enabled", "credentials_survive"), [(True, False), (False, True)])
+def test_clone_honors_managed_shared_adapter_ownership(home, tmp_path, monkeypatch, enabled, credentials_survive):
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text(
+        yaml.safe_dump({"platforms": {"homeassistant": {"enabled": enabled}}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    (home / ".env").write_text(_SHARED_ENV, encoding="utf-8")
+    (home / "config.yaml").write_text("model:\n  default: gpt-5\n", encoding="utf-8")
+
+    profile_dir = create_profile("managed-home", clone_config=True, no_alias=True)
+
+    env_text = (profile_dir / ".env").read_text(encoding="utf-8")
+    assert ("HASS_TOKEN=hass-tool-token" in env_text) is credentials_survive
 
 
 def test_clone_all_drops_directory_shaped_channel_state(home):

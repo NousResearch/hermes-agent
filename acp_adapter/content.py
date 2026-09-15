@@ -12,6 +12,7 @@ from acp.schema import (
     AudioContentBlock, BlobResourceContents, EmbeddedResourceContentBlock, ImageContentBlock,
     ResourceContentBlock, TextContentBlock, TextResourceContents,
 )
+from hermes_constants import is_wsl
 
 logger = logging.getLogger("acp_adapter.server")
 
@@ -71,27 +72,47 @@ _IMAGE_SUFFIX_MIME = {
 
 def _path_from_file_uri(uri: str) -> Path | None:
     """Local file URI/path from an ACP client -> readable Path (None for non-file URIs).
-    Windows drive forms (Zed via wsl.exe) become ``/mnt/<drive>/...``."""
+    Windows drive forms from a WSL client become ``/mnt/<drive>/...`` only when
+    Hermes itself runs in WSL; native Windows keeps the drive path readable."""
     raw = (uri or "").strip()
     if not raw:
         return None
 
-    parsed = urlparse(raw)
-    if parsed.scheme and parsed.scheme != "file":
-        return None
-
-    if parsed.scheme == "file" and parsed.netloc and parsed.netloc not in {"", "localhost"}:
-        return None
-    path_text = unquote(parsed.path or "") if parsed.scheme == "file" else unquote(raw)
+    # Parse native drive paths before ``urlparse`` mistakes ``C:`` for a URI scheme.
+    # ``C:relative.md`` is drive-relative on Windows, not a local absolute path;
+    # never turn it into an attachable resource.
+    decoded_raw = unquote(raw)
+    is_windows_drive_path = (
+        len(raw) >= 3
+        and raw[0].isalpha()
+        and raw[1] == ":"
+        and raw[2] in "/\\"
+    )
+    if is_windows_drive_path:
+        path_text = decoded_raw
+    else:
+        parsed = urlparse(raw)
+        if parsed.scheme and parsed.scheme != "file":
+            return None
+        if parsed.scheme == "file" and parsed.netloc and parsed.netloc not in {"", "localhost"}:
+            return None
+        path_text = unquote(parsed.path or "") if parsed.scheme == "file" else unquote(raw)
 
     # file:///C:/Users/... or C:\Users\...
     if len(path_text) >= 3 and path_text[0] == "/" and path_text[2] == ":" and path_text[1].isalpha():
+        if len(path_text) < 4 or path_text[3] not in "/\\":
+            return None
         drive, rest = path_text[1], path_text[3:]
     elif len(path_text) >= 2 and path_text[1] == ":" and path_text[0].isalpha():
+        if len(path_text) < 3 or path_text[2] not in "/\\":
+            return None
         drive, rest = path_text[0], path_text[2:]
     else:
         return Path(path_text)
-    return Path("/mnt") / drive.lower() / rest.lstrip("/\\").replace("\\", "/")
+    normalized_rest = rest.lstrip("/\\").replace("\\", "/")
+    if is_wsl():
+        return Path("/mnt") / drive.lower() / normalized_rest
+    return Path(f"{drive}:/{normalized_rest}")
 
 
 def _decode_text_bytes(data: bytes, mime_type: str | None) -> str | None:

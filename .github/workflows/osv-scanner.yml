@@ -40,7 +40,7 @@ permissions:
 jobs:
   scan:
     name: Scan lockfiles
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
     with:
       # Scan explicit lockfiles rather than recursing, so we only look at
       # the five sources of truth and skip vendored / test / worktree dirs.
@@ -58,21 +58,16 @@ jobs:
   emit-status:
     name: Emit review status
     runs-on: ubuntu-latest
-    # Downloads one small SARIF artifact and runs two inline python snippets —
-    # minutes of work. Bound it so a wedged artifact download can't hold a
-    # runner for GitHub's 6-hour default (the only unbounded job left in
-    # .github/workflows; every other workflow already sets timeout-minutes).
-    timeout-minutes: 10
     needs: scan
     if: always()
     outputs:
       review_status: ${{ steps.emit.outputs.review_status }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download SARIF result
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: OSV Scanner SARIF file
           path: /tmp/osv-results

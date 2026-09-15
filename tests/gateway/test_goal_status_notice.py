@@ -78,5 +78,3 @@ async def test_goal_status_notice_defers_until_post_delivery_callback():
             "metadata": {"thread_id": "thread-123"},
         }
     ]
-
-

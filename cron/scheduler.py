@@ -98,6 +98,30 @@ def _set_cron_session_title(session_db, session_id, base_title):
         return deduped
 
 
+def _configured_provider_label(job: dict) -> str:
+    """Best available resolved provider/model label for a delivered cron failure.
+
+    Cron jobs may inherit their lane from fleet or global configuration, so a
+    job-local ``None`` must not turn a provider failure into an anonymous 429.
+    This is diagnostic only: execution still uses the canonical resolver.
+    """
+    try:
+        cfg = load_config() or {}
+    except Exception:
+        cfg = {}
+    cron_cfg = cfg.get("cron") or {}
+    model_cfg = cfg.get("model") or {}
+    provider = job.get("provider") or cron_cfg.get("model_provider") or model_cfg.get("provider")
+    model = job.get("model") or cron_cfg.get("model") or model_cfg.get("default")
+    if provider and model:
+        return f"provider {provider} (model {model})"
+    if provider:
+        return f"provider {provider}"
+    if model:
+        return f"model {model} (provider unresolved)"
+    return "provider unresolved"
+
+
 def _fallback_chain_phrase() -> str:
     """Fallback-chain clause for a provider-failure message: "exhausted" vs "none configured" (most
     installs). Fails open to the ambiguous wording if config can't be read — never crash delivery.
@@ -248,7 +272,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
         elif "quota" in lower:
             reason = "quota limit"
         return (
-            f"⚠️ Cron '{job_name}' failed: provider {reason}. "
+            f"⚠️ Cron '{job_name}' failed: provider {reason} ({_configured_provider_label(job)}). "
             f"{_fallback_chain_phrase()} "
             "Full details saved in cron output."
         )

@@ -45,3 +45,21 @@ def test_rate_limit_empty_chain_also_carries_the_hint(monkeypatch):
     msg = _summarize_cron_failure_for_delivery(job, "HTTP 429: rate limit exceeded")
     assert "No fallback chain configured" in msg
     assert "hermes fallback add" in msg
+
+
+def test_rate_limit_alert_names_the_resolved_fleet_provider(monkeypatch):
+    monkeypatch.setattr(
+        scheduler,
+        "load_config",
+        lambda: {
+            "model": {"default": "gpt-5.6-terra", "provider": "openai-codex"},
+            "fallback_providers": [],
+        },
+    )
+    monkeypatch.setattr(scheduler, "get_fallback_chain", lambda cfg: [])
+    job = {"name": "momentum", "id": "provider-none", "model": None, "provider": None}
+
+    msg = _summarize_cron_failure_for_delivery(job, "HTTP 429: usage limit reached")
+
+    assert "provider openai-codex" in msg
+    assert "gpt-5.6-terra" in msg

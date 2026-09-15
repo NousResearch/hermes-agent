@@ -9,6 +9,7 @@ gpt-5.4-mini after a Codex usage-limit 429.
 """
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from agent.chat_completion_helpers import rewrite_prompt_model_identity
 from agent.conversation_loop import (
@@ -46,6 +47,24 @@ def _count_cache_markers(messages):
         if isinstance(content, list):
             for part in content:
                 if isinstance(part, dict) and "cache_control" in part:
+                    count += 1
+    return count
+
+
+def _part_markers(messages):
+    # Only markers the openrouter envelope layout honors: inside a
+    # non-empty content part. A top-level-only marker is ignored by
+    # the provider, so it must not satisfy the wiring tests.
+    count = 0
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if (
+                    isinstance(part, dict)
+                    and "cache_control" in part
+                    and (part.get("text") or part.get("type") != "text")
+                ):
                     count += 1
     return count
 
@@ -354,3 +373,203 @@ class TestPeelReferenceGuidanceRoundTrip:
         ]
         peeled = peel_reference_guidance(messages, self._GUIDANCE)
         assert peeled == messages[:-1]
+
+
+class TestFailoverRedecorationWiring:
+    """#72869 gap: the retry loop must actually call
+    ``_redecorate_prompt_cache_for_provider`` at the top of each attempt.
+
+    The existing redecoration-policy tests call the helper directly and
+    none exercises the retry-loop wiring, so deleting the call site inside
+    ``run_conversation``'s retry loop (``agent/conversation_loop.py``
+    ~line 2001) leaves this whole file green while the #72626 regression
+    comes back. This drives the real retry loop
+    through ``AIAgent.run_conversation`` and inspects the actual outgoing
+    kwargs for the post-failover attempt.
+    """
+
+    def _agent_with_fallback(
+        self,
+        *,
+        base_url="https://open.bigmodel.cn/api/coding/paas/v4",
+        provider="zai",
+        model="glm-5.1",
+        fallback_model=None,
+    ):
+        # Imported here, not at module level: importing run_agent at collection
+        # time runs its loader before the autouse HERMES_HOME isolation
+        # fixture, reading the real Hermes home.
+        from run_agent import AIAgent
+
+        fb_chain = fallback_model
+        if fb_chain is None:
+            fb_chain = [
+                {
+                    "provider": "openrouter",
+                    "model": "anthropic/claude-opus-4.7",
+                    "base_url": "https://openrouter.ai/api/v1",
+                }
+            ]
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+        ):
+            agent = AIAgent(
+                api_key="primkey",
+                base_url=base_url,
+                provider=provider,
+                model=model,
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                fallback_model=fb_chain,
+            )
+        agent.client = MagicMock()
+        return agent
+
+    def test_retry_loop_redecorates_after_failover(self):
+        agent = self._agent_with_fallback()
+        # zai is not an Anthropic-caching route -> primary starts cache-off.
+        assert agent._use_prompt_caching is False
+
+        class _RateLimitError(Exception):
+            status_code = 429
+
+            def __init__(self):
+                super().__init__("Error code: 429 - rate limit exceeded")
+                self.response = SimpleNamespace(headers={})
+                self.body = {"error": {"message": "rate limit exceeded"}}
+
+        def _mock_response(content):
+            msg = SimpleNamespace(content=content, tool_calls=None)
+            choice = SimpleNamespace(message=msg, finish_reason="stop")
+            return SimpleNamespace(choices=[choice], model="fallback/model", usage=None)
+
+        sent_kwargs = []
+
+        def fake_api_call(api_kwargs):
+            sent_kwargs.append(api_kwargs)
+            if len(sent_kwargs) == 1:
+                raise _RateLimitError()
+            return _mock_response("answered via fallback")
+
+        mock_fb_client = MagicMock()
+        mock_fb_client.api_key = "fb-key"
+        mock_fb_client.base_url = "https://openrouter.ai/api/v1"
+        mock_fb_client._custom_headers = None
+        mock_fb_client.default_headers = None
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch("agent.agent_runtime_helpers.time.sleep"),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(mock_fb_client, "anthropic/claude-opus-4.7"),
+            ),
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ),
+            patch("agent.model_metadata.get_model_context_length", return_value=200000),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert len(sent_kwargs) == 2, "expected the primary attempt + one post-failover retry"
+        assert agent._fallback_activated is True
+        # openrouter + a claude-named model is a real cache-on route (envelope
+        # layout) -- the policy flip must be genuine, not stubbed.
+        assert agent._use_prompt_caching is True
+
+        primary_markers = _count_cache_markers(sent_kwargs[0].get("messages") or [])
+        fallback_part_markers = _part_markers(sent_kwargs[1].get("messages") or [])
+        assert primary_markers == 0, "primary (cache-off) request must carry no cache_control"
+        assert fallback_part_markers > 0, (
+            "the post-failover request never got cache markers in positions "
+            "the envelope layout honors (content parts) -- the retry loop "
+            "must call _redecorate_prompt_cache_for_provider before "
+            "rebuilding kwargs each attempt (agent/conversation_loop.py "
+            "~line 2001). The redecoration-policy tests call the helper "
+            "directly; only this test exercises the wiring."
+        )
+
+    def test_retry_loop_strips_cache_markers_on_failover_to_non_caching_route(self):
+        agent = self._agent_with_fallback(
+            base_url="https://openrouter.ai/api/v1",
+            provider="openrouter",
+            model="anthropic/claude-opus-4.7",
+            fallback_model=[
+                {
+                    "provider": "zai",
+                    "model": "glm-5.1",
+                    "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+                }
+            ],
+        )
+        assert agent._use_prompt_caching is True
+
+        class _RateLimitError(Exception):
+            status_code = 429
+
+            def __init__(self):
+                super().__init__("Error code: 429 - rate limit exceeded")
+                self.response = SimpleNamespace(headers={})
+                self.body = {"error": {"message": "rate limit exceeded"}}
+
+        def _mock_response(content):
+            msg = SimpleNamespace(content=content, tool_calls=None)
+            choice = SimpleNamespace(message=msg, finish_reason="stop")
+            return SimpleNamespace(choices=[choice], model="fallback/model", usage=None)
+
+        sent_kwargs = []
+
+        def fake_api_call(api_kwargs):
+            sent_kwargs.append(api_kwargs)
+            if len(sent_kwargs) == 1:
+                raise _RateLimitError()
+            return _mock_response("answered via fallback")
+
+        mock_fb_client = MagicMock()
+        mock_fb_client.api_key = "fb-key"
+        mock_fb_client.base_url = "https://open.bigmodel.cn/api/coding/paas/v4"
+        mock_fb_client._custom_headers = None
+        mock_fb_client.default_headers = None
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch("agent.agent_runtime_helpers.time.sleep"),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(mock_fb_client, "glm-5.1"),
+            ),
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ),
+            patch("agent.model_metadata.get_model_context_length", return_value=200000),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert len(sent_kwargs) == 2, "expected the primary attempt + one post-failover retry"
+        assert agent._fallback_activated is True
+        assert agent._use_prompt_caching is False
+
+        primary_part_markers = _part_markers(sent_kwargs[0].get("messages") or [])
+        fallback_markers = _count_cache_markers(sent_kwargs[1].get("messages") or [])
+        assert primary_part_markers > 0, (
+            "primary (cache-on) request must carry cache_control in content parts"
+        )
+        assert fallback_markers == 0, (
+            "the post-failover request leaked stale cache_control markers into "
+            "a non-caching route"
+        )

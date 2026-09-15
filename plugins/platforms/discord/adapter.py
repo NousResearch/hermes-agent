@@ -263,7 +263,7 @@ from gateway.platforms.helpers import (
 from gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
 from gateway.platforms.base import (
-    BasePlatformAdapter, ExecApprovalPrompt, SendResult,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult, build_auto_tts_output_path,
     cache_image_from_url, cache_image_from_bytes_async, cache_audio_from_url, cache_audio_from_bytes_async,
     cache_document_from_bytes_async, SUPPORTED_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS,
     _prefix_within_utf16_limit, utf16_len, validate_inbound_media_size,
@@ -1002,6 +1002,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     # characters — without a cap the adapter posts every 2000-char chunk back-to-back and floods the channel
     # (the incident delivered 60,698 chars as 31 messages).
     MAX_SPLIT_MESSAGES = 8
+    # A speaker reaction on a bot-authored response requests an attachment-only
+    # one-shot TTS rendering. Keep the accepted command surface deliberately
+    # narrow and deduplicate Discord gateway replays.
+    _TTS_REACTION_EMOJIS = frozenset({"🔈", "🔊"})
+    _TTS_REACTION_MAX_DEDUP_KEYS = 256
+    _TTS_REACTION_MAX_ATTEMPTS = 6
+    _TTS_REACTION_RETRY_DELAY_SECONDS = 10
 
     # Voice auto-disconnect after N idle seconds (discord.voice_channel_inactivity_timeout_seconds; 0 off).
     VOICE_TIMEOUT = 300
@@ -1107,6 +1114,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Discord's edit rate limit (~1 edit per stream tick for the rest of a long reply). Mirrors the
         # Telegram #58563 fix.
         self._last_overflow_preview: Dict[tuple, str] = {}
+        # A reaction on the source message while its 👀 marker is present arms
+        # one TTS render of the complete final response, before Discord chunks it.
+        self._tts_reaction_turns: Dict[str, Dict[str, Any]] = {}
+        self._tts_reaction_seen: Dict[str, None] = {}
         self._warned_fail_closed_default = False
 
     def _config_value(self, key: str, default: Any, *, env_key: Optional[str] = None) -> Any:
@@ -1232,6 +1243,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             intents.message_content = True
             intents.dm_messages = True
             intents.guild_messages = True
+            intents.reactions = True
             intents.members = _needs_server_members_intent(
                 self._allowed_user_ids, self._allowed_role_ids,
             )
@@ -1296,6 +1308,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             @self._client.event
             async def on_message(message: DiscordMessage):
                 await adapter_self._dispatch_discord_message(message)
+
+            @self._client.event
+            async def on_raw_reaction_add(payload):
+                await adapter_self._on_tts_reaction(payload)
+
+            @self._client.event
+            async def on_raw_reaction_remove(payload):
+                adapter_self._forget_tts_reaction(payload)
 
             @self._client.event
             async def on_message_edit(before: DiscordMessage, after: DiscordMessage):
@@ -2813,8 +2833,174 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Reactions enabled via ``extra.reactions`` (YAML, per profile) or ``DISCORD_REACTIONS``."""
         return self._extra_or_env_flag("reactions", "DISCORD_REACTIONS", "true", truthy=False)
 
+    @staticmethod
+    def _reaction_emoji_name(payload: Any) -> str:
+        emoji = getattr(payload, "emoji", None)
+        return str(getattr(emoji, "name", emoji) or "")
+
+    def _tts_reaction_key(self, payload: Any) -> str:
+        return ":".join((
+            str(getattr(payload, "user_id", "") or ""),
+            str(getattr(payload, "channel_id", "") or ""),
+            str(getattr(payload, "message_id", "") or ""),
+            self._reaction_emoji_name(payload),
+        ))
+
+    def _remember_tts_reaction(self, payload: Any) -> bool:
+        key = self._tts_reaction_key(payload)
+        if not key or key in self._tts_reaction_seen:
+            return False
+        self._tts_reaction_seen[key] = None
+        while len(self._tts_reaction_seen) > self._TTS_REACTION_MAX_DEDUP_KEYS:
+            self._tts_reaction_seen.pop(next(iter(self._tts_reaction_seen)), None)
+        return True
+
+    def _forget_tts_reaction(self, payload: Any) -> None:
+        self._tts_reaction_seen.pop(self._tts_reaction_key(payload), None)
+
+    def _is_tts_reaction_user_authorized(self, payload: Any) -> bool:
+        """Use the ordinary Discord authorization gate; the bot cannot TTS for strangers."""
+        user_id = str(getattr(payload, "user_id", "") or "")
+        if not user_id or not self._client:
+            return False
+        if user_id == str(getattr(getattr(self._client, "user", None), "id", "") or ""):
+            return False
+        guild = None
+        guild_id = getattr(payload, "guild_id", None)
+        if guild_id is not None:
+            with suppress(TypeError, ValueError):
+                guild = self._client.get_guild(int(guild_id))
+        channel_id = str(getattr(payload, "channel_id", "") or "")
+        return self._is_allowed_user(
+            user_id, getattr(payload, "member", None), guild=guild, is_dm=guild is None,
+            channel_ids={channel_id} if channel_id else None,
+        )
+
+    async def _fetch_tts_reaction_message(self, payload: Any) -> tuple[Optional[Any], Optional[Any]]:
+        if not self._client:
+            return None, None
+        channel_id, message_id = getattr(payload, "channel_id", None), getattr(payload, "message_id", None)
+        if channel_id is None or message_id is None:
+            return None, None
+        channel = self._client.get_channel(int(channel_id))
+        if channel is None:
+            try:
+                channel = await self._client.fetch_channel(int(channel_id))
+            except Exception:
+                logger.debug("[%s] Cannot fetch reaction channel %s", self.name, channel_id, exc_info=True)
+                return None, None
+        if not hasattr(channel, "fetch_message"):
+            return channel, None
+        try:
+            return channel, await channel.fetch_message(int(message_id))
+        except Exception:
+            logger.debug("[%s] Cannot fetch reaction message %s", self.name, message_id, exc_info=True)
+            return channel, None
+
+    @staticmethod
+    def _visible_tts_reaction_text(content: str) -> str:
+        content = re.sub(r"(?m)^\s*\[\[(?:audio_as_voice|as_document)\]\]\s*$", "", content)
+        return re.sub(r"(?m)^\s*MEDIA:\S+\s*$", "", content).strip()
+
+    def _begin_tts_reaction_turn(self, event: MessageEvent) -> None:
+        """Track the source message while its final response is still assembling."""
+        message_id = str(getattr(event, "message_id", "") or "")
+        author_id = str(getattr(getattr(getattr(event, "raw_message", None), "author", None), "id", "") or "")
+        chat_id = str(getattr(getattr(event, "source", None), "chat_id", "") or "")
+        if message_id and author_id and chat_id:
+            self._tts_reaction_turns[message_id] = {
+                "author_id": author_id, "chat_id": chat_id, "pending": False, "response_text": "",
+            }
+
+    def _remember_tts_reaction_response(self, *, reply_to: Optional[str], content: str) -> None:
+        """Capture the unsplit final response for a speaker reaction armed mid-turn."""
+        turn = self._tts_reaction_turns.get(str(reply_to or ""))
+        if turn:
+            turn["response_text"] = content
+
+    async def _attempt_tts_reaction_delivery(
+        self, *, chat_id: str, spoken_text: str, reply_to: str
+    ) -> None:
+        """Synthesize and send one TTS reaction attempt, cleaning up any output."""
+        from tools.tts_tool import text_to_speech_tool
+
+        raw = await asyncio.to_thread(
+            text_to_speech_tool, text=spoken_text,
+            output_path=build_auto_tts_output_path(self.platform),
+        )
+        result = json.loads(raw)
+        paths = [str(path) for path in (result.get("file_paths") or [result.get("file_path")])
+                 if path and os.path.isfile(str(path))]
+        if not result.get("success") or not paths:
+            raise RuntimeError(result.get("error", "no attachable audio output"))
+        for path in paths:
+            try:
+                await self.send_voice(chat_id=chat_id, audio_path=path, reply_to=reply_to)
+            finally:
+                with suppress(OSError):
+                    os.remove(path)
+
+    async def _send_tts_reaction_audio(self, *, chat_id: str, text: str, reply_to: str) -> None:
+        from tools.tts_tool import check_tts_requirements
+
+        if not check_tts_requirements():
+            logger.warning("[%s] Reaction TTS requested but no TTS provider is available", self.name)
+            return
+        spoken_text = self.prepare_tts_text(text)
+        if not spoken_text:
+            return
+        for attempt in range(1, self._TTS_REACTION_MAX_ATTEMPTS + 1):
+            try:
+                await self._attempt_tts_reaction_delivery(
+                    chat_id=chat_id, spoken_text=spoken_text, reply_to=reply_to,
+                )
+                return
+            except Exception:
+                logger.warning(
+                    "[%s] Reaction TTS attempt %s/%s failed",
+                    self.name, attempt, self._TTS_REACTION_MAX_ATTEMPTS, exc_info=True,
+                )
+                if attempt < self._TTS_REACTION_MAX_ATTEMPTS:
+                    await asyncio.sleep(self._TTS_REACTION_RETRY_DELAY_SECONDS)
+        await self.send(
+            chat_id, "🎙️ Audio generation failed after 6 attempts. Please try again later.",
+            reply_to=reply_to, metadata={"non_conversational": True},
+        )
+
+    async def _on_tts_reaction(self, payload: Any) -> bool:
+        """Read a reacted-to bot message aloud for an authorized user, once per reaction."""
+        if self._reaction_emoji_name(payload) not in self._TTS_REACTION_EMOJIS:
+            return False
+        if not self._is_tts_reaction_user_authorized(payload) or not self._remember_tts_reaction(payload):
+            return False
+        message_id = str(getattr(payload, "message_id", "") or "")
+        turn = self._tts_reaction_turns.get(message_id)
+        if turn:
+            turn["pending"] = True
+            await self.send(
+                str(turn["chat_id"]), "🎙️ Generating audio…", reply_to=message_id,
+                metadata={"non_conversational": True},
+            )
+            return True
+        channel, message = await self._fetch_tts_reaction_message(payload)
+        bot_id = str(getattr(getattr(self._client, "user", None), "id", "") or "")
+        if not message or str(getattr(getattr(message, "author", None), "id", "") or "") != bot_id:
+            self._forget_tts_reaction(payload)
+            return False
+        text = self._visible_tts_reaction_text(str(getattr(message, "content", "") or ""))
+        if not self.prepare_tts_text(text):
+            self._forget_tts_reaction(payload)
+            return False
+        chat_id = str(getattr(channel, "id", getattr(payload, "channel_id", "")))
+        reply_to = str(getattr(payload, "message_id", ""))
+        await self.send(chat_id, "🎙️ Generating audio…", reply_to=reply_to,
+                        metadata={"non_conversational": True})
+        await self._send_tts_reaction_audio(chat_id=chat_id, text=text, reply_to=reply_to)
+        return True
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction and record durable handling state."""
+        self._begin_tts_reaction_turn(event)
         message = event.raw_message
         acked = False
         if self._reactions_enabled() and hasattr(message, "add_reaction"):
@@ -2822,17 +3008,22 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         await asyncio.to_thread(self._record_discord_processing_start, event, emoji_ack=acked)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for final reaction and durable state."""
+        """Swap the in-progress reaction for final reaction and deliver any armed full-response TTS."""
         await asyncio.to_thread(self._record_discord_processing_complete, event, outcome)
-        if not self._reactions_enabled():
-            return
-        message = event.raw_message
-        if hasattr(message, "add_reaction"):
-            await self._remove_reaction(message, "👀")
-            if outcome == ProcessingOutcome.SUCCESS:
-                await self._add_reaction(message, "✅")
-            elif outcome == ProcessingOutcome.FAILURE:
-                await self._add_reaction(message, "❌")
+        message_id = str(getattr(event, "message_id", "") or "")
+        turn = self._tts_reaction_turns.pop(message_id, None)
+        if self._reactions_enabled():
+            message = event.raw_message
+            if hasattr(message, "add_reaction"):
+                await self._remove_reaction(message, "👀")
+                if outcome == ProcessingOutcome.SUCCESS:
+                    await self._add_reaction(message, "✅")
+                elif outcome == ProcessingOutcome.FAILURE:
+                    await self._add_reaction(message, "❌")
+        if turn and turn.get("pending") and outcome == ProcessingOutcome.SUCCESS and turn.get("response_text"):
+            await self._send_tts_reaction_audio(
+                chat_id=str(turn["chat_id"]), text=str(turn["response_text"]), reply_to=message_id,
+            )
 
     @staticmethod
     def _message_reference_from_ids(message_id, channel) -> "discord.MessageReference":
@@ -2953,6 +3144,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 message_id=message_ids[0] if message_ids else None,
                 raw_response={"message_ids": message_ids}
             )
+            if final_delivery:
+                self._remember_tts_reaction_response(reply_to=reply_to, content=content)
             return await self._record_response_async(reply_to, result, content, final_delivery)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)

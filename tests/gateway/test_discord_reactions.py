@@ -66,6 +66,7 @@ def adapter():
         fetch_channel=AsyncMock(),
         user=SimpleNamespace(id=99999, name="HermesBot"),
     )
+    adapter._allowed_user_ids = {"42"}
     return adapter
 
 
@@ -139,5 +140,78 @@ async def test_reactions_disabled_via_env(adapter, monkeypatch):
     raw_message.remove_reaction.assert_not_awaited()
     # Response should still be sent
     adapter.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_speaker_reaction_fetches_one_bot_reply_and_requests_audio(adapter, monkeypatch):
+    """An authorized speaker reaction reads exactly the reacted-to bot response."""
+    channel = SimpleNamespace(
+        id=123,
+        fetch_message=AsyncMock(return_value=SimpleNamespace(
+            author=SimpleNamespace(id=99999), content="**Visible** reply",
+        )),
+    )
+    adapter._client.get_channel = lambda _id: channel
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="status"))
+    speak = AsyncMock()
+    monkeypatch.setattr(adapter, "_send_tts_reaction_audio", speak)
+    payload = SimpleNamespace(message_id=88, channel_id=123, user_id=42, emoji="🔊")
+
+    assert await adapter._on_tts_reaction(payload) is True
+    assert await adapter._on_tts_reaction(payload) is False
+    adapter.send.assert_awaited_once_with(
+        "123", "🎙️ Generating audio…", reply_to="88", metadata={"non_conversational": True},
+    )
+    speak.assert_awaited_once_with(chat_id="123", text="**Visible** reply", reply_to="88")
+
+
+def test_speaker_reaction_strips_transport_only_media_directives(adapter):
+    assert adapter._visible_tts_reaction_text(
+        "Visible text\n[[audio_as_voice]]\nMEDIA:/tmp/voice-message.ogg\n[[as_document]]"
+    ) == "Visible text"
+
+
+@pytest.mark.asyncio
+async def test_speaker_reaction_retries_tts_six_times_before_one_failure_notice(adapter, monkeypatch):
+    """Transient TTS faults wait ten seconds and retry without making the user re-react."""
+    attempt = AsyncMock(side_effect=[RuntimeError("provider unavailable")] * 6)
+    sleep = AsyncMock()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="failure"))
+    monkeypatch.setattr("tools.tts_tool.check_tts_requirements", lambda: True)
+    monkeypatch.setattr(adapter, "_attempt_tts_reaction_delivery", attempt, raising=False)
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+
+    await adapter._send_tts_reaction_audio(chat_id="123", text="Visible reply", reply_to="88")
+
+    assert attempt.await_count == 6
+    assert sleep.await_args_list == [((10,),)] * 5
+    adapter.send.assert_awaited_once_with(
+        "123", "🎙️ Audio generation failed after 6 attempts. Please try again later.",
+        reply_to="88", metadata={"non_conversational": True},
+    )
+
+
+@pytest.mark.asyncio
+async def test_speaker_reaction_during_processing_voices_the_complete_unsplit_response(adapter, monkeypatch):
+    """Reacting to the source message before ✅ arms one TTS job for the full final response."""
+    raw_message = SimpleNamespace(
+        author=SimpleNamespace(id=42), add_reaction=AsyncMock(), remove_reaction=AsyncMock(),
+    )
+    event = _make_event("1", raw_message)
+    monkeypatch.setattr(adapter, "_record_discord_processing_start", lambda *args, **kwargs: None)
+    monkeypatch.setattr(adapter, "_record_discord_processing_complete", lambda *args, **kwargs: None)
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="status"))
+    speak = AsyncMock()
+    monkeypatch.setattr(adapter, "_send_tts_reaction_audio", speak)
+
+    await adapter.on_processing_start(event)
+    payload = SimpleNamespace(message_id=1, channel_id=123, user_id=42, emoji="🔈")
+    assert await adapter._on_tts_reaction(payload) is True
+    adapter._remember_tts_reaction_response(reply_to="1", content="full response across all Discord chunks")
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    speak.assert_awaited_once_with(
+        chat_id="123", text="full response across all Discord chunks", reply_to="1",
+    )
 
 

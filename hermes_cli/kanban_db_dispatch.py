@@ -71,6 +71,11 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ``review`` is the lifecycle lane for authorized reviewer/closer recovery.
+# Its PR link is the handoff artifact, while a ready-lane PR link still means
+# an implementation worker would duplicate already-open work.
+_ACTIVE_PR_RECOVERY_LANES = frozenset({"review"})
+
 
 @dataclass
 class DispatchResult:
@@ -1214,9 +1219,9 @@ def check_respawn_guard(
     if err and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
-    # Review-lane spawns stop here: a recent completed run and a fresh PR URL
-    # are the canonical *inputs* to a review handoff, not duplicate-work signals.
-    if lane == "review":
+    # Authorized recovery-lane spawns stop here: a recent completed run and a
+    # fresh PR URL are canonical handoff inputs, not duplicate-work signals.
+    if lane in _ACTIVE_PR_RECOVERY_LANES:
         return None
 
     # 3. Completed run within guard window. Exception: an explicit re-queue

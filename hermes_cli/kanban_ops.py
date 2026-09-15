@@ -105,6 +105,13 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
             "auto_assigned_default": res.auto_assigned_default,
+            "respawn_guarded": [
+                {"task_id": tid, "reason": reason}
+                for (tid, reason) in res.respawn_guarded
+            ],
+            "rate_limited": res.rate_limited,
+            "skipped_locked": res.skipped_locked,
+            "memory_pressure": res.memory_pressure,
         }, ascii=True)
         return 0
     print(f"Reclaimed:    {res.reclaimed}")

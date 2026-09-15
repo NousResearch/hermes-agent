@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,6 +30,7 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_db_dispatch as kbd
+from hermes_cli import kanban_ops
 
 
 @pytest.fixture
@@ -476,6 +478,32 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         assert kbd.check_respawn_guard(
             conn, review_id, lane="review"
         ) == "rate_limit_cooldown"
+
+
+def test_dispatch_json_exposes_suppression_reasons(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Operators can distinguish an active PR, quota cooldown, lock, and pressure."""
+    monkeypatch.setattr(
+        kanban_ops.kbd,
+        "dispatch_once",
+        lambda *args, **kwargs: kbd.DispatchResult(
+            respawn_guarded=[("active-pr-task", "active_pr")],
+            rate_limited=["quota-task"],
+            skipped_locked=True,
+            memory_pressure="elevated",
+        ),
+    )
+
+    assert kanban_ops._cmd_dispatch(
+        SimpleNamespace(dry_run=True, max=None, failure_limit=kbd.DEFAULT_FAILURE_LIMIT, json=True)
+    ) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["respawn_guarded"] == [{"task_id": "active-pr-task", "reason": "active_pr"}]
+    assert payload["rate_limited"] == ["quota-task"]
+    assert payload["skipped_locked"] is True
+    assert payload["memory_pressure"] == "elevated"
 
 
 def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(

@@ -24,6 +24,20 @@ approval:
   blocklist_message: "Tá an t-ordú seo ar an liosta cosc gan choinníoll agus ní féidir é a cheadú."
 
 gateway:
+  # Pairing DM sent to an unknown sender. `{command}` is the literal CLI
+  # invocation the owner runs; keep it verbatim in every language.
+  pairing:
+    greeting:     "Dia duit~ Ní aithním thú fós!"
+    code:         "Seo do chód péireála: `{code}`"
+    approve_hint: "Iarr ar úinéir an bhota é seo a rith:\n`{command}`"
+    rate_limited: "An iomarca iarratas péireála faoi láthair~ Bain triail eile as ar ball!"
+
+  # One-time notice when a platform has no home channel. `{brand}` is the
+  # active skin's agent name ("Hermes" for the stock skin); `{cmd}` is the
+  # platform's sethome command.
+  home_channel:
+    notice: "📬 Níl cainéal baile socraithe do {platform}. Is é an cainéal baile an áit a seachadann {brand} torthaí jabanna cron agus teachtaireachtaí trasardáin.\n\nClóscríobh {cmd} chun an comhrá seo a dhéanamh mar do chainéal baile, nó déan neamhaird de."
+
   approval_expired: "⚠️ Tá an cead imithe in éag (níl an gníomhaire ag fanacht níos mó). Iarr ar an ngníomhaire iarracht eile a dhéanamh."
   draining:         "⏳ Ag fanacht le {count} gníomhaire(í) gníomhach roimh atosú..."
   goal_cleared:     "✓ Sprioc glanta."

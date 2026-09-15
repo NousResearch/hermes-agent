@@ -20,6 +20,20 @@ approval:
   blocklist_message: "이 명령은 무조건 차단 목록에 있으며 승인할 수 없습니다."
 
 gateway:
+  # Pairing DM sent to an unknown sender. `{command}` is the literal CLI
+  # invocation the owner runs; keep it verbatim in every language.
+  pairing:
+    greeting:     "안녕하세요~ 아직 당신을 알지 못해요!"
+    code:         "페어링 코드입니다: `{code}`"
+    approve_hint: "봇 소유자에게 다음 명령을 실행해 달라고 요청하세요:\n`{command}`"
+    rate_limited: "지금 페어링 요청이 너무 많아요~ 나중에 다시 시도해 주세요!"
+
+  # One-time notice when a platform has no home channel. `{brand}` is the
+  # active skin's agent name ("Hermes" for the stock skin); `{cmd}` is the
+  # platform's sethome command.
+  home_channel:
+    notice: "📬 {platform}에 홈 채널이 설정되어 있지 않습니다. 홈 채널은 {brand}이(가) 크론 작업 결과와 플랫폼 간 메시지를 전달하는 곳입니다.\n\n이 채팅을 홈 채널로 만들려면 {cmd}를 입력하세요. 원하지 않으면 무시해도 됩니다."
+
   approval_expired: "⚠️ 승인이 만료되었습니다 (에이전트가 더 이상 대기하지 않습니다). 에이전트에게 다시 시도하도록 요청하세요."
   draining:         "⏳ 재시작 전에 활성 에이전트 {count}명을 정리하는 중..."
   goal_cleared:     "✓ 목표가 삭제되었습니다."

@@ -16,6 +16,7 @@ import json
 import os
 import re
 import time
+from agent.i18n import t
 from contextlib import suppress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
@@ -95,14 +96,15 @@ class GatewayInboundMixin:
                 else ""
             )
             reply = (
-                f"Hi~ I don't recognize you yet!\n\n"
-                f"Here's your pairing code: `{code}`\n\n"
-                f"Ask the bot owner to run:\n"
-                f"`hermes {profile_arg}pairing approve "
-                f"{platform_name} {code}`"
+                t("gateway.pairing.greeting") + "\n\n"
+                + t("gateway.pairing.code", code=code) + "\n\n"
+                + t(
+                    "gateway.pairing.approve_hint",
+                    command=f"hermes {profile_arg}pairing approve {platform_name} {code}",
+                )
             )
         else:
-            reply = "Too many pairing requests right now~ Please try again later!"
+            reply = t("gateway.pairing.rate_limited")
         if adapter:
             await adapter.send(source.chat_id, reply)
         if not code:

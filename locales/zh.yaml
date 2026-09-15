@@ -20,6 +20,20 @@ approval:
   blocklist_message: "此命令位于无条件拦截列表中，无法被批准。"
 
 gateway:
+  # Pairing DM sent to an unknown sender. `{command}` is the literal CLI
+  # invocation the owner runs; keep it verbatim in every language.
+  pairing:
+    greeting:     "你好~ 我还不认识你！"
+    code:         "这是你的配对码：`{code}`"
+    approve_hint: "请让机器人的所有者运行：\n`{command}`"
+    rate_limited: "当前配对请求过多~ 请稍后再试！"
+
+  # One-time notice when a platform has no home channel. `{brand}` is the
+  # active skin's agent name ("Hermes" for the stock skin); `{cmd}` is the
+  # platform's sethome command.
+  home_channel:
+    notice: "📬 {platform} 尚未设置主频道。主频道是 {brand} 投递定时任务结果和跨平台消息的地方。\n\n输入 {cmd} 将此聊天设为主频道，或忽略此消息。"
+
   approval_expired: "⚠️ 批准已过期（代理不再等待）。请让代理重试。"
   draining:         "⏳ 正在等待 {count} 个活跃代理结束后重启..."
   goal_cleared:     "✓ 目标已清除。"

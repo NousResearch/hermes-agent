@@ -16,7 +16,7 @@ vi.mock('@/lib/query-client', () => ({ queryClient: { invalidateQueries: vi.fn()
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
 
 const { ProfileTag } = await import('./profile-tag')
-const { setProfileColor } = await import('@/store/profile')
+const { $profiles, setProfileColor } = await import('@/store/profile')
 
 afterEach(cleanup)
 
@@ -26,6 +26,15 @@ describe('ProfileTag', () => {
 
     const tag = screen.getByRole('img', { name: 'Profile: xavier' })
     expect(tag.textContent).toBe('x')
+  })
+
+  it('uses a cached display name for a renamed profile badge', () => {
+    $profiles.set([{ display_name: 'Homelab', name: 'it-homelab' }] as never)
+
+    render(<ProfileTag profile="it-homelab" />)
+
+    const tag = screen.getByRole('img', { name: 'Profile: Homelab (it-homelab)' })
+    expect(tag.textContent).toBe('H')
   })
 
   it('normalizes an empty profile to default, which shows the home glyph', () => {

@@ -1,541 +1,854 @@
-# Hermes Work — Inteligência Operacional
+# Inteligência Centralizada — Hermes Workstation (Hermes Work)
 
-> Fonte consolidada e unificada de conhecimento duradouro sobre a arquitetura, o funcionamento real, os fluxos entre processos, contratos de comunicação e invariantes do **Hermes Work** (Hermes Workstation).
-> Este documento complementa ARCHITECTURE.md, CURRENT_STATE.md, DECISIONS.md, CONSTRAINTS.md, TESTING.md, UPSTREAM_DELTA.md e ROADMAP.md.
-> Em caso de divergência, o código e os testes automatizados do branch `main` são a fonte da implementação; os documentos de arquitetura são a fonte das invariantes.
+Este documento atua como a **base de conhecimento canônica e fonte única da verdade (inteligência centralizada)** sobre o funcionamento, a arquitetura de baixo nível, os contratos de persistência e a integração do **Hermes Workstation (Hermes Work)** nesta branch/fork downstream do repositório Hermes Agent.
+
+Qualquer desenvolvedor ou agente de IA que for trabalhar neste domínio **DEVE** ler este documento para se situar sobre os conceitos, invariantes arquiteturais, armadilhas conhecidas e restrições estabelecidas antes de modificar qualquer código em `apps/desktop/`, `workstation/`, `tools/browser_workstation.py` ou superfícies de integração associadas.
+
+> **Atualização operacional:** este documento foi enriquecido com as validações
+> de runtime, persistência, Gateway, superfícies de cliente e qualificação de
+> release realizadas na sessão de 2026-09-12/14. Os contratos de código e os
+> testes em `main` continuam sendo a autoridade final quando houver divergência.
 
 ---
 
-## 1. Modelo Mental e Princípios Fundamentais
+## 1. O que é o Hermes Workstation?
 
-Hermes Work é uma camada de produto de alta fidelidade integrada downstream ao núcleo do Hermes Agent. **Não é um segundo agente**, nem um subsistema isolado de conversas, tarefas ou memória.
+O **Hermes Workstation** é uma camada de produto de primeira classe que adiciona uma interface rica de Desktop (via Electron) e um motor de navegação isolado para automação de tarefas web e desktop com controle híbrido (Humano + Agente).
 
-Três princípios fundamentais governam toda a arquitetura:
+Em vez de simplesmente rodar no terminal ou usar navegadores remotos em nuvem de forma volátil, o Hermes Work integra uma aplicação Desktop nativa com um **perfil de Chromium próprio e dedicado** (totalmente isolado do navegador pessoal Chrome/Edge/Brave do usuário). Isso permite navegar, raspar dados, autenticar em serviços e agir na web em nome do usuário com persistência de sessões, sem vazamento de dados privados.
 
-1. **O prompt caching por conversa é sagrado**: o contexto longo reutiliza prefixos em cache a cada turno. Mutações arbitrárias, trocas de toolsets no meio da conversa, mensagens consecutivas com o mesmo papel ou recriação do system prompt invalidam o cache e multiplicam custos desnecessariamente.
-2. **O core é estreito (narrow waist), a capacidade vive nas bordas**: ferramentas universais vivem nas bordas; capacidades de desktop vivem no session toolset (`desktop_ui`, `workstation_browser`, `vault`), habilitadas exclusivamente pelas capacidades da sessão, nunca por variáveis de ambiente globais no processo backend.
-3. **Owners canônicos estritos**: cada domínio possui exatamente um dono canônico.
+A arquitetura trata o Desktop e o Core Agent como entidades desacopladas que podem rodar em processos separados, máquinas distintas ou através de pontes de rede (loopback, LAN autenticada, Tailscale), mantendo invariantes rigorosos de segurança e persistência de sessão.
 
-| Domínio / Estado / Capacidade | Owner Canônico | Mecanismo de Persistência / Acesso |
-|---|---|---|
-| Conversas, sessões e continuidade | Hermes SessionDB | SQLite (`~/.hermes/state.db`) com índice FTS5 |
-| Cards, estados, eventos, runs e notificações | Kanban Hermes (`hermes_cli.kanban_db`) | SQLite (`~/.hermes/kanban.db`) |
-| Memória duradoura e fatos do usuário | Hermes Memory | SQLite (`~/.hermes/memories.db`) |
-| Conhecimento Pessoal / Documentação Local-First | Hermes Vault (`workstation/vault.py`) | Diretório local de Markdown (`~/.hermes/vault/`) + SQLite Index |
-| Página viva e automação de browser | BrowserTask + BrowserRuntime ativo | Instância Electron `WebContentsView` / CDP Session |
-| Cookies, localStorage, IndexedDB e cache | Sessão Electron/Chromium isolada | Perfil de disco isolado em `%LOCALAPPDATA%/HermesWorkstation/Browser/User Data` |
-| Evidências de execução e auditoria passo a passo | Execution Journal | Arquivos append-only JSONL (`~/.hermes/workstation/journal/*.jsonl`) |
-| Governança, risco e aprovação de ações | ScopedPolicyEngine | Políticas declarativas (`workstation/policy.py`) |
-| Projeções, telemetria e estado exposto a clientes | Workstation Controller / IPC Contracts | HTTP Loopback Bearer Token + Electron IPC bridge |
+### Princípios Fundamentais:
+1. **Controle Híbrido Sem Fricção:** O usuário e o agente podem alternar a qualquer momento a posse da aba ativa ("Take Control" / "Release Control") sem quebrar a sessão ou perder o estado do DOM.
+2. **Economia Radical de Tokens:** O sistema prioriza percepção estruturada/semântica do DOM em vez de queimar milhares de tokens de visão com capturas de tela contínuas a cada clique.
+3. **Isolamento e Segurança Fail-Closed:** O controlador de browser é acessível apenas em loopback (`127.0.0.1`), protegido por Bearer Token único. Caso a infraestrutura do browser caia durante uma tarefa ativa, o agente falha de forma fechada (*fail-closed*), impedindo vazamento de dados para instâncias genéricas ou sem cookies.
+4. **Cintura Estreita (Narrow Waist):** A capacidade do navegador de desktop é atribuída dinamicamente à sessão ativa no Gateway, nunca poluindo o schema central permanente do LLM nem quebrando o cache de prompt (*prompt caching*).
 
-### 1.1 Fluxo Operacional Canônico
+---
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User as Usuário
-    participant GW as Gateway / SessionDB
-    participant KB as Workstation Kanban Bridge
-    participant Agent as AIAgent Loop
-    participant Tool as browser_workstation
-    participant Runtime as WorkstationBrowserRuntime (Electron)
-    participant CDP as Chromium WebContentsView
-    participant Journal as ExecutionJournal
+## 2. Componentes Principais
 
-    User->>GW: Envia pedido multietapas / online
-    GW->>KB: promote_request_if_multistep(prompt, session_id)
-    KB->>KB: Cria Card no kanban_db & Inicia ExecutionJournal
-    GW->>Agent: Executa turno com HERMES_KANBAN_TASK injetado
-    Agent->>Tool: Chama browser_navigate(url, task_id)
-    Tool->>Runtime: IPC workstation-browser:control (action: navigate)
-    Runtime->>CDP: webContents.debugger (Page.navigate)
-    Runtime->>Journal: Registra NAVIGATION / ACTION
-    CDP-->>Runtime: Carregamento e DOM concluídos
-    Runtime-->>Tool: Retorna snapshot estruturado (refIds, layout, texto)
-    Tool-->>Agent: Resultado da ferramenta
-    Agent->>GW: Resposta final do turno
-    GW->>KB: complete_task_with_report(BrowserTaskReport)
-    KB->>Journal: Registra TASK_COMPLETED
+### 2.1. Electron Desktop App (`apps/desktop/`)
+Aplicação local do usuário construída com Electron + Vite + React.
+- **Superfície de Conversação:** Chat construído com `@assistant-ui/react`, gerenciando streaming de tokens, blocos de ferramentas e visualização de artefatos.
+- **Superfícies de Exibição do Navegador:** O navegador interno NÃO é um `<iframe>` nem um webview HTML comum; ele utiliza **`WebContentsView`** nativo do Chromium acoplado diretamente ao compositor da janela principal (`BrowserWindow`).
+- **Hosts de Exibição:** Engloba o painel lateral contextual do Chat (`WorkstationBrowserPane`), o painel global de tarefas (`BrowserHub`) e o painel Kanban.
+
+### 2.2. Chromium / BrowserRuntime (`WorkstationBrowserRuntime`)
+O motor interno do browser localizado em `apps/desktop/electron/workstation-browser-runtime.ts`. O Hermes não usa os perfis pessoais do usuário nem contamina o navegador do sistema operacional.
+- **Isolamento de Dados:** Gerencia seu próprio diretório de perfil (`HermesWorkstation/Browser/User Data`), com banco SQLite de cookies, armazenamento LocalStorage e cache isolados.
+- **Controle CDP de Baixo Nível:** Emite cliques e digitação usando Chrome DevTools Protocol (`wc.debugger`) diretamente no compositor do Chromium, gerando eventos de mouse com coordenadas reais (`cdpClick`) em vez de scripts sintéticos JS que falham em SPAs modernos.
+- **Desacoplamento Arquitetural:** A responsabilidade do `BrowserRuntime` é abstrata. A implementação canônica apoia-se no Chromium do Electron, mas a arquitetura é projetada para não acoplar irreversivelmente regras de negócio ao Electron (permitindo adapters alternativos como headless Lightpanda ou Chromium remoto).
+
+### 2.3. O Conceito Central de `BrowserTask`
+Este é o conceito **MAIS IMPORTANTE** da abstração web. Uma `BrowserTask` representa a **posse semântica** e o **ciclo de vida estrutural** de uma tarefa de automação:
+- **Relacionamento 1-para-1 estrito:** No processo Electron, uma `BrowserTask` possui no máximo uma aba ao vivo (`live page` / `BrowserEntry`) vinculada pelo identificador `ownerTaskId`. Uma tarefa restaurada pode permanecer lazy, sem `WebContents`, até ser materializada; nunca existem duas páginas independentes para o mesmo `taskId` nem uma página compartilhada por tarefas.
+- **Ciclo de vida flexível e estados:** O contrato persistido usa `visible`, `hidden` e `parked`, com `fresh`, `restored` e `recreated` como estados de recuperação. Rótulos como `active`, `waiting-for-human`, `background`, `recent` e `stalled` são projeções operacionais da Task Rail/recursos, não novos estados duráveis. A tarefa pode ser escondida (`hide`), estacionada (`park`) e exibida (`show`).
+- **Ocultar/Estacionar não destrói a página:** Invocar `hideTask` ou `parkTask` **NÃO encerra** o processo ou o objeto da página (o DOM, listeners, variáveis e contexto JS continuam vivos na memória do processo). Apenas a visualização no host (janela Electron) é destacada/removida (`window.contentView.removeChildView`).
+- **Destruição explícita:** Uma task só é descartada e liberada da memória quando há invocação explícita de `destroyTask(taskId)` ou ação direta de fechamento pelo usuário.
+
+### 2.4. Persistência Estrutural (`BrowserSessionState`)
+O `BrowserSessionState` é o subsistema responsável por capturar o estado estrutural das abas e tarefas, salvando-o atomicamente em disco:
+- **Onde reside:** O arquivo composto canônico é `workstationBasePath() / Runtime / browser-session.json`. Ele contém as abas lógicas, a aba ativa e o snapshot de `BrowserTask`. O antigo `browser-tasks.json` continua sendo aceito apenas como origem de migração quando o arquivo composto ainda não existe; o fluxo normal grava a projeção composta.
+- **Resolução do diretório:** `HERMES_WORKSTATION_HOME` pode apontar para uma raiz isolada (obrigatório em validações de candidato); sem override, Windows usa `%LOCALAPPDATA%\HermesWorkstation`, macOS usa `~/Library/Application Support/HermesWorkstation` e Linux usa `$XDG_CONFIG_HOME/HermesWorkstation` ou `~/.config/HermesWorkstation`.
+- **Separação de responsabilidades:** O estado de sessão persistido é estritamente **estrutural** (IDs de abas, ordem no array, apontador de aba ativa, políticas de recuperação e URLs seguras).
+- **Invariante de Segurança:** Segredos digitados, senhas, tokens de autenticação extraídos e estado volátil da heap Javascript **nunca** são persistidos nesses arquivos JSON em texto claro.
+- **Sanitização:** A URL persistida aceita somente `about:blank` ou HTTP(S), rejeita userinfo, barras invertidas, caracteres de controle, percent-encoding malformado, query/hash e padrões reconhecíveis de credencial, JWT, OTP ou token opaco. O limite é 2.048 caracteres; títulos de página não atravessam o boundary durável (`safeTitleMetadata` retorna `null`). Há no máximo 128 abas e uma aba por `BrowserTask`; duplicatas inválidas são descartadas.
+- **Escrita atômica e tolerância a Windows:** a projeção é normalizada antes da escrita, gravada em temporário privado `0600` e promovida por rename. Em `EPERM`/`EBUSY`, o runtime tenta `copyFileSync` e remove o temporário. Se a troca falhar, a última intenção normalizada permanece em memória para a próxima tentativa, enquanto o disco conserva o snapshot completo anterior. Versões futuras não são sobrescritas nem rebaixadas por uma versão antiga.
+- **Restart Recovery (Restauração Preguiçosa / Lazy):** Ao reiniciar a aplicação, as tarefas prévias são restauradas logicamente em estado `parked`, com `recoveryState: 'restored'`. Abas comuns podem ser recriadas a partir de URL segura; abas de tarefa ficam pendentes e a página Chromium real só é instanciada ao usar/mostrar a tarefa. Se a página recuperada já estiver `stale/page-gone`, um novo ID de view é criado sem duplicar a identidade lógica da tarefa. Isso economiza memória e deixa explícita a diferença entre recuperar metadados e recuperar o objeto `WebContents`.
+
+---
+
+## 3. Topologia de Comunicação e Protocolos
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              HERMES CORE AGENT                              │
+│                      (CLI / Gateway / Tool Calling Loop)                    │
+└───────────────────────┬─────────────────────────────────────▲───────────────┘
+                        │ HTTP POST (JSON)                    │
+                        │ Loopback 127.0.0.1:<port>           │ Resposta Sanitizada
+                        │ Authorization: Bearer <token>       │ (Force-Redacted)
+                        ▼                                     │
+┌─────────────────────────────────────────────────────────────┴───────────────┐
+│                       WORKSTATION CONTROLLER SERVICE                        │
+│               (Loopback HTTP Server em browser-control.json)                │
+└───────────────────────┬─────────────────────────────────────────────────────┘
+                        │ Chamadas Internas / Métodos de Runtime
+                        ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         WorkstationBrowserRuntime                           │
+│                      (Electron Main Process Layer)                          │
+│                                                                             │
+│  ┌───────────────────────────────┐     IPC (preload.ts bridge)              │
+│  │   Chromium WebContentsView    │◄─────────────────────────────┐           │
+│  │   (Aba viva / CDP Input)      │                              │           │
+│  └───────────────────────────────┘                              │           │
+└─────────────────────────────────────────────────────────────────┼───────────┘
+                                                                  │
+                                   ┌──────────────────────────────┴───────────┐
+                                   │         Desktop UI (React Renderer)      │
+                                   │  - Chat (WorkstationBrowserPane)         │
+                                   │  - Browser Hub (Central de Tarefas)      │
+                                   └──────────────────────────────────────────┘
 ```
 
----
+### 3.1. Agente Core (Python) ↔ Desktop Controller (Electron)
+A comunicação não depende de pipes instáveis de terminal. Ela ocorre via **Loopback TCP Local com Bearer Auth**:
 
-## 2. Limites entre Processos e Comunicação (IPC / Loopback)
+1. **Arquivo Descritor de Controle (`browser-control.json`):**
+   Ao inicializar o controlador, o Electron abre um servidor HTTP em `127.0.0.1` numa porta dinâmica (passando `0` para alocação automática pelo sistema operacional) e gera um token aleatório seguro (`crypto.randomBytes(32)`).
+   Ele grava o descritor atômico em:
+   - **Windows:** `%LOCALAPPDATA%\HermesWorkstation\Runtime\browser-control.json`
+   - **macOS:** `~/Library/Application Support/HermesWorkstation/Runtime/browser-control.json`
+   - **Linux:** `~/.config/HermesWorkstation/Runtime/browser-control.json`
 
-O ecossistema Hermes Work opera através de múltiplos processos especializados do Sistema Operacional, desacoplados em tempo e espaço.
-
-```
-+-------------------------------------------------------------------------------+
-|                       ELECTRON DESKTOP (Processo GUI)                         |
-|  - apps/desktop/electron/main.ts                                              |
-|  - workstation-browser-runtime.ts (Chromium host via WebContentsView)         |
-|  - Servidor Vite / React UI (Chat, Right-Rail Preview, Kanban Board, Vault)   |
-+-------------------------------------------------------------------------------+
-       │                                                    ▲
-       │ Electron IPC (preload.ts contextBridge)            │
-       ▼                                                    │
-+------------------------------------+          +-------------------------------+
-|       SUBPROCESSO RENDERER         |          |    WORKSTATION CONTROLLER     |
-| - Previews em tempo real           |          | - HTTP Loopback (127.0.0.1)   |
-| - Painel lateral de Browser (Chat) |          | - Auth: Bearer <auth_token>   |
-| - Projeções visuais do Kanban      |          | - Porta dinâmica em discovery │
-| - Grafo Interativo do Vault (D3)   |          +-------------------------------+
-+------------------------------------+                      ▲
-                                                            │ HTTP JSON / Tools
-                                                            ▼
-+-------------------------------------------------------------------------------+
-|                       PYTHON BACKEND (Processo Agente)                        |
-|  - .venv/Scripts/python.exe -> tui_gateway/server.py / run_agent.py           |
-|  - tools/browser_workstation.py (Driver CDP / Controller Client)              |
-|  - workstation/kanban.py (Bridge e Journaling)                                |
-|  - workstation/vault.py (Engine PKM / Obsidian compatibility)                 |
-|  - workstation/policy.py (ScopedPolicyEngine)                                 |
-+-------------------------------------------------------------------------------+
-```
-
-### 2.1 Backend Python & Gateway
-- O processo Python roda como processo nativo do SO (`python.exe`), completamente dissociado da visibilidade da janela.
-- Conecta-se ao Electron através de chamadas estruturadas e canais de controle.
-- Não assume que a janela está aberta, visível ou focada. Toda execução de ferramentas é headless-capable.
-
-### 2.2 Workstation Controller (HTTP Loopback)
-- **Endereço**: Rigorosamente fixado em `127.0.0.1` (loopback). Nenhuma exposição pública ou em interface LAN sem proxy reverso autenticado.
-- **Autenticação**: Bearer token criptograficamente randômico gerado a cada inicialização (`Authorization: Bearer <token>`).
-- **Arquivo de Controle de Descoberta**: Gravado atomicamente em diretório com permissões restritas (`%LOCALAPPDATA%/HermesWorkstation/Runtime/controller.json` ou `~/.hermes/workstation/controller.json`). Contém:
-  ```json
-  {
-    "url": "http://127.0.0.1:54321",
-    "token": "sec_xxxxxxxxxxxxxxxx",
-    "pid": 12345,
-    "version": "1.0",
-    "started_at": 1726300000
-  }
-  ```
-- **Validação de Payload**: Toda requisição valida rigorosamente `session_id`, `task_id`, `kanban_card_id` e `run_id`. Entradas nulas, vazias, com caracteres de controle ou excessivamente longas são rejeitadas com erro 400.
-- **Endpoints Chave**:
-  - `POST /v1/action`: Execução de comandos CDP (`navigate`, `click`, `type`, `extract_items`, etc.).
-  - `GET /v1/status`: Verificação de saúde, PID e estado das abas gerenciadas.
-  - `POST /v1/attach`: Vinculação de viewport com `preferredTaskId` para o right-rail preview.
-- **Limpeza Segura**: O arquivo de descoberta só é apagado no shutdown se o PID e o token do arquivo ainda corresponderem ao processo atual, evitando que um processo encerrando remova o arquivo de um novo processo recém-iniciado.
-
-### 2.3 Electron Desktop & Runtime IPC
-- O Electron gerencia `WebContentsView` para cada aba e tarefa.
-- A comunicação entre a interface do usuário (React) e o processo principal do Electron é intermediada por APIs fortemente tipadas em `preload.ts` via `contextBridge.exposeInMainWorld('workstationBrowser', ...)`.
-- As mensagens nunca trafegam como código executável ou strings não-escapadas; usam serialização JSON segura.
-
----
-
-## 3. Ciclo de Vida dos Processos, Boot Handshake e Resiliência
-
-### 3.1 O Desafio do Cold-Start no Windows
-No ambiente Windows, ferramentas de segurança (Windows Defender / AMSI) e a compilação JIT de primeiro uso introduzem uma latência de 5 a 10 segundos na importação pesada de submódulos do Python (`tui_gateway.server`, `tui_gateway.ws`, `aiohttp`, `websockets`).
-
-- **Pre-Warming de Módulos**: Implementado via `_warm_gateway_module()` em `hermes_cli/web_server.py`. Importações críticas são aquecidas de forma assíncrona para evitar que o processo Electron esgote o timeout de conexão antes do gateway responder.
-- **Buffering de Stdout no Windows**: Quando executado sem um terminal TTY interativo (ex: spawnado como subprocesso pelo Electron), o Python no Windows ativa o buffer de saída padrão por padrão. Isso retém a impressão do banner de porta (`Gateway running on http://127.0.0.1:<port>`).
-  - **Mitigação**: Injeção da variável de ambiente `PYTHONUNBUFFERED=1` no spawn do processo e chamadas explícitas de `sys.stdout.flush()` logo após a inicialização dos listeners HTTP/WS.
-
-### 3.2 Handshake com Dual Probes (HTTP + WebSocket) e Janela de 45s
-O processo principal do Electron aguarda a prontidão do backend utilizando uma estratégia de verificação dupla:
-1. **Probe HTTP**: Executa requisições `GET` em `http://127.0.0.1:<port>/` com backoff exponencial.
-2. **Probe WebSocket**: Valida a estabilidade do canal em tempo real em `ws://127.0.0.1:<port>/api/ws?token=...` via `probeGatewayWebSocketWithRetry`.
-3. **Janela de Tolerância de 45 Segundos**: Em vez de falhar prematuramente em 10 segundos, o runner Electron suporta até 45s de janela no cold boot, garantindo inicialização bem-sucedida mesmo sob carga pesada do sistema ou atualizações de antivírus.
-
-### 3.3 Graceful Shutdown e Árvore de Processos
-1. Ao receber `SIGTERM` ou evento de fechamento da janela:
-   - Sinaliza cancelamento imediato a agentes em execução (`agent.request_interrupt()`).
-   - Notifica clientes conectados no WebSocket e fecha conexões ativas.
-   - Encerra o listener HTTP loopback.
-   - Apaga o arquivo `controller.json` (apenas se PID e token coincidirem).
-   - Mata a árvore de subprocessos com segurança no Windows (`taskkill /T /F /PID ...` controlado).
-
----
-
-## 4. Roteamento Fail-Closed do Browser e Vinculação de Tarefas
-
-O subsistema de navegação web do Hermes implementa roteamento estrito e fail-closed para evitar qualquer divisão de cérebro (split-brain) entre o navegador integrado do Workstation e eventuais runners legados de browser.
-
-### 4.1 Despacho Unidirecional Externo
-Em `tools/browser_tool.py`, a função de roteamento `_workstation_or_legacy` intercepta toda invocação de ferramentas de navegação:
-- Se a sessão atual estiver marcada com a capacidade de Workstation Desktop ou se um Workstation Controller estiver ativo e respondendo no loopback, o despacho é delegado exclusivamente a `workstation_routed_browser_handler`.
-- Todas as operações (`browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_extract_items`) trafegam via `_dispatch` para a rota HTTP `POST 127.0.0.1:<port>/v1/action`.
-
-### 4.2 Vinculação Canônica de Tarefa (`_bind(task_key)`)
-- Na primeira ação executada com sucesso através do Workstation Controller para uma determinada chave de tarefa (`session_id:task_id`), o runtime executa `_bind(task_key)`.
-- A partir deste instante, a tarefa está **formalmente vinculada** ao Workstation Desktop Browser.
-
-### 4.3 Política Fail-Closed (Anti-Fallback Silencioso)
-Se durante o andamento da tarefa o controlador do Desktop cair, reiniciar ou ficar indisponível:
-- **NUNCA** fazer fallback silencioso para o browser legado (Playwright headless externo ou Chrome desacoplado).
-- O sistema falha fechado imediatamente, levantando a exceção canônica `WorkstationBrowserUnavailable`.
-- **Justificativa Arquitetural**: O fallback silencioso para outro processo de navegador destruiria o histórico da sessão, perderia cookies de autenticação inseridos pelo usuário, duplicaria requisições e causaria desorientação severa no raciocínio do modelo.
-
----
-
-## 5. Isolamento Multi-Sessão no Navegador e Prevenção de Hijacking
-
-Uma das maiores armadilhas de arquitetura em agentes de desktop é a disputa de abas entre sessões simultâneas.
-
-### 5.1 O Problema do Tab Hijacking (Resolvido em HW-019)
-- **Causa Raiz**: Se o usuário alternava entre Sessão 1 e Sessão 2, ferramentas como `browser_snapshot`, `browser_click` ou scripts de percepção que executavam antes de um `browser_navigate` associavam `activeTab.ownerTaskId = currentTaskId`. Se a aba ativa pertencia à Sessão 1, a Sessão 2 sequestrava a aba da Sessão 1, sobrescrevendo a navegação e destruindo o trabalho anterior.
-- **Solução Arquitetural**:
-  No método `executeControlRequest` em `apps/desktop/electron/workstation-browser-runtime.ts`:
-  ```typescript
-  // Se a aba ativa já pertence a outra tarefa, NÃO roube a aba.
-  // Aloque imediatamente uma aba dedicada isolada para a nova tarefa.
-  if (active && active.ownerTaskId && active.ownerTaskId !== taskId) {
-    targetEntry = this.entryForTask(taskId, true, 'about:blank')
-  }
-  ```
-
-### 5.2 Eliminação de Contenção de Viewport
-- **Anti-Pattern Antigo**: Cada ferramenta (`browser_click`, `browser_type`, `browser_scroll`) chamava forçadamente `this.activateTab(entry.id)`. Isso provocava piscamento de tela, roubava o foco do usuário enquanto navegava em outros apps e trazia a aba de background para frente.
-- **Padrão Correto**: Ferramentas em segundo plano interagem exclusivamente com o `WebContentsView` correspondente via **Chrome DevTools Protocol (CDP)** direto (`webContents.debugger.sendCommand`). O viewport ativo só é alterado se o usuário explicitamente clicar na aba ou solicitar inspeção em primeiro plano.
-
-### 5.3 Roteamento de Preview por Sessão (Session-Aware Right Rail)
-- O canal `workstation-browser:attach` no `preload.ts` e `workstation-browser-runtime.ts` aceita o argumento opcional `preferredTaskId`.
-- Quando o usuário visualiza o chat da Sessão A, o componente `WorkstationBrowserPane` requisita `attach(bounds, 'chat', sessionA_taskId)`.
-- Se a Sessão B executar navegações em segundo plano, os eventos emitidos (`onOpenChatPreview`) são filtrados no store do React (`use-preview-routing.ts`):
-  ```typescript
-  if (event.sessionId !== activeSessionKey()) {
-    // Ignora expansão de preview de sessão em background
-    return
-  }
-  ```
-  Isso impede que abas de outras tarefas estourem na tela do usuário no meio de uma conversa diferente.
-
----
-
-## 6. Resiliência de Segundo Plano e Proteções de Minimização (Windows Hardening)
-
-O Hermes Work foi projetado para operar com **zero interrupção em background**: o usuário pode despachar comandos longos de pesquisa ou automação web, minimizar o Hermes Work e utilizar outros programas (como seu Google Chrome pessoal, IDEs ou jogos) sem degradação de performance ou conflitos.
-
-### 6.1 Invariantes de Segundo Plano no Chromium / Electron
-1. **`backgroundThrottling: false`**: Configurado explicitamente em cada `WebContentsView` e na janela principal. Impede que o Chromium congele timers de JavaScript (`setTimeout`, `setInterval`), animações e requisições de rede assíncronas quando a janela perde o foco.
-2. **Flag `--disable-renderer-backgrounding`**: Injetada nos switches de linha de comando do Chromium em `main.ts`:
-   ```typescript
-   app.commandLine.appendSwitch('disable-renderer-backgrounding')
+   Exemplo de payload do descritor:
+   ```json
+   {
+     "version": 1,
+     "pid": 12345,
+     "url": "http://127.0.0.1:54321",
+     "token": "4f8a92...c29b",
+     "runtime": "electron-chromium",
+     "profile_path": ".../HermesWorkstation/Browser/User Data",
+     "created_at": "2026-09-14T12:00:00.000Z"
+   }
    ```
-   Garante que o agendador de processos do Windows não marque as threads de renderização como de baixa prioridade quando ocultas.
-3. **Estacionamento de Abas Inativas com Preservação de Compositor (`parkEntry`)**:
-   Em vez de desconectar o `WebContentsView` do DOM ou destruí-lo ao ficar inativo, o runtime move a visualização para uma fatia de 1x1 pixel no canto superior (`{ x: 0, y: 0, width: 1, height: 1 }`). Isso mantém o pipeline de composição do Chromium e as sessões de CDP 100% ativas sem penalidade de renderização gráfica.
-4. **Proteção Contra Colapso de Viewport na Minimização do Windows**:
-   No Windows, quando uma janela é minimizada, o SO envia eventos de redimensionamento onde as dimensões da janela caem para zero ou valores degenerados.
-   - **Correção Implementada**: `reconcileViewportGeometry()` em `workstation-browser-runtime.ts` inspeciona `this.window.isMinimized()`. Se minimizado, aborta a reconfiguração destrutiva e preserva a última geometria válida.
-   - Ao receber o evento `'restore'`, a geometria original é restaurada com precisão.
-5. **Automação via CDP vs Input Nativo**:
-   O Hermes Work **não emula cliques de mouse pelo Windows** (`mouse_event` / `SendInput`). Ele envia comandos CDP (`Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`). Portanto, o cursor do mouse do usuário e o foco do teclado no seu Chrome pessoal permanecem 100% livres e independentes.
+   O descritor real também inclui `runtime: "electron-chromium"`,
+   `profile_path` e `created_at`. O arquivo é escrito atomicamente com modo
+   privado quando suportado e é removido no shutdown somente se ainda pertence
+   ao mesmo token/processo. Ele nunca deve ser impresso, retornado ao modelo ou
+   publicado pela rota LAN.
+2. **Roteamento em `tools/browser_workstation.py`:**
+   Toda ferramenta `browser_*` (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_scroll`, `browser_back`, `browser_press`, `browser_vision`, `browser_console`, etc.) é interceptada antes do backend legado:
+   - Lê o descritor local e envia um POST JSON com cabeçalho `Authorization: Bearer <token>`.
+   - **Fast Health Probe:** O status do controlador possui cache de disponibilidade de 0.75s (`_AVAILABILITY_CACHE_SECONDS`) com timeout de probe de 200ms (`_HEALTH_TIMEOUT_SECONDS`), garantindo que o agente não sofra atrasos se o Desktop estiver fechado.
+   - **Contrato HTTP:** `GET /health` retorna prontidão; `GET /resources` retorna a projeção de recursos; `GET /events?task_id=...&limit=...` retorna eventos limitados; `POST /v1/action` executa uma ação `browser_*`. Todas as rotas exigem o Bearer exato e respostas são envelopes JSON `{success, ...}`.
+   - **Payload de ação:** o envelope leva `action`, `arguments`, `task_id`, `session_id` e, quando disponível, `kanban_card_id`/`card_id` e `run_id`. Identidades são strings limitadas a 256 caracteres e sem caracteres de controle; ações não iniciadas por `browser_` são rejeitadas.
+   - **Proteção de Carga:** O servidor loopback do Electron impõe `MAX_CONTROL_BODY_BYTES = 512 * 1024` para repelir requisições malformadas ou payload bombs. A leitura de eventos é limitada a 200 itens e o cliente Python também normaliza esse limite.
+3. **Fail-Closed Rigoroso:**
+   Assim que o agente executa a primeira ação no Workstation Browser em uma tarefa, essa tarefa é registrada em `_BOUND_TASKS`. Se o controlador Desktop for encerrado ou cair no meio da tarefa, a execução **falha de forma fechada (fail-closed)** com erro explicativo, em vez de realizar um fallback silencioso para outro navegador em nuvem ou sem cookies. Isso protege credenciais e evita ações em ambientes desautenticados.
+4. **Redação no Boundary:**
+   Toda resposta de ferramentas do Workstation passa obrigatoriamente por `redact_sensitive_text` antes de cruzar o limite para o modelo LLM. Segredos do descritor, portas, tokens e cookies brutos nunca chegam ao prompt do modelo.
+
+### 3.1.1. Resolução por sessão e fallback
+
+O health check não decide sozinho se a sessão deve conhecer a superfície. A
+capacidade de schema é resolvida pela sessão do Gateway:
+
+- `HERMES_SESSION_SOURCE=desktop` tem precedência sobre
+  `HERMES_SESSION_PLATFORM`; somente essa superfície recebe os schemas
+  `browser_*` quando `browser.workstation.enabled` (ou o default habilitado)
+  permite o Workstation Browser;
+- o probe de disponibilidade (`200 ms`, cache de `0,75 s`) é apenas uma decisão
+  de execução/recovery, nunca um gate process-global que remove ferramentas do
+  prompt;
+- `HERMES_WORKSTATION_BROWSER_ROUTING` ou
+  `browser.workstation.routing_enabled` controla fallback. O default é
+  interno-only: se o controller não estiver disponível, a chamada falha
+  fechada mesmo para tarefa ainda não vinculada;
+- se routing estiver explicitamente habilitado, somente uma tarefa ainda não
+  vinculada pode cair na lane legada. Depois de qualquer ação interna bem-
+  sucedida, a chave `task_id`/`session_id` entra em `_BOUND_TASKS` e nunca é
+  silenciosamente movida para outro browser.
+
+Essa separação é necessária porque um processo Hermes pode atender várias
+sessões e topologias. `HERMES_DESKTOP=1` identifica quem iniciou um backend,
+mas não prova que uma GUI está conectada e, portanto, não pode ser usado para
+decidir a presença do schema de browser.
+
+### 3.2. Frontend UI (React) ↔ Processo Principal (Electron IPC)
+A interface de usuário comunica-se com o runtime via ponte segura definida em `apps/desktop/electron/preload.ts`:
+- **Canal de Estado Reativo:** `hermes:workstation-browser:state` (envia atualizações de abas ativas, URLs, títulos, status de carregamento, erros e proprietário do controle).
+- **Ações IPC Expostas:**
+  - `attach(bounds, host)`: acopla a view nativa nas coordenadas do painel.
+  - `detach()`: desanexa a view da janela mantendo a aba viva.
+  - `setVisible(visible)`: oculta/restaura o `WebContentsView` instantaneamente no compositor nativo.
+  - `clearError()`: limpa o último erro registrado da tela.
+  - `transferViewport(targetHost, bounds)`: transfere a exibição entre o painel lateral de chat (`chat`) e a central global (`hub`).
+  - `takeControl()` / `releaseControl()`: gerencia a alternância de posse entre humano e IA.
+
+O preload expõe somente métodos tipados da ponte; o renderer não recebe o
+objeto `BrowserWindow`, `WebContentsView`, token do controller ou acesso Node
+genérico. Os handlers usam `senderWindow(event)` e rejeitam invocações cujo
+sender não seja um `BrowserWindow`. O canal de estado envia a projeção inteira
+(`ready`, `attached`, `viewportHost`, `paused`, `controlOwner`, tabs, tasks,
+downloads e `lastError`) para todas as janelas Desktop vivas.
+
+### 3.3. Projeção comum de recursos e eventos
+
+O runtime é o dono de página/`BrowserTask`; o `ExecutionJournal` é o dono da
+história durável. `workstation-browser-resources.ts` apenas deriva uma
+projeção UI-neutral versionada, sem criar um terceiro armazenamento:
+
+- `schema_version: 1`, `runtime: "electron-chromium"` e
+  `generated_at` formam o envelope;
+- há um recurso `browser:electron-chromium`, um
+  `browser-task:<taskId>` por tarefa e um
+  `execution-journal:<taskId>` por diário;
+- cada recurso preserva `task_id`, `session_id`, permissões e estado. A
+  linhagem de tarefa inclui `kanban_card_id` e `run_id`; evidências apontam para
+  `browser://controller`, `browser://tab/<id>` e
+  `workstation://task/<id>` quando apropriado;
+- `agent-control` só aparece quando o controller está pronto, o browser não
+  está pausado e `controlOwner === 'agent'`; caso contrário, a permissão cai
+  para `read`;
+- `execution_status` é derivado de evidência real: `hold` em pausa,
+  `waiting-for-human` para lease/controle humano, `stalled` sem controller ou
+  tab viva, e `running` apenas quando há ambos;
+- o recurso mostra no máximo os 200 eventos mais recentes. A inspeção profunda
+  continua no diário da tarefa; a projeção não deve copiar a linha do tempo
+  inteira.
+
+O cliente Python em `workstation/client.py` é somente um adaptador de
+transporte: valida schema/runtime, normaliza recursos/eventos e retorna um
+envelope degradado (`available: false`, arrays vazios e erro limitado a 500
+caracteres) quando o controller cai. Dashboard e TUI usam o mesmo cliente,
+respectivamente em `/api/workstation/resources` e
+`/api/workstation/events`, e nos métodos JSON-RPC `workstation.resources` e
+`workstation.events`. Nenhum desses clientes cria tarefa, grava estado ou
+substitui o controller.
+
+### 3.4. Relação com Gateway, backend e SessionDB
+
+O Desktop conversa com um backend `hermes serve` headless por WebSocket/JSON-RPC
+para chat, sessões, streaming e comandos; esse processo não precisa servir a
+SPA do Dashboard. `dashboard` e `serve` compartilham o servidor oficial, mas
+são superfícies independentes. Para runtimes antigos, o launcher pode usar
+`dashboard --no-open` somente como fallback de compatibilidade quando `serve`
+não existe.
+
+O Browser Controller local continua sendo a ponte específica para as ações
+`browser_*` e para o Chromium que vive no processo Electron. O Gateway mantém
+a identidade de sessão e expõe apenas projeções autenticadas/read-only para
+clientes. SessionDB continua sendo a autoridade do histórico de chat e dos
+IDs de sessão; Workstation só referencia essa identidade em `sessionHost` e
+nos envelopes de ação/evento.
 
 ---
 
-## 7. Ergonomia Avançada do Browser: CDP no Windows, Canvas SPA e Auth Walls
+## 4. Surfaces e Hosts de Exibição
 
-A automação de browsers em ambiente de desktop real exige lidar com particularidades profundas de rendering, emulação de hardware e barreiras de segurança da web contemporânea.
+- **Chat Browser View (`WorkstationBrowserPane`):** View do browser atrelada a uma janela de conversa (contextual). Fica fixada à sessão onde foi gerada.
+- **Browser Hub:** View do browser principal que concentra todas as tarefas do Workstation (global).
+- **Single-Host Contract:** Tanto o Chat Browser View quanto o Browser Hub são apenas **hosts de exibição**. O objeto vivo (a aba real do Chromium) é único e muda de Host conforme o uso, garantindo que não existam abas fantasmas operando a mesma automação de forma assíncrona/duplicada.
+- **Supressão Mútua:** Quando a tela cheia do Browser Hub é aberta, o painel lateral do chat é automaticamente suprimido para impedir instâncias concorrentes disputando limites e foco na mesma janela.
 
-### 7.1 Windows Virtual Keycodes em CDP (`browser_type`)
-No Windows, o motor Blink do Chromium exige o campo `windowsVirtualKeyCode` nas mensagens de evento `Input.dispatchKeyEvent`. Caso contrário, combinações de teclado com modificadores (como `Ctrl+A`) são ignoradas, gerando falhas onde campos de texto concatenam valores em vez de substituí-los.
+### 4.1. Geometria nativa e transferência de viewport
 
-- **Pipeline de Limpeza em 4 Estágios** para `clear_before_typing: true`:
-  1. **DOM Selection**: Executa `window.getSelection()` e `document.activeElement.select()` via script de avaliação.
-  2. **CDP Ctrl+A**: Dispara `Input.dispatchKeyEvent` com `modifiers: 2`, `key: 'a'`, `code: 'KeyA'` e `windowsVirtualKeyCode: 65`.
-  3. **CDP Backspace**: Dispara `Input.dispatchKeyEvent` com `key: 'Backspace'`, `code: 'Backspace'` e `windowsVirtualKeyCode: 8`.
-  4. **DOM Value Cleansing**: Em caso de nós teimosos de framework (React/Vue/Angular), zera explicitamente `el.value = ''` e despacha eventos sintéticos `input` e `change`.
+Chat e Hub normalmente compartilham a mesma `BrowserWindow`; o host não é
+identificado pelo sender IPC sozinho. Por isso, o renderer envia um `host`
+explícito em `attach`/`transferViewport` e um `expectedHost` em atualizações de
+limite. O runtime:
 
-### 7.2 Canvas / WebGL SPA Settlement (Cegueira em Single-Page Apps)
-Determinadas aplicações web (ex: Google Maps, interfaces CAD, dashboards gráficos) renderizam a interface primária em `<canvas>` WebGL. Nesses cenários, a árvore de acessibilidade tradicional retorna vazia (0 elementos detectáveis), induzindo o agente ao erro ("página em branco").
+- desanexa a view antiga antes de anexar a nova, mantendo uma única view viva;
+- converte DIP do renderer para pixels nativos usando `webContents.zoomFactor`;
+- valida números finitos, garante largura/altura mínimas de 1 px e limita
+  `x/y/width/height` aos `contentBounds` da janela;
+- ignora uma atualização de resize se `expectedHost` não corresponder ao
+  `viewportHost` vigente. Isso evita que um pane desmontado ou em background
+  mova a view para o próprio retângulo;
+- reconcilia bounds em `resize`, `maximize` e `unmaximize`, e remove os
+  listeners no teardown;
+- deixa `WebContentsView` estacionado em background com frame rate reduzido
+  (por default 6 FPS) e privilegia a view visível (até 60 FPS), sem fechar a
+  página.
 
-- **Polling Adaptativo de Hidratação**: O runtime executa verificação em fatias de 300ms (até 1200ms) aguardando nós essenciais de feed ou painel (`div[role="feed"]`, `#pane`, `div[jsaction]`).
-- **Injeção de Fallback Textual**: Se a árvore de acessibilidade permanecer vazia mas houver texto ou nós no DOM, o snapshot embute explicitamente a captura de `document.body.innerText` acompanhada de um aviso estruturado: `[SPAs baseadas em Canvas/WebGL detectadas - use busca textual ou coordenadas visuais]`.
-
-### 7.3 Human Handoff Proativo (`detectAuthWall`)
-Anti-bots modernos (Cloudflare Turnstile, reCAPTCHA Enterprise, Akamai Bot Manager, desafios de autenticação de dois fatores e telas de `/account-verification`) foram desenhados para impedir navegação automatizada. Um agente ingênuo gasta dezenas de turnos clicando aleatoriamente em iframes inacessíveis.
-
-- **Detecção Heurística Automática**: `detectAuthWall()` analisa títulos, URLs e marcadores semânticos de segurança no DOM.
-- **Marcação no Snapshot**: O snapshot é imediatamente prefixado com `⚠️ [HUMAN_HANDOFF_REQUIRED]` e o objeto de retorno contém `wall_detected: true`.
-- **Banner no Desktop UI**: O Workstation Browser projeta um aviso de destaque na barra superior (`lastError`), orientando o usuário humano a resolver a validação em primeiro plano. O agente pausa o fluxo de cliques cegos até que a navegação prossiga.
-
-### 7.4 Extração Estruturada em Lote (`browser_extract_items`)
-- **Problema**: Agentes de pesquisa gastavam entre 10 e 15 turnos consecutivos injetando scripts fragmentados via `browser_console` para raspar listas de produtos no Mercado Livre ou Amazon, estourando o contexto da conversa.
-- **Solução**: Ferramenta nativa `browser_extract_items`. O runtime detecta heurística e automaticamente containers repetitivos de pesquisa (`[data-component-type="s-search-result"]`, `li.ui-search-layout__item`, `div.Nv2PK`, `article`, etc.).
-- **Retorno Normalizado**: Em um único turno do modelo, entrega uma lista consolidada contendo:
-  ```json
-  [
-    {
-      "index": 1,
-      "title": "Produto Exemplo",
-      "url": "https://site.com/item/123",
-      "price": "R$ 199,00",
-      "rating": "4.8",
-      "reviews": "1.250 avaliações",
-      "snippet": "Descrição curta do item..."
-    }
-  ]
-  ```
+O teste integrado confirma a sequência de bounds stale → bounds aceito,
+transferência Hub → Chat, maximize/restore e limpeza de hide/park/destroy.
+Uma alteração de bounds jamais deve criar uma segunda aba, trocar o
+`ownerTaskId` ou ser aceita apenas porque veio de um renderer válido.
 
 ---
 
-## 8. Hermes Vault: Knowledge Management Local-First (Compatível com Obsidian)
+## 5. Eficiência Radical de Tokens e Estratégia de Percepção
 
-O Hermes Vault é o motor de gestão de conhecimento pessoal (PKM) do Hermes Work, projetado para operar com soberania de dados e interoperabilidade total com o ecossistema Obsidian.
+Agentes convencionais que automatizam navegadores costumam enviar capturas de tela contínuas em alta resolução para o LLM a cada clique ou rolagem. Isso consome entre **1.500 e 2.500 tokens de visão por ação**, levando a custos proibitivos e esgotamento rápido de rate-limits.
 
-### 8.1 Filosofia Local-First
-- **Localização Canônica**: Diretório local `~/.hermes/vault/`.
-- **Formato Nativo**: Arquivos `.md` puros com frontmatter YAML padrão. Nenhuma base de dados proprietária ou binária é necessária para ler as notas; o usuário pode abrir o diretório diretamente no Obsidian, VS Code ou qualquer editor de texto.
+O Hermes Workstation emprega uma abordagem de **Percepção Semântica Estruturada**:
 
-### 8.2 Mecanismo de Indexação Bidirecional (`VaultIndex`)
-Implementado em `workstation/vault.py`:
-- **Wikilinks**: Reconhece sintaxes `[[Nome da Nota]]`, `[[Nome da Nota#Seção]]` e `[[Nome da Nota|Texto de Apelido]]`.
-- **Tags**: Extrai tags inline (`#tecnologia`, `#roadmap/v1`) e metadados de tags definidos no frontmatter (`tags: [...]`).
-- **Tabela de Backlinks**: Mantém mapa reativo de links de entrada e saída. Quando uma nota é editada pelo agente ou usuário, os nós de referência são recalculados incrementalmente.
+### 5.1. Árvore Semântica Compacta (`formatInventory`)
+Ao solicitar um snapshot da página (`browser_snapshot` ou como resultado automático de `browser_click` / `browser_type`), o runtime injeta o script `inventoryScript` e formata os dados em texto estruturado:
+```text
+URL: https://exemplo.com/login
+Title: Entrar no Sistema
 
-### 8.3 Interface Gráfica no Desktop (`apps/desktop/src/plugins/vault/`)
-A aba do Vault no Electron é organizada em 3 colunas:
-1. **Navegador Estrutural**: Árvore de pastas, lista de notas e nuvem de tags.
-2. **Editor e Leitor Markdown**: Suporte a visualização rica, syntax highlighting de código e atalhos rápidos.
-3. **Painel de Relações e Grafo Interativo**:
-   - Componente visual baseado em D3.js (force-directed graph).
-   - Renderiza nós de documentos e conexões de links bidirecionais em tempo real, com suporte a zoom, arraste de nós e filtragem por profundidade.
+Interactive elements:
+- [c1] input "E-mail ou usuário"
+- [c2] input "Senha"
+- [c3] button "Entrar" disabled
+- [c4] a "Esqueci minha senha"
 
-### 8.4 Toolset do Agente (`"vault"`)
-Ferramentas dedicadas expostas ao agente sob o toolset `"vault"`:
-- `vault_search`: Busca semântica e textual com suporte a filtros por tag e path.
-- `vault_read`: Leitura de notas com metadados estruturados e backlinks associados.
-- `vault_write`: Criação e atualização atômica de notas (com garantia de flush em disco).
-- `vault_append`: Anexação de notas rápidas, seções de diário ou logs de pesquisa.
-- `vault_backlinks`: Descoberta de todas as notas que fazem referência a um documento específico.
-- `vault_graph`: Obtenção da matriz topológica de nós e arestas do grafo de conhecimento.
-
----
-
-## 9. Governança e Ciclo de Vida de Extensões de Navegador
-
-O suporte a extensões do Chrome (arquivos `.crx` e diretórios desempacotados) é tratado como uma capability sensível governada pelo agente.
-
-### 9.1 Pipeline de Autonomia de Extensões
-O simples download ou desempacotamento de uma extensão não constitui uma capability carregada. O pipeline completo exige:
-
+Page text:
+Bem-vindo ao sistema. Digite suas credenciais para continuar.
 ```
-[Agent Intent]
-      │
-      ▼
-[Extension Requirement Resolver] ──> Identifica ID ou URL da Chrome Web Store
-      │
-      ▼
-[Manifest Inspector] ───────────────> Inspeciona permissions, host_permissions, content_scripts
-      │
-      ▼
-[ScopedPolicyEngine Evaluation] ───> Avalia matriz de risco
-      │
-      ├──> Risco Baixo/Médio (Permitido por política)
-      └──> Risco Alto/Crítico (Exige REQUIRE_APPROVAL humano)
-      │
-      ▼
-[Install & Unpack] ─────────────────> Baixa CRX2/CRX3 oficial, extrai ZIP para diretório isolado
-      │
-      ▼
-[Session Load] ─────────────────────> browserSession.loadExtension(path, { allowFileAccess: true })
-      │
-      ▼
-[Verification & Use] ───────────────> Prova de que a extensão está ativa no contexto da página
-      │
-      ▼
-[Execution Journal] ────────────────> Registra eventos: EXTENSION_REQUIRED, EXTENSION_POLICY_CHECK,
-                                     EXTENSION_APPROVED, EXTENSION_INSTALLED, EXTENSION_LOADED
+* **Orçamento Rígido de Tokens (Compact Budget):**
+  - **Modo Compacto (padrão):** Limite de **8.000 caracteres de texto** (`COMPACT_TEXT_CHARS`) e máximo de **120 elementos interativos** (`COMPACT_ELEMENTS`).
+  - Consumo médio por turno: Apenas **~1.000 a 1.800 tokens de texto**, uma fração mínima do custo de visão.
+  - **Modo Completo (`full=True`):** 24.000 caracteres e 400 elementos, usado apenas se o modelo solicitar explicitamente inspecionar a página inteira.
+
+### 5.2. Visão como Fallback Cirúrgico (`browser_vision`)
+A ferramenta visual existe e funciona perfeitamente, mas é classificada como ferramenta de **exceção**. O agente só a utiliza quando o inventário semântico é insuficiente (ex: desafios visuais tipo CAPTCHA, mapas canvas, diagramas interativos ou layouts puramente pictóricos).
+
+### 5.3. Preservação do Prompt Caching Sagrado
+Conforme definido em `AGENTS.md`, o cache de prompt de cada conversa é sagrado:
+- O Hermes nunca altera o schema de ferramentas no meio da conversa.
+- Em sessões onde o Workstation Browser não está habilitado (como chats puros ou gateways de mensagens), as ferramentas `browser_*` sequer entram no schema inicial, economizando milhares de tokens fixos de declaração de API.
+
+O snapshot compacto é produzido no processo Electron por `executeJavaScript`,
+mas cliques e digitação usam `wc.debugger`/CDP (`Input.dispatchMouseEvent`,
+`Input.dispatchKeyEvent` e `Input.insertText`) sobre a mesma `WebContents`. O
+runtime devolve o snapshot após um pequeno atraso de estabilização da página
+(aproximadamente 220 ms para click/back, 160 ms para type, 140 ms para scroll e
+120 ms para key press), não uma captura visual automática. `browser_console`
+executa expressão somente quando explicitamente solicitado; a captura visual
+grava PNG local em `Browser/Screenshots` e continua sendo uma exceção.
+
+---
+
+## 6. Controle Híbrido (Human vs Agent)
+
+O Workstation Browser suporta alternância de controle em tempo real através do mecanismo "Take Control" / "Release Control":
+1. **Agente Atuando (`controlOwner: 'agent'`):** O modelo LLM envia comandos de automação via protocolo loopback CDP.
+2. **Usuário Assume o Controle (`takeControl`):** O usuário clica no botão "Take Control" na interface do Desktop. O `controlOwner` muda para `'human'`. Enquanto o humano estiver no controle, comandos automatizados de entrada do agente são temporariamente bloqueados para evitar colisões de digitação ou cliques erráticos.
+3. **Usuário Devolve o Controle (`releaseControl`):** O humano conclui o login, resolve um CAPTCHA ou confere a compra e clica em "Release Control". O agente recebe sinal verde e retoma sua execução exatamente de onde parou, preservando o estado do DOM e todos os cookies da sessão na **MESMA** `BrowserTask`.
+
+O gate de controle é aplicado no controller, não apenas visualmente no
+renderer: ações mutáveis (`navigate`, `click`, `type`, `scroll`, `back` e
+`press`) são rejeitadas enquanto `paused` ou enquanto o dono é `human`.
+Leituras como snapshot, imagens e eventos continuam sendo uma projeção de
+observação quando disponíveis, mas a permissão do recurso cai para `read` sem
+evidência/controle. Pausar é uma barreira de execução e não logout, limpeza de
+cookies ou destruição de tab.
+
+---
+
+## 7. Decisões de UI, Overlays e Descobertas Críticas
+
+Durante a construção e validação da interface Desktop, importantes desafios de integração entre o Chromium nativo e o React foram identificados e solucionados:
+
+### 7.1. Oclusão do `WebContentsView` sobre Menus HTML/React
+* **O Problema:** O `WebContentsView` é uma superfície nativa do sistema operacional (janela HWND no Windows). Menus de contexto HTML gerados pelo React/Radix UI (`[data-radix-menu-content]`) são renderizados no DOM da janela principal (`document.body`). Pelo modelo do Electron, **qualquer superfície nativa do Chromium se sobrepõe permanentemente a nós DOM HTML**, independentemente de `z-index: 999999` ou de camadas CSS. Quando o usuário clicava com o botão direito no ícone do browser, o menu abria por baixo do browser, ficando invisível e inacessível.
+* **A Solução Arquitetural:**
+  1. Criação do método `setVisible(visible: boolean)` no runtime do Electron, que desanexa temporariamente o `WebContentsView` do compositor da janela (`window.contentView.removeChildView`) sem destruir a página, sem perder o estado JS e sem recarregar.
+  2. Implementação de um `MutationObserver` no `WorkstationBrowserPane` e no `BrowserHub` que monitora `document.body` em busca de portais de overlay do Radix (`[data-radix-menu-content]`, `[role="menu"]`, `[data-radix-popper-content-wrapper]`, dropdowns e diálogos).
+  3. No milissegundo em que o menu do botão direito se abre, o browser cede visibilidade; assim que o menu é fechado ou uma opção é clicada, o browser é restaurado instantaneamente sem flicker.
+
+### 7.2. Ciclo de Vida de Erros Transitórios de DOM (`stale_or_unknown_ref`)
+* **O Problema:** Em Single Page Applications (SPAs) modernas como o Instagram ou X (Twitter), nós do DOM são constantemente virtualizados e remontados pelo React durante rolagens ou atualizações. Quando o agente tentava clicar em um identificador `ref` cujo nó havia acabado de ser desanexado (`!el.isConnected`), o Chromium retornava `{ error: 'stale_or_unknown_ref' }`. O runtime gravava esse erro em `this.lastError`, mas como não havia rotina de expiração, a barra vermelha de aviso ficava presa na tela indefinidamente, mesmo após o agente continuar seu trabalho com sucesso.
+* **A Solução:**
+  1. Erros transitórios de elementos (`stale_or_unknown_ref`, `element_not_visible`, `element_unavailable`, `ref_required`) agora possuem um **timeout automático de expiração de 7 segundos**.
+  2. O runtime limpa `lastError` imediatamente após qualquer requisição subsequente bem-sucedida ou ao navegar para uma nova URL.
+  3. Adicionado botão de dispensar manual (`✕`) na interface chamando `bridge.clearError()`.
+  4. Mensagem humanizada e amigável formatada para o usuário final.
+
+### 7.3. Isolamento de Abas por Sessão de Chat
+* **Fixação por Sessão:** O painel lateral do browser pertence à sessão onde foi invocado. Quando o usuário cria ou troca de sessão de chat, o browser anterior não "acompanha" para a nova conversa como uma assombração visual; a view se desanexa até que seja explicitamente acionada no novo chat.
+* **Nomeação Amigável de Tarefas:** Tarefas criadas no Browser Hub recebem nomes baseados no contexto da sessão de chat associada e no título da aba, evitando UUIDs técnicos impenetráveis para o usuário.
+
+### 7.4. Inicialização preguiçosa e erro transitório
+
+O controller HTTP é iniciado no `app.whenReady()` para que o agente possa
+encontrar a superfície desde o boot, mas a criação de uma `WebContentsView`
+desanexada é adiada até o browser ou uma ação `browser_*` realmente precisar
+dela. Isso evita deixar um target Electron sem janela proprietária e reduz o
+custo de inicialização. A sessão persistente e a restauração estrutural podem
+ocorrer antes da primeira view visível.
+
+Erros de `stale_or_unknown_ref`, `element_not_visible`,
+`element_unavailable` e `ref_required` são transitórios: entram em `lastError`,
+expiram após 7 segundos se não forem substituídos, e uma requisição bem-
+sucedida limpa o erro imediatamente. O renderer também pode chamar
+`clearError`. Não transforme esse alerta em estado de falha permanente e não
+faça retry cego de um `ref`: gere novo snapshot e use uma referência atual.
+
+---
+
+## 8. Isolamento de Perfis, User-Agent e Persistência de Dados
+
+### 8.1. Onde os Dados Residem
+Para garantir segurança e facilidade de manutenção, o Hermes separa rigorosamente o **código-fonte** dos **dados do usuário**:
+
+| Tipo de Dado | Local de Armazenamento | Descrição |
+|---|---|---|
+| **Perfil Chromium (Cookies / Logins)** | `%LOCALAPPDATA%\HermesWorkstation\Browser\User Data` | Dados do navegador (WhatsApp Web, Instagram, Google, abas salvas). **Nunca** é apagado ao atualizar código. |
+| **Metadados estruturais de sessão/tarefas** | `%LOCALAPPDATA%\HermesWorkstation\Runtime\browser-session.json` | Snapshot composto versionado de abas, ordem, aba ativa, URLs sanitizadas e `BrowserTask`; `browser-tasks.json` é somente origem de migração legada. |
+| **Memória do Agente / Histórico Chat** | `~/.hermes` (`C:\Users\<User>\.hermes`) | Banco de dados SQLite (`state.db`), `config.yaml`, `.env`, memórias de longo prazo. |
+| **Preferências do Electron** | `%APPDATA%\hermes` | Configurações de tema, janelas e layout do Desktop. |
+
+### 8.2. User-Agent Neutro e Compatibilidade Web
+O Workstation Browser implementa a função `getStandardChromeUserAgent()`:
+```text
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36
+```
+Ele remove qualquer menção a strings como `Electron` ou `Hermes`. Isso previne bloqueios automatizados por serviços web sensíveis (como o aviso *"Atualize seu navegador Chrome"* ao tentar abrir o WhatsApp Web).
+
+### 8.3. Resolução Flexível de Backend (`resolveHermesBackend`)
+O aplicativo Desktop localiza o backend Python através de uma hierarquia clara:
+1. **`HERMES_DESKTOP_HERMES_ROOT` (Prioridade Máxima):** Se o desenvolvedor definir essa variável de ambiente apontando para o seu repositório local (ex: `C:\Github\hermes-agent`), o executável Desktop executa diretamente esse código-fonte, aproveitando imediatamente todas as modificações e novidades locais sem precisar recompilar o instalador.
+2. **`SOURCE_REPO_ROOT`:** Quando executado via `npm run dev` diretamente de um checkout git.
+3. **`ACTIVE_HERMES_ROOT`:** Runtime canônico em `%LOCALAPPDATA%\hermes\hermes-agent`.
+4. **Bootstrap Installer:** Disparado apenas se nenhum runtime funcional for encontrado.
+
+### 8.4. Cache, extensões e downloads
+
+O perfil é aberto com `session.fromPath(profilePath, { cache: true })`, com
+`contextIsolation: true`, `nodeIntegration: false`, `sandbox: true` e
+`backgroundThrottling: false` nas views. O User-Agent Chrome neutro é aplicado
+na sessão, em `onBeforeSendHeaders` e novamente em cada `WebContentsView`.
+
+`cleanupCache` pode ser executado por limite ou à força, mas limpa somente
+cache: cookies, LocalStorage, IndexedDB e estado de login permanecem. A
+manutenção roda em timer de 30 minutos e em uma verificação inicial atrasada;
+falha de métrica/cache não pode derrubar o browser. Extensões são carregadas
+pela `ChromeExtensionManager` na sessão dedicada, após download/extração
+qualificados. Downloads são eventos de estado em memória, limitados aos 20
+mais recentes, e não devem ser confundidos com BrowserSessionState.
+
+---
+
+## 9. Fluxo de Decisão de Footprint (The Footprint Ladder)
+
+O Hermes Workstation respeita rigorosamente o **Footprint Ladder** (`AGENTS.md`). Não adicionamos ferramentas Core a torto e a direito para resolver problemas do Workstation, pois cada ferramenta adicionada é cobrada em tokens em **todas** as chamadas de API:
+
+1. **Estender código existente:** Zero novo surface.
+2. **CLI command + skill:** Gerencia configurações expressíveis via terminal (`hermes cron`, `hermes tools`). Zero footprint no schema do modelo.
+3. **Service-gated tool (`check_fn`):** Só aparece quando o serviço pré-requisito está configurado.
+4. **Plugin:** Para capacidades de terceiros ou nichos específicos.
+5. **Servidor MCP (no catálogo):** Se a capacidade precisa de I/O estruturado mas não é fundamental ao core.
+6. **Nova Core Tool (Último recurso):** Somente quando a capacidade for fundamental, útil para quase todos os usuários e inalcançável via terminal + arquivo.
+
+---
+
+## 10. Invariantes Críticos e Edge-Cases (Downstream vs Upstream)
+
+Ao atuar em camadas de testes ou SO hospedeiro, considere armadilhas inerentes à ponte POSIX para Windows:
+- **File Modes e Ownership (`438 !== 384/493`):** Testes de `hardening` baseados em File Modes estritos (`0o700`) tendem a gerar divergências lógicas no Windows devido ao NTFS não suportar nativamente permissões octais do Unix da mesma forma, exigindo abstrações corretas ao invés de expectações hardcoded. O mesmo vale para formatações nativas de `Intl` que trocam o ponto flutuante, podendo falhar testes de formatação gráfica estrita de UI.
+- **Symlinks e EPERM em Worktrees:** Construções de socket (`ssh-connection`) e diretórios de cache ou paths temporários na LocalAppData geram falhas de `EPERM` se manipulados indevidamente no Windows (ex: bloqueios ao rodar git-worktrees simultâneos em caminhos de rede/UNC ou namespaces de WSL `\\?\`).
+- **PowerShell Hand-off e Timings:** O ciclo de atualizações da workstation e transferências de arquivos com PowerShell retém os metadados corretos de `acquisition time`, porém é propenso a timeouts lentos nos runners CI de integração (gerando Timeouts fixos de 5000ms e 15000ms no Electron), que não devem ser tratados trivialmente com `continue-on-error`.
+
+### 10.1. Matriz de escopo de estado
+
+Antes de editar qualquer integração, classifique o estado no escopo correto:
+
+| Escopo | Dono/Exemplo | Regra |
+|---|---|---|
+| Processo Electron | singleton `WorkstationBrowserRuntime`, listeners IPC, token do controller | não usar como identidade de sessão; encerrar limpa o processo, não o perfil |
+| Perfil Browser | `session.fromPath`, cookies, LocalStorage, IndexedDB, cache, extensões | fica fora do repositório; não compartilhar com Chrome/Edge pessoal |
+| Sessão Hermes/Gateway | `session_id`, `HERMES_SESSION_SOURCE`, `HERMES_SESSION_PLATFORM` | decide surface/schema e linhagem; não é substituída pelo BrowserTask |
+| BrowserTask | `taskId`, `ownerTaskId`, `sessionHost`, `kanbanCardId`, `runId`, lease/estado | uma identidade lógica e no máximo uma página viva |
+| Host/renderer | `viewportHost`, bounds, `attached`, pane Chat ou Hub | view de apresentação; nunca fonte de verdade da task |
+| Journal/Kanban | SessionDB, card/run canônicos, `ExecutionJournal` JSONL | histórico e lineage persistentes; não duplicar no runtime |
+
+Dois testes de segurança são especialmente importantes: uma sessão Desktop
+deve receber a superfície mesmo se o probe de controller estiver indisponível,
+e uma sessão não-Desktop deve permanecer sem o schema; e uma tarefa já ligada
+deve falhar fechada quando o descritor/controller desaparecer, mesmo que a
+lane legada esteja funcional.
+
+### 10.2. Limites que fazem parte do contrato
+
+Os seguintes números são limites de segurança/recursos, não metas que testes
+devam congelar como catálogos mutáveis: controller body 512 KiB; identidades
+de controller 256 caracteres; URL restaurável 2.048 caracteres; 128 abas no
+snapshot; eventos públicos 200; inventário compacto 8.000 caracteres/120
+elementos e inventário completo 24.000 caracteres/400 elementos. Alterar um
+limite exige revisar o boundary, o cliente normalizador e a evidência E2E em
+conjunto.
+
+### 10.3. Persistência não é identidade viva
+
+O `browser-session.json` pode carregar uma intenção lógica recente mesmo se o
+disco ainda contiver o snapshot anterior após uma falha de rename. Durante
+shutdown, o runtime persiste antes de fechar `WebContents`; eventos tardios de
+destruição não devem apagar a recuperação. Já `WebContents`, debugger CDP,
+heap JavaScript e handles de janela são sempre process-local. Qualquer texto
+que diga que uma página foi "preservada" através de restart deve significar
+metadados + perfil Chromium recuperáveis, nunca o mesmo objeto de memória.
+
+---
+
+## 11. Mecânica de Testes e Anti-Patterns de Validação
+
+A Workspace provê suítes automatizadas completas para garantir não-regressão:
+
+### 11.1. Suíte Electron / Desktop (Vitest)
+Executada em `apps/desktop/`:
+```powershell
+npx vitest run electron/workstation-browser src/store/preview.test.ts
+```
+Cobre:
+- Ciclo de vida e isolamento de `BrowserTask` (`workstation-browser-task.test.ts`);
+- Durabilidade e tolerância a falhas do `SessionState` (`workstation-browser-session-state-resilience.test.ts`);
+- Restauração de viewport e acoplamento de janelas (`workstation-browser-runtime-viewport.test.ts`);
+- Recuperação de crash de abas e resiliência de processo (`workstation-browser-runtime-recovery.test.ts`);
+- Comportamento de `setVisible` e auto-limpeza de `clearError` (`workstation-browser-runtime-task.test.ts`).
+
+### 11.2. Suíte de Rota e Contratos Python (Pytest)
+Executada na raiz do repositório:
+```powershell
+$env:PYTHONPATH="."; python -m pytest workstation/tests
+```
+Cobre atualmente 175 testes de rotas, contratos de host, pipelines de eventos,
+drift, políticas, memória, workers, isolamento, release qualification e
+evidência de carga. O comando CI-parity do repositório continua sendo
+`scripts/run_tests.sh workstation/tests/`; a contagem deve ser reportada como
+evidência da execução, nunca como um assert de número fixo.
+
+### 11.3. Regras Estritas de Validação
+- **Causalidade de Regressão Rigorosa (Não Conte Vermelhos):** O Windows downstream já possui problemas endêmicos e falhas de runtime fixadas num conhecido **KI-006** (EPERMs, timeouts no WSL Bridge e file masks). Comparar a qualidade de uma PR pela mera contagem de testes quebrados é um antipattern grave. Qualquer validação obriga executar uma matriz de **Test Identity (1:1)** exata rodando os arquivos do Baseline lado-a-lado com o Candidato, ignorando diferenças voláteis geradas pelo harness, como strings literais de temporários randômicos (ex: `ssh-test-XYZ`).
+- **NUNCA enfraqueça testes (No Skips):** Não tente pular testes falhos, "corrigir" temporariamente asserts de POSIX ou utilizar `.env` mutáveis apenas para apagar ruídos. Comporte-se restritamente sob as regras de baseline.
+- **Tipagem e Linter Estritos:** `npm run typecheck --workspace apps/desktop` deve retornar 0 erros. O ESLint deve ser mantido limpo com zero warnings e conformidade à ordenação de imports (`perfectionist/sort-imports`).
+
+---
+
+## 12. Anti-Patterns — O que NUNCA fazer no Hermes Workstation
+
+- ❌ **NÃO mutar o histórico de mensagens nem injetar mensagens sintéticas de usuário:** Isso quebra o cache de prompt (`prompt caching`) no provedor de IA e multiplica em até 10x o custo por mensagem.
+- ❌ **NÃO adicionar ferramentas nativas de browser ao `_HERMES_CORE_TOOLS`:** Ferramentas enviadas no core oneram todas as chamadas de API em todas as plataformas (CLI, WhatsApp, Telegram). Ferramentas de browser devem permanecer vinculadas à sessão ativa (`session-scoped`).
+- ❌ **NÃO tirar capturas de tela (screenshots) a cada clique:** Utilize primariamente o inventário semântico estruturado (`formatInventory`). Reserve visão (`browser_vision`) exclusivamente para tarefas onde o texto e botões da página forem insuficientes.
+- ❌ **NÃO destruir instâncias de WebContents ao ocultar ou parkear abas:** Ocultar (`hide`/`park`) deve apenas desanexar a view da janela (`removeChildView`), preservando a aba viva em memória.
+- ❌ **NÃO salvar segredos, tokens ou dados brutos de formulários em arquivos JSON de estado:** Arquivos como `browser-session.json` e `browser-tasks.json` devem conter apenas identificadores e URLs sanitizadas.
+- ❌ **NÃO usar variáveis de ambiente de processo para determinar capacidade de interface:** Uma variável como `HERMES_DESKTOP=1` indica apenas quem disparou o processo; a disponibilidade de ferramentas GUI deve ser consultada a partir da sessão ativa que se comunica com o Gateway.
+- ❌ **NÃO deixar erros operacionais transitórios (ex: `stale_or_unknown_ref`) bloqueados permanentemente na UI:** Erros de elementos em SPAs devem ter auto-expiração e limpeza reativa em ações subsequentes.
+- ❌ **NÃO reintroduzir normalização heurística de títulos como garantia de segurança:** títulos controlados pela página são sempre `null` no estado durável; qualquer título visto na UI é uma leitura viva de `WebContents`.
+- ❌ **NÃO afirmar que snapshots compostos intermediários são impossíveis:** uma operação pode substituir primeiro `browserTasks` e depois a projeção de abas (ou vice-versa). Cada combinação observável precisa ser normalizada, segura e recuperável.
+- ❌ **NÃO transformar `BrowserSessionState` em um segundo banco:** a persistência composta é projeção estrutural; SessionDB, Kanban, ExecutionJournal e o perfil Chromium continuam com seus próprios donos.
+
+---
+
+## 13. Gaps reproduzidos e contratos confirmados
+
+Esta seção registra os fatos reproduzidos durante a validação da Implementation 4
+que não devem ser perdidos em uma refatoração. Os números de commit/workflow são
+evidência histórica do candidato da PR #9; repita a matriz baseline/candidato
+antes de projetá-los sobre outro SHA.
+
+No código atual, `BrowserTaskLifecycle` possui um único mapa por `taskId` e
+`createTask` é idempotente. O registro V1 contém `taskId`, `createdAt`,
+`updatedAt`, `panelHost`, `controlHost`, `sessionHost`, `kanbanCardId`, `runId`,
+`localConnection`, `status`, `leaseState`, `parked` e `recoveryState`
+(`fresh | restored | recreated | null`). O enum persistido de status é
+`visible | hidden | parked`; a página viva é mantida separadamente pelo
+`taskTabs` do runtime, sempre com no máximo uma relação `taskId -> tabId`.
+
+### 13.1. Três lacunas de BrowserTask reproduzidas
+
+1. **Snapshot que parkava Take/Release Control:** `entryForTask()` estacionava
+   incondicionalmente depois de operações de leitura/controle. Uma tarefa visível
+   e anexada perdia a view. A causa era ignorar `active && attached`; parqueie
+   somente entrada não visível/anexada e mantenha `visible`.
+2. **Crash reutilizado como página viva:** `render-process-gone` marcava `crashed`,
+   mas a verificação consultava apenas `isDestroyed()`. A mesma `WebContents`
+   inválida era reutilizada. `rawEntryForTask` deve descartar `crashed ||
+   isDestroyed()`, recriar lazy e manter uma única relação `taskId -> page`.
+3. **Active tab perdido ao destruir:** `closeTab()` fechava primeiro e só então
+   decidia se era ativa; o evento síncrono `destroyed` limpava `activeTabId`.
+   Capturar `wasActive`, centralizar `discardEntry` e ativar o sobrevivente (ou
+   `about:blank`) torna a operação determinística.
+
+Os testes dessas regressões cobrem também isolamento de duas tarefas, limpeza
+explícita de uma página crashada e a asserção negativa de que tokens/senhas de
+URL ou formulário não aparecem no estado persistido. A suíte focada chegou a
+16/16 e os typechecks Electron passaram no candidato validado.
+
+### 13.2. Regras de leitura sem ambiguidade
+
+- O enum de código continua `visible | hidden | parked`; *Waiting for Human*,
+  *Background* e *Recent* são agrupamentos derivados da UI.
+- `browser-session.json` é o snapshot composto atual; `browser-tasks.json` apenas
+  migra estado legado e não é um segundo page store.
+- O descriptor `browser-control.json` não contém `session_id`. Seus campos são
+  `version`, `pid`, `url`, `token`, `runtime`, `profile_path` e `created_at`.
+  `session_id` pertence ao envelope de ação/evento.
+- A porta do controller vem de `listen(0, '127.0.0.1')`; clientes leem o descriptor
+  e usam `Authorization: Bearer <token>`, sem presumir porta fixa ou imprimir token.
+- `safeTitleMetadata` retorna `null` por design. Título visível é leitura efêmera
+  de `WebContents`, não identidade durável.
+- Restart conserva IDs, ordem, active tab, políticas e URLs seguras e reabre o
+  perfil persistente; não conserva `WebContentsView`, debugger CDP ou heap.
+- `ownerTaskId` é a barreira entre tarefas. Controller, IPC, resources, Journal e
+  Kanban carregam a mesma identidade; conflito de vínculo falha fechado.
+
+### 13.3. Outcomes históricos de CI
+
+Na matriz 1:1 do candidato da PR #9, BrowserTask focused passou 15/15 (16/16
+após o teste de segredo) e o Workstation Pytest passou. O vermelho restante foi
+classificado, não contado como regressão de core:
+
+| Step | Outcome real | Classificação |
+| --- | --- | --- |
+| Desktop UI | mock sem `BROWSER_ROUTE` | baseline/harness |
+| Desktop platform | sete arquivos conhecidos (EPERM, WSL/POSIX, timeouts) | baseline Windows |
+| Docker | classificador; build/test pulados | `NON-EXECUTABLE` |
+| Nix/CI sem runner | queued/cancelled, `steps=[]` | `NON-EXECUTABLE` |
+| Desktop E2E | guardado por `false &&` | `NON-EXECUTABLE` |
+
+Não relaxar asserts, adicionar skips ou promover um workflow que não executou o
+teste. Para qualquer candidato novo, repetir os mesmos arquivos contra baseline
+do mesmo SHA, registrar o primeiro erro real e classificar `PASS`, `FAIL
+regression`, `FAIL baseline` ou `NON-EXECUTABLE`.
+
+### 13.4. Fronteira de manutenção
+
+Não criar segundo `BrowserRuntime`, page store, SessionDB, Kanban DB ou Journal;
+não persistir secrets; não decidir a superfície GUI pelo ambiente global do
+processo; não alterar ownership de OpenCode/Antigravity; e não declarar a
+Implementation 4 completa apenas por testes focados verdes. A aprovação final
+continua pertencendo ao Conductor, depois de evidência nativa/clean-machine.
+
+---
+
+## 14. Delta factual verificado em código (sessão de 2026-09-14)
+
+Esta seção fecha os detalhes de baixo nível observados após a consolidação das
+seções anteriores. Ela não cria uma nova arquitetura; serve como um mapa de
+leitura rápida para quem precisa rastrear uma chamada desde o tool até o
+Chromium e de volta ao cliente.
+
+### 14.1. Boot, descriptor e endpoints reais
+
+O boot é intencionalmente assimétrico: `app.whenReady()` abre a sessão dedicada,
+restaura o snapshot e inicia o servidor loopback; a primeira
+`WebContentsView` só é criada quando Hub, Chat ou uma ação `browser_*` a exige.
+O servidor escuta em `127.0.0.1` com porta `0`, portanto nunca há porta fixa
+para descobrir ou publicar.
+
+O descriptor escrito em `Runtime/browser-control.json` tem apenas:
+
+```text
+version, pid, url, token, runtime, profile_path, created_at
 ```
 
-### 9.2 Matriz de Risco para Triagem de Extensões
+`token` é `crypto.randomBytes(32).toString('base64url')`. A escrita usa arquivo
+temporário privado + rename; remoção no shutdown compara o token atual, para
+que um processo antigo não apague o descriptor de um processo novo. O Python
+valida versão, prefixo literal `http://127.0.0.1:` e token antes de abrir
+qualquer socket. Não há `session_id` no descriptor.
 
-| Permissões no Manifest | Nível de Risco | Ação Padrão | Justificativa |
-|---|---|---|---|
-| `storage`, `activeTab`, `alarms` | Baixo | `ALLOW` | Acesso confinado à aba ativa ou armazenamento interno |
-| `tabs`, `downloads`, `clipboardRead` | Médio | `ALLOW` com auditoria | Manipulação de arquivos locais e clipboard |
-| `cookies`, `webRequest`, `webRequestBlocking` | Alto | `REQUIRE_APPROVAL` | Potencial leitura de sessões autenticadas e interceptação de tráfego |
-| `<all_urls>`, `*://*/*`, `nativeMessaging` | Crítico | `REQUIRE_APPROVAL` / `DENY` | Execução arbitrária de código em qualquer domínio e conexão com apps externos |
+O contrato HTTP atual é:
 
----
-
-## 10. Integração com Kanban, Journaling e Tarefas Descobertas
-
-O Kanban do Hermes (`~/.hermes/kanban.db`) é a única fonte de verdade para o ciclo de vida de tarefas autônomas.
-
-### 10.1 Promoção Automática de Turno Multietapas
-No `tui_gateway/server.py`:
-- No início de cada turno, a mensagem do usuário é avaliada por `is_multistep_request()`.
-- Palavras-chave em português e inglês ativam a promoção: `pesquise`, `pesquisa`, `navegue`, `procure`, `browser`, `navegador`, `online`, `internet`, `site`, `web`, `busque`, `investigate`, `research`, prompts multi-linhas ou solicitações complexas.
-- O card é criado com `parents=[]`, status inicial `in_progress` e `HERMES_KANBAN_TASK` exportado no ambiente da sessão.
-
-### 10.2 Tarefas Descobertas (Discovered Follow-ups)
-Durante a execução de uma tarefa, o agente pode descobrir impedimentos ou necessidades secundárias (ex: necessidade de resolver captcha, fluxo de autenticação OAuth ausente, configuração de credenciais).
-- O agente utiliza `record_discovered_followup()`.
-- O card filho é criado com `parents=[parent_task_id]` e associado à mesma `origin_session_id`.
-- Se o filho for marcado como `required_for_parent=True`, o card pai entra automaticamente em estado de bloqueio (`BLOCKED`), impedindo conclusão precipitada.
-
-### 10.3 Conclusão Canônica com BrowserTaskReport
-Ao término do turno:
-- Um `BrowserTaskReport` é construído com:
-  - `urls_visited`: lista de URLs exploradas;
-  - `actions_taken`: contagem e resumo de cliques, digitações e navegações;
-  - `extracted_data`: resumo estruturado dos fatos encontrados;
-  - `status`: `'completed'` ou `'failed'`.
-- O método `complete_task_with_report` finaliza o card no `kanban_db` e grava o evento `TASK_COMPLETED` no `ExecutionJournal`.
-- Limpeza em bloco `finally:` garante que `HERMES_KANBAN_TASK` seja restaurado para evitar vazamento de contexto entre turnos de chats diferentes.
-
-### 10.4 Kanban Híbrido: um owner, dois modos semânticos
-O mesmo banco canônico `hermes_cli.kanban_db` também abriga o **Hybrid Kanban**. Ele não é outro produto, uma store do Electron ou uma projeção do Execution Journal: as tabelas `hybrid_boards`, `hybrid_columns`, `hybrid_cards` e `hybrid_activity` pertencem à migration aditiva do Kanban.
-
-- O Kanban **Agêntico** mantém `tasks.status`, dispatcher, `task_runs`, links de dependência e semântica operacional upstream.
-- O Kanban **Híbrido** é uma área compartilhada por humanos e agentes. Uma coluna é somente organização visual; o nome ou posição de uma coluna nunca altera `tasks.status` nem chama `kanban_complete` implicitamente.
-- UI e agente convergem em `hermes_cli.hybrid_kanban`. A API autenticada do plugin e a tool `kanban_hybrid` enviam comandos semânticos (`before_id` / `after_id`), e o domínio — não o React — calcula posição, registra `actor_type`, `actor_id`, `session_id` e `source` em `hybrid_activity`.
-- Cada mutação ocorre sob a transação/locking do Kanban. Ranks densos são reindexados em uma namespace temporária negativa antes de publicar a ordem, eliminando colisões transitórias de `UNIQUE`; `expected_revision` rejeita edições/movimentos baseados em card ou coluna obsoletos.
-
----
-
-## 11. Mecânica do Upstream Delta e Âncoras de Integração
-
-O repositório do Hermes Workstation é mantido como um fork downstream de alto valor agregado sobre o upstream oficial da Nous Research.
-
-### 11.1 Base SHA e Rastreabilidade
-- **Base SHA**: `057dcdf236f8a6a26721c10fcc6ccb72726e272a`.
-- Todas as alterações no núcleo (`core`) são mínimas, cirúrgicas e protegidas por âncoras de código.
-
-### 11.2 Âncoras de Integração no Core
-As integrações do Workstation com o código upstream concentram-se em pontos de injeção estritos:
-1. `run_agent.py`: Injeção de variáveis de contexto e escopo de Kanban.
-2. `tools/browser_tool.py`: Roteamento condicional para o `workstation_routed_browser_handler`.
-3. `tui_gateway/server.py`: Promoção automática de pedidos multietapas e injeção do toolset de desktop.
-4. `hermes_cli/web_server.py`: Pre-warming do gateway para mitigar latência de boot no Windows.
-
-### 11.3 Validação com `apply_core_integration.py` e Doctor
-- O script `workstation/scripts/apply_core_integration.py` valida e aplica as âncoras de forma idempotente.
-- O diagnóstico estrito (`workstation\doctor.cmd -Strict`) verifica os hashes e padrões das âncoras em cada execução. Qualquer divergência não-autorizada quebra o build antes de subir para produção.
-
----
-
-## 12. Identidade do Executável e Empacotamento Desktop (Windows Native PE)
-
-A camada de empacotamento para desktop no Windows possui particularidades rigorosas sobre como o shell do Windows resolve ícones e nomes de processos.
-
-### 12.1 Problema Histórico: O Ícone Padrão do Electron na Barra de Tarefas
-Quando um aplicativo Electron é iniciado em modo de desenvolvimento (via `.bat` ou `npm run dev`), o processo executado é `node_modules/electron/dist/electron.exe`. O binário original da equipe do Electron possui em sua tabela de recursos nativos (PE Resource Table) o ícone azul clássico do Electron.
-No Windows:
-1. O Windows Taskbar agrupa as janelas pelo **Application User Model ID (AUMID)** e, na ausência de atalhos de Start Menu registrados para aquele ID, extrai o ícone diretamente do arquivo `.exe` do processo em disco.
-2. Mesmo que `BrowserWindow({ icon })` seja fornecido, janelas frameless (`titleBarStyle: 'hidden'`) nem sempre transmitem as mensagens `WM_SETICON` para o compositor do Windows Shell.
-
-### 12.2 A Solução Arquitetural de Estampagem com `rcedit`
-- Fluxo automatizado em `apps/desktop/scripts/set-exe-identity.mjs`:
-  - Utiliza `rcedit` para gravar diretamente os recursos nativos no `.exe`:
-    - `icon`: `apps/desktop/assets/icon.ico` (ou `Hermes Work.ico` na raiz).
-    - `ProductName`: `"Hermes Work"`.
-    - `FileDescription`: `"Hermes Work"`.
-    - `CompanyName`: `"Nous Research"`.
-- **Auto-resolução Dinâmica com Hoisting de Monorepo**:
-  No npm com workspaces, dependências comuns são içadas (*hoisted*) para a raiz (`/node_modules/electron/...`) e não ficam dentro de `/apps/desktop/node_modules/`. O script resolve o caminho real do executável dinamicamente via `createRequire(import.meta.url)('electron')`, funcionando perfeitamente em qualquer topologia de diretórios.
-- **`nativeImage` e Chamada Explícita**:
-  No `apps/desktop/electron/main.ts`, importamos `nativeImage`, carregamos o ícone com `nativeImage.createFromPath(iconPath)` e chamamos explicitamente `mainWindow.setIcon(icon)` para Windows, cobrindo janelas primárias e secundárias.
-- **Separação de AUMID**:
-  Definimos `app.setAppUserModelId('com.nousresearch.hermeswork')`, desvinculando o app de qualquer atalho ou cache do aplicativo herdado (`com.nousresearch.hermes`).
-
----
-
-## 13. Persistência, Perfil de Navegador e Tolerância a Falhas
-
-Existem três classes distintas de persistência que nunca devem ser misturadas:
-
-```
-[1. CANONICAL STATE]
-  - SessionDB (~/.hermes/state.db)
-  - Kanban (~/.hermes/kanban.db)
-  - Memory (~/.hermes/memories.db)
-  - Vault Markdown Storage (~/.hermes/vault/)
-  - Execution Journal (~/.hermes/workstation/journal/*.jsonl)
-       │ (Persistência estrutural duradoura independente do browser)
-       ▼
-[2. BROWSER-MANAGED STATE]
-  - Perfil Chromium isolado (%LOCALAPPDATA%/HermesWorkstation/Browser/User Data)
-  - Cookies, LocalStorage, IndexedDB, HTTP Cache, Service Workers
-       │ (Gerenciado exclusivamente pela engine do Chromium)
-       ▼
-[3. RUNTIME CONTROL STATE]
-  - Controller Discovery File (%LOCALAPPDATA%/HermesWorkstation/Runtime/controller.json)
-  - Identidade BrowserTask em memória
-  - Mapeamento temporário de abas ativas
+```text
+GET  /health                       -> state completo do runtime
+GET  /resources                    -> resource snapshot schema v1
+GET  /events?task_id=&limit=       -> event snapshot schema v1, limit <= 200
+POST /v1/action                    -> {action, arguments, task_id, ...}
 ```
 
-### 13.1 Invariantes de Recuperação Pós-Crash / Restart
-1. **Perfis Independentes**: Nunca compartilhar nem reutilizar o perfil pessoal do Google Chrome ou Edge do usuário (`AppData/Local/Google/Chrome/User Data`). O Hermes Work mantém seu próprio diretório de dados limpo, isolando credenciais e histórico.
-2. **Escrita Atômica**: Todos os arquivos de estado estrutural utilizam escrita atômica (gravação em arquivo temporário `.tmp` seguida de substituição atômica `rename`). No Windows, erros de compartilhamento de arquivo (`EPERM` / `EBUSY`) são tratados com retentativas controladas e fallback defensivo de cópia.
-3. **Sem Recuperação Fantasma**: O fechamento explícito de uma aba ou tarefa (`destroyTask`) remove o registro estrutural. Um restart posterior do sistema **não deve recriar abas destruídas**. Abas preservadas são restauradas de forma *lazy* (carregadas sob demanda apenas quando o usuário ou tarefa as acessa).
+Todos exigem Bearer exato. Corpo acima de 512 KiB é rejeitado enquanto é lido;
+respostas são `application/json`, `no-store` e não incluem token/descriptor.
+`/v1/action` só aceita nomes iniciados por `browser_`; erros de parsing,
+política, controle humano ou identidade retornam `success: false`/HTTP 400.
+
+### 14.2. Do tool ao `WebContentsView`
+
+`tools.browser_workstation` calcula a chave de binding como
+`task_id || session_id || "default"`, faz o health probe com cache curto e
+monta o payload. Card/run podem vir de argumentos explícitos ou das variáveis
+de contexto do turno (`HERMES_KANBAN_TASK`, `HERMES_KANBAN_RUN_ID`). O retorno
+é redigido recursivamente antes de ser entregue ao modelo.
+
+No controller, identidades são normalizadas e vinculadas antes da mutação. Em
+`browser_navigate`, `entryForTask()` garante/reusa a única entrada da task,
+normaliza o alvo e carrega a URL. Para ações de leitura/interação sem tab
+previamente associada, a resolução tenta, nesta ordem: hint lazy restaurado,
+uma tab ativa não proprietária (que passa a ser owned), ou criação de uma nova
+tab para a task. Se nada puder ser ligado, retorna
+`no_bound_browser_tab` em vez de operar uma página aleatória.
+
+Navegação, click, type, scroll, back e press exigem `assertAgentControl()`;
+snapshot, imagens, console e vision são leituras. Click/type/scroll/back/press
+aguardam, respectivamente, aproximadamente 220/160/140/220/120 ms antes do
+snapshot de retorno. A entrada é manipulada por CDP (`Input.dispatch*`/
+`Input.insertText`) e não por JS sintético de alto nível.
+
+`setWindowOpenHandler` nunca abre uma segunda janela: popup top-level seguro de
+uma task é redirecionado para a própria entrada (idempotência de `ownerTaskId`)
+e popup inseguro é negado. `will-navigate` e `will-redirect` repetem a guarda
+para navegações top-level. Eventos `render-process-gone` marcam
+`crashed/stale/page-gone`; a próxima resolução descarta o objeto inválido e
+cria exatamente uma replacement, preservando a relação lógica.
+
+### 14.3. Navegação e metadata segura
+
+`normalizeWorkstationBrowserTarget` usa as seguintes heurísticas, antes da
+policy de website: `about:blank` permanece; `http(s)` é normalizado; hosts
+locais (`localhost`, `127.0.0.1`, `[::1]`) recebem `http`; host-like sem
+espaços recebe `https`; texto restante vira query DuckDuckGo. A policy rejeita
+IMDS/metadata (incluindo variantes IPv4-mapped/IPv6) e o roteador rejeita
+prefixos de segredo antes de construir a busca.
+
+O runtime mantém dois valores de URL: a URL viva de `WebContents` para a
+interface e `safeUrl` para restart. O segundo é reavaliado em cada
+`did-navigate`, `did-navigate-in-page`, `page-title-updated` e crash. Query e
+fragmento nunca sobrevivem; userinfo, `\\`, controles, encoding ambíguo,
+atribuições `token/password`, JWTs, tokens opacos e rotas de login/OTP com
+credenciais falham fechados. Mesmo uma URL assinada só pode deixar sobreviver a
+parte estrutural sem o material secreto.
+
+O título é uma armadilha recorrente: `wc.getTitle()` aparece no estado de UI
+para o usuário, mas `safeTitleMetadata()` retorna sempre `null`. Isto vale para
+“título inocente” e título com token; não existe allow-list parcial que permita
+inferir que texto controlado por uma página é seguro.
+
+### 14.4. Reconciliação, ordem e atomicidade
+
+O snapshot composto é uma projeção de `entries`, `taskTabs`, `activeTabId` e
+`BrowserTaskLifecycle`. No caminho de lifecycle, uma falha pode deixar no disco
+**nova metadata de task + projeção de tabs anterior**; gravações independentes
+de abas também podem conservar metadata de task anterior. Ambas as formas são
+tratadas como snapshots estruturais, normalizadas na leitura, e os testes
+C1/C2/C3 reiniciam a partir da combinação exata em vez de assumir uma transação
+inexistente.
+
+A ordem persistida é restaurada em duas fases: primeiro materializar todas as
+tabs possíveis (ordinárias agora, tasks como pending/lazy), depois reconciliar
+`restoredTabOrder`. Limpar a fila durante a primeira fase reordena uma sequência
+como `ordinary-A, ordinary-B, task-T` e quebra `activeTabId` lógico. Um task
+ativo logicamente pode permanecer pending até `show/navigate`; o fallback
+`about:blank` físico não deve roubar essa seleção.
+
+No shutdown, `persistBrowserSessionState()` roda antes de `WebContents.close()`
+e eventos `destroyed` são suprimidos. Em operação normal, `destroyed` lembra a
+tab como stale para a próxima reconciliação; `destroyTask` remove explicitamente
+a metadata. Assim, crash e destroy têm semânticas distintas e observáveis.
+
+### 14.5. Preview/Chat/Hub não são page stores
+
+`$previewTabs` tem persistência própria apenas para o rail React: arquivos,
+URLs e artifacts exibíveis. A superfície URL do Workstation usa o id singleton
+`url:browser`; abrir uma segunda URL troca o alvo do mesmo browser e não cria
+uma segunda instância Chromium. `$sessionPreviewTabs` apenas pinna a seleção do
+rail por conversa e promove a chave runtime para a chave persistida quando o
+primeiro turno é salvo.
+
+`WorkstationBrowserPane` chama `attach(bounds, "chat", taskId)`, atualiza
+geometria com `ResizeObserver` + `expectedHost="chat"` e chama apenas `detach()`
+no unmount. O Hub faz o mesmo com host `hub`; ambos transferem a única view.
+`use-preview-routing` abre a superfície somente para uma sessão visível e não
+fecha o preview de uma sessão em background. `MutationObserver` remove/recoloca
+a view enquanto menus/dialogs Radix ocupam o DOM, pois `z-index` não atravessa
+uma superfície nativa.
+
+### 14.6. Resources, eventos e clientes não mutantes
+
+O resource snapshot é calculado a cada consulta a partir do runtime e do
+`ExecutionJournal`; não é salvo pelo controller. O cliente Python aceita apenas
+`schema_version=1`, `runtime="electron-chromium"`, recursos/eventos com tipos
+válidos e retorna `available:false` em degradação. O Dashboard
+(`/api/workstation/resources`, `/api/workstation/events`) e o TUI
+(`workstation.resources`, `workstation.events`) atravessam esse mesmo cliente e
+nunca leem o descriptor diretamente.
+
+`execution_journal:<taskId>` expõe somente os últimos 200 eventos na projeção;
+o diário JSONL completo continua sendo a fonte de histórico. `running` é uma
+afirmação conquistada por controller + tab viva; sem evidência o recurso é
+`stalled`, mesmo que uma task lógica ainda exista.
+
+### 14.7. Evidência e limites desta atualização
+
+Os documentos de contexto/journal registram H010 (restart/metadata), H011
+(soak nativo), H012 (backend headless/reconnect) e H013 (janela oculta,
+geometria e parity de resources/events), além de 175/175 contratos Workstation
+Python, UI/platform/typecheck e gates de packaging. Esses números são o estado
+qualificado do snapshot documentado; para uma alteração nova, repetir a matriz
+com SHA, runner e ambiente, e classificar `PASS`, `FAIL regression`, `FAIL
+baseline` ou `NON-EXECUTABLE`.
+
+O que continua explicitamente fora deste núcleo: corrigir KI-007/“Session not
+found”, alterar SessionDB/Gateway sem reprodução, Preview unification, Browser
+Memory, LAN/Tailscale, novo Kanban/control plane, ou qualquer fallback que
+quebre uma task já bound. A regra de manutenção segue sendo: uma identidade
+lógica, uma página viva por task, um runtime, um snapshot composto, um Journal e
+owners já existentes.
 
 ---
 
-## 14. Pirâmide de Evidência, Validação de Testes e Diagnóstico Operacional
+## 15. Provas adversariais e crash consistency do snapshot composto
 
-Nenhuma funcionalidade ou melhoria é considerada concluída sem evidência executável nos testes do repositório.
+### 15.1. Títulos e URLs: garantia que o código realmente prova
 
-| Camada de Teste | Ferramenta | O que PROVA | O que NÃO PROVA |
-|---|---|---|---|
-| **Unitários Python** | `pytest workstation/tests/` | Lógica do Kanban, Journaling, Parser de CRX, regras de PolicyEngine, contratos de controle, Vault PKM | Não prova renderização visual de janelas ou compatibilidade com sites reais |
-| **Unitários Electron/TS** | `vitest apps/desktop` | Isolamento de abas, parking de viewport, roteamento de previews, bounds geometry | Não prova persistência em disco do Chromium ou aceleração gráfica |
-| **Strict Doctor** | `workstation/doctor.ps1 -Strict` | Integridade de ferramentas (git, node, python, npm), consistência do lockfile e âncoras de código | Não é teste funcional end-to-end |
-| **Typecheck** | `npm run typecheck --workspace apps/desktop` | Segurança de tipos em todo o código TypeScript do Desktop e Electron | Não prova ausência de erros em runtime |
-| **Smoke Nativo** | Execução real via `START-HERMES-WORKSTATION.bat` | Janela real, inicialização do backend, injeção de ícone nativo, navegação de sites | Não substitui os testes unitários automatizados |
+O boundary de restart não tenta classificar texto livre. `safeTitleMetadata()`
+retorna sempre `null`, inclusive para `Example Domain — Dashboard` ou
+`Customer 482913`; títulos vivos continuam sendo fornecidos por
+`WebContents.getTitle()` para a UI enquanto o processo existe. Assim, conteúdo
+arbitrário de `<title>` nunca pode aparecer em `browser-session.json`.
 
-### 14.1 Status Comprovado da Suíte de Testes
-- **191/191 Testes Python Verdes** em `workstation/tests/` cobrindo rigorosamente o Hybrid Kanban, o Workstation Controller, o Roteamento de Browser Fail-Closed, o ScopedPolicyEngine e o motor de Vault.
-- **11/11 Testes TypeScript Verdes** em `workstation-browser-runtime-resilience.test.ts` cobrindo isolamento de abas, parking de viewport e recuperação de geometria no Windows.
+`safeRestorableUrlMetadata()` preserva somente estrutura suficiente para uma
+recuperação segura. A inspeção faz até oito camadas de percent-decoding e falha
+fechada para encoding malformado/instável; barras invertidas são rejeitadas
+antes do parser. Query e fragment são removidos, e pathname/resultado final
+passam por marcadores de atribuição, rotas de autenticação, JWT e token opaco.
+As regressões mínimas são:
 
-### 14.2 Comandos de Verificação Rápida
-```bash
-# Validação estrita de ambiente e âncoras de upstream
-.\workstation\doctor.cmd -Strict
+| Entrada adversarial | Resultado durável exigido |
+|---|---|
+| query `access_token` | somente origem/path; valor ausente |
+| OAuth `code` em query | somente origem/path; código ausente |
+| token em fragment | somente origem/path; token ausente |
+| URL com `username:password@host` | rejeitada (`null`) |
+| JWT em pathname | rejeitada (`null`) |
+| URL assinada/presigned | credenciais removidas; somente estrutura segura, ou `null` |
+| `/recovery/code/482913` | rejeitada |
+| `/verification/code/482913` | rejeitada |
+| `/otp/482913` | rejeitada |
+| `/temporary/pin/482913` | rejeitada |
+| `/magic/login/code/482913` | rejeitada |
+| `/customers/482913` | permitida como identificador estrutural |
 
-# Testes de regressão da camada Python
-.venv\Scripts\pytest workstation\tests\
+Os cinco títulos de credencial (`Recovery code 482913`, `Verification code
+482913`, `OTP 482913`, `Temporary PIN 482913`, `Magic login code 482913`) são
+verificados no retorno, no JSON escrito, no snapshot recarregado e no JSON
+re-serializado. Essa prova é deliberadamente diferente de “o sanitizer parece
+seguro”: ela verifica que o material proibido não reaparece depois do restart.
 
-# Testes de resiliência e runtime do Desktop
-npm test --workspace apps/desktop
+### 15.2. Intermediários de persistência são possíveis e seguros
+
+Cada replacement do arquivo é atômico, mas uma operação lógica pode executar
+mais de um replacement. Portanto, o estado abaixo é **possível e aceito**:
+
+```text
+browserTasks novos + projeção anterior de tabs/safeUrl/safeTitle
 ```
 
----
+Ele não é descrito como impossível. A normalização elimina referências a task
+inexistente, deduplica IDs, rebaixa tarefas restauradas para `parked`/lazy e
+reaplica a política de metadata antes de qualquer view ser criada. O próximo
+save bem-sucedido grava um único snapshot composto canônico.
 
-## 15. Catálogo de Anti-Patterns (O que NUNCA fazer)
+### 15.3. C1 — `createTask` interrompido entre projeções
 
-1. **Nunca criar um segundo SessionDB, Kanban, Memory ou Vault**: Toda tarefa deve viver no `kanban_db`, toda conversa no `SessionDB`, todo fato no `Hermes Memory` e toda documentação no `Hermes Vault`.
-2. **Nunca sequestrar abas ativas (`activeTab.ownerTaskId = newTaskId`)**: Sempre verifique se a aba ativa pertence a outra tarefa e aloque uma aba dedicada isolada.
-3. **Nunca fazer fallback silencioso para o browser legado após vinculação (`_bind`)**: Se o controller do desktop cair, falhe fechado (`WorkstationBrowserUnavailable`). Não divida o cérebro da automação.
-4. **Nunca simular cliques do Windows em nível de SO**: Use sempre CDP (`webContents.debugger`). Não bloqueie nem roube o mouse ou foco do usuário.
-5. **Nunca forçar ativação de viewport em chamadas de ferramentas de background**: Deixe o usuário navegar onde quiser; interaja com as abas de fundo de forma invisível.
-6. **Nunca omitir `windowsVirtualKeyCode` em comandos CDP de teclado no Windows**: Teclas de controle e atalhos (`Ctrl+A`, `Backspace`) exigem seus códigos virtuais do Windows.
-7. **Nunca executar sequências excessivas de `browser_console` para raspar listas**: Utilize a ferramenta nativa de extração em lote `browser_extract_items`.
-8. **Nunca deixar o agente em loop cego diante de Auth Walls / CAPTCHA**: Detecte com `detectAuthWall()`, acione `⚠️ [HUMAN_HANDOFF_REQUIRED]` e aguarde intervenção humana no desktop.
-9. **Nunca usar o perfil de navegação pessoal do usuário**: Mantenha o isolamento rigoroso de perfil do Workstation Browser em `%LOCALAPPDATA%/HermesWorkstation/Browser/User Data`.
-10. **Nunca expor segredos, tokens ou cookies em logs ou respostas**: Mascare credenciais e bearer tokens em qualquer saída ou log do sistema.
-11. **Nunca falhar a inicialização do app por etapas cosméticas**: Se a estampagem de ícone ou uma checagem não-crítica encontrar arquivo em uso, emita `console.warn` e permita o boot da aplicação.
-12. **Nunca classificar uma capacidade como "Concluída" sem testes verdes correspondentes no repositório**.
+O seam de fault-injection falha um `renameSync` escolhido após a metadata da
+task ter sido durabilizada. Um runtime novo deve observar `T` no máximo uma vez,
+com `status=parked` e `recoveryState=restored`; nenhuma página de `T` pode ser
+ressuscitada durante `ensure()`. `showTask(T)` deve então criar uma única
+`WebContentsView`, manter um único `taskTabs`/`ownerTaskId` e produzir o
+snapshot canônico sem título ou URL insegura.
 
----
+### 15.4. C2 — recriação/show interrompidos
 
-## 16. Guia do Desenvolvedor: Inicialização e Ciclo Dogfood
+Partindo de task lazy com URL sanitizada, a falha depois de
+`visible/recreated` mas antes da projeção final deixa a projeção anterior de
+tabs/active no disco. No restart, a task volta a parked/lazy; a ordem e a aba
+ativa lógica válidas são reconciliadas, uma única materialização ocorre mesmo
+com dois `showTask(T)` repetidos e nenhum query, fragment, título ou segredo
+antigo pode introduzir conteúdo não sanitizado. O estado converge para uma task,
+uma relação task→tab e um snapshot composto.
 
-### 1-Click Dogfood Launcher
-O arquivo [`START-HERMES-WORKSTATION.bat`](file:///c:/Github/hermes-agent/START-HERMES-WORKSTATION.bat) na raiz do repositório é o ponto de entrada oficial para desenvolvimento e uso diário:
+### 15.5. C3 — `destroyTask` interrompido
 
-1. Executa `workstation/install.cmd`:
-   - Configura o `.venv` isolado e instala o pacote `hermes-agent` em modo editável (`pip install -e .`).
-   - Sincroniza e audita dependências do Node.js através dos workspaces do npm.
-2. Executa `workstation/doctor.cmd -Strict`:
-   - Valida requisitos de runtime (Node >= 22.22.0, Python 3.11-3.13, Git).
-   - Valida âncoras de integração e políticas de licença.
-3. Executa `workstation/start.cmd -SkipInstall`:
-   - Auto-estampa o `electron.exe` com a identidade e ícone do Hermes Work via `rcedit`.
-   - Inicia o servidor Vite para o frontend e o processo Electron conectado ao Python local.
+Depois da remoção durável de `T`, qualquer relação de tab órfã é eliminada antes
+da próxima recuperação. Ao reiniciar, `listTasks()` não contém `T`,
+`showTask(T)` falha com “BrowserTask not found”, nenhuma página pode ser criada
+para o ID destruído e a aba/ordem ativa restante é escolhida
+deterministicamente. A view crashada também é fechada explicitamente; crash e
+destroy não são tratados como a mesma transição.
 
-### Dicas de Troubleshooting em Desenvolvimento
-- **Porta em Uso**: Se o gateway acusar porta ocupada (ex: `Address already in use: 127.0.0.1:8000`), finalize processos zumbis anteriores via PowerShell:
-  ```powershell
-  Get-Process -Name python, electron -ErrorAction SilentlyContinue | Stop-Process -Force
-  ```
-- **Limpeza de Cache do Vite**: Se a interface do React apresentar módulos desatualizados:
-  ```powershell
-  Remove-Item -Recurse -Force apps/desktop/node_modules/.vite
-  ```
-- **Modo Debug de CDP**: Para inspecionar comandos trafegando no Chromium em tempo real, defina a variável de ambiente `DEBUG_WORKSTATION_CDP=1` antes de iniciar o launcher.
+Esses testes usam apenas `BrowserSessionStateFilePersistence` com IO injetado e
+o `WorkstationBrowserRuntime`; não introduzem transaction manager, SessionDB,
+page store ou control plane adicional. A prova de integração deve permanecer
+junto dos testes C1/C2/C3, para que uma futura alteração do ordering de saves
+não volte a ser mascarada por mocks isolados.
+

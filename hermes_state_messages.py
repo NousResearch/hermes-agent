@@ -1205,6 +1205,59 @@ class SessionMessagesMixin:
         return {"rewound_count": len(rewound), "target_message": target_row, "new_head_id": new_head_id,
                 **({"replacement_message_id": replacement_message_id} if preserve_compaction_handoff else {})}
 
+    def compact_session(self, session_id: str, *, keep_last: Optional[int] = None,
+                        keep_until: Optional[float] = None, dry_run: bool = False) -> Dict[str, int]:
+        """Soft-archive older active rows while keeping the session identity and recent context.
+
+        Archived rows use ``active=0, compacted=1``: they leave model context, but remain available to
+        display and session search.  The selection is ordered by durable row id, not wall-clock timestamps,
+        because message timestamps can be supplied by external platforms and are not monotonic.
+        """
+        if (keep_last is None) == (keep_until is None):
+            raise ValueError("provide exactly one of keep_last or keep_until")
+        if keep_last is not None and keep_last < 1:
+            raise ValueError("keep_last must be at least 1")
+
+        def _select(conn):
+            rows = conn.execute(
+                "SELECT id, timestamp, tool_calls FROM messages "
+                "WHERE session_id = ? AND active = 1 ORDER BY id", (session_id,)
+            ).fetchall()
+            if keep_last is not None:
+                dropped = rows[:-keep_last] if len(rows) > keep_last else []
+            else:
+                dropped = [row for row in rows if float(row["timestamp"]) < keep_until]
+            return rows, dropped
+
+        def _result(rows, dropped):
+            return {"compacted": len(dropped), "remaining": len(rows) - len(dropped)}
+
+        if dry_run:
+            with self._read_ctx() as conn:
+                rows, dropped = _select(conn)
+            return _result(rows, dropped)
+
+        def _do(conn):
+            self._check_transcript_write_guards(
+                conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)
+            rows, dropped = _select(conn)
+            if not dropped:
+                return _result(rows, dropped)
+            ids = [row["id"] for row in dropped]
+            id_set = set(ids)
+            conn.execute(
+                f"UPDATE messages SET active = 0, compacted = 1 WHERE session_id = ? AND active = 1 "
+                f"AND id IN ({_placeholders(ids)})", [session_id, *ids])
+            remaining = [row for row in rows if row["id"] not in id_set]
+            tool_calls = sum(_tool_calls_len(row["tool_calls"]) for row in remaining)
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+                (len(remaining), tool_calls, session_id),
+            )
+            return _result(rows, dropped)
+
+        return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""
         sql = "SELECT COUNT(*) FROM messages" + (" WHERE session_id = ?" if session_id else "")

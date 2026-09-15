@@ -53,11 +53,13 @@ describe('absorbSpokenReplyRewrite', () => {
     expect(absorbSpokenReplyRewrite(spoken, after)).toEqual(spoken)
   })
 
-  it('does not migrate a durable id that simply vanished', () => {
-    const spoken = { id: 'durable-old', ordinal: 0 }
-    const after = [assistant('durable-new')]
+  it('migrates a durable (non-live-tail) id rewritten at the same ordinal by hydrate', () => {
+    // e.g. a tool-call completion bubble `assistant-${Date.now()}` that
+    // post-turn hydrateFromStoredSession then rewrites to `${ts}-${idx}-assistant`.
+    const spoken = { id: 'assistant-12345', ordinal: 0 }
+    const after = [user('u1'), assistant('1770-3-assistant')]
 
-    expect(absorbSpokenReplyRewrite(spoken, after)).toEqual(spoken)
+    expect(absorbSpokenReplyRewrite(spoken, after)).toEqual({ id: '1770-3-assistant', ordinal: 0 })
   })
 
   it('keeps the anchor when the spoken id is still in the list', () => {

@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -55,6 +56,26 @@ _LOCAL_TARGET_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 def _default_home() -> str:
     from hermes_constants import get_process_hermes_home
     return str(get_process_hermes_home())
+
+
+def _hermes_cli() -> str:
+    """Resolve the CLI belonging to this Bot Mode runtime before consulting PATH.
+
+    Background delivery runners commonly inherit a service-manager PATH. Docker
+    installs place the executable at ``<runtime>/bin/hermes`` (normally
+    ``/opt/hermes/bin/hermes``), which is intentionally not required to be on
+    that PATH. A venv sibling remains the preferred runtime-local entrypoint.
+    """
+    executable = "hermes.exe" if sys.platform == "win32" else "hermes"
+    runtime_root = Path(__file__).resolve().parent.parent
+    candidates = (
+        Path(sys.executable or "").parent / executable,
+        runtime_root / "bin" / executable,
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which(executable) or executable
 
 
 def message_agent_tool_schema() -> dict:
@@ -183,7 +204,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
             BOT_CHAT_TITLE, _handle, _hermes_root, _peers, _profile_name as _self_profile_name, _roster,
             is_bot_mode_managed,
         )
-        from tools.bot_relay import BOT_CHAT_TURN_ARGS, _hermes_cli
+        from tools.bot_relay import BOT_CHAT_TURN_ARGS
 
         if _session_title(agent) != BOT_CHAT_TITLE:
             return _err("message_agent is only available in a Bot Mode 'Bot Chat' session. "

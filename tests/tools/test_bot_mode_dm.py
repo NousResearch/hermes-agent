@@ -232,11 +232,32 @@ def _runner_author(command):
     return json.loads(parts[marker + 2])
 
 
+def test_delivery_cli_uses_docker_bundle_when_path_omits_hermes(tmp_path, monkeypatch):
+    """Regression for #111560: the Docker shim is outside a minimal service PATH."""
+    docker_root = tmp_path / "opt" / "hermes"
+    shim = docker_root / "bin" / "hermes"
+    shim.parent.mkdir(parents=True)
+    shim.touch()
+    shim.chmod(0o755)
+    monkeypatch.setattr(bot_mode_dm, "__file__", str(docker_root / "tools" / "bot_mode_dm.py"))
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "python"))
+    monkeypatch.setenv("PATH", "/usr/local/bin:/usr/bin:/bin")
+
+    assert bot_mode_dm._hermes_cli() == str(shim)
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",), peers=("spark",))
+    agent = _FakeAgent(home, title="Bot Chat")
+
+    assert json.loads(bot_mode_dm.message_agent_tool("researcher", "ping", agent=agent))["status"] == "sent"
+    assert json.loads(bot_mode_dm.message_agent_tool("spark", "ping", agent=agent))["status"] == "sent"
+    assert [_runner_parts(call["command"])[2][0] for call in calls] == [str(shim), str(shim)]
+
+
 def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     calls = _capture_spawn(monkeypatch)
     # These assertions target the -p/turn-args shape; pin the entrypoint resolution
     # so the test stays hermetic across venvs that do/don't expose a sibling script.
-    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    monkeypatch.setattr(bot_mode_dm, "_hermes_cli", lambda: "hermes")
     home = _managed_home(tmp_path, teammates=("researcher",))
     agent = _FakeAgent(home, title="Bot Chat")
 
@@ -298,7 +319,7 @@ def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
     tool-side roster (read from the machine-root config) validated the
     target."""
     calls = _capture_spawn(monkeypatch)
-    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    monkeypatch.setattr(bot_mode_dm, "_hermes_cli", lambda: "hermes")
     home = _managed_home(tmp_path, peers=("spark",))
     # A reviewer-profile gateway context: the agent's session db lives under
     # that profile's home, so _agent_home() resolves there while the
@@ -320,7 +341,7 @@ def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
 
 def test_peer_delivery_command(tmp_path, monkeypatch):
     calls = _capture_spawn(monkeypatch)
-    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
+    monkeypatch.setattr(bot_mode_dm, "_hermes_cli", lambda: "hermes")
     monkeypatch.setattr("socket.gethostname", lambda: "eri-mac.local")
     home = _managed_home(tmp_path, peers=("spark",))
     agent = _FakeAgent(home, title="Bot Chat")

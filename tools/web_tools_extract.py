@@ -180,10 +180,12 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
     if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
 
-    # Cache each successful fetch's full clean text (best-effort; oversized skipped).
-    for url, fetched in zip(fetch_urls, results):
+    # Cache each successful fetch under the URL that the provider actually returned.
+    # Providers may omit failed URLs or return successful results out of request order.
+    for fetched in results:
+        url = fetched.get("url")
         _content = fetched.get("raw_content", "") or fetched.get("content", "")
-        if _content and not fetched.get("error"):
+        if url in fetch_urls and _content and not fetched.get("error"):
             extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)
     return results
 

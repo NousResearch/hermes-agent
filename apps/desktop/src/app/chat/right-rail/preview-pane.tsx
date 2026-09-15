@@ -93,6 +93,55 @@ type PreviewWebview = HTMLElement & {
   replaceMisspelling?: (word: string) => void
   selectAll?: () => void
   sendInputEvent?: (event: PreviewInputEvent) => void
+  setWindowOpenHandler?: (handler: (details: { url: string }) => { action: 'deny' }) => void
+}
+
+/**
+ * A guest `window.open` / `target=_blank` URL worth navigating to, or `null`
+ * when there is nothing to go to. Script-bearing schemes run inside the page
+ * rather than navigating it, so they stay denied — the same blocklist the
+ * address bar applies (`normalizePreviewAddress`).
+ */
+export function guestWindowOpenTarget(url: string): string | null {
+  const next = url.trim()
+
+  if (!next) {
+    return null
+  }
+
+  const scheme = /^([a-z0-9+.-]+):/i.exec(next)?.[1]
+
+  if (scheme && /^(data|javascript)$/i.test(scheme)) {
+    return null
+  }
+
+  return next
+}
+
+/**
+ * Route the preview guest's popups back into its own webview. Without the
+ * `allowpopups` attribute Chromium drops `target=_blank` clicks before any
+ * handler runs (#101190) — and the renderer-side `new-window` event #101325
+ * used no longer exists in Electron 40, so this uses the supported
+ * `setWindowOpenHandler` seam instead. Always denies: the URL never reaches
+ * an OS browser (cf. the embedder deny in `window-open-policy.ts`), it just
+ * loads in place with history intact. A setter, not a listener, so it dies
+ * with the element and needs no teardown.
+ */
+export function installGuestWindowOpenHandler(webview: PreviewWebview, navigate: (url: string) => void): void {
+  if (typeof webview.setWindowOpenHandler !== 'function') {
+    return
+  }
+
+  webview.setWindowOpenHandler(({ url }) => {
+    const next = guestWindowOpenTarget(url ?? '')
+
+    if (next) {
+      navigate(next)
+    }
+
+    return { action: 'deny' }
+  })
 }
 
 /** Electron throws if getURL/getTitle run before attach + dom-ready, or after
@@ -1023,8 +1072,23 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     const webview = document.createElement('webview') as PreviewWebview
     webview.className = 'flex h-full w-full flex-1 bg-transparent'
     webview.setAttribute('partition', 'persist:hermes-preview')
+    // Without `allowpopups` Chromium silently drops `target=_blank` clicks
+    // before any handler runs (#101190); the handler below keeps them in-pane.
+    webview.setAttribute('allowpopups', '')
     webview.setAttribute('src', target.url)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
+
+    // A popup the guest asked for loads in place, keeping history intact — a
+    // dedicated tab is the strip's "+" job, not the page's.
+    installGuestWindowOpenHandler(webview, next => {
+      setCurrentUrl(next)
+
+      if (typeof webview.loadURL === 'function') {
+        void webview.loadURL(next)
+      } else {
+        webview.setAttribute('src', next)
+      }
+    })
 
     const onConsole = (event: Event) => {
       const detail = event as Event & {

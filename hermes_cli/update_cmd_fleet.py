@@ -28,6 +28,11 @@ _FLEET_RESTART_PENDING_NAME = "fleet_restart_pending"
 
 _FRESH_RESTART_SUPERVISORS = frozenset({"systemd", "launchd", "service", "s6"})
 
+# A supervisor can report a restarted unit active before the gateway finishes its
+# bootstrap and publishes ``gateway_state.json``. Keep the readiness poll bounded,
+# but allow the default systemd startup budget plus status-publication slack.
+_FLEET_PROBE_SETTLE_TIMEOUT_SECONDS = 120.0
+
 _SYSTEMD_SCOPES = (("user", ["systemctl", "--user"]), ("system", ["systemctl"]))
 _LIST_GATEWAY_UNITS = ["list-units", "hermes-gateway*", "hermes-serve*", "--plain", "--no-legend", "--no-pager"]
 
@@ -1064,6 +1069,9 @@ class _GatewayRestartOutcome:
     #: the summary tells the user to restart them by hand, so the fleet probe must not expect
     #: a row for them.
     stopped_unmapped_pids: set = field(default_factory=set)
+    #: ``scope/name`` of every settled systemd unit; the fleet probe stops waiting for a state stamp
+    #: once none of them is active or activating any more (the successor died, nothing will publish).
+    restarted_scoped_units: set = field(default_factory=set)
 
     def fleet_probe_signals(self) -> tuple:
         """``(pre_restart_pids, killed_pids)`` with the unmapped stops removed — the signals that
@@ -1342,6 +1350,7 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
             e, _pre_update_plan, out, gateway_mode=gateway_mode, restarted_scoped_units=restarted_scoped_units
         )
 
+    out.restarted_scoped_units = set(restarted_scoped_units)
     return out
 
 
@@ -1378,14 +1387,33 @@ def _collect_fleet_snapshot(restart, rows_expected: bool) -> list:
     from hermes_cli.update_receipt import collect_fleet_versions
     if not rows_expected:
         return collect_fleet_versions(pre_restart_pids=restart.pre_restart_gateway_pids)
-    _fleet_deadline = _time.monotonic() + 30.0
+    _fleet_deadline = _time.monotonic() + _FLEET_PROBE_SETTLE_TIMEOUT_SECONDS
     while True:
         _time.sleep(2.0)
         snapshot = collect_fleet_versions(pre_restart_pids=restart.pre_restart_gateway_pids)
         if snapshot and not any(row.get("state") == "down" for row in snapshot):
             return snapshot
-        if _time.monotonic() >= _fleet_deadline:
+        if _time.monotonic() >= _fleet_deadline or _restarted_units_gone(
+                getattr(restart, "restarted_scoped_units", ())):
             return snapshot
+
+
+def _restarted_units_gone(scoped_units) -> bool:
+    """True when every restarted systemd unit is neither active nor activating: the successor died,
+    nothing will publish a state stamp, so the settle poll should fail closed now instead of at the
+    deadline. Unknown (no units, systemctl missing/slow) keeps waiting."""
+    if not scoped_units:
+        return False
+    scope_cmds = dict(_SYSTEMD_SCOPES)
+    for scoped in scoped_units:
+        scope, _, name = scoped.partition("/")
+        try:
+            state = _systemctl(scope_cmds[scope] + ["is-active", name], timeout=5).stdout.strip()
+        except (KeyError, FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+        if state in ("active", "activating", "reloading"):
+            return False
+    return True
 
 
 def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_resume, node_failures, update_complete):

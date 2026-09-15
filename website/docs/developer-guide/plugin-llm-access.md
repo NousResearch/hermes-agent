@@ -318,7 +318,12 @@ auxiliary:
 
 Plugins may supply provider/model registration defaults for their own
 tasks. Operator configuration in `auxiliary.<task>` overrides those
-defaults and controls the deployment choice. A plugin can only use a task
+defaults and controls the deployment choice. A registered task is a
+first-class slot on every model-assignment surface: the `hermes model` →
+*Configure auxiliary models* picker, the dashboard Models page, and Desktop
+Settings → Models → Auxiliary all list it (after the built-in tasks, under
+the plugin's `display_name`) and can pin, reset, or flag it as a stale
+provider pin like any built-in. A plugin can only use a task
 it registered itself; unknown or foreign task names fail before provider
 invocation. `allow_task_override: true` is an explicit operator grant for
 using Hermes built-in auxiliary tasks; it does not permit another plugin's

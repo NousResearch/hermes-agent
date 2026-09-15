@@ -77,6 +77,7 @@ _MODEL_PICKER_CANCEL_ACTION = "hermes_model_cancel"
 # restart, aged-out state entry, or a value the stored state no longer
 # covers): the message is rewritten to this so the control visibly dies.
 _MODEL_PICKER_EXPIRED_NOTICE = "⏳ This model picker expired — please run /model again."
+_CLARIFY_EXPIRED_NOTICE = "⏳ This prompt expired — please send a new request."
 _MODEL_PICKER_ACTION_IDS = (
     _MODEL_PICKER_PROVIDER_ACTION,
     _MODEL_PICKER_MODEL_ACTION,
@@ -1046,6 +1047,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Bounded: never-clicked prompts would otherwise leak forever.
         self._approval_resolved: Dict[Any, bool] = {}
         self._clarify_resolved: Dict[Any, bool] = {}
+        # clarify_id -> Slack message metadata retained until the response or
+        # timeout wins, allowing expiry to replace a stale interactive card.
+        self._clarify_timeout_cards: Dict[str, Dict[str, str]] = {}
         # Model picker state keyed by workspace message marker (team_id, ts) →
         # picker context (providers, session_key, on_model_selected, stage).
         # Mirrors _approval_resolved / _clarify_resolved: bounded, and the
@@ -5200,10 +5204,27 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Bare-ts key (not workspace-scoped) so the action handler's atomic-pop guard
         # can reject double-clicks (mirrors _approval_resolved).
-        return await self._send_interactive_prompt(
+        result = await self._send_interactive_prompt(
             chat_id, metadata, _build, "send_clarify",
             resolved=self._clarify_resolved, resolved_max=self._CLARIFY_RESOLVED_MAX,
             team_scoped_key=False, sanitize=False)
+        if result.success and result.message_id:
+            raw_response = result.raw_response if isinstance(result.raw_response, dict) else {}
+            self._clarify_timeout_cards[clarify_id] = {
+                "channel_id": str(raw_response.get("channel") or chat_id),
+                "msg_ts": str(result.message_id),
+                "question_text": _build()[0],
+            }
+            self._trim_oldest_dict_entries(
+                self._clarify_timeout_cards, self._CLARIFY_RESOLVED_MAX)
+            try:
+                from tools.clarify_gateway import get_clarify_timeout
+                timeout = get_clarify_timeout()
+            except Exception:
+                timeout = 0
+            if timeout > 0:
+                asyncio.create_task(self._expire_clarify_after_timeout(clarify_id, timeout))
+        return result
 
     def _is_interactive_user_authorized(
         self, user_id: str, *, channel_id: str = "", user_name: Optional[str] = None,
@@ -5405,6 +5426,25 @@ class SlackAdapter(BasePlatformAdapter):
             channel_id, msg_ts, question_text, decision_text, "Clarification", "clarify", sanitize=False
         )
 
+    async def _expire_clarify_after_timeout(self, clarify_id: str, timeout: float) -> None:
+        """Proactively replace a live clarify card once its gateway wait expires."""
+        await asyncio.sleep(timeout)
+        await self._expire_clarify_card(clarify_id)
+
+    async def _expire_clarify_card(self, clarify_id: str) -> None:
+        """Claim an unresolved clarify and render its Slack card as expired."""
+        card = self._clarify_timeout_cards.pop(clarify_id, None)
+        if card is None:
+            return
+        try:
+            from tools.clarify_gateway import expire_gateway_clarify
+            if not expire_gateway_clarify(clarify_id):
+                return
+        except Exception:
+            return
+        await self._update_clarify_message(
+            card["channel_id"], card["msg_ts"], card["question_text"], _CLARIFY_EXPIRED_NOTICE)
+
     async def _handle_clarify_action(self, ack, body, action) -> None:
         """Handle a clarify button click (a choice or "Other") from Block Kit."""
         started = await self._begin_interaction(ack, body, action, "clarify", team_scoped=False)
@@ -5422,7 +5462,7 @@ class SlackAdapter(BasePlatformAdapter):
         from tools import clarify_gateway as _clarify_mod
         # "Other" → text-capture mode: mark_awaiting_text flips the entry and the
         # gateway's text-intercept resolves it from the user's next message.
-        expired_text = f"⏳ This prompt expired — please send a new request. (by {user_name})"
+        expired_text = _CLARIFY_EXPIRED_NOTICE
         if action_id == "hermes_clarify_other" or token == "other":
             if not _clarify_mod.mark_awaiting_text(clarify_id):
                 # Entry evicted/gateway restarted — a typed answer would go nowhere.
@@ -5447,6 +5487,7 @@ class SlackAdapter(BasePlatformAdapter):
         if resolved_text is None:
             resolved_text = f"choice {idx + 1}"
         if _clarify_mod.resolve_gateway_clarify(clarify_id, resolved_text):
+            self._clarify_timeout_cards.pop(clarify_id, None)
             await self._update_clarify_message(
                 channel_id, msg_ts, original_text, f"✅ {user_name}: {resolved_text}")
             # Privacy: choice text may carry user context — INFO gets metadata only.

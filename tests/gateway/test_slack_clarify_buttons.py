@@ -186,6 +186,68 @@ class TestSlackClarifyChoiceAction:
         assert entry is not None
         assert not entry.event.is_set()
 
+    @pytest.mark.asyncio
+    async def test_timeout_proactively_replaces_card_and_late_choice_stays_expired(self):
+        """A timeout updates the card before a user needs to press a stale button."""
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+        cm.register("cid-expired", "sk-expired", "Pick a target", ["a", "b"])
+        adapter._clarify_resolved["3.3"] = False
+        adapter._clarify_timeout_cards["cid-expired"] = {
+            "channel_id": "C1", "msg_ts": "3.3", "question_text": "❓ Pick a target",
+        }
+
+        await adapter._expire_clarify_card("cid-expired")
+
+        assert mock_client.chat_update.call_args.kwargs["text"] == (
+            "⏳ This prompt expired — please send a new request."
+        )
+
+    @pytest.mark.asyncio
+    async def test_late_other_click_keeps_the_proactive_expiry_notice(self):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+        cm.register("cid-late-other", "sk-late-other", "Pick", ["a"])
+        adapter._clarify_resolved["3.4"] = False
+        adapter._clarify_timeout_cards["cid-late-other"] = {
+            "channel_id": "C1", "msg_ts": "3.4", "question_text": "❓ Pick",
+        }
+        await adapter._expire_clarify_card("cid-late-other")
+
+        await adapter._handle_clarify_action(AsyncMock(), {
+            "message": {"ts": "3.4", "blocks": [
+                {"type": "section", "text": {"type": "mrkdwn", "text": "❓ Pick"}},
+            ]},
+            "channel": {"id": "C1"}, "user": {"name": "norbert", "id": "U_N"},
+        }, {"action_id": "hermes_clarify_other", "value": "cid-late-other|other"})
+
+        assert mock_client.chat_update.call_args.kwargs["text"] == (
+            "⏳ This prompt expired — please send a new request."
+        )
+        assert cm.resolve_gateway_clarify("cid-expired", "a") is False
+
+        ack = AsyncMock()
+        body = {
+            "message": {"ts": "3.3", "blocks": [
+                {"type": "section", "text": {"type": "mrkdwn", "text": "❓ Pick a target"}},
+            ]},
+            "channel": {"id": "C1"}, "user": {"name": "norbert", "id": "U_N"},
+        }
+        await adapter._handle_clarify_action(
+            ack, body, {"action_id": "hermes_clarify_choice_0", "value": "cid-expired|0"}
+        )
+        assert mock_client.chat_update.call_args.kwargs["text"] == (
+            "⏳ This prompt expired — please send a new request."
+        )
+
 
 # ===========================================================================
 # _handle_clarify_action — "Other" → text-capture → typed reply (c)

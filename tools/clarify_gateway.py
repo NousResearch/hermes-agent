@@ -98,6 +98,20 @@ def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
         return True
 
 
+def expire_gateway_clarify(clarify_id: str) -> bool:
+    """Atomically claim a still-pending clarify for its timeout notification.
+
+    The waiter owns cleanup, while this claim prevents a Slack expiry task from
+    replacing a card after a simultaneous button or text response won the race.
+    """
+    with _lock:
+        entry = _entries.get(clarify_id)
+        if entry is None or entry.event.is_set():
+            return False
+        entry.event.set()
+        return True
+
+
 def get_pending_for_session(session_key: str, *, include_choice_prompts: bool = False) -> Optional[_ClarifyEntry]:
     """Oldest pending entry awaiting free text (open-ended, or after "Other");
     ``include_choice_prompts=True`` returns the oldest unresolved entry of any kind (user
@@ -223,12 +237,13 @@ def resolve_text_response_for_session(session_key: str, response: str) -> bool:
 
 
 def mark_awaiting_text(clarify_id: str) -> bool:
-    """Flip an entry into text-capture mode (user picked 'Other'); False if unknown."""
+    """Flip an active entry into text-capture mode; False if expired or unknown."""
     with _lock:
         entry = _entries.get(clarify_id)
-        if entry is not None:
+        if entry is not None and not entry.event.is_set():
             entry.awaiting_text = True
-        return entry is not None
+            return True
+        return False
 
 
 def has_pending(session_key: str) -> bool:

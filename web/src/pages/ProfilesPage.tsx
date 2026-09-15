@@ -28,6 +28,11 @@ import { api } from "@/lib/api";
 import type { ActiveProfileInfo, ProfileInfo } from "@/lib/api";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
+import { ProfileModelPicker } from "@/components/ProfileModelPicker";
+import {
+  profileModelKey,
+  type ProfileModelChoice,
+} from "@/lib/profile-model-picker";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
@@ -303,7 +308,6 @@ export default function ProfilesPage() {
         p.modelNone ?? "No authenticated providers — set a key first",
       editModel: p.editModel ?? "Change model",
       modelSaved: p.modelSaved ?? "Model updated",
-      modelSelect: p.modelSelect ?? "Select a model",
       actions: p.actions ?? "Actions",
       manageSkills: p.manageSkills ?? "Manage skills & tools",
       activeSetHint:
@@ -322,9 +326,9 @@ export default function ProfilesPage() {
   const [creating, setCreating] = useState(false);
   // Model picker (lazy-loaded the first time a picker is opened). modelChoice
   // is a "slug\u0000model" key, or "" to inherit from clone/default.
-  const [modelChoices, setModelChoices] = useState<
-    { provider: string; model: string; label: string }[] | null
-  >(null);
+  const [modelChoices, setModelChoices] = useState<ProfileModelChoice[] | null>(
+    null,
+  );
   const modelChoicesLoading = useRef(false);
   const [modelChoice, setModelChoice] = useState("");
   const closeCreateModal = useCallback(() => setCreateModalOpen(false), []);
@@ -375,7 +379,7 @@ export default function ProfilesPage() {
     api
       .getModelOptions()
       .then((res) => {
-        const flat: { provider: string; model: string; label: string }[] = [];
+        const flat: ProfileModelChoice[] = [];
         for (const prov of res.providers ?? []) {
           for (const m of prov.models ?? []) {
             flat.push({
@@ -898,29 +902,15 @@ export default function ProfilesPage() {
               <div className="grid gap-2">
                 <Label htmlFor="profile-model">{L.modelOptional}</Label>
 
-                <Select
-                  id="profile-model"
-                  value={modelChoice}
-                  disabled={modelChoices === null}
-                  onValueChange={setModelChoice}
-                >
-                  <SelectOption value="">
-                    {modelChoices === null ? L.modelLoading : L.modelInherit}
-                  </SelectOption>
-
-                  {(modelChoices ?? []).map((c) => (
-                    <SelectOption
-                      key={`${c.provider}\u0000${c.model}`}
-                      value={`${c.provider}\u0000${c.model}`}
-                    >
-                      {c.label}
-                    </SelectOption>
-                  ))}
-                </Select>
-
-                {modelChoices !== null && modelChoices.length === 0 && (
-                  <p className="text-xs text-muted-foreground">{L.modelNone}</p>
-                )}
+                <ProfileModelPicker
+                  choices={modelChoices}
+                  emptyLabel={L.modelNone}
+                  inheritLabel={L.modelInherit}
+                  loadingLabel={L.modelLoading}
+                  searchInputId="profile-model"
+                  selected={modelChoice}
+                  onSelect={setModelChoice}
+                />
               </div>
 
               <fieldset className="grid gap-3 border-t border-border pt-4">
@@ -1273,48 +1263,35 @@ export default function ProfilesPage() {
                 editorKind === "soul" && "min-h-0 overflow-y-auto",
               )}
             >
-              {editorKind === "model" &&
-                (modelChoices !== null && modelChoices.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">{L.modelNone}</p>
-                ) : (
-                  <>
-                    <Select
-                      value={modelEditChoice}
-                      disabled={modelChoices === null}
-                      placeholder={
-                        modelChoices === null ? L.modelLoading : L.modelSelect
-                      }
-                      onValueChange={setModelEditChoice}
-                    >
-                      {(modelChoices ?? []).map((c) => (
-                        <SelectOption
-                          key={`${c.provider}\u0000${c.model}`}
-                          value={`${c.provider}\u0000${c.model}`}
-                        >
-                          {c.label}
-                        </SelectOption>
-                      ))}
-                    </Select>
+              {editorKind === "model" && (
+                <>
+                  <ProfileModelPicker
+                    choices={modelChoices}
+                    emptyLabel={L.modelNone}
+                    loadingLabel={L.modelLoading}
+                    searchInputId="profile-model-editor"
+                    selected={modelEditChoice}
+                    onSelect={setModelEditChoice}
+                  />
 
-                    <div className="flex justify-end">
-                      <Button
-                        size="sm"
-                        className="uppercase"
-                        onClick={() => handleSaveModel(editorName)}
-                        disabled={
-                          modelSaving ||
-                          !modelChoices?.some(
-                            (c) =>
-                              `${c.provider}\u0000${c.model}` ===
-                              modelEditChoice,
-                          )
-                        }
-                      >
-                        {modelSaving ? t.common.saving : t.common.save}
-                      </Button>
-                    </div>
-                  </>
-                ))}
+                  <div className="flex justify-end">
+                    <Button
+                      size="sm"
+                      className="uppercase"
+                      onClick={() => handleSaveModel(editorName)}
+                      disabled={
+                        modelSaving ||
+                        !modelChoices?.some(
+                          (choice) =>
+                            profileModelKey(choice) === modelEditChoice,
+                        )
+                      }
+                    >
+                      {modelSaving ? t.common.saving : t.common.save}
+                    </Button>
+                  </div>
+                </>
+              )}
 
               {editorKind === "desc" && (
                 <>

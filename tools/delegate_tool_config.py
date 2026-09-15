@@ -376,7 +376,50 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     if values["base_url"] and not is_native_sdk_provider:
         return _direct_endpoint_credentials(values, explicit_request_overrides)
     if not values["provider"]:
-        # Pure inherit; explicit request_overrides still merge OVER the parent's.
+        # No explicit delegation override: normally inherit the parent. Named custom providers
+        # need one extra identity check, however. The live agent stores the resolved billing
+        # class as bare ``custom`` and two named providers may share the same base_url. In that
+        # case blindly inheriting the parent's provider/key can pair a switched model with the
+        # previous custom provider (e.g. model-b-current + provider-a credentials). Recover the
+        # named identity from the model catalog first and resolve its complete credential bundle
+        # for the child.
+        parent_model = str(getattr(parent_agent, "model", "") or "").strip()
+        parent_provider = str(getattr(parent_agent, "provider", "") or "").strip()
+        parent_base_url = str(getattr(parent_agent, "base_url", "") or "").strip()
+        if parent_provider.lower().startswith("custom"):
+            try:
+                from hermes_cli.runtime_provider import (
+                    canonical_custom_identity,
+                    resolve_runtime_provider,
+                )
+
+                custom_identity = canonical_custom_identity(
+                    base_url=parent_base_url,
+                    config_provider=parent_provider,
+                    model=values["model"] or parent_model,
+                )
+                if custom_identity:
+                    runtime = resolve_runtime_provider(
+                        requested=custom_identity,
+                        target_model=values["model"] or parent_model or None,
+                    )
+                    return _credential_bundle(
+                        values["model"] or parent_model or runtime.get("model") or None,
+                        custom_identity,
+                        runtime.get("base_url"),
+                        runtime.get("api_key") or None,
+                        runtime.get("api_mode"),
+                        _merge_request_overrides(
+                            runtime.get("request_overrides"), explicit_request_overrides
+                        ) or {},
+                        command=runtime.get("command"),
+                        args=list(runtime.get("args") or []),
+                    )
+            except Exception as exc:
+                logger.debug("Could not canonicalize inherited custom provider: %s", exc)
+
+        # Built-ins and genuine ad-hoc endpoints keep the ordinary inheritance path; None
+        # overrides are resolved from the parent in _build_child_agent.
         return _credential_bundle(
             values["model"], None, None, None, None,
             _merge_request_overrides(getattr(parent_agent, "request_overrides", None), explicit_request_overrides),

@@ -17,6 +17,7 @@ import { Button } from '@/components/ui/button'
 import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
 import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
+import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
@@ -25,7 +26,7 @@ import { confirm } from '@/store/confirm'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
-import { $settingsRequestProfile } from '@/store/settings-scope'
+import { $settingsOwner } from '@/store/settings-scope'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
 import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
@@ -144,7 +145,7 @@ function OAuthPicker({
   onWantApiKey: () => void
   onWantLocalModels: () => void
   providers: OAuthProvider[]
-  profile?: string
+  profile?: ProfileScope
 }) {
   const { t } = useI18n()
   const p = t.settings.providers
@@ -354,8 +355,8 @@ export function ProvidersSettings({
   view
 }: ProvidersSettingsProps) {
   const { t } = useI18n()
-  const scopeProfile = useStore($settingsRequestProfile)
-  const { rowProps, vars } = useEnvCredentials(scopeProfile)
+  const settingsOwner = useStore($settingsOwner)
+  const { rowProps, vars } = useEnvCredentials(settingsOwner)
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
   const [openProvider, setOpenProvider] = useState<null | string>(null)
   const [disconnecting, setDisconnecting] = useState<null | string>(null)
@@ -368,9 +369,13 @@ export function ProvidersSettings({
 
   const refreshOAuthProviders = useCallback(async () => {
     // OAuth providers are best-effort — a failure here just hides the panel.
-    const { providers } = await listOAuthProviders(scopeProfile)
+    if (!settingsOwner) {
+      return
+    }
+
+    const { providers } = await listOAuthProviders(settingsOwner)
     setOauthProviders(providers)
-  }, [scopeProfile])
+  }, [settingsOwner])
 
   useEffect(() => {
     let cancelled = false
@@ -381,7 +386,11 @@ export function ProvidersSettings({
       }
 
       try {
-        const { providers } = await listOAuthProviders(scopeProfile)
+        if (!settingsOwner) {
+          return
+        }
+
+        const { providers } = await listOAuthProviders(settingsOwner)
 
         if (!cancelled) {
           setOauthProviders(providers)
@@ -392,7 +401,7 @@ export function ProvidersSettings({
     })()
 
     return () => void (cancelled = true)
-  }, [onboardingActive, scopeProfile])
+  }, [onboardingActive, settingsOwner])
 
   // External (CLI-managed) providers can't be cleared via the API by design —
   // Hermes never deletes creds another tool owns behind a silent API call.
@@ -443,7 +452,11 @@ export function ProvidersSettings({
     setDisconnecting(provider.id)
 
     try {
-      await disconnectOAuthProvider(provider.id, scopeProfile)
+      if (!settingsOwner) {
+        return
+      }
+
+      await disconnectOAuthProvider(provider.id, settingsOwner)
       notify({
         durationMs: 3_000,
         kind: 'success',
@@ -483,7 +496,7 @@ export function ProvidersSettings({
     return (
       <SettingsContent>
         <SettingsProfileScope className="mb-5" />
-        <LocalEndpointRow onOpen={reason => startManualLocalEndpoint(reason, scopeProfile)} />
+        <LocalEndpointRow onOpen={reason => startManualLocalEndpoint(reason, settingsOwner ?? undefined)} />
         {keyGroups.length > 0 ? (
           <div className="grid gap-3">
             <SearchField
@@ -539,7 +552,7 @@ export function ProvidersSettings({
         onTerminalDisconnect={provider => void handleTerminalDisconnect(provider)}
         onWantApiKey={() => onViewChange('keys')}
         onWantLocalModels={() => onViewChange('local')}
-        profile={scopeProfile}
+        profile={settingsOwner ?? undefined}
         providers={oauthProviders}
       />
     </SettingsContent>

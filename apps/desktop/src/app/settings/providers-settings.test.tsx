@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ConfirmHost } from '@/components/confirm-host'
 import { $confirmRequest } from '@/store/confirm'
+import { $connection } from '@/store/session'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
 const listOAuthProviders = vi.fn()
@@ -34,7 +35,7 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/store/onboarding', () => ({
   $desktopOnboarding: onboarding,
   startManualProviderOAuth: (...args: unknown[]) => startManualProviderOAuth(...args),
-  startManualLocalEndpoint: (reason: null | string) => startManualLocalEndpoint(reason)
+  startManualLocalEndpoint: (...args: unknown[]) => startManualLocalEndpoint(...args)
 }))
 
 function provider(id: string, loggedIn: boolean, patch: Partial<OAuthProvider> = {}): OAuthProvider {
@@ -72,6 +73,7 @@ function keyVar(patch: Partial<EnvVarInfo> = {}): EnvVarInfo {
 }
 
 beforeEach(() => {
+  $connection.set({ mode: 'local' } as never)
   onboarding.set({ manual: false })
   getEnvVars.mockResolvedValue({})
   disconnectOAuthProvider.mockResolvedValue({ ok: true, provider: 'nous' })
@@ -105,6 +107,29 @@ async function renderProvidersSettings() {
 }
 
 describe('ProvidersSettings', () => {
+  it('drops credential drafts and retargets reads when the Settings gateway changes', async () => {
+    $connection.set({ mode: 'remote', connectionId: 'gateway-a', baseUrl: 'https://a.example' } as never)
+    getEnvVars.mockResolvedValue({ WIDGET_API_KEY: keyVar({ provider: 'widget', provider_label: 'Widget' }) })
+    const { ProvidersSettings } = await import('./providers-settings')
+    const { container } = render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+
+    await screen.findByText('Widget')
+    expect(getEnvVars).toHaveBeenLastCalledWith({ connectionId: 'gateway-a', profile: 'alpha' })
+    const input = container.querySelector('input[type="password"]')!
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: 'gateway-a-draft' } })
+    expect(input.getAttribute('value')).toBe('gateway-a-draft')
+
+    await act(async () => {
+      $connection.set({ mode: 'remote', connectionId: 'gateway-b', baseUrl: 'https://b.example' } as never)
+    })
+
+    await waitFor(() =>
+      expect(getEnvVars).toHaveBeenLastCalledWith({ connectionId: 'gateway-b', profile: 'alpha' })
+    )
+    expect(container.querySelector('input[type="password"]')?.getAttribute('value')).toBe('')
+  })
+
   it('reads and saves API keys for the shared Settings target and reloads when it changes', async () => {
     const { $settingsScopeOverride } = await import('@/store/settings-scope')
     const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
@@ -127,15 +152,20 @@ describe('ProvidersSettings', () => {
     try {
       const { container } = render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
       await screen.findByText('Widget')
-      expect(getEnvVars).toHaveBeenLastCalledWith('profile-b')
+      expect(getEnvVars).toHaveBeenLastCalledWith({ connectionId: 'local', profile: 'profile-b' })
       expect(screen.getByText('Applies to')).toBeTruthy()
       const input = container.querySelector('input[type="password"]')!
       fireEvent.focus(input)
       fireEvent.change(input, { target: { value: 'fixture-key' } })
       fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-      await waitFor(() => expect(setEnvVar).toHaveBeenCalledWith('WIDGET_API_KEY', 'fixture-key', 'profile-b'))
+      await waitFor(() =>
+        expect(setEnvVar).toHaveBeenCalledWith('WIDGET_API_KEY', 'fixture-key', {
+          connectionId: 'local',
+          profile: 'profile-b'
+        })
+      )
       fireEvent.click(screen.getByRole('button', { name: 'profile-a' }))
-      await waitFor(() => expect(getEnvVars).toHaveBeenLastCalledWith(undefined))
+      await waitFor(() => expect(getEnvVars).toHaveBeenLastCalledWith({ connectionId: 'local', profile: 'profile-a' }))
     } finally {
       cleanup()
       $settingsScopeOverride.set(null)
@@ -150,13 +180,14 @@ describe('ProvidersSettings', () => {
 
     try {
       await renderProvidersSettings()
-      expect(getEnvVars).toHaveBeenCalledWith('beta')
-      expect(listOAuthProviders).toHaveBeenCalledWith('beta')
+      const owner = { connectionId: 'local', profile: 'beta' }
+      expect(getEnvVars).toHaveBeenCalledWith(owner)
+      expect(listOAuthProviders).toHaveBeenCalledWith(owner)
       fireEvent.click(await screen.findByText('Nous Portal'))
-      expect(startManualProviderOAuth).toHaveBeenCalledWith('nous', 'beta')
+      expect(startManualProviderOAuth).toHaveBeenCalledWith('nous', owner)
       fireEvent.click(await screen.findByRole('button', { name: 'Remove Nous Portal' }))
       fireEvent.click(await screen.findByRole('button', { name: 'Disconnect' }))
-      await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous', 'beta'))
+      await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous', owner))
     } finally {
       $settingsScopeOverride.set(null)
     }
@@ -178,7 +209,9 @@ describe('ProvidersSettings', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }))
     })
 
-    await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous', undefined))
+    await waitFor(() =>
+      expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous', { connectionId: 'local', profile: 'default' })
+    )
     expect(listOAuthProviders).toHaveBeenCalledTimes(2)
   })
 
@@ -203,7 +236,7 @@ describe('ProvidersSettings', () => {
       fireEvent.click(await screen.findByText('Nous Portal'))
     })
 
-    expect(startManualProviderOAuth).toHaveBeenCalledWith('nous', undefined)
+    expect(startManualProviderOAuth).toHaveBeenCalledWith('nous', { connectionId: 'local', profile: 'default' })
     expect(disconnectOAuthProvider).not.toHaveBeenCalled()
   })
 
@@ -301,6 +334,8 @@ describe('ProvidersSettings', () => {
 
     fireEvent.click(row)
 
-    await waitFor(() => expect(startManualLocalEndpoint).toHaveBeenCalledWith(null))
+    await waitFor(() =>
+      expect(startManualLocalEndpoint).toHaveBeenCalledWith(null, { connectionId: 'local', profile: 'default' })
+    )
   })
 })

@@ -77,6 +77,13 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
 export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const scopeProfile = useStore($settingsScopeProfile)
   const activeConnectionId = useStore($activeConnectionId)
+  const settingsOwner = useStore($settingsOwner)
+
+  const settingsOwnerKey = vaultOwnerKey(
+    settingsOwner?.connectionId ?? settingsOwner?.legacyConnection?.baseUrl ?? activeConnectionId,
+    scopeProfile
+  )
+
   const { t } = useI18n()
   const navigate = useNavigate()
   const { hash, pathname, search } = useLocation()
@@ -446,7 +453,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       />
     ) : activeView === 'providers' ? (
       <ProvidersSettings
-        key={scopeProfile}
+        key={settingsOwnerKey}
         onClose={onClose}
         onConfigSaved={onConfigSaved}
         onMainModelChanged={onMainModelChanged}
@@ -454,7 +461,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         view={providerView}
       />
     ) : activeView === 'keys' ? (
-      <KeysSettings view={keysView} />
+      <KeysSettings key={settingsOwnerKey} view={keysView} />
     ) : activeView === 'notifications' ? (
       <NotificationsSettings />
     ) : activeView === 'billing' ? (

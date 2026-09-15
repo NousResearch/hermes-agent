@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/i18n'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $localRuntimeJobs } from '@/store/local-runtime-jobs'
+import { startManualOnboarding } from '@/store/onboarding'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
@@ -20,6 +21,7 @@ vi.mock('@/lib/model-options', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   requestModelOptions: vi.fn()
 }))
+vi.mock('@/store/onboarding', () => ({ startManualOnboarding: vi.fn() }))
 
 import { requestModelOptions } from '@/lib/model-options'
 
@@ -94,6 +96,16 @@ afterEach(() => {
 })
 
 describe('ModelPickerDialog download rows', () => {
+  it('keeps the captured gateway owner when opening nested provider setup', async () => {
+    const scope = { connectionId: 'gateway-a', profile: 'alpha' }
+    renderPicker({ providerSetupScope: scope })
+    await screen.findByText('Qwen3.6-27B-UD-Q4_K_XL')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add provider' }))
+
+    expect(startManualOnboarding).toHaveBeenCalledWith(undefined, scope)
+  })
+
   it('shows an in-flight download as a disabled progress row in the Local group', async () => {
     $localRuntimeJobs.set([DOWNLOAD_JOB])
     renderPicker()

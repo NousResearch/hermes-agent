@@ -419,6 +419,12 @@ platforms:
       unfurl_links: false
       unfurl_media: false
 
+      # Let Slack render the agent's standard Markdown directly (default: false).
+      # Supports tables, headers, task lists, and syntax-highlighted code fences.
+      # Slack limits markdown blocks to 12,000 characters per message; Hermes
+      # falls back to rich_blocks (when enabled) or flat mrkdwn when necessary.
+      markdown_blocks: false
+
       # Render agent messages as Slack Block Kit blocks (default: false).
       # When true, the final agent message is sent with structured blocks —
       # section headers, dividers, true nested lists (via rich_text), and
@@ -471,6 +477,7 @@ platforms:
 | `platforms.slack.extra.reply_broadcast` | `false` | When `true`, thread replies are also posted to the main channel. Only the first chunk is broadcast. |
 | `platforms.slack.extra.unfurl_links` | Slack default | Set to `false` to suppress automatic previews for linked web pages while preserving clickable links. When either unfurl key is set, media captions are posted as a separate message *before* the file (Slack's upload API cannot carry unfurl controls), and native draft streaming falls back to edit-based delivery. |
 | `platforms.slack.extra.unfurl_media` | Slack default | Set to `false` to suppress automatic media previews while preserving clickable links. Same caption-ordering and streaming notes as `unfurl_links`. |
+| `platforms.slack.extra.markdown_blocks` | `false` | When `true`, sends the agent's standard Markdown through Slack's native [`markdown` block](https://docs.slack.dev/reference/block-kit/blocks/markdown-block/), which renders tables, headers, task lists, and syntax-highlighted code fences. Slack caps cumulative markdown-block text at 12,000 characters per message; Hermes falls back safely when content is too long or Slack rejects the block. No app reinstall required. |
 | `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists, and native tables). A plain-text fallback is always sent. Tables over Slack's limits fall back to aligned monospace. No app reinstall required — it's a send-side change only. |
 | `platforms.slack.extra.feedback_buttons` | `false` | When `true` with `rich_blocks`, appends Slack-native feedback controls to final replies. |
 | `platforms.slack.extra.native_task_cards` | `false` | When `true`, renders live tool calls as Slack-native plan/task cards. Cards work with Slack's built-in default `tool_progress: off`; an explicitly configured `display.tool_progress: off` (global or `display.platforms.slack`; `/verbose` writes the same key) disables cards too. Cards need a thread: when the card lane is active and the chat has no thread to anchor on (a top-level DM with `reply_in_thread: false`), Hermes shows no tool progress instead of text bubbles, unless you explicitly set `tool_progress: new`/`all`, which falls back to editable text progress there. Recoverable native API failures fall back to one continuously edited text update. |

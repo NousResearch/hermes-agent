@@ -598,6 +598,7 @@ export interface SessionLiveInfo {
   profile_name?: string | null
   mcp_servers?: McpServerStatus[]
   system_prompt?: string | null
+  config_warning?: string | null
   credential_warning?: string | null
   lazy?: boolean | null
   [key: string]: unknown
@@ -2706,6 +2707,7 @@ export interface SessionCwdSetResult {
   profile_name?: string | null
   mcp_servers?: McpServerStatus[]
   system_prompt?: string | null
+  config_warning?: string | null
   credential_warning?: string | null
   lazy?: boolean | null
   [key: string]: unknown

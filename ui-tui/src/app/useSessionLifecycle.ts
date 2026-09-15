@@ -207,29 +207,27 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         return null
       }
 
-      const info = r.info ?? null
+      const info = { ...r.info, stored_session_id: r.stored_session_id }
       const requestedTitle = title?.trim() ?? ''
 
       resetSession()
       setSessionStartedAt(Date.now())
 
-      writeActiveSessionFile(r.session_id)
+      writeActiveSessionFile(r.stored_session_id)
       patchUiState({
         info,
         sid: r.session_id,
-        status: info?.version ? 'ready' : 'starting agent…',
+        status: info.version ? 'ready' : 'starting agent…',
         usage: usageFrom(info)
       })
 
-      if (info) {
-        setHistoryItems([introMsg(info)])
-      }
+      setHistoryItems([introMsg(info)])
 
-      if (info?.credential_warning) {
+      if (info.credential_warning) {
         sys(`warning: ${info.credential_warning}`)
       }
 
-      if (info?.config_warning) {
+      if (info.config_warning) {
         sys(`warning: ${info.config_warning}`)
       }
 
@@ -330,7 +328,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'resuming…' })
 
-      rpc<SetupStatusResponse>('setup.status', {}).then(setup => {
+      return rpc<SetupStatusResponse>('setup.status', {}).then(setup => {
         if (setup?.provider_configured === false) {
           panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
           patchUiState({ status: 'setup required' })
@@ -340,7 +338,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         const previousSid = getUiState().sid
 
-        gw.request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
+        return gw.request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
           .then(raw => {
             const r = asRpcResult<SessionResumeResult>(raw)
 
@@ -350,7 +348,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               return patchUiState({ status: 'ready' })
             }
 
-            const info = r.info ?? null
+            const info = {
+              ...r.info,
+              stored_session_id: r.info.stored_session_id || r.stored_session_id || r.resumed || id
+            }
+
             const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
 
             resetSession()
@@ -358,8 +360,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
             const resumed = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]
 
-            setHistoryItems(info ? [introMsg(info), ...resumed] : resumed)
-            writeActiveSessionFile(r.resumed ?? r.session_id)
+            setHistoryItems([introMsg(info), ...resumed])
+            writeActiveSessionFile(info.stored_session_id)
             patchUiState({
               busy: running,
               info,
@@ -417,8 +419,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       newSession,
       resetSession,
       resetVisibleHistory,
-      resumeById,
-      trimTail
+      resumeById
     ]
   )
 }

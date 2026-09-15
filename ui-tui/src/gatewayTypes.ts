@@ -176,10 +176,7 @@ export interface SystemBatteryResponse {
 
 // ── Session lifecycle ────────────────────────────────────────────────
 
-export interface SessionCreateResponse {
-  info?: SessionInfo & { config_warning?: string; credential_warning?: string }
-  session_id: string
-}
+export type { SessionCreateResult as SessionCreateResponse } from '@hermes/shared/gateway-events'
 
 export type LiveSessionStatus = 'idle' | 'starting' | 'waiting' | 'working'
 

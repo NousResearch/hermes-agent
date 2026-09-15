@@ -25235,6 +25235,18 @@
             "default": null,
             "title": "System Prompt"
           },
+          "config_warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Config Warning"
+          },
           "credential_warning": {
             "anyOf": [
               {
@@ -26084,6 +26096,18 @@
             ],
             "default": null,
             "title": "System Prompt"
+          },
+          "config_warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Config Warning"
           },
           "credential_warning": {
             "anyOf": [

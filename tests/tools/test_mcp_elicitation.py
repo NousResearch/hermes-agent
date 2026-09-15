@@ -70,7 +70,10 @@ class TestElicitationHandlerFormMode:
         handler = ElicitationHandler("pay", {"timeout": 5})
         params = _form_params(
             "authorize a payment of $0.50",
-            {"properties": {"approved": {"type": "boolean"}}},
+            {
+                "properties": {"approved": {"type": "boolean"}},
+                "required": ["approved"],
+            },
         )
 
         with patch("tools.approval_prompt.request_elicitation_consent", return_value="accept"):
@@ -78,9 +81,52 @@ class TestElicitationHandlerFormMode:
 
         assert isinstance(result, ElicitResult)
         assert result.action == "accept"
-        assert result.content == {}
+        assert result.content == {"approved": True}
         assert handler.metrics["accepted"] == 1
         assert handler.metrics["declined"] == 0
+
+    def test_user_accepts_composio_style_form_returns_allow_once(self):
+        handler = ElicitationHandler("apps", {"timeout": 5})
+        params = _form_params(
+            "Allow an operation?",
+            {
+                "type": "object",
+                "properties": {
+                    "decision": {
+                        "type": "string",
+                        "oneOf": [
+                            {"const": "allow_once", "title": "Allow once"},
+                            {"const": "allow_session", "title": "Allow for this session"},
+                            {"const": "deny", "title": "Deny"},
+                        ],
+                    }
+                },
+                "required": ["decision"],
+            },
+        )
+
+        with patch("tools.approval_prompt.request_elicitation_consent", return_value="accept"):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert result.action == "accept"
+        assert result.content == {"decision": "allow_once"}
+
+    def test_user_accepts_arbitrary_form_declines_instead_of_sending_empty_content(self):
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        params = _form_params(
+            "Enter a card number",
+            {
+                "properties": {"card_number": {"type": "string"}},
+                "required": ["card_number"],
+            },
+        )
+
+        with patch("tools.approval_prompt.request_elicitation_consent", return_value="accept"):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert result.action == "decline"
+        assert handler.metrics["accepted"] == 0
+        assert handler.metrics["declined"] == 1
 
 
     def test_schema_read_from_real_sdk_params_reaches_the_summary(self):

@@ -357,7 +357,7 @@ def _without_session_meta(messages) -> list:
 
 def _db_unavailable_line() -> str:
     from hermes_state import format_session_db_unavailable
-    return f"  {format_session_db_unavailable()}"
+    return f"  {format_session_db_unavailable(details=True)}"
 
 
 def _print_side_result_panel(cli, *, header_lines, body, title_suffix, empty_note, console=None) -> None:

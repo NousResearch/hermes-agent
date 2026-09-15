@@ -860,6 +860,9 @@ class _ChildRun:
             "files_written": sorted({p for tid, paths in _files_written_map.items() if tid == self.child_task_id for p in paths})[:40],
             "output_tail": _extract_output_tail(result, max_entries=8, max_chars=600),
         }
+        if entry.get("failure_reason"):
+            # Classified verdict rides the event so every surface glosses the failure the same way.
+            complete_kwargs["failure_reason"] = entry["failure_reason"]
         _cost_usd = getattr(child, "session_estimated_cost_usd", None)
         if _cost_usd is not None:
             with _quiet(None):

@@ -176,7 +176,7 @@ class TurnRunner:
             if status in SUBAGENT_FAILURE_STATUSES and ctx._run_still_current():
                 line = format_subagent_failure_line(
                     kwargs.get("goal"), status, error=kwargs.get("summary") or preview,
-                    duration_seconds=kwargs.get("duration_seconds"),
+                    duration_seconds=kwargs.get("duration_seconds"), failure_reason=kwargs.get("failure_reason"),
                 )
                 self._schedule(self._runner._deliver_platform_notice(ctx.source, line), "subagent failure notice scheduling error")
         except Exception:
@@ -1351,6 +1351,7 @@ class TurnRunner:
         """Send the approval request from the agent thread: the adapter's interactive button
         approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps."""
         from gateway.run import _approval_send_outcome, _format_exec_approval_fallback, _interim_metadata, _redact_approval_command
+        from gateway.run_turn_runner_approval_settle import register_timeout_notice
         ctx = self._ctx
         adapter = ctx._status_adapter
         # Slack's assistant_threads_setStatus disables the compose box, so the user can't type
@@ -1377,6 +1378,11 @@ class TurnRunner:
                     raise RuntimeError("send_exec_approval: loop unavailable")
                 outcome = _approval_send_outcome(fut, timeout=15)
                 if outcome == "sent":
+                    # Without this, a card whose timer runs out keeps live buttons and nobody
+                    # learns the command did NOT run (only the TUI registered a settle hook).
+                    register_timeout_notice(
+                        self, approval_data, command=cmd,
+                        card_message_id=getattr(fut.result(timeout=0), "message_id", None))
                     return
                 if outcome == "ambiguous":
                     # Timeout ≠ failure: the card may have posted with a late ack. The prompt
@@ -1432,6 +1438,9 @@ class TurnRunner:
             )
             if fut is not None:
                 fut.result(timeout=15)
+                # No card to edit on the text path: the prompt has no buttons to drop and carries
+                # the /approve instructions, so the timeout notice is posted as a new message.
+                register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
         except Exception as e:
             logger.error("Failed to send approval request: %s", e)
 
@@ -1785,7 +1794,16 @@ class TurnRunner:
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
             )
         except Exception as exc:
-            return {"final_response": f"⚠️ Provider authentication failed: {exc}", "messages": [], "api_calls": 0, "tools": []}
+            # Model/credential resolution failed before the turn began; the raw text (URLs, status
+            # codes) belongs in the log, and the chat gets the commands that fix it.
+            logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc)
+            return {
+                "final_response": (
+                    "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. "
+                    "Use /login to sign in again, or /model to pick a different model. If it keeps "
+                    "failing, run `hermes doctor` on the host."),
+                "messages": [], "api_calls": 0, "tools": [],
+            }
         pr = runner._provider_routing
         reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)
         runner._reasoning_config = reasoning_config

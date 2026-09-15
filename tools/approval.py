@@ -468,10 +468,30 @@ def _approved() -> dict:
     return {"approved": True, "message": None}
 
 
-def _denied(message: str, *, pattern_key: str, description: str, outcome: str, **extra) -> dict:
-    """Standard non-consent result: the agent must not retry or rephrase."""
+# ``outcome`` -> one plain sentence for the person who just answered (or did not). ``message`` is
+# addressed to the model ("Do NOT retry ..."); surfaces render ``user_summary`` first and fold the
+# model text away, so a Reject click does not read like an error the user caused.
+_USER_SUMMARIES = {
+    "denied": "You denied this {noun} — it did not run.",
+    "timeout": "No answer within {minutes} — the {noun} did not run.",
+    "notify_failed": "The approval request could not be delivered — the {noun} did not run.",
+    "blocked": "This {noun} is not allowed in an unattended session — it did not run.",
+}
+
+
+def _user_summary(outcome: str, noun: str = "command") -> str:
+    from tools.approval_context import _get_approval_timeout, format_approval_window
+    window = format_approval_window(_get_approval_timeout())
+    return _USER_SUMMARIES.get(outcome, "This {noun} did not run.").format(noun=noun, minutes=window)
+
+
+def _denied(message: str, *, pattern_key: str, description: str, outcome: str, noun: str = "command",
+            **extra) -> dict:
+    """Standard non-consent result: the agent must not retry or rephrase. ``user_summary`` is the
+    one-line human reading of the same outcome (see ``_USER_SUMMARIES``)."""
     return {"approved": False, "message": message, "pattern_key": pattern_key,
-            "description": description, "outcome": outcome, "user_consent": False, **extra}
+            "description": description, "outcome": outcome, "user_consent": False,
+            "user_summary": _user_summary(outcome, noun), **extra}
 
 
 def _blocked(message: str, *, pattern_key: str, description: str) -> dict:
@@ -770,7 +790,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         extra = {"deny_reason": deny_reason} if "reason" in fmt else {}
         return _denied(template.format(description=description, breaker=breaker, **fmt),
                        pattern_key=pattern_key, description=description,
-                       outcome=outcome, **extra)
+                       outcome=outcome, noun=spec.noun, **extra)
 
     def grant(choice: str) -> dict:
         # A smart-DENY owner override is always one operation, even if an older client returns "session" or "always".
@@ -818,7 +838,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             decision = _await_gateway_decision(session_key, notify_cb, data, surface="gateway")
             if decision.get("notify_failed"):
                 return _denied(spec.notify_failed, pattern_key=pattern_key,
-                               description=description, outcome="notify_failed")
+                               description=description, outcome="notify_failed", noun=spec.noun)
             # Consent contract: silence is NOT consent, and an explicit deny is a hard
             # halt — both produce a BLOCKED outcome. ``/deny <reason>`` free text is
             # relayed verbatim so the agent can adapt rather than only hearing "denied".
@@ -1186,7 +1206,7 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
             return _denied(
                 "BLOCKED: execute_code runs arbitrary local Python (including "
                 "subprocess calls that bypass shell-string approval checks). " + ctx.exec_tail,
-                pattern_key=pattern_key, description=description, outcome="blocked",
+                pattern_key=pattern_key, description=description, outcome="blocked", noun="code",
             )
         return _approved()
 

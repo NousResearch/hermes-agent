@@ -2860,18 +2860,21 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             # the store before relying on resume.
             self._session_db_unavailable = True
             logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
+            from hermes_state_user_copy import describe_storage_failure, storage_failure_details
+            failure = describe_storage_failure(e)
             try:
                 Console(stderr=True).print(
                     "[bold yellow]⚠ Session store unavailable[/bold yellow] — "
-                    "this conversation will [bold]NOT be saved[/bold] to disk and "
-                    "cannot be resumed later. Searching past sessions is also disabled.\n"
-                    f"  Reason: {e}\n"
-                    "  Fix the state.db store (e.g. `hermes update` to rebuild the venv) to restore persistence."
+                    "this conversation will [bold]NOT be saved[/bold] and cannot be resumed later. "
+                    "Searching past sessions is also disabled.\n"
+                    f"  Reason: {failure.gloss}.\n"
+                    f"  {failure.action}\n"
+                    f"  [dim]Details: {storage_failure_details(e)}[/dim]"
                 )
             except Exception:
                 print(
                     "WARNING: Session store unavailable — this conversation will NOT be "
-                    f"saved to disk and cannot be resumed later. Reason: {e}"
+                    f"saved and cannot be resumed later. Reason: {failure.gloss}. {failure.action}"
                 )
         _run_state_db_auto_maintenance(self._session_db)
         _run_checkpoint_auto_maintenance()
@@ -3110,19 +3113,30 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self.preloaded_skills += [name for name in loaded_skills if name not in self.preloaded_skills]
 
     def _show_tool_availability_warnings(self):
-        """Warn about tools disabled by missing API keys (not system deps)."""
+        """Warn about toolsets switched off at startup (missing API keys, unusable terminal backend)."""
         try:
+            # Runs on a daemon thread on the snapshot fast path: keep the imports to modules the
+            # registry walk already loaded plus the pure notices module (a heavy import here races
+            # importlib's module locks against the main thread).
             from model_tools import check_tool_availability
+            from hermes_cli.tool_availability_notices import (
+                current_terminal_backend, filter_to_enabled_toolsets, tool_availability_warning_lines,
+            )
+            from tools.terminal_tool import terminal_backend_unavailable_reason
+            from toolsets import resolve_toolset
 
-            available, unavailable = check_tool_availability()
-            api_key_missing = [u for u in unavailable if u["missing_vars"]]
-
-            if api_key_missing:
+            _, unavailable = check_tool_availability()
+            # Only toolsets this CLI session actually has. The selection is usually a composite bundle
+            # (``hermes-cli``), so expand it to tool names before matching — a raw name comparison
+            # matched nothing on a default install and silently dropped the terminal notice.
+            unavailable = filter_to_enabled_toolsets(unavailable, self.enabled_toolsets or [], resolve_toolset)
+            lines = tool_availability_warning_lines(
+                unavailable, terminal_reason=terminal_backend_unavailable_reason(),
+                terminal_backend=current_terminal_backend())
+            if lines:
                 self._console_print()
-                self._console_print("[yellow]⚠️  Some tools disabled (missing API keys):[/]")
-                for item in api_key_missing:
-                    self._console_print(f"   [dim]• {item['name']}[/] [dim italic]({', '.join(item['missing_vars'])})[/]")
-                self._console_print("[dim]   Run 'hermes setup' to configure[/]")
+                for line in lines:
+                    self._console_print(line)
         except Exception:
             pass
 
@@ -3398,8 +3412,10 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             _cprint(f"{_DIM}Did you mean: {', '.join(sorted(matches))}?{_RST}")
         else:
             # Exact token with no handler (never re-dispatch the same token: recursion), or no match.
-            _cprint(f"\033[1;31mUnknown command: {cmd_lower}{_RST}")
-            _cprint(f"{_DIM}{_ACCENT}Type /help for available commands{_RST}")
+            from hermes_cli.cli_unknown_command import unknown_command_lines
+            lead, pointer = unknown_command_lines(cmd_lower, all_known)
+            _cprint(f"\033[1;31m{lead}{_RST}")
+            _cprint(f"{_DIM}{_ACCENT}{pointer}{_RST}")
         return True
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:

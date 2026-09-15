@@ -384,6 +384,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
+from gateway.platforms.base_exec_approval import (
+    EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
@@ -436,6 +438,20 @@ def streaming_tts_should_skip_whole_file(completed_turns: set[str], session_key:
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
     "Secure secret entry is not supported over messaging. "
     "Load this skill in the local CLI to be prompted, or add the key to ~/.hermes/.env manually.")
+
+# One sentence for every "you may not press/run this" refusal on every platform (slash commands,
+# approval buttons, pickers, prompts). ``{platform}`` is the ``Platform.value`` for the
+# ``hermes pairing approve`` command (hermes_cli/subcommands/pairing.py) that lets the owner fix it.
+# Kept under 200 chars: Telegram's answerCallbackQuery truncates longer text.
+UNAUTHORIZED_ACTION_NOTICE = (
+    "This bot is private and you're not on its allowed list. If you own it, run "
+    "`hermes pairing approve {platform} <request-id>` on the host (`hermes pairing list` shows the id).")
+
+
+def unauthorized_action_notice(platform: Any) -> str:
+    """``UNAUTHORIZED_ACTION_NOTICE`` for a ``Platform`` member or its string name."""
+    name = getattr(platform, "value", platform)
+    return UNAUTHORIZED_ACTION_NOTICE.format(platform=str(name or "<platform>"))
 
 
 def safe_url_for_log(url: str, max_len: int = 80) -> str:
@@ -2514,11 +2530,14 @@ class BasePlatformAdapter(ABC):
             # No running loop (unit tests): close the coroutine to avoid a never-awaited warning.
             coro.close()
 
-    # ── ``_format_exec_approval`` templates; adapters override to keep historical wording.
-    _EA_HEADER: str = "⚠️ Command Approval Required\n\n"
+    # ── ``_format_exec_approval`` templates; adapters override only the MARKUP (bold, HTML,
+    # fences) — the words come from ``gateway.platforms.base_exec_approval`` so every surface
+    # says the same thing.
+    _EA_HEADER: str = f"⚠️ {EA_HEADER_TEXT}\n\n"
     _EA_CODE_OPEN: str = "```\n"
     _EA_CODE_CLOSE: str = "\n```\n"
-    _EA_REASON_LABEL: str = "Reason: "
+    _EA_REASON_LABEL: str = f"{EA_REASON_LABEL_TEXT}: "
+    _EA_DEADLINE_PREFIX: str = "\n\n"  # separates the deadline line from the reason line
     _EA_SMART_DENY_LINE: str = "\n\nSmart DENY: owner override applies to this one operation only."
     _EA_CMD_BUDGET: int = 3000
     _EA_REASON_BUDGET: int = 0  # 0 = the reason is never truncated
@@ -2537,17 +2556,23 @@ class BasePlatformAdapter(ABC):
         """Chars of command preview that fit; platforms with a hard message cap compute it."""
         return self._EA_CMD_BUDGET
 
+    def _ea_deadline_line(self) -> str:
+        """The "doing nothing means it will NOT run" line, with the configured approvals.timeout."""
+        return self._EA_DEADLINE_PREFIX + self._ea_escape(format_approval_deadline_line(approval_timeout_seconds()))
+
     def _format_exec_approval(
         self, command: str, description: str = "dangerous command", smart_denied: bool = False) -> str:
-        """Shared exec-approval prompt text: header + fenced (truncated) command + reason,
-        plus the smart-deny line. Buttons/trailing instructions stay platform-local."""
+        """Shared exec-approval prompt text: header + fenced (truncated) command + why it was
+        flagged + the deadline line, plus the smart-deny line. Buttons/trailing instructions stay
+        platform-local."""
         if self._EA_REASON_BUDGET:
             description = self._truncate_preview(str(description or ""), self._EA_REASON_BUDGET)
         cmd_preview = self._truncate_preview(
             str(command or ""), self._exec_approval_cmd_budget(description, smart_denied))
         text = (f"{self._EA_HEADER}"
                 f"{self._EA_CODE_OPEN}{self._ea_escape(cmd_preview)}{self._EA_CODE_CLOSE}"
-                f"{self._EA_REASON_LABEL}{self._ea_escape(description)}")
+                f"{self._EA_REASON_LABEL}{self._ea_escape(description)}"
+                f"{self._ea_deadline_line()}")
         return text + self._EA_SMART_DENY_LINE if smart_denied else text
 
     # ── Exec-approval prompt (template method). The choice set is one rule for every button

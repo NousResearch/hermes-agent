@@ -1529,4 +1529,5 @@ class TestOverflowWithCompactionDisabled:
         mock_persist.assert_called()
         assert result.get("failed") is True
         assert result.get("compaction_disabled") is True
-        assert "auto-compaction is disabled" in result["error"]
+        assert result["failure_reason"] == "context_overflow" and result["failure_retryable"] is False
+        assert "/compress" in result["error"] and "compression.enabled" in result["error"]

@@ -67,7 +67,7 @@ def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
             f"(no readOnlyHint=true annotation) and may modify external state.",
             f"Server '{server_name}' is configured 'trust: untrusted'. "
             f"Approve to run '{tool_name}' once, or deny to block it.",
-            surface=f"mcp-trust/{server_name}")
+            surface=f"mcp-trust/{server_name}", title=f"MCP server '{server_name}' is asking")
     except Exception as exc:
         logger.error("MCP trust gate: approval check failed for %s.%s: %s", server_name, tool_name, exc, exc_info=True)
         return tool_error(f"MCP tool '{tool_name}' on untrusted server '{server_name}' was blocked: the approval "

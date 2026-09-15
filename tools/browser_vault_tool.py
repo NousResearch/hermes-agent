@@ -557,7 +557,7 @@ def _confirm_payment_fill(label: str, origin: str) -> bool:
         f"Fill payment card '{label}' on {origin}",
         "The agent wants to enter your saved card details into this checkout page. The card number and "
         "CVC never enter the conversation. Approve only if you intend to pay here.",
-        surface="vault-payment") == "accept"
+        surface="vault-payment", title="Confirm payment card fill?") == "accept"
 
 
 # ---------------------------------------------------------------------------

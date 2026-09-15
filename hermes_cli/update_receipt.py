@@ -362,13 +362,19 @@ def print_fleet_version_matrix(fleet: list[dict[str, Any]]) -> bool:
         print(_FLEET_ROW_LINES.get(entry.get("state"), _FLEET_ROW_UNKNOWN).format(
             profile=entry.get("profile"), pid=entry.get("pid"), short=sha[:8] if isinstance(sha, str) and sha else "?",
         ))
-    any_stale, any_down = "stale" in states, "down" in states
-    if any_stale or any_down:
+    stale_or_down = sum(1 for entry in fleet if entry.get("state") in ("stale", "down"))
+    if stale_or_down:
         print()
-        if any_stale:
-            print("  ⚠ Stale gateways keep serving pre-update code until restarted:")
-        if any_down:
-            print("  ⚠ Down gateways stopped serving messaging entirely — restart them:")
-        print("      hermes gateway restart                # active profile")
-        print("      hermes -p <profile> gateway restart   # named profile")
-    return any_stale or any_down
+        if "stale" in states:
+            print("  ⚠ Stale gateways keep serving pre-update code until restarted.")
+        if "down" in states:
+            print("  ⚠ Down gateways stopped serving messaging entirely.")
+        # ``✓ Update complete!`` was already printed before the restart phase (the exit code
+        # must land before a systemd restart can kill this process), so this verdict has to
+        # supersede it explicitly — otherwise the output says success while the exit code is 1.
+        print()
+        print(
+            f"✗ Update not complete: {stale_or_down} gateway(s) still running the old code (or stopped).")
+        print("  Run `hermes gateway restart` (or `hermes -p <profile> gateway restart` for a named")
+        print("  profile), then `hermes gateway status` to confirm.")
+    return stale_or_down > 0

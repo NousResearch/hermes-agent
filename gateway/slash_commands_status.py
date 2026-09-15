@@ -68,8 +68,9 @@ async def _quiet(call, default=None):
         return default
 
 
-HISTORY_UNREADABLE = ("⚠️ Conversation history is unreadable (state.db). "
-                      "This is not a new conversation — earlier messages exist but cannot be loaded.")
+HISTORY_UNREADABLE = ("⚠️ I can't read this conversation's history right now (your earlier messages "
+                      "exist but cannot be loaded). Run `hermes doctor --fix` on the host, or use /new "
+                      "to start fresh.")
 
 
 def _quiet_sync(call, default=None):

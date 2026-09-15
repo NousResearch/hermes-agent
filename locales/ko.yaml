@@ -11,7 +11,7 @@ approval:
   prompt_smart_deny: "      선택 [o/D]: "
   smart_deny_once_inputs: "o,once"
   smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ 시간 초과 - 명령을 거부합니다"
+  timeout:         "      ⏱ {waited} 동안 응답이 없어 명령을 실행하지 않았습니다. 다시 요청해 재시도하거나 제한을 늘리세요: hermes config set approvals.timeout {suggested}"
   allowed_once:    "      ✓ 한 번 허용됨"
   allowed_session: "      ✓ 이 세션에서 허용됨"
   allowed_always:  "      ✓ 영구 허용 목록에 추가됨"

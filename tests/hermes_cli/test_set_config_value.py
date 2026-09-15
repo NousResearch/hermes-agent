@@ -709,12 +709,12 @@ class TestMalformedYAMLConfigPreservation:
         """set_config_value must raise, not overwrite the broken config."""
         self._write_broken_config(_isolated_hermes_home)
 
-        with pytest.raises(RuntimeError, match="not valid YAML"):
+        with pytest.raises(RuntimeError, match="formatting error"):
             set_config_value("agent.max_turns", "50")
 
         captured = capsys.readouterr()
         combined = captured.out + captured.err
-        assert "Failed to parse" in combined or "not valid YAML" in combined
+        assert "formatting error" in combined and "`hermes config edit`" in combined
         # Original config must remain intact
         raw = _read_config(_isolated_hermes_home)
         assert raw == self.BROKEN_CONFIG, f"Config was overwritten:\n{raw}"
@@ -725,12 +725,12 @@ class TestMalformedYAMLConfigPreservation:
 
         self._write_broken_config(_isolated_hermes_home)
 
-        with pytest.raises(RuntimeError, match="not valid YAML"):
+        with pytest.raises(RuntimeError, match="formatting error"):
             unset_config_value("model")
 
         captured = capsys.readouterr()
         combined = captured.out + captured.err
-        assert "Failed to parse" in combined or "not valid YAML" in combined
+        assert "formatting error" in combined and "`hermes config edit`" in combined
         raw = _read_config(_isolated_hermes_home)
         assert raw == self.BROKEN_CONFIG
 

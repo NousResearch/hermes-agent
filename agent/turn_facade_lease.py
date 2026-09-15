@@ -334,9 +334,12 @@ def _lease_not_acquired_result(agent, session_id: str, conversation_history) -> 
         agent._emit_warning(timeout_msg)
     except Exception:
         logger.debug("Failed to emit session turn lease timeout warning", exc_info=True)
+    # Stamped so Desktop/TUI show "session busy, send again" instead of code="unknown".
     return {
         "final_response": timeout_msg,
         **base,
         "failed": True,
         "error": f"session_turn_lease_timeout:{session_id}",
+        "failure_reason": "session_busy",
+        "failure_retryable": True,
     }

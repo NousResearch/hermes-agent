@@ -613,7 +613,8 @@ class CLIAgentSetupMixin:
             return True
         except Exception as e:
             console = ChatConsole()
-            console.print(f"[bold red]Failed to initialize agent: {e}[/]")
+            from hermes_cli.cli_chat_error_copy import agent_init_failure_message
+            console.print(f"[bold red]{_escape(agent_init_failure_message(e))}[/]")
             from hermes_constants import partial_update_hint
             for line in partial_update_hint(e):
                 console.print(line)

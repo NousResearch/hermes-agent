@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.message_metadata import append_message
 from agent.message_sanitization import close_interrupted_tool_sequence, coalesce_tool_call_id
+from agent.turn_failure_copy import site_copy, stamp_failure
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -56,14 +57,14 @@ def _partial_exit(agent, messages, conversation_history, api_call_count, final_r
     This path never reaches finalize_turn, so persist here."""
     close_interrupted_tool_sequence(messages, final_response)
     agent._persist_session(messages, conversation_history)
-    return {
+    return stamp_failure({
         "final_response": final_response,
         "messages": messages,
         "api_calls": api_call_count,
         "completed": False,
         "partial": True,
         "error": final_response,
-    }
+    }, "truncated", True)
 
 
 def validate_tool_calls(
@@ -176,8 +177,7 @@ def validate_tool_calls(
             agent._invalid_json_retries = 0
             agent._cleanup_task_resources(effective_task_id)
             return _verdict("return", _partial_exit(
-                agent, messages, conversation_history, api_call_count,
-                "Response truncated due to output length limit",
+                agent, messages, conversation_history, api_call_count, site_copy("truncated"),
             ))
 
         agent._invalid_json_retries += 1

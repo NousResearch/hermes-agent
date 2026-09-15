@@ -495,9 +495,12 @@ def _with_timeout_notice(stdout_text: str, timeout_msg: str) -> str:
     return stdout_text + f"\n\n⏰ {timeout_msg}" if stdout_text else f"⏰ {timeout_msg}"
 
 
-def _error_result(error: str, *, tool_calls_made: int = 0, duration: float = 0) -> str:
-    return json.dumps({"status": "error", "error": error, "tool_calls_made": tool_calls_made,
-                       "duration_seconds": duration}, ensure_ascii=False)
+def _error_result(error: str, *, tool_calls_made: int = 0, duration: float = 0,
+                  user_summary: Optional[str] = None) -> str:
+    body = {"status": "error", "error": error, "tool_calls_made": tool_calls_made, "duration_seconds": duration}
+    if user_summary:
+        body["user_summary"] = user_summary  # one human sentence; surfaces show it before the model text
+    return json.dumps(body, ensure_ascii=False)
 
 
 def _remote_failure(exc: BaseException, exec_start: float, tool_calls_made: int) -> str:
@@ -711,7 +714,8 @@ def execute_code(
     from tools.approval import check_execute_code_guard
     _guard = check_execute_code_guard(code, env_type, has_host_access=_docker_has_host_access(_env_config))
     if not _guard.get("approved", False):
-        return _error_result(_guard.get("message") or "execute_code blocked by approval guard.")
+        return _error_result(_guard.get("message") or "execute_code blocked by approval guard.",
+                             user_summary=_guard.get("user_summary"))
     # Clear a stale interrupt bit that landed during the blocking approval-wait so it can't
     # kill the just-approved run on the first poll. A genuine post-clear interrupt re-sets it.
     if _guard.get("user_approved"):

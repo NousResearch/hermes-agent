@@ -1312,7 +1312,10 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         try:
             st.resolve_runtime(requested=st.target_provider)
         except Exception as e:
-            return st.fail_on_target(f"Could not resolve credentials for provider '{st.provider_label}': {e}")
+            return st.fail_on_target(
+                f"{st.provider_label} is not connected: no API key or login was found for it. Add one with "
+                f"`hermes auth add {st.target_provider}`, or pick a connected provider in /model.\n"
+                f"  Details: {e}")
     return None
 
 

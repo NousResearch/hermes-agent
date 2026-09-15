@@ -11,7 +11,7 @@ approval:
   prompt_smart_deny: "      Választás [o/D]: "
   smart_deny_once_inputs: "o,once"
   smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ Időtúllépés - parancs elutasítva"
+  timeout:         "      ⏱ Nem érkezett válasz {waited} alatt — a parancs nem futott le. Kérd újra a megismétléshez, vagy növeld a határt: hermes config set approvals.timeout {suggested}"
   allowed_once:    "      ✓ Egyszer engedélyezve"
   allowed_session: "      ✓ Engedélyezve ehhez a munkamenethez"
   allowed_always:  "      ✓ Hozzáadva az állandó engedélylistához"

@@ -16,7 +16,7 @@ approval:
   prompt_smart_deny: "      الاختيار [o/D]: "
   smart_deny_once_inputs: "o,once"
   smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ انتهت المهلة - يتم رفض الأمر"
+  timeout:         "      ⏱ لا توجد إجابة خلال {waited} — لم يتم تنفيذ الأمر. اطلب مرة أخرى لإعادة المحاولة، أو ارفع الحد: hermes config set approvals.timeout {suggested}"
   allowed_once:    "      ✓ مسموح مرة واحدة"
   allowed_session: "      ✓ مسموح لهذه الجلسة"
   allowed_always:  "      ✓ أُضيف إلى قائمة السماح الدائمة"

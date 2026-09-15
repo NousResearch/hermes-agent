@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 from tools.async_delegation import _new_delegation_id, record_unit_child
 from tools.delegate_tool_child_run import _attach_child, _detach_child, _fabricated_entry, _signal_child_stop
 from tools.delegate_tool_progress import (
-    SUBAGENT_FAILURE_STATUSES, _clean_error_text, _print_completion_line, _quiet, format_batch_tag,
+    SUBAGENT_FAILURE_STATUSES, _print_completion_line, _quiet, describe_subagent_failure, format_batch_tag,
 )
 from tools.delegate_tool_registry import _capture_gateway_steer_authority
 from tools.delegate_tool_results import _finalize_child_results
@@ -94,7 +94,9 @@ def _report_child_done(parent_agent, spinner_ref, entry, tag, task_labels, n_tas
     schema_invalid = entry.get("schema_valid") is False and status == "completed"
     icon = "⚠" if schema_invalid else ("✓" if status == "completed" else "✗")
     completion_line = f"{icon} [{_slot}] {label}  ({entry.get('duration_seconds', 0)}s)"
-    _err_line = _clean_error_text(entry.get("error"), max_chars=120) if status in SUBAGENT_FAILURE_STATUSES else ""
+    _err_line = (
+        describe_subagent_failure(entry.get("failure_reason"), entry.get("error"), max_chars=120)
+        if status in SUBAGENT_FAILURE_STATUSES else "")
     if schema_invalid:
         _err_line = "output_schema not satisfied — raw text returned (schema_valid=false)"
     if _err_line:

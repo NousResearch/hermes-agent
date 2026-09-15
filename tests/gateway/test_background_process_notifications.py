@@ -404,8 +404,9 @@ class TestConciseFormatter:
         text = _format_concise_process_notification(
             "proc_abc", "make build", 2, out,
         )
-        assert text.startswith("❌ Background task failed (exit 2)")
-        assert "Traceback: boom" in text
+        assert text.startswith("❌ Background task failed")
+        assert "exit 2" in text and "Traceback: boom" in text
+        assert "rerun" in text
         # Only a short tail, not the whole output
         assert "line0" not in text
 
@@ -472,7 +473,7 @@ async def test_concise_mode_failure_includes_tail(monkeypatch, tmp_path):
 
     adapter.send.assert_awaited_once()
     sent_text = adapter.send.await_args.args[1]
-    assert sent_text.startswith("❌ Background task failed (exit 128)")
+    assert sent_text.startswith("❌ Background task failed") and "exit 128" in sent_text
     assert "fatal: repo not found" in sent_text
 
 
@@ -796,7 +797,7 @@ async def test_raw_output_modes_are_human_facing(monkeypatch, tmp_path):
     assert len(sent) == 2
     interim, final = sent
     assert interim.startswith("⏳ Background task still running") and "step 1 ok" in interim
-    assert final.startswith("❌ Background task failed (exit 2)") and "linker error" in final
+    assert final.startswith("❌ Background task failed") and "exit 2" in final and "linker error" in final
     for text in sent:
         assert "proc_deadbeef" not in text and "[Background process" not in text and "~" not in text
         assert "\x1b[" not in text

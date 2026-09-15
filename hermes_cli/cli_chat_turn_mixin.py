@@ -331,8 +331,12 @@ class CLIChatTurnMixin:
         except Exception as exc:
             logging.error("run_conversation raised: %s", exc, exc_info=True)
             _summary = getattr(self.agent, '_summarize_api_error', lambda e: str(e)[:300])(exc)
+            from hermes_cli.cli_chat_error_copy import chat_error_response
             turn.result = {
-                "final_response": f"Error: {_summary}", "messages": [], "api_calls": 0,
+                "final_response": chat_error_response(
+                    exc, provider=str(getattr(self.agent, "provider", "") or self.provider or ""),
+                    model=str(getattr(self.agent, "model", "") or self.model or "")),
+                "messages": [], "api_calls": 0,
                 "completed": False, "failed": True, "error": _summary,
             }
         finally:
@@ -476,7 +480,12 @@ class CLIChatTurnMixin:
         response = turn.result.get("final_response", "") if turn.result else ""
         # "failed"/"partial" with an empty final_response: no usable answer.
         if turn.result and (turn.result.get("failed") or turn.result.get("partial")) and not response:
-            response = f"Error: {turn.result.get('error', 'Unknown error')}"
+            from hermes_cli.cli_chat_error_copy import chat_error_response
+            response = chat_error_response(
+                str(turn.result.get("error") or "Unknown error"),
+                provider=str(getattr(self.agent, "provider", "") or self.provider or ""),
+                model=str(getattr(self.agent, "model", "") or self.model or ""),
+                failure_reason=turn.result.get("failure_reason"))
             # Stop continuous voice on persistent errors (e.g. 429) — else error→record→error loops.
             if self._voice_continuous:
                 self._voice_continuous = False

@@ -1129,10 +1129,6 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self.home_path = Path(self.scope_key)
         self._discovery_lock = threading.RLock()
         self._discovered: bool = False
-        # True once a discovery re-applied plugin secret sources for this home: the per-home snapshot and
-        # the installed scope may then hold plugin-supplied names, and a later discovery that finds NO
-        # enabled plugin source (plugin removed / disabled) must still reconcile once to drop them.
-        self._plugin_secret_sources_reconciled: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
         self._gateway_message_injector: tuple[object, Callable] | None = None
         self._context_engine = None  # Set by a plugin via register_context_engine()
@@ -1272,34 +1268,24 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             plugin_sources = list_plugin_sources()
         except Exception:
             return
-        enabled_names: list[str] = []
-        if plugin_sources:
+        if not plugin_sources:
+            return
+        try:
+            from hermes_cli.config import load_config
+            secrets = (load_config() or {}).get("secrets") or {}
+        except Exception:
+            secrets = {}
+
+        def _enabled(source) -> bool:
+            section = secrets.get(getattr(source, "name", ""))
             try:
-                from hermes_cli.config import load_config
-                secrets = (load_config() or {}).get("secrets") or {}
+                return bool(source.is_enabled(section if isinstance(section, dict) else {}))
             except Exception:
-                secrets = {}
+                return False  # mirrors the orchestrator: a raising is_enabled() is skipped
 
-            def _enabled(source) -> bool:
-                section = secrets.get(getattr(source, "name", ""))
-                try:
-                    return bool(source.is_enabled(section if isinstance(section, dict) else {}))
-                except Exception:
-                    return False  # mirrors the orchestrator: a raising is_enabled() is skipped
-
-            enabled_names = [getattr(s, "name", "") for s in plugin_sources if _enabled(s)]
+        enabled_names = [getattr(s, "name", "") for s in plugin_sources if _enabled(s)]
         if not enabled_names:
-            # Nothing enabled now. If an earlier discovery re-applied plugin sources for this home, the
-            # snapshot and installed scope still carry that plugin's names (force-reload unloads the
-            # registration first, so this is exactly the "last plugin source removed" path) — reconcile
-            # once so they drop out. A home that never had one stays a no-op: no re-pull, no re-load.
-            if not self._plugin_secret_sources_reconciled:
-                return
-            # The marker is cleared only AFTER the cleanup below succeeds: reset/reload/refresh are
-            # fallible, and clearing first left the stale credential active with no retry on the next
-            # discovery (review on f5f88d5058).
-        else:
-            self._plugin_secret_sources_reconciled = True
+            return
         try:
             # Reset and reload the SAME home the process (or routed turn) resolves to: under multiplex this
             # runs at gateway boot after sibling profiles may already have hydrated, and a global clear
@@ -1308,16 +1294,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             home = get_hermes_home()
             reset_secret_source_cache(home)
             load_hermes_dotenv(hermes_home=home)
-            # A scope installed for this home was frozen BEFORE these sources existed — a routed cron
-            # fire builds its scope in run_one_job and only then, on its first agent build, discovers
-            # plugins; under multiplex semantics the load above is hydrate-only, so fold the values
-            # into the installed scope or THIS fire never sees the plugin credential.
-            from agent.secret_scope import refresh_installed_secret_scope
-            refresh_installed_secret_scope(Path(home))
-            if not enabled_names:
-                self._plugin_secret_sources_reconciled = False  # cleanup succeeded; nothing left to drop
             logger.debug("Re-applied secret sources after plugin discovery for: %s",
-                         ", ".join(sorted(enabled_names)) or "<none — reconciled removed plugin sources>")
+                         ", ".join(sorted(enabled_names)))
         except Exception as exc:
             logger.debug("secret source re-apply after discovery failed: %s", exc)
 

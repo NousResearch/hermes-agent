@@ -1582,5 +1582,13 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
         print("\nLogin cancelled.")
         raise SystemExit(130)
     except Exception as exc:
-        print(f"Login failed: {exc}")
+        from hermes_cli.auth_error_copy import sign_in_failure_lines
+        logger.debug("nous login failed: %r", exc)
+        print()
+        for line in sign_in_failure_lines(exc, service_host=_portal_host(getattr(args, "portal_url", None))):
+            print(line)
         raise SystemExit(1)
+
+
+def _portal_host(portal_url: Optional[str]) -> str:
+    return urlparse(portal_url or DEFAULT_NOUS_PORTAL_URL).hostname or "portal.nousresearch.com"

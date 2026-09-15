@@ -690,8 +690,9 @@ def quarantine_invalid_state_db(path: Path, *, already_locked: bool = False) -> 
         if not acquired:
             logger.error("quarantine lock for %s not acquired within 5s — refusing to "
                          "quarantine without the cross-process lock. The invalid file "
-                         "is left in place. If sessions fail to load, restore from "
-                         "state-snapshots via `hermes snapshot list` / `hermes snapshot restore <id>`.",
+                         "is left in place. If sessions fail to load, run `hermes sessions recover "
+                         "--source <state.db> --inspect-only`, or restore a snapshot with "
+                         "`/snapshot list` / `/snapshot restore <id>` (terminal `hermes` chat only).",
                          path)
             return None
         return _do_quarantine()

@@ -40,6 +40,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult, transcode_to_ogg_opus
+from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.helpers import bounded_put
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecret
@@ -467,7 +468,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             interactive = {"type": "list", "body": {"text": body_text}, "action": {"button": "Choose", "sections": [{"title": "Options", "rows": rows}]}}
         return await self._send_interactive(chat_id, interactive, metadata, self._clarify_state, clarify_id, session_key)
 
-    _EA_HEADER = "⚠️ *Command Approval Required*\n\n"
+    _EA_HEADER = f"⚠️ *{EA_HEADER_TEXT}*\n\n"
     _EA_CODE_CLOSE = "\n```\n\n"
     _EA_CMD_BUDGET = 800  # body caps at 1024; leave room for the framing prose
 

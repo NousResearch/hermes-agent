@@ -1505,10 +1505,12 @@ def resolve_provider(
             return "bedrock"
     except ImportError:
         pass  # boto3 not installed
+    from hermes_constants import display_hermes_home
     raise AuthError(
-        "No inference provider configured. Run 'hermes model' to choose a "
-        "provider and model, or set an API key (OPENROUTER_API_KEY, "
-        "OPENAI_API_KEY, etc.) in ~/.hermes/.env.",
+        "Hermes is not connected to any AI provider yet. Run `hermes model` to pick one (the free "
+        "Nous tier needs no API key), type `/login` in chat, or add a key with "
+        f"`hermes auth add <provider>`. (Advanced: put an API key such as OPENROUTER_API_KEY in "
+        f"{display_hermes_home()}/.env.)",
         code="no_provider_configured")
 
 

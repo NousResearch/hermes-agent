@@ -5396,12 +5396,12 @@ class TestGetMessagesPagination:
         assert db.get_resume_message_count("seg-5", tip_only=True) == 4
         with pytest.raises(hermes_state.SessionResumeTooLargeError) as full:
             db.assert_resume_safe("seg-5", max_messages=10)
-        assert "across its lineage" in str(full.value)
+        assert full.value.scope == "across its lineage"
         assert db.assert_resume_safe("seg-5", max_messages=10, tip_only=True) == 4
         with pytest.raises(hermes_state.SessionResumeTooLargeError) as tip:
             db.assert_resume_safe("seg-5", max_messages=3, tip_only=True)
         assert tip.value.message_count == 4
-        assert "in its tip segment" in str(tip.value)
+        assert tip.value.scope == "in its tip segment"
 
     def test_resume_guard_counts_exactly_what_a_branch_resume_loads(self, db):
         """An explicit /branch copy owns its transcript: the guard and the

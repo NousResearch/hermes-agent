@@ -1825,7 +1825,9 @@ class TestDockerAwareGateway:
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
-        with pytest.raises(RuntimeError, match="systemctl is not available"):
+        from hermes_cli.gateway_command_errors import SystemctlUnavailableError
+
+        with pytest.raises(SystemctlUnavailableError):
             gateway_cli._run_systemctl(["start", "hermes-gateway"])
 
     def test_run_systemctl_passes_through_on_success(self, monkeypatch):

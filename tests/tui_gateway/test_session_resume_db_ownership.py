@@ -171,7 +171,9 @@ def test_resume_closes_profile_db_when_reopen_fails(profile_dbs, monkeypatch):
     resp = _resume(session_id="s1", profile="work")
 
     assert resp["error"]["code"] == 5000
-    assert "resume failed" in resp["error"]["message"]
+    # Plain "could not reopen" lead; the raw cause survives on the Details line.
+    assert "Could not reopen" in resp["error"]["message"]
+    assert "database is locked" in resp["error"]["message"]
     assert profile_dbs[0].closed == 1
 
 

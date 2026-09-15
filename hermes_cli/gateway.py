@@ -2289,7 +2289,8 @@ def _run_systemctl(args: list[str], *, system: bool = False, **kwargs) -> subpro
     try:
         return subprocess.run(_systemctl_cmd(system) + args, **kwargs)
     except FileNotFoundError:
-        raise RuntimeError("systemctl is not available on this system") from None
+        from hermes_cli.gateway_command_errors import SystemctlUnavailableError
+        raise SystemctlUnavailableError() from None
 
 
 def _service_scope_label(system: bool = False) -> str:
@@ -4586,10 +4587,10 @@ def _guard_existing_gateway_process_conflict(replace: bool = False) -> None:
             pass
         return
 
-    print_error(f"Another gateway instance is already running (PID {pid}).")
-    print("  Use 'hermes gateway restart' to replace it,")
-    print("  or 'hermes gateway stop' first.")
-    print("  Or use 'hermes gateway run --replace' to auto-replace.")
+    print_error(f"A gateway is already running (PID {pid}), so your bots are most likely online already.")
+    print("  Check with `hermes gateway status`.")
+    print("  To restart it: `hermes gateway restart`. To stop it: `hermes gateway stop`.")
+    print("  To replace it from here: `hermes gateway run --replace`.")
     sys.exit(1)
 
 
@@ -5899,6 +5900,15 @@ def gateway_command(args):
         # System-scope action typed without sudo; the wizard intercepts this earlier with guidance.
         print(str(e))
         sys.exit(1)
+    except (subprocess.CalledProcessError, RuntimeError) as e:
+        # systemctl exited non-zero or is missing entirely: guidance, not a traceback.
+        from hermes_cli.gateway_command_errors import explain_service_failure
+        lines = explain_service_failure(e)
+        if lines is None:
+            raise
+        print_error(lines[0])
+        _print_indented("\n".join(lines[1:]))
+        sys.exit(1)
 
 
 def _maybe_redirect_run_to_s6_supervision(args) -> bool:
@@ -6079,7 +6089,10 @@ _NO_BACKEND_MESSAGES = {
         "Service uninstall is not applicable inside a Docker container.",
         "To stop the gateway, stop or remove the container:", "",
         "  docker stop <container>", "  docker rm <container>"),
-    ("uninstall", "unsupported"): (1, "Not supported on this platform."),
+    ("uninstall", "unsupported"): (1,
+        "Running the gateway as a background service is not available on this platform "
+        "(no systemd, launchd or Scheduled Tasks), so there is nothing to uninstall.",
+        "Stop a manually started gateway with: hermes gateway stop"),
     ("start", "termux"): (1,
         "Gateway service start is not supported on Termux because there is no system service manager.",
         "Run manually: hermes gateway"),
@@ -6093,7 +6106,10 @@ _NO_BACKEND_MESSAGES = {
         "  docker start <container>     # start a stopped container",
         "  docker restart <container>   # restart a running container", "",
         "Or run the gateway directly: hermes gateway run"),
-    ("start", "unsupported"): (1, "Not supported on this platform."),
+    ("start", "unsupported"): (1,
+        "Running the gateway as a background service is not available on this platform "
+        "(no systemd, launchd or Scheduled Tasks).",
+        "Run it directly with: hermes gateway run"),
 }
 
 

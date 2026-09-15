@@ -44,24 +44,53 @@ def _clean_error_text(error: Any, max_chars: int = 200) -> str:
     line = lines[-1] if lines[0].startswith("Traceback") else lines[0]
     return line[: max_chars - 3] + "..." if len(line) > max_chars else line
 
+
+def describe_subagent_failure(failure_reason: Any, error: Any, max_chars: int = 200) -> str:
+    """Plain-language reason for a failed child: the classified ``failure_reason`` gloss when there is one,
+    else the child's own error text reduced to one clean line."""
+    # One gloss table for every surface (agent/turn_failure_copy.py); the child is the subject.
+    from agent.turn_failure_copy import failure_cause_gloss
+
+    gloss = failure_cause_gloss(failure_reason, subject="it", possessive="its")
+    return gloss or _clean_error_text(error, max_chars)
+
+
+def _format_duration(seconds: Any) -> str:
+    if not isinstance(seconds, (int, float)) or seconds <= 0:
+        return ""
+    return f"{round(seconds / 60)} min" if seconds >= 120 else f"{round(seconds)}s"
+
+
 def format_subagent_failure_line(
     goal: Optional[str], status: Optional[str], error: Any = None, duration_seconds: Any = None,
+    failure_reason: Any = None,
 ) -> str:
-    """One clean, human-readable line describing a failed subagent, rendered
-    directly to the user (CLI spinner echo, gateway platform notice), e.g.
-    ``⚠️ Subagent failed — "research competitor pricing": Error code: 404 (after 12s)``."""
+    """One clean, human-readable line describing a failed subagent, rendered directly to the user (CLI spinner
+    echo, gateway platform notice). Says what happened and what to do next; never the raw exception when the
+    child loop classified the failure, e.g.
+    ``⚠️ Subagent failed — "research competitor pricing" after 12s: the model it was given was not found at the
+    AI model service. Details: /agents, or ask me to retry with a smaller task.``"""
     goal_label = (goal or "").strip().replace("\n", " ")
     if len(goal_label) > 60:
         goal_label = goal_label[:57] + "..."
-    line = f"⚠️ Subagent {'timed out' if status == 'timeout' else 'failed'}"
-    if goal_label:
-        line += f' — "{goal_label}"'
-    err = _clean_error_text(error)
-    if err:
-        line += f": {err}"
-    if isinstance(duration_seconds, (int, float)) and duration_seconds > 0:
-        line += f" (after {round(duration_seconds)}s)"
-    return line
+    goal_part = f' — "{goal_label}"' if goal_label else ""
+    elapsed = _format_duration(duration_seconds)
+    if status == "timeout":
+        # The child's own timeout text repeats the duration and names mechanisms (API/tool calls); the
+        # user needs the outcome and the knob.
+        after = f" after {elapsed}" if elapsed else ""
+        return (
+            f"⚠️ Subagent timed out{goal_part}{after} without finishing. I will carry on without it; ask me to "
+            "retry it, or raise delegation.child_timeout_seconds in config.yaml if these tasks legitimately "
+            "take longer."
+        )
+    line = f"⚠️ Subagent failed{goal_part}"
+    if elapsed:
+        line += f" after {elapsed}"
+    reason = describe_subagent_failure(failure_reason, error)
+    if reason:
+        line += f": {reason.rstrip('.')}"
+    return line + ". Details: /agents, or ask me to retry with a smaller task."
 
 
 class DelegateEvent(str, enum.Enum):
@@ -323,7 +352,7 @@ class _ChildProgressRelay:
         if kwargs.get("status") in SUBAGENT_FAILURE_STATUSES:
             self._tree_line(format_subagent_failure_line(
                 self.goal_label, kwargs.get("status"), error=kwargs.get("summary") or preview,
-                duration_seconds=kwargs.get("duration_seconds"),
+                duration_seconds=kwargs.get("duration_seconds"), failure_reason=kwargs.get("failure_reason"),
             ))
         self._relay("subagent.complete", preview=preview, **kwargs)
 

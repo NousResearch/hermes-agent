@@ -416,32 +416,68 @@ def _inside_mcp_add_args(argv: list, index: int) -> bool:
     return True
 
 
+def _looks_like_hermes_invocation() -> bool:
+    """False when ``sys.argv`` belongs to a test runner rather than a ``hermes`` run.
+
+    pytest's own ``-p no:xdist`` reaches ``_scan_profile_flag`` through ``sys.argv`` at import
+    time; it must stay a silent skip, while a real ``hermes -p 'Work Bot'`` must fail loudly.
+    """
+    return "pytest" not in (sys.argv[0] or "")
+
+
+def _exit_invalid_profile_name(value: str) -> None:
+    from hermes_cli.profiles import _invalid_profile_name_error
+
+    print(f"Error: {_invalid_profile_name_error(value)}", file=sys.stderr)
+    print("Run `hermes profile list` to see your profiles.", file=sys.stderr)
+    sys.exit(2)
+
+
+def _looks_like_option_value(value: str) -> bool:
+    """A ``-p`` value that clearly belongs to some other tool (pytest's ``-p no:xdist``, a
+    third-party ``-p --flag``), never a mistyped profile name."""
+    return value.startswith("-") or ":" in value
+
+
 def _scan_profile_flag(argv: list) -> tuple:
     """Find -p/--profile/--profile= in argv -> (name, tokens_consumed, index).
 
     Historically the flag worked even after the subcommand (`hermes chat -p
     coder`), so scan broadly; stop at ``--`` and at the `mcp add --args`
-    passthrough region. Values that can't be profile names (pytest's
-    ``-p no:xdist``) are rejected so resolve_profile_env never sys.exits on them.
+    passthrough region. The value is normalised (strip + casefold, matching
+    ``profiles.normalize_profile_name``) before validation so ``-p Work`` selects
+    ``work``. A value that cannot be a profile name is rejected so
+    resolve_profile_env never sys.exits on it; the rejection is explained (exit 2)
+    only when the flag comes BEFORE the first subcommand token under a real
+    ``hermes`` run — after a subcommand, ``-p`` may belong to that subcommand or a
+    plugin (`hermes kanban ... -p 8080`), and option-looking values (``no:xdist``,
+    ``--flag``) are always a silent skip.
     """
     from hermes_cli._parser import top_level_value_flag_sets
 
     value_flags, optional_value_flags = top_level_value_flag_sets()
     i = 0
+    saw_subcommand = False
     while i < len(argv):
         arg = argv[i]
         if arg == "--" or (arg == "--args" and _inside_mcp_add_args(argv, i)):
             break
         if arg in {"--profile", "-p"} and i + 1 < len(argv):
-            if re.match(_PROFILE_NAME_RE, argv[i + 1]):
-                return argv[i + 1], 2, i
+            raw = argv[i + 1]
+            value = raw.strip().casefold()
+            if re.match(_PROFILE_NAME_RE, value):
+                return value, 2, i
+            if not saw_subcommand and not _looks_like_option_value(raw) and _looks_like_hermes_invocation():
+                _exit_invalid_profile_name(raw)
             break
         if arg.startswith("--profile="):
-            return arg.split("=", 1)[1], 1, i
+            return arg.split("=", 1)[1].strip().casefold(), 1, i
         takes_value = "=" not in arg and i + 1 < len(argv) and (
             arg in value_flags
             or (arg in optional_value_flags and not argv[i + 1].startswith("-"))
         )
+        if not takes_value and not arg.startswith("-"):
+            saw_subcommand = True
         i += 2 if takes_value else 1
     return None, 0, None
 
@@ -1428,7 +1464,11 @@ def _resolve_continue_arg(args, *, use_tui: bool) -> None:
                     args.resume = last_id
                 else:
                     kind = "TUI" if use_tui else "CLI"
-                    print(f"No previous {kind} session found to continue.")
+                    print(
+                        f"No previous {kind} session to continue. Start a new one with "
+                        "`hermes`, or list sessions with `hermes sessions list`.",
+                        file=sys.stderr,
+                    )
                     sys.exit(1)
 
 
@@ -1926,7 +1966,11 @@ def _resolve_active_provider(config, model_cfg, effective_provider, custom_provi
         try:
             active = resolve_provider("auto")
         except AuthError as exc:
-            if effective_provider == "auto":
+            if exc.code == "no_provider_configured":
+                # The picker that is about to open IS the fix; a warning that says
+                # "run `hermes model`" from inside `hermes model` is circular.
+                print("No provider is set up yet — pick one below. (Nous Portal works without an API key.)")
+            elif effective_provider == "auto":
                 print(f"Warning: {format_auth_error(exc)} Falling back to auto provider detection.")
             active = None  # no provider yet; default to first in list
 
@@ -2473,14 +2517,10 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
         import fastapi  # noqa: F401
         import uvicorn  # noqa: F401
     except ImportError as e:
-        print("Web UI dependencies not installed (need fastapi + uvicorn).")
-        print(
-            f"Re-install the package into this interpreter so metadata updates apply:\n"
-            f"  cd {PROJECT_ROOT}\n"
-            f"  {sys.executable} -m pip install -e .\n"
-            "If `pip` is missing in this venv, use:  uv pip install -e ."
-        )
-        print(f"Import error: {e}")
+        from hermes_cli.main_dep_hints import missing_optional_deps_message
+
+        print(missing_optional_deps_message("dashboard", "its web-server packages (fastapi, uvicorn)", "all"))
+        print(f"Details: {e}")
         sys.exit(1)
 
     # Seed bundled skills on first dashboard launch so the desktop GUI's

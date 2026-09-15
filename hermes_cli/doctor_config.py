@@ -256,7 +256,7 @@ def _validate_model_config(config_path, issues: list) -> None:
         with warn_on_error(""):
             if not _provider_has_credentials(runtime_provider):
                 _fail_and_issue(f"model.provider '{runtime_provider}' is set but no API key is configured",
-                                "(check ~/.hermes/.env or run 'hermes setup')",
+                                f"(add it to {_DHH}/.env or run 'hermes setup')",
                                 f"No credentials found for provider '{runtime_provider}'. Run 'hermes setup' or set the provider's "
                                 f"API key in {_DHH}/.env, or switch providers with 'hermes config set model.provider <name>'", issues)
 

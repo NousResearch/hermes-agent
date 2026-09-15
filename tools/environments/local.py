@@ -381,33 +381,9 @@ def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None)
     if Path(target).resolve() == launch_home.resolve():
         return env
     from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
-    from hermes_cli.env_loader import launch_dotenv_keys, managed_dotenv_keys, source_supplied_names
-    # Current file AND every key any dotenv load put into os.environ this process lifetime: a key
-    # removed or renamed in the launch .env after boot is still in os.environ with the old value, and
-    # a re-parse of the file alone no longer names it (#107695 review). External secret sources
-    # (vault, 1Password, ...) write their names into the same shared os.environ, and a name the
-    # LAUNCH profile's source supplied is not the target profile's to see; the caller's scope
-    # overlay puts back exactly the ones the target's own sources supply. The administrator-managed
-    # .env is NOT residue: its values are policy for every profile (``_apply_managed_env`` applies
-    # it last, with override, so it beats the user's own .env) — leave them in place.
-    residue = set(load_env_file(launch_home / ".env")) | set(launch_dotenv_keys()) | set(TERMINAL_CONFIG_ENV_MAP.values())
-    residue |= set(source_supplied_names())
-    residue -= set(managed_dotenv_keys())
-    for key in residue:
+    for key in set(load_env_file(launch_home / ".env")) | set(TERMINAL_CONFIG_ENV_MAP.values()):
         if not _is_global_env(key) or key.startswith("TERMINAL_"):
             env.pop(key, None)
-    return env
-
-
-def restore_managed_env(env: dict) -> dict:
-    """Re-apply the administrator-managed ``.env`` values over *env* — call AFTER a routed profile's scope
-    has been overlaid. ``_apply_managed_env`` gives those keys precedence over the user's own ``.env`` in
-    the launch process; a routed child must see the same precedence, or the routed user's value for a
-    managed key (``ORG_POLICY_FLAG=user-value``) silently wins over policy."""
-    from hermes_cli.env_loader import managed_dotenv_keys
-    for key in managed_dotenv_keys():
-        if key in os.environ:
-            env[key] = os.environ[key]
     return env
 
 

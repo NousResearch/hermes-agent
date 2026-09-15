@@ -186,6 +186,38 @@ def _missing_profile_error(canon: str) -> FileNotFoundError:
     return FileNotFoundError(f"Profile '{canon}' does not exist. Create it with: hermes profile create {canon}")
 
 
+def _unknown_profile_error(canon: str) -> FileNotFoundError:
+    """For delete/rename/export of a name that matches no profile (likely a typo)."""
+    return FileNotFoundError(f"No profile named '{canon}'. See your profiles with: hermes profile list")
+
+
+def _profile_exists_error(canon: str) -> FileExistsError:
+    return FileExistsError(
+        f"A profile named '{canon}' already exists. Switch to it with `hermes profile use {canon}`, "
+        "see all profiles with `hermes profile list`, or choose a different name."
+    )
+
+
+_PROFILE_NAME_RULE = (
+    "Use lowercase letters, numbers, '-' or '_', starting with a letter or number, "
+    "up to 64 characters"
+)
+
+
+def _suggest_profile_name(name: str) -> str:
+    """Best-effort valid id derived from *name* (``'My Work'`` -> ``'my-work'``); ``my-work`` if nothing usable."""
+    candidate = re.sub(r"[^a-z0-9_-]+", "-", name.strip().lower()).strip("-_")[:64]
+    return candidate if _PROFILE_ID_RE.match(candidate) else "my-work"
+
+
+def _invalid_profile_name_error(name: str) -> ValueError:
+    suggestion = _suggest_profile_name(name)
+    return ValueError(
+        f"{name!r} is not a valid profile name. {_PROFILE_NAME_RULE} (for example: {suggestion}). "
+        f"Then run `hermes profile create {suggestion}`."
+    )
+
+
 # Validation
 
 def normalize_profile_name(name: str) -> str:
@@ -216,7 +248,7 @@ def validate_profile_name(name: str) -> None:
     if name == "default":
         return  # special alias for ~/.hermes
     if not _PROFILE_ID_RE.match(name):
-        raise ValueError(f"Invalid profile name {name!r}. Must match [a-z0-9][a-z0-9_-]{{0,63}}")
+        raise _invalid_profile_name_error(name)
     if name in _RESERVED_NAMES:
         raise ValueError(
             f"Profile name {name!r} is reserved — it collides with either "
@@ -229,7 +261,7 @@ def validate_alias_name(name: str) -> None:
     """Raise ``ValueError`` unless *name* is a safe wrapper filename: it is used verbatim
     under ``~/.local/bin``, so ``../../.bashrc`` must never escape the wrapper dir."""
     if not _PROFILE_ID_RE.match(name):
-        raise ValueError(f"Invalid alias name {name!r}. Must match [a-z0-9][a-z0-9_-]{{0,63}}")
+        raise ValueError(f"Invalid alias name {name!r}. {_PROFILE_NAME_RULE}.")
 
 
 def _canon_valid(name: str) -> str:
@@ -244,7 +276,7 @@ def _existing_profile_dir(name: str) -> Tuple[str, Path]:
     canon = _canon_valid(name)
     profile_dir = get_profile_dir(canon)
     if not profile_dir.is_dir():
-        raise FileNotFoundError(f"Profile '{canon}' does not exist.")
+        raise _unknown_profile_error(canon)
     return canon, profile_dir
 
 
@@ -259,7 +291,7 @@ def get_profile_dir(name: str) -> Path:
     # regex only, not _RESERVED_NAMES: a pre-reserved-list dir like
     # profiles/hermes may still exist and must keep resolving.
     if not _PROFILE_ID_RE.match(canon):
-        raise ValueError(f"Invalid profile name {canon!r}. Must match [a-z0-9][a-z0-9_-]{{0,63}}")
+        raise _invalid_profile_name_error(canon)
     return _get_profiles_root() / canon
 
 
@@ -880,10 +912,10 @@ def create_profile(
         # Empty shells left by post-delete mkdir may be replaced. Identity files mean the
         # leftover is not a shell — fail closed, no rmtree.
         if (profile_dir / "config.yaml").exists() or (profile_dir / ".env").exists():
-            raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
+            raise _profile_exists_error(canon)
         shutil.rmtree(profile_dir)
     if profile_dir.exists():
-        raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
+        raise _profile_exists_error(canon)
     source_dir = _resolve_clone_source(clone_from) if cloning else None
     if source_dir is not None and clone_channels:
         from hermes_cli.profile_channels import clone_channels_refusal
@@ -1666,7 +1698,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         )
     profile_dir = get_profile_dir(canon)
     if profile_dir.exists():
-        raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
+        raise _profile_exists_error(canon)
     _get_profiles_root().mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="hermes_profile_import_") as tmpdir:
         staging_root = Path(tmpdir)
@@ -1749,9 +1781,9 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     old_dir = get_profile_dir(old_canon)
     new_dir = get_profile_dir(new_canon)
     if not old_dir.is_dir():
-        raise FileNotFoundError(f"Profile '{old_canon}' does not exist.")
+        raise _unknown_profile_error(old_canon)
     if new_dir.exists():
-        raise FileExistsError(f"Profile '{new_canon}' already exists.")
+        raise _profile_exists_error(new_canon)
 
     # 1. Stop gateway if running
     if _check_gateway_running(old_dir):

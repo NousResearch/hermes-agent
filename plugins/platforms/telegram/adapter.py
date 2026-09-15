@@ -131,11 +131,16 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.authz_mixin import _coerce_allow_set
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
-    BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error, unauthorized_action_notice,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
 )
+
+# Every refused button tap answers with the same sentence.
+_UNAUTHORIZED = unauthorized_action_notice(Platform.TELEGRAM)
+
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
@@ -3834,7 +3839,7 @@ class TelegramAdapter(BasePlatformAdapter):
             "send_update_prompt", chat_id, metadata, build, thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)
 
     # Template attrs for the shared _format_exec_approval core (HTML mode).
-    _EA_HEADER = "⚠️ <b>Command Approval Required</b>\n\n"
+    _EA_HEADER = f"⚠️ <b>{EA_HEADER_TEXT}</b>\n\n"
     _EA_CODE_OPEN = "<pre>"
     _EA_CODE_CLOSE = "</pre>\n\n"
     _EA_SMART_DENY_LINE = "\n\n<b>Smart DENY:</b> owner override applies to this one operation only."
@@ -3966,7 +3971,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer(text="Picker expired — run the command again.")
             return
         # Same auth gate as approval buttons: strangers in a shared group must not flip session state.
-        if not await self._callback_authorized(query, self._callback_ctx(query), "⛔ You are not authorized to change this setting."):
+        if not await self._callback_authorized(query, self._callback_ctx(query), _UNAUTHORIZED):
             return
         try:
             choice = state["choices"][int(data[3:])]
@@ -4327,7 +4332,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer(text="Invalid approval data.")
             return
         session_key = await self._claim_callback_state(
-            query, cb, self._approval_state, approval_id, "⛔ You are not authorized to approve commands.",
+            query, cb, self._approval_state, approval_id, _UNAUTHORIZED,
             "This approval has already been resolved.")
         if not session_key:
             return
@@ -4368,7 +4373,7 @@ class TelegramAdapter(BasePlatformAdapter):
         choice = parts[1]  # once, always, cancel
         confirm_id = parts[2]
         session_key = await self._claim_callback_state(
-            query, cb, self._slash_confirm_state, confirm_id, "⛔ You are not authorized to answer this prompt.",
+            query, cb, self._slash_confirm_state, confirm_id, _UNAUTHORIZED,
             "This prompt has already been resolved.")
         if not session_key:
             return
@@ -4414,7 +4419,7 @@ class TelegramAdapter(BasePlatformAdapter):
         clarify_id = parts[1]
         choice_token = parts[2]
         session_key = await self._claim_callback_state(
-            query, cb, self._clarify_state, clarify_id, "⛔ You are not authorized to answer this prompt.",
+            query, cb, self._clarify_state, clarify_id, _UNAUTHORIZED,
             "This prompt has already been resolved.", pop=False)
         if not session_key:
             return
@@ -4474,7 +4479,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _handle_update_prompt_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
         """``update_prompt:<y|n>`` — forward the answer to the update process."""
         answer = data.split(":", 1)[1]  # "y" or "n"
-        if not await self._callback_authorized(query, cb, "⛔ You are not authorized to answer update prompts."):
+        if not await self._callback_authorized(query, cb, _UNAUTHORIZED):
             return
         await query.answer(text=f"Sent '{answer}' to the update process.")
         await self._edit_md_quiet(query, f"☤ Update prompt answered: *{'Yes' if answer == 'y' else 'No'}*")
@@ -4510,7 +4515,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer(text="Invalid gmail-triage data.")
             return
         verb, arg = parts[1], parts[2]
-        if not await self._callback_authorized(query, cb, "⛔ You are not authorized to act on this email."):
+        if not await self._callback_authorized(query, cb, _UNAUTHORIZED):
             return
         entry = self._GT_VERB_DISPATCH.get(verb)
         if not entry:

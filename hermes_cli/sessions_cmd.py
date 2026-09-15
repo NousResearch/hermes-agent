@@ -45,7 +45,7 @@ def _confirm_prompt(prompt: str) -> bool:
 
 
 def _not_found(session_id) -> int:
-    print(f"Session '{session_id}' not found.")
+    print(f"No session '{session_id}'. Run: hermes sessions list to find the id.")
     return 1
 
 
@@ -988,7 +988,9 @@ def cmd_sessions(args, sessions_parser=None):
         # mode=ro cannot create the store; a reader on a fresh profile reports empty rather than failing.
         if observational and not _default_db_path().exists():
             return _print_empty_store(action, args)
-        print(f"Error: Could not open session database: {e}")
+        print("Could not open your session history database. "
+              "Run: hermes sessions repair to fix it (a backup is made first).")
+        print(f"Details: {e}")
         return 1
     try:
         handler = _DB_HANDLERS.get(action)

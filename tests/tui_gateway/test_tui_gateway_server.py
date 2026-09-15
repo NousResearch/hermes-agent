@@ -9128,6 +9128,20 @@ def test_setup_status_answers_from_the_bootstrap_record_once_it_exists(monkeypat
         fb.reset_for_tests()
 
 
+def test_invalid_params_and_unknown_method_name_the_version_skew_fix():
+    """The only signal of a TUI/backend version mismatch; the lead phrases stay for clients."""
+    resp = server.handle_request({"id": "1", "method": "no.such.method", "params": {}})
+    assert resp["error"]["code"] == -32601
+    assert resp["error"]["message"].startswith("unknown method: no.such.method")
+    assert "hermes update" in resp["error"]["message"]
+
+    resp = server.handle_request(
+        {"id": "2", "method": "session.status", "params": {"session_id": "x", "turn_author": "y"}})
+    assert resp["error"]["code"] == 4000
+    assert resp["error"]["message"].startswith("invalid params for session.status: turn_author")
+    assert "hermes update" in resp["error"]["message"]
+
+
 def test_probe_credentials_emits_exact_empty_key_warning():
     agent = types.SimpleNamespace(api_key="", provider="openrouter")
 
@@ -14951,7 +14965,11 @@ def test_prompt_submit_fails_loudly_when_store_unavailable(monkeypatch):
         server._sessions.pop("lost-sid", None)
 
     assert resp["error"]["code"] == 5072
-    assert "session storage unavailable" in resp["error"]["message"]
+    msg = resp["error"]["message"]
+    assert "not saved" in msg and "hermes doctor --fix" in msg
+    assert "utf-8 decode failure" not in msg  # raw cause rides `data.details`, never the lead
+    assert resp["error"]["data"]["code"] == "storage_unavailable"
+    assert "utf-8 decode failure" in resp["error"]["data"]["details"]
 
 
 @pytest.mark.real_agent_prewarm
@@ -15068,7 +15086,11 @@ def test_session_list_returns_clean_error_when_state_db_is_unavailable(monkeypat
     resp = server.handle_request({"id": "1", "method": "session.list", "params": {}})
 
     assert "error" in resp
-    assert "state.db unavailable: locking protocol" in resp["error"]["message"]
+    # Plain cause + repair command; the machine-readable code lets a GUI attach "Run doctor".
+    assert "Session storage is unavailable" in resp["error"]["message"]
+    assert "hermes doctor --fix" in resp["error"]["message"]
+    assert resp["error"]["data"]["code"] == "storage_unavailable"
+    assert resp["error"]["data"]["details"] == "locking protocol"
 
 
 # --------------------------------------------------------------------------
@@ -15103,7 +15125,8 @@ def test_session_delete_returns_db_unavailable_when_no_db(monkeypatch):
 
     assert "error" in resp
     assert resp["error"]["code"] == 5036
-    assert "state.db unavailable" in resp["error"]["message"]
+    assert "Session storage is unavailable" in resp["error"]["message"]
+    assert resp["error"]["data"]["code"] == "storage_locked"
 
 
 def test_session_delete_refuses_active_session(monkeypatch):
@@ -16784,8 +16807,13 @@ def test_prompt_submit_surfaces_backend_error_as_visible_text(monkeypatch):
     assert complete_events, "expected message.complete to be emitted"
     payload = complete_events[-1][2]
     assert payload.get("status") == "error"
-    assert payload.get("text", "").startswith("Error:")
-    assert "kimi-k2.6" in payload.get("text", "")
+    text = payload.get("text", "")
+    # Plain title first, the raw provider body demoted to a Details line, and a next step —
+    # never the bare "Error: <body>" as if it were the assistant's reply.
+    assert not text.startswith("Error:")
+    assert "Details: HTTP 400: invalid model id 'kimi-k2.6'" in text
+    assert "/retry" in text or "/model" in text
+    assert payload.get("error") == "HTTP 400: invalid model id 'kimi-k2.6'"
 
 
 def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):

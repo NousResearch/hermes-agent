@@ -41,6 +41,7 @@ from gateway.platforms._shared import (
     platform_gate_env as _scoped_gate_env, send_error
 )
 from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
@@ -4710,7 +4711,7 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] %s failed: %s", label, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
-    _EA_HEADER = ":warning: *Command Approval Required*\n"
+    _EA_HEADER = f":warning: *{EA_HEADER_TEXT}*\n"
     _EA_CODE_OPEN = "```"
     _EA_CODE_CLOSE = "```\n"
     _EA_SMART_DENY_LINE = "\n*Smart DENY:* owner override applies to this one operation only."
@@ -4722,7 +4723,7 @@ class SlackAdapter(BasePlatformAdapter):
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         # execute_code approvals embed the whole script, so budget the preview against the cap.
         fixed = (len(self._EA_HEADER) + len(self._EA_CODE_OPEN) + len(self._EA_CODE_CLOSE)
-                 + len(self._EA_REASON_LABEL) + len(description) + len("...")
+                 + len(self._EA_REASON_LABEL) + len(description) + len("...") + len(self._ea_deadline_line())
                  + (len(self._EA_SMART_DENY_LINE) if smart_denied else 0))
         return max(0, self._EA_SECTION_CAP - fixed)
 

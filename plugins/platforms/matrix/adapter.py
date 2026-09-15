@@ -61,6 +61,7 @@ except ImportError:
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
@@ -1582,7 +1583,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     # Template attrs for the shared _format_exec_approval core (header + fence + reason only;
     # the smart-deny/scope wording lives in the reaction legend below).
-    _EA_HEADER = "⚠️ **Dangerous command requires approval**\n"
+    _EA_HEADER = f"⚠️ **{EA_HEADER_TEXT}**\n"
     _EA_CMD_BUDGET = 2000
 
     async def _send_reaction_prompt(

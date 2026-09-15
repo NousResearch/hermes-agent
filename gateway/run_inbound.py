@@ -21,6 +21,10 @@ from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_common import _UNSET
+from gateway.run_inbound_unauthorized import (
+    PAIRING_RATE_LIMITED_REPLY, UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg,
+    unauthorized_owner_hint,
+)
 from gateway.session import (
     SessionSource, is_shared_multi_user_session, neutralize_untrusted_inline_text
 )
@@ -88,21 +92,9 @@ class GatewayInboundMixin:
         code = pairing_store.generate_code(platform_name, source.user_id, source.user_name or "")
         adapter = self._adapter_for_source(source)
         if code:
-            store_profile = getattr(pairing_store, "profile", None)
-            profile_arg = (
-                f"-p {store_profile} "
-                if isinstance(store_profile, str) and store_profile and store_profile != "default"
-                else ""
-            )
-            reply = (
-                f"Hi~ I don't recognize you yet!\n\n"
-                f"Here's your pairing code: `{code}`\n\n"
-                f"Ask the bot owner to run:\n"
-                f"`hermes {profile_arg}pairing approve "
-                f"{platform_name} {code}`"
-            )
+            reply = pairing_code_reply(platform_name, code, pairing_profile_arg(pairing_store))
         else:
-            reply = "Too many pairing requests right now~ Please try again later!"
+            reply = PAIRING_RATE_LIMITED_REPLY
         if adapter:
             await adapter.send(source.chat_id, reply)
         if not code:
@@ -128,6 +120,21 @@ class GatewayInboundMixin:
             await adapter.send(source.chat_id, text or DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE)
         except Exception:
             logger.warning("Failed to deliver unauthorized-DM decline on %s", platform_name, exc_info=True)
+
+    async def _hm_report_ignored_dm(self, source: SessionSource) -> None:
+        """Unauthorized DM under behaviour ``ignore``: nothing goes to the sender. The owner gets the
+        sender's ID and the allowlist fix in the WARNING log and, once per sender, in the home channel."""
+        from hermes_constants import display_hermes_home
+        platform_name = source.platform.value if source.platform else "unknown"
+        hint = unauthorized_owner_hint(
+            platform_name, source.user_id, source.user_name or "", hermes_home=display_hermes_home(),
+        )
+        logger.warning("Unauthorized user (ignored): %s", hint)
+        notifier = getattr(self, "_unauthorized_owner_notifier", None)
+        if notifier is None:
+            notifier = self._unauthorized_owner_notifier = UnauthorizedOwnerNotifier()
+        if notifier.first_time(platform_name, source.user_id) and getattr(self, "config", None) is not None:
+            await notifier.notify(self, source, hint)
 
     async def _hm_admit_event(
         self, event: "MessageEvent"
@@ -214,15 +221,20 @@ class GatewayInboundMixin:
                 # posts, sender_chat): can't be paired but may be authorized via a chat allowlist.
                 logger.debug("Ignoring message with no user_id from %s", source.platform.value)
                 return None
-            logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # DMs get a pairing code or a one-time decline, groups are ignored. A bot cannot pair, and
             # answering one mid-cooldown is outbound traffic.
-            if source.chat_type == "dm" and not getattr(source, "is_bot", False):
-                behavior = self._get_unauthorized_dm_behavior(source.platform, profile=source.profile)
-                if behavior == "pair":
-                    await self._hm_offer_pairing_code(source)
-                elif behavior == "decline":
-                    await self._hm_send_unauthorized_decline(source)
+            pairable_dm = source.chat_type == "dm" and not getattr(source, "is_bot", False)
+            behavior = self._get_unauthorized_dm_behavior(source.platform, profile=source.profile) if pairable_dm else None
+            if behavior == "pair":
+                logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
+                await self._hm_offer_pairing_code(source)
+            elif behavior == "decline":
+                logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
+                await self._hm_send_unauthorized_decline(source)
+            elif pairable_dm:
+                await self._hm_report_ignored_dm(source)
+            else:
+                logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             return None
         # The busy path charged this event on arrival; a drained follow-up must not pay twice.
         if not getattr(event, "_bot_loop_admitted", False) and not self._admit_bot_message_for_source(source):

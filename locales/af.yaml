@@ -11,7 +11,7 @@ approval:
   prompt_smart_deny: "      Keuse [o/D]: "
   smart_deny_once_inputs: "o,once"
   smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ Tyd verstreke - opdrag word geweier"
+  timeout:         "      ⏱ Geen antwoord binne {waited} — die opdrag is nie uitgevoer nie. Vra weer om te herprobeer, of verhoog die limiet: hermes config set approvals.timeout {suggested}"
   allowed_once:    "      ✓ Eenmalig toegelaat"
   allowed_session: "      ✓ Vir hierdie sessie toegelaat"
   allowed_always:  "      ✓ By permanente toelaatlys gevoeg"

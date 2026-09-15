@@ -2107,7 +2107,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
     except Exception as e:
         logger.warning("Failed to get summary response: %s", e)
-        final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
+        from agent.turn_failure_copy import site_copy
+        final_response = site_copy("max_iterations_no_summary", limit=agent.max_iterations)
     finally:
         from agent import relay_llm
         relay_llm.complete_logical_call(summary_api_request_id, outcome=summary_call_outcome)

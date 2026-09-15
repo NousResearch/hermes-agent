@@ -1538,7 +1538,9 @@ async def test_run_agent_sends_normalized_failure_before_queued_followup(
     sent_texts = [call["content"] for call in adapter.sent]
     assert QueuedFailedEmptyAgent.calls == 2
     assert result["final_response"] == "follow-up processed"
-    assert any("The request failed: provider exploded" in text for text in sent_texts)
+    # Sanitized failure copy (raw "provider exploded" stays in the log), then the queued follow-up.
+    assert any("couldn't finish this reply" in text and "/retry" in text for text in sent_texts)
+    assert not any("provider exploded" in text for text in sent_texts)
 
 
 @pytest.mark.asyncio

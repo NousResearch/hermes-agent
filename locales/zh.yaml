@@ -11,7 +11,7 @@ approval:
   prompt_smart_deny: "      选择 [o/D]: "
   smart_deny_once_inputs: "o,once"
   smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ 超时 — 已拒绝命令"
+  timeout:         "      ⏱ {waited} 内没有回应——未执行该命令。再次请求即可重试，或提高上限：hermes config set approvals.timeout {suggested}"
   allowed_once:    "      ✓ 本次允许"
   allowed_session: "      ✓ 本次会话内允许"
   allowed_always:  "      ✓ 已加入永久允许列表"

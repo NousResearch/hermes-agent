@@ -37,6 +37,9 @@ from tui_gateway import git_probe
 from tui_gateway._env import env_float, env_int
 from tui_gateway.turn_marker import clear_turn_marker, read_turn_marker, record_turn_start  # noqa: F401
 from tui_gateway.contracts import registry as _contracts
+# User-facing copy shared with the split method modules (they close over this namespace).
+from tui_gateway.user_messages import (  # noqa: F401
+    AGENT_STILL_STARTING, agent_init_failed_message, busy_message, resume_failed_message, turn_error_text)
 from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
                                    current_transport, reset_transport)
 
@@ -483,7 +486,12 @@ def _response_profile_name(profile: str | None = None) -> str:
 
 
 def _db_unavailable_error(rid, *, code: int):
-    return _err(rid, code, f"state.db unavailable: {_db_error or 'state.db unavailable'}")
+    from hermes_state_user_copy import describe_storage_failure, storage_failure_details
+    failure = describe_storage_failure(_db_error)
+    return _err(
+        rid, code,
+        f"Session storage is unavailable: {failure.gloss}. {failure.action}",
+        data={"code": failure.code, "cause": failure.cause, "details": storage_failure_details(_db_error)})
 
 
 # ── Per-session profile scoping: the desktop's app-global remote mode points every profile at this
@@ -806,7 +814,8 @@ def handle_request(req: dict) -> dict | None:
         return normalized
     rid, method, params = normalized
     if not (fn := _methods.get(method)):
-        return _err(rid, -32601, f"unknown method: {method}")
+        return _err(rid, -32601, f"unknown method: {method} — the client and the Hermes backend are out of sync "
+                    "(different versions); run `hermes update` and restart both")
     # Test doubles register straight into ``_methods`` without a contract; every production
     # handler comes through ``register_method`` and therefore has one.
     contract = _contracts.METHODS.get(method)
@@ -886,7 +895,7 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
 def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
     ready = session.get("agent_ready")
     if ready is not None and not ready.wait(timeout=timeout):
-        return _err(rid, 5032, "agent initialization timed out")
+        return _err(rid, 5032, AGENT_STILL_STARTING)
     return _err(rid, 5032, err) if (err := session.get("agent_error")) else None
 
 
@@ -1130,7 +1139,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
             _announce_built_agent(sid, key, current, agent)
         except Exception as e:
             current["agent_error"] = str(e)
-            _emit("error", sid, {"message": f"agent init failed: {e}"})
+            _emit("error", sid, {"message": agent_init_failed_message(e)})
         finally:
             _finish_agent_build(
                 sid, key, current, notify_registered=notify_registered, scopes=scopes, session_db=session_db)
@@ -2619,7 +2628,7 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
         except Exception as exc:
             if _sessions.get(sid) is not session:
                 return
-            message = f"resume failed: {exc}"
+            message = resume_failed_message(exc)
             session.update(resume_hydrating=False, resume_history_error=message, agent_error=message)
             session["resume_history_ready"].set()
             session["agent_ready"].set()

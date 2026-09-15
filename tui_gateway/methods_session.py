@@ -726,7 +726,7 @@ def _resume_lazy(ctx: _Resume) -> dict:
         # repair_alternation heals a durable ``user;user`` once here.
         history = ctx.child_history(repair=True)
     except Exception as e:
-        return _err(ctx.rid, 5000, f"resume failed: {e}")
+        return _err(ctx.rid, 5000, resume_failed_message(e))
     record = ctx.record(source, cwd, history, lazy=True, todo_state=_todo_state_from_history(history))
     if (reused := ctx.claim(sid, record)) is not None:
         return reused
@@ -767,7 +767,7 @@ def _resume_cold(ctx: _Resume) -> dict:
     try:
         history, display_history, raw_history = ctx.restore()
     except Exception as e:
-        return _err(ctx.rid, 5000, f"resume failed: {e}")
+        return _err(ctx.rid, 5000, resume_failed_message(e))
     overrides = _stored_session_runtime_overrides(ctx.found)
     record = ctx.record(source, cwd, history, overrides, display_history_prefix=ctx.display_prefix(),
                         todo_state=_todo_state_from_history(history))
@@ -795,7 +795,7 @@ def _resume_eager(ctx: _Resume) -> dict:
                 context_cwd_is_launch_artifact=(source in _LAUNCH_CWD_NOT_A_WORKSPACE and not ctx.profile_resume_cwd),
                 auth_user_id=_transport_auth_user_id(current_transport()), **stored_runtime_overrides)
         except Exception as e:
-            return _err(ctx.rid, 5000, f"resume failed: {e}")
+            return _err(ctx.rid, 5000, resume_failed_message(e))
     with _session_resume_lock:
         live = _find_live_session_by_key(ctx.target, ctx.profile_home)
         if live is not None:
@@ -826,7 +826,7 @@ def _resume_eager(ctx: _Resume) -> dict:
             if ctx.owns_db:
                 with _sessions_lock:
                     _sessions.pop(sid, None)
-            return _err(ctx.rid, 5000, f"resume failed: {e}")
+            return _err(ctx.rid, 5000, resume_failed_message(e))
         session = _sessions.get(sid) or {}
     return _resume_response(
         ctx, sid, session, info=_session_info(agent, session), display=display_history, count_source=raw_history,
@@ -1727,8 +1727,8 @@ def _(rid, params: dict, session: dict) -> dict:
 
 @_session_method("session.undo", live=True)
 def _(rid, params: dict, session: dict) -> dict:
-    # Under a running turn the post-run write would clobber the undo — /interrupt first.
-    busy = _err(rid, 4009, "session busy — /interrupt the current turn before /undo")
+    # Under a running turn the post-run write would clobber the undo — stop the reply first.
+    busy = _err(rid, 4009, busy_message("undo"))
     if session.get("running"):
         return busy
     removed = 0
@@ -1859,7 +1859,7 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     if session.get("running"):
-        return _err(rid, 4009, "session busy — /interrupt the current turn before /compress")
+        return _err(rid, 4009, busy_message("compress"))
     sid = params.get("session_id", "")
     try:
         return _compress_live(rid, sid, session, _str_param(params, "focus_topic"))

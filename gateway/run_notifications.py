@@ -26,6 +26,18 @@ from gateway.run_shutdown import _log_suppressed, _notice_target_key, _send_erro
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+# A failed /update leaves the previous version running; the full pip/git log stays on the host
+# (`hermes update` re-runs it in the terminal) and only a short tail is quoted in chat.
+_UPDATE_FAILED_NOTICE = (
+    "❌ Hermes update failed; the previous version is still running. Run `hermes update` on the "
+    "host to see the full error, or try /update again later.")
+
+
+def _update_output_tail(output: str, limit: int) -> str:
+    """Last ``limit`` chars of an update log, prefixed with an ellipsis when cut."""
+    return output if len(output) <= limit else "…" + output[-limit:]
+
+
 _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
 # Routing fields copied verbatim from a process watcher onto its synthetic completion event.
 _WATCHER_ROUTE_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id", "user_name")
@@ -584,8 +596,7 @@ class GatewayNotificationsMixin:
                 with _log_suppressed(logging.WARNING, "Update final notification failed: %s"):
                     exit_code = self._update_exit_code(paths)
                     await target.send(
-                        "✅ Hermes update finished." if exit_code == 0
-                        else "❌ Hermes update failed (exit code {}).".format(exit_code)
+                        "✅ Hermes update finished." if exit_code == 0 else _UPDATE_FAILED_NOTICE
                     )
                     logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
                 self._clear_update_markers(paths, session_key)
@@ -661,16 +672,14 @@ class GatewayNotificationsMixin:
                 metadata = self._pending_marker_metadata(platform, chat_id, pending, adapter)
                 from tools.ansi_strip import strip_ansi
                 output = strip_ansi(output).strip()
-                if output:
-                    if len(output) > 3500:
-                        output = "…" + output[-3500:]
-                    status = "✅ Hermes update finished." if exit_code == 0 else "❌ Hermes update failed."
-                    msg = f"{status}\n\n```\n{output}\n```"
+                if exit_code == 0:
+                    msg = "✅ Hermes update finished successfully."
+                    if output:
+                        msg = f"{msg}\n\n```\n{_update_output_tail(output, 3500)}\n```"
                 else:
-                    msg = (
-                        "✅ Hermes update finished successfully." if exit_code == 0 else
-                        "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
-                    )
+                    msg = _UPDATE_FAILED_NOTICE
+                    if output:
+                        msg = f"{msg}\n\nLast lines:\n```\n{_update_output_tail(output, 800)}\n```"
                 await adapter.send(chat_id, msg, metadata=_non_conversational_metadata(metadata, platform=platform))
                 logger.info("Sent post-update notification to %s:%s (exit=%s)", platform_str, chat_id, exit_code)
         except Exception as e:
@@ -844,7 +853,7 @@ class GatewayNotificationsMixin:
                 logger.info("state.db recovered before the home-channel warning went out; not broadcasting")
                 return
         from hermes_constants import get_default_hermes_root, profile_cli_selector
-        from hermes_state import _default_db_path, classify_persistence_error, format_session_db_unavailable
+        from hermes_state import _default_db_path, classify_persistence_error
         cause = classify_persistence_error(error)
         # Copy-pasteable, so name the real store and pin the profile: a bare `hermes` follows
         # active_profile, which may be a different database (#105887).
@@ -877,9 +886,12 @@ class GatewayNotificationsMixin:
                 "recovery tools or restore a backup unless `hermes doctor` confirms damage."
             )
         else:
+            from hermes_state_user_copy import describe_storage_failure
+            failure = describe_storage_failure(error)
             message = (
-                f"⚠️ Session database unavailable — messages may not be persisted. "
-                f"{format_session_db_unavailable()}\nRun `hermes doctor` for diagnostics."
+                "⚠️ Session database unavailable — messages may not be saved and /resume will be "
+                f"empty. Cause: {failure.gloss}. Run `hermes {profile_arg}doctor --fix` on the "
+                "gateway machine, then `hermes gateway restart`."
             )
         logger.warning("Broadcasting state.db failure warning to home channels: %s", error)
         for platform, _platform_cfg, home, transport in self._home_channel_transports():

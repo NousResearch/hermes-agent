@@ -57,6 +57,19 @@ def test_dispatch_rejects_unknown_params_without_calling_handler():
     assert response["error"]["data"][0]["loc"] == ["extra"]
 
 
+def test_only_an_unknown_key_is_diagnosed_as_version_skew():
+    """A missing or mistyped field names the field; the "run hermes update" remedy is reserved for an
+    unknown key, the one shape that means the client and backend disagree on the wire."""
+    with _registered(lambda rid, params: _DispatchResult(count=params.count)) as name:
+        missing = server.handle_request({"id": "rpc-6", "method": name, "params": {}})
+        unknown = server.handle_request({"id": "rpc-7", "method": name, "params": {"count": 1, "extra": True}})
+
+    assert missing["error"]["code"] == unknown["error"]["code"] == 4000
+    assert "count: Field required" in missing["error"]["message"]
+    assert "hermes update" not in missing["error"]["message"]
+    assert "hermes update" in unknown["error"]["message"]
+
+
 def test_dispatch_redacts_invalid_param_input_from_error_frame():
     secret = "not-for-the-wire"
     with _registered(lambda rid, params: _DispatchResult(count=params.count)) as name:

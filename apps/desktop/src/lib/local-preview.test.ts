@@ -197,3 +197,27 @@ describe('PDF previews', () => {
     expect(readDesktopFileDataUrl).not.toHaveBeenCalled()
   })
 })
+
+describe('absolute local paths on Windows', () => {
+  const cwd = 'C:\\Users\\dev'
+
+  it('keeps a drive-letter path with backslashes intact', () => {
+    expect(localPreviewTarget('C:\\Users\\dev\\Desktop\\notes.md', cwd)?.path).toBe(
+      'C:\\Users\\dev\\Desktop\\notes.md'
+    )
+  })
+
+  it('keeps a drive-letter path with forward slashes intact', () => {
+    expect(localPreviewTarget('C:/Users/dev/Desktop/notes.md', cwd)?.path).toBe(
+      'C:/Users/dev/Desktop/notes.md'
+    )
+  })
+
+  it('keeps a UNC path intact', () => {
+    expect(localPreviewTarget('\\\\server\\share\\notes.md', cwd)?.path).toBe('\\\\server\\share\\notes.md')
+  })
+
+  it('still resolves a genuinely relative path against the cwd', () => {
+    expect(localPreviewTarget('notes.md', cwd)?.path).toBe('C:\\Users\\dev/notes.md')
+  })
+})

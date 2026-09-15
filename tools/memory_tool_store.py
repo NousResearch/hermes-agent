@@ -211,7 +211,8 @@ class MemoryStore:
             _error(message, current_entries=self._entries_for(target), usage=self._usage(target)))
 
     def _mutate(self, target: str, mutate, *, skip_drift: bool = False) -> Dict[str, Any]:
-        """Lock, re-read from disk, run ``mutate(entries, limit)`` -> ``(new_entries, message)``
+        """Lock, re-read from disk, run ``mutate(entries, limit)`` ->
+        ``(new_entries, message, committed_operations)``
         or an error dict, then persist and return the success response. The reload aborts
         on an existing-but-unreadable file (even append-only ``add`` rewrites the whole
         file) and, unless *skip_drift*, on external drift (flushing would discard
@@ -232,7 +233,7 @@ class MemoryStore:
             self._set_entries(target, result[0])
             path.parent.mkdir(parents=True, exist_ok=True)
             self._write_file(path, result[0])
-            return self._success_response(target, result[1])
+            return self._success_response(target, result[1], committed_operations=result[2])
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
@@ -244,14 +245,15 @@ class MemoryStore:
 
         def _add(entries, limit):
             if content in entries:
-                return self._success_response(target, "Entry already exists (no duplicate added).")
+                return self._success_response(
+                    target, "Entry already exists (no duplicate added).", committed_operations=[])
             if len(ENTRY_DELIMITER.join(entries + [content])) > limit:
                 return self._failure_with_entries(target, (
                     f"Memory at {self._char_count(target):,}/{limit:,} chars. Adding this entry "
                     f"({len(content)} chars) would exceed the limit. Consolidate now: use 'replace' to merge "
                     f"overlapping entries into shorter ones or 'remove' stale or less important entries (see "
                     f"current_entries below), then retry this add — all in this turn."))
-            return entries + [content], "Entry added."
+            return entries + [content], "Entry added.", [{"action": "add", "content": content}]
         # Append-only: skip the drift guard (appending never clobbers foreign
         # content) but still refuse a failed read — add rewrites the WHOLE file.
         return self._mutate(target, _add, skip_drift=True)
@@ -286,14 +288,15 @@ class MemoryStore:
                     f"of the entry you want to {'replace' if new_content else 'remove'}.", current_entries=entries))
             replaced = entries[:idx] + ([] if new_content is None else [new_content]) + entries[idx + 1:]
             if new_content is None:
-                return replaced, "Entry removed."
+                return replaced, "Entry removed.", [{"action": "remove", "old_text": old_text}]
             new_total = len(ENTRY_DELIMITER.join(replaced))
             if new_total > limit:
                 return self._failure_with_entries(target, (
                     f"Replacement would put memory at {new_total:,}/{limit:,} chars. Shorten the new content, "
                     f"or 'remove' other stale or less important entries to make room (see current_entries "
                     f"below), then retry — all in this turn."))
-            return replaced, "Entry replaced."
+            return replaced, "Entry replaced.", [
+                {"action": "replace", "content": new_content, "old_text": old_text}]
         return self._mutate(target, _apply)
 
     @staticmethod
@@ -334,12 +337,19 @@ class MemoryStore:
 
         def _apply(entries, limit):
             working = list(entries)  # only committed if the whole batch validates
+            committed_operations = []
             for i, op in enumerate(ops):
                 act = op.get("action")
-                msg = self._apply_batch_op(working, act, (op.get("content") or op.get("new_text") or "").strip(),
-                                           (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})")
+                content = (op.get("content") or op.get("new_text") or "").strip()
+                old_text = (op.get("old_text") or "").strip()
+                before = list(working)
+                msg = self._apply_batch_op(
+                    working, act, content, old_text, f"Operation {i + 1} ({act or 'unknown'})")
                 if msg:
                     return self._failure_with_entries(target, msg + " No operations were applied (batch is all-or-nothing).")
+                if working != before:
+                    committed_operations.append({
+                        "action": act, "content": content, "old_text": old_text})
             if entries and not working:
                 # #103419: a consolidation batch that removes the last entry would
                 # commit an empty file as a normal successful write. Refuse; single
@@ -357,7 +367,7 @@ class MemoryStore:
                     f"After applying all {len(operations)} operations, memory would be at "
                     f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
                     f"entries in the same batch (see current_entries below), then retry."))
-            return working, f"Applied {len(operations)} operation(s)."
+            return working, f"Applied {len(operations)} operation(s).", committed_operations
         return self._mutate(target, _apply)
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
@@ -365,7 +375,8 @@ class MemoryStore:
         it, preserving the prefix cache); None if empty."""
         return self._system_prompt_snapshot.get(target, "") or None
 
-    def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
+    def _success_response(self, target: str, message: str = None, *,
+                          committed_operations: List[Dict[str, Any]]) -> Dict[str, Any]:
         """TERMINAL and WITHOUT the entries list: echoing entries invites the model to
         "find more to fix" and re-issue the same ops. A successful write resets the
         per-turn failure budget."""
@@ -374,7 +385,9 @@ class MemoryStore:
         self._consolidation_failures = 0
         return {"success": True, "done": True, "target": target,
                 "usage": self._usage_pct(target, self._char_count(target)),
-                "entry_count": len(self._entries_for(target)), **({"message": message} if message else {}),
+                "entry_count": len(self._entries_for(target)),
+                "committed_operations": committed_operations,
+                **({"message": message} if message else {}),
                 "note": "Write saved. This update is complete — do not repeat it."}
 
     def _render_block(self, target: str, entries: List[str]) -> str:

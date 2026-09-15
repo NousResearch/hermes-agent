@@ -756,11 +756,22 @@ class MemoryManager:
         mutating actions, and forwards ``old_text`` plus provenance from ``build_metadata`` (the loop
         knows session/task/tool-call identity; we do not).
         """
-        if not self._memory_tool_result_succeeded(tool_result):
+        result = tool_result
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except Exception:
+                return
+        if not self._memory_tool_result_succeeded(result):
             return
         target = str(tool_args.get("target") or "memory")
-        operations = tool_args.get("operations")
-        for op in operations if isinstance(operations, list) and operations else [tool_args]:
+        operations = (
+            result.get("committed_operations")
+            if "committed_operations" in result
+            else tool_args.get("operations")
+        )
+        raw_operations = operations if isinstance(operations, list) else [tool_args]
+        for op in raw_operations:
             action = str(op.get("action") or "") if isinstance(op, dict) else ""
             if action not in self._MIRRORED_MEMORY_ACTIONS:
                 continue

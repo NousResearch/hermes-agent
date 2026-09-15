@@ -13,6 +13,7 @@ import pytest
 
 from agent.memory_manager import MemoryManager
 from agent.memory_provider import MemoryProvider
+from tools.memory_tool import MemoryStore, memory_tool
 
 
 class _RecordingProvider(MemoryProvider):
@@ -101,4 +102,33 @@ def test_build_metadata_callback_is_merged_per_op():
             "content": "fact",
             "metadata": {"session_id": "s1", "tool_name": "memory"},
         }
+    ]
+
+
+def test_only_operations_that_changed_builtin_memory_are_mirrored(tmp_path, monkeypatch):
+    monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+    store = MemoryStore()
+    store.load_from_disk()
+    mgr, provider = _manager_with_provider()
+
+    first_args = {"action": "add", "target": "memory", "content": "stable fact"}
+    first_result = memory_tool(store=store, **first_args)
+    mgr.notify_memory_tool_write(first_result, first_args)
+
+    duplicate_result = memory_tool(store=store, **first_args)
+    mgr.notify_memory_tool_write(duplicate_result, first_args)
+
+    batch_args = {
+        "target": "memory",
+        "operations": [
+            {"action": "add", "content": "stable fact"},
+            {"action": "add", "content": "new fact"},
+        ],
+    }
+    batch_result = memory_tool(store=store, **batch_args)
+    mgr.notify_memory_tool_write(batch_result, batch_args)
+
+    assert [(call["action"], call["content"]) for call in provider.calls] == [
+        ("add", "stable fact"),
+        ("add", "new fact"),
     ]

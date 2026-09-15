@@ -1398,6 +1398,35 @@ class TestLifecycleGuardModule:
         )
         assert result is False
 
+    def test_nul_padded_remote_text_is_scanned_not_skipped(self):
+        """A NUL in remote callback text is not a binary signature.
+
+        The local read stopped equating "contains a NUL" with "is a compiled
+        binary" — `bash` runs a text script straight past an embedded NUL, so
+        a single pad byte used to skip the scan of a file that still executes
+        its lifecycle command. The recursion boundary kept the old rule, which
+        left the same bypass reachable through every `read_remote_script`
+        backend: one NUL anywhere in the returned text made the whole payload
+        unscannable AND safe, hiding the command sitting next to it.
+
+        No magic signature here, so this is text: strip the NULs and scan.
+        """
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        for payload in (
+            "pad\x00 hermes gateway restart\n",
+            "hermes gateway restart\n\x00trailing junk",
+            "her\x00mes gateway restart\n",
+        ):
+            result = contains_gateway_lifecycle_command_or_referenced_script(
+                "bash /nonexistent/dir/helper.sh",
+                cwd="/tmp",
+                read_remote_script=lambda _path, _p=payload: _p,
+            )
+            assert result is True, payload
+
     def test_oversized_remote_callback_text_fails_closed(self):
         """T4: >1 MiB of NUL-free text from a remote callback must follow the
         local-read contract (oversized regular file → fail closed, #76762)

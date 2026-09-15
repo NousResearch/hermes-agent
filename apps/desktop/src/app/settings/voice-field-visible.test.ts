@@ -53,4 +53,22 @@ describe('voiceFieldVisible', () => {
     // ...and not while another STT provider is selected.
     expect(voiceFieldVisible('stt.openrouter.model', cfg())).toBe(false)
   })
+
+  it('shows a command-declared provider\'s fields while it is selected', () => {
+    // Command providers are keyed one level deeper (`stt.providers.<name>.model`); the old
+    // regex read the provider as "providers", so these fields never rendered at all.
+    const selected = cfg({
+      stt: { enabled: true, provider: 'openrouter', providers: { openrouter: { type: 'command', command: 'run' } } }
+    })
+    expect(voiceFieldVisible('stt.providers.openrouter.model', selected)).toBe(true)
+
+    const otherSelected = cfg({
+      stt: { enabled: true, provider: 'groq', providers: { openrouter: { type: 'command', command: 'run' } } }
+    })
+    expect(voiceFieldVisible('stt.providers.openrouter.model', otherSelected)).toBe(false)
+
+    const ttsSide = cfg({ tts: { provider: 'mybackend', providers: { mybackend: { type: 'command', command: 'run' } } } })
+    expect(voiceFieldVisible('tts.providers.mybackend.voice', ttsSide)).toBe(true)
+    expect(voiceFieldVisible('tts.providers.mybackend.voice', cfg())).toBe(false)
+  })
 })

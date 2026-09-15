@@ -98,6 +98,28 @@ def test_desktop_stt_suggestions_cover_the_shared_catalog():
     assert not missing, f"desktop catalog is missing {missing} from OPENROUTER_STT_MODELS"
 
 
+def test_desktop_renders_the_openrouter_model_row():
+    """A schema-advertised row the desktop never lists stays invisible: ``sectionFieldEntries``
+    walks the static ``SECTIONS`` list, not the served schema. Pin the row, its free-input escape
+    hatch, and its copy (the fallback label is prettyName(lastSegment) => a bare "Model")."""
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[2]
+            / "apps/desktop/src/app/settings/constants.ts").read_text()
+
+    voice_section = text.split("id: 'voice'", 1)[1].split("id: '", 1)[0]
+    assert "'stt.openrouter.model'" in voice_section, (
+        "row missing from the Voice section - sectionFieldEntries only walks SECTIONS, so the "
+        "field would never render however the schema advertises it")
+
+    free_input = text.split("export const FREE_INPUT_KEYS", 1)[1]
+    assert "'stt.openrouter.model'" in free_input, "row must stay free-input (live catalog moves)"
+
+    assert "'stt.openrouter.model': 'OpenRouter Model'" in text, "FIELD_LABELS copy missing"
+    assert "'stt.openrouter.model': 'Vendor-prefixed OpenRouter slug" in text, (
+        "FIELD_DESCRIPTIONS copy missing")
+
+
 def test_cli_picker_catalog_is_the_shared_stt_catalog():
     """No second hand-typed copy in the CLI picker."""
     from hermes_cli.tools_config_providers import STT_MODEL_CATALOG

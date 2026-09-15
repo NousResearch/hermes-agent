@@ -428,6 +428,9 @@ export const FREE_INPUT_KEYS = new Set([
 export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   model: 'Default Model',
   modelContextLength: 'Context Window',
+  // Provider-scoped voice rows: the fallback label is prettyName(lastSegment), which would render
+  // this one as a bare "Model" next to every other provider's model row.
+  'stt.openrouter.model': 'OpenRouter Model',
   fallbackProviders: 'Fallback Models',
   toolsets: 'Enabled Toolsets',
   timezone: 'Timezone',
@@ -602,6 +605,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
 export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   model: 'Used for new chats unless you pick a different model in the composer.',
   modelContextLength: "Leave at 0 to use the selected model's detected context window.",
+  'stt.openrouter.model': 'Vendor-prefixed OpenRouter slug, e.g. openai/whisper-large-v3. Audited live: meta/muse-voice-transcribe-1.0 needs 16 or 24 kHz WAV.',
   fallbackProviders: 'Backup provider:model entries to try if the default model fails.',
   display: {
     personality: 'Default assistant style for new sessions.',

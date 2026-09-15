@@ -29,6 +29,23 @@ Unlike the fail-OPEN Bot Mode flags, an unusable spec fails CLOSED. A typo in a 
 must never quietly remove a working teammate; a typo in a lock must never quietly stop protecting
 what the operator asked to protect. Refusing writes is recoverable by editing the file, which
 already requires the access the lock does not claim to stop.
+
+So the stanza is parsed into exactly three states by :func:`lock_state`, and every decision reads
+that instead of re-deriving "is it on?" from an ambient value:
+
+* ``off`` — no stanza, or ``enabled`` is a recognised false spelling. Writes proceed.
+* ``valid`` — ``enabled`` is a recognised true spelling, ``keys`` names at least one path, and a
+  ``password``, if present, is a hash this build can actually verify.
+* ``unusable`` — the operator asked for a lock this build cannot apply as written: an unrecognised
+  ``enabled`` value, no usable ``keys``, a ``password`` that is not a supported hash, or a stanza
+  that is not a mapping. Every guarded write is refused, **including while an unlock window is
+  open**: a spec that cannot be normalised cannot be reasoned about, and a window opened against
+  one cannot be shown to have authorised anything. Recovery is editing the root ``config.yaml``.
+
+An unlock window is therefore authority over ONE lock generation, not over "the lock" in general.
+The receipt carries a fingerprint of the exact normalised spec (patterns + password hash) it was
+opened against, and lapses the moment that changes — so unlocking lock A and then replacing it with
+lock B does not leave B unlocked with B's password never verified.
 """
 
 from __future__ import annotations
@@ -41,8 +58,9 @@ import logging
 import os
 import secrets
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -101,13 +119,39 @@ def lock_spec(home: Path | str | None = None) -> dict:
     return section if isinstance(section, dict) else {}
 
 
-def is_enabled(spec: dict) -> bool:
-    value = spec.get("enabled")
+# The YAML spellings an operator may reasonably write. Anything else is a typo, and a typo in a
+# lock is not a decision to switch it off — see ``_enabled_state``.
+_TRUE_WORDS = ("1", "true", "yes", "on")
+_FALSE_WORDS = ("0", "false", "no", "off")
+
+
+def _enabled_state(value: Any) -> str:
+    """``"on"`` | ``"off"`` | ``"invalid"`` — never collapse an unrecognised value to "off".
+
+    ``enabled: maybe`` used to be indistinguishable from an explicit disable, which made a typo in
+    the one field that arms the lock silently unarm it. A value this function cannot recognise is
+    reported as ``invalid`` so the caller can refuse writes instead of proceeding.
+    """
+    if value is None:
+        return "off"
     if isinstance(value, bool):
-        return value
+        return "on" if value else "off"
+    # bool is a subclass of int, so this only sees real integers.
     if isinstance(value, int):
-        return value == 1
-    return isinstance(value, str) and value.strip().lower() in ("1", "true", "yes", "on")
+        return "on" if value == 1 else ("off" if value == 0 else "invalid")
+    if isinstance(value, str):
+        word = value.strip().lower()
+        if word in _TRUE_WORDS:
+            return "on"
+        if word in _FALSE_WORDS or not word:
+            return "off"
+    return "invalid"
+
+
+def is_enabled(spec: dict) -> bool:
+    """Whether the lock is armed. ``False`` for both "off" and "unusable" — callers deciding
+    whether to REFUSE a write must use :func:`lock_state`, which separates the two."""
+    return _enabled_state(spec.get("enabled")) == "on"
 
 
 # The lock always protects itself. Without this, the front doors it guards would each be one
@@ -130,12 +174,59 @@ def locked_patterns(spec: dict) -> tuple[str, ...]:
     return configured + (SELF_PATTERN,)
 
 
-def spec_is_unusable(spec: dict) -> bool:
-    """True when the operator asked for a lock but named nothing usable to lock."""
+def _unusable_reason(spec: dict) -> str:
+    """Why an armed lock cannot be applied as written, or ``""`` when it can."""
     raw = spec.get("keys")
     configured = [entry for entry in raw
                   if isinstance(entry, str) and entry.strip()] if isinstance(raw, list) else []
-    return is_enabled(spec) and not configured
+    if not configured:
+        return f"{LOCK_SECTION}.keys is empty or not a list of paths"
+    if _password_state(spec.get("password")) == "invalid":
+        # A password this build cannot verify must never degrade to "no password required".
+        return (f"{LOCK_SECTION}.password is not a hash this build can verify "
+                f"(expected `{_HASH_SCHEME}$n$r$p$salt$hash`, as written by `hermes config lock`)")
+    return ""
+
+
+def spec_is_unusable(spec: dict) -> bool:
+    """True when the operator asked for a lock this build cannot apply as written."""
+    state = _enabled_state(spec.get("enabled"))
+    if state == "invalid":
+        return True
+    return state == "on" and bool(_unusable_reason(spec))
+
+
+@dataclass(frozen=True)
+class LockState:
+    """The parsed stanza: ``status`` is ``"off"``, ``"valid"`` or ``"unusable"``."""
+
+    status: str
+    spec: dict
+    reason: str = ""
+
+
+def lock_state(home: Path | str | None = None) -> LockState:
+    """Parse the root stanza into its one authoritative state.
+
+    Every policy decision reads this — never ``is_enabled`` alone, which cannot tell an explicit
+    disable from a value it failed to recognise.
+    """
+    root = hermes_root(home)
+    section = _read_root_yaml(root).get(LOCK_SECTION)
+    if section is None:
+        return LockState("off", {})
+    if not isinstance(section, dict):
+        return LockState("unusable", {},
+                         f"{LOCK_SECTION} is not a mapping of settings (got {type(section).__name__})")
+    enabled = _enabled_state(section.get("enabled"))
+    if enabled == "off":
+        return LockState("off", section)
+    if enabled == "invalid":
+        return LockState("unusable", section,
+                         f"{LOCK_SECTION}.enabled is {section.get('enabled')!r}, which is neither "
+                         f"{' / '.join(_TRUE_WORDS)} nor {' / '.join(_FALSE_WORDS)}")
+    reason = _unusable_reason(section)
+    return LockState("unusable", section, reason) if reason else LockState("valid", section)
 
 
 def path_matches(path: str, pattern: str) -> bool:
@@ -188,16 +279,49 @@ def hash_password(password: str) -> str:
     return f"{_HASH_SCHEME}${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${b64(salt)}${b64(digest)}"
 
 
-def verify_password(password: str, stored: object) -> bool:
-    """Constant-time check against a stored hash. Any malformed/absent hash verifies as False."""
-    if not isinstance(stored, str) or not password:
-        return False
-    parts = stored.split("$")
+def _parse_hash(stored: object) -> Optional[tuple[int, int, int, bytes, bytes]]:
+    """``(n, r, p, salt, digest)`` for a hash this build can verify, else ``None``.
+
+    The single parser for the stored form: :func:`verify_password` and the validity check in
+    :func:`_unusable_reason` must agree on what "a usable password" means, or a hash one of them
+    rejects would be treated as "no password set" by the other.
+    """
+    if not isinstance(stored, str):
+        return None
+    parts = stored.strip().split("$")
     if len(parts) != 6 or parts[0] != _HASH_SCHEME:
-        return False
+        return None
     try:
         n, r, p = int(parts[1]), int(parts[2]), int(parts[3])
-        salt, expected = base64.b64decode(parts[4]), base64.b64decode(parts[5])
+        salt, digest = base64.b64decode(parts[4], validate=True), base64.b64decode(parts[5], validate=True)
+    except Exception:
+        return None
+    if n < 2 or r < 1 or p < 1 or not salt or not digest:
+        return None
+    return n, r, p, salt, digest
+
+
+def _password_state(stored: object) -> str:
+    """``"absent"`` | ``"valid"`` | ``"invalid"``.
+
+    A value that is present but not a hash we can verify is ``invalid`` — never ``absent``. The
+    unlock doors only ask for a password when one is "required", so reporting a malformed hash as
+    "no password configured" would open the window to anyone who asked.
+    """
+    if stored is None:
+        return "absent"
+    if isinstance(stored, str) and not stored.strip():
+        return "absent"
+    return "valid" if _parse_hash(stored) is not None else "invalid"
+
+
+def verify_password(password: str, stored: object) -> bool:
+    """Constant-time check against a stored hash. Any malformed/absent hash verifies as False."""
+    parsed = _parse_hash(stored)
+    if parsed is None or not password:
+        return False
+    n, r, p, salt, expected = parsed
+    try:
         actual = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=n, r=r, p=p,
                                 dklen=len(expected))
     except Exception:
@@ -206,7 +330,12 @@ def verify_password(password: str, stored: object) -> bool:
 
 
 def has_password(spec: dict) -> bool:
-    return isinstance(spec.get("password"), str) and bool(spec["password"].strip())
+    """Whether unlocking this spec must present a password.
+
+    Only ever consulted for a spec :func:`lock_state` called ``valid``, where a present password is
+    a verifiable hash; a malformed one makes the whole spec unusable rather than passwordless.
+    """
+    return _password_state(spec.get("password")) == "valid"
 
 
 # ── the unlock window ────────────────────────────────────────────────────────
@@ -216,28 +345,59 @@ def unlock_path(home: Path | str | None = None) -> Path:
     return hermes_root(home) / UNLOCK_FILENAME
 
 
-def unlock_expiry(home: Path | str | None = None) -> Optional[float]:
-    """Expiry of the live unlock window, or None when there is none (or it lapsed)."""
+def spec_fingerprint(spec: dict) -> str:
+    """A stable id for one lock generation: its patterns and its password hash.
+
+    An unlock window authorises changes to the lock it was opened against — not to whatever lock
+    happens to be in the file later. Binding the receipt to this fingerprint means replacing the
+    lock (new keys, new password, cleared and recreated) lapses the window instead of handing the
+    new lock an authority nobody proved. The password hash is folded in as a SHA-256 input, so the
+    receipt never carries the stored hash itself.
+    """
+    payload = json.dumps({"keys": sorted(locked_patterns(spec)),
+                          "password": spec.get("password") if isinstance(spec.get("password"), str) else ""},
+                         sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def unlock_expiry(home: Path | str | None = None, *, spec: dict | None = None) -> Optional[float]:
+    """Expiry of the live unlock window for *spec*, or None when there is none.
+
+    None when the receipt is missing, unreadable, lapsed, or was opened against a DIFFERENT lock
+    generation — including a receipt written before this binding existed, which cannot be shown to
+    belong to any spec and so is never honoured.
+    """
+    if spec is None:
+        spec = lock_spec(home)
     try:
         data = json.loads(unlock_path(home).read_text(encoding="utf-8"))
         expires = float(data.get("expires_at") or 0)
     except (OSError, ValueError, TypeError):
         return None
-    return expires if expires > time.time() else None
+    if expires <= time.time():
+        return None
+    return expires if data.get("lock") == spec_fingerprint(spec) else None
 
 
-def is_unlocked(home: Path | str | None = None) -> bool:
-    return unlock_expiry(home) is not None
+def is_unlocked(home: Path | str | None = None, *, spec: dict | None = None) -> bool:
+    return unlock_expiry(home, spec=spec) is not None
 
 
-def begin_unlock(home: Path | str | None = None, seconds: float = DEFAULT_UNLOCK_SECONDS) -> float:
-    """Open a time-boxed unlock window and return its expiry. Caller verifies the password first."""
+def begin_unlock(home: Path | str | None = None, seconds: float = DEFAULT_UNLOCK_SECONDS,
+                 *, spec: dict | None = None) -> float:
+    """Open a time-boxed unlock window over ONE lock generation and return its expiry.
+
+    The caller verifies the password first. *spec* is the lock that authority was proven against;
+    the window lapses if it is replaced.
+    """
     from utils import atomic_json_write
 
+    if spec is None:
+        spec = lock_spec(home)
     expires = time.time() + max(1.0, float(seconds))
     path = unlock_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_json_write(path, {"expires_at": expires}, mode=0o600)
+    atomic_json_write(path, {"expires_at": expires, "lock": spec_fingerprint(spec)}, mode=0o600)
     return expires
 
 
@@ -257,14 +417,21 @@ def check_write(before: Any, after: Any, home: Path | str | None = None) -> None
     Never raises while an unlock window is live, and never for a write that leaves every locked
     path exactly as it was.
     """
-    spec = lock_spec(home)
-    if not is_enabled(spec) or is_unlocked(home):
+    state = lock_state(home)
+    if state.status == "off":
         return
-    if spec_is_unusable(spec):
+    if state.status == "unusable":
+        # No unlock-window escape here on purpose: a stanza that cannot be normalised cannot be
+        # reasoned about, and a window opened against one cannot be shown to have authorised
+        # anything (it has no fingerprint to match). Recovery is editing the root config.yaml,
+        # which this lock never claimed to stop.
         raise SettingsLockError(
-            f"settings are locked but {LOCK_SECTION}.keys is empty or not a list, so the lock "
-            f"cannot be applied — fix {LOCK_SECTION} in the root config.yaml, or set "
-            f"{LOCK_SECTION}.enabled: false")
+            f"settings are locked but the {LOCK_SECTION} stanza cannot be applied as written: "
+            f"{state.reason}. Fix {LOCK_SECTION} in the root config.yaml (or set "
+            f"{LOCK_SECTION}.enabled: false there) — every config write is refused until you do.")
+    spec = state.spec
+    if is_unlocked(home, spec=spec):
+        return
     offending = violations(before, after, spec)
     if not offending:
         return
@@ -289,13 +456,15 @@ def check_config_write(config_path: Path | str, before: Any, after: Any) -> None
 
 def describe(home: Path | str | None = None) -> dict:
     """Status for the CLI and the desktop: is it on, what is locked, is a window open."""
-    spec = lock_spec(home)
-    expires = unlock_expiry(home)
+    state = lock_state(home)
+    spec = state.spec
+    expires = unlock_expiry(home, spec=spec) if state.status == "valid" else None
     return {
-        "enabled": is_enabled(spec),
+        "enabled": state.status != "off",
         "keys": list(locked_patterns(spec)),
         "password_required": has_password(spec),
-        "unusable": spec_is_unusable(spec),
+        "unusable": state.status == "unusable",
+        "reason": state.reason,
         "unlocked": expires is not None,
         "unlocked_until": expires,
     }
@@ -303,9 +472,9 @@ def describe(home: Path | str | None = None) -> dict:
 
 def locked_leaf_paths(config: Any, home: Path | str | None = None) -> tuple[str, ...]:
     """Which existing config leaves are currently locked — what a UI greys out."""
-    spec = lock_spec(home)
-    if not is_enabled(spec):
+    state = lock_state(home)
+    if state.status != "valid":
         return ()
-    patterns = locked_patterns(spec)
+    patterns = locked_patterns(state.spec)
     return tuple(sorted(path for path in _flatten(config or {})
                         if any(path_matches(path, pattern) for pattern in patterns)))

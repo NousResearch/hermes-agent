@@ -129,6 +129,90 @@ class TestCronCommandLifecycle:
         assert jobs[0]["name"] == "Skill combo"
 
 
+class TestCronEditEmptyPrompt:
+    """CLI ``hermes cron edit --prompt`` must reject empty/whitespace so a
+    failed ``$(cat /missing)`` cannot silently wipe a job prompt.
+    """
+
+    def _parser(self):
+        parser = argparse.ArgumentParser(prog="hermes")
+        subparsers = parser.add_subparsers(dest="command")
+        build_cron_parser(subparsers, cmd_cron=cron_command)
+        return parser
+
+    def test_cron_edit_rejects_empty_prompt_when_script_remains(self, tmp_cron_dir, capsys):
+        scripts_dir = tmp_cron_dir / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "w.sh").write_text("echo hi\n", encoding="utf-8")
+        job = create_job(
+            prompt="summarize this",
+            schedule="every 5m",
+            script="w.sh",
+        )
+        args = self._parser().parse_args(["cron", "edit", job["id"], "--prompt", ""])
+        rc = cron_command(args)
+        captured = capsys.readouterr()
+        combined = f"{captured.out}\n{captured.err}"
+        assert rc == 1
+        stored = get_job(job["id"])
+        assert stored["prompt"] == "summarize this"
+        assert stored["script"] == "w.sh"
+        assert "empty" in combined.lower() or "--prompt" in combined.lower()
+
+    def test_cron_edit_rejects_whitespace_only_prompt_when_skills_remain(self, tmp_cron_dir, capsys):
+        job = create_job(
+            prompt="combine skill outputs",
+            schedule="every 1h",
+            skills=["daily-report"],
+        )
+        args = self._parser().parse_args(["cron", "edit", job["id"], "--prompt", "   "])
+        rc = cron_command(args)
+        captured = capsys.readouterr()
+        combined = f"{captured.out}\n{captured.err}"
+        assert rc == 1
+        stored = get_job(job["id"])
+        assert stored["prompt"] == "combine skill outputs"
+        assert stored["skills"] == ["daily-report"]
+        assert "empty" in combined.lower() or "--prompt" in combined.lower()
+
+    def test_cron_edit_omitted_prompt_preserves_prompt_on_schedule_change(self, tmp_cron_dir, capsys):
+        job = create_job(prompt="keep this prompt", schedule="every 1h")
+        args = self._parser().parse_args(
+            ["cron", "edit", job["id"], "--schedule", "every 2h"]
+        )
+        rc = cron_command(args)
+        assert rc == 0
+        stored = get_job(job["id"])
+        assert stored["prompt"] == "keep this prompt"
+        assert stored["schedule_display"] == "every 120m"
+
+    def test_cron_edit_nonempty_prompt_updates(self, tmp_cron_dir, capsys):
+        job = create_job(prompt="original prompt", schedule="every 1h")
+        args = self._parser().parse_args(
+            ["cron", "edit", job["id"], "--prompt", "Use the revised task"]
+        )
+        rc = cron_command(args)
+        assert rc == 0
+        stored = get_job(job["id"])
+        assert stored["prompt"] == "Use the revised task"
+
+    def test_cron_edit_empty_script_still_clears_when_prompt_remains(self, tmp_cron_dir, capsys):
+        scripts_dir = tmp_cron_dir / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "w.sh").write_text("echo hi\n", encoding="utf-8")
+        job = create_job(
+            prompt="keep this prompt",
+            schedule="every 5m",
+            script="w.sh",
+        )
+        args = self._parser().parse_args(["cron", "edit", job["id"], "--script", ""])
+        rc = cron_command(args)
+        assert rc == 0
+        stored = get_job(job["id"])
+        assert stored["prompt"] == "keep this prompt"
+        assert not stored.get("script")
+
+
 class TestUnverifiedDeliveryVisibility:
     """An evidence-free live-adapter ack (Slack/Matrix/Mattermost bare
     ``SendResult(success=True)``) is accepted as delivered, but the UNVERIFIED

@@ -97,10 +97,9 @@ def _(rid, params: dict) -> dict:
     enabled = bool(params.get("enabled"))
     cfg = load_config()
     section = cfg.setdefault("vault", {}).setdefault(name, {})
-    if enabled:
-        section.pop("enabled", None)  # detected managers are on by default; this removes the opt-out
-    else:
-        section["enabled"] = False
+    # Persist both states explicitly. The schema default is disabled, so removing the key while
+    # enabling only makes the next config load restore ``False`` and the UI switch snap back off.
+    section["enabled"] = enabled
     if not enabled:
         lock(name)
     save_config(cfg)

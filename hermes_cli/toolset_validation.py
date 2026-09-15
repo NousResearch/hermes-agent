@@ -66,7 +66,13 @@ def validate_platform_toolsets(
             continue
 
         for name in raw:
-            if not isinstance(name, str) or not name:
+            if not isinstance(name, str):
+                value_detail = "null" if name is None else type(name).__name__
+                warnings.append(
+                    f"platform '{platform}' contains invalid {value_detail} toolset value"
+                )
+                continue
+            if not name:
                 continue
             if not is_valid_toolset(name):
                 hint = f" — did you mean '{default}'?" if default_valid else ""

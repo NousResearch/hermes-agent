@@ -4,6 +4,7 @@ Tests the _handle_title_command handler (set/show session titles)
 across all gateway messenger platforms.
 """
 
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -158,7 +159,7 @@ class TestResetCommandWithTitle:
 
     @pytest.mark.asyncio
     async def test_reset_command_duplicate_title_surfaces_warning(self):
-        """/new <title> with an already-in-use title returns a warning in the reply."""
+        """/new preserves a rejected title while appending outgoing account limits."""
         from datetime import datetime
 
         from gateway.run import GatewayRunner
@@ -204,13 +205,23 @@ class TestResetCommandWithTitle:
         runner._session_db.set_session_title.side_effect = ValueError(
             "Title 'Dup' is already in use by session abc-123"
         )
-        runner._agent_cache = {}
-        runner._agent_cache_lock = None
+        old_agent = MagicMock(provider="openai-codex", base_url="https://codex.example", api_key="token")
+        runner._agent_cache = {session_key: (old_agent, "sig")}
+        runner._agent_cache_lock = threading.Lock()
         runner._is_user_authorized = lambda _source: True
         runner._format_session_info = lambda: ""
 
         event = _make_event(text="/new Dup")
-        result = await runner._handle_reset_command(event)
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(
+                "agent.account_usage.fetch_account_usage",
+                lambda provider, **kwargs: object(),
+            )
+            monkeypatch.setattr(
+                "agent.account_usage.render_account_usage_lines",
+                lambda snapshot, markdown=False: ["📈 **Account limits**", "Session: 90% remaining"],
+            )
+            result = await runner._handle_reset_command(event)
 
         runner._session_db.set_session_title.assert_called_once()
         reply = str(result)
@@ -218,6 +229,25 @@ class TestResetCommandWithTitle:
         assert "session started untitled" in reply
         # Header must NOT claim the rejected title as the session name
         assert "New session started: Dup" not in reply
+        assert "📈 **Account limits**" in reply
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("snapshot", [None, RuntimeError("provider unavailable")])
+    async def test_reset_omits_absent_or_failing_account_usage(self, snapshot):
+        """Account usage is optional: no snapshot or a fetch error leaves /new successful."""
+        from gateway.slash_commands_session import GatewaySessionCommandsMixin
+
+        agent = MagicMock(provider="openai-codex", base_url=None, api_key=None)
+        runner = object.__new__(GatewaySessionCommandsMixin)
+
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            def fetch_usage(provider, **kwargs):
+                if isinstance(snapshot, Exception):
+                    raise snapshot
+                return snapshot
+
+            monkeypatch.setattr("agent.account_usage.fetch_account_usage", fetch_usage)
+            assert await runner._reset_account_usage_lines(agent) == []
 
 
 # ---------------------------------------------------------------------------

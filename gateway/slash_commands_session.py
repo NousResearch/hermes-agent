@@ -28,6 +28,9 @@ logger = logging.getLogger("gateway.run")  # log-record parity with gateway/run.
 # Bound on the off-loop agent cleanup during /new; past it the reset proceeds and the teardown
 # finishes (or leaks) in its worker thread rather than blocking the event loop.
 _RESET_CLEANUP_TIMEOUT_S = 30.0
+# Account-usage APIs are auxiliary to /new. Bound the wait so an unavailable provider cannot
+# delay the conversation boundary or its acknowledgement.
+_RESET_ACCOUNT_USAGE_TIMEOUT_S = 10.0
 # chat_type values whose session key is per-user (DM-like), incl. the unknown/blank case.
 _DM_CHAT_TYPES = {"dm", "direct", "private", ""}
 
@@ -149,10 +152,38 @@ class GatewaySessionCommandsMixin:
         await self.hooks.emit("session:end", dict(hook_payload))
         await self.hooks.emit("session:reset", dict(hook_payload))
 
+    async def _reset_account_usage_lines(self, agent) -> list[str]:
+        """Best-effort account block for /new from the outgoing resident agent's route.
+
+        Snapshotting the route before cache eviction preserves the existing reset boundary: /new
+        neither creates an agent nor resolves a configured-provider fallback just for this banner.
+        """
+        provider = getattr(agent, "provider", None) if agent is not None else None
+        if not provider:
+            return []
+        try:
+            from agent.account_usage import fetch_account_usage, render_account_usage_lines
+
+            snapshot = await asyncio.wait_for(
+                asyncio.to_thread(
+                    fetch_account_usage,
+                    provider,
+                    base_url=getattr(agent, "base_url", None),
+                    api_key=getattr(agent, "api_key", None),
+                ),
+                timeout=_RESET_ACCOUNT_USAGE_TIMEOUT_S,
+            )
+            return render_account_usage_lines(snapshot, markdown=True) if snapshot else []
+        except Exception:
+            return []
+
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source
         session_key = self._session_key_for_source(source)
+        # Retain only the outgoing agent's immutable route fields for the optional banner. The
+        # agent itself is still cleaned up and evicted on the normal reset path below.
+        account_agent = self._resident_agent_for(session_key)
         self._invalidate_session_run_generation(session_key, reason="session_reset")
         # Evict the running-agent slot now that the generation is bumped: the in-flight run's own
         # guarded release (old generation) returns False and would leave a zombie slot that silently
@@ -218,6 +249,9 @@ class GatewaySessionCommandsMixin:
         except Exception:
             _tip_line = ""
         body = f"{header}\n\n{session_info}" if session_info else header
+        account_lines = await self._reset_account_usage_lines(account_agent)
+        if account_lines:
+            body = body + "\n\n" + "\n".join(account_lines)
         return EphemeralReply(f"{body}{_tip_line}")
 
     async def _reset_titled_header(self, header: str, session_id: str, title_arg: str) -> str:

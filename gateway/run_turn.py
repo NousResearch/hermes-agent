@@ -789,8 +789,49 @@ class GatewayTurnMixin:
         from gateway.run import _stamp_hygiene_compression_provenance
         _stamp_hygiene_compression_provenance(agent, desc, getattr(ActivityProvenance, provenance_name), debug_label)
 
-    async def _hmwa_hygiene_notify(self, source, meta, message, what):
+    def _hmwa_admit_compression_warning(self, session_key, cooldown_seconds):
+        """Allow one compression-failure notice per session cooldown window.
+
+        The cooldown itself is durable and keeps compression retries bounded.
+        This small delivery ledger prevents the companion notices from turning
+        one failed attempt into a chat burst (timeout, then abort, then
+        blocked-context). It is deliberately keyed by the rotation-stable
+        session key and expires lazily, so unrelated chats never suppress one
+        another and the map stays bounded in a long-running gateway.
+        """
+        if not session_key:
+            return True
+        now = time.monotonic()
+        deadlines = getattr(self, "_compression_warning_deadlines", None)
+        if deadlines is None:
+            deadlines = self._compression_warning_deadlines = {}
+        for key, deadline in tuple(deadlines.items()):
+            if deadline <= now:
+                deadlines.pop(key, None)
+        if deadlines.get(session_key, 0.0) > now:
+            return False
+        try:
+            duration = float(cooldown_seconds)
+        except (TypeError, ValueError):
+            duration = 0.0
+        # A short, bounded fallback also joins failures that occur before the
+        # cooldown recorder is available (e.g. a transient SessionDB outage).
+        deadlines[session_key] = now + max(duration, 60.0)
+        return True
+
+    async def _hmwa_hygiene_notify(
+        self, source, meta, message, what, *, category=None, session_key=None, cooldown_seconds=0.0,
+    ):
         """Best-effort user notice on the hygiene thread; failure is logged, never raised."""
+        if not message:
+            return
+        if category == "compression":
+            from agent.i18n import is_gateway_system_message_suppressed
+            if is_gateway_system_message_suppressed("compression"):
+                return
+            if not self._hmwa_admit_compression_warning(session_key, cooldown_seconds):
+                logger.debug("Suppressed duplicate compression notice for session %s", session_key)
+                return
         try:
             _adapter = self._adapter_for_source(source)
             if _adapter and source.chat_id:
@@ -802,11 +843,12 @@ class GatewayTurnMixin:
         """Escalate the failure streak (off-loop) and persist the cooldown, when enabled."""
         from gateway.run import _hygiene_cooldown_for_failure, _record_hygiene_cooldown
         if hs.failure_cooldown_seconds < 0:
-            return
+            return 0.0
         _hyg_cooldown = await asyncio.to_thread(
             _hygiene_cooldown_for_failure, self, session_key, hs.failure_cooldown_seconds,
         )
         _record_hygiene_cooldown(self, session_id, _hyg_cooldown, reason)
+        return _hyg_cooldown
 
     async def _hmwa_hygiene_on_turn_hold(self, attempt, hs, session_entry, session_key, source):
         """``except HygieneTurnHoldExceeded`` body: keep or cancel the worker's commit admission,
@@ -887,6 +929,8 @@ class GatewayTurnMixin:
         )
         await self._hmwa_hygiene_notify(
             source, attempt.meta, t("gateway.compress.turnhold_deferred"), "compression-turnhold notice",
+            category="compression", session_key=session_key,
+            cooldown_seconds=_HYGIENE_TURNHOLD_RETRY_SECONDS,
         )
         raise
 
@@ -907,7 +951,7 @@ class GatewayTurnMixin:
         _adopted = await self._hmwa_hygiene_cancel_or_adopt(attempt, "session hygiene timeout")
         if _adopted is not None:
             return _adopted
-        await self._hmwa_hygiene_record_failure_cooldown(
+        _hyg_cooldown = await self._hmwa_hygiene_record_failure_cooldown(
             hs, session_key, session_entry.session_id,
             "session hygiene compression " + (
                 "cancelled at commit fence" if _hyg_fence_cancelled
@@ -947,6 +991,7 @@ class GatewayTurnMixin:
                 idle_timeout=hs.timeout_seconds, progress_observed=fence.progress_observed,
             ),
             "compression-timeout warning",
+            category="compression", session_key=session_key, cooldown_seconds=_hyg_cooldown,
         )
         raise
 
@@ -1082,7 +1127,7 @@ class GatewayTurnMixin:
         ):
             await asyncio.to_thread(_reset_hygiene_failure_streak, self, session_key)
         if _hyg_aborted:
-            await self._hmwa_hygiene_record_failure_cooldown(
+            _hyg_cooldown = await self._hmwa_hygiene_record_failure_cooldown(
                 hs, session_key, session_entry.session_id,
                 "session hygiene compression cancelled at commit fence" if _hyg_fence_cancelled
                 else getattr(_comp, "_last_summary_error", None),
@@ -1101,6 +1146,7 @@ class GatewayTurnMixin:
                     "conversation is unchanged. Run /compress to retry, /reset for a clean "
                     "session, or check your auxiliary.compression model configuration.",
                     "compression-failure warning",
+                    category="compression", session_key=session_key, cooldown_seconds=_hyg_cooldown,
                 )
         # Configured aux model failed, recovered on the main model: only the user can fix that config.
         elif _comp is not None and getattr(_comp, "_last_aux_model_failure_model", None):
@@ -1112,6 +1158,8 @@ class GatewayTurnMixin:
                 "model — context is intact — but you may want to "
                 "check `auxiliary.compression.model` in config.yaml.",
                 "aux-model-fallback notice",
+                category="compression", session_key=session_key,
+                cooldown_seconds=hs.failure_cooldown_seconds,
             )
 
     async def _hmwa_hygiene_codex_compaction(self, hs, plan, history, session_entry, session_key, _hyg_runtime):

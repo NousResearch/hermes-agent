@@ -51,7 +51,7 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "ar-sa": "ar", "ar-eg": "ar", "ar-ae": "ar", "ar-ma": "ar", "ar-dz": "ar",
 }
 
-_MUTABLE_CATEGORIES = frozenset({"progress", "lifecycle", "info"})
+_MUTABLE_CATEGORIES = frozenset({"progress", "lifecycle", "info", "compression"})
 # Only notification messages whose callers treat an empty string as "do not
 # send" belong here. Errors, approvals and command replies remain visible.
 GATEWAY_MESSAGE_CATEGORIES: dict[str, str] = {
@@ -62,15 +62,6 @@ GATEWAY_MESSAGE_CATEGORIES: dict[str, str] = {
     "gateway.interrupting_task": "progress",
     "gateway.compaction_done": "progress",
     "gateway.steered_into_run": "progress",
-<<<<<<< HEAD
-=======
-    # The compaction START status is already swallowed by the gateway noise
-    # regex; this completion edge is deliberately delivered to chat instead
-    # (test_compaction_completion_notice_reaches_chat), so muting it needs
-    # this category entry — the noise filter will never do it.
-    "gateway.compaction_done": "progress",
-    # lifecycle — gateway daemon lifecycle notifications
->>>>>>> 92b3bde16c0f (feat(gateway): make the compaction-completion notice suppressible)
     "gateway.restart_success": "lifecycle",
     "gateway.gateway_online": "lifecycle",
     "gateway.shutdown_restarting": "lifecycle",
@@ -259,6 +250,16 @@ def _suppressed_categories() -> frozenset[str]:
         return _suppress_cache.setdefault(profile_key, frozen)
 
 
+def is_gateway_system_message_suppressed(category: str) -> bool:
+    """Whether the active profile muted a user-visible gateway message category.
+
+    Raw operational notices use this instead of going through ``t()``: they
+    share the same profile-scoped policy without treating arbitrary model text
+    as a suppressible system message.
+    """
+    return category in _suppressed_categories()
+
+
 class _MissingField(str):
     """A format placeholder that remains visible when an override omits data."""
 
@@ -424,4 +425,5 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
 __all__ = [
     "SUPPORTED_LANGUAGES", "DEFAULT_LANGUAGE", "GATEWAY_MESSAGE_CATEGORIES", "t", "get_language",
     "localize_gateway_message", "reset_language_cache", "agent_display_name",
+    "is_gateway_system_message_suppressed",
 ]

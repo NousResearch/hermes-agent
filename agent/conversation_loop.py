@@ -1292,6 +1292,7 @@ class _LoopState:
     _should_review_memory: Any
     _plugin_user_context: Any
     _ext_prefetch_cache: Any
+    budget_hint: Any
     # Turn-scoped state (rebound by the phases).
     messages: Any
     active_system_prompt: Any
@@ -1357,7 +1358,7 @@ class _LoopState:
 # _LoopState fields seeded from TurnContext (same name minus the leading underscore).
 _CTX_FIELDS = frozenset({
     "user_message", "original_user_message", "conversation_history", "effective_task_id", "turn_id",
-    "_should_review_memory", "_plugin_user_context", "_ext_prefetch_cache", "messages",
+    "_should_review_memory", "_plugin_user_context", "_ext_prefetch_cache", "budget_hint", "messages",
     "active_system_prompt", "current_turn_user_idx", "_preflight_compression_blocked",
 })
 # Keyword names each phase helper takes (minus ``agent``), cached per function object.

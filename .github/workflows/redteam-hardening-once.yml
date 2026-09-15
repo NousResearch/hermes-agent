@@ -1,0 +1,114 @@
+name: Workstation Red Team Hardening One Shot
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/redteam-hardening-once.yml
+
+permissions:
+  contents: write
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  apply-validate-commit:
+    if: startsWith(github.event.head_commit.message, 'chore(redteam): bootstrap hardening workflow')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout pinned main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Verify clean bootstrap checkout
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain)"
+          echo "bootstrap_sha=$(git rev-parse HEAD)"
+
+      - name: Apply audited red-team patch
+        run: python scripts/redteam_hardening_once.py
+
+      - name: Python syntax gate
+        run: |
+          python -m py_compile \
+            agent/context_compressor.py \
+            agent/tool_executor.py \
+            tools/browser_workstation.py \
+            tools/browser_tool.py \
+            tools/tool_result_storage.py \
+            tools/approval.py \
+            workstation/artifacts.py \
+            workstation/browser_supervisor.py \
+            workstation/workers.py \
+            workstation/tests/test_redteam_hardening.py
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install focused Python test environment
+        run: uv sync --locked --python 3.11 --extra dev
+
+      - name: Run focused security and reliability tests
+        run: |
+          source .venv/bin/activate
+          python -m pytest -q \
+            workstation/tests/test_redteam_hardening.py \
+            workstation/tests/test_browser_workstation_route.py \
+            workstation/tests/test_artifacts_and_verbosity.py \
+            workstation/tests/test_persistent_workers.py \
+            workstation/tests/test_browser_supervisor.py \
+            workstation/tests/test_browser_extract_items.py \
+            workstation/tests/test_workload_benchmark.py \
+            --tb=short
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: Desktop TypeScript gate
+        run: npm --prefix apps/desktop run typecheck
+
+      - name: Diff safety gate
+        run: |
+          set -euo pipefail
+          git diff --check
+          git status --short
+
+      - name: Commit validated hardening directly to main
+        run: |
+          set -euo pipefail
+          git config user.name "hermes-redteam-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add \
+            agent/context_compressor.py \
+            agent/tool_executor.py \
+            tools/browser_workstation.py \
+            tools/browser_tool.py \
+            tools/tool_result_storage.py \
+            tools/approval.py \
+            workstation/artifacts.py \
+            workstation/browser_supervisor.py \
+            workstation/workers.py \
+            apps/desktop/electron/workstation-browser-runtime.ts \
+            workstation/tests/test_redteam_hardening.py
+          git commit -m "fix(workstation): close red-team trust and durability gaps"
+          git push origin HEAD:main
+          echo "validated_commit=$(git rev-parse HEAD)"

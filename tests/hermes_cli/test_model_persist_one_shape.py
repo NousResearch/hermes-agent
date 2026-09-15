@@ -149,6 +149,18 @@ def test_provider_switch_drops_the_key_env_pointer_but_a_same_route_repick_keeps
     persist_model_selection(same_route)
     assert _model_block(seeded_home)["key_env"] == "CUSTOM_BOX_API_KEY"
 
+    # Registry providers get the pointer too (Desktop stores e.g. HERMES_CUSTOM_LMSTUDIO_API_KEY
+    # as model.key_env with provider lmstudio, #106336): a same-route model re-pick keeps it.
+    (seeded_home / "config.yaml").write_text(
+        seed.replace("provider: custom\n", "provider: lmstudio\n")
+            .replace("CUSTOM_BOX_API_KEY", "HERMES_CUSTOM_LMSTUDIO_API_KEY"), encoding="utf-8")
+    persist_model_selection(ModelSwitchResult(
+        success=True, new_model="qwen3-8b", target_provider="lmstudio",
+        base_url="http://localhost:1234/v1", api_mode="openai_chat", is_global=True))
+    block = _model_block(seeded_home)
+    assert block["default"] == "qwen3-8b"
+    assert block["key_env"] == "HERMES_CUSTOM_LMSTUDIO_API_KEY"
+
 
 def test_gateway_persists_to_the_profile_config_it_was_given(tmp_path, monkeypatch):
     """Multiplexed gateway: the write lands in the routed profile's config.yaml, never the

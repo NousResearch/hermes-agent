@@ -7,7 +7,6 @@
  */
 
 import {
-  Button,
   GlyphSpinner,
   Input,
   Select,
@@ -17,7 +16,6 @@ import {
   SelectValue,
   useQuery
 } from '@hermes/plugin-sdk'
-import { useState } from 'react'
 
 import { labeled } from './dialog-parts'
 import { botRouteKey, requestForBot, resolveBotConnectionRoute } from './routing'
@@ -119,13 +117,7 @@ interface ModelPickerProps {
 export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'gateway default' }: ModelPickerProps) {
   const { data, isLoading, error } = useModelOptions(bot)
 
-  // Hooks are ALWAYS declared up front, before any conditional return.
-  // Declaring them after a return trips React error #310.
-  const NONE = '__default__'
-  const CUSTOM = '__custom__'
   const providers = (data?.providers || []).filter(p => p && p.slug)
-  const isKnown = !value.provider || value.provider === NONE || providers.some(p => p.slug === value.provider)
-  const [useFreeText, setUseFreeText] = useState(!isKnown)
 
   if (isLoading) {
     return (
@@ -167,47 +159,6 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
     )
   }
 
-  if (useFreeText) {
-    return (
-      <div className="flex flex-col gap-2">
-        <div className="grid grid-cols-2 gap-2.5">
-          {labeled(
-            'Provider (Custom)',
-            <Input
-              onChange={event =>
-                onChange({
-                  provider: event.target.value
-                })
-              }
-              placeholder="e.g. omnirouter, inferx, 9router"
-              value={value.provider}
-            />
-          )}
-          {labeled(
-            'Model (Custom)',
-            <Input
-              onChange={event =>
-                onChange({
-                  model: event.target.value
-                })
-              }
-              placeholder="e.g. antigravity/gemini-3.6-flash-high"
-              value={value.model}
-            />
-          )}
-        </div>
-        <Button
-          className="h-6 self-start text-xs text-(--ui-text-tertiary)"
-          onClick={() => setUseFreeText(false)}
-          size="sm"
-          variant="ghost"
-        >
-          ← Back to dropdowns
-        </Button>
-      </div>
-    )
-  }
-
   const activeProvider = providers.find(p => p.slug === value.provider) || null
 
   const models = activeProvider
@@ -218,40 +169,42 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
     <div className="grid grid-cols-[1fr_1.4fr] gap-2.5">
       {labeled(
         'Provider',
-        <Select
-          onValueChange={v => {
-            if (v === NONE) {
+        <>
+          <Input
+            aria-label="Provider"
+            list="hermes-bot-provider-options"
+            onChange={event => {
+              const provider = event.target.value
+              const selected = providers.find(p => p.slug.toLowerCase() === provider.trim().toLowerCase())
+              const canonicalProvider = selected?.slug || provider
+
+              const providerModels = (selected?.models || []).map(m =>
+                typeof m === 'string' ? m : m.id || m.name || ''
+              )
+
+              const nextModel = selected
+                ? providerModels.includes(value.model)
+                  ? value.model
+                  : providerModels[0] || ''
+                : provider
+                  ? value.model
+                  : ''
+
               onChange({
-                provider: '',
-                model: ''
+                provider: canonicalProvider,
+                model: nextModel
               })
-            } else if (v === CUSTOM) {
-              setUseFreeText(true)
-            } else {
-              const prov = providers.find(p => p.slug === v)
-              const provModels = (prov?.models || []).map(m => (typeof m === 'string' ? m : m.id || m.name || ''))
-              const first = provModels[0] || ''
-              onChange({
-                provider: v,
-                model: prov && provModels.includes(value.model) ? value.model : first
-              })
-            }
-          }}
-          value={value.provider || NONE}
-        >
-          <SelectTrigger className="h-8 rounded-md">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={NONE}>Inherit (launch profile)</SelectItem>
+            }}
+            placeholder="type or choose a provider"
+            value={value.provider}
+          />
+          <datalist id="hermes-bot-provider-options">
+            <option label="Inherit (launch profile)" value="" />
             {providers.map(p => (
-              <SelectItem key={p.slug} value={p.slug}>
-                {p.name ? `${p.name} (${p.slug})` : p.slug}
-              </SelectItem>
+              <option key={p.slug} label={p.name ? `${p.name} (${p.slug})` : p.slug} value={p.slug} />
             ))}
-            <SelectItem value={CUSTOM}>✏️ Enter manually…</SelectItem>
-          </SelectContent>
-        </Select>
+          </datalist>
+        </>
       )}
       {labeled(
         'Model',

@@ -14,7 +14,10 @@ from pathlib import Path
 
 import pytest
 
-_repo = str(Path(__file__).resolve().parents[1])
+# parents[2]: this file is at tests/hermes_cli/, so parents[1] is
+# <root>/tests — inserting it would shadow the real `acp` SDK with the
+# repo's own tests/acp/ package and false-positive importorskip("acp") gates.
+_repo = str(Path(__file__).resolve().parents[2])
 if _repo not in sys.path:
     sys.path.insert(0, _repo)
 

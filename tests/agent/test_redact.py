@@ -1291,6 +1291,7 @@ class TestHermesHomePathClassification:
         monkeypatch.setattr(file_safety, "_hermes_root_path", lambda: home)
         assert _is_secret_file_arg(str(home / "config.yaml"))
         assert _is_secret_file_arg(str(home / "profiles" / "coder" / "config.yaml"))
+        assert _is_secret_file_arg(str(home / "backups" / "config" / "config.yaml.good.20260914-184559"))
         assert not _is_secret_file_arg(str(tmp_path / "proj" / "config.yaml"))
         assert not _is_secret_file_arg("config.yaml")  # relative, not resolvable to the home
 

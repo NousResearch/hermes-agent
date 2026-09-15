@@ -15,6 +15,11 @@ export interface WheelLike {
   deltaY: number
 }
 
+export interface HorizontalSwipeResult {
+  claimed: boolean
+  direction: -1 | 1 | null
+}
+
 /** macOS "smart zoom" (two-finger double-tap): a ctrl-wheel with no delta. */
 export function isSmartZoomWheel(e: WheelLike): boolean {
   return e.ctrlKey && e.deltaX === 0 && e.deltaY === 0
@@ -23,6 +28,77 @@ export function isSmartZoomWheel(e: WheelLike): boolean {
 /** Pinch-to-zoom (or ctrl + mouse wheel): a ctrl-wheel carrying a delta. */
 export function isPinchZoomWheel(e: WheelLike): boolean {
   return e.ctrlKey && (e.deltaX !== 0 || e.deltaY !== 0)
+}
+
+export const HORIZONTAL_SWIPE_THRESHOLD = 36
+export const HORIZONTAL_SWIPE_IDLE_MS = 180
+export const HORIZONTAL_SWIPE_REARM_MS = 220
+export const HORIZONTAL_SWIPE_REARM_DELTA = 8
+export const HORIZONTAL_SWIPE_REARM_FACTOR = 1.8
+
+/**
+ * Turns Chromium's horizontal trackpad wheel stream into one action per
+ * physical swipe. A fresh acceleration impulse can rearm the detector inside
+ * macOS's long momentum tail, so repeated swipes do not require pointer motion.
+ */
+export function createHorizontalSwipeDetector(
+  threshold: number = HORIZONTAL_SWIPE_THRESHOLD,
+  idleMs: number = HORIZONTAL_SWIPE_IDLE_MS
+): (event: WheelLike, now?: number) => HorizontalSwipeResult {
+  let accumulated = 0
+  let lastEventAt: number | null = null
+  let triggered = false
+  let triggeredAt: number | null = null
+  let lastMagnitude = 0
+
+  return (event: WheelLike, now: number = Date.now()): HorizontalSwipeResult => {
+    const horizontal = !event.ctrlKey && Math.abs(event.deltaX) > Math.abs(event.deltaY)
+
+    if (!horizontal) {
+      return { claimed: false, direction: null }
+    }
+
+    if (lastEventAt === null || now - lastEventAt > idleMs) {
+      accumulated = 0
+      triggered = false
+      triggeredAt = null
+      lastMagnitude = 0
+    }
+
+    lastEventAt = now
+
+    const magnitude = Math.abs(event.deltaX)
+
+    if (triggered) {
+      const freshImpulse =
+        triggeredAt !== null &&
+        now - triggeredAt >= HORIZONTAL_SWIPE_REARM_MS &&
+        magnitude >= HORIZONTAL_SWIPE_REARM_DELTA &&
+        magnitude > lastMagnitude * HORIZONTAL_SWIPE_REARM_FACTOR
+
+      lastMagnitude = magnitude
+
+      if (!freshImpulse) {
+        return { claimed: true, direction: null }
+      }
+
+      accumulated = event.deltaX
+      triggered = false
+      triggeredAt = null
+    } else {
+      accumulated += event.deltaX
+      lastMagnitude = magnitude
+    }
+
+    if (Math.abs(accumulated) < threshold) {
+      return { claimed: true, direction: null }
+    }
+
+    triggered = true
+    triggeredAt = now
+
+    return { claimed: true, direction: accumulated > 0 ? 1 : -1 }
+  }
 }
 
 export const DOUBLE_TAP_MS = 300

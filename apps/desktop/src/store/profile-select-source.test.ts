@@ -33,7 +33,7 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
-const { $activeGatewayProfile, newSessionInProfile, selectProfile } = await import('./profile')
+const { $activeGatewayProfile, $profiles, cycleProfile, newSessionInProfile, selectProfile } = await import('./profile')
 
 beforeEach(() => {
   ensureGatewayForProfile.mockClear()
@@ -42,6 +42,7 @@ beforeEach(() => {
   activeGatewayConnectionId.mockReturnValue(null)
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
+  $profiles.set([])
   // resolveConnectionForAgent is best-effort; without a bridge it resolves
   // null and the previous descriptor stays, which is fine here.
   ;(globalThis as { window?: unknown }).window = {}
@@ -82,6 +83,57 @@ describe('selectProfile', () => {
 
     await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledWith('local', 'default'))
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
+  })
+})
+
+describe('cycleProfile latest-intent navigation', () => {
+  it('advances again before the previous backend finishes loading', async () => {
+    let finishFirst!: () => void
+    ensureGatewayForProfile.mockImplementationOnce(
+      () =>
+        new Promise<undefined>(resolve => {
+          finishFirst = () => resolve(undefined)
+        })
+    )
+    $profiles.set([
+      {
+        has_env: false,
+        is_default: true,
+        model: null,
+        name: 'default',
+        path: '/tmp/default',
+        provider: null,
+        skill_count: 0
+      },
+      {
+        has_env: false,
+        is_default: false,
+        model: null,
+        name: 'alpha',
+        path: '/tmp/alpha',
+        provider: null,
+        skill_count: 0
+      },
+      {
+        has_env: false,
+        is_default: false,
+        model: null,
+        name: 'beta',
+        path: '/tmp/beta',
+        provider: null,
+        skill_count: 0
+      }
+    ])
+
+    cycleProfile(1)
+    await vi.waitFor(() => expect(ensureGatewayForProfile).toHaveBeenCalledWith('alpha'))
+
+    cycleProfile(1)
+    await vi.waitFor(() => expect(ensureGatewayForProfile).toHaveBeenCalledWith('beta'))
+    await vi.waitFor(() => expect($activeGatewayProfile.get()).toBe('beta'))
+
+    finishFirst()
+    await vi.waitFor(() => expect($activeGatewayProfile.get()).toBe('beta'))
   })
 })
 

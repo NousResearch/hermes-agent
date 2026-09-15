@@ -450,14 +450,7 @@ class TestSecretRedactionInDisplay:
 # ---------------------------------------------------------------------------
 
 class TestSchemaValidation:
-    """#34067: ``hermes config set`` must not report bare success for
-    unrecognized keys. The key IS written (arbitrary keys are supported —
-    top-level scalars bridge into os.environ for skills/external apps), but
-    a post-write notice warns that Hermes may never read it and suggests the
-    likely-intended path. Headline case: the plausible-but-wrong
-    ``gateway.discord.gateway_restart_notification`` (correct path:
-    ``discord.gateway_restart_notification``).
-    """
+    """Unknown config keys are rejected unless an explicit force is supplied."""
 
 
 
@@ -475,9 +468,19 @@ class TestSchemaValidation:
 
 
 
-    def test_force_suppresses_notice(self, _isolated_hermes_home, capsys):
-        """``--force`` writes unknown keys without the notice (scripted
-        forward-compat writes)."""
+    def test_unknown_key_refuses_before_writing(self, _isolated_hermes_home, capsys):
+        """A typo must leave the existing YAML byte-for-byte unchanged."""
+        config_path = _isolated_hermes_home / "config.yaml"
+        config_path.write_text("model: gpt-4o\n")
+
+        with pytest.raises(SystemExit):
+            set_config_value("brand_new_future_key", "value")
+
+        assert config_path.read_text() == "model: gpt-4o\n"
+        assert "not a recognized config key" in capsys.readouterr().err
+
+    def test_force_writes_unknown_key(self, _isolated_hermes_home, capsys):
+        """``--force`` preserves scripted forward-compatible writes."""
         set_config_value("brand_new_future_key", "value", force=True)
         out = capsys.readouterr().out
         assert "not a recognized config key" not in out

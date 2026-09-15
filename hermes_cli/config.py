@@ -3454,21 +3454,9 @@ def _write_user_config(config_path: Path, user_config: Dict[str, Any]) -> None:
     atomic_yaml_write(config_path, user_config, sort_keys=False)
 
 
-def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:
-    print(color(
-        f"⚠ '{key}' is not a recognized config key — it was saved anyway, "
-        "but Hermes may not read it.", Colors.YELLOW))
-    if suggestion:
-        print(color(f"  Did you mean: {suggestion}", Colors.YELLOW))
-    print(color(
-        "  (Custom top-level keys are supported and bridged to the "
-        "environment for skills/external tools. Use --force to skip "
-        "this notice.)", Colors.DIM))
-
-
 def set_config_value(key: str, value: str, force: bool = False):
     """Set a configuration value at a dotted ``key``; ``value`` is auto-coerced to bool/int/float.
-    ``force`` skips the unknown-key warning AND authorizes replacing a mapping section with a
+    ``force`` authorizes unknown keys and replacing a mapping section with a
     scalar. Without it, scalar writes over mappings are refused and bare ``model`` is redirected
     to ``model.default``."""
     if is_managed():
@@ -3493,17 +3481,16 @@ def set_config_value(key: str, value: str, force: bool = False):
         return
 
     # Canonicalize per-platform display keys BEFORE validation/coercion so both see the path the
-    # runtime reads. Unknown keys are still written (top-level scalars are bridged into os.environ
-    # for skills/external apps) but get a post-write "did you mean" hint.
+    # runtime reads.
     key, _redirect_note = _redirect_platform_display_key(key)
     if _redirect_note:
-        # Unknown-key notice (#34067): the key is still written (arbitrary keys are supported — top-level
-        # scalars are bridged into os.environ for skills and external apps), but a plausible-but-wrong
-        # dotted path like ``gateway.discord.gateway_restart_notification`` previously reported bare success
-        # and left the user debugging behavior that never changed. Warn after the write so the user gets
-        # immediate feedback plus a "did you mean" hint, without blocking legitimate unknown keys.
         print(_redirect_note)
     is_known, suggestion = _validate_config_key(key)
+    if not is_known and not force:
+        message = f"✗ '{key}' is not a recognized config key. Use --force to write it anyway."
+        if suggestion:
+            message += f" Did you mean: {suggestion}?"
+        _exit_invalid(message)
 
     # Read the RAW user config (not merged) so defaults are never dumped back; fail-closed.
     config_path = get_config_path()
@@ -3544,12 +3531,6 @@ def set_config_value(key: str, value: str, force: bool = False):
         _display_value = mask_secret(value)
     print(f"✓ Set {key} = {_display_value} in {config_path}")
     warn_unpinned_cron_jobs_after_model_config_change(key, value, user_config)
-
-    # Post-write unknown-key notice (#34067): value IS saved, but tell the user the runtime may never read
-    # it and suggest the likely-intended path.
-    if not is_known and not force:
-        _print_unknown_key_notice(key, suggestion)
-
 
 def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
     """Print a resolved configuration value. Credentials are masked unless ``--raw`` or

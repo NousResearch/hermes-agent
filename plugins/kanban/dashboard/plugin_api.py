@@ -129,6 +129,88 @@ def _require_run(conn: sqlite3.Connection, run_id: int) -> kanban_db.Run:
     return _require(kanban_db.get_run, conn, run_id, "run")
 
 
+def _worker_profile_home(profile: str) -> Path:
+    """Profile-scoped home that owns a dispatched worker's session store."""
+    from hermes_cli.profiles import resolve_profile_env
+
+    return Path(resolve_profile_env(profile))
+
+
+def _worker_context_payload(task: kanban_db.Task, *, board: str) -> dict[str, Any]:
+    """Current worker occupancy, attached by exact live PID/session identity.
+
+    ``tasks.session_id`` is the originating human conversation, not the worker.
+    The active-session lease is the existing process→session identity seam; the
+    persisted provider anchor then yields current context rather than lifetime
+    input/output counters. Any missing/stale rung fails closed to unavailable.
+    """
+    if task.status != "running" or not task.assignee or not task.worker_pid or task.current_run_id is None:
+        return {"available": False}
+
+    try:
+        from agent.usage_anchor import anchored_context_tokens
+        from hermes_cli.active_sessions import active_session_registry_snapshot
+        from hermes_state import SessionDB
+
+        profile_home = _worker_profile_home(task.assignee)
+        matches = [
+            entry for entry in active_session_registry_snapshot(profile_home, strict=True)
+            if int(entry.get("pid") or 0) == int(task.worker_pid)
+            and str(entry.get("surface") or "") == "cli"
+            and str((entry.get("metadata") or {}).get("kanban_task_id") or "") == task.id
+            and str((entry.get("metadata") or {}).get("kanban_run_id") or "") == str(task.current_run_id)
+            and str((entry.get("metadata") or {}).get("kanban_board") or "") == board
+        ]
+        if len(matches) != 1:
+            return {"available": False}
+        session_id = str(matches[0].get("session_id") or "")
+        if not session_id:
+            return {"available": False}
+
+        metadata = matches[0].get("metadata") or {}
+        context_max = int(metadata.get("context_max") or 0)
+        if context_max <= 0:
+            return {"available": False}
+
+        db = SessionDB(profile_home / "state.db", read_only=True)
+        try:
+            session = db.get_session(session_id)
+            if not session or session.get("source") != "kanban":
+                return {"available": False}
+            anchor = db.get_session_model_config_value(session_id, "_usage_anchor", None)
+            if not isinstance(anchor, dict):
+                return {"available": False}
+            base_count = int(anchor.get("base_count") or 0)
+            prompt_tokens = int(anchor.get("prompt_tokens") or 0)
+            if base_count <= 0 or prompt_tokens <= 0:
+                return {"available": False}
+            # Only the priced boundary row plus the unpriced tail are needed. A
+            # hover must not reconstruct a worker's entire (potentially huge) transcript.
+            tail = db.get_messages_as_conversation(session_id, offset=base_count - 1)
+        finally:
+            db.close()
+        # The sliced conversation starts at the priced boundary. Rebase only
+        # its position; retain the canonical fingerprint and accounting rules.
+        context_used = anchored_context_tokens(tail, {**anchor, "base_count": 1})
+        if context_used is None or context_used <= 0:
+            return {"available": False}
+
+        delta = tail[1:]
+        if delta and isinstance(delta[0], dict) and delta[0].get("role") == "assistant":
+            delta = delta[1:]
+        estimated = bool(delta)
+        return {
+            "available": True,
+            "context_used": int(context_used),
+            "context_max": context_max,
+            "estimated": estimated,
+            "source": "provider_usage_plus_estimate" if estimated else "provider_usage",
+        }
+    except Exception:
+        log.debug("kanban worker context unavailable for task %s", task.id, exc_info=True)
+        return {"available": False}
+
+
 def _require_ok(ok: bool) -> None:
     """404 when a kanban_db mutator reports the task vanished mid-request."""
     if not ok:
@@ -366,6 +448,20 @@ def get_task(
                 {"id": c.id, "title": c.title, "status": c.status, "latest_summary": child_summaries.get(c.id), "result": c.result}
                 for c in children],
             "runs": [asdict(r) for r in kanban_db.list_runs(conn, task_id, state_type=run_state_type, state_name=run_state_name)]}
+
+
+@router.get("/tasks/{task_id}/context")
+def get_task_context(task_id: str, board: Optional[str] = Query(None)):
+    """Lightweight, on-demand context occupancy for the task's current worker."""
+    resolved_board = _resolve_board(board) or kanban_db.get_current_board()
+    with closing(_conn(board=resolved_board)) as conn:
+        task = _require_task(conn, task_id)
+        identity = (task.status, task.assignee, task.worker_pid, task.current_run_id)
+        payload = _worker_context_payload(task, board=resolved_board)
+        current = _require_task(conn, task_id)
+        if identity != (current.status, current.assignee, current.worker_pid, current.current_run_id):
+            return {"available": False}
+        return payload
 
 
 # --- POST /tasks ------------------------------------------------------------

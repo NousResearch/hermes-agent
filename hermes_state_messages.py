@@ -889,26 +889,38 @@ class SessionMessagesMixin:
                 seen.add(current)
             return best if best is not None else session_id
 
-    def _fetch_conversation_rows(self, session_ids: List[str], active_clause: str, *, with_session_id: bool):
+    def _fetch_conversation_rows(
+        self, session_ids: List[str], active_clause: str, *, with_session_id: bool, offset: int = 0,
+    ):
         """``_CONVERSATION_ROW_COLUMNS`` rows for *session_ids* ORDER BY id (timestamps are not monotonic
         and would break tool-call adjacency)."""
+        if offset and len(session_ids) != 1:
+            raise ValueError("conversation offset requires exactly one session")
         return self._read_all(
             f"SELECT {'session_id, ' if with_session_id else ''}{self._CONVERSATION_ROW_COLUMNS} "
             f"FROM messages WHERE session_id IN ({_placeholders(session_ids)})"
-            f"{active_clause} ORDER BY id", tuple(session_ids))
+            f"{active_clause} ORDER BY id"
+            f"{' LIMIT -1 OFFSET ?' if offset else ''}",
+            (*session_ids, int(offset)) if offset else tuple(session_ids))
 
     def get_messages_as_conversation(self, session_id: str, include_ancestors: bool = False,
                                      include_inactive: bool = False, repair_alternation: bool = False,
                                      include_row_ids: bool = False,
-                                     include_compacted: bool = False) -> List[Dict[str, Any]]:
+                                     include_compacted: bool = False,
+                                     offset: int = 0) -> List[Dict[str, Any]]:
         """Load messages in OpenAI format. ``include_compacted`` (deduped display history) is for DISPLAY reads
         only: the model-fed restore must not regrow what compaction summarized away. ``repair_alternation``
         repairs the loaded list for LIVE REPLAY callers (a durable ``user;user`` pair would re-trigger the
         per-request repair forever), preserving summary markers before repair so derivative context
         cannot merge with an original user turn; the stored transcript is never mutated."""
+        if offset < 0:
+            raise ValueError("conversation offset must be non-negative")
+        if offset and (include_ancestors or include_compacted):
+            raise ValueError("conversation offset is incompatible with lineage/display reads")
         rows = self._fetch_conversation_rows(
             self._resume_lineage_ids(session_id) if include_ancestors else [session_id],
-            self._active_clause(include_inactive, include_compacted), with_session_id=False)
+            self._active_clause(include_inactive, include_compacted), with_session_id=False,
+            offset=offset)
         if include_compacted:
             rows = self._dedupe_display_generations(rows)
         return self._rows_to_conversation(rows, session_id=session_id, include_ancestors=include_ancestors,

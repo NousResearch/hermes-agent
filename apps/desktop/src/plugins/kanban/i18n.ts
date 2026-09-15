@@ -40,6 +40,8 @@ type KanbanMessages = {
   wontRun: string
   wontRunTip: string
   noHeartbeat: string
+  contextUsage: (used: string, max: string, estimated: boolean) => string
+  contextUnavailable: string
   expand: (label: string) => string
   collapse: (label: string) => string
   newTaskIn: (label: string) => string
@@ -253,6 +255,8 @@ export const en: KanbanMessages = {
   wontRunTip:
     'Ready cards only run once a profile is assigned. Open the card and set an assignee, or configure a default assignee in orchestration settings.',
   noHeartbeat: 'no heartbeat',
+  contextUsage: (used, max, estimated) => `Context ${used} / ${max} tokens${estimated ? ' (estimated)' : ''}`,
+  contextUnavailable: 'Context unavailable',
   expand: label => `Expand ${label}`,
   collapse: label => `Collapse ${label}`,
   newTaskIn: label => `New task in ${label}`,
@@ -465,6 +469,8 @@ const ja: KanbanMessages = {
   wontRunTip:
     'Ready のカードはプロフィールが割り当てられて初めて実行されます。カードを開いて担当を設定するか、オーケストレーション設定でデフォルトの担当を設定してください。',
   noHeartbeat: 'ハートビートなし',
+  contextUsage: (used, max, estimated) => `コンテキスト ${used} / ${max} トークン${estimated ? '（推定）' : ''}`,
+  contextUnavailable: 'コンテキストを取得できません',
   expand: label => `${label} を展開`,
   collapse: label => `${label} を折りたたむ`,
   newTaskIn: label => `${label} に新しいタスク`,
@@ -675,6 +681,8 @@ const zh: KanbanMessages = {
   wontRun: '不会运行',
   wontRunTip: '就绪卡片只有在分配了配置档后才会运行。打开卡片设置负责人，或在编排设置中配置默认负责人。',
   noHeartbeat: '无心跳',
+  contextUsage: (used, max, estimated) => `上下文 ${used} / ${max} 词元${estimated ? '（估算）' : ''}`,
+  contextUnavailable: '上下文不可用',
   expand: label => `展开 ${label}`,
   collapse: label => `折叠 ${label}`,
   newTaskIn: label => `在 ${label} 新建任务`,
@@ -883,6 +891,8 @@ const zhHant: KanbanMessages = {
   wontRun: '不會執行',
   wontRunTip: '就緒卡片只有在指派了設定檔後才會執行。開啟卡片設定負責人，或在編排設定中設定預設負責人。',
   noHeartbeat: '無心跳',
+  contextUsage: (used, max, estimated) => `內容長度 ${used} / ${max} 詞元${estimated ? '（估算）' : ''}`,
+  contextUnavailable: '內容長度不可用',
   expand: label => `展開 ${label}`,
   collapse: label => `摺疊 ${label}`,
   newTaskIn: label => `在 ${label} 新增任務`,

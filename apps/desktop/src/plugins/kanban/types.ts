@@ -21,6 +21,7 @@ export interface KanbanTask {
   warnings?: null | { count: number; highest_severity?: null | string }
   /** Worker liveness (present on running cards) — drives the arc + run clock. */
   started_at?: null | number
+  current_run_id?: null | number
   worker_pid?: null | number
   last_heartbeat_at?: null | number
 }
@@ -37,6 +38,17 @@ export interface KanbanBoard {
   latest_event_id: number
   now: number
 }
+
+/** On-demand current-context readout for the card's exact live worker. */
+export type TaskContextUsage =
+  | { available: false }
+  | {
+      available: true
+      context_used: number
+      context_max: number
+      estimated: boolean
+      source: 'provider_usage' | 'provider_usage_plus_estimate'
+    }
 
 /** A structured recovery action attached to a diagnostic. */
 export interface DiagnosticAction {

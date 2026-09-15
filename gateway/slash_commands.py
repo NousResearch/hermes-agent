@@ -891,6 +891,36 @@ class GatewaySlashCommandsMixin(
             return "Only gateway admins can change the persistent approval mode."
         # Approval checks load config dynamically; do not evict the cached agent or alter its
         # system prompt/tool schema (prompt-cache prefix is sacred).
+        if requested:
+            from hermes_cli.policy_mutation import PolicyMutationBroker
+            broker = PolicyMutationBroker()
+            session_id = self._session_key_for_source(event.source)
+            pending = broker.request(session_id, "approvals.mode", "set")
+
+            async def _on_confirm(choice: str):
+                if choice == "cancel":
+                    return "Approval mode change cancelled."
+                # The operator-input settlement point is the shared slash-confirm surface. Admin
+                # authorization above only admits the request; it never mints mutation authority.
+                from hermes_cli.policy_mutation import _operator_settlement_scope
+                confirmation_id = getattr(_on_confirm, "_policy_confirmation_id", None) or "gateway-confirm"
+                broker.record_settlement(pending.request_id, confirmation_id)
+                with _operator_settlement_scope(pending.request_id, confirmation_id):
+                    proof = broker.operator_confirm(pending.request_id)
+                return run_approval_mode_command(
+                    requested, proof=proof, session_id=pending.session_id,
+                ).message
+
+            return await self._request_slash_confirm(
+                event=event,
+                command="approvals",
+                title="/approvals",
+                message=(
+                    f"⚠️ Confirm persistent approval mode change to `{requested}`.\n\n"
+                    "Choose Approve Once to apply it, or Cancel to leave the policy unchanged."
+                ),
+                handler=_on_confirm,
+            )
         return run_approval_mode_command(requested).message
 
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:

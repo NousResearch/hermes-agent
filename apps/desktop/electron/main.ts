@@ -12424,6 +12424,14 @@ function teardownFailedLocalBackend(poolKey: string, entry: any): Promise<void> 
 // is the backendPool key when it differs from the profile name (composite
 // registry scopes) so the exit/error cleanup evicts the right entry.
 function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; poolKey?: string } = {}) {
+  // Extra `--profile default` backends race the named-profile serve + gateway
+  // on xAI's single-use refresh token (symlinked auth.json). Skip spawning
+  // default while a named profile is pinned as Desktop's primary.
+  const activeProfile = readActiveDesktopProfile()
+  if (String(profile).trim() === 'default' && activeProfile && activeProfile !== 'default') {
+    rememberLog(`Skipping extra default backend (active profile is "${activeProfile}")`)
+    return startHermes()
+  }
   return localBackendLifecycle.start(() => runPoolBackendStart(profile, entry, opts))
 }
 

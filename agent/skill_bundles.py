@@ -53,6 +53,11 @@ def _load_bundle_file(path: Path) -> Optional[Dict[str, Any]]:
     except OSError as exc:
         logger.warning("Could not read bundle %s: %s", path, exc)
         return None
+    except UnicodeError as exc:
+        # UnicodeDecodeError é ValueError (não OSError): sem este ramo, um único arquivo
+        # com byte inválido propagava e derrubava a descoberta de TODOS os bundles.
+        logger.warning("Bundle %s is not valid UTF-8: %s", path, exc)
+        return None
     except yaml.YAMLError as exc:
         logger.warning("Invalid YAML in bundle %s: %s", path, exc)
         return None

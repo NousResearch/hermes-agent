@@ -472,9 +472,38 @@ def _skill_readiness(frontmatter: Dict[str, Any], skill_name: str) -> Tuple[dict
     return fields, extras
 
 
+def _owning_search_dir(skill_md: Path, all_dirs) -> Optional[Path]:
+    """The most specific search dir containing *skill_md*, compared **lexically**.
+
+    Symlinks are deliberately NOT followed: a skill entry exposed by a root via symlink
+    belongs to that root (that is what decides same-root duplication vs cross-tier
+    shadowing), even though the file it points at lives elsewhere.
+    """
+    best: Optional[Path] = None
+    for search_dir in all_dirs:
+        with suppress(Exception):
+            if skill_md.is_relative_to(search_dir) and (
+                best is None or len(Path(search_dir).parts) > len(Path(best).parts)
+            ):
+                best = Path(search_dir)
+    return best
+
+
+def _rank_same_root_candidate(candidate, root: Optional[Path]) -> tuple:
+    """Deterministic rank for same-root duplicates: a real SKILL.md beats a legacy flat
+    ``<name>.md`` (a support note must never shadow a skill), then shallower path wins."""
+    _skill_dir, skill_md = candidate
+    is_flat = 0 if skill_md.name == "SKILL.md" else 1
+    with suppress(Exception):
+        if root is not None:
+            return (is_flat, len(skill_md.relative_to(root).parts))
+    return (is_flat, len(skill_md.parts))
+
+
 def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: list, all_dirs):
-    """Unique on-disk skill for *name*: collision refusal, project-tier precedence, quarantine
-    gate, not-found listing. ``(error_json, skill_dir, skill_md)``; skill_md set iff no error."""
+    """Unique on-disk skill for *name*: collision refusal, project-tier precedence, same-root
+    precedence, quarantine gate, not-found listing. ``(error_json, skill_dir, skill_md)``;
+    skill_md set iff no error."""
     if not all_dirs:
         return _fail(
             "Skills directory does not exist yet. It will be created on first install."), None, None
@@ -483,6 +512,29 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
         # A project skill intentionally overrides a same-named local/external skill;
         # ambiguity WITHIN the project tier still refuses.
         candidates = [c for c in candidates if _under_any(c[1], project_dirs)] or candidates
+    if len(candidates) > 1:
+        # Same-root duplication is NOT the shadowing bug class this guard exists for: when one
+        # search dir carries both ``<root>/arxiv`` and a category/legacy copy of it
+        # (``<root>/research/arxiv``, ``<root>/.../arxiv.md``), no second tier is involved, so
+        # there is nothing that could be silently shadowed — refusing would only make the skill
+        # unloadable by its bare name (measured: 106 such names in one root, breaking every
+        # bundle that declares them). Resolve deterministically, log it, and keep refusing a TRUE
+        # ambiguity (equal rank, or candidates spanning two tiers — the local-vs-external case).
+        roots = {_owning_search_dir(smd, all_dirs) for _sd, smd in candidates}
+        if len(roots) == 1 and next(iter(roots)) is not None:
+            # Non-None guard: every candidate is built from a search dir today, so an
+            # all-None set should be unreachable — but if it ever happens the "same root"
+            # claim would be unfounded and the tie-break could silently cross tiers,
+            # which is exactly what the refusal below exists to prevent.
+            root = next(iter(roots))
+            ranked = sorted(candidates, key=lambda c: _rank_same_root_candidate(c, root))
+            if _rank_same_root_candidate(ranked[0], root) != _rank_same_root_candidate(ranked[1], root):
+                logger.info(
+                    "Skill '%s': %d same-root candidates, resolved to %s (nested: %s)",
+                    name, len(candidates), ranked[0][1],
+                    "; ".join(str(smd) for _sd, smd in ranked[1:]),
+                )
+                candidates = [ranked[0]]
     if len(candidates) > 1:
         paths = [str(smd) for _, smd in candidates]
         logger.warning("Skill name collision for '%s': %d candidates — %s", name, len(candidates), "; ".join(paths))
@@ -512,12 +564,25 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
 
 def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, active_skills_dir):
     """Warn (never block) when loaded from outside the trusted dirs (project + local + external)
-    and/or when common prompt-injection patterns appear."""
+    and/or when common prompt-injection patterns appear.
+
+    Trust is decided on the path that EXPOSED the skill as well as on its real location. A root
+    that deliberately exposes a skill through a symlink (the local skills dir is largely a symlink
+    view of the library) has vouched for it; resolving first made every such skill warn —
+    measured ~2k spurious warnings per bundle-heavy session, which buries the real signal. The
+    injection-pattern check below is independent and still runs.
+    """
     trusted_dirs = [active_skills_dir.resolve()]
     with suppress(Exception):
         trusted_dirs.extend(d.resolve() for d in all_dirs)
+
+    def _exposed_under(path: Path, dirs) -> bool:
+        with suppress(Exception):
+            return any(path.is_relative_to(Path(d)) for d in dirs)
+        return False
+
     warnings = []
-    if not _under_any(skill_md, trusted_dirs):
+    if not (_under_any(skill_md, trusted_dirs) or _exposed_under(skill_md, [active_skills_dir, *all_dirs])):
         warnings.append(f"skill file is outside the trusted skills directory (~/.hermes/skills/): {skill_md}")
     if any(p in content.lower() for p in _INJECTION_PATTERNS):
         warnings.append("skill content contains patterns that may indicate prompt injection")

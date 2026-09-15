@@ -545,7 +545,7 @@ class CLIInfoMixin:
         """Best-effort discovery tip (startup + /clear); never raises."""
         try:
             from hermes_cli.tips import get_random_tip
-            _tip = get_random_tip()
+            _tip = get_random_tip(surface="cli")
             try:
                 from hermes_cli.skin_engine import get_active_skin
                 _tip_color = get_active_skin().get_color("banner_dim", "#B8860B")

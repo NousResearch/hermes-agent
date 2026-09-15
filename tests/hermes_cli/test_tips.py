@@ -1,6 +1,7 @@
 """Tests for hermes_cli/tips.py — random tip display at session start."""
 
-from hermes_cli.tips import TIPS, get_random_tip
+from hermes_cli.tips import TIPS, _tip_command_refs, _tips_for_surface, get_random_tip
+from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command
 
 
 class TestTipsCorpus:
@@ -48,3 +49,45 @@ class TestTipIntegrationInCLI:
         # Should not contain nested/broken Rich tags
         assert markup.count("[/]") == 1
         assert "[dim #B8860B]" in markup
+
+
+def test_gateway_tips_only_reference_gateway_commands() -> None:
+    gateway_tips = _tips_for_surface("gateway")
+
+    assert "busy" in GATEWAY_KNOWN_COMMANDS
+    assert len(gateway_tips) < len(TIPS)
+    for tip in gateway_tips:
+        for command in _tip_command_refs(tip):
+            if command == "command":
+                continue
+            command_def = resolve_command(command)
+            assert command_def is not None, tip
+            assert not command_def.cli_only, tip
+            assert not command_def.gateway_config_gate, tip
+
+
+def test_cli_tips_do_not_reference_gateway_only_commands() -> None:
+    cli_tips = _tips_for_surface("cli")
+    cli_tip_text = "\n".join(cli_tips)
+
+    assert "/topic in Telegram DMs" not in cli_tip_text
+    assert len(cli_tips) < len(TIPS)
+    for tip in cli_tips:
+        for command in _tip_command_refs(tip):
+            command_def = resolve_command(command)
+            assert command_def is None or not command_def.gateway_only, tip
+
+
+def test_surface_selection_never_falls_back_to_unavailable_commands(monkeypatch):
+    monkeypatch.setattr("hermes_cli.tips.TIPS", ["Try /skin", "Try /verbose"])
+    assert not _tip_command_refs(get_random_tip(surface="gateway"))
+
+
+def test_command_references_preserve_identifiers_and_filter_adjacent_commands():
+    from hermes_cli.tips import _tip_available_on_surface
+
+    assert _tip_command_refs("Use /queue/steer or /some_command") == {
+        "queue", "steer", "some_command"
+    }
+    assert not _tip_available_on_surface("Try /queue/skin", "gateway")
+    assert _tip_available_on_surface("Try /HELP", "gateway")

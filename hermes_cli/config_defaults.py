@@ -107,6 +107,11 @@ DEFAULT_CONFIG = {
         # whole call; the OpenAI SDK also retries transient errors (max_retries=2). Set 1 for fast
         # failover to fallback providers; raise to tolerate longer provider hiccups.
         "api_max_retries": 3,
+        # Mid-stream reconnect attempts when a stream drops on a transient error. Applies to both
+        # streaming paths: chat-completions and the Responses/Codex transport. 0 = no reconnect
+        # after the first attempt. The HERMES_STREAM_RETRIES env var is still honoured when this
+        # key is absent, so existing setups keep their behaviour.
+        "max_stream_retries": 2,
         # Empty-response retry guard. Empty retries re-send the full input at full price; this stops
         # re-billing deterministic empties (unsignaled refusals, zero output tokens) while failing
         # open on ambiguous evidence (missing usage, any tokens, model/provider change).

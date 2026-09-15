@@ -2670,7 +2670,22 @@ class _StreamingCall(StreamingWaitMonitor):
             finish_reason = "stop"
         return usage, finish_reason
 
+    def _model_synced_kwargs(self, next_api_kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Re-key the wire model from the agent's live runtime for this attempt.
+
+        ``api_kwargs`` is captured at construction; a mid-turn ``/model`` switch
+        rebuilds the request client from the new provider while the replayed
+        request still names the old model — the new base_url then 404s on a
+        foreign model name (#112121). Every stream (re)open re-reads the model,
+        so a switch can never send a stale model name to the new provider.
+        """
+        current = getattr(self.agent, "model", None)
+        if current and "model" in next_api_kwargs and next_api_kwargs["model"] != current:
+            return {**next_api_kwargs, "model": current}
+        return next_api_kwargs
+
     def _open_chat_stream(self, stream_kwargs: dict[str, Any]):
+        stream_kwargs = self._model_synced_kwargs(stream_kwargs)
         # Native Gemini rejects OpenAI's usage-streaming extension; so do strict endpoints that
         # already 4xx'd on it this session (``_stream_options_unsupported``, see #9705).
         if not is_native_gemini_base_url(self.agent.base_url) and not getattr(self.agent, "_stream_options_unsupported", False):
@@ -2999,7 +3014,7 @@ class _StreamingCall(StreamingWaitMonitor):
         accumulator = relay_llm.AnthropicStreamAccumulator()
 
         def _open_anthropic_stream(next_api_kwargs: dict[str, Any]):
-            final_kwargs = dict(next_api_kwargs)
+            final_kwargs = self._model_synced_kwargs(dict(next_api_kwargs))
             sanitize_anthropic_kwargs(final_kwargs, log_prefix=getattr(self.agent, "log_prefix", ""))
             manager = request_client.messages.stream(**final_kwargs)
             _stream_context["manager"] = manager

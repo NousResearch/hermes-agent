@@ -2228,9 +2228,9 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         session_db=session_db,
     )
     from cron.jobs import _normalize_job_optional_text
-    pin = _normalize_job_optional_text(job.get("model"))
-    if pin:
-        agent._fallback_pin_model = pin
+    if _normalize_job_optional_text(job.get("model")):
+        # Effective initialized model (AIAgent already normalized aliases like deepseek-chat).
+        agent._fallback_pin_model = agent.model
     return agent
 
 

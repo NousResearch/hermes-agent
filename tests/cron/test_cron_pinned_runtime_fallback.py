@@ -6,7 +6,9 @@ from cron.scheduler import run_job
 
 
 class _FakeAgent:
-    def __init__(self, **_kwargs):
+    def __init__(self, **kwargs):
+        self.model = kwargs.get("model")
+        self.provider = kwargs.get("provider")
         self.run_conversation = MagicMock(return_value={"final_response": "ok"})
 
 

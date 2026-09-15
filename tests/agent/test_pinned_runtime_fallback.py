@@ -65,3 +65,58 @@ class TestPinnedRuntimeFallback:
         assert activated is True
         assert agent.model == "pinned-model-x"
         assert agent.provider == "sinkok"
+
+    def test_deepseek_chat_alias_does_not_match_openrouter_deepseek_chat(self):
+        """Primary deepseek-chat is deepseek-flash; OpenRouter deepseek-chat is another slug."""
+        with (
+            patch("model_tools.get_tool_definitions", return_value=[]),
+            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("agent.process_bootstrap.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key",
+                base_url="https://api.deepseek.com",
+                model="deepseek-chat",
+                provider="deepseek",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                fallback_model=[{"provider": "openrouter", "model": "deepseek-chat"}],
+            )
+            agent.client = MagicMock()
+        agent._fallback_pin_model = agent.model
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "deepseek/deepseek-chat"),
+        ) as resolve:
+            activated = agent._try_activate_fallback()
+        assert agent.model == "deepseek-flash"
+        assert activated is False
+        resolve.assert_not_called()
+
+    def test_vendor_prefixed_same_model_swap_still_runs(self):
+        """gpt-5.4 pin vs openai/gpt-5.4 on openai-codex is the same identity."""
+        with (
+            patch("model_tools.get_tool_definitions", return_value=[]),
+            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("agent.process_bootstrap.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key",
+                base_url="https://api.openai.com/v1",
+                model="gpt-5.4",
+                provider="openai",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                fallback_model=[{"provider": "openai-codex", "model": "openai/gpt-5.4"}],
+            )
+            agent.client = MagicMock()
+        agent._fallback_pin_model = agent.model
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url="https://chatgpt.com/backend-api"), "gpt-5.4"),
+        ):
+            activated = agent._try_activate_fallback()
+        assert activated is True
+        assert agent.model == "gpt-5.4"

@@ -319,6 +319,28 @@ class TestToolProgressGrouping:
             == "separate"
         )
 
+    def test_progress_draft_window_is_configurable_per_platform(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "tool_progress_max_lines": 6,
+                "platforms": {"wecom": {"tool_progress_max_lines": 3}},
+            }
+        }
+        assert resolve_display_setting(config, "wecom", "tool_progress_max_lines") == 3
+        assert resolve_display_setting(config, "discord", "tool_progress_max_lines") == 6
+
+    def test_progress_draft_window_normalises_yaml_scalars(self):
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting(
+            {"display": {"tool_progress_max_lines": "3"}}, "wecom", "tool_progress_max_lines",
+        ) == 3
+        assert resolve_display_setting(
+            {"display": {"tool_progress_max_lines": "not-a-number"}}, "wecom", "tool_progress_max_lines",
+        ) == 0
+
 
 class TestReasoningStyle:
     """Per-platform reasoning render style (code | blockquote | subtext)."""
@@ -344,5 +366,3 @@ class TestLiveStatusSetting:
         from gateway.display_config import resolve_display_setting
 
         assert resolve_display_setting({}, "slack", "live_status") == "full"
-
-

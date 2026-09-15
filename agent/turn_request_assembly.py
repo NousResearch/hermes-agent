@@ -107,6 +107,7 @@ def assemble_api_request(
     agent: Any, *, messages: Any, current_turn_user_idx: Any, _ext_prefetch_cache: Any,
     _plugin_user_context: Any, moa_config: Any, active_system_prompt: Any,
     original_user_message: Any, pending_moa_prepared_request: Any, request_logger: Any,
+    message_timestamp_replay_enabled: Any,
 ) -> AssembledRequest:
     """Assemble the request in the original order. ORDER IS LOAD-BEARING: cache breakpoints
     are injected only after whitespace normalization, the orphan sweep, thinking-only drop /
@@ -121,6 +122,7 @@ def assemble_api_request(
         agent, messages, current_turn_user_idx=current_turn_user_idx,
         ext_prefetch_cache=_ext_prefetch_cache, plugin_user_context=_plugin_user_context,
         moa_config=moa_config, active_system_prompt=active_system_prompt,
+        message_timestamp_replay_enabled=message_timestamp_replay_enabled,
     )
 
     if moa_config:

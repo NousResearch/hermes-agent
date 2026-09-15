@@ -497,6 +497,67 @@ def test_recompute_ready_honours_dispatcher_failure_limit(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+def test_complete_task_structured_refusals_preserve_dependency_and_cas_invariants(
+    kanban_home, monkeypatch,
+):
+    from hermes_cli import kanban_pr_acceptance_store as acceptance_store
+
+    with kbc.connect() as conn:
+        parent_b = kb.create_task(conn, title="parent b")
+        parent_a = kb.create_task(conn, title="parent a")
+        child = kb.create_task(conn, title="child", parents=[parent_b, parent_a])
+        assert kb.block_task(conn, parent_a, reason="wait", kind="needs_input")
+        assert kb.block_task(conn, parent_b, reason="wait", kind="needs_input")
+
+        ok, refusal = kb.complete_task(conn, child, with_reason=True)
+        assert ok is False
+        assert refusal == kb.CompletionRefusal(
+            "parents_not_satisfied",
+            blocking_parents=tuple(sorted(((parent_a, "blocked"), (parent_b, "blocked")))),
+        )
+        assert kb.get_task(conn, child).status == "todo"
+
+        ok, refusal = kb.complete_task(conn, "t_missing00", with_reason=True)
+        assert (ok, refusal.code) == (False, "unknown_task")
+
+        assert kb.complete_task(conn, parent_a)
+        ok, refusal = kb.complete_task(conn, parent_a, with_reason=True)
+        assert (ok, refusal.code, refusal.task_status) == (False, "terminal_state", "done")
+
+        running = kb.create_task(conn, title="running")
+        claimed = kb.claim_task(conn, running)
+        ok, refusal = kb.complete_task(
+            conn, running, expected_run_id=claimed.current_run_id + 1, with_reason=True,
+        )
+        assert (ok, refusal.code) == (False, "run_mismatch")
+        assert kb.complete_task(conn, running, expected_run_id=claimed.current_run_id)
+
+        acceptance_task = kb.create_task(conn, title="acceptance")
+        original_prepare = acceptance_store.prepare_acceptance
+        monkeypatch.setattr(acceptance_store, "prepare_acceptance", lambda *_args: False)
+        ok, refusal = kb.complete_task(conn, acceptance_task, with_reason=True)
+        assert (ok, refusal.code) == (False, "acceptance_refused")
+        monkeypatch.setattr(acceptance_store, "prepare_acceptance", original_prepare)
+
+        successful = kb.create_task(conn, title="successful")
+        assert kb.complete_task(conn, successful, with_reason=True) == (True, None)
+
+        assert kb.complete_task(conn, parent_b)
+
+        def reopen_parent(db, task_id, expected_run_id, metadata):
+            with kb.write_txn(db):
+                db.execute("UPDATE tasks SET status='blocked' WHERE id=?", (parent_a,))
+            return original_prepare(db, task_id, expected_run_id, metadata)
+
+        monkeypatch.setattr(acceptance_store, "prepare_acceptance", reopen_parent)
+        ok, refusal = kb.complete_task(conn, child, with_reason=True)
+        assert ok is False
+        assert refusal == kb.CompletionRefusal(
+            "parents_not_satisfied", blocking_parents=((parent_a, "blocked"),),
+        )
+        assert kb.get_task(conn, child).status == "ready"
+
+
 
 
 

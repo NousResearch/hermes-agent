@@ -2921,9 +2921,12 @@ export interface Translations extends NoticeTranslations {
     voiceEngineChained: string
     voiceEngineLive: string
     voiceEngineLiveNeedsKey: string
+    voiceEngineGrok: string
+    voiceEngineGrokNeedsKey: string
     voiceEngineChangeFailed: string
     voiceEngineChainedShort: string
     voiceEngineLiveShort: string
+    voiceEngineGrokShort: string
     voiceDictation: string
     speakReplies: string
     stopSpeakingReplies: string

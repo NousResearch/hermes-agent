@@ -98,6 +98,35 @@ class TestDetectToolFailureStructured:
 
 
 
+    def test_nested_error_inside_a_success_object_is_not_a_failure(self):
+        # browser_cdp wraps a raw CDP result as {"success": True, "method", "result"}.
+        # A Runtime.evaluate that reads a page's own validation object puts that
+        # object's "error" key inside "result": data the tool read, not a failure.
+        result = json.dumps({
+            "success": True,
+            "method": "Runtime.evaluate",
+            "result": {"result": {"type": "object",
+                                  "value": {"error": ["Vul een geldig telefoonnummer in."]}}},
+        })
+        assert _detect_tool_failure("browser_cdp", result) == (False, "")
+
+    def test_success_object_with_error_word_in_a_nested_string_is_not_a_failure(self):
+        result = json.dumps({"success": True, "rows": [{"ok": False, "error": "matched 0 elements"}]})
+        assert _detect_tool_failure("browser_fill_form", result) == (False, "")
+
+    def test_top_level_error_without_success_flag_is_still_a_failure(self):
+        result = json.dumps({"error": "CDP call timed out after 30.0s", "method": "Runtime.evaluate"})
+        is_failure, suffix = _detect_tool_failure("browser_cdp", result)
+        assert is_failure is True
+        assert "timed out" in suffix
+
+    def test_plain_text_failures_still_trip_the_substring_scan(self):
+        # The substring scan is for results that are not a JSON object.
+        assert _detect_tool_failure("web_search", "Error executing tool 'web_search': boom") == (True, " [error]")
+        assert _detect_tool_failure("web_search", 'request "failed" upstream') == (True, " [error]")
+        assert _detect_tool_failure("web_search", "all good") == (False, "")
+
+
 class TestGetCuteToolMessageFailureSuffix:
     """End-to-end: failure suffix is appended by get_cute_tool_message."""
 

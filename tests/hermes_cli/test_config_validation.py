@@ -10,6 +10,40 @@ from hermes_cli.config import (
 )
 
 
+class TestKanbanWorkerRouteValidation:
+    def test_shipped_route_is_opt_in(self):
+        kanban_cfg = DEFAULT_CONFIG["kanban"]
+        assert isinstance(kanban_cfg, dict)
+        assert kanban_cfg["default_model"] == ""
+        assert kanban_cfg["default_provider"] == ""
+
+    def test_complete_route_is_valid(self):
+        issues = validate_config_structure({
+            "kanban": {
+                "default_model": "gpt-5.6-luna",
+                "default_provider": "openai-codex",
+            },
+        })
+        assert not any("kanban.default_" in issue.message for issue in issues)
+
+    def test_partial_route_is_reported(self):
+        issues = validate_config_structure({
+            "kanban": {"default_model": "gpt-5.6-luna"}
+        })
+        assert any(
+            issue.severity == "warning" and "must be set together" in issue.message
+            for issue in issues
+        )
+
+    def test_non_string_route_value_is_reported(self):
+        issues = validate_config_structure({"kanban": {"default_model": 42}})
+        assert any(
+            issue.severity == "error"
+            and "kanban.default_model must be a string" in issue.message
+            for issue in issues
+        )
+
+
 class TestCustomProvidersValidation:
     """custom_providers must be a YAML list, not a dict."""
 

@@ -151,6 +151,77 @@ def test_spawn_passes_model_and_provider(monkeypatch, tmp_path, conn):
     assert cmd[j + 1] == "openrouter"
 
 
+def test_worker_route_uses_assigned_profile_config(monkeypatch, tmp_path, conn):
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "elias"
+    profile.mkdir(parents=True)
+    profile.joinpath("config.yaml").write_text(
+        "kanban:\n  default_model: gpt-5.6-luna\n  default_provider: openai-codex\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    tid = kb.create_task(conn, title="t", assignee="elias")
+    task = kb.get_task(conn, tid)
+    assert task is not None
+
+    cmd = kbd._worker_argv(task, "elias", str(profile))
+
+    model_index = cmd.index("-m")
+    assert cmd[model_index : model_index + 4] == [
+        "-m",
+        "gpt-5.6-luna",
+        "--provider",
+        "openai-codex",
+    ]
+
+
+def test_task_route_beats_assigned_profile_default(monkeypatch, tmp_path, conn):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    profile.joinpath("config.yaml").write_text(
+        "kanban:\n  default_model: gpt-5.6-luna\n  default_provider: openai-codex\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    tid = kb.create_task(
+        conn,
+        title="t",
+        assignee="elias",
+        model_override="task-model",
+        provider_override="task-provider",
+    )
+    task = kb.get_task(conn, tid)
+    assert task is not None
+
+    cmd = kbd._worker_argv(task, "elias", str(profile))
+
+    model_index = cmd.index("-m")
+    assert cmd[model_index : model_index + 4] == [
+        "-m",
+        "task-model",
+        "--provider",
+        "task-provider",
+    ]
+
+
+def test_partial_worker_route_keeps_profile_default(monkeypatch, tmp_path, conn):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    profile.joinpath("config.yaml").write_text(
+        "kanban:\n  default_model: gpt-5.6-luna\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    tid = kb.create_task(conn, title="t", assignee="elias")
+    task = kb.get_task(conn, tid)
+    assert task is not None
+
+    cmd = kbd._worker_argv(task, "elias", str(profile))
+
+    assert "-m" not in cmd
+    assert "--provider" not in cmd
+
+
 # ---------------------------------------------------------------------------
 # Dashboard API — PATCH / bulk / create / model-options
 # ---------------------------------------------------------------------------

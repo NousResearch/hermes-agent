@@ -291,7 +291,16 @@ kanban:
                                    # comma-separated string) of profile names to
                                    # restrict which assignees this home claims;
                                    # fail-closed, an empty list claims nothing.
+  default_model: ""                 # optional worker route for this profile
+  default_provider: ""              # set both non-empty values together
 ```
+
+`default_model` and `default_provider` are an opt-in route for workers assigned
+to that profile. When both are non-empty, the dispatcher passes them only for a
+task with no explicit model/provider override. A task-level override always wins.
+Leave both empty, or clear a partial route, to preserve the assigned profile's
+normal model and provider selection. `hermes config check` warns about a partial
+route; the dispatcher ignores it rather than launching a mixed route.
 
 Override the config flag at runtime via `HERMES_KANBAN_DISPATCH_IN_GATEWAY=0`
 for debugging. Standard gateway supervision applies: run `hermes gateway

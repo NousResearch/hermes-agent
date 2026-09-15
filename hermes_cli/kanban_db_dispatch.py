@@ -2154,6 +2154,42 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+def _configured_worker_route(hermes_home: Optional[str]) -> Optional[tuple[str, str]]:
+    """Return the assigned profile's complete opt-in Kanban worker route.
+
+    The dispatcher may belong to a different profile, so read the target
+    profile's config explicitly. A missing, malformed, or partial route must
+    retain the historical behavior: let the worker resolve its own profile
+    model and provider at startup.
+    """
+    if not hermes_home:
+        return None
+    try:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_cli.config import load_config_readonly
+
+        token = set_hermes_home_override(hermes_home)
+        try:
+            kanban_cfg = (load_config_readonly() or {}).get("kanban")
+        finally:
+            reset_hermes_home_override(token)
+        if not isinstance(kanban_cfg, dict):
+            return None
+        model = kanban_cfg.get("default_model")
+        provider = kanban_cfg.get("default_provider")
+        if not isinstance(model, str) or not isinstance(provider, str):
+            return None
+        model, provider = model.strip(), provider.strip()
+        return (model, provider) if model and provider else None
+    except Exception as exc:
+        _kb._log.debug(
+            "kanban worker: could not resolve configured route for HERMES_HOME=%r (%s)",
+            hermes_home,
+            exc,
+        )
+        return None
+
+
 _retagged_workspace_roots: set[str] = set()
 
 
@@ -2206,6 +2242,10 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
         # intended backend (model X with provider Y is the classic board-stall).
         if task.provider_override:
             cmd.extend(["--provider", task.provider_override])
+    elif not task.provider_override:
+        route = _configured_worker_route(hermes_home)
+        if route:
+            cmd.extend(["-m", route[0], "--provider", route[1]])
     # Independent of the model override — a task can run the profile's own
     # model at a different depth.
     if task.reasoning_effort:

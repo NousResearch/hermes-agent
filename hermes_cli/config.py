@@ -1138,6 +1138,30 @@ def _validate_voice(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
                "Set voice.submit_mode to direct (submit immediately) or draft (edit before sending)")
 
 
+def _validate_kanban_worker_route(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
+    """Validate the optional per-profile route used for Kanban workers."""
+    kanban_cfg = config.get("kanban")
+    if kanban_cfg is None:
+        return
+    if not isinstance(kanban_cfg, dict):
+        _issue(issues, "error", f"kanban must be a mapping, got {type(kanban_cfg).__name__}",
+               "Set kanban.default_model and kanban.default_provider together, or remove kanban")
+        return
+
+    model = kanban_cfg.get("default_model")
+    provider = kanban_cfg.get("default_provider")
+    for key, value in (("default_model", model), ("default_provider", provider)):
+        if value is not None and not isinstance(value, str):
+            _issue(issues, "error", f"kanban.{key} must be a string, got {type(value).__name__}",
+                   f"Set kanban.{key} to a non-empty string, or clear it to use the profile route")
+
+    model_set = isinstance(model, str) and bool(model.strip())
+    provider_set = isinstance(provider, str) and bool(provider.strip())
+    if model_set != provider_set:
+        _issue(issues, "warning", "kanban.default_model and kanban.default_provider must be set together",
+               "Set both values to route workers, or clear both to use the assigned profile's route")
+
+
 def _validate_entry_list(
     entries: list, label: str, issues: List[ConfigIssue], fields, *, non_dict: Tuple[str, str, str],
 ) -> None:
@@ -1220,6 +1244,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
 
     issues: List[ConfigIssue] = []
     _validate_voice(config, issues)
+    _validate_kanban_worker_route(config, issues)
     cp = config.get("custom_providers")
     fb = config.get("fallback_model")
     for value, validator in ((cp, _validate_custom_providers), (fb, _validate_fallback_model)):

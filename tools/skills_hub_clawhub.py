@@ -1,5 +1,6 @@
 """Skills Hub ClawHub adapter (clawhub.ai HTTP API)."""
 
+import base64
 import hashlib
 import json
 import logging
@@ -58,6 +59,30 @@ def _first_str(*values: Any) -> Optional[str]:
     return next((v for v in values if isinstance(v, str) and v), None)
 
 
+def _normalize_sha256(value: Any) -> Optional[str]:
+    """Return a canonical full SHA-256 value, or None for advisory junk."""
+    if not isinstance(value, str):
+        return None
+    digest = value.strip()
+    hex_digest = digest.lower().removeprefix("sha256:")
+    if re.fullmatch(r"[0-9a-f]{64}", hex_digest):
+        return f"sha256:{hex_digest}"
+    if digest.startswith("sha256-"):
+        try:
+            decoded = base64.b64decode(digest.removeprefix("sha256-"), validate=True)
+        except (ValueError, TypeError):
+            return None
+        if len(decoded) == 32:
+            return f"sha256:{decoded.hex()}"
+    return None
+
+
+class _DownloadedFiles(dict):
+    """ZIP members plus the digest of the exact archive they came from."""
+
+    archive_sha256: Optional[str] = None
+
+
 class ClawHubSource(GuardedFetchMixin, SkillSource):
     """ClawHub (clawhub.ai) HTTP API. Every skill is community trust — the ClawHavoc
     incident (341 malicious skills, Feb 2026) showed their vetting is insufficient."""
@@ -93,12 +118,42 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         if not isinstance(nested, dict):
             return data
         merged = dict(nested)
-        # latestVersion and owner (needed for valid detail URLs) live beside the skill.
-        if data.get("latestVersion") is not None and "latestVersion" not in merged:
-            merged["latestVersion"] = data["latestVersion"]
-        if "owner" in data and "owner" not in merged:
-            merged["owner"] = data["owner"]
+        # Listing wrappers keep operational and registry-verdict fields beside skill.
+        for key in ("latestVersion", "owner", "decision", "reasons", "security",
+                    "checkedAt", "securityAuditUrl", "integrity", "sha256"):
+            if data.get(key) is not None and key not in merged:
+                merged[key] = data[key]
         return merged
+
+    @classmethod
+    def _registry_metadata(cls, *payloads: Any) -> Dict[str, Any]:
+        """Project optional ClawHub verdict and integrity fields without inventing values."""
+        metadata: Dict[str, Any] = {}
+        for payload in payloads:
+            if not isinstance(payload, dict):
+                continue
+            security = payload.get("security")
+            security = security if isinstance(security, dict) else {}
+            verdict = {
+                "decision": _first_str(payload.get("decision")),
+                "status": _first_str(security.get("status")),
+                "passed": security.get("passed") if isinstance(security.get("passed"), bool) else None,
+                "checked_at": _first_str(security.get("checkedAt"), payload.get("checkedAt")),
+                "audit_url": _first_str(payload.get("securityAuditUrl"), security.get("auditUrl")),
+                "reasons": payload.get("reasons") if isinstance(payload.get("reasons"), list) else None,
+            }
+            verdict = {key: value for key, value in verdict.items() if value is not None}
+            if verdict:
+                metadata["registry_security"] = verdict
+            integrity = payload.get("integrity")
+            candidates = (
+                integrity.get("sha256") if isinstance(integrity, dict) else integrity,
+                payload.get("sha256"),
+            )
+            digest = next((normalized for value in candidates if (normalized := _normalize_sha256(value))), None)
+            if digest:
+                metadata["registry_integrity"] = {"sha256": digest}
+        return metadata
 
     @staticmethod
     def _owner_from_payload(data: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -125,7 +180,8 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
             name=item.get("displayName") or item.get("name") or slug,
             description=item.get("summary") or item.get("description") or "",
             source="clawhub", identifier=slug, trust_level="community",
-            tags=cls._normalize_tags(item.get("tags", [])), extra={"owner": owner} if owner else {},
+            tags=cls._normalize_tags(item.get("tags", [])),
+            extra=({"owner": owner} if owner else {}) | cls._registry_metadata(item),
         )
 
     def _skill_detail(self, identifier: str) -> Optional[Tuple[str, Dict[str, Any]]]:
@@ -250,6 +306,7 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         # Primary: ZIP bundle from /download. Fallback: version metadata with
         # inline/raw content (files may sit under version_data["version"]).
         files = self._download_zip(slug, latest_version, owner=owner)
+        version_data: Optional[Dict[str, Any]] = None
         if "SKILL.md" not in files:
             version_data = self._get_json(
                 f"{self.BASE_URL}/skills/{slug}/versions/{latest_version}", params=owner_params,
@@ -264,8 +321,13 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
                 "ClawHub fetch for %s resolved version %s but could not retrieve file content", slug, latest_version,
             )
             return None
+        metadata = self._registry_metadata(skill_data, version_data)
+        archive_sha256 = getattr(files, "archive_sha256", None)
+        if archive_sha256:
+            metadata["download_sha256"] = archive_sha256
         return SkillBundle(name=slug, files=files, source="clawhub",
-                           identifier=f"@{owner}/{slug}" if owner else slug, trust_level="community")
+                           identifier=f"@{owner}/{slug}" if owner else slug, trust_level="community",
+                           metadata=metadata)
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         detail = self._skill_detail(identifier)
@@ -451,7 +513,7 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         return enriched
 
     def _extract_files(self, version_data: Dict[str, Any]) -> Dict[str, str]:
-        files: Dict[str, str] = {}
+        files: _DownloadedFiles = _DownloadedFiles()
         file_list = version_data.get("files")
         if isinstance(file_list, dict):
             return {k: v for k, v in file_list.items() if isinstance(v, str)}
@@ -530,6 +592,7 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
                                 return files
                             archive.write(chunk)
                         archive.seek(0)
+                        files.archive_sha256 = f"sha256:{hashlib.sha256(archive.getvalue()).hexdigest()}"
 
                 if retry_after_delay is not None:
                     if attempt < max_retries - 1:

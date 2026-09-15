@@ -168,6 +168,36 @@ def _cron_mirror_message(job: dict, text: str) -> str:
     return f"[Cron delivery: {job.get('name') or job.get('id', 'cron')}]\n{text}"
 
 
+def _record_opted_in_cron_delivery_handoff(
+    job: dict, *, brief_text: str, platform_name: str, chat_id: str,
+    thread_id: Optional[str] = None, user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> None:
+    """Best-effort scoped handoff after a successful opted-in persist. Never raises.
+
+    Delivery must never be reported failed because this bookkeeping broke — same
+    rule as the existing mirror. Only ``attach_to_session is True`` records; the
+    idle follow-up path already reloads SQLite and must stay fail-open otherwise.
+    """
+    try:
+        if job.get("attach_to_session") is not True:
+            return
+        if not session_id:
+            from gateway.mirror import _find_session_id
+            session_id = _find_session_id(
+                platform_name, str(chat_id), thread_id=thread_id, user_id=user_id,
+            )
+        from gateway.cron_delivery_handoff import record_opted_in_cron_handoff
+        record_opted_in_cron_handoff(
+            session_id=session_id, job=job, brief_text=brief_text, provenance="cron",
+        )
+    except Exception as e:
+        logger.debug(
+            "Job '%s': cron delivery handoff record failed for %s:%s: %s",
+            job.get("id", "?"), platform_name, chat_id, e,
+        )
+
+
 def _maybe_mirror_cron_delivery(
     job: dict, platform_name: str, chat_id: str, mirror_text: str, thread_id: Optional[str] = None,
     user_id: Optional[str] = None, *, enabled: bool = False,
@@ -198,6 +228,10 @@ def _maybe_mirror_cron_delivery(
             logger.info(
                 "Job '%s': mirrored delivery into %s:%s session transcript",
                 job.get("id", "?"), platform_name, chat_id)
+            _record_opted_in_cron_delivery_handoff(
+                job, brief_text=text, platform_name=platform_name, chat_id=chat_id,
+                thread_id=thread_id, user_id=user_id,
+            )
         else:
             logger.debug(
                 "Job '%s': delivery mirror skipped for %s:%s "
@@ -268,11 +302,17 @@ def _seed_cron_session(
             # bails on populated chats.
             _entry = session_store.get_or_create_session(dest_source)
             seeded_session_id = getattr(_entry, "session_id", None)
-    return mirror_to_session(
+    ok = mirror_to_session(
         platform_name, str(chat_id), _cron_mirror_message(job, text),
         source_label="cron", thread_id=thread_id, user_id=user_id, role="user",
         session_id=seeded_session_id,
     )
+    if ok:
+        _record_opted_in_cron_delivery_handoff(
+            job, brief_text=text, platform_name=platform_name, chat_id=chat_id,
+            thread_id=thread_id, user_id=user_id, session_id=seeded_session_id,
+        )
+    return ok
 
 
 def _seed_cron_thread_session(

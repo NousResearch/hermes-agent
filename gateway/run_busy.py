@@ -529,13 +529,44 @@ class GatewayBusySessionMixin:
         logger.info("Demoting busy_input_mode 'interrupt' to 'queue' for session %s because %s", session_key, why)
         return "queue"
 
+    def _attach_cron_delivery_handoff_on_redirect(
+        self, running_agent, event: Optional[MessageEvent], session_key: str,
+    ) -> None:
+        """Move a same-session opted-in cron brief onto the agent after an accepted redirect.
+
+        Quoted follow-ups, missing session identity, and unsupported runtimes are no-ops.
+        Fail-open: never raise, never rewrite ``event.text`` / redirect content.
+        """
+        try:
+            if running_agent is None or event is None:
+                return
+            if getattr(event, "reply_to_message_id", None) or getattr(event, "reply_to_text", None):
+                return
+            if getattr(running_agent, "_supports_active_turn_redirect", False) is not True:
+                return
+            store = getattr(self, "session_store", None)
+            if store is None or not session_key:
+                return
+            session_id = store.peek_session_id(session_key)
+            if not session_id:
+                return
+            from gateway.cron_delivery_handoff import (
+                attach_handoffs_to_agent, take_opted_in_cron_handoffs,
+            )
+            attach_handoffs_to_agent(running_agent, take_opted_in_cron_handoffs(session_id))
+        except Exception:
+            logger.debug("cron delivery handoff attach on redirect failed", exc_info=True)
+
     def _try_agent_verb(
         self, running_agent, verb: str, text: str, session_key: str, *, event: Optional[MessageEvent] = None
     ) -> bool:
         """Call ``running_agent.<verb>(text)`` (steer/redirect); False + warning on failure."""
         try:
             call_text = self._steer_text_with_origin(text, event) if event else text
-            return bool(getattr(running_agent, verb)(call_text))
+            accepted = bool(getattr(running_agent, verb)(call_text))
+            if accepted and verb == "redirect":
+                self._attach_cron_delivery_handoff_on_redirect(running_agent, event, session_key)
+            return accepted
         except Exception as exc:
             logger.warning("Gateway %s failed for session %s: %s", verb, session_key, exc)
             return False

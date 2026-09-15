@@ -105,6 +105,15 @@ _BROWSERS = (
         ("/usr/bin/microsoft-edge", "/usr/bin/microsoft-edge-stable",
          "/opt/microsoft/msedge/microsoft-edge", "/opt/microsoft/msedge/msedge"),
         "microsoft-edge", linux_exec=("microsoft-edge", "microsoft-edge-stable")),
+    _Browser(
+        "vivaldi", "/Applications/Vivaldi.app/Contents/MacOS/Vivaldi",
+        ("Vivaldi",), ("vivaldi.exe", "vivaldi"),
+        (("Vivaldi", "Application", "vivaldi.exe"),),
+        ("Vivaldi", "User Data"),
+        ("vivaldi", "vivaldi-stable"),
+        ("/usr/bin/vivaldi", "/usr/bin/vivaldi-stable",
+         "/opt/vivaldi/vivaldi", "/opt/vivaldi/vivaldi-stable"),
+        "vivaldi", linux_exec=("vivaldi", "vivaldi-stable")),
 )
 _BROWSER_BY_KEY = {b.key: b for b in _BROWSERS}
 
@@ -140,7 +149,13 @@ _LINUX_DESKTOP_MAP = (
     # ORDER MATTERS: ``brave-origin.desktop`` contains the bare ``brave`` fragment,
     # so the substring scan must hit the Origin entry first (#95549).
     ("brave-origin", "brave-origin"), ("brave", "brave"),
-    ("microsoft-edge", "edge"), ("com.microsoft.edge", "edge"), ("msedge", "edge"))
+    ("microsoft-edge", "edge"), ("com.microsoft.edge", "edge"), ("msedge", "edge"),
+    # Vivaldi: same Chromium core, but a fully distinct install identity
+    # (Vivaldi Technologies product path, ``com.vivaldi.Vivaldi`` bundle id) so
+    # it side-by-side installs with any other Chromium browser — its profile
+    # is under ``~/.config/vivaldi/`` and must never be conflated with
+    # Chromium's ``~/.config/chromium/`` profile (wrong-principal, #95549).
+    ("vivaldi", "vivaldi"), ("com.vivaldi.vivaldi", "vivaldi"))
 
 _LINUX_CHANNEL_FRAGMENTS = (
     "google-chrome-beta", "google-chrome-unstable", "google-chrome-canary",
@@ -162,7 +177,8 @@ _LINUX_SNAP_PROFILE_PARTS = {
 _DARWIN_BUNDLE_MAP = (
     ("com.google.chrome", "chrome"), ("com.microsoft.edgemac", "edge"),
     ("com.brave.browser", "brave"), ("com.brave.browser.origin", "brave-origin"),
-    ("org.chromium.chromium", "chromium"))
+    ("org.chromium.chromium", "chromium"),
+    ("com.vivaldi.vivaldi", "vivaldi"))
 
 _DARWIN_CHANNEL_BUNDLES = (
     "com.google.chrome.beta", "com.google.chrome.dev", "com.google.chrome.canary",

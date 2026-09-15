@@ -267,6 +267,16 @@ export async function revealDesktopPath(path: string): Promise<void> {
   }
 }
 
+// Hand a LOCAL file/folder to its OS default application (Excel, Preview, …).
+// The existing `openExternal` bridge deliberately treats `file://` URLs as
+// reveal-in-folder requests. A bare native path takes its audited `openPath`
+// route instead, including missing-file checks and reveal fallback, so keep the
+// path native here. A gateway path has no bytes on this disk; callers gate by
+// the target's captured filesystem origin before invoking this action.
+export async function openDesktopPathWithDefaultApp(path: string): Promise<void> {
+  await bridge().openExternal(path)
+}
+
 // Rename a file/folder in place; returns the new absolute path. Local only.
 export async function renameDesktopPath(path: string, newName: string): Promise<string> {
   const desktop = bridge()

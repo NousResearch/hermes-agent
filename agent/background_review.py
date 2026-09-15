@@ -216,7 +216,7 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
         "credential_pool": getattr(agent, "_credential_pool", None),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "max_tokens": getattr(agent, "max_tokens", None), "command": getattr(agent, "acp_command", None),
-        "args": list(getattr(agent, "acp_args", []) or []), "routed": False,
+        "args": list(getattr(agent, "acp_args", []) or []), "acp_cwd": getattr(agent, "acp_cwd", None), "routed": False,
     }
     task = _background_review_task_config(task_cfg)
     task_provider, task_model, task_base_url, task_api_key = (
@@ -236,7 +236,7 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
             "provider": rp.get("provider") or task_provider, "model": rp.get("model") or task_model,
             **{key: rp.get(key) for key in ("api_key", "base_url", "api_mode", "credential_pool", "command")},
             "request_overrides": dict(rp.get("request_overrides") or {}),
-            "args": list(rp.get("args") or []), "routed": True,
+            "args": list(rp.get("args") or []), "acp_cwd": rp.get("acp_cwd"), "routed": True,
         }
     except Exception as e:
         logger.debug("background-review aux routing failed (%s); using main model", e)
@@ -883,7 +883,7 @@ def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iteratio
     if isinstance(rt.get("max_tokens"), int):
         kwargs["max_tokens"] = rt["max_tokens"]
     if isinstance(rt.get("command"), str) and rt["command"]:
-        kwargs.update(acp_command=rt["command"], acp_args=rt.get("args") or [])
+        kwargs.update(acp_command=rt["command"], acp_args=rt.get("args") or [], acp_cwd=rt.get("acp_cwd"))
     if not routed:
         kwargs.update(_same_model_parity_kwargs(agent))
     elif (routed_cfg := _routed_reasoning_config(task_cfg)) is not None:

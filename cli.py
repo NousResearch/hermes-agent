@@ -2724,6 +2724,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self.api_mode = "chat_completions"
         self.acp_command: Optional[str] = None
         self.acp_args: list[str] = []
+        self.acp_cwd: Optional[str] = None
         self.base_url = (
             base_url or _startup_base_url_override or _model_config.get("base_url", "")
             or os.getenv("OPENROUTER_BASE_URL", "")

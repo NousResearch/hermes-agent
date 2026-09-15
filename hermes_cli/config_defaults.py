@@ -1240,6 +1240,7 @@ DEFAULT_CONFIG = {
         "fallback_providers": None,
         "base_url": "",  # direct OpenAI-compatible endpoint for subagents
         "api_key": "",  # key for delegation.base_url (falls back to OPENAI_API_KEY)
+        "acp_cwd": "",  # Remote ACP session directory; empty inherits the parent.
         # Wire protocol for delegation.base_url: "chat_completions" | "codex_responses" |
         # "anthropic_messages". Empty = auto-detect from URL (e.g. /anthropic suffix); set
         # explicitly for non-standard endpoints.

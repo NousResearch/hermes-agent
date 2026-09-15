@@ -274,6 +274,19 @@ delegation:
 
 If omitted, subagents use the same model as the parent.
 
+For subprocess-backed ACP providers, `model.acp_cwd` names the session directory
+on the ACP server. Children inherit it; `delegation.acp_cwd` overrides it:
+
+```yaml
+delegation:
+  provider: "copilot-acp"
+  acp_cwd: "/remote/workspace"
+```
+
+The directory need not exist locally when the command launches through SSH.
+The launcher runs in Hermes' local working directory. Switching a child to an
+HTTP provider clears the inherited ACP transport and directory.
+
 ### Cost strategy: frontier planner, inexpensive workers
 
 Decomposing a problem into well-specified subtasks takes frontier-level judgment; executing a subtask that already comes with a clear goal, full context, and an output contract usually doesn't. Meanwhile the children are where the tokens go — a parallel batch of subagents typically burns the large majority of a run's total tokens, so the worker model is where the cost actually lives. Pinning `delegation.model` to an inexpensive model while your main session stays on a frontier model keeps the planning quality where it matters and cuts spend where the volume is:

@@ -201,7 +201,7 @@ class GatewayTurnMixin:
         # Tests bind this method onto bare namespaces, so no class-level tables here.
         runtime = {
             k: runtime_kwargs.get(k) for k in (
-                "api_key", "base_url", "provider", "requested_provider", "api_mode", "command", "args",
+                "api_key", "base_url", "provider", "requested_provider", "api_mode", "command", "args", "acp_cwd",
                 "credential_pool", "max_tokens", "capabilities",
             )
         }
@@ -213,7 +213,7 @@ class GatewayTurnMixin:
             "runtime": runtime,
             "signature": (
                 model, runtime["provider"], runtime["requested_provider"], runtime["base_url"],
-                runtime["api_mode"], runtime["command"], tuple(runtime["args"]),
+                runtime["api_mode"], runtime["command"], tuple(runtime["args"]), runtime["acp_cwd"],
             ),
         }
         if getattr(self, "_service_tier", None) != "priority":

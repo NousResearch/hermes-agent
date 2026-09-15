@@ -360,6 +360,7 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
         runtime.get("base_url"), api_key, runtime.get("api_mode"),
         _merge_request_overrides(runtime.get("request_overrides"), explicit_request_overrides) or {},
         command=pinned_command, args=list(runtime.get("args") or []),
+        acp_cwd=v["acp_cwd"] or runtime.get("acp_cwd"),
     )
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
@@ -370,6 +371,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     with a user-facing message."""
     values = {k: str(cfg.get(k) or "").strip() or None for k in ("model", "provider", "base_url", "api_key")}
     values["api_mode"] = str(cfg.get("api_mode") or "").strip().lower() or None
+    values["acp_cwd"] = str(cfg.get("acp_cwd") or "").strip() or None
     explicit_request_overrides = cfg.get("request_overrides") if isinstance(cfg.get("request_overrides"), dict) else None
     is_native_sdk_provider = (values["provider"] or "").strip().lower() in _NATIVE_SDK_PROVIDERS
 
@@ -380,6 +382,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         return _credential_bundle(
             values["model"], None, None, None, None,
             _merge_request_overrides(getattr(parent_agent, "request_overrides", None), explicit_request_overrides),
+            acp_cwd=values["acp_cwd"],
         )
     return _runtime_provider_credentials(values, explicit_request_overrides)
 
@@ -438,6 +441,7 @@ def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
     override_acp_command: Optional[str], override_acp_args: Optional[List[str]],
+    override_acp_cwd: Optional[str] = None,
     routing_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
@@ -477,12 +481,14 @@ def _resolve_child_runtime(
     effective_acp_args = list(
         override_acp_args if override_acp_args is not None else (getattr(parent_agent, "acp_args", []) or [])
     )
+    effective_acp_cwd = override_acp_cwd if override_acp_cwd is not None else getattr(parent_agent, "acp_cwd", None)
     # A pinned provider must use direct API calls; inheriting the parent's ACP
     # transport would bypass the override credentials entirely.
     # Inheriting acp_command unconditionally causes run_agent.py to initialize CopilotACPClient, bypassing
     # override credentials entirely (issue #16816).
     if override_provider and not override_acp_command:
         effective_acp_command, effective_acp_args = None, []
+        effective_acp_cwd = None
     # Defensive: validate trusted delegation.command exists on PATH before honoring it. An explicitly pinned
     # transport that cannot run must fail the spawn loudly (#80450) — silently falling back to the default
     # transport would run the child somewhere the user explicitly routed it away from. Normally unreachable
@@ -511,6 +517,7 @@ def _resolve_child_runtime(
         "provider": effective_provider,
         "capabilities": _inherit_parent_capabilities(parent_agent, override_provider, override_base_url),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,
+        "acp_cwd": effective_acp_cwd,
         "reasoning_config": child_reasoning,
         # Resolve routing and recovery policy from the same configuration owner. A pinned provider, endpoint, or
         # model never borrows the parent's chain; an explicitly declared child chain still remains available.

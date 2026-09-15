@@ -286,7 +286,10 @@ class CopilotACPClient:
         self._default_headers = dict(default_headers or {})
         self._acp_command = acp_command or command or _resolve_command()
         self._acp_args = list(acp_args or args or _resolve_args())
-        self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
+        # The launcher (e.g. ssh) runs locally; session/new names the server's
+        # filesystem. Never resolve a remote path against the local host.
+        self._process_cwd = os.getcwd()
+        self._acp_cwd = acp_cwd or self._process_cwd
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
         self.is_closed, self._active_process = False, None
         self._active_process_lock = threading.Lock()
@@ -339,7 +342,7 @@ class CopilotACPClient:
             # pipes stay intact for the ACP wire.
             proc = subprocess.Popen(
                 [self._acp_command] + self._acp_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, encoding='utf-8', errors='replace', bufsize=1, cwd=self._acp_cwd, env=_build_subprocess_env(),
+                text=True, encoding='utf-8', errors='replace', bufsize=1, cwd=self._process_cwd, env=_build_subprocess_env(),
                 creationflags=windows_hide_flags(),
             )
         except FileNotFoundError as exc:

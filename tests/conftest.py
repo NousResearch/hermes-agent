@@ -589,7 +589,7 @@ def _bind_platform_native_home(_hermetic_environment, request, tmp_path, monkeyp
         return
     import hermes_constants
 
-    real_native = Path(hermes_constants._get_platform_default_hermes_home())
+    real_native = hermes_constants._get_platform_default_hermes_home()
     if not _hermes_home_under_native_home(os.environ.get("HERMES_HOME", "").strip(), real_native):
         return
     native = tmp_path / "platform-native-home"

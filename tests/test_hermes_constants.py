@@ -34,6 +34,7 @@ class TestGetDefaultHermesRoot:
     """Tests for get_default_hermes_root() — Docker/custom deployment awareness."""
 
     @pytest.mark.linux_only
+    @pytest.mark.real_platform_home  # asserts the real native fallback with HERMES_HOME unset
     def test_no_hermes_home_returns_native(self, tmp_path, monkeypatch):
         """When HERMES_HOME is not set, returns ~/.hermes."""
         monkeypatch.delenv("HERMES_HOME", raising=False)

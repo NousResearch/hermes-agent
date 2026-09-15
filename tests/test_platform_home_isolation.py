@@ -15,11 +15,11 @@ import hermes_constants
 from tests.conftest import _hermes_home_under_native_home
 
 # Captured at collection time, before any per-test fixture can redirect the resolver.
-_OPERATOR_PLATFORM_HOME = Path(hermes_constants._get_platform_default_hermes_home()).resolve()
+_OPERATOR_PLATFORM_HOME = hermes_constants._get_platform_default_hermes_home().resolve()
 
 
 def test_default_profile_root_is_never_the_operator_home():
-    """Whatever basetemp was used, the resolved default root must not be the live install."""
+    """Tripwire: bites only when basetemp sits under the native home (the shape the fixture guards)."""
     assert hermes_constants.get_default_hermes_root().resolve() != _OPERATOR_PLATFORM_HOME
 
 

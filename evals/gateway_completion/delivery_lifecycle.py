@@ -67,7 +67,6 @@ async def main():
                     effective_task_id=label,
                     task_id=label,
                     session_key=key,
-                    workdir=str(HOME),
                     cwd=str(HOME),
                     effective_pty=False,
                     notify_on_complete=notify,

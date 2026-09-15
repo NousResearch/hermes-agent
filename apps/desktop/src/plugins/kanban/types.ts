@@ -140,6 +140,10 @@ export interface BoardMeta {
   /** First-class Project the board is scoped to (id) + resolved name. */
   project_id?: null | string
   project_name?: null | string
+  /** Board-header dispatcher toggles (default true unless overridden). */
+  dispatch_enabled?: boolean
+  auto_decompose_enabled?: boolean
+  review_dispatch_enabled?: boolean
 }
 
 /** POST /boards/{slug}/export — the archive the backend wrote. */

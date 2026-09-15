@@ -76,13 +76,14 @@ import {
   fetchBoards,
   fetchProfiles,
   patchTask,
-  PROFILES_KEY
+  PROFILES_KEY,
+  updateBoard
 } from './api'
 import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
-import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
+import { columnMeta, type BoardMeta, type BoardsResponse, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
   $newTaskLane,
   ago,
@@ -943,6 +944,68 @@ function FilterMenu({
   )
 }
 
+// ── board-header toggles ────────────────────────────────────────────────────
+
+/**
+ * Dispatch/Decompose/Review toggle row — the board's dispatcher controls,
+ * next to the filter kebab. Each switch writes immediately via its own
+ * mutation (POST-onSuccess cache update, not a pre-response optimistic
+ * /onMutate snapshot — the fields are booleans with no meaningful "revert
+ * from stale snapshot" story, so onSuccess + invalidate is the simpler and
+ * correct shape here) and invalidates the boards query key on success.
+ */
+export function BoardHeaderToggles({ board }: { board: BoardMeta }) {
+  const k = useKanban()
+  const qc = useQueryClient()
+
+  const useToggle = (field: 'auto_decompose_enabled' | 'dispatch_enabled' | 'review_dispatch_enabled') =>
+    useMutation({
+      mutationFn: (checked: boolean) => updateBoard(board.slug, { [field]: checked }),
+      onError: err => host.notify({ kind: 'error', message: errText(err) }),
+      onSuccess: result => {
+        qc.setQueryData<BoardsResponse>(BOARDS_KEY, prev =>
+          prev
+            ? { ...prev, boards: prev.boards.map(b => (b.slug === board.slug ? result.board : b)) }
+            : prev
+        )
+        void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+      }
+    })
+
+  const dispatchMut = useToggle('dispatch_enabled')
+  const decomposeMut = useToggle('auto_decompose_enabled')
+  const reviewMut = useToggle('review_dispatch_enabled')
+
+  const Row = ({
+    checked,
+    label,
+    mut
+  }: {
+    checked: boolean
+    label: string
+    mut: ReturnType<typeof useToggle>
+  }) => (
+    <label className="flex cursor-pointer items-center gap-1.5 text-[0.75rem] text-(--ui-text-secondary)">
+      <Switch
+        aria-label={label}
+        checked={checked}
+        disabled={mut.isPending}
+        onCheckedChange={value => mut.mutate(value)}
+        size="xs"
+      />
+      {label}
+    </label>
+  )
+
+  return (
+    <div className="flex items-center gap-3">
+      <Row checked={board.dispatch_enabled ?? true} label={k.headerDispatch} mut={dispatchMut} />
+      <Row checked={board.auto_decompose_enabled ?? true} label={k.headerDecompose} mut={decomposeMut} />
+      <Row checked={board.review_dispatch_enabled ?? true} label={k.headerReview} mut={reviewMut} />
+    </div>
+  )
+}
+
 // ── selection bar ────────────────────────────────────────────────────────────
 
 /**
@@ -1093,6 +1156,12 @@ export function KanbanBoardPage() {
     queryKey: boardKey(slug, archived),
     refetchInterval: 60_000
   })
+
+  // Current board's metadata (dispatch toggles live here, not on `board` —
+  // that's the task-column payload). Same query the switcher reads, so a
+  // toggle flip and a board switch share one cache entry.
+  const { data: boardsResponse } = useQuery({ queryFn: fetchBoards, queryKey: BOARDS_KEY, staleTime: 30_000 })
+  const currentBoardMeta = boardsResponse?.boards.find(b => b.slug === (slug || boardsResponse.current))
 
   const [openId, setOpenId] = useState<null | string>(null)
   const [addStatus, setAddStatus] = useState<null | string>(null)
@@ -1345,6 +1414,7 @@ export function KanbanBoardPage() {
           />
         )}
         <SearchField aria-label={k.filterCards} onChange={setSearch} placeholder={k.filterCards} value={search} />
+        {currentBoardMeta && <BoardHeaderToggles board={currentBoardMeta} />}
         <div className="ml-auto flex items-center gap-1">
           <Tip label={k.orchestrationSettings}>
             <Button

@@ -98,9 +98,19 @@ def _get_plugin_env_provider(env_type: str):
 def _is_unusable_container_cwd(cwd: str) -> bool:
     """True if *cwd* is a host or relative path that can't be a container
     workdir: ``docker run -w`` needs an absolute in-sandbox path, otherwise the
-    container fails to start (exit 125). Windows drive paths aren't ``isabs``
-    on POSIX, so they're caught by the prefix check."""
-    return bool(cwd) and (_is_host_cwd(cwd) or not os.path.isabs(cwd))
+    container fails to start (exit 125). Host paths (including any Windows
+    drive) are caught by :func:`_is_host_cwd`; what is left is the requirement
+    that the path be absolute *inside the sandbox*, which is POSIX.
+
+    That last check must not be ``os.path.isabs``. ``os.path`` is ``posixpath``
+    or ``ntpath`` depending on the machine Hermes runs on, so the same string
+    gets different verdicts on different hosts -- and CPython 3.13 changed
+    ``ntpath.isabs`` to return False for a rooted path with no drive. On a
+    Windows host running 3.13+ this would start rejecting ``/workspace`` and
+    ``/root``: discarding exactly the values the guard exists to let through.
+    Asking for a leading ``/`` is the rule the sandbox actually imposes, and it
+    is the same answer everywhere."""
+    return bool(cwd) and (_is_host_cwd(cwd) or not cwd.startswith("/"))
 
 
 def _tenv(name: str, default: str = "") -> str:

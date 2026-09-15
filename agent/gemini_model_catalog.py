@@ -6,6 +6,7 @@ verified agent models. Failed pages never return a partial/authoritative catalog
 malformed individual entries are skipped.
 """
 import json
+import logging
 import time
 from urllib.parse import urlencode
 from urllib.request import Request
@@ -60,4 +61,7 @@ def fetch_models(api_key: str | None, *, timeout: float = 8.0) -> list[str] | No
             tokens.add(token)
     except Exception:
         return None  # no credential-bearing exceptions in logs
+    logging.getLogger(__name__).warning(
+        "Gemini model discovery reached its pagination limit; using the fallback catalog."
+    )
     return None

@@ -16,6 +16,9 @@ def reasoning_selection_efforts(provider: str, model: str) -> tuple[str, ...] | 
 def resolve_provider_reasoning_config(
     provider: str, model: str, config: dict | None, *, explicit: bool = False
 ) -> dict | None:
+    supported = reasoning_selection_efforts(provider, model)
+    if supported is None:
+        return config
     effort = "none" if config and config.get("enabled") is False else str((config or {}).get("effort") or "").strip().lower()
     if effort.startswith("budget:"):
         profile = get_provider_profile(provider)
@@ -30,9 +33,6 @@ def resolve_provider_reasoning_config(
         if explicit:
             raise ValueError(f"Unsupported thinking token budget for {provider}/{model}.")
         return {"enabled": True}
-    supported = reasoning_selection_efforts(provider, model)
-    if supported is None:
-        return config
     if config is None:
         return {"enabled": True}  # provider default, distinct from inheritance
     effort = "none" if config.get("enabled") is False else str(config.get("effort") or "").strip().lower()

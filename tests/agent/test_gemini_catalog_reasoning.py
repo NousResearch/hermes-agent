@@ -102,6 +102,30 @@ def test_successful_native_list_does_not_reintroduce_curated_ids(monkeypatch):
     assert models._profile_live_catalog("gemini") == []
 
 
+def test_catalog_page_limit_reports_fallback_without_sensitive_data(catalog, monkeypatch, caplog):
+    import agent.gemini_model_catalog as native
+
+    monkeypatch.setattr(native, "fetch_models_dev", models_dev.fetch_models_dev)
+    page_count = 0
+
+    def next_page(*args, **kwargs):
+        nonlocal page_count
+        page_count += 1
+        return io.StringIO(json.dumps({
+            "models": [{"name": "models/gemini-future-levels",
+                        "supportedGenerationMethods": ["generateContent"]}],
+            "nextPageToken": f"sensitive-page-token-{page_count}",
+        }))
+
+    monkeypatch.setattr(native, "open_credentialed_url", next_page)
+    assert native.fetch_models("fixture-secret-key") is None
+    assert page_count > 1
+    assert "pagination limit" in caplog.text
+    assert "fallback" in caplog.text
+    assert "fixture-secret-key" not in caplog.text
+    assert "sensitive-page-token" not in caplog.text
+
+
 @pytest.mark.parametrize("bad_entry", [
     None, {}, {"name": None}, {"name": 42}, {"name": ""},
     {"name": "models/gemini-fixed", "supportedGenerationMethods": 42},

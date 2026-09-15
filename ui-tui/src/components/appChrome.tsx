@@ -443,7 +443,7 @@ const effortLabel = (effort?: string) => {
     .trim()
     .toLowerCase()
 
-  return value && value !== 'medium' && value !== 'normal' && value !== 'default' ? value : ''
+  return value && value !== 'medium' && value !== 'normal' && value !== 'default' && value !== 'auto' ? value : ''
 }
 
 const shortModelLabel = (model: string) =>

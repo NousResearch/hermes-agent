@@ -276,6 +276,30 @@ class TestRunBoundedSync:
 
 
 class TestRunBoundedAsync:
+    def test_watchdog_margin_stays_platform_safe(self, monkeypatch):
+        intervals = []
+
+        class FakeTimer:
+            def __init__(self, interval, _callback):
+                intervals.append(interval)
+                self.daemon = False
+
+            def start(self):
+                pass
+
+            def cancel(self):
+                pass
+
+        monkeypatch.setattr(threading, "Timer", FakeTimer)
+
+        async def scenario():
+            return await run_bounded_async(asyncio.sleep(0), float("inf"), label="watchdog")
+
+        result = asyncio.run(scenario())
+        assert result.timed_out is False
+        assert intervals == [MAX_SAFE_TIMEOUT_S, MAX_SAFE_TIMEOUT_S + 5.0]
+        assert intervals[-1] <= threading.TIMEOUT_MAX
+
     def test_completion_returns_value(self):
         async def scenario():
             async def op():

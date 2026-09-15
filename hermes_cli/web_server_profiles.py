@@ -35,15 +35,26 @@ def _is_current_profile(profile: Optional[str]) -> bool:
 
 
 @contextmanager
-def _hermes_home_scope(path) -> Any:
+def _hermes_home_scope(path, *, request_scoped: bool = True) -> Any:
     """Scope ``load_config``/``save_config`` (anything resolving ``get_hermes_home()`` at call
-    time) to ``path`` for the block via the context-local HERMES_HOME override."""
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    token = set_hermes_home_override(str(path))
-    try:
+    time) to ``path`` for the block via the context-local HERMES_HOME override.
+
+    ``request_scoped`` marks the override as a web request serving ANOTHER profile's data, which
+    must not trigger a cross-profile plugin MODULE load whose registration has process-global side
+    effects (``discover_plugins``, #106608). Pass ``False`` for a scope that is this process's own
+    profile — an explicit name resolving to the process home, where the override is only a nesting
+    guard and this process's own plugins stay loadable.
+    """
+    from hermes_constants import request_scoped_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    if not request_scoped:
+        token = set_hermes_home_override(str(path))
+        try:
+            yield
+        finally:
+            reset_hermes_home_override(token)
+        return
+    with request_scoped_hermes_home(path):
         yield
-    finally:
-        reset_hermes_home_override(token)
 
 
 def _is_other_profile(profile: Optional[str]) -> bool:
@@ -242,8 +253,12 @@ def _config_profile_scope(profile: Optional[str]):
         yield None
         return
     profile_dir = _resolve_profile_dir(profile.strip())
-    with _hermes_home_scope(profile_dir):
-        yield None if profile_dir.resolve() == get_process_hermes_home().resolve() else profile_dir
+    # An explicit name for THIS process's own profile keeps current-profile semantics: the override
+    # is entered only so a nested scope cannot retain another profile, and this process's own
+    # plugins stay loadable (``request_scoped=False``).
+    is_other = profile_dir.resolve() != get_process_hermes_home().resolve()
+    with _hermes_home_scope(profile_dir, request_scoped=is_other):
+        yield profile_dir if is_other else None
 
 
 # Terminal backend picker rows — GUI counterpart of terminal.backend. Keep in sync with

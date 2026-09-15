@@ -19,6 +19,7 @@ import {
   Navigate,
   useLocation,
   useNavigate,
+  useSearchParams,
 } from "react-router";
 import {
   Activity,
@@ -373,7 +374,12 @@ const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
 export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
-  const { manifests, loading: pluginsLoading } = usePlugins();
+  // The management profile is ProfileProvider state projected onto the URL
+  // (`?profile=`). App sits ABOVE the provider, so read the URL to keep the
+  // plugin list — and the sidebar tabs it drives — scoped to the selected
+  // profile instead of the dashboard process's own (#46408).
+  const [searchParams] = useSearchParams();
+  const { manifests, loading: pluginsLoading } = usePlugins(searchParams.get("profile") ?? "");
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);

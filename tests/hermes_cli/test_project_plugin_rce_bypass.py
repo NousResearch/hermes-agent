@@ -38,6 +38,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli import web_server
+from hermes_cli.config import get_hermes_home
 import hermes_cli.web_server_dashboard as _web_server_dashboard
 
 
@@ -47,9 +48,9 @@ def _reset_plugin_cache(monkeypatch):
     cache before *and* after each test so leakage between tests can't
     mask a regression — and so the production cache the import-time
     ``_mount_plugin_api_routes()`` populated doesn't bleed in."""
-    web_server._dashboard_plugins_cache = None
+    web_server._dashboard_plugins_cache = {}
     yield
-    web_server._dashboard_plugins_cache = None
+    web_server._dashboard_plugins_cache = {}
 
 
 def _write_plugin_manifest(root: Path, name: str, manifest: dict) -> Path:
@@ -230,7 +231,7 @@ class TestMountApiRoutesRefusesUntrusted:
 
     def test_project_source_api_is_not_imported(self, tmp_path):
         plugin = self._payload_plugin(tmp_path, source="project")
-        web_server._dashboard_plugins_cache = [plugin]
+        web_server._dashboard_plugins_cache = {str(get_hermes_home()): [plugin]}
         with patch("importlib.util.spec_from_file_location") as spec:
             _web_server_dashboard._mount_plugin_api_routes()
         assert spec.call_count == 0, (
@@ -245,7 +246,7 @@ class TestMountApiRoutesRefusesUntrusted:
         file outside the dashboard dir."""
         plugin = self._payload_plugin(tmp_path, source="user",
                                        api_file="../../../tmp/evil.py")
-        web_server._dashboard_plugins_cache = [plugin]
+        web_server._dashboard_plugins_cache = {str(get_hermes_home()): [plugin]}
         with patch("importlib.util.spec_from_file_location") as spec:
             _web_server_dashboard._mount_plugin_api_routes()
         assert spec.call_count == 0

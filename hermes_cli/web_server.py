@@ -909,18 +909,28 @@ def _voice_list_error_logged_once(signature: Optional[str]) -> bool:
 
 _ACTION_LOG_FILES.setdefault("computer-use-grant", "action-computer-use-grant.log")
 
-# Cache discovered plugins per-process (refresh on explicit re-scan).
-_dashboard_plugins_cache: Optional[list] = None
+# Cache discovered plugins per-process, keyed by the resolved home so a request
+# scoped to a different profile (via ``?profile=<name>``) gets its own discovery
+# result instead of another profile's (issue #46408). Discovery now depends on the
+# task-local home (see ``_dashboard_plugin_search_dirs``), so it must not be shared
+# across profiles.
+_dashboard_plugins_cache: dict[str, list] = {}
+_dashboard_plugins_cache_lock = threading.Lock()
 
 
 def _get_dashboard_plugins(force_rescan: bool = False) -> list:
     global _dashboard_plugins_cache
-    stale = _dashboard_plugins_cache is None or force_rescan or any(
-        not Path(p["_dir"]).is_dir() for p in _dashboard_plugins_cache
-    )
-    if stale:
-        _dashboard_plugins_cache = _discover_dashboard_plugins()
-    return _dashboard_plugins_cache
+    from hermes_cli.config import get_hermes_home
+    # Cache keyed by resolved home: discovery depends on the task-local home, so a
+    # request scoped to a different profile (?profile=<name>) gets its own result
+    # and never another profile's (#46408).
+    home = str(get_hermes_home())
+    with _dashboard_plugins_cache_lock:
+        cached = _dashboard_plugins_cache.get(home)
+        if cached is None or force_rescan or any(not Path(p["_dir"]).is_dir() for p in cached):
+            cached = _discover_dashboard_plugins()
+            _dashboard_plugins_cache[home] = cached
+        return cached
 
 
 # Router mounting. ORDER IS ROUTE-MATCHING ORDER: literal paths must land before

@@ -11,10 +11,14 @@ import stat
 import sys
 from contextvars import ContextVar, Token
 from pathlib import Path
+from typing import Iterator
 
 _profile_fallback_warned: bool = False
 _UNSET = object()
 _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar("_HERMES_HOME_OVERRIDE", default=_UNSET)
+# Marks an override as belonging to a *request* scope (``is_request_scoped_hermes_home``): a web
+# request serving another profile's config/state, not a workload that owns the profile it scopes.
+_REQUEST_SCOPED_HOME: ContextVar[bool] = ContextVar("_REQUEST_SCOPED_HOME", default=False)
 
 # TUI busy-indicator styles (CLI /indicator, TUI gateway config, /help registry).
 # Keep in sync with INDICATOR_STYLES / DEFAULT_INDICATOR_STYLE in ui-tui/src/app/interfaces.ts.
@@ -40,6 +44,34 @@ def get_hermes_home_override() -> str | None:
     """Return the active context-local Hermes home override, if any."""
     override = _HERMES_HOME_OVERRIDE.get()
     return str(override) if override is not _UNSET and override else None
+
+
+def is_request_scoped_hermes_home() -> bool:
+    """Whether the active Hermes-home override belongs to a request scope.
+
+    A request scope changes which profile's config/state ONE REQUEST reads and writes; it does not
+    make the process that profile. Readers with process-global side effects must not act under one:
+    loading another profile's plugin modules registers providers in process-wide registries by name,
+    which replaces the running dashboard's own (#106608).
+    """
+    return bool(_REQUEST_SCOPED_HOME.get())
+
+
+@contextlib.contextmanager
+def request_scoped_hermes_home(path: str | Path) -> Iterator[None]:
+    """Scope ``path`` as the Hermes home for one request, marked request-scoped.
+
+    For web requests that serve another profile's data. Do NOT use it for work the process itself
+    owns: the cron external worker and a multiplexed gateway turn scope their OWN profile, and must
+    keep discovering that profile's plugins.
+    """
+    override_token = set_hermes_home_override(path)
+    scoped_token = _REQUEST_SCOPED_HOME.set(True)
+    try:
+        yield
+    finally:
+        _REQUEST_SCOPED_HOME.reset(scoped_token)
+        reset_hermes_home_override(override_token)
 
 
 def _get_platform_default_hermes_home() -> Path:

@@ -840,12 +840,14 @@ def register_method(name: str, fn) -> None:
     _methods[name] = wrapper
 
 
-def invoke(name: str, params: Params, **trusted):
-    """Call a declared raw handler for a trusted in-process path without revalidating its model."""
+def invoke(name: str, params: Params, *, rid=None, **trusted):
+    """Call a declared raw handler for a trusted in-process path without revalidating its model.
+
+    Pass the outer ``rid`` when the caller may relay the handler's error frame to the client: ``_err`` stamps it."""
     raw = getattr(_methods[name], "_hermes_raw_handler", None)
     if raw is None:
         raise RuntimeError(f"RPC handler {name!r} is not registered through register_method")
-    return raw(None, params, **trusted)
+    return raw(rid, params, **trusted)
 
 
 def method(name: str):
@@ -2220,7 +2222,7 @@ def _emit_session_info_for_session(sid: str, session: dict) -> None:
     agent = session.get("agent")
     if agent is not None or _metadata_mirror(session):
         with contextlib.suppress(Exception):
-            _emit("session.info", sid, SessionInfoPayload(**_session_info(agent, session).model_dump(mode="json")))
+            _emit("session.info", sid, SessionInfoPayload.of(_session_info(agent, session)))
 
 
 def broadcast_session_info() -> None:
@@ -2262,7 +2264,7 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
             if not added:
                 return  # discovery added nothing → don't churn the client
             info = _session_info(agent, session)
-        _emit("session.info", sid, SessionInfoPayload(**info.model_dump(mode="json")))  # outside the lock — write_json must not block under _sessions_lock
+        _emit("session.info", sid, SessionInfoPayload.of(info))  # outside the lock — write_json must not block under _sessions_lock
     threading.Thread(target=_wait_then_refresh, name=f"tui-mcp-late-refresh-{sid}", daemon=True).start()
 
 
@@ -2494,8 +2496,7 @@ def _init_session(
     _register_session_cwd(_sessions[sid])
     _wire_session_agent(sid, key, agent)  # no eager slash-worker pre-warm (see _start_agent_build)
     _start_session_services(sid, key, _sessions.get(sid, {}))
-    _emit("session.info", sid, SessionInfoPayload(**_session_info(
-        agent, _sessions.get(sid, {})).model_dump(mode="json")))
+    _emit("session.info", sid, SessionInfoPayload.of(_session_info(agent, _sessions.get(sid, {}))))
     _schedule_mcp_late_refresh(sid, agent)
 
 

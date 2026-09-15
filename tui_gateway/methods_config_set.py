@@ -36,7 +36,7 @@ def _write_display_sections(*, sections=None, drop_sections=(), **display_fields
 def _emit_session_info(sid: str, session: dict) -> None:
     agent = session.get("agent")
     if agent is not None:
-        _emit("session.info", sid, SessionInfoPayload(**_session_info(agent, session).model_dump(mode="json")))
+        _emit("session.info", sid, SessionInfoPayload.of(_session_info(agent, session)))
 
 
 def _emit_all_session_info() -> None:

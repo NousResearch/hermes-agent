@@ -10,6 +10,7 @@ import contextlib
 
 from .method_ctx import HandlerRegistry, bind_module
 from .contracts.common import SessionLiveInfo
+from .contracts.events import SessionInfoPayload
 from .contracts.sessions import SessionStatusParams
 
 _registry = HandlerRegistry()
@@ -291,7 +292,7 @@ def _compress_live_with_feedback(sid: str, session: dict, agent, arg: str, *, sn
         after_messages = list(session.get("history", []))
     after_tokens = estimate(
         after_messages, getattr(agent, "_cached_system_prompt", "") or sys_prompt, getattr(agent, "tools", None) or tools)
-    _emit("session.info", sid, SessionLiveInfo.model_validate(_session_info(agent, session)))
+    _emit("session.info", sid, SessionInfoPayload.of(_session_info(agent, session)))
     fb = summarize_manual_compression(
         before_messages, after_messages, before_tokens, after_tokens,
         compression_state=getattr(agent, "context_compressor", None))
@@ -326,7 +327,7 @@ def _mirror_fast(sid, session, agent, arg) -> None:
     if agent:
         if arg.lower() in _FAST_TIERS:
             agent.service_tier = _FAST_TIERS[arg.lower()]
-        _emit("session.info", sid, SessionLiveInfo.model_validate(_session_info(agent, session)))
+        _emit("session.info", sid, SessionInfoPayload.of(_session_info(agent, session)))
 
 
 def _mirror_reload_mcp(sid, session, agent, arg) -> None:

@@ -513,8 +513,7 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
         with session["history_lock"]:
             session["running"] = False
             session["last_active"] = time.time()
-        _emit("session.info", sid, SessionInfoPayload(**_session_info(
-            session.get("agent"), session).model_dump(mode="json")))
+        _emit("session.info", sid, SessionInfoPayload.of(_session_info(session.get("agent"), session)))
         return
     with session["history_lock"]:
         if session.get("_turn_cancel_requested") or not session.get("running"):

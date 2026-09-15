@@ -24,7 +24,9 @@ import pytest
 from hermes_cli.local_runtime.catalog import (
     CATALOG,
     PLEASANT_FLOOR_TOK_S,
+    PLEASANT_REFERENCE_TURN_S,
     predicted_decode_tok_s,
+    predicted_reference_turn_s,
     recommended_entry,
     select_variant,
 )
@@ -60,21 +62,20 @@ def _unified(size_gb: int) -> HardwareBudget:
 #    48  | qwen3.8-27b             | qwen3.6-35b-a3b
 #    96  | qwen3.8-27b             | qwen3.6-35b-a3b
 #   128  | qwen3.8-flash-next      | qwen3.6-35b-a3b
-#   256  | qwen3.8-flash-next      | qwen3.8-flash-next
-#   512  | qwen3.8-flash-next      | qwen3.8-flash-next
+#   256  | qwen3.8-flash-next      | qwen3.6-35b-a3b
+#   512  | qwen3.8-flash-next      | qwen3.6-35b-a3b
 #
 # Reading guide for reviewers:
 # - Discrete <=16 GB: nothing runs resident; no automatic recommendation.
 #   Browse remains available for explicit spill choices.
 # - Discrete 24-96 GB: the 27B is the flagship experience — dense reads
 #   at ~1 TB/s clear the floor easily, so quality decides.
-# - Discrete/unified where Flash Next fits resident (128 GB discrete,
-#   256+ GB unified): the frontier model is the pick — highest quality,
-#   and its sparse decode clears the floor even at UMA bandwidth
-#   (~24 tok/s predicted at 210 GB/s).
-# - Unified 32-128 GB — the Spark class, the reason this resolver
-#   exists: the dense 27B predicts ~13 tok/s at UMA bandwidth (below
-#   the pleasant floor), so the 35B-A3B (~60 tok/s) wins.
+# - Discrete 128+ GB: Flash Next is the highest-quality fitting model and
+#   its sparse decode plus prefill clear the reference-turn budget.
+# - Unified 32+ GB — the Spark class, the reason this resolver exists:
+#   Flash Next clears the decode floor once it fits, but its reference
+#   prompt does not clear the turn budget at UMA bandwidth. The 35B-A3B
+#   (~60 tok/s decode) wins on total turn latency.
 # - Unified <=24 GB: no entry passes the physics check inside the UMA
 #   budget (spilling is impossible on UMA by construction — the pool IS
 #   the RAM). The pane's browse flow is the path for those machines
@@ -95,9 +96,9 @@ DECISION_TABLE = [
     (128, "discrete", "qwen3.8-flash-next", "best-quality-resident"),
     (128, "unified", "qwen3.6-35b-a3b", "speed-gated-quality"),
     (256, "discrete", "qwen3.8-flash-next", "best-quality-resident"),
-    (256, "unified", "qwen3.8-flash-next", "best-quality-resident"),
+    (256, "unified", "qwen3.6-35b-a3b", "speed-gated-quality"),
     (512, "discrete", "qwen3.8-flash-next", "best-quality-resident"),
-    (512, "unified", "qwen3.8-flash-next", "best-quality-resident"),
+    (512, "unified", "qwen3.6-35b-a3b", "speed-gated-quality"),
 ]
 
 
@@ -151,6 +152,27 @@ def test_unified_never_recommends_a_below_floor_dense_model():
     ]
     if clears:
         assert predicted_decode_tok_s(entry, choice.variant, budget) >= PLEASANT_FLOOR_TOK_S
+
+
+def test_recommendation_prices_prefill_before_quality():
+    budget = _unified(256)
+    pick = recommended_entry(budget)[0]
+    choice = select_variant(pick, budget)
+    assert choice is not None
+    _, turn_s = predicted_reference_turn_s(pick, choice.variant, budget)
+    assert turn_s <= PLEASANT_REFERENCE_TURN_S
+
+    higher_quality = [
+        (entry, candidate)
+        for entry in CATALOG
+        if entry.quality > pick.quality
+        and (candidate := select_variant(entry, budget)) is not None
+        and candidate.zero_spill
+    ]
+    assert higher_quality
+    for entry, candidate in higher_quality:
+        _, candidate_turn_s = predicted_reference_turn_s(entry, candidate.variant, budget)
+        assert candidate_turn_s > PLEASANT_REFERENCE_TURN_S
 
 
 def test_quality_decides_where_speed_permits():

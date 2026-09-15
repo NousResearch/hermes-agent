@@ -161,14 +161,21 @@ def select_variant(entry: CatalogEntry, budget: HardwareBudget) -> VariantChoice
 #
 # QUALITY is a judgment made once at authoring time (entry.quality). SPEED is physics per machine:
 # decode is memory-bound, so predicted tok/s ≈ bandwidth / bytes-read-per-token (build size scaled
-# by decode fraction). The bandwidth axis is the `uma` flag: every discrete card that matters is
-# 900+ GB/s GDDR while the unified-memory class measures ~1/5th of that. A measured per-machine
-# bandwidth could replace these class constants without touching the rule; predictions order
-# candidates and gate the floor — they are not display values.
+# by decode fraction). Batched prompt evaluation reuses each weight load across several tokens, so
+# prefill is faster than decode but still scales on the same active-weight and bandwidth axes. The
+# bandwidth axis is the `uma` flag: every discrete card that matters is 900+ GB/s GDDR while the
+# unified-memory class measures ~1/5th of that.
 
 _DISCRETE_BANDWIDTH_GB_S = 1000.0   # representative GDDR6X/GDDR7 class
 _UMA_BANDWIDTH_GB_S = 210.0         # measured on unified-memory NVIDIA
 _HOST_BANDWIDTH_GB_S = 80.0         # spilled weights stream over host DRAM
+_PREFILL_BATCH_REUSE = 3.0           # measured CPU/Vulkan prefill is roughly 3x decode
+
+# One representative agent turn. This matches the system prompt + tool schema scale users actually
+# send, instead of pricing only the answer stream after that prompt has already been evaluated.
+REFERENCE_PROMPT_TOKENS = 20_000
+REFERENCE_OUTPUT_TOKENS = 512
+PLEASANT_REFERENCE_TURN_S = 120.0
 
 # Below this predicted decode speed a model stops feeling pleasant for agentic use (roughly
 # reading speed with headroom for tool-call bursts). Distinct from the growth policy's 6 tok/s
@@ -186,6 +193,21 @@ def predicted_decode_tok_s(entry: CatalogEntry, variant: QuantVariant, budget: H
     return bandwidth * 1e9 / bytes_per_token
 
 
+def predicted_prefill_tok_s(entry: CatalogEntry, variant: QuantVariant, budget: HardwareBudget, *,
+                            spilled: bool = False) -> float:
+    """Reference-prompt throughput, including reuse from batched prompt evaluation."""
+    return predicted_decode_tok_s(entry, variant, budget, spilled=spilled) * _PREFILL_BATCH_REUSE
+
+
+def predicted_reference_turn_s(entry: CatalogEntry, variant: QuantVariant,
+                               budget: HardwareBudget, *, spilled: bool = False) -> tuple[float, float]:
+    """Return (time-to-first-token, total turn) for the representative agent turn."""
+    decode_tok_s = predicted_decode_tok_s(entry, variant, budget, spilled=spilled)
+    prefill_tok_s = predicted_prefill_tok_s(entry, variant, budget, spilled=spilled)
+    ttft_s = REFERENCE_PROMPT_TOKENS / prefill_tok_s
+    return ttft_s, ttft_s + REFERENCE_OUTPUT_TOKENS / decode_tok_s
+
+
 def recommended_entry(budget: HardwareBudget,
                       entries: "tuple[CatalogEntry, ...] | None" = None
                       ) -> "tuple[CatalogEntry, str] | None":
@@ -193,9 +215,10 @@ def recommended_entry(budget: HardwareBudget,
 
     Callers pass pre-filtered entries when some are ineligible for reasons the catalog can't know
     (engine too old). Reasons: best-quality-resident (quality won among resident entries clearing
-    the pleasant floor); speed-gated-quality (same, but the floor eliminated a HIGHER quality
-    candidate); fastest-resident (nothing resident clears the floor). Returns None when no
-    eligible entry runs resident; spilled models remain available for explicit selection.
+    both the decode and reference-turn floors); speed-gated-quality (same, but either floor
+    eliminated a HIGHER quality candidate); fastest-resident (nothing resident clears both
+    floors). Returns None when no eligible entry runs resident; spilled models remain available
+    for explicit selection.
     """
     pool = CATALOG if entries is None else entries
     fitting = [(e, c) for e in pool if (c := select_variant(e, budget)) is not None]
@@ -205,14 +228,19 @@ def recommended_entry(budget: HardwareBudget,
     def speed(t, spilled=False):
         return predicted_decode_tok_s(t[0], t[1].variant, budget, spilled=spilled)
 
+    def turn_s(t):
+        return predicted_reference_turn_s(t[0], t[1].variant, budget)[1]
+
     resident = [(e, c) for e, c in fitting if c.zero_spill]
-    pleasant = [t for t in resident if speed(t) >= PLEASANT_FLOOR_TOK_S]
+    pleasant = [t for t in resident
+                if speed(t) >= PLEASANT_FLOOR_TOK_S
+                and turn_s(t) <= PLEASANT_REFERENCE_TURN_S]
     if pleasant:
         pick = max(pleasant, key=lambda t: (t[0].quality, -t[1].variant.size_bytes))[0]
         floor_gated = any(e.quality > pick.quality for e, _ in resident)
         return (pick, "speed-gated-quality" if floor_gated else "best-quality-resident")
     if resident:
-        return (max(resident, key=speed)[0], "fastest-resident")
+        return (min(resident, key=lambda t: (turn_s(t), -t[0].quality))[0], "fastest-resident")
     # A spilled model may be usable, but it is not a recommendation. Keep it
     # discoverable through Browse so the user can opt in with the degradation visible.
     return None

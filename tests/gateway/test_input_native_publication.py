@@ -206,8 +206,9 @@ async def test_cold_equal_images_preserve_order_with_one_physical_owner(tmp_path
         assert publications and all(references == [expected] for references in publications)
         if not refused:
             from gateway.session_admission import admission_fingerprint
-            row = get_session_admission(db, admission_id=receipt['admission_id'])
-            assert row['payload_digest'] == admission_fingerprint(canonical_target=rpc.ref.session_id,
+            saved_digest = db._conn.execute('SELECT payload_digest FROM session_admissions WHERE admission_id=?',
+                (receipt['admission_id'],)).fetchone()[0]
+            assert saved_digest == admission_fingerprint(canonical_target=rpc.ref.session_id,
                 payload={'input': normalized[0], 'intent': 'queue'})
         copy = native_row(db)
         assert copy['state'] == 'ready'

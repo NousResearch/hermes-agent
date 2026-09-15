@@ -98,6 +98,9 @@ class TestPerCapabilityBackendSelection:
         # No search_backend or extract_backend set — both fall through
         assert web_tools._get_search_backend() == "keenable"
         assert web_tools._get_extract_backend() == "keenable"
+        # No extract_backends chain either: the dispatcher's chain view is the
+        # scalar as a one-entry chain (pre-chain behavior).
+        assert web_tools._get_extract_backends() == ["keenable"]
 
 
 # ---------------------------------------------------------------------------
@@ -116,10 +119,13 @@ class TestDefaultConfig:
         assert "backend" in web
         assert "search_backend" in web
         assert "extract_backend" in web
-        # All empty string by default (no override)
+        assert "extract_backends" in web
+        # All empty by default (no override) — the empty chain must leave
+        # scalar/auto-detect resolution in charge.
         assert web["backend"] == ""
         assert web["search_backend"] == ""
         assert web["extract_backend"] == ""
+        assert web["extract_backends"] == []
 
 
 # ---------------------------------------------------------------------------

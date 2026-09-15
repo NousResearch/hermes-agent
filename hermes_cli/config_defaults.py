@@ -350,6 +350,10 @@ DEFAULT_CONFIG = {
         "backend": "",           # shared fallback — applies to both search and extract
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
+        # Ordered web_extract fallback chain (e.g. ["firecrawl", "tavily"]): a backend that errors,
+        # raises, or returns no usable content hands the batch to the next entry. Wins over
+        # extract_backend / backend when non-empty; entries are honored as written (no silent skips).
+        "extract_backends": [],
         # per-page char budget for web_extract; larger pages truncate, full text kept in cache/web
         "extract_char_limit": 15000,
         # Keyless free-tier ring: with NO web backend configured or keyed, web_search/web_extract

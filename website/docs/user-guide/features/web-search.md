@@ -403,9 +403,32 @@ web:
 When per-capability keys are empty, both fall through to `web.backend`. Only when no web selection has ever been written is the backend auto-detected from whichever API key/URL is present — once a selection exists, the runtime always uses it, and adding a key to `.env` does not reroute web traffic.
 
 **Priority order (per capability):**
-1. `web.search_backend` / `web.extract_backend` (explicit per-capability)
-2. `web.backend` (shared fallback; `nous` = managed Tool Gateway)
-3. Auto-detect from environment variables (never-configured setups only)
+1. `web.extract_backends` (ordered fallback chain, `web_extract` only — see below)
+2. `web.search_backend` / `web.extract_backend` (explicit per-capability)
+3. `web.backend` (shared fallback; `nous` = managed Tool Gateway)
+4. Auto-detect from environment variables (never-configured setups only)
+
+### Extract fallback chain
+
+A single extract backend is a single point of failure: expired credits, a rate limit, or a timeout fails the whole `web_extract` call until you change config and restart. `web.extract_backends` lists backends in the order to try:
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  extract_backends:
+    - firecrawl
+    - tavily
+    - exa
+```
+
+Each URL batch goes to the first entry. If that backend raises, times out, returns nothing, or returns only failed rows — an explicit per-URL error **or** a contentless page (HTTP 200 with an empty body, as an unhydrated SPA or a soft bot wall produces) — Hermes logs a warning and hands the same batch to the next entry. Partial success (at least one usable page) is a final answer and is not shopped around. The last entry's outcome is what a single backend would have returned, including its per-URL errors.
+
+Notes:
+- The chain wins over `web.extract_backend` / `web.backend` whenever it is non-empty; `web_search` is unaffected.
+- Entries are honored as written: a name that isn't a registered extract provider (typo, uninstalled or disabled plugin, search-only backend) is skipped with a typed warning — never silently replaced by another backend. Blank entries and duplicates are dropped.
+- A website-policy block (`blocked_by_policy`) is a decision, not a failure: a blocked URL is never re-fetched through the next entry.
+- The one-shot keyless rescue (below) applies only to the **last** entry, so a failing entry falls through to *your* chain, not to the free ring.
+- Third-party extract plugins work as entries by their provider name (the `name` the plugin registers, which can differ from its plugin/package name).
 
 ### Auto-detection
 

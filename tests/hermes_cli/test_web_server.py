@@ -2980,14 +2980,17 @@ class TestNewEndpoints:
         assert cfg["web"]["backend"] == "firecrawl"
 
         # The REAL runtime resolution — not a parallel reimplementation.
-        from tools.web_tools import _get_extract_backend, _get_search_backend
+        from tools.web_tools import _get_extract_backend, _get_extract_backends, _get_search_backend
         assert _get_search_backend() == "searxng"
         assert _get_extract_backend() == "firecrawl"
+        assert _get_extract_backends() == ["firecrawl"]
 
-        # And the config endpoint reports the same split.
+        # And the config endpoint reports the same split. The scalar key stays
+        # the contract the GUI badge binds to; the chain is additive.
         data = self.client.get("/api/tools/toolsets/web/config").json()
         assert data["active_search_backend"] == "searxng"
         assert data["active_extract_backend"] == "firecrawl"
+        assert data["active_extract_backends"] == ["firecrawl"]
 
 
     # -- Terminal execution backend picker ---------------------------------

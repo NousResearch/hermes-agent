@@ -23,6 +23,10 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   const explicit = psLiteral(explicitHermesPath)
 
   const script = [
+    // Module auto-load / cold-start progress records get serialized by Windows
+    // OpenSSH as "#< CLIXML <Objs S=\"progress\">..." into the same stdout the
+    // probe parses; silence the progress stream before anything can emit it.
+    '$ProgressPreference="SilentlyContinue"',
     '$ErrorActionPreference="Stop"',
     'function Assert-NoReparse([string]$candidate,[bool]$allowMissing=$false){',
     'if([string]::IsNullOrWhiteSpace($candidate)){return}',
@@ -65,7 +69,25 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     '[ordered]@{os="Windows";arch=$env:PROCESSOR_ARCHITECTURE;hermesHome=$hermesHome;hermesPath=$hermes;python=$python}|ConvertTo-Json -Compress'
   ].join(';')
 
-  return JSON.parse((await ssh.exec(powerShellCommand(script))).trim())
+  // Windows OpenSSH may serialize PowerShell's progress stream as
+  // "#< CLIXML <Objs ...>...</Objs>" blocks into the same stdout channel the
+  // probe reads, ahead of, after, or on the same line as the probe JSON
+  // (module auto-load racing the exec read). Drop every block, then apply
+  // the sibling helpers' convention: the JSON is the last meaningful line.
+  const lines = String(await ssh.exec(powerShellCommand(script)))
+    .replace(/^\uFEFF/, '')
+    .replace(/#< CLIXML[\s\S]*?<\/Objs>/g, '')
+    .trim()
+    .split(/\r?\n/)
+    .filter(line => line.trim() && !line.trimStart().startsWith('#< CLIXML'))
+
+  const parsed = JSON.parse(lines[lines.length - 1] || 'null')
+
+  if (!parsed?.os || !parsed?.arch) {
+    throw new Error(`Windows probe did not return the expected platform JSON: ${String(lines[lines.length - 1] ?? '').slice(0, 200)}`)
+  }
+
+  return parsed
 }
 
 function windowsUpdateMarkerProbeCommand(hermesHome) {

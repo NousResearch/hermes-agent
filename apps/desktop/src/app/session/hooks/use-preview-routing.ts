@@ -2,6 +2,7 @@ import type { GatewayEvent } from '@hermes/shared'
 import { useCallback } from 'react'
 
 import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import {
@@ -22,7 +23,7 @@ type EventHandler = (event: GatewayEvent) => void
 interface PreviewRoutingOptions {
   baseHandleGatewayEvent: EventHandler
   currentCwd: string
-  requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequest
 }
 
 function asRecord(payload: unknown): Record<string, unknown> {
@@ -48,7 +49,7 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
 
       const cwd = $currentCwd.get() || currentCwd || ''
 
-      const result = await requestGateway<{ task_id?: string }>('preview.restart', {
+      const result = await requestGateway('preview.restart', {
         context: context || undefined,
         cwd: cwd || undefined,
         session_id: sessionId,

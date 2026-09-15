@@ -1,13 +1,11 @@
 /** Starts the first build in its own session. A submit that fails or is unconfirmed keeps that session:
  * it must not close the session or start a second build. */
-import { JsonRpcGatewayError } from '@hermes/shared'
+import { JsonRpcGatewayError, type RpcMethods, type SessionResumeResult } from '@hermes/shared'
 
 import type { ClientSessionState } from '@/app/types'
 import type { HandoffPlan } from '@/components/onboarding-chat/setup-profile'
-import type { SessionMessage } from '@/types/hermes'
 
 import { markFirstBuildSession } from './handoff-receipt'
-import type { AmbientGatewayRequest } from './session-rpc-dispatcher'
 
 export const BUILD_PROFILE = 'default'
 
@@ -26,43 +24,35 @@ export interface HandoffReceipt extends HandoffTask {
   status: 'created' | 'submitting' | 'accepted'
 }
 
-export interface HandoffSnapshot {
-  session_id: string
-  session_key: string
-  running: boolean
-  hydrating?: boolean
-  messages_omitted?: boolean
-  messages?: SessionMessage[]
-}
 
 export interface HandoffDeps {
   create: () => Promise<Pick<HandoffReceipt, 'runtimeId' | 'storedId' | 'owner'>>
   personalize: () => Promise<void>
-  request: <T>(
+  request: <M extends keyof RpcMethods>(
     owner: HandoffReceipt['owner'],
-    method: string,
-    params: NonNullable<Parameters<AmbientGatewayRequest>[1]>
-  ) => Promise<T>
+    method: M,
+    params: RpcMethods[M]['params']
+  ) => Promise<RpcMethods[M]['result']>
   read: () => HandoffReceipt | null
   save: (receipt: HandoffReceipt) => void
-  bind: (receipt: HandoffReceipt, running: boolean, snapshot?: HandoffSnapshot) => void
+  bind: (receipt: HandoffReceipt, running: boolean, snapshot?: SessionResumeResult) => void
 }
 
 /** Only these preflight refusal codes from methods_prompt allow a second submit. A generic server error,
  * such as a lost ACK, can arrive after the prompt already started. */
 const PREFLIGHT_REJECTIONS = new Set([4001, 4004, 4009, 4018, 4090, 4091, 4120, 4121, 5070, 5071, 5072, 5122])
 
-interface HydratedHandoffSnapshot extends HandoffSnapshot {
-  messages: SessionMessage[]
+interface HydratedHandoffSnapshot extends SessionResumeResult {
+  running: boolean
+  session_key: string
 }
 
-function verifyHandoffSnapshot(snapshot: HandoffSnapshot): asserts snapshot is HydratedHandoffSnapshot {
+function verifyHandoffSnapshot(snapshot: SessionResumeResult): asserts snapshot is HydratedHandoffSnapshot {
   if (
     snapshot.hydrating ||
     snapshot.messages_omitted ||
     !snapshot.session_id ||
     !snapshot.session_key ||
-    !Array.isArray(snapshot.messages) ||
     (snapshot.running !== true && snapshot.running !== false)
   ) {
     throw new Error('Could not verify the first build. Retry when the connection recovers.')
@@ -79,7 +69,7 @@ export async function startHandoff(deps: HandoffDeps, task: HandoffTask, recover
     deps.save(receipt)
     markFirstBuildSession(receipt.storedId)
   } else {
-    const snapshot = await deps.request<HandoffSnapshot>(receipt.owner, 'session.resume', {
+    const snapshot = await deps.request(receipt.owner, 'session.resume', {
       session_id: receipt.storedId,
       omit_messages: false
     })
@@ -123,7 +113,7 @@ export async function startHandoff(deps: HandoffDeps, task: HandoffTask, recover
   deps.save(receipt)
 
   try {
-    const response = await deps.request<{ status?: string }>(receipt.owner, 'prompt.submit', {
+    const response = await deps.request(receipt.owner, 'prompt.submit', {
       session_id: receipt.runtimeId,
       text: receipt.brief
     })

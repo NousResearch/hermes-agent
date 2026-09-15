@@ -18,7 +18,7 @@
 import { useEffect, useState } from 'react'
 
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
-import type { ConnectorRow } from '@/lib/connector-tools'
+import { type ConnectorRow, connectorRowFromWire } from '@/lib/connector-tools'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
@@ -50,17 +50,15 @@ export function useConnectorCatalog(storedId: null | string, runtimeId: null | s
         const connectionId = isSessionOwnerRoute(scope) ? scope.connectionId : null
         const profile = isSessionOwnerRoute(scope) ? scope.profile : scope || ambientProfile
 
-        return requestGatewayForAgent<{ available: boolean; connectors: ConnectorRow[] }>(
-          connectionId,
-          profile,
-          'connectors.list',
-          { session_id: runtimeId },
-          15000
-        )
+        return requestGatewayForAgent(connectionId, profile, 'connectors.list', { session_id: runtimeId }, 15000)
       })
       .then(response => {
         if (!cancelled) {
-          setCatalog(response.available ? { rows: response.connectors, status: 'ready' } : { status: 'unavailable' })
+          setCatalog(
+            response.available
+              ? { rows: response.connectors.map(connectorRowFromWire), status: 'ready' }
+              : { status: 'unavailable' }
+          )
         }
       })
       .catch(() => {

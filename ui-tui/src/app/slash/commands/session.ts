@@ -1,18 +1,8 @@
 import { compactNumber } from '@hermes/shared/format'
 
-import { usageBarsText } from '../../../components/overlayPrimitives.js'
 import { introMsg, toTranscriptMessages } from '../../../domain/messages.js'
 import { sessionScopedModelArg, TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
-import type {
-  BackgroundStartResponse,
-  ConfigGetValueResponse,
-  ConfigSetResponse,
-  SessionBranchResponse,
-  SessionCompressResponse,
-  SessionUsageResponse,
-  SlashExecResponse,
-  VoiceToggleResponse
-} from '../../../gatewayTypes.js'
+import { configSetSessionInfo, configValueText } from '../../../gatewayTypes.js'
 import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
 import type { PanelSection } from '../../../types.js'
 import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
@@ -87,8 +77,8 @@ export const sessionCommands: SlashCommand[] = [
         return ctx.transcript.sys('/bg <prompt>')
       }
 
-      ctx.gateway.rpc<BackgroundStartResponse>('prompt.background', { session_id: ctx.sid, text: arg }).then(
-        ctx.guarded<BackgroundStartResponse>(r => {
+      ctx.gateway.rpc('prompt.background', { session_id: ctx.sid ?? '', text: arg }).then(
+        ctx.guarded(r => {
           if (!r.task_id) {
             return
           }
@@ -108,8 +98,8 @@ export const sessionCommands: SlashCommand[] = [
         return ctx.transcript.sys('/btw <question>')
       }
 
-      ctx.gateway.rpc<BackgroundStartResponse>('prompt.btw', { session_id: ctx.sid, text: arg }).then(
-        ctx.guarded<BackgroundStartResponse>(r => {
+      ctx.gateway.rpc('prompt.btw', { session_id: ctx.sid ?? '', text: arg }).then(
+        ctx.guarded(r => {
           if (!r.task_id) {
             return
           }
@@ -139,14 +129,14 @@ export const sessionCommands: SlashCommand[] = [
 
       const switchModel = (confirmExpensiveModel = false) =>
         ctx.gateway
-          .rpc<ConfigSetResponse>('config.set', {
+          .rpc('config.set', {
             confirm_expensive_model: confirmExpensiveModel,
             key: 'model',
             session_id: ctx.sid,
             value: modelValueForConfigSet(arg)
           })
           .then(
-            ctx.guarded<ConfigSetResponse>(r => {
+            ctx.guarded(r => {
               if (r.confirm_required) {
                 patchOverlayState({
                   confirm: {
@@ -162,17 +152,17 @@ export const sessionCommands: SlashCommand[] = [
                 return
               }
 
-              if (!r.value) {
+              const model = configValueText(r.value)
+
+              if (!model) {
                 return ctx.transcript.sys('error: invalid response: model switch')
               }
 
-              ctx.transcript.sys(r.deferred ? `model → ${r.value} (applies next turn)` : `model → ${r.value}`)
+              ctx.transcript.sys(r.deferred ? `model → ${model} (applies next turn)` : `model → ${model}`)
               ctx.local.maybeWarn(r)
 
-              patchUiState(state => ({
-                ...state,
-                info: state.info ? { ...state.info, model: r.value! } : { model: r.value!, skills: {}, tools: {} }
-              }))
+              // Until the next session.info lands there is no snapshot to patch.
+              patchUiState(state => (state.info ? { ...state, info: { ...state.info, model } } : state))
             })
           )
 
@@ -223,13 +213,15 @@ export const sessionCommands: SlashCommand[] = [
         return
       }
 
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'personality', session_id: ctx.sid, value: arg }).then(
-        ctx.guarded<ConfigSetResponse>(r => {
+      ctx.gateway.rpc('config.set', { key: 'personality', session_id: ctx.sid, value: arg }).then(
+        ctx.guarded(r => {
           if (r.history_reset) {
-            ctx.session.resetVisibleHistory(r.info ?? null)
+            ctx.session.resetVisibleHistory(configSetSessionInfo(r))
           }
 
-          ctx.transcript.sys(`personality: ${r.value || 'default'}${r.history_reset ? ' · transcript cleared' : ''}`)
+          ctx.transcript.sys(
+            `personality: ${configValueText(r.value) || 'default'}${r.history_reset ? ' · transcript cleared' : ''}`
+          )
           ctx.local.maybeWarn(r)
         })
       )
@@ -241,12 +233,12 @@ export const sessionCommands: SlashCommand[] = [
     name: 'compress',
     run: (arg, ctx) => {
       ctx.gateway
-        .rpc<SessionCompressResponse>('session.compress', {
-          session_id: ctx.sid,
+        .rpc('session.compress', {
+          session_id: ctx.sid ?? '',
           ...(arg ? { focus_topic: arg } : {})
         })
         .then(
-          ctx.guarded<SessionCompressResponse>(r => {
+          ctx.guarded(r => {
             if (Array.isArray(r.messages)) {
               const rows = toTranscriptMessages(r.messages)
 
@@ -297,8 +289,8 @@ export const sessionCommands: SlashCommand[] = [
     run: (arg, ctx) => {
       const prevSid = ctx.sid
 
-      ctx.gateway.rpc<SessionBranchResponse>('session.branch', { name: arg, session_id: ctx.sid }).then(
-        ctx.guarded<SessionBranchResponse>(r => {
+      ctx.gateway.rpc('session.branch', { name: arg, session_id: ctx.sid ?? '' }).then(
+        ctx.guarded(r => {
           if (!r.session_id) {
             return
           }
@@ -323,8 +315,8 @@ export const sessionCommands: SlashCommand[] = [
           ? normalized
           : 'status'
 
-      ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
-        ctx.guarded<VoiceToggleResponse>(r => {
+      ctx.gateway.rpc('voice.toggle', { action }).then(
+        ctx.guarded(r => {
           ctx.voice.setVoiceEnabled(!!r.enabled)
           ctx.voice.setVoiceTts(!!r.tts)
 
@@ -423,9 +415,9 @@ export const sessionCommands: SlashCommand[] = [
 
       // Bare /pet and /pet toggle flip display.pet.enabled via the slash worker.
       ctx.gateway.gw
-        .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
+        .request('slash.exec', { command: cmd.slice(1), session_id: ctx.sid ?? '' })
         .then(
-          ctx.guarded<SlashExecResponse>(r => {
+          ctx.guarded(r => {
             const body = r.output || '/pet: no output'
             ctx.transcript.sys(r.warning ? `warning: ${r.warning}\n${body}` : body)
           })
@@ -443,8 +435,8 @@ export const sessionCommands: SlashCommand[] = [
 
       if (!value) {
         return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'theme' })
-          .then(ctx.guarded<ConfigGetValueResponse>(r => ctx.transcript.sys(`theme: ${r.value || 'auto'}`)))
+          .rpc('config.get', { key: 'theme' })
+          .then(ctx.guarded(r => ctx.transcript.sys(`theme: ${r.value || 'auto'}`)))
       }
 
       if (!['auto', 'light', 'dark'].includes(value)) {
@@ -456,9 +448,9 @@ export const sessionCommands: SlashCommand[] = [
       // reverts on restart. A few ms later than an optimistic flip, but the
       // env/theme state and config.yaml never disagree.
       ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'theme', value })
+        .rpc('config.set', { key: 'theme', value })
         .then(
-          ctx.guarded<ConfigSetResponse>(r => {
+          ctx.guarded(r => {
             if (r.value === undefined) {
               return
             }
@@ -477,13 +469,13 @@ export const sessionCommands: SlashCommand[] = [
     run: (arg, ctx) => {
       if (!arg) {
         return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'skin' })
-          .then(ctx.guarded<ConfigGetValueResponse>(r => ctx.transcript.sys(`skin: ${r.value || 'default'}`)))
+          .rpc('config.get', { key: 'skin' })
+          .then(ctx.guarded(r => ctx.transcript.sys(`skin: ${r.value || 'default'}`)))
       }
 
       ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'skin', value: arg })
-        .then(ctx.guarded<ConfigSetResponse>(r => r.value && ctx.transcript.sys(`skin → ${r.value}`)))
+        .rpc('config.set', { key: 'skin', value: arg })
+        .then(ctx.guarded(r => r.value && ctx.transcript.sys(`skin → ${r.value}`)))
     }
   },
 
@@ -496,20 +488,16 @@ export const sessionCommands: SlashCommand[] = [
 
       if (!value) {
         return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'indicator' })
-          .then(
-            ctx.guarded<ConfigGetValueResponse>(r =>
-              ctx.transcript.sys(`indicator: ${r.value || DEFAULT_INDICATOR_STYLE}`)
-            )
-          )
+          .rpc('config.get', { key: 'indicator' })
+          .then(ctx.guarded(r => ctx.transcript.sys(`indicator: ${r.value || DEFAULT_INDICATOR_STYLE}`)))
       }
 
       if (!(INDICATOR_STYLES as readonly string[]).includes(value)) {
         return ctx.transcript.sys(`usage: /indicator [${INDICATOR_STYLES.join('|')}]`)
       }
 
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'indicator', value }).then(
-        ctx.guarded<ConfigSetResponse>(r => {
+      ctx.gateway.rpc('config.set', { key: 'indicator', value }).then(
+        ctx.guarded(r => {
           if (!r.value) {
             return
           }
@@ -529,8 +517,8 @@ export const sessionCommands: SlashCommand[] = [
     name: 'yolo',
     run: (_arg, ctx) => {
       ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: ctx.sid })
-        .then(ctx.guarded<ConfigSetResponse>(r => ctx.transcript.sys(`yolo ${r.value === '1' ? 'on' : 'off'}`)))
+        .rpc('config.set', { key: 'yolo', session_id: ctx.sid })
+        .then(ctx.guarded(r => ctx.transcript.sys(`yolo ${r.value === '1' ? 'on' : 'off'}`)))
     }
   },
 
@@ -540,16 +528,14 @@ export const sessionCommands: SlashCommand[] = [
     run: (arg, ctx) => {
       if (!arg) {
         return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'reasoning', session_id: ctx.sid })
+          .rpc('config.get', { key: 'reasoning', session_id: ctx.sid ?? undefined })
           .then(
-            ctx.guarded<ConfigGetValueResponse>(
-              r => r.value && ctx.transcript.sys(`reasoning: ${r.value} · display ${r.display || 'hide'}`)
-            )
+            ctx.guarded(r => r.value && ctx.transcript.sys(`reasoning: ${r.value} · display ${r.display || 'hide'}`))
           )
       }
 
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', reasoningConfigPayload(arg, ctx.sid ?? '')).then(
-        ctx.guarded<ConfigSetResponse>(r => {
+      ctx.gateway.rpc('config.set', reasoningConfigPayload(arg, ctx.sid ?? '')).then(
+        ctx.guarded(r => {
           if (!r.value) {
             return
           }
@@ -587,19 +573,15 @@ export const sessionCommands: SlashCommand[] = [
 
       if (!mode || mode === 'status') {
         return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'fast', session_id: ctx.sid })
-          .then(
-            ctx.guarded<ConfigGetValueResponse>(r =>
-              ctx.transcript.sys(`fast mode: ${r.value === 'fast' ? 'fast' : 'normal'}`)
-            )
-          )
+          .rpc('config.get', { key: 'fast', session_id: ctx.sid ?? undefined })
+          .then(ctx.guarded(r => ctx.transcript.sys(`fast mode: ${r.value === 'fast' ? 'fast' : 'normal'}`)))
           .catch(ctx.guardedErr)
       }
 
       ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'fast', session_id: ctx.sid, value: mode })
+        .rpc('config.set', { key: 'fast', session_id: ctx.sid, value: mode })
         .then(
-          ctx.guarded<ConfigSetResponse>(r => {
+          ctx.guarded(r => {
             const next = r.value === 'fast' ? 'fast' : 'normal'
             ctx.transcript.sys(`fast mode: ${next}`)
             patchUiState(state => ({
@@ -631,9 +613,9 @@ export const sessionCommands: SlashCommand[] = [
 
       if (!mode || mode === 'status') {
         return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'busy' })
+          .rpc('config.get', { key: 'busy' })
           .then(
-            ctx.guarded<ConfigGetValueResponse>(r => {
+            ctx.guarded(r => {
               const current = r.value || 'interrupt'
               ctx.transcript.sys(`busy input mode: ${current}`)
             })
@@ -642,9 +624,9 @@ export const sessionCommands: SlashCommand[] = [
       }
 
       ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'busy', value: mode })
+        .rpc('config.set', { key: 'busy', value: mode })
         .then(
-          ctx.guarded<ConfigSetResponse>(r => {
+          ctx.guarded(r => {
             const next = r.value || mode
             ctx.transcript.sys(`busy input mode: ${next}`)
           })
@@ -658,8 +640,8 @@ export const sessionCommands: SlashCommand[] = [
     name: 'verbose',
     run: (arg, ctx) => {
       ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'verbose', session_id: ctx.sid, value: arg || 'cycle' })
-        .then(ctx.guarded<ConfigSetResponse>(r => r.value && ctx.transcript.sys(`verbose: ${r.value}`)))
+        .rpc('config.set', { key: 'verbose', session_id: ctx.sid, value: arg || 'cycle' })
+        .then(ctx.guarded(r => r.value && ctx.transcript.sys(`verbose: ${r.value}`)))
     }
   },
 
@@ -667,7 +649,7 @@ export const sessionCommands: SlashCommand[] = [
     help: 'session usage + Nous credits',
     name: 'usage',
     run: (_arg, ctx) => {
-      ctx.gateway.rpc<SessionUsageResponse>('session.usage', { session_id: ctx.sid }).then(r => {
+      ctx.gateway.rpc('session.usage', { session_id: ctx.sid ?? '' }).then(r => {
         if (ctx.stale()) {
           return
         }
@@ -675,50 +657,18 @@ export const sessionCommands: SlashCommand[] = [
         const sys = ctx.transcript.sys
 
         if (r) {
-          patchUiState({
-            usage: { calls: r.calls ?? 0, input: r.input ?? 0, output: r.output ?? 0, total: r.total ?? 0 }
-          })
+          patchUiState({ usage: r })
         }
 
         // Nous balance block is agent-independent (a portal fetch), so it shows
-        // even with zero API calls or on a resumed session. Prefer the shared
-        // dollar usage model (two-bar view, dollars-only); fall back to the
-        // legacy text lines only when the model is unavailable.
-        const usageModel = r?.usage
-        const barLines = usageBarsText(usageModel)
-        let showedBalance = false
+        // even with zero API calls or on a resumed session. `session.usage`
+        // answers the counters plus these credit lines; the dollar two-bar model
+        // lives on /topup and /subscription (billing.state).
+        const creditsLines = r?.credits_lines ?? []
+        const showedBalance = creditsLines.length > 0
 
-        if (usageModel?.available && (barLines.length || usageModel.status === 'free')) {
-          const sections: PanelSection[] = []
-          const plan = usageModel.plan_name ?? (usageModel.status === 'free' ? 'Free' : null)
-
-          if (plan) {
-            sections.push({
-              text: `Plan: ${plan}${usageModel.renews_display ? ` · renews ${usageModel.renews_display}` : ''}`
-            })
-          }
-
-          if (barLines.length) {
-            sections.push({ text: barLines.join('\n') })
-          }
-
-          if (usageModel.status === 'free') {
-            sections.push({ text: '> Free · free models only. Run /subscription to reach paid models.' })
-          } else if (usageModel.status === 'low') {
-            sections.push({
-              text: `! Low balance · ${usageModel.total_spendable_display ?? 'under $5'} left. Run /topup or /subscription.`
-            })
-          }
-
-          ctx.transcript.panel('Balance', sections)
-          showedBalance = true
-        } else {
-          const creditsLines = r?.credits_lines ?? []
-
-          if (creditsLines.length) {
-            ctx.transcript.panel('Nous balance', [{ text: creditsLines.join('\n') }])
-            showedBalance = true
-          }
+        if (showedBalance) {
+          ctx.transcript.panel('Nous balance', [{ text: creditsLines.join('\n') }])
         }
 
         if (!r?.calls) {
@@ -731,10 +681,10 @@ export const sessionCommands: SlashCommand[] = [
           return
         }
 
-        const f = (v: number | undefined) => (v ?? 0).toLocaleString()
+        const f = (v: null | number | undefined) => (v ?? 0).toLocaleString()
 
-        const rows: [string, string][] = [
-          ['Model', r.model ?? ''],
+        const rows: string[][] = [
+          ['Model', r.model],
           ['Input tokens', f(r.input)],
           ['Output tokens', f(r.output)],
           ['Total tokens', f(r.total)],

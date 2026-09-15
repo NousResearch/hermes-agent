@@ -3,6 +3,7 @@ status). Bodies are rebound onto server.py's globals at install time (method_ctx
 
 from __future__ import annotations
 
+from .contracts.tools_commands import BrowserManageParams, BrowserManageResult
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -93,16 +94,13 @@ def _connect_local_default(port: int, system: str, announce) -> str | None:
     return None
 
 
-def _browser_connect(rid, params: dict) -> dict:
+def _browser_connect(rid, params: BrowserManageParams) -> BrowserManageResult | dict:
     import platform
     from hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
     from tools.browser_tool_lifecycle import cleanup_all_browsers
     from urllib.parse import urlparse
-    raw_url = params.get("url")
-    if raw_url is not None and not isinstance(raw_url, str):
-        return _err(rid, 4015, f"browser url must be a string, got {type(raw_url).__name__}")
-    url = (raw_url or "").strip() or DEFAULT_BROWSER_CDP_URL
-    sid, system, messages = params.get("session_id") or "", platform.system(), []
+    url = (params.url or "").strip() or DEFAULT_BROWSER_CDP_URL
+    sid, system, messages = params.session_id or "", platform.system(), []
 
     def announce(message: str, *, level: str = "info") -> None:
         messages.append(message)
@@ -136,7 +134,7 @@ def _browser_connect(rid, params: dict) -> dict:
         elif _is_default_local_cdp(parsed):
             discovered = _connect_local_default(port, system, announce)
             if discovered is None:
-                return _ok(rid, {"connected": False, "url": url, "messages": messages})
+                return BrowserManageResult(connected=False, url=url, messages=messages or None)
             # Adopt whatever loopback/port answered ([::1] and/or an alternate port when 9222 was squatted).
             url = discovered
             parsed = urlparse(url)
@@ -153,11 +151,10 @@ def _browser_connect(rid, params: dict) -> dict:
         cleanup_all_browsers()
     except Exception as e:
         return _err(rid, 5031, str(e))
-    return _ok(rid, {"connected": True, "url": normalized,
-                     **({"messages": messages} if messages else {})})
+    return BrowserManageResult(connected=True, url=normalized, messages=messages or None)
 
 
-def _browser_disconnect(rid) -> dict:
+def _browser_disconnect(rid) -> BrowserManageResult:
     # Reap, drop the override, reap again — same swap window as ``_browser_connect``.
     def reap() -> None:
         with contextlib.suppress(Exception):
@@ -167,9 +164,10 @@ def _browser_disconnect(rid) -> dict:
     reap()
     os.environ.pop("BROWSER_CDP_URL", None)
     reap()
-    return _ok(rid, {"connected": False})
+    return BrowserManageResult(connected=False)
 
 
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
+    setattr(server, BrowserManageResult.__name__, BrowserManageResult)
     bind_module(globals(), server, skip=("_",))

@@ -241,7 +241,7 @@ def test_project_info_for_cwd_returns_status_payload(tmp_path):
     nested = folder / "src"
     nested.mkdir()
 
-    assert server._project_info_for_cwd(str(nested)) == {
+    assert server._project_info_for_cwd(str(nested)).model_dump(mode="json") == {
         "id": created["id"],
         "slug": "repo",
         "name": "Repo",
@@ -257,13 +257,13 @@ def test_session_info_carries_project_for_owned_cwd(tmp_path):
     _call("projects.create", {"name": "Proj", "folders": [str(folder)]})
 
     info = server._session_info(None, {"cwd": str(folder), "session_key": "s1"})
-    assert info["project"] == {
-        "id": info["project"]["id"],
+    assert info.project.model_dump(mode="json") == {
+        "id": info.project.id,
         "slug": "proj",
         "name": "Proj",
         "primary_path": str(folder),
     }
-    assert info["project"]["name"] == "Proj"
+    assert info.project.name == "Proj"
 
 
 def test_update_and_archive(tmp_path):

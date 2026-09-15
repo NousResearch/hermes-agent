@@ -1,4 +1,8 @@
+import { type RpcMethods, SERVER_REQUEST_METHODS, type ServerRequestMap } from './gateway-contract.generated.js'
 import type { GatewayEvent } from './gateway-events.js'
+
+// The current generated contract predates its JsonValue export; import it from there after regeneration lands.
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
 
 export type GatewayRequestId = number | string
 
@@ -12,46 +16,109 @@ export interface JsonRpcFrame {
   error?: JsonRpcErrorPayload
   id?: GatewayRequestId | null
   method?: string
-  params?: GatewayEvent | ServerRequestParams
-  result?: unknown
+  params?: JsonValue
+  result?: JsonValue
 }
 
-/**
- * Params of a server→client request (`tui_gateway/server_requests.py`): the
- * backend asking the renderer a question. `session_id` names the session
- * blocked on the answer; the rest is method-specific.
- */
-export interface ServerRequestParams extends Record<string, unknown> {
-  session_id?: string
+/** One inbound server→client request, decoded from the generated method map. */
+export interface ServerRequest<M extends keyof ServerRequestMap> {
+  readonly id: string
+  readonly method: M
+  readonly params: ServerRequestMap[M]['params']
+  readonly sessionId: string | null
+  /** The first `respond` (or `fail`) wins, including after a reconnect replay. */
+  respond(result: ServerRequestMap[M]['result']): void
+  /** Answer with a JSON-RPC error (the backend treats it as unanswered). */
+  fail(error: JsonRpcErrorPayload): void
+  /** Replay-tagged requests keep their original id and must not re-notify. */
+  readonly replayed?: boolean
 }
 
-/** One inbound server→client request, as handed to a `ServerRequestHandler`. */
-export interface ServerRequest<M extends string = string, P extends ServerRequestParams = ServerRequestParams> {
+/** The per-method server-request union produced by the wire decoder. */
+export type AnyServerRequest = { [M in keyof ServerRequestMap]: ServerRequest<M> }[keyof ServerRequestMap]
+
+type ServerRequestHandler<M extends keyof ServerRequestMap> = (request: ServerRequest<M>) => void
+
+type ServerRequestHandlers = { [M in keyof ServerRequestMap]?: Set<ServerRequestHandler<M>> }
+
+const handlersFor = <M extends keyof ServerRequestMap>(
+  handlers: ServerRequestHandlers,
+  method: M
+): Set<ServerRequestHandler<M>> => {
+  const existing = handlers[method]
+
+  if (existing) {
+    // SAFETY: this property is only initialized by handlersFor with the same generated method key.
+    return existing as Set<ServerRequestHandler<M>>
+  }
+
+  const created = new Set<ServerRequestHandler<M>>()
+  // SAFETY: this property is only written by handlersFor with the same generated method key.
+  handlers[method] = created as ServerRequestHandlers[M]
+
+  return created
+}
+
+const anyServerRequest = <M extends keyof ServerRequestMap>(request: ServerRequest<M>): AnyServerRequest => {
+  // SAFETY: the generated ServerRequestMap key narrowed by SERVER_REQUEST_METHODS selects the matching union member.
+  return request as AnyServerRequest
+}
+
+interface DecodedServerRequest<M extends keyof ServerRequestMap> {
   id: string
   method: M
-  params: P
-  /**
-   * Route the answer back to the backend that asked. Idempotent: the first
-   * `respond` (or `fail`) wins; a request re-delivered after a reconnect
-   * (`open_requests`) reuses the id, so a stale card answering twice is a
-   * no-op on the wire.
-   */
-  respond: (result: Record<string, unknown>) => void
-  /** Answer with a JSON-RPC error (the backend treats it as unanswered). */
-  fail: (code: number, message: string) => void
-  /**
-   * Renderer-side tag set by the owner when a request arrives through a
-   * replay (`open_requests`) rather than live; handlers that already show the
-   * card can skip re-notifying.
-   */
-  replayed?: boolean
+  params: ServerRequestMap[M]['params']
+  rawParams: Record<string, JsonValue>
+  replayed: boolean
+  sessionId: string | null
 }
-
-/** Handles one inbound server→client request; return `false` to decline (next handler tries). */
-export type ServerRequestHandler = (request: ServerRequest) => boolean | void
 
 const isServerRequestFrame = (frame: JsonRpcFrame): frame is JsonRpcFrame & { id: string; method: string } =>
   typeof frame.id === 'string' && typeof frame.method === 'string' && frame.method !== 'event'
+
+const isJsonObject = (value: JsonValue): value is Record<string, JsonValue> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+
+const isServerRequestMethod = (method: string): method is keyof ServerRequestMap =>
+  SERVER_REQUEST_METHODS.some(serverRequestMethod => serverRequestMethod === method)
+
+const decodeServerRequest = <M extends keyof ServerRequestMap>(
+  id: string,
+  method: M,
+  rawParams: JsonValue,
+  replayed: boolean
+): DecodedServerRequest<M> => {
+  const params = isJsonObject(rawParams) ? rawParams : {}
+
+  return {
+    id,
+    method,
+    params: decodeWire<ServerRequestMap[M]['params']>(params),
+    rawParams: params,
+    replayed,
+    sessionId: typeof params.session_id === 'string' ? params.session_id : null
+  }
+}
+
+const isGatewayEvent = (value: JsonValue): value is { type: string; [key: string]: JsonValue } =>
+  isJsonObject(value) && typeof value.type === 'string'
+
+// SAFETY: the backend validated every frame against the same generated contract before sending it;
+// this is the one place wire JSON becomes a generated type.
+const decodeWire = <T>(value: JsonValue): T => value as T
+
+const jsonFrame = (text: string): JsonRpcFrame | null => {
+  try {
+    // SAFETY: JSON parse output is an object, and every consumed field is checked below.
+    const frame = JSON.parse(text) as JsonRpcFrame
+
+    return frame && typeof frame === 'object' && !Array.isArray(frame) ? frame : null
+  } catch {
+    return null
+  }
+}
+
+const responseResult = (frame: JsonRpcFrame): JsonValue => frame.result ?? null
 
 /** JSON-RPC error with optional structured `data` from the gateway. */
 export class JsonRpcGatewayError extends Error {
@@ -101,7 +168,7 @@ export interface JsonRpcRequestChannelOptions {
    * channel has already answered `-32601` so the backend does not wait out
    * its deadline against a client with no handler.
    */
-  onUnhandledRequest?: (request: { id: string; method: string; params: ServerRequestParams }) => void
+  onUnhandledRequest?: (request: { id: string; method: string; params: Record<string, JsonValue> }) => void
   requestIdPrefix?: string
   requestTimeoutMs?: number
   /**
@@ -121,9 +188,56 @@ export type HeartbeatLiveness = 'any-inbound' | 'response'
 
 interface PendingCall {
   reject: (error: Error) => void
-  resolve: (value: unknown) => void
+  resolve: (value: JsonValue) => void
   timer?: ReturnType<typeof setTimeout>
 }
+
+interface PendingRequest {
+  call: PendingCall
+}
+
+interface RequestOptions {
+  notConnectedError: () => Error
+  signal?: AbortSignal
+  timeoutMs: number
+}
+
+interface WireRequest {
+  method: string
+  params: object
+}
+
+interface TypedWireRequest<M extends keyof RpcMethods> extends WireRequest {
+  method: M
+  params: RpcMethods[M]['params']
+}
+
+interface UntypedWireRequest extends WireRequest {
+  params: Record<string, JsonValue>
+}
+
+const typedWireRequest = <M extends keyof RpcMethods>(
+  method: M,
+  params: RpcMethods[M]['params']
+): TypedWireRequest<M> => ({
+  method,
+  params
+})
+
+const untypedWireRequest = (method: string, params: Record<string, JsonValue>): UntypedWireRequest => ({
+  method,
+  params
+})
+
+const requestOptions = (
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+  notConnectedError: () => Error
+): RequestOptions => ({
+  notConnectedError,
+  signal,
+  timeoutMs
+})
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
 // Keepalive + dead-connection detection. A silent drop (macOS sleep, proxy
@@ -167,13 +281,14 @@ const unrefTimer = (timer: unknown) => {
  */
 export class JsonRpcRequestChannel {
   private nextId = 0
-  private readonly pending = new Map<GatewayRequestId, PendingCall>()
+  private readonly pending = new Map<GatewayRequestId, PendingRequest>()
   private transport: JsonRpcTransport | null = null
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private heartbeatSequence = 0
   private readonly outstandingPings = new Set<string>()
   private lastLivenessAt = 0
-  private readonly requestHandlers: ServerRequestHandler[] = []
+  private readonly serverRequestHandlers: ServerRequestHandlers = {}
+  private readonly anyServerRequestHandlers = new Set<(request: AnyServerRequest) => void>()
   private readonly options: Required<
     Omit<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onUnhandledRequest'>
   > &
@@ -221,38 +336,59 @@ export class JsonRpcRequestChannel {
     return this.transport === transport
   }
 
-  request<T>(
-    method: string,
-    params: Record<string, unknown> = {},
+  request<M extends keyof RpcMethods>(
+    method: M,
+    params: RpcMethods[M]['params'],
     timeoutMs = this.options.requestTimeoutMs,
     signal?: AbortSignal,
     notConnectedError: () => Error = () => new Error('gateway not connected')
-  ): Promise<T> {
+  ): Promise<RpcMethods[M]['result']> {
+    return this.requestInternal(
+      typedWireRequest(method, params),
+      requestOptions(timeoutMs, signal, notConnectedError)
+    ).then(value => decodeWire<RpcMethods[M]['result']>(value))
+  }
+
+  // SAFETY: plugins are third-party code; the method name is not known at compile time.
+  requestUntyped(
+    method: string,
+    params: Record<string, JsonValue>,
+    timeoutMs = this.options.requestTimeoutMs,
+    signal?: AbortSignal,
+    notConnectedError: () => Error = () => new Error('gateway not connected')
+  ): Promise<JsonValue> {
+    return this.requestInternal(
+      untypedWireRequest(method, params),
+      requestOptions(timeoutMs, signal, notConnectedError)
+    )
+  }
+
+  private requestInternal(request: WireRequest, options: RequestOptions): Promise<JsonValue> {
     const transport = this.transport
 
     if (!transport) {
-      return Promise.reject(notConnectedError())
+      return Promise.reject(options.notConnectedError())
     }
 
-    if (signal?.aborted) {
+    if (options.signal?.aborted) {
       return Promise.reject(new DOMException('Aborted', 'AbortError'))
     }
 
     const id = this.options.createRequestId(++this.nextId)
 
-    return new Promise<T>((resolve, reject) => {
+    return new Promise((resolve, reject) => {
       let onAbort: (() => void) | undefined
 
       const detachAbort = () => {
-        if (onAbort && signal) {
-          signal.removeEventListener('abort', onAbort)
+        if (onAbort && options.signal) {
+          options.signal.removeEventListener('abort', onAbort)
         }
       }
 
-      const pending: PendingCall = {
+      const call: PendingCall = {
         resolve: value => {
           detachAbort()
-          resolve(value as T)
+          resolve(value)
         },
         reject: error => {
           detachAbort()
@@ -260,39 +396,39 @@ export class JsonRpcRequestChannel {
         }
       }
 
-      if (timeoutMs > 0) {
-        pending.timer = setTimeout(() => {
+      if (options.timeoutMs > 0) {
+        call.timer = setTimeout(() => {
           if (this.pending.delete(id)) {
             detachAbort()
             // Include the configured timeout so a caller (or a user looking
             // at an error toast) can tell whether the default window fired
             // or a per-call override — e.g. /compress opts into 120s.
-            const seconds = Math.round(timeoutMs / 1000)
-            reject(new Error(`request timed out after ${seconds}s: ${method}`))
+            const seconds = Math.round(options.timeoutMs / 1000)
+            reject(new Error(`request timed out after ${seconds}s: ${request.method}`))
           }
-        }, timeoutMs)
+        }, options.timeoutMs)
 
         if (this.options.unrefTimers) {
-          unrefTimer(pending.timer)
+          unrefTimer(call.timer)
         }
       }
 
       // Abort drops the pending call immediately (no dangling resolver/timer);
       // server-side cancellation is a separate cooperative RPC where it matters.
-      if (signal) {
+      if (options.signal) {
         onAbort = () => {
           this.clearPending(id)
           detachAbort()
           reject(new DOMException('Aborted', 'AbortError'))
         }
 
-        signal.addEventListener('abort', onAbort, { once: true })
+        options.signal.addEventListener('abort', onAbort, { once: true })
       }
 
-      this.pending.set(id, pending)
+      this.pending.set(id, { call })
 
       try {
-        transport.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }))
+        transport.send(JSON.stringify({ jsonrpc: '2.0', id, ...request }))
       } catch (error) {
         this.clearPending(id)
         detachAbort()
@@ -301,79 +437,96 @@ export class JsonRpcRequestChannel {
     })
   }
 
-  /**
-   * Register a handler for server→client requests (clarify, approval, sudo,
-   * …). Handlers are tried in registration order until one accepts (returns
-   * anything but `false`); an unhandled request is answered `-32601` so the
-   * backend never waits out its deadline against a client that cannot answer.
-   */
-  onRequest(handler: ServerRequestHandler): () => void {
-    this.requestHandlers.push(handler)
+  /** Register a handler for one server→client request method. */
+  onServerRequest<M extends keyof ServerRequestMap>(
+    method: M,
+    handler: (request: ServerRequest<M>) => void
+  ): () => void {
+    const handlers = handlersFor(this.serverRequestHandlers, method)
+    handlers.add(handler)
 
-    return () => {
-      const index = this.requestHandlers.indexOf(handler)
-
-      if (index >= 0) {
-        this.requestHandlers.splice(index, 1)
-      }
-    }
+    return () => handlers.delete(handler)
   }
 
-  /**
-   * Deliver a server request to the handlers. Live frames arrive through
-   * `handleFrame`; owners call this directly for `open_requests` returned by a
-   * reconnect replay (`replayed: true`) so an unanswered question survives a
-   * dropped socket.
-   */
-  deliverRequest(id: string, method: string, params: ServerRequestParams, replayed = false): boolean {
+  /** Catch every generated server→client request without widening its payload type. */
+  onAnyServerRequest(handler: (request: AnyServerRequest) => void): () => void {
+    this.anyServerRequestHandlers.add(handler)
+
+    return () => this.anyServerRequestHandlers.delete(handler)
+  }
+
+  /** Deliver a live or replayed server request through the typed method table. */
+  deliverRequest(id: string, method: string, rawParams: JsonValue, replayed = false): boolean {
+    if (!isServerRequestMethod(method)) {
+      this.sendServerRequestResponse(id, {
+        error: { code: JSON_RPC_METHOD_NOT_FOUND, message: `no handler for server request: ${method}` }
+      })
+      this.options.onUnhandledRequest?.({ id, method, params: isJsonObject(rawParams) ? rawParams : {} })
+
+      return false
+    }
+
+    return this.deliverDecodedServerRequest(decodeServerRequest(id, method, rawParams, replayed))
+  }
+
+  private deliverDecodedServerRequest<M extends keyof ServerRequestMap>(decoded: DecodedServerRequest<M>): boolean {
     let settled = false
 
-    const send = (frame: Record<string, unknown>) => {
+    const send = (frame: { error: JsonRpcErrorPayload } | { result: object }) => {
       if (settled) {
         return
       }
 
       settled = true
-
-      try {
-        this.transport?.send(JSON.stringify({ jsonrpc: '2.0', id, ...frame }))
-      } catch {
-        // The generation is gone; the backend withdraws the request itself (timeout / reconnect replay).
-      }
+      this.sendServerRequestResponse(decoded.id, frame)
     }
 
-    const request: ServerRequest = {
-      id,
-      method,
-      params,
-      replayed,
+    const request: ServerRequest<M> = {
+      id: decoded.id,
+      method: decoded.method,
+      params: decoded.params,
+      sessionId: decoded.sessionId,
+      replayed: decoded.replayed,
       respond: result => send({ result }),
-      fail: (code, message) => send({ error: { code, message } })
+      fail: error => send({ error })
     }
 
-    for (const handler of this.requestHandlers) {
-      if (handler(request) !== false) {
-        return true
-      }
+    const handlers = handlersFor(this.serverRequestHandlers, decoded.method)
+
+    for (const handler of handlers) {
+      handler(request)
     }
 
-    request.fail(JSON_RPC_METHOD_NOT_FOUND, `no handler for server request: ${method}`)
-    this.options.onUnhandledRequest?.({ id, method, params })
+    for (const handler of this.anyServerRequestHandlers) {
+      handler(anyServerRequest(request))
+    }
+
+    if (handlers.size || this.anyServerRequestHandlers.size) {
+      return true
+    }
+
+    request.fail({ code: JSON_RPC_METHOD_NOT_FOUND, message: `no handler for server request: ${decoded.method}` })
+    this.options.onUnhandledRequest?.({ id: decoded.id, method: decoded.method, params: decoded.rawParams })
 
     return false
   }
 
-  private deliverOpenRequests(result: unknown): void {
-    const open = (result as { open_requests?: unknown } | null)?.open_requests
+  private sendServerRequestResponse(id: string, frame: { error: JsonRpcErrorPayload } | { result: object }): void {
+    try {
+      this.transport?.send(JSON.stringify({ jsonrpc: '2.0', id, ...frame }))
+    } catch {
+      // The generation is gone; the backend withdraws the request itself (timeout / reconnect replay).
+    }
+  }
 
-    if (!Array.isArray(open)) {
+  private deliverOpenRequests(result: JsonValue): void {
+    if (!isJsonObject(result) || !Array.isArray(result.open_requests)) {
       return
     }
 
-    for (const entry of open as Array<{ id?: unknown; method?: unknown; params?: unknown }>) {
-      if (typeof entry?.id === 'string' && typeof entry.method === 'string') {
-        const params = entry.params && typeof entry.params === 'object' ? (entry.params as ServerRequestParams) : {}
-        this.deliverRequest(entry.id, entry.method, params, true)
+    for (const entry of result.open_requests) {
+      if (isJsonObject(entry) && typeof entry.id === 'string' && typeof entry.method === 'string') {
+        this.deliverRequest(entry.id, entry.method, entry.params ?? null, true)
       }
     }
   }
@@ -386,15 +539,9 @@ export class JsonRpcRequestChannel {
    * JSON or not a JSON object (`null`, a scalar).
    */
   handleFrame(text: string): JsonRpcFrame | null {
-    let frame: JsonRpcFrame
+    const frame = jsonFrame(text)
 
-    try {
-      frame = JSON.parse(text) as JsonRpcFrame
-    } catch {
-      return null
-    }
-
-    if (!frame || typeof frame !== 'object') {
+    if (!frame) {
       return null
     }
 
@@ -403,8 +550,7 @@ export class JsonRpcRequestChannel {
     }
 
     if (isServerRequestFrame(frame)) {
-      const params = frame.params && typeof frame.params === 'object' ? (frame.params as ServerRequestParams) : {}
-      this.deliverRequest(frame.id, frame.method, params)
+      this.deliverRequest(frame.id, frame.method, frame.params ?? null)
 
       return frame
     }
@@ -423,7 +569,7 @@ export class JsonRpcRequestChannel {
         this.clearPending(frame.id)
 
         if (frame.error) {
-          call.reject(jsonRpcErrorFromFrame(frame.error))
+          call.call.reject(jsonRpcErrorFromFrame(frame.error))
         } else {
           // Reconnect contract: `session.resume` / `session.activate` /
           // `session.events.since` answer with `open_requests` — the server→
@@ -431,15 +577,18 @@ export class JsonRpcRequestChannel {
           // the event replay ring (they are not events), so they are re-
           // delivered here, before the caller sees the result, over the very
           // socket that owns them.
-          this.deliverOpenRequests(frame.result)
-          call.resolve(frame.result)
+          const result = responseResult(frame)
+          this.deliverOpenRequests(result)
+
+          call.call.resolve(result)
         }
       }
 
       return frame
     }
 
-    if (frame.method === 'event' && frame.params && typeof (frame.params as GatewayEvent).type === 'string') {
+    if (frame.method === 'event' && frame.params && isGatewayEvent(frame.params)) {
+      // SAFETY: event envelopes carry generated payload shapes; this boundary confirms their discriminator.
       this.options.onEvent?.(frame.params as GatewayEvent)
     }
 
@@ -510,23 +659,23 @@ export class JsonRpcRequestChannel {
   }
 
   private clearPending(id: GatewayRequestId): void {
-    const call = this.pending.get(id)
+    const pending = this.pending.get(id)
 
-    if (call?.timer) {
-      clearTimeout(call.timer)
+    if (pending?.call.timer) {
+      clearTimeout(pending.call.timer)
     }
 
     this.pending.delete(id)
   }
 
   private rejectAllPending(error: Error): void {
-    for (const [id, call] of this.pending) {
-      if (call.timer) {
-        clearTimeout(call.timer)
+    for (const [id, pending] of this.pending) {
+      if (pending.call.timer) {
+        clearTimeout(pending.call.timer)
       }
 
       this.pending.delete(id)
-      call.reject(error)
+      pending.call.reject(error)
     }
   }
 }

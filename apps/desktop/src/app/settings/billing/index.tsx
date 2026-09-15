@@ -30,7 +30,7 @@ import { StepUpInlineAction } from './inline-feedback'
 import { openExternal } from './open-external'
 import { BillingPlansView } from './plans-view'
 import { createSimulatedBillingApi } from './simulated-api'
-import type { BillingStateResponse } from './types'
+import type { BillingStateResult } from './types'
 import {
   type BillingAccountRowView,
   type BillingNoticeView,
@@ -135,7 +135,7 @@ function PaymentMethodAside({ row }: { row: BillingAccountRowView }) {
   )
 }
 
-function AccountRow({ billing, row }: { billing?: BillingStateResponse; row: BillingAccountRowView }) {
+function AccountRow({ billing, row }: { billing?: BillingStateResult; row: BillingAccountRowView }) {
   if (row.id === 'buy_credits' && row.action && row.chips && billing?.can_charge && billing.cli_billing_enabled) {
     return <BuyCreditsRow billing={billing} row={row} />
   }
@@ -161,12 +161,12 @@ function AccountRow({ billing, row }: { billing?: BillingStateResponse; row: Bil
   )
 }
 
-function BuyCreditsRow({ billing, row }: { billing: BillingStateResponse; row: BillingAccountRowView }) {
+function BuyCreditsRow({ billing, row }: { billing: BillingStateResult; row: BillingAccountRowView }) {
   const presets = useMemo(
     () =>
-      billing.charge_presets.map((amount, index) => ({
+      (billing.charge_presets ?? []).map((amount, index) => ({
         amount,
-        label: billing.charge_presets_display[index] || formatMoney(amount)
+        label: billing.charge_presets_display?.[index] || formatMoney(amount)
       })),
     [billing.charge_presets, billing.charge_presets_display]
   )

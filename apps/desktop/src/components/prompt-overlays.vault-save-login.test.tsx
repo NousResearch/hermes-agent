@@ -39,7 +39,14 @@ it('answers the vault.save_login server request with identifier + password as on
   const respond = vi.fn()
   $activeSessionId.set('session-b')
   $gateway.set({ request: ambient } as never)
-  rememberServerRequest({ fail: vi.fn(), id: 'req-s', method: 'vault.save_login', params: {}, respond })
+  rememberServerRequest({
+    fail: vi.fn(),
+    id: 'req-s',
+    method: 'vault.save_login',
+    params: { origin: 'https://github.com', profile: null, session_id: 'session-a', site: 'github.com' },
+    respond,
+    sessionId: 'session-a'
+  })
   setVaultSaveLoginRequest({
     origin: 'https://github.com',
     requestId: 'req-s',
@@ -75,7 +82,14 @@ it("Don't save answers an empty login and clears the card", async () => {
   setSessionOwnerHint('session-a', { connectionId: 'conn-1', profile: 'owner' })
   const respond = vi.fn()
   $gateway.set({ request: vi.fn() } as never)
-  rememberServerRequest({ fail: vi.fn(), id: 'req-d', method: 'vault.save_login', params: {}, respond })
+  rememberServerRequest({
+    fail: vi.fn(),
+    id: 'req-d',
+    method: 'vault.save_login',
+    params: { origin: 'https://github.com', profile: null, session_id: 'session-a', site: 'github.com' },
+    respond,
+    sessionId: 'session-a'
+  })
   setVaultSaveLoginRequest({
     origin: 'https://github.com',
     requestId: 'req-d',

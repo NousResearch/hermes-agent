@@ -4,6 +4,12 @@ Bodies are rebound onto server.py's globals at install (method_ctx.bind_module).
 from __future__ import annotations
 
 from .method_ctx import HandlerRegistry, bind_module
+from .contracts.base import Params
+from .contracts.projects_pets import (
+    ActiveIdResult, OptionalProjectResult, ProjectFolderParams, ProjectIdParams, ProjectResult,
+    ProjectsAddFolderParams, ProjectsArchiveParams, ProjectsCreateParams, ProjectsForCwdParams,
+    ProjectsForCwdResult, ProjectsPayload, ProjectsSetActiveParams, ProjectsUpdateParams,
+)
 
 _registry = HandlerRegistry()
 method = _registry.method
@@ -17,11 +23,17 @@ class _NoProject(Exception):
     """Raised inside a projects handler when ``params['id']`` resolves to None."""
 
 
-def _projects_payload(conn) -> dict:
+def _project_info(project):
+    from tui_gateway.contracts.projects_pets import ProjectInfo
+    return ProjectInfo.model_validate(project.to_dict())
+
+
+def _projects_payload(conn) -> ProjectsPayload:
     from hermes_cli import projects_db as pdb
-    return {
-        "projects": [p.to_dict() for p in pdb.list_projects(conn, include_archived=True)],
-        "active_id": pdb.get_active_id(conn)}
+    return ProjectsPayload(
+        projects=[_project_info(project) for project in pdb.list_projects(conn, include_archived=True)],
+        active_id=pdb.get_active_id(conn),
+    )
 
 
 def _projects_method(name: str):
@@ -30,7 +42,7 @@ def _projects_method(name: str):
     def decorator(fn):
         @method(name)
         @_registry.profile_scoped
-        def handler(rid, params: dict) -> dict:
+        def handler(rid, params) -> dict:
             try:
                 from hermes_cli import projects_db as pdb
                 with pdb.connect_closing() as conn:
@@ -45,87 +57,91 @@ def _projects_method(name: str):
     return decorator
 
 
-def _require_project(pdb, conn, params: dict):
-    """The project named by ``params['id']`` (or raise ``_NoProject``)."""
-    proj = pdb.get_project(conn, str(params.get("id") or ""))
+def _require_project(pdb, conn, project_id: str):
+    """The project named by ``project_id`` (or raise ``_NoProject``)."""
+    proj = pdb.get_project(conn, project_id)
     if proj is None:
         raise _NoProject
     return proj
 
 
-def _pick(params: dict, *keys: str) -> dict:
-    return {k: params.get(k) for k in keys}
+@_projects_method("projects.update")
+def _(rid, params: ProjectsUpdateParams, pdb, conn) -> ProjectResult | dict:
+    project = _require_project(pdb, conn, params.id)
+    pdb.update_project(
+        conn, project.id, name=params.name, description=params.description, icon=params.icon,
+        color=params.color, board_slug=params.board_slug)
+    return ProjectResult(project=_project_info(pdb.get_project(conn, project.id)))
 
 
-def _register_project_mutator(suffix: str, fn_name: str, takes_path: bool, kwargs_of) -> None:
-    """``projects.<suffix>``: resolve ``params['id']`` (5062 when missing), call
-    ``pdb.<fn_name>(conn, id[, path], **kwargs_of(params))``, answer with the refreshed project."""
-    @_projects_method(f"projects.{suffix}")
-    def _(rid, params, pdb, conn) -> dict:
-        proj = _require_project(pdb, conn, params)
-        args = (str(params.get("path") or ""),) if takes_path else ()
-        getattr(pdb, fn_name)(conn, proj.id, *args, **kwargs_of(params))
-        return _ok(rid, {"project": pdb.get_project(conn, proj.id).to_dict()})
+@_projects_method("projects.add_folder")
+def _(rid, params: ProjectsAddFolderParams, pdb, conn) -> ProjectResult | dict:
+    project = _require_project(pdb, conn, params.id)
+    pdb.add_folder(conn, project.id, params.path, label=params.label, is_primary=params.is_primary)
+    return ProjectResult(project=_project_info(pdb.get_project(conn, project.id)))
 
 
-_register_project_mutator(
-    "update", "update_project", False,
-    lambda p: _pick(p, "name", "description", "icon", "color", "board_slug"))
-_register_project_mutator(
-    "add_folder", "add_folder", True,
-    lambda p: {"label": p.get("label"), "is_primary": bool(p.get("is_primary"))})
-_register_project_mutator("remove_folder", "remove_folder", True, lambda p: {})
-_register_project_mutator("set_primary", "set_primary", True, lambda p: {})
+@_projects_method("projects.remove_folder")
+def _(rid, params: ProjectFolderParams, pdb, conn) -> ProjectResult | dict:
+    project = _require_project(pdb, conn, params.id)
+    pdb.remove_folder(conn, project.id, params.path)
+    return ProjectResult(project=_project_info(pdb.get_project(conn, project.id)))
+
+
+@_projects_method("projects.set_primary")
+def _(rid, params: ProjectFolderParams, pdb, conn) -> ProjectResult | dict:
+    project = _require_project(pdb, conn, params.id)
+    pdb.set_primary(conn, project.id, params.path)
+    return ProjectResult(project=_project_info(pdb.get_project(conn, project.id)))
 
 
 @_projects_method("projects.list")
-def _(rid, params, pdb, conn) -> dict:
-    return _ok(rid, _projects_payload(conn))
+def _(rid, params: Params, pdb, conn) -> ProjectsPayload | dict:
+    return _projects_payload(conn)
 
 
 @_projects_method("projects.get")
-def _(rid, params, pdb, conn) -> dict:
-    return _ok(rid, {"project": _require_project(pdb, conn, params).to_dict()})
+def _(rid, params: ProjectIdParams, pdb, conn) -> ProjectResult | dict:
+    return ProjectResult(project=_project_info(_require_project(pdb, conn, params.id)))
 
 
 @_projects_method("projects.create")
-def _(rid, params, pdb, conn) -> dict:
+def _(rid, params: ProjectsCreateParams, pdb, conn) -> OptionalProjectResult | dict:
     pid = pdb.create_project(
-        conn, name=str(params.get("name") or ""), folders=params.get("folders") or [],
-        **_pick(params, "slug", "primary_path", "description", "icon", "color", "board_slug"))
-    if params.get("use"):
+        conn, name=params.name, folders=params.folders or [], slug=params.slug,
+        primary_path=params.primary_path, description=params.description, icon=params.icon,
+        color=params.color, board_slug=params.board_slug)
+    if params.use:
         pdb.set_active(conn, pid)
     proj = pdb.get_project(conn, pid)
-    return _ok(rid, {"project": proj.to_dict() if proj else None})
+    return OptionalProjectResult(project=_project_info(proj) if proj else None)
 
 
 @_projects_method("projects.archive")
-def _(rid, params, pdb, conn) -> dict:
-    proj = _require_project(pdb, conn, params)
-    (pdb.restore_project if params.get("restore") else pdb.archive_project)(conn, proj.id)
-    return _ok(rid, _projects_payload(conn))
+def _(rid, params: ProjectsArchiveParams, pdb, conn) -> ProjectsPayload | dict:
+    proj = _require_project(pdb, conn, params.id)
+    (pdb.restore_project if params.restore else pdb.archive_project)(conn, proj.id)
+    return _projects_payload(conn)
 
 
 @_projects_method("projects.delete")
-def _(rid, params, pdb, conn) -> dict:
-    pdb.delete_project(conn, _require_project(pdb, conn, params).id)
-    return _ok(rid, _projects_payload(conn))
+def _(rid, params: ProjectIdParams, pdb, conn) -> ProjectsPayload | dict:
+    pdb.delete_project(conn, _require_project(pdb, conn, params.id).id)
+    return _projects_payload(conn)
 
 
 @_projects_method("projects.set_active")
-def _(rid, params, pdb, conn) -> dict:
-    pdb.set_active(conn, _require_project(pdb, conn, params).id if params.get("id") else None)
-    return _ok(rid, {"active_id": pdb.get_active_id(conn)})
+def _(rid, params: ProjectsSetActiveParams, pdb, conn) -> ActiveIdResult | dict:
+    pdb.set_active(conn, _require_project(pdb, conn, params.id).id if params.id else None)
+    return ActiveIdResult(active_id=pdb.get_active_id(conn))
 
 
 @_projects_method("projects.for_cwd")
-def _(rid, params, pdb, conn) -> dict:
-    cwd = _completion_cwd(
-        {"cwd": str(params.get("cwd") or "").strip()} if params.get("cwd") else {})
+def _(rid, params: ProjectsForCwdParams, pdb, conn) -> ProjectsForCwdResult | dict:
+    cwd = _completion_cwd({"cwd": params.cwd.strip()} if params.cwd else {})
     proj = pdb.project_for_path(conn, cwd)
-    return _ok(rid, {
-        "project": proj.to_dict() if proj else None, "cwd": cwd,
-        "branch": git_probe.branch(cwd)})
+    return ProjectsForCwdResult(
+        project=_project_info(proj) if proj else None, cwd=cwd, branch=git_probe.branch(cwd))
 
 
 def _non_workspace_dirs() -> set[str]:

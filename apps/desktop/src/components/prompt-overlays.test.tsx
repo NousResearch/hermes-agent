@@ -98,7 +98,14 @@ describe('PromptOverlays', () => {
 
     $activeSessionId.set('s1')
     $gateway.set({ request } as never)
-    rememberServerRequest({ fail: vi.fn(), id: 'sudo-1', method: 'sudo', params: {}, respond })
+    rememberServerRequest({
+      fail: vi.fn(),
+      id: 'sudo-1',
+      method: 'sudo',
+      params: { profile: null, session_id: 's1' },
+      respond,
+      sessionId: 's1'
+    })
     setSudoRequest({ requestId: 'sudo-1', sessionId: 's1' })
 
     renderPrompts()
@@ -139,7 +146,14 @@ describe('PromptOverlays', () => {
 
     $activeSessionId.set('s1')
     $gateway.set({ request } as never)
-    rememberServerRequest({ fail: vi.fn(), id: 'secret-1', method: 'secret', params: {}, respond })
+    rememberServerRequest({
+      fail: vi.fn(),
+      id: 'secret-1',
+      method: 'secret',
+      params: { env_var: 'TEST_SECRET', metadata: null, profile: null, prompt: 'Paste a secret', session_id: 's1' },
+      respond,
+      sessionId: 's1'
+    })
     setSecretRequest({ envVar: 'TEST_SECRET', prompt: 'Paste a secret', requestId: 'secret-1', sessionId: 's1' })
 
     renderPrompts()

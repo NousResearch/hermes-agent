@@ -11,7 +11,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import OpenModel, ProfileParams, SessionLiveInfo
+from .common import SessionLiveInfo
 from .registry import method
 
 
@@ -78,7 +78,6 @@ class ToolsConfigureParams(Params):
     action: ToolsAction
     names: list[str]
     session_id: str | None = None
-    profile: str | None = None
 
 
 class ToolsConfigureResult(Result):
@@ -130,6 +129,7 @@ class ReloadMcpResult(Result):
     loaded_rev: str | None = None
     coalesced: bool | None = None
     turn_isolation: bool | None = None
+    # ``methods_tools`` forwards compute-host acknowledgements verbatim.
     host_ack: JsonValue | None = None
 
 
@@ -148,7 +148,7 @@ class SkillsAction(WireEnum):
     inspect = "inspect"
 
 
-class SkillsManageParams(ProfileParams):
+class SkillsManageParams(Params):
     """``query`` is the search text / hub identifier / browse page (digits); ``page`` / ``page_size``
     apply to ``browse``."""
 
@@ -163,18 +163,18 @@ class SkillHubHit(Result):
     description: str
 
 
-class SkillBrowseItem(OpenModel):
-    """``hermes_cli.skills_hub.browse_skills`` row."""
+class SkillBrowseItem(Result):
+    """``hermes_cli.skills_hub.browse_skills`` always emits these fields."""
 
-    name: str = ""
-    description: str = ""
-    source: str = ""
-    trust: str | None = None
-    identifier: str | None = None
+    name: str
+    description: str
+    source: str
+    trust: str
+    identifier: str
 
 
-class SkillInspectInfo(OpenModel):
-    """``hermes_cli.skills_hub.inspect_skill``; ``{}`` when the identifier resolves nowhere."""
+class SkillInspectInfo(Result):
+    """``hermes_cli.skills_hub.inspect_skill`` result; the handler wraps a miss as ``{}``."""
 
     name: str | None = None
     description: str | None = None
@@ -209,17 +209,28 @@ class SkillsReloadParams(Params):
 
 class SkillCommandRef(Result):
     name: str
-    description: str = ""
+    description: str
 
 
-class SkillsReloadDiff(OpenModel):
-    """``agent.skill_commands.reload_skills``."""
+class LearningFrameLabel(Result):
+    """``learning_graph_render`` label card emitted for a highlighted bucket."""
 
-    added: list[SkillCommandRef] = Field(default_factory=list)
-    removed: list[SkillCommandRef] = Field(default_factory=list)
-    unchanged: list[str] = Field(default_factory=list)
-    total: int = 0
-    commands: int = 0
+    key: str
+    glyph: str
+    label: str
+    meta: str
+    style: str
+    alpha: float
+
+
+class SkillsReloadDiff(Result):
+    """``agent.skill_commands.reload_skills`` always returns this complete diff."""
+
+    added: list[SkillCommandRef]
+    removed: list[SkillCommandRef]
+    unchanged: list[str]
+    total: int
+    commands: int
 
 
 class SkillsReloadResult(Result):
@@ -247,8 +258,9 @@ class LearningFrame(Result):
     reveal: float
     date: str
     visible: int
+    # ``learning_graph_render`` emits heterogeneous style-run lists.
     grid: list[list[JsonValue]]
-    labels: list[dict[str, JsonValue]] = Field(default_factory=list)
+    labels: list[LearningFrameLabel] = Field(default_factory=list)
 
 
 class LearningLegendItem(Result):
@@ -349,8 +361,105 @@ class McpCatalogResult(Result):
     servers: list[McpCatalogEntry]
 
 
-method("mcp.catalog", params=ProfileParams, result=McpCatalogResult,
+method("mcp.catalog", params=Params, result=McpCatalogResult,
        doc="Curated MCP presets with per-profile installed/enabled state and the env keys each needs.")
+
+
+class McpToolsConfig(Params):
+    """``tools.mcp_tool_registration`` accepts this tool-filter and utility policy."""
+
+    include: list[str] | None = None
+    exclude: list[str] | None = None
+    resources: bool | None = None
+    prompts: bool | None = None
+
+
+class McpSamplingConfig(Params):
+    """``tools.mcp_tool_sampling.SamplingHandler`` accepts these server-request limits."""
+
+    enabled: bool | None = None
+    max_rpm: int | None = None
+    timeout: float | None = None
+    max_tokens_cap: int | None = None
+    max_tool_rounds: int | None = None
+    model: str | None = None
+    allowed_models: list[str] | None = None
+    log_level: str | None = None
+
+
+class McpElicitationConfig(Params):
+    """``tools.mcp_tool_sampling.ElicitationHandler`` accepts this approval policy."""
+
+    enabled: bool | None = None
+    timeout: float | None = None
+
+
+class McpLifecycleConfig(Params):
+    """``tools.mcp_tool_common._get_lifecycle_seconds`` reads these stdio recycle limits."""
+
+    idle_timeout_seconds: float | None = None
+    max_lifetime_seconds: float | None = None
+
+
+class McpOauthConfig(Params):
+    """``tools.mcp_oauth*`` reads this OAuth client configuration."""
+
+    client_id: str | None = None
+    client_secret: str | None = None
+    client_metadata_url: str | None = None
+    cimd: bool | None = None
+    user_agent: str | None = None
+    timeout: float | None = None
+    flow: str | None = None
+    redirect_uri: str | None = None
+    redirect_host: str | None = None
+    redirect_port: int | None = None
+    client_name: str | None = None
+    token_endpoint_auth_method: str | None = None
+    application_type: str | None = None
+    scope: str | None = None
+
+
+class McpIdentityHeaderConfig(Params):
+    """``tools.mcp_tool_errors._resolve_identity_header`` accepts these fields."""
+
+    name: str
+    value_from: str | None = None
+    value: str | None = None
+
+
+class McpServerConfig(Params):
+    """Closed configuration accepted by ``tools.mcp_tool_config`` and transport helpers."""
+
+    command: str | None = None
+    args: list[str] | None = None
+    env: dict[str, str] | None = None
+    url: str | None = None
+    headers: dict[str, str] | None = None
+    transport: str | None = None
+    enabled: bool | None = None
+    timeout: float | None = None
+    connect_timeout: float | None = None
+    protocol: str | None = None
+    supports_parallel_tool_calls: bool | None = None
+    skip_preflight: bool | None = None
+    keepalive_interval: float | None = None
+    idle_timeout_seconds: float | None = None
+    max_lifetime_seconds: float | None = None
+    lifecycle: McpLifecycleConfig | None = None
+    tools: McpToolsConfig | None = None
+    auth: str | None = None
+    oauth: McpOauthConfig | None = None
+    sampling: McpSamplingConfig | None = None
+    elicitation: McpElicitationConfig | None = None
+    trust: str | None = None
+    ssl_verify: bool | str | None = None
+    client_cert: str | list[str] | None = None
+    client_key: str | None = None
+    identity_header: McpIdentityHeaderConfig | None = None
+    strict_redirect_headers: bool | None = None
+    lazy: bool | None = None
+    cwd: str | None = None
 
 
 class McpServerSummary(Result):
@@ -365,6 +474,7 @@ class McpServerSummary(Result):
     auth: str | None = None
     oauth_tokens_present: bool | None = None
     enabled: bool
+    # ``mcp_rpc_helpers`` redacts but otherwise forwards the configurable filter object.
     tools: JsonValue | None = None
 
 
@@ -372,7 +482,7 @@ class McpServersListResult(Result):
     servers: list[McpServerSummary]
 
 
-method("mcp.servers.list", params=ProfileParams, result=McpServersListResult,
+method("mcp.servers.list", params=Params, result=McpServersListResult,
        doc="Configured MCP servers for the (scoped) profile, secrets redacted to env-key names.")
 
 
@@ -400,20 +510,19 @@ class McpServersStatusResult(Result):
     checked_at: int
 
 
-method("mcp.servers.status", params=ProfileParams, result=McpServersStatusResult,
+method("mcp.servers.status", params=Params, result=McpServersStatusResult,
        doc="Cached runtime state per configured server; never connects, probes, or starts auth.")
 
 
-class McpServerNameParams(ProfileParams):
+class McpServerNameParams(Params):
     name: str
 
 
 class McpServersAddParams(McpServerNameParams):
-    """``preset`` (catalog id) and/or ``config`` (url/command/args/env/headers/auth/tools); a
-    ``bearer_token`` is written to the profile's .env, only the header template persists."""
+    """``preset`` (catalog id) and/or closed ``config``; bearer tokens become an env-backed header."""
 
     preset: str | None = None
-    config: dict[str, JsonValue] | None = None
+    config: McpServerConfig | None = None
     bearer_token: str | None = None
 
 
@@ -572,7 +681,7 @@ class PluginsAction(WireEnum):
     update = "update"
 
 
-class PluginsManageParams(ProfileParams):
+class PluginsManageParams(Params):
     """``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``
     (+ ``force``, ``enable``, ``ref``); ``update``: ``name``."""
 

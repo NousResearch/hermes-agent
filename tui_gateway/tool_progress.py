@@ -4,6 +4,10 @@ projection. Bodies are rebound onto server.py's globals (method_ctx.bind_module)
 from __future__ import annotations
 
 from .method_ctx import bind_module
+from .contracts.events import (
+    MoaAggregatingPayload, MoaPhasePayload, MoaProgressPayload, MoaReferencePayload,
+    StreamDeltaPayload, SubagentEventPayload, TodoUpdatedPayload, ToolCompletePayload,
+    ToolOutputRiskPayload, ToolStartPayload)
 
 # Verbose tool text is capped to the Ink render budget (a hair more, so the "[omitted …]" label
 # stays informative): unbounded output fed a render-tree blowup that OOM-killed the TUI parent.
@@ -208,12 +212,13 @@ def _connector_lifecycle_is_stale(sid: str, name: str, args: dict) -> bool:
 
 
 def _emit_tool_lifecycle(event, sid, name, args, payload):
+    payload_model = payload
     if not _connector_tool_lifecycle(name, args):
-        return _emit(event, sid, payload)
+        return _emit(event, sid, payload_model)
     from tui_gateway.connector_payload import connector_ui_payload
     from tui_gateway.event_replay import _stamp_event
 
-    payload = connector_ui_payload(payload)
+    payload = type(payload).model_validate(connector_ui_payload(payload.model_dump(mode="json")))
     # Capture the owner after projection so id reuse cannot redirect its link,
     # then release the session lock before potentially blocking transport I/O.
     with _sessions_lock:
@@ -249,7 +254,7 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             payload["args"] = args
         if _session_verbose(sid) and (args_text := _tool_args_text(args)):
             payload["args_text"] = args_text
-        _emit_tool_lifecycle("tool.start", sid, name, args, payload)
+        _emit_tool_lifecycle("tool.start", sid, name, args, ToolStartPayload.model_validate(payload))
 
 
 def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
@@ -283,11 +288,11 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
             payload["inline_diff"] = "\n".join(rendered)
     if (_tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name)
             or name in _TODO_TOOL_NAMES or _connector_tool_lifecycle(name, args)):
-        _emit_tool_lifecycle("tool.complete", sid, name, args, payload)
+        _emit_tool_lifecycle("tool.complete", sid, name, args, ToolCompletePayload.model_validate(payload))
     # Task state is application data, not tool-progress chrome: a dedicated full-snapshot event lets
     # every client reconcile without parsing tool args.
     if todo_state is not None:
-        _emit("todo.updated", sid, todo_state)
+        _emit("todo.updated", sid, TodoUpdatedPayload.model_validate(todo_state))
 
 
 # ── _on_tool_progress dispatch: each handler takes (sid, name, preview, kw) ─────────────────────
@@ -297,14 +302,13 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
 def _progress_output_risk(sid, name, preview, kw):
     metadata = kw.get("risk_metadata")
     if isinstance(metadata, dict):
-        _emit("tool.output_risk", sid, {
-            "tool_id": str(kw.get("tool_call_id") or ""), "name": str(name), "risk": str(metadata.get("risk") or "low"),
-            "findings": [str(item) for item in metadata.get("findings", [])], "redacted": bool(metadata.get("redacted", False)),
-        })
+        _emit("tool.output_risk", sid, ToolOutputRiskPayload(
+            tool_id=str(kw.get("tool_call_id") or ""), name=str(name), risk=str(metadata.get("risk") or "low"),
+            findings=[str(item) for item in metadata.get("findings", [])], redacted=bool(metadata.get("redacted", False))))
 
 
 def _progress_reasoning(sid, name, preview, kw):
-    _emit("reasoning.available", sid, {"text": str(preview), **({"verbose": True} if _session_verbose(sid) else {})})
+    _emit("reasoning.available", sid, StreamDeltaPayload(text=str(preview), verbose=True if _session_verbose(sid) else None))
 
 
 def _progress_moa_reference(sid, name, preview, kw):
@@ -314,7 +318,7 @@ def _progress_moa_reference(sid, name, preview, kw):
     for key, out in (("moa_index", "index"), ("moa_count", "count")):
         if kw.get(key) is not None:
             ref_payload[out] = kw[key]
-    _emit("moa.reference", sid, ref_payload)
+    _emit("moa.reference", sid, MoaReferencePayload.model_validate(ref_payload))
 
 
 def _progress_moa_progress(sid, name, preview, kw):
@@ -325,7 +329,7 @@ def _progress_moa_progress(sid, name, preview, kw):
     # deterministically.
     if refs_done is None or refs_total is None:
         return
-    _emit("moa.progress", sid, {"label": str(name or ""), "refs_done": int(refs_done), "refs_total": int(refs_total)})
+    _emit("moa.progress", sid, MoaProgressPayload(label=str(name or ""), refs_done=int(refs_done), refs_total=int(refs_total)))
 
 
 def _progress_moa_phase(sid, name, preview, kw):
@@ -339,7 +343,7 @@ def _progress_moa_phase(sid, name, preview, kw):
             phase_payload[out] = int(kw[key])
     if name:
         phase_payload["aggregator"] = str(name)
-    _emit("moa.phase", sid, phase_payload)
+    _emit("moa.phase", sid, MoaPhasePayload.model_validate(phase_payload))
 
 
 def _not_none(v):
@@ -373,6 +377,7 @@ _SUBAGENT_FIELDS = (
 
 
 def _progress_subagent(sid, name, preview, kw, event_type):
+    payload_model = kw.pop("subagent_payload", None)
     payload = {"goal": str(kw.get("goal") or ""), "task_count": int(kw.get("task_count") or 1), "task_index": int(kw.get("task_index") or 0)}
     source = {**kw, "tool_name": name, "text": preview}
     for key, present, coerce in _SUBAGENT_FIELDS:
@@ -385,8 +390,10 @@ def _progress_subagent(sid, name, preview, kw, event_type):
         payload["text"] = str(preview)
     # subagent.text is the child's per-token reply, relayed solely to feed a watch window's live mirror
     # (keyed off the child sid); on the parent it's hundreds of ignored frames, so skip it.
+    payload_model = payload_model if isinstance(payload_model, SubagentEventPayload) else SubagentEventPayload(**payload)
+    payload = payload_model.model_dump(mode="json")
     if event_type != "subagent.text":
-        _emit(event_type, sid, payload)
+        _emit(event_type, sid, payload_model)
     _mirror_subagent_to_child(event_type, payload)
 
 
@@ -395,7 +402,7 @@ def _progress_subagent(sid, name, preview, kw, event_type):
 _PROGRESS_HANDLERS = {
     "tool.output_risk": (_progress_output_risk, "name"), "reasoning.available": (_progress_reasoning, "preview"),
     "moa.reference": (_progress_moa_reference, "name"),
-    "moa.aggregating": (lambda sid, name, preview, kw: _emit("moa.aggregating", sid, {"aggregator": str(name or "")}), None),
+    "moa.aggregating": (lambda sid, name, preview, kw: _emit("moa.aggregating", sid, MoaAggregatingPayload(aggregator=str(name or ""))), None),
     "moa.progress": (_progress_moa_progress, None), "moa.phase": (_progress_moa_phase, None),
 }
 

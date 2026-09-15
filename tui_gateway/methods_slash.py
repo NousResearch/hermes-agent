@@ -9,6 +9,8 @@ from __future__ import annotations
 import contextlib
 
 from .method_ctx import HandlerRegistry, bind_module
+from .contracts.common import SessionLiveInfo
+from .contracts.sessions import SessionStatusParams
 
 _registry = HandlerRegistry()
 
@@ -58,7 +60,7 @@ def _format_live_review_output(sid: str, session: Optional[dict], arg: str) -> s
 def _format_live_usage_output(sid: str, session: dict, arg: str) -> str:
     agent = session.get("agent")
     usage = _session_usage_snapshot(session)
-    if agent is None and not usage:
+    if agent is None and not usage.total and not usage.model:
         return _NO_AGENT_USAGE
     if session.get("_metadata_message_count") is not None:
         message_count = int(session.get("_metadata_message_count") or 0)
@@ -67,18 +69,18 @@ def _format_live_usage_output(sid: str, session: dict, arg: str) -> str:
             message_count = len(session.get("history", []))
 
     def n(key: str) -> str:
-        return f"{int(usage.get(key) or 0):,}"
+        return f"{int(getattr(usage, key) or 0):,}"
     rows = [("Input tokens:", n("input")), ("Output tokens:", n("output"))]
-    if int(usage.get("reasoning") or 0):
+    if int(usage.reasoning or 0):
         rows.append(("Reasoning tokens:", n("reasoning")))
     rows += [("Prompt tokens:", n("prompt")), ("Completion tokens:", n("completion")),
              ("Total tokens:", n("total")), ("API calls:", n("calls"))]
-    if usage.get("context_max"):
-        pct = int(usage.get("context_percent") or 0)
-        mark = "~" if usage.get("context_estimated") else ""
+    if usage.context_max:
+        pct = int(usage.context_percent or 0)
+        mark = "~" if usage.context_estimated else ""
         rows.append(("Current context:", f"{mark}{n('context_used')} / {n('context_max')} ({mark}{pct}%)"))
     rows += [("Messages:", f"{message_count:,}"), ("Compressions:", n("compressions"))]
-    model = usage.get("model") or _metadata_mirror(session).get("model") or getattr(agent, "model", "") or "(unknown)"
+    model = usage.model or _metadata_mirror(session).get("model") or getattr(agent, "model", "") or "(unknown)"
     lines = ["Session Token Usage", "────────────────────────────────────────", f"Model: {model}"]
     return "\n".join(lines + [f"{label:<30}{value}" for label, value in rows])
 
@@ -139,19 +141,19 @@ def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
     lines = [f"Conversation: {len(messages)} messages" if messages else "Conversation is empty (no messages yet)."]
     roles = Counter(str(msg.get("role") or "unknown") for msg in messages)
     lines.append("  " + ", ".join(f"{r}: {roles.get(r, 0)}" for r in ("user", "assistant", "tool", "system")))
-    if model := mirror.get("model") or usage.get("model") or "":
+    if model := mirror.get("model") or usage.model or "":
         lines.append(f"Model: {model}")
     lines.append(f"Provider: {mirror.get('provider') or 'auto'}")
-    context_used = int(usage.get("context_used") or 0)
-    mark = "~" if usage.get("context_estimated") else ""
-    context_max = int(usage.get("context_max") or 0)
+    context_used = int(usage.context_used or 0)
+    mark = "~" if usage.context_estimated else ""
+    context_max = int(usage.context_max or 0)
     if context_used and context_max:
         lines.append(
             f"Context usage: {mark}{context_used:,} / {context_max:,} tokens ({mark}{(context_used / context_max) * 100:.1f}%)")
     elif context_used:
         lines.append(f"Context usage: {mark}{context_used:,} tokens")
-    if usage.get("compressions"):
-        lines.append(f"Compressions: {int(usage.get('compressions') or 0):,}")
+    if usage.compressions:
+        lines.append(f"Compressions: {int(usage.compressions or 0):,}")
     if (agent := session.get("agent")) is not None:
         from agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
         # RPC thread: bind the session cwd or the discovery walk keys on the backend's cwd, not the workspace.
@@ -198,10 +200,10 @@ def _format_live_model_output(session: dict) -> str:
 
 
 def _format_live_status_output(sid: str, session: dict, arg: str) -> str:
-    response = _methods["session.status"]("status", {"session_id": sid})
-    if response.get("error"):
-        return str(response["error"].get("message") or "status unavailable")
-    return str(response.get("result", {}).get("output") or "")
+    response = invoke("session.status", SessionStatusParams(session_id=sid))
+    if isinstance(response, dict):
+        return str(response.get("error", {}).get("message") or "status unavailable")
+    return str(response.output or "")
 
 
 # name → (reply when there is no session, formatter(sid, session, arg) or a fixed reply).
@@ -289,7 +291,7 @@ def _compress_live_with_feedback(sid: str, session: dict, agent, arg: str, *, sn
         after_messages = list(session.get("history", []))
     after_tokens = estimate(
         after_messages, getattr(agent, "_cached_system_prompt", "") or sys_prompt, getattr(agent, "tools", None) or tools)
-    _emit("session.info", sid, _session_info(agent, session))
+    _emit("session.info", sid, SessionLiveInfo.model_validate(_session_info(agent, session)))
     fb = summarize_manual_compression(
         before_messages, after_messages, before_tokens, after_tokens,
         compression_state=getattr(agent, "context_compressor", None))
@@ -324,7 +326,7 @@ def _mirror_fast(sid, session, agent, arg) -> None:
     if agent:
         if arg.lower() in _FAST_TIERS:
             agent.service_tier = _FAST_TIERS[arg.lower()]
-        _emit("session.info", sid, _session_info(agent, session))
+        _emit("session.info", sid, SessionLiveInfo.model_validate(_session_info(agent, session)))
 
 
 def _mirror_reload_mcp(sid, session, agent, arg) -> None:

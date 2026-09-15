@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $currentUsage } from '@/store/session'
+import { messageCompletePayload, usage } from '@/test/contract'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -33,56 +34,42 @@ describe('useMessageStream status-bar usage scoping', () => {
   it('merges a live session.usage tick from the focused session', () => {
     mountStream()
 
-    act(() =>
-      stream.handleEvent({
-        payload: { usage: { context_percent: 42, input: 1200, total: 1280 } },
-        session_id: SID,
-        type: 'session.usage'
-      })
-    )
+    // The contract sends every usage field on each tick, so a tick replaces the row wholesale.
+    const tick = usage({ ...BASELINE, context_percent: 42, input: 1200, total: 1280 })
 
-    // Merge, not replace: fields absent from the tick keep their prior values.
-    expect($currentUsage.get()).toEqual({ ...BASELINE, context_percent: 42, input: 1200, total: 1280 })
-    expect(sessionStates.get(SID)?.usage).toEqual({
-      ...BASELINE,
-      context_percent: 42,
-      input: 1200,
-      total: 1280
-    })
+    act(() => stream.handleEvent({ payload: { usage: tick }, session_id: SID, type: 'session.usage' }))
+
+    expect($currentUsage.get()).toEqual(tick)
+    expect(sessionStates.get(SID)?.usage).toEqual(tick)
   })
 
   it('caches a background session.usage tick without overwriting the primary status bar', () => {
     mountStream()
 
+    const tick = usage({ input: 9999, total: 9999 })
+
     act(() =>
-      stream.handleEvent({
-        payload: { usage: { input: 9999, total: 9999 } },
-        session_id: 'background-session',
-        type: 'session.usage'
-      })
+      stream.handleEvent({ payload: { usage: tick }, session_id: 'background-session', type: 'session.usage' })
     )
 
     expect($currentUsage.get()).toEqual(BASELINE)
-    expect(sessionStates.get('background-session')?.usage).toEqual({
-      calls: 0,
-      input: 9999,
-      output: 0,
-      total: 9999
-    })
+    expect(sessionStates.get('background-session')?.usage).toEqual(tick)
   })
 
   it('applies message.complete usage from the focused session', () => {
     mountStream()
 
+    const settled = usage({ calls: 3, input: 1500, output: 90, total: 1590 })
+
     act(() =>
       stream.handleEvent({
-        payload: { text: 'done', usage: { calls: 3, input: 1500, output: 90, total: 1590 } },
+        payload: messageCompletePayload({ text: 'done', usage: settled }),
         session_id: SID,
         type: 'message.complete'
       })
     )
 
-    expect($currentUsage.get()).toEqual({ calls: 3, input: 1500, output: 90, total: 1590 })
+    expect($currentUsage.get()).toEqual(settled)
   })
 
   it('ignores message.complete usage from a background session', () => {
@@ -90,7 +77,7 @@ describe('useMessageStream status-bar usage scoping', () => {
 
     act(() =>
       stream.handleEvent({
-        payload: { text: 'done', usage: { calls: 9, input: 9999, output: 999, total: 9999 } },
+        payload: messageCompletePayload({ text: 'done', usage: usage({ calls: 9, input: 9999, output: 999, total: 9999 }) }),
         session_id: 'background-session',
         type: 'message.complete'
       })

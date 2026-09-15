@@ -8,6 +8,7 @@ import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
 import { readDesktopFileDataUrlLocalFirst, selectDesktopPaths } from '@/lib/desktop-fs'
 import { desktopGit } from '@/lib/desktop-git'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { downscaleDataUrlForPreview } from '@/lib/image-resize'
 import { normalize } from '@/lib/text'
 import {
@@ -22,7 +23,6 @@ import {
 } from '@/store/composer'
 import { notify, notifyError } from '@/store/notifications'
 
-import type { ImageDetachResponse } from '../../types'
 
 const IMAGE_EXTENSION_PATTERN = /\.(png|jpe?g|gif|webp|bmp|tiff?|svg|ico)$/i
 
@@ -336,7 +336,7 @@ const MAIN_ACTIONS_SCOPE: ComposerActionsScope = {
 interface ComposerActionsOptions {
   activeSessionId: string | null
   currentCwd: string
-  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequest
   scope?: ComposerActionsScope
 }
 
@@ -802,7 +802,7 @@ export function useComposerActions({
         removed.attachedSessionId &&
         removed.attachedSessionId === activeSessionId
       ) {
-        await requestGateway<ImageDetachResponse>('image.detach', {
+        await requestGateway('image.detach', {
           session_id: activeSessionId,
           path: removed.path
         }).catch(() => undefined)

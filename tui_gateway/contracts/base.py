@@ -12,38 +12,39 @@ Modelling rules (they keep the generated TS clean and the wire stable):
 
 - ``snake_case`` field names, exactly as they travel.
 - Closed sets are ``StrEnum`` (rendered as literal unions); discriminators are ``Literal``.
-- ``X | None = None`` renders ``x?: X | null``; a plain default renders ``x?: X``.
-- Params models are ``extra="forbid"``: an unknown key is a client bug and answers ``4000``
-  instead of being silently ignored. Result and payload models are ``extra="allow"`` only
-  while a field is genuinely open (``dict[str, Any]`` is banned in a contract — declare the
-  shape or use ``JsonValue``).
+- Inbound models (method params and server-request results) render defaulted fields as optional.
+  Outbound models (method results, server-request params and event payloads) render every field
+  required; use ``X | None`` when the wire may carry ``null``.
+- Every model is ``extra="forbid"``. An unknown key in params is a client bug and answers
+  ``4000`` instead of being silently ignored; a genuinely open field is ``JsonValue``, never
+  ``dict[str, Any]`` or ``extra="allow"``.
 """
 
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
 
-from pydantic import BaseModel, ConfigDict
-
-JsonValue = Any  # a JSON scalar/array/object the contract deliberately leaves open (renders ``unknown``)
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 
 class Params(BaseModel):
-    """Client→server method params / server→client request params. Unknown keys are rejected."""
+    """Inbound client→server method params / outbound server-request params; unknown keys reject."""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
+    # The desktop routes any method to a named profile by injecting ``profile`` (``requestGatewayForProfile``,
+    # ``session-request-router.routeParams``) and ``server._profile_scoped`` reads it via getattr: transport, not surface.
+    profile: str | None = None
+
 
 class Result(BaseModel):
-    """Method / server-request result. Serialised with ``exclude_none=False`` so an explicit
-    ``null`` stays a ``null`` on the wire (clients distinguish absent from null)."""
+    """Outbound method / inbound server-request result; ``None`` serializes as wire ``null``."""
 
     model_config = ConfigDict(extra="forbid")
 
 
 class Payload(BaseModel):
-    """Notification payload (``event`` frame ``params.payload``)."""
+    """Outbound notification payload (``event`` frame ``params.payload``)."""
 
     model_config = ConfigDict(extra="forbid")
 

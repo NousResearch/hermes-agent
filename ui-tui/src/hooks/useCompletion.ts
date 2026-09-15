@@ -1,12 +1,10 @@
+import type { CompletionItem } from '@hermes/shared/gateway-events'
 import { looksLikeSlashCommand } from '@hermes/shared/slash'
 import { useEffect, useRef, useState } from 'react'
 
-import type { CompletionItem } from '../app/interfaces.js'
 import { rankSlashItems } from '../app/slash/fuzzyScore.js'
 import { inlineSlashTrigger } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { CompletionResponse } from '../gatewayTypes.js'
-import { asRpcResult } from '../lib/rpc.js'
 import { listWidgetApps } from '../sdk/registry.js'
 
 /** Client-side widget apps live in the TUI's registry, not the gateway — so
@@ -22,19 +20,18 @@ export function mergeWidgetAppItems(input: string, items: CompletionItem[]): Com
 
   const local = rankSlashItems(listWidgetApps(), input, app => ({ description: app.help, id: app.id }))
     .filter(app => !items.some(item => item.text === `/${app.id}`))
-    .map(app => ({ display: `/${app.id}`, meta: app.help, text: `/${app.id}` }))
+    .map(app => ({ display: `/${app.id}`, kind: null, meta: app.help, text: `/${app.id}` }))
 
   return [...items, ...local]
 }
 
 const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))[^\s]*)$/
 
-export function completionRequestForInput(
-  input: string
-):
+export type CompletionRequest =
   | { method: 'complete.path'; params: { word: string }; replaceFrom: number }
   | { method: 'complete.slash'; params: { text: string }; replaceFrom: number; skillsOnly?: boolean }
-  | null {
+
+export function completionRequestForInput(input: string): CompletionRequest | null {
   const isSlashCommand = looksLikeSlashCommand(input)
   const pathWord = isSlashCommand ? null : (input.match(TAB_PATH_RE)?.[1] ?? null)
 
@@ -77,6 +74,35 @@ export function completionRequestForInput(
   }
 }
 
+interface CompletionFetch {
+  items: CompletionItem[]
+  replaceFrom: number
+}
+
+/** One completion round-trip per method, so each result keeps its own generated shape.
+ *  An inline `/skill` reference replaces its own token, so the gateway's `replace_from`
+ *  (an offset into the synthetic `/query` it was sent) does not apply there. */
+const fetchCompletions = async (
+  gw: GatewayClient,
+  request: CompletionRequest,
+  input: string
+): Promise<CompletionFetch> => {
+  if (request.method === 'complete.path') {
+    const result = await gw.request('complete.path', request.params)
+
+    return { items: result.items, replaceFrom: request.replaceFrom }
+  }
+
+  const result = await gw.request('complete.slash', request.params)
+  const items = mergeWidgetAppItems(input, result.items)
+
+  // Mid-message offers SKILLS only: a built-in like `/model` acts on the app,
+  // so it is meaningless as a reference inside prose.
+  return request.skillsOnly
+    ? { items: items.filter(item => item.kind === 'skill'), replaceFrom: request.replaceFrom }
+    : { items, replaceFrom: result.replace_from ?? 1 }
+}
+
 export function useCompletion(input: string, blocked: boolean, gw: GatewayClient) {
   const [completions, setCompletions] = useState<CompletionItem[]>([])
   const [compIdx, setCompIdx] = useState(0)
@@ -116,35 +142,15 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
         return
       }
 
-      gw.request<CompletionResponse>(request.method, request.params)
-        .then(raw => {
+      fetchCompletions(gw, request, input)
+        .then(({ items, replaceFrom }) => {
           if (ref.current !== input) {
             return
           }
 
-          const r = asRpcResult<CompletionResponse>(raw)
-
-          const fetched =
-            request.method === 'complete.slash' ? mergeWidgetAppItems(input, r?.items ?? []) : (r?.items ?? [])
-
-          // Mid-message offers SKILLS only. A built-in like `/model` or `/new`
-          // acts on the app, so it's meaningless as a reference inside prose —
-          // only a skill reads as "handle this part with X". Filtering here
-          // rather than in the gateway keeps one completion source for both
-          // shapes.
-          const items =
-            request.method === 'complete.slash' && request.skillsOnly
-              ? fetched.filter(item => item.kind === 'skill')
-              : fetched
-
           setCompletions(items)
           setCompIdx(0)
-          // An inline reference replaces its own token, so the gateway's
-          // `replace_from` (an offset into the synthetic `/query` it was sent)
-          // doesn't apply — the caller already knows where the token starts.
-          setCompReplace(
-            request.method === 'complete.slash' && !request.skillsOnly ? (r?.replace_from ?? 1) : request.replaceFrom
-          )
+          setCompReplace(replaceFrom)
         })
         .catch((e: unknown) => {
           if (ref.current !== input) {
@@ -155,6 +161,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
             {
               text: '',
               display: 'completion unavailable',
+              kind: null,
               meta: e instanceof Error && e.message ? e.message : 'unavailable'
             }
           ])

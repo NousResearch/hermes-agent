@@ -6,6 +6,9 @@
  * cannot be interpreted downstream.
  */
 
+import type { SeedMessage } from '@hermes/shared'
+
+import { seedMessage } from '@/app/session/hooks/use-session-actions/create-overrides'
 import { machineKind, machineLanguageName, machineSetupLeads, machineUserName } from '@/store/machine'
 
 const VOICE_RULES =
@@ -17,17 +20,10 @@ export const PLAIN_SPEECH = `${VOICE_RULES} Keep every turn short. This is a cha
 
 /** Seed rows for the guided chat's session.create: the hidden runbook row, then the greeting. Pass the greeting the
  *  client is already animating (pickOnboardingGreeting) so the stored row and the animation hold the same words. */
-export function buildChatOnboardingSeedMessages(
-  greeting: string,
-  signedIn = false
-): {
-  content: string
-  display_kind?: 'hidden'
-  role: 'assistant' | 'user'
-}[] {
+export function buildChatOnboardingSeedMessages(greeting: string, signedIn = false): SeedMessage[] {
   return [
-    { content: buildChatOnboardingPrompt(machineUserName(), signedIn), display_kind: 'hidden', role: 'user' },
-    { content: greeting, role: 'assistant' }
+    seedMessage('user', buildChatOnboardingPrompt(machineUserName(), signedIn), 'hidden'),
+    seedMessage('assistant', greeting)
   ]
 }
 

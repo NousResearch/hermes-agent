@@ -12,11 +12,12 @@
 import { describe, expect, it } from 'vitest'
 
 import { routineFilterHint, selectRoutineJobs } from './cron'
+import { cronJobRow } from './cron-test-utils'
 import type { RoutineJob } from './types'
 
 const jobs: RoutineJob[] = [
-  { job_id: '1', name: '[bot:ops] Morning' },
-  { job_id: '2', name: '[bot:research] Digest' }
+  cronJobRow({ job_id: '1', name: '[bot:ops] Morning' }),
+  cronJobRow({ job_id: '2', name: '[bot:research] Digest' })
 ]
 
 describe('selecting the jobs for the active bot', () => {
@@ -29,8 +30,8 @@ describe('selecting the jobs for the active bot', () => {
 
   it('shows every job in a profile-scoped list, tagged or not', () => {
     const profileJobs: RoutineJob[] = [
-      { job_id: 'legacy', name: 'ordinary profile cronjob' },
-      { job_id: 'routine', name: '[bot:ops] Bot Mode routine' }
+      cronJobRow({ job_id: 'legacy', name: 'ordinary profile cronjob' }),
+      cronJobRow({ job_id: 'routine', name: '[bot:ops] Bot Mode routine' })
     ]
 
     const view = selectRoutineJobs({ jobs: profileJobs, scoped: 'ops' }, null, [], 'ops')
@@ -40,8 +41,8 @@ describe('selecting the jobs for the active bot', () => {
 
   it('keeps tag filtering for an unmarked list (older gateways)', () => {
     const profileJobs: RoutineJob[] = [
-      { job_id: 'legacy', name: 'ordinary launch-profile cronjob' },
-      { job_id: 'routine', name: '[bot:ops] Bot Mode routine' }
+      cronJobRow({ job_id: 'legacy', name: 'ordinary launch-profile cronjob' }),
+      cronJobRow({ job_id: 'routine', name: '[bot:ops] Bot Mode routine' })
     ]
 
     const view = selectRoutineJobs({ jobs: profileJobs }, null, [], 'ops')
@@ -51,8 +52,8 @@ describe('selecting the jobs for the active bot', () => {
 
   it('cannot leak another profile\u2019s jobs through a stale scope marker', () => {
     const profileJobs: RoutineJob[] = [
-      { job_id: 'research', name: 'ordinary research cronjob' },
-      { job_id: 'routine', name: '[bot:ops] Bot Mode routine' }
+      cronJobRow({ job_id: 'research', name: 'ordinary research cronjob' }),
+      cronJobRow({ job_id: 'routine', name: '[bot:ops] Bot Mode routine' })
     ]
 
     const view = selectRoutineJobs({ jobs: profileJobs, scoped: 'research' }, null, [], 'ops')
@@ -61,7 +62,7 @@ describe('selecting the jobs for the active bot', () => {
   })
 
   it('shows untagged legacy cronjobs only on the default bot', () => {
-    const legacy: RoutineJob = { job_id: 'legacy', name: 'Existing reminder' }
+    const legacy: RoutineJob = cronJobRow({ job_id: 'legacy', name: 'Existing reminder' })
 
     expect(selectRoutineJobs({ jobs: [legacy] }, null, [], 'default').jobs).toEqual([legacy])
     expect(selectRoutineJobs({ jobs: [legacy] }, null, [], 'ops').jobs).toEqual([])
@@ -97,7 +98,7 @@ describe('a failed refresh keeps the last good list', () => {
 // that cronjobs are present but hidden by the tag filter.
 describe('explaining an empty pane over a non-empty store', () => {
   it('stays quiet when the active bot already has tagged jobs', () => {
-    const all: RoutineJob[] = [{ job_id: '1', name: '[bot:ops] Morning' }]
+    const all: RoutineJob[] = [cronJobRow({ job_id: '1', name: '[bot:ops] Morning' })]
 
     expect(routineFilterHint(all, all)).toBeNull()
   })
@@ -109,8 +110,8 @@ describe('explaining an empty pane over a non-empty store', () => {
 
   it('explains the hidden jobs when the store has jobs but none match', () => {
     const all: RoutineJob[] = [
-      { job_id: '2', name: '[bot:research] Digest' },
-      { job_id: '3', name: 'untagged job' }
+      cronJobRow({ job_id: '2', name: '[bot:research] Digest' }),
+      cronJobRow({ job_id: '3', name: 'untagged job' })
     ]
 
     expect(routineFilterHint(all, [])).toMatch(/tagged for this bot/)

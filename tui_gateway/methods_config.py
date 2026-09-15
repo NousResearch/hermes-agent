@@ -2,6 +2,16 @@
 (method_ctx.bind_module) and reference them bare. ``config.set`` lives in methods_config_set.
 """
 
+from .contracts.base import Params
+from .contracts.config_free_tier_control import (
+    ConfigGetParams,
+    ConfigGetResult,
+    DiagnosticsShareNousParams,
+    DiagnosticsShareNousResult,
+    SetupRuntimeCheckParams,
+    SetupRuntimeCheckResult,
+    SetupStatusResult,
+)
 from .method_ctx import HandlerRegistry, bind_module
 
 from hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
@@ -30,39 +40,42 @@ def _reconcile_repo_discovery(pdb, conn, policy, policy_key):
 
 
 @_projects_handler("projects.discover_repos")
-def _(rid, params: dict) -> dict:
-    """Repos for the desktop overview: scanned-from-disk (cached) ∪ session-derived."""
+def _(rid, params) -> "ProjectsDiscoverReposResult | dict":
+    from tui_gateway.contracts.projects_pets import (
+        DiscoveredRepo, ProjectsDiscoverReposParams, ProjectsDiscoverReposResult, RepoDiscoveryPolicy,
+    )
+    assert isinstance(params, ProjectsDiscoverReposParams)
     with _profile_db(params) as db:
         if db is None:
-            return _ok(rid, {"repos": []})
+            return ProjectsDiscoverReposResult(repos=[], discovery_policy=None)
         from hermes_cli import projects_db as pdb
         policy = _repo_discovery_policy()
         with pdb.connect_closing() as conn:
             _reconcile_repo_discovery(pdb, conn, policy, _repo_discovery_policy_key(policy))
-            # `scan=true` (remote-gateway desktop): its native scan only sees its own filesystem,
-            # so the host scans the policy roots so zero-session repos surface.
-            # See #81723.
-            if params.get("scan") and policy["enabled"]:
+            if params.scan and policy["enabled"]:
                 _scan_discovered_repos_remote(conn, policy)
             repos = _discover_repos_payload(db, conn=conn, include_cached=policy["enabled"])
-        return _ok(rid, {"repos": repos, "discovery_policy": policy})
+        return ProjectsDiscoverReposResult(
+            repos=[DiscoveredRepo.model_validate(repo) for repo in repos],
+            discovery_policy=RepoDiscoveryPolicy.model_validate(policy),
+        )
 
 
 @_projects_handler("projects.record_repos")
-def _(rid, params: dict) -> dict:
-    """Persist repo roots found by the client's (desktop-side) scan; return the merged list."""
+def _(rid, params) -> "ProjectsRecordReposResult | dict":
+    from tui_gateway.contracts.projects_pets import (
+        DiscoveredRepo, ProjectsRecordReposParams, ProjectsRecordReposResult, RepoDiscoveryPolicy,
+    )
+    assert isinstance(params, ProjectsRecordReposParams)
     from hermes_cli import projects_db as pdb
     policy = _repo_discovery_policy()
     policy_key = _repo_discovery_policy_key(policy)
-    incoming = params.get("discovery_policy")
-    if isinstance(incoming, dict):
-        accepted = _repo_discovery_policy_key(_repo_discovery_policy(incoming)) == policy_key
-    else:
-        accepted = _repo_discovery_policy_is_default(policy)  # legacy client without a policy
+    incoming = params.discovery_policy
+    accepted = (
+        _repo_discovery_policy_key(_repo_discovery_policy(incoming.model_dump(mode="json"))) == policy_key
+        if incoming is not None else _repo_discovery_policy_is_default(policy))
     accepted = bool(policy["enabled"] and accepted)
-    pairs = [(item, None) if isinstance(item, str) else (str(item["root"]), item.get("label"))
-             for item in params.get("repos") or []
-             if isinstance(item, str) or (isinstance(item, dict) and item.get("root"))]
+    pairs = [(repo, None) if isinstance(repo, str) else (repo.root, repo.label) for repo in params.repos or []]
     with pdb.connect_closing() as conn:
         _reconcile_repo_discovery(pdb, conn, policy, policy_key)
         if accepted:
@@ -71,46 +84,51 @@ def _(rid, params: dict) -> dict:
             pdb.clear_discovered_repos(conn, policy_key=policy_key)
     with _profile_db(params) as db:
         repos = [] if db is None else _discover_repos_payload(db, include_cached=policy["enabled"])
-        return _ok(rid, {"repos": repos, "accepted": accepted, "discovery_policy": policy})
+        return ProjectsRecordReposResult(
+            repos=[DiscoveredRepo.model_validate(repo) for repo in repos], accepted=accepted,
+            discovery_policy=RepoDiscoveryPolicy.model_validate(policy),
+        )
 
 
 def _stamped_project_tree(db, params, **kwargs):
     """``_build_project_tree`` + profile stamping shared by the two tree RPCs."""
     from tui_gateway.project_tree import stamp_profile
     tree, active_id = _build_project_tree(db, **kwargs)
-    stamp_profile(tree["projects"], _response_profile_name(params.get("profile")))
+    stamp_profile(tree["projects"], _response_profile_name(params.profile))
     return tree, active_id
 
 
 @_projects_handler("projects.tree")
-def _(rid, params: dict) -> dict:
-    """Project -> repo -> lane overview with counts + a few preview sessions per project, plus the
-    flat set of session ids claimed by any project (excluded from flat Recents). Lanes carry no
-    session rows; drill-in uses ``projects.project_sessions``."""
+def _(rid, params) -> "ProjectsTreeResult | dict":
+    from tui_gateway.contracts.projects_pets import ProjectTreeNode, ProjectsTreeParams, ProjectsTreeResult
+    assert isinstance(params, ProjectsTreeParams)
     with _profile_db(params) as db:
         if db is None:
-            return _ok(rid, {"projects": [], "active_id": None, "scoped_session_ids": []})
+            return ProjectsTreeResult(projects=[], active_id=None, scoped_session_ids=[])
         tree, active_id = _stamped_project_tree(
-            db, params, preview_limit=int(params.get("preview_limit") or 3), hydrate=False,
-            session_limit=int(params.get("session_limit") or 2000), include_discovered=True)
-        return _ok(rid, {"projects": tree["projects"], "active_id": active_id,
-                         "scoped_session_ids": tree["scoped_session_ids"]})
+            db, params, preview_limit=params.preview_limit or 3, hydrate=True,
+            session_limit=params.session_limit or 2000, include_discovered=True)
+        return ProjectsTreeResult(
+            projects=[ProjectTreeNode.model_validate(project) for project in tree["projects"]],
+            active_id=active_id, scoped_session_ids=tree["scoped_session_ids"],
+        )
 
 
 @_projects_handler("projects.project_sessions")
-def _(rid, params: dict) -> dict:
-    """Fully hydrated lanes for one project, from the same grouping as ``projects.tree``."""
-    project_id = str(params.get("project_id") or "")
-    if not project_id:
-        return _err(rid, 5063, "project_id required")
+def _(rid, params) -> "ProjectsProjectSessionsResult | dict":
+    from tui_gateway.contracts.projects_pets import (
+        ProjectsProjectSessionsParams, ProjectsProjectSessionsResult, ProjectTreeNode,
+    )
+    assert isinstance(params, ProjectsProjectSessionsParams)
     with _profile_db(params) as db:
         if db is None:
-            return _ok(rid, {"project": None})
-        # Drill-in only needs the entered project: skip the zero-session discovery tier.
+            return ProjectsProjectSessionsResult(project=None)
         tree, _active = _stamped_project_tree(
             db, params, preview_limit=0, hydrate=True,
-            session_limit=int(params.get("session_limit") or 5000), include_discovered=False)
-        return _ok(rid, {"project": next((p for p in tree["projects"] if p["id"] == project_id), None)})
+            session_limit=params.session_limit or 5000, include_discovered=False)
+        project = next((item for item in tree["projects"] if item["id"] == params.project_id), None)
+        return ProjectsProjectSessionsResult(
+            project=ProjectTreeNode.model_validate(project) if project else None)
 
 
 # ── config.get — one getter per key returning the result payload.
@@ -136,8 +154,8 @@ def _cfg_get_provider(params):
             "providers": list_available_providers()}
 
 
-def _cfg_get_project(params):
-    raw = str(params.get("cwd", "") or (_load_cfg().get("terminal") or {}).get("cwd", "") or "").strip()
+def _cfg_get_project(params: ConfigGetParams):
+    raw = str(params.cwd or (_load_cfg().get("terminal") or {}).get("cwd", "") or "").strip()
     cwd = _completion_cwd({"cwd": raw} if raw else {})
     return {"cwd": cwd, "branch": git_probe.branch(cwd)}
 
@@ -148,9 +166,9 @@ def _cfg_get_personality(params):
     return {"value": active_personality_name(_load_cfg()) or "none"}
 
 
-def _cfg_get_reasoning(params):
+def _cfg_get_reasoning(params: ConfigGetParams):
     cfg = _load_cfg()
-    session = _sessions.get(params.get("session_id", "")) or {}
+    session = _sessions.get(params.session_id) or {}
     reasoning_config = session.get("create_reasoning_override")
     if session and not isinstance(reasoning_config, dict):
         reasoning_config = getattr(session.get("agent"), "reasoning_config", None)
@@ -165,10 +183,10 @@ def _cfg_get_reasoning(params):
     return {"value": effort, "display": display}
 
 
-def _cfg_get_fast(params):
+def _cfg_get_fast(params: ConfigGetParams):
     # `config.set fast` is session-scoped: prefer the session's live/pinned value over the
     # global key (a pre-build session keeps its pin in create_service_tier_override).
-    session = _sessions.get(params.get("session_id", "")) or {}
+    session = _sessions.get(params.session_id) or {}
     agent = session.get("agent")
     tier = (getattr(agent, "service_tier", None) if agent is not None
             else session.get("create_service_tier_override"))
@@ -227,13 +245,13 @@ _CONFIG_GET_ERR = {"provider": 5013, "approval_mode": 5001, "approvals.mode": 50
 
 @method("config.get")
 @_profile_scoped
-def _(rid, params: dict) -> dict:
-    key = params.get("key", "")
+def _(rid, params: ConfigGetParams) -> ConfigGetResult | dict:
+    key = params.key
     getter = _CONFIG_GETTERS.get(key)
     if getter is None:
         return _err(rid, 4002, f"unknown config key: {key}")
     try:
-        return _ok(rid, getter(params))
+        return ConfigGetResult(**getter(params))
     except Exception as e:
         if key not in _CONFIG_GET_ERR:
             raise
@@ -242,30 +260,26 @@ def _(rid, params: dict) -> dict:
 
 # ── setup readiness
 
-def _readiness_check(rid, params, probe):
-    """Shared shell of setup.status / setup.runtime_check. ``probe(profile, scoped)`` runs inside the
-    optional ``profile`` param's HERMES_HOME + ``.env`` secret scope (ContextVars: concurrent checks
-    stay isolated); ``scoped`` is the ``{"profile": ...}`` payload stamp (``{}`` for the launch
-    profile). An unknown profile answers ``ok=False`` (never a JSON-RPC error, never a quiet answer
-    for the launch profile instead)."""
+def _readiness_check(rid, params, probe, result_type):
+    """Run a readiness probe in the optional profile's runtime scope."""
     import contextlib
-    profile = str(params.get("profile") or "").strip() if isinstance(params, dict) else ""
+
+    profile = str(params.profile or "").strip()
     scope = contextlib.nullcontext()
     if profile:
         from hermes_cli import profiles as profiles_mod
         if not profiles_mod.profile_exists(profile):
-            return _ok(rid, {"ok": False, "profile": params.get("profile"),
-                             "error": f"Profile '{profile}' does not exist on this backend."})
+            return result_type(ok=False, profile=params.profile,
+                               error=f"Profile '{profile}' does not exist on this backend.")
         home = _profile_home(profile)
         if home is not None:
             scope = _session_profile_runtime_scope({"profile_home": str(home)})
     with scope:
-        payload = probe(profile, {"profile": profile} if profile else {})
-    return _ok(rid, payload)
+        return result_type(**probe(profile, {"profile": profile} if profile else {}))
 
 
 @method("setup.status")
-def _(rid, params: dict) -> dict:
+def _(rid, params: Params) -> SetupStatusResult | dict:
     """Loose provider check; ``profile`` (optional) scopes it to that profile's home.
 
     For the launch profile the answer is the boot bootstrap's record (``free_tier_bootstrap``):
@@ -287,13 +301,13 @@ def _(rid, params: dict) -> dict:
             return {"provider_configured": record.provider_configured, "ready": True,
                     "free_tier": record.free_tier, "other_providers": record.other_providers,
                     "inference_provider": record.inference_provider, **record.failure_fields(), **scoped}
-        return _readiness_check(rid, params, probe)
+        return _readiness_check(rid, params, probe, SetupStatusResult)
     except Exception as e:
         return _err(rid, 5016, str(e))
 
 
 @method("setup.runtime_check")
-def _(rid, params: dict) -> dict:
+def _(rid, params: SetupRuntimeCheckParams) -> SetupRuntimeCheckResult | dict:
     """Strict provider check via the same resolve_runtime_provider() the agent uses on session
     creation (setup.status is True if ANY provider auth state is discoverable): ok=False + the auth
     error when the model can't be served, so UIs surface onboarding before a doomed prompt.
@@ -302,7 +316,7 @@ def _(rid, params: dict) -> dict:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         from hermes_cli.auth import has_usable_secret
         from hermes_cli.main import _has_any_provider_configured
-        requested = str(params.get("provider") or "").strip() or None
+        requested = str(params.provider or "").strip() or None
 
         def probe(profile, scoped):
             runtime = resolve_runtime_provider(requested=requested)
@@ -328,9 +342,9 @@ def _(rid, params: dict) -> dict:
                     "source": runtime.get("source"),
                     "free_tier": provider == "nous" and route_is_welcome_host(runtime.get("base_url")),
                     **scoped}
-        return _readiness_check(rid, params, probe)
+        return _readiness_check(rid, params, probe, SetupRuntimeCheckResult)
     except Exception as e:
-        return _ok(rid, {"ok": False, "error": str(e)})
+        return SetupRuntimeCheckResult(ok=False, error=str(e))
 
 
 def _safe_client_label(label: str) -> str:
@@ -342,7 +356,7 @@ def _safe_client_label(label: str) -> str:
 
 
 @method("diagnostics.share_nous")
-def _(rid, params: dict) -> dict:
+def _(rid, params: DiagnosticsShareNousParams) -> DiagnosticsShareNousResult | dict:
     """Upload a redacted debug bundle to Nous-internal diagnostics storage — same collection +
     force-redaction pipeline as ``hermes debug share --nous``; redaction is NOT client-controllable
     and consent lives with the CALLER (privacy notice first). Structured ``ok``/``error`` envelope so
@@ -351,18 +365,17 @@ def _(rid, params: dict) -> dict:
     try:
         from hermes_cli.debug import _redact_log_text, build_nous_bundle, collect_share_bundle
         from hermes_cli.diagnostics_upload import share_to_nous
-        log_lines = params.get("log_lines")
-        if not isinstance(log_lines, int) or not (10 <= log_lines <= 2000):
+        log_lines = params.log_lines
+        if log_lines is None or not (10 <= log_lines <= 2000):
             log_lines = 200
         bundle = collect_share_bundle(log_lines=log_lines, redact=True)
         # Client text goes through the SAME upload-safe redactor as backend logs (force secret
         # redaction + email masking), never the weaker bare secret pass.
-        error_context = params.get("error_context")
-        if isinstance(error_context, str) and error_context.strip():
+        error_context = params.error_context
+        if error_context and error_context.strip():
             bundle["error-context.txt"] = _redact_log_text(error_context.strip()[:8_000])
         # Bounded: at most 4 files, 512KB each, sanitized labels — not an arbitrary upload surface.
-        extra_files = params.get("extra_files")
-        for label, text in list(extra_files.items())[:4] if isinstance(extra_files, dict) else ():
+        for label, text in list((params.extra_files or {}).items())[:4]:
             safe_label = _safe_client_label(label) if isinstance(label, str) else ""
             if safe_label and isinstance(text, str) and text.strip():
                 bundle[f"client/{safe_label}"] = _redact_log_text(text[:524_288])
@@ -370,12 +383,14 @@ def _(rid, params: dict) -> dict:
         view_url = res.get("viewUrl") or res.get("view_url")
         upload_id = res.get("id")
         if not view_url and not upload_id:  # an upload the user can't reference is useless to support
-            return _ok(rid, {"ok": False, "error": "upload succeeded but returned no view URL or id"})
-        return _ok(rid, {"ok": True, "view_url": view_url, "upload_id": upload_id,
-                         "expires_at": res.get("expiresAt") or res.get("expires_at")})
+            return DiagnosticsShareNousResult(ok=False, error="upload succeeded but returned no view URL or id")
+        return DiagnosticsShareNousResult(
+            ok=True, view_url=view_url, upload_id=upload_id,
+            expires_at=res.get("expiresAt") or res.get("expires_at"))
     except Exception as e:
-        return _ok(rid, {"ok": False, "error": str(e)})
+        return DiagnosticsShareNousResult(ok=False, error=str(e))
 
 
 def register(server) -> None:
+    """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
     bind_module(globals(), server, skip=("_",))

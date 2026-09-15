@@ -1,3 +1,5 @@
+import type { JsonValue } from '@hermes/shared'
+
 import { $gateway } from '@/store/gateway'
 import { $activeSessionId } from '@/store/session'
 
@@ -13,7 +15,7 @@ export interface OneShotRequest {
   /** Registered backend template id (e.g. 'commit_message'). */
   template?: string
   /** Variables for the template. */
-  variables?: Record<string, unknown>
+  variables?: Record<string, JsonValue>
   /** Raw system prompt (used when no template is given). */
   instructions?: string
   /** Raw user content (used when no template is given). */
@@ -43,7 +45,7 @@ export async function requestOneShot(req: OneShotRequest): Promise<string> {
 
   const sessionId = req.sessionId === undefined ? $activeSessionId.get() : req.sessionId
 
-  const result = await gateway.request<{ text?: string }>('llm.oneshot', {
+  const result = await gateway.request('llm.oneshot', {
     input: req.input,
     instructions: req.instructions,
     max_tokens: req.maxTokens,
@@ -51,7 +53,7 @@ export async function requestOneShot(req: OneShotRequest): Promise<string> {
     task: req.task,
     temperature: req.temperature,
     template: req.template,
-    variables: req.variables
+    variables: req.variables ?? null
   })
 
   return (result?.text ?? '').trim()

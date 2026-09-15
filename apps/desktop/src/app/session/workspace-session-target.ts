@@ -1,5 +1,6 @@
 import type { MutableRefObject } from 'react'
 
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { pinNewChatProfile } from '@/store/profile'
 import { followActiveSessionCwd, projectProfile, resolveNewSessionCwd } from '@/store/projects'
 import {
@@ -15,7 +16,7 @@ interface WorkspaceSessionOptions {
   followActiveSessionCwd?: (cwd: string) => void | Promise<void>
   onExplicitWorkspace?: (cwd: string) => void
   path: null | string
-  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequest
   startFreshSessionDraft: (options?: { workspaceTarget: NewChatWorkspaceTarget }) => void
 }
 
@@ -61,7 +62,7 @@ export function startWorkspaceSession({
   const workspaceGeneration = $newChatWorkspaceTargetGeneration.get()
 
   setCurrentCwd(target)
-  void requestGateway<{ branch?: string; cwd?: string }>('config.get', { key: 'project', cwd: target })
+  void requestGateway('config.get', { key: 'project', cwd: target })
     .then(info => {
       if ($newChatWorkspaceTargetGeneration.get() !== workspaceGeneration || activeSessionIdRef.current) {
         return

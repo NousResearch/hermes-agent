@@ -9,7 +9,18 @@ import json
 import contextlib
 import threading
 
+from tui_gateway.contracts.server_requests import (
+    EmptyRequestParams, PreviewActRequestParams, ReadRangeRequestParams, SudoRequestParams,
+    SecretRequestParams, VaultCodeRequestParams, VaultSaveLoginRequestParams,
+    VaultUnlockRequestParams)
+
 from .method_ctx import bind_module
+from .contracts.common import SessionLiveInfo
+from .contracts.connectors_operation import ConnectionRequestPayload
+from .contracts.events import (
+    MessageCompletePayload, MessageInterimPayload, NotificationClearPayload, NotificationShowPayload,
+    PreviewRestartProgressPayload, ReactionPayload, StreamDeltaPayload, ToolCompletePayload,
+    ToolGeneratingPayload, ToolStartPayload)
 
 
 # Child-session live mirror: a delegated child's activity reaches the gateway only as
@@ -58,12 +69,12 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
         if event_type in _CHILD_DELTA_EVENTS:
             if text:
                 _emit(_CHILD_DELTA_EVENTS[event_type], csid,
-                      {"text": f"{text}\n" if event_type == "subagent.start" else text})
+                      StreamDeltaPayload(text=f"{text}\n" if event_type == "subagent.start" else text))
             return
         if event_type not in ("subagent.tool", "subagent.complete"):
             return
         if st["open_tool"]:
-            _emit("tool.complete", csid, st["open_tool"])
+            _emit("tool.complete", csid, ToolCompletePayload(**st["open_tool"]))
         if event_type == "subagent.tool":
             st["seq"] += 1
             tool = {"name": str(payload.get("tool_name") or "tool"),
@@ -71,10 +82,10 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
             if preview := str(payload.get("tool_preview") or payload.get("text") or ""):
                 tool["preview"] = preview
             st["open_tool"] = tool
-            _emit("tool.start", csid, tool)
+            _emit("tool.start", csid, ToolStartPayload(**tool))
         else:
             summary = str(payload.get("summary") or payload.get("text") or "")
-            _emit("message.complete", csid, {"text": summary})
+            _emit("message.complete", csid, MessageCompletePayload(text=summary))
             _child_mirrors.pop(child_key, None)
 
 
@@ -83,7 +94,7 @@ def _agent_cbs(sid: str) -> dict:
         # read_terminal / read_preview (desktop GUI): server request like clarify; the preview
         # read gets longer since a URL tab extracts text from a live page.
         return lambda start=None, count=None: _ask(
-            method, sid, {k: v for k, v in (("start", start), ("count", count)) if v is not None},
+            method, sid, ReadRangeRequestParams(session_id=sid, start=start, count=count),
             timeout=timeout)
 
     callbacks = {
@@ -91,29 +102,31 @@ def _agent_cbs(sid: str) -> dict:
         "tool_complete_callback": lambda tc_id, name, args, result: _on_tool_complete(sid, tc_id, name, args, result),
         "tool_progress_callback": lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
             sid, event_type, name, preview, args, **kwargs),
-        "tool_gen_callback": lambda name: _tool_progress_enabled(sid) and _emit("tool.generating", sid, {"name": name}),
-        "thinking_callback": lambda text: _emit("thinking.delta", sid, {"text": text}),
+        "tool_gen_callback": lambda name: _tool_progress_enabled(sid) and _emit("tool.generating", sid, ToolGeneratingPayload(name=name)),
+        "thinking_callback": lambda text: _emit("thinking.delta", sid, StreamDeltaPayload(text=text)),
         # Affection reaction (ily / <3 / good bot) → hearts; core-detected so TUI/desktop share it.
-        "reaction_callback": lambda kind: _emit("reaction", sid, {"kind": kind}),
+        "reaction_callback": lambda kind: _emit("reaction", sid, ReactionPayload(kind=kind)),
         "reasoning_callback": lambda text: _emit(
-            "reasoning.delta", sid, {"text": text, **({"verbose": True} if _session_verbose(sid) else {})}),
+            "reasoning.delta", sid, StreamDeltaPayload(text=text, verbose=True if _session_verbose(sid) else None)),
         "status_callback": lambda kind, text=None: _status_update(sid, str(kind), None if text is None else str(text)),
         # Credits/notice spine: AgentNotice → notification.show; recovery → notification.clear.
         "notice_callback": lambda n: _emit(
             "notification.show", sid,
-            {"text": n.text, "level": n.level, "kind": n.kind, "ttl_ms": n.ttl_ms, "key": n.key, "id": n.id}),
-        "notice_clear_callback": lambda key: _emit("notification.clear", sid, {"key": key}),
+            NotificationShowPayload(text=n.text, level=n.level, kind=n.kind, ttl_ms=n.ttl_ms, key=n.key, id=n.id)),
+        "notice_clear_callback": lambda key: _emit("notification.clear", sid, NotificationClearPayload(key=key)),
         "clarify_callback": lambda q, c, multi_select=False, questions=None: (
             _clarify_block(sid, q, c, multi_select=multi_select, questions=questions)),
         "read_terminal_callback": _read_block("terminal.read", 30),
         "read_preview_callback": _read_block("preview.read", 45),
         # drive_preview / annotate_preview (desktop GUI): same budget as the preview read it ends with.
-        "drive_preview_callback": lambda payload: _ask("preview.act", sid, dict(payload), timeout=45),
+        "drive_preview_callback": lambda payload: _ask(
+            "preview.act", sid, PreviewActRequestParams(session_id=sid, **payload), timeout=45),
         # read_window_below (desktop GUI): main process enumerates native windows.
-        "read_window_below_callback": lambda: _ask("window.read", sid, {}, timeout=30),
+        "read_window_below_callback": lambda: _ask("window.read", sid, EmptyRequestParams(session_id=sid), timeout=30),
         # manage_connections card. Fire-and-forget: the tool thread waits on its own operation
         # (tools/connectors/run.py), and the card drives it through connection.respond by op_id.
-        "connection_callback": lambda payload: _emit("connection.request", sid, dict(payload)) and None,
+        "connection_callback": lambda payload: _emit(
+            "connection.request", sid, ConnectionRequestPayload.model_validate(payload)) and None,
         # tour (desktop GUI): renderer drives driver.js and answers the ``tour`` request.
         "tour_callback": lambda payload: _tour_request(sid, payload)}
 
@@ -121,7 +134,7 @@ def _agent_cbs(sid: str) -> dict:
     # messages; _run_prompt_submit overwrites it per turn and clears it so a stale closure can't fire.
     if _load_interim_assistant_messages():
         callbacks["interim_assistant_callback"] = lambda text, *, already_streamed=False: _emit(
-            "message.interim", sid, {"text": str(text), "already_streamed": bool(already_streamed)})
+            "message.interim", sid, MessageInterimPayload(text=str(text), already_streamed=bool(already_streamed)))
     return callbacks
 
 
@@ -149,7 +162,7 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
         info = _session_info(agent, session) if agent is not None else {
             "cwd": resolved, "branch": git_probe.branch(resolved),
             "project": _project_info_for_cwd(resolved), "lazy": True}
-        _emit("session.info", sid, info)
+        _emit("session.info", sid, SessionLiveInfo.model_validate(info))
     except Exception:
         logger.debug("failed to emit session.info after project workspace move", exc_info=True)
 
@@ -162,15 +175,16 @@ def _wire_callbacks(sid: str):
     from tools.project_tools import set_project_workspace_callback
 
     def secret_cb(env_var, prompt, metadata=None):
-        pl = {"prompt": prompt, "env_var": env_var, **({"metadata": metadata} if metadata else {})}
-        val = _ask("secret", sid, pl)
+        val = _ask("secret", sid, SecretRequestParams(
+            session_id=sid, prompt=prompt, env_var=env_var, metadata=metadata))
         if not val:
             return {"success": True, "stored_as": env_var, "validated": False, "skipped": True, "message": "skipped"}
         from hermes_cli.config import save_env_value_secure
         return {**save_env_value_secure(env_var, val), "skipped": False, "message": "ok"}
 
     set_sudo_password_callback(lambda: _ask(
-        "sudo", sid, {"command": _redact_approval_command(get_sudo_prompt_command())}, timeout=120))
+        "sudo", sid, SudoRequestParams(session_id=sid, command=_redact_approval_command(get_sudo_prompt_command())),
+        timeout=120))
     set_project_workspace_callback(_apply_project_workspace)
     set_secret_capture_callback(secret_cb)
     # External password-manager unlock: the renderer shows a masked master-password card; the
@@ -179,11 +193,13 @@ def _wire_callbacks(sid: str):
                                              set_save_login_prompt_callback, set_unlock_prompt_callback)
     set_current_session_id(sid)  # an unlock made on this turn belongs to this session (released with it)
     set_unlock_prompt_callback(lambda backend, display_name: _ask(
-        "vault.unlock_prompt", sid, {"backend": backend, "display_name": display_name}, timeout=120))
+        "vault.unlock_prompt", sid, VaultUnlockRequestParams(
+            session_id=sid, backend=backend, display_name=display_name), timeout=120))
 
     def save_login_cb(origin, site):
         # The renderer shows identifier + masked password; the JSON answer goes straight to the vault store.
-        raw = _ask("vault.save_login", sid, {"origin": origin, "site": site}, timeout=180)
+        raw = _ask("vault.save_login", sid, VaultSaveLoginRequestParams(
+            session_id=sid, origin=origin, site=site), timeout=180)
         try:
             data = json.loads(raw) if raw else None
         except ValueError:
@@ -192,7 +208,7 @@ def _wire_callbacks(sid: str):
 
     set_save_login_prompt_callback(save_login_cb)
     set_code_prompt_callback(lambda site, hint: _ask(
-        "vault.code", sid, {"site": site, "hint": hint}, timeout=180))
+        "vault.code", sid, VaultCodeRequestParams(session_id=sid, site=site, hint=hint), timeout=180))
 
 
 def _available_personalities(cfg: dict | None = None) -> dict:
@@ -247,7 +263,7 @@ def _apply_personality_to_session(
         session["history"].append({"role": "user", "content": marker, "display_kind": "personality_switch"})
         session["history_version"] = int(session.get("history_version", 0)) + 1
     info = _session_info(agent)
-    _emit("session.info", sid, info)
+    _emit("session.info", sid, SessionLiveInfo.model_validate(info))
     return False, info
 
 
@@ -378,7 +394,7 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
 
     def progress(message: str, level: str = "info") -> None:
         if text := str(message or "").strip():
-            _emit("preview.restart.progress", parent, {"task_id": task_id, "level": level, "text": text})
+            _emit("preview.restart.progress", parent, PreviewRestartProgressPayload(task_id=task_id, level=level, text=text))
 
     def tool_start(tool_call_id: str, name: str, args: dict) -> None:
         started_at[tool_call_id] = time.time()
@@ -468,7 +484,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         session["history"] = []
         session["history_version"] = int(session.get("history_version", 0)) + 1
     info = _session_info(new_agent, session)
-    _emit("session.info", sid, info)
+    _emit("session.info", sid, SessionLiveInfo.model_validate(info))
     _restart_slash_worker(sid, session)
     return info
 

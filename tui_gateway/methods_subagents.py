@@ -4,6 +4,8 @@ Async projection adapted from JoaoMarcos44's PR #70899; controls reuse the
 existing subagent.steer RPC rather than introducing a second steering runtime.
 """
 
+from __future__ import annotations
+
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -27,26 +29,26 @@ def _owned_subagent_records(session_id, transport, owner):
 
 
 @method("subagent.list")
-def _(rid, params):
-    session_id = _str_param(params, "session_id")
+def _(rid, params: SessionParams) -> SubagentListResult | dict:
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import SubagentListResult
+    session_id = params.session_id
     transport, owner = _current_session_steer_authority(session_id)
     if transport is None or owner is None:
         return _err(rid, 4001, "session not found or not owned by this transport")
     live = _owned_subagent_records(session_id, transport, owner)
-    return _ok(rid, {
-        "subagents": [{key: r.get(key) for key in _SUBAGENT_SNAPSHOT_FIELDS} for r in live],
-        "delegations": [],
-    })
+    return SubagentListResult(
+        subagents=[{key: r.get(key) for key in _SUBAGENT_SNAPSHOT_FIELDS} for r in live], delegations=[])
 
 
 @method("subagent.interrupt")
-def _(rid, params):
+def _(rid, params: SubagentIdParams) -> SubagentInterruptResult | dict:
     from agent.interrupt_compat import request_hard_interrupt
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import SubagentInterruptResult
 
-    subagent_id = _str_param(params, "subagent_id")
+    subagent_id = params.subagent_id
     if not subagent_id:
         return _err(rid, 4000, "subagent_id required")
-    session_id = _str_param(params, "session_id")
+    session_id = params.session_id
     transport, owner = _current_session_steer_authority(session_id)
     if transport is None or owner is None:
         return _err(rid, 4001, "session not found or not owned by this transport")
@@ -60,24 +62,25 @@ def _(rid, params):
             found = bool(request_hard_interrupt(agent, f"Interrupted via TUI ({subagent_id})"))
         except Exception:
             logger.debug("subagent interrupt failed", exc_info=True)
-    return _ok(rid, {"found": found, "subagent_id": subagent_id})
+    return SubagentInterruptResult(found=found, subagent_id=subagent_id)
 
 
 @method("subagent.tail")
-def _(rid, params):
-    session_id = _str_param(params, "session_id")
-    subagent_id = _str_param(params, "subagent_id")
+def _(rid, params: SubagentIdParams) -> SubagentTailResult | dict:
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import SubagentTailResult
+    session_id = params.session_id
+    subagent_id = params.subagent_id
     if not subagent_id:
         return _err(rid, 4000, "subagent_id required")
     transport, owner = _current_session_steer_authority(session_id)
     if transport is None or owner is None:
         return _err(rid, 4001, "session not found or not owned by this transport")
-    result = {"subagent_id": subagent_id, "available": False, "text": "", "truncated": False}
+    result = SubagentTailResult(subagent_id=subagent_id, available=False, text="", truncated=False)
     record = next((r for r in _owned_subagent_records(session_id, transport, owner)
                    if r.get("subagent_id") == subagent_id), None)
     path = getattr(record.get("agent"), "_live_transcript_path", None) if record else None
     if not path:
-        return _ok(rid, result)
+        return result
     try:
         with open(path, "rb") as stream:
             size = stream.seek(0, 2)
@@ -85,8 +88,8 @@ def _(rid, params):
             text = stream.read(_SUBAGENT_TAIL_BYTES).decode("utf-8", errors="ignore")
     except OSError:
         # Creation/cleanup races are normal while a child starts or ends.
-        return _ok(rid, result)
-    return _ok(rid, {**result, "available": True, "text": text, "truncated": size > _SUBAGENT_TAIL_BYTES})
+        return result
+    return SubagentTailResult(subagent_id=subagent_id, available=True, text=text, truncated=size > _SUBAGENT_TAIL_BYTES)
 
 
 def register(server):

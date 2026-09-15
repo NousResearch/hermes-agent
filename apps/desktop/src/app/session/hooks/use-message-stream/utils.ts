@@ -1,6 +1,9 @@
+import type { SubagentStatus } from '@hermes/shared'
+
 import type { GatewayEventPayload } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { isTodoToolName } from '@/lib/todos'
+import type { SubagentPayload } from '@/store/subagents'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -178,7 +181,7 @@ export function delegateTaskPayloads(
   payload: GatewayEventPayload | undefined,
   phase: 'running' | 'complete',
   sourceEventType?: string
-): Record<string, unknown>[] {
+): SubagentPayload[] {
   if (payload?.name !== 'delegate_task') {
     return []
   }
@@ -189,39 +192,42 @@ export function delegateTaskPayloads(
   const tasks = rawTasks.length ? rawTasks.map(parseMaybeRecord) : [args]
   const resultStatus = typeof result.status === 'string' ? result.status.toLowerCase() : ''
   const failedResult = Boolean(payload.error) || ['timeout', 'error', 'failed', 'failure'].includes(resultStatus)
-  const status = phase === 'complete' ? (failedResult ? 'failed' : 'completed') : 'running'
+  const status: SubagentStatus = phase === 'complete' ? (failedResult ? 'failed' : 'completed') : 'running'
   const toolId = payload.tool_id || payload.tool_call_id || payload.id || 'delegate_task'
   const progressText = firstString(payload.preview, payload.message, payload.context)
-
-  const eventType =
-    phase === 'complete'
-      ? 'subagent.complete'
-      : sourceEventType === 'tool.start'
-        ? 'subagent.start'
-        : 'subagent.progress'
+  const starting = phase === 'running' && sourceEventType === 'tool.start'
+  const progressing = phase === 'running' && !starting
 
   return tasks.map((task, index) => {
     const goal = firstString(task.goal, args.goal, payload.context) || 'Delegated task'
     const summary = firstString(result.summary, payload.summary, payload.message)
 
     return {
-      depth: 0,
-      duration_seconds: payload.duration_s,
       goal,
-      status,
-      subagent_id: `delegate-tool:${toolId}:${index}`,
-      summary: summary || undefined,
       task_count: tasks.length,
       task_index: index,
-      text: eventType === 'subagent.progress' ? progressText || goal : undefined,
-      tool_name: eventType === 'subagent.start' ? 'delegate_task' : undefined,
-      tool_preview: eventType === 'subagent.start' ? progressText : undefined,
+      subagent_id: `delegate-tool:${toolId}:${index}`,
+      parent_id: null,
+      child_session_id: null,
+      delegation_id: null,
+      depth: 0,
+      model: null,
+      tool_count: null,
       toolsets: Array.isArray(task.toolsets) ? task.toolsets : Array.isArray(args.toolsets) ? args.toolsets : [],
-      event_type: eventType,
+      input_tokens: null,
+      output_tokens: null,
+      reasoning_tokens: null,
+      api_calls: null,
+      files_read: null,
+      files_written: null,
       output_tail:
-        phase === 'complete' && summary
-          ? [{ is_error: Boolean(payload.error), preview: summary, tool: 'delegate_task' }]
-          : undefined
+        phase === 'complete' && summary ? [{ is_error: Boolean(payload.error), preview: summary, tool: 'delegate_task' }] : null,
+      tool_name: starting ? 'delegate_task' : null,
+      text: progressing ? progressText || goal : null,
+      status,
+      summary: summary || null,
+      duration_seconds: payload.duration_s ?? null,
+      tool_preview: starting ? progressText || null : null
     }
   })
 }

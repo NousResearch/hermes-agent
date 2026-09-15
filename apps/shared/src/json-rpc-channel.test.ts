@@ -17,9 +17,9 @@ describe('JsonRpcRequestChannel', () => {
 
     channel.attach(transport)
 
-    const ok = channel.request<{ ok: boolean }>('session.create', { cols: 80 })
+    const ok = channel.request('session.create', { cols: 80 })
     const okId = last().id
-    const failing = channel.request('projects.create')
+    const failing = channel.request('projects.create', { name: 'example' })
     const failId = last().id
 
     expect(okId).toBe('x1')
@@ -31,7 +31,9 @@ describe('JsonRpcRequestChannel', () => {
         jsonrpc: '2.0'
       })
     )
-    channel.handleFrame(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'session.info', payload: {} } }))
+    channel.handleFrame(
+      JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'session.info', payload: {} } })
+    )
     // Non-JSON and unknown ids are ignored, never thrown.
     expect(channel.handleFrame('not json')).toBeNull()
     channel.handleFrame(JSON.stringify({ id: 'never-sent', jsonrpc: '2.0', result: 1 }))
@@ -67,15 +69,17 @@ describe('JsonRpcRequestChannel', () => {
 
       channel.attach(transport)
 
-      const slow = expect(channel.request('a.slow', {}, 1_000)).rejects.toThrow('request timed out after 1s: a.slow')
-      const untilDetach = channel.request('b.wait')
+      const slow = expect(channel.requestUntyped('a.slow', {}, 1_000)).rejects.toThrow(
+        'request timed out after 1s: a.slow'
+      )
+      const untilDetach = channel.requestUntyped('b.wait', {})
 
       await vi.advanceTimersByTimeAsync(1_000)
       await slow
 
       channel.detach(new Error('gateway exited (1)'))
       await expect(untilDetach).rejects.toThrow('gateway exited (1)')
-      await expect(channel.request('c.after')).rejects.toThrow('gateway not connected')
+      await expect(channel.requestUntyped('c.after', {})).rejects.toThrow('gateway not connected')
     } finally {
       vi.useRealTimers()
     }
@@ -139,7 +143,10 @@ describe('JsonRpcRequestChannel', () => {
       channel.startHeartbeat()
 
       const pingIds = () =>
-        sent.map(f => JSON.parse(f) as { id: string; method: string }).filter(f => f.method === 'gateway.ping').map(f => f.id)
+        sent
+          .map(f => JSON.parse(f) as { id: string; method: string })
+          .filter(f => f.method === 'gateway.ping')
+          .map(f => f.id)
 
       // Pongs arrive: alive well past the deadline.
       for (let i = 0; i < 6; i++) {
@@ -150,7 +157,7 @@ describe('JsonRpcRequestChannel', () => {
       expect(failures).toEqual([])
 
       // A response to one of our own requests also counts.
-      const call = channel.request('session.list')
+      const call = channel.request('session.list', {})
       const callId = (JSON.parse(sent.at(-1)!) as { id: string }).id
 
       await vi.advanceTimersByTimeAsync(250)
@@ -162,7 +169,9 @@ describe('JsonRpcRequestChannel', () => {
       // Deltas keep streaming but no ping is answered → dead.
       for (let i = 0; i < 4; i++) {
         await vi.advanceTimersByTimeAsync(100)
-        channel.handleFrame(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', payload: {} } }))
+        channel.handleFrame(
+          JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', payload: {} } })
+        )
       }
 
       expect(failures).toEqual(['WebSocket heartbeat acknowledgement timed out'])
@@ -173,34 +182,46 @@ describe('JsonRpcRequestChannel', () => {
 
   // Server→client requests (tui_gateway/server_requests.py): the backend asks,
   // the client answers with a RESPONSE frame carrying the same id.
-  it('routes a server request to the first accepting handler and answers -32601 when nobody accepts', () => {
+  it('routes a server request by generated method and answers -32601 when the method is unknown', () => {
     const unhandled: string[] = []
     const channel = new JsonRpcRequestChannel({ onUnhandledRequest: req => void unhandled.push(req.method) })
     const { sent, transport } = spyTransport()
 
     channel.attach(transport)
-    channel.onRequest(req => (req.method === 'clarify' ? void req.respond({ answer: 'yes' }) : false))
+    channel.onServerRequest('clarify', req => req.respond({ answer: 'yes' }))
 
-    channel.handleFrame(JSON.stringify({ id: 'srq-1', jsonrpc: '2.0', method: 'clarify', params: { session_id: 's1' } }))
-    channel.handleFrame(JSON.stringify({ id: 'srq-2', jsonrpc: '2.0', method: 'tour', params: { session_id: 's1' } }))
+    channel.handleFrame(
+      JSON.stringify({
+        id: 'srq-1',
+        jsonrpc: '2.0',
+        method: 'clarify',
+        params: { choices: [], kind: 'single', multi_select: false, question: 'Continue?', session_id: 's1' }
+      })
+    )
+    channel.handleFrame(
+      JSON.stringify({ id: 'srq-2', jsonrpc: '2.0', method: 'not.declared', params: { session_id: 's1' } })
+    )
 
     const frames = sent.map(f => JSON.parse(f) as { id: string; result?: unknown; error?: { code: number } })
 
     expect(frames[0]).toEqual({ id: 'srq-1', jsonrpc: '2.0', result: { answer: 'yes' } })
     expect(frames[1].id).toBe('srq-2')
     expect(frames[1].error?.code).toBe(-32601)
-    expect(unhandled).toEqual(['tour'])
+    expect(unhandled).toEqual(['not.declared'])
   })
 
-  it('re-delivers open_requests from a response before the caller sees the result, tagged replayed', async () => {
-    const delivered: Array<{ id: string; replayed?: boolean }> = []
+  it('re-delivers open_requests through their generated method, tagged replayed', async () => {
+    const delivered: Array<{ id: string; replayed?: boolean; sessionId: string | null }> = []
     const channel = new JsonRpcRequestChannel()
     const { sent, transport } = spyTransport()
 
     channel.attach(transport)
-    channel.onRequest(req => void delivered.push({ id: req.id, replayed: req.replayed }))
+    channel.onServerRequest(
+      'sudo',
+      req => void delivered.push({ id: req.id, replayed: req.replayed, sessionId: req.sessionId })
+    )
 
-    const resume = channel.request<{ session_id: string }>('session.resume', { session_id: 's1' })
+    const resume = channel.request('session.resume', { session_id: 's1' })
     const rid = (JSON.parse(sent.at(-1)!) as { id: string }).id
 
     channel.handleFrame(
@@ -214,6 +235,6 @@ describe('JsonRpcRequestChannel', () => {
       })
     )
     await expect(resume).resolves.toMatchObject({ session_id: 's1' })
-    expect(delivered).toEqual([{ id: 'srq-9', replayed: true }])
+    expect(delivered).toEqual([{ id: 'srq-9', replayed: true, sessionId: 's1' }])
   })
 })

@@ -7,7 +7,7 @@ import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import type { BillingRefusal, BillingResult } from './api'
 import { useBillingApi } from './api'
 import { resolveRefusal } from './errors'
-import type { BillingStateResponse, SubscriptionStateResponse, SubscriptionTierOption, UsageModelData } from './types'
+import type { BillingStateResult, SubscriptionStateResult, SubscriptionTierOption, UsageModel } from './types'
 
 export const EMPTY_BILLING_VALUE = '—'
 export const FALLBACK_PORTAL_BILLING_URL = 'https://portal.nousresearch.com/billing'
@@ -187,8 +187,8 @@ export function useSubscriptionState(enabled = true) {
 }
 
 export function deriveBillingView(
-  stateResult?: BillingResult<BillingStateResponse>,
-  subscriptionResult?: BillingResult<SubscriptionStateResponse>
+  stateResult?: BillingResult<BillingStateResult>,
+  subscriptionResult?: BillingResult<SubscriptionStateResult>
 ): BillingView {
   if (!stateResult) {
     return {
@@ -264,7 +264,7 @@ export function deriveBillingView(
 }
 
 export function buildManageSubscriptionUrl(
-  subscription?: null | Pick<SubscriptionStateResponse, 'org_id' | 'portal_url'>,
+  subscription?: null | Pick<SubscriptionStateResult, 'org_id' | 'portal_url'>,
   fallbackPortalUrl?: null | string,
   // Optional tier to pre-select on the portal, appended as `plan=<tierId>`
   // (validated server-side by the NAS reader, draft #748).
@@ -326,7 +326,7 @@ function emptySummary(): BillingSummaryItemView[] {
  * summary, and a single plan card whose only action is signing in — no payment,
  * credits, auto-refill or usage sections at all.
  */
-function freeTierView(billing: BillingStateResponse): BillingView {
+function freeTierView(billing: BillingStateResult): BillingView {
   return {
     notice: {
       action: { label: 'Sign in', onSelect: openFreeTierSignIn },
@@ -367,7 +367,7 @@ function refusalNotice(refusal: BillingRefusal): BillingNoticeView {
 // A logged-in account with no card can't buy credits or manage auto-refill, and
 // every one of those controls disables silently — so lead the page with a single
 // warn banner that names the blocker and links straight to the fix.
-function noCardNotice(billing: BillingStateResponse): BillingNoticeView | undefined {
+function noCardNotice(billing: BillingStateResult): BillingNoticeView | undefined {
   if (billing.card) {
     return undefined
   }
@@ -382,7 +382,7 @@ function noCardNotice(billing: BillingStateResponse): BillingNoticeView | undefi
 
 // The active tier from the UNFILTERED catalog — a grandfathered current tier is
 // is_enabled:false, so it must still resolve here (by is_current or matching id).
-function findCurrentTier(subscription: null | SubscriptionStateResponse): SubscriptionTierOption | undefined {
+function findCurrentTier(subscription: null | SubscriptionStateResult): SubscriptionTierOption | undefined {
   const current = subscription?.current
 
   return subscription?.tiers?.find(tier => tier.is_current || tier.tier_id === current?.tier_id)
@@ -391,8 +391,8 @@ function findCurrentTier(subscription: null | SubscriptionStateResponse): Subscr
 // Whether this account can change plans in-app: a personal (non-team) subscription
 // the server says the user can change, whose payload actually loaded.
 function plansCapable(
-  subscription: null | SubscriptionStateResponse,
-  subscriptionResult: BillingResult<SubscriptionStateResponse> | undefined
+  subscription: null | SubscriptionStateResult,
+  subscriptionResult: BillingResult<SubscriptionStateResult> | undefined
 ): boolean {
   if (!subscription || (subscriptionResult && !subscriptionResult.ok)) {
     return false
@@ -434,9 +434,9 @@ export function formatMonthlyCreditsDelta(delta?: null | string): null | string 
  * escape-hatch link so the user is never stranded on an info-only card.
  */
 function derivePlanCard(
-  billing: BillingStateResponse,
-  subscription: null | SubscriptionStateResponse,
-  subscriptionResult: BillingResult<SubscriptionStateResponse> | undefined,
+  billing: BillingStateResult,
+  subscription: null | SubscriptionStateResult,
+  subscriptionResult: BillingResult<SubscriptionStateResult> | undefined,
   tiers: BillingPlanTierView[],
   capable: boolean,
   pending: PendingPlanTransition | undefined
@@ -487,7 +487,7 @@ function derivePlanCard(
 // Precedence: a downgrade WINS if both are somehow set — it names a concrete target
 // tier, the stronger, more specific signal, and is what the grid marks.
 function pendingTransition(
-  current: null | undefined | NonNullable<SubscriptionStateResponse['current']>
+  current: null | undefined | NonNullable<SubscriptionStateResult['current']>
 ): PendingPlanTransition | undefined {
   if (current?.pending_downgrade_tier_name && current.pending_downgrade_at) {
     return {
@@ -523,7 +523,7 @@ function pendingTransition(
  * never dropped.
  */
 function derivePlanTiers(
-  subscription: null | SubscriptionStateResponse,
+  subscription: null | SubscriptionStateResult,
   fallbackPortalUrl: null | string,
   capable: boolean,
   pending: PendingPlanTransition | undefined
@@ -590,7 +590,7 @@ function derivePlanTiers(
   })
 }
 
-function paymentMethodRow(billing: BillingStateResponse): BillingAccountRowView {
+function paymentMethodRow(billing: BillingStateResult): BillingAccountRowView {
   const portalUrl = billing.portal_url ?? FALLBACK_PORTAL_BILLING_URL
   const card = billing.card
 
@@ -615,14 +615,14 @@ function paymentMethodRow(billing: BillingStateResponse): BillingAccountRowView 
   }
 }
 
-function buyCreditsRow(billing: BillingStateResponse): BillingAccountRowView {
+function buyCreditsRow(billing: BillingStateResult): BillingAccountRowView {
   if (!billing.card) {
     // The no-card blocker is already spelled out by the page-level warn banner
     // (noCardNotice); repeating it here — emoji and all — just clutters the row,
     // so keep the plain "what buying does" line and let the controls sit disabled.
     return {
       action: { disabled: true, label: 'Buy' },
-      chips: billing.charge_presets.map(amount => ({ disabled: true, label: formatMoney(amount) })),
+      chips: (billing.charge_presets ?? []).map(amount => ({ disabled: true, label: formatMoney(amount) })),
       description: 'A single charge on your card, added to your balance today.',
       id: 'buy_credits',
       title: 'Buy credits now'
@@ -641,7 +641,7 @@ function buyCreditsRow(billing: BillingStateResponse): BillingAccountRowView {
 
   return {
     action: { disabled: true, label: 'Buy' },
-    chips: billing.charge_presets.map(amount => ({ disabled: true, label: formatMoney(amount) })),
+    chips: (billing.charge_presets ?? []).map(amount => ({ disabled: true, label: formatMoney(amount) })),
     description: 'A single charge on your card, added to your balance today.',
     id: 'buy_credits',
     title: 'Buy credits now'
@@ -653,7 +653,7 @@ function buyCreditsRow(billing: BillingStateResponse): BillingAccountRowView {
 // this with the disambiguating "Charges $X … below $Y." sentence (spec §8).
 const AUTO_REFILL_GENERIC = 'Keep your balance topped up when it drops below your threshold.'
 
-function autoReloadRow(billing: BillingStateResponse): BillingAccountRowView {
+function autoReloadRow(billing: BillingStateResult): BillingAccountRowView {
   const autoReload = billing.auto_reload
 
   if (!autoReload) {
@@ -712,8 +712,8 @@ function autoReloadRow(billing: BillingStateResponse): BillingAccountRowView {
 }
 
 function deriveUsageRows(
-  billing: BillingStateResponse,
-  subscription: null | SubscriptionStateResponse
+  billing: BillingStateResult,
+  subscription: null | SubscriptionStateResult
 ): BillingUsageRowView[] {
   const rows: BillingUsageRowView[] = []
   const current = subscription?.current
@@ -789,11 +789,11 @@ function deriveUsageRows(
   return rows
 }
 
-function displayBalance(billing: BillingStateResponse): string {
+function displayBalance(billing: BillingStateResult): string {
   return nonEmpty(billing.balance_display) ?? formatMoney(billing.balance_usd)
 }
 
-function displayPlan(subscription: null | SubscriptionStateResponse, usage?: UsageModelData): string {
+function displayPlan(subscription: null | SubscriptionStateResult, usage: null | undefined | UsageModel): string {
   const current = subscription?.current
   const tier = current?.tier_name ?? usage?.plan_name
 
@@ -806,7 +806,7 @@ function displayPlan(subscription: null | SubscriptionStateResponse, usage?: Usa
   return price ? `${tier} · ${price}/mo` : tier
 }
 
-function topupCreditsValue(billing: BillingStateResponse, usage?: UsageModelData): string {
+function topupCreditsValue(billing: BillingStateResult, usage: null | undefined | UsageModel): string {
   return (
     usage?.topup_remaining_display ??
     usage?.topup_bar?.remaining_display ??
@@ -815,7 +815,7 @@ function topupCreditsValue(billing: BillingStateResponse, usage?: UsageModelData
   )
 }
 
-function buyCreditsDisabledReason(billing: BillingStateResponse): null | string {
+function buyCreditsDisabledReason(billing: BillingStateResult): null | string {
   if (!billing.is_admin) {
     return resolveRefusal({ kind: 'role_required', message: '' }).message
   }

@@ -338,7 +338,7 @@ def test_compute_host_explicit_images_do_not_clear_later_attachment(monkeypatch)
         "r1", "sid", session, "B", image_paths=["/tmp/b.png"]
     )
 
-    assert response["result"]["status"] == "streaming"
+    assert response.status == "streaming"
     assert session["attached_images"] == ["/tmp/c.png"]
 
 
@@ -17592,8 +17592,9 @@ def test_browser_manage_connect_rejects_non_string_url(monkeypatch):
         }
     )
 
-    assert resp["error"]["code"] == 4015
-    assert "must be a string" in resp["error"]["message"]
+    # The url type is the params model's job now, so the refusal is the 4000 validation frame.
+    assert resp["error"]["code"] == 4000
+    assert "invalid params for browser.manage" in resp["error"]["message"]
     assert "BROWSER_CDP_URL" not in os.environ
 
 
@@ -22018,7 +22019,7 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
     monkeypatch.setattr(
         server,
         "_submit_prompt_to_compute_host",
-        lambda *_args, **_kwargs: server._ok("host", {"status": "streaming"}),
+        lambda *_args, **_kwargs: server.PromptSubmitResult(status="streaming"),
     )
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)

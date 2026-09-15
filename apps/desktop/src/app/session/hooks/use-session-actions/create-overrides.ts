@@ -9,22 +9,21 @@
  * other mints a session pointing a provider at a model it does not serve — and
  * no caller needs one.
  */
+import type { SeedMessage, SessionCreateParams } from '@hermes/shared'
+
 export interface SessionCreateOverrides {
   reasoningEffort?: string
   title?: string
 }
 
-export interface SessionSeedMessage {
-  content: string
-  display_kind?: 'hidden'
-  role: 'assistant' | 'user'
+export type SessionSeedMessage = SeedMessage
+
+/** One `session.create` seed row. The contract spells every field, so the unset ones are explicit nulls. */
+export function seedMessage(role: string, content: string, displayKind: 'hidden' | null = null): SeedMessage {
+  return { _row_id: null, content, display_kind: displayKind, profile: null, role, text: null }
 }
 
-export interface SessionCreateOverrideParams {
-  messages?: SessionSeedMessage[]
-  reasoning_effort?: string
-  title?: string
-}
+export type SessionCreateOverrideParams = Pick<SessionCreateParams, 'messages' | 'reasoning_effort' | 'title'>
 
 export function sessionCreateOverrideParams(
   overrides: SessionCreateOverrides | undefined,

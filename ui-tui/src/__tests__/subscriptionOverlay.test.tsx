@@ -22,9 +22,10 @@ vi.mock('@hermes/ink', async importOriginal => {
   }
 })
 
+import type { SubscriptionStateResult } from '@hermes/shared/gateway-events'
+
 import type { SubscriptionOverlayState } from '../app/interfaces.js'
 import { SubscriptionOverlay } from '../components/subscriptionOverlay.js'
-import type { SubscriptionStateResponse } from '../gatewayTypes.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 const t = DEFAULT_THEME
@@ -106,7 +107,7 @@ const TIERS = [
   }
 ]
 
-const state = (overrides: Partial<SubscriptionStateResponse> = {}): SubscriptionStateResponse => ({
+const state = (overrides: Partial<SubscriptionStateResult> = {}): SubscriptionStateResult => ({
   ok: true,
   logged_in: true,
   is_admin: true,
@@ -134,7 +135,7 @@ const ctx = {
   upgrade: vi.fn(() => Promise.resolve(null))
 }
 
-const overlay = (s: SubscriptionStateResponse): SubscriptionOverlayState => ({ ctx, screen: 'overview', state: s })
+const overlay = (s: SubscriptionStateResult): SubscriptionOverlayState => ({ ctx, screen: 'overview', state: s })
 
 // Overview: the entry screen across every account state (plan + usage + the
 // actions that enter the in-terminal change flow).
@@ -330,7 +331,7 @@ describe('SubscriptionOverlay — overview', () => {
 // In-terminal change flow (V3): picker → confirm → result. useInput is mocked
 // (no key simulation), so these assert each screen's rendered content.
 
-const subscriber = (overrides: Partial<SubscriptionStateResponse> = {}): SubscriptionStateResponse =>
+const subscriber = (overrides: Partial<SubscriptionStateResult> = {}): SubscriptionStateResult =>
   state({
     current: {
       tier_id: 'plus',
@@ -348,12 +349,12 @@ const subscriber = (overrides: Partial<SubscriptionStateResponse> = {}): Subscri
 
 const at = (
   screen: SubscriptionOverlayState['screen'],
-  s: SubscriptionStateResponse,
+  s: SubscriptionStateResult,
   extra: Partial<SubscriptionOverlayState> = {}
 ): SubscriptionOverlayState => ({ ctx, screen, state: s, ...extra })
 
 // Free account (no current sub) where NAS still returns the tier catalog.
-const freeWithCatalog = (): SubscriptionStateResponse =>
+const freeWithCatalog = (): SubscriptionStateResult =>
   state({
     current: null,
     tiers: TIERS.map(tier => ({ ...tier, is_current: false })),

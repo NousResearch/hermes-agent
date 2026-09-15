@@ -1,3 +1,4 @@
+import type { RpcMethods } from '@hermes/shared'
 import { useEffect } from 'react'
 
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
@@ -8,6 +9,8 @@ import {
 } from '@/hermes'
 import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
+import { toSessionMessages } from '@/lib/chat-messages/hydration'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { notify } from '@/store/notifications'
 import {
   isReadOnlyRuntimeId,
@@ -23,7 +26,7 @@ import {
   sessionTileOwnerRoute,
   setSessionTileDelegate
 } from '@/store/session-states'
-import type { SessionResumeResult } from '@/types/hermes'
+import type { SessionMessage } from '@/types/hermes'
 
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
 import { singleFlightSessionResume } from '../../session/hooks/use-prompt-actions/single-flight-resume'
@@ -41,7 +44,7 @@ type SessionStateCache = ReturnType<typeof useSessionStateCache>
 
 function mergeTileTranscript(
   previous: ChatMessage[],
-  prefetchMessages: SessionResumeResult['messages'] | undefined,
+  prefetchMessages: SessionMessage[] | undefined,
   streamId?: null | string
 ): ChatMessage[] {
   const prefetched = toChatMessages(prefetchMessages ?? [])
@@ -182,15 +185,15 @@ export function useSessionTileDelegate({
       return owner
     }
 
-    const requestForStoredSession = async <T>(
+    const requestForStoredSession = async <M extends keyof RpcMethods>(
       storedSessionId: string,
-      method: string,
-      params: Record<string, unknown>,
+      method: M,
+      params: RpcMethods[M]['params'],
       timeoutMs?: number
-    ): Promise<T> => {
+    ): Promise<RpcMethods[M]['result']> => {
       const owner = await ownerForStoredSession(storedSessionId)
 
-      return requestForSessionProfile<T>(owner, requestGateway, method, params, timeoutMs)
+      return requestForSessionProfile(owner, requestGateway, method, params, timeoutMs)
     }
 
     setSessionTileDelegate({
@@ -248,9 +251,8 @@ export function useSessionTileDelegate({
 
         const storedSessionId = storedSessionIdForRuntime(runtimeId)
 
-        const routedRequest = storedSessionId
-          ? <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) =>
-              requestForStoredSession<T>(storedSessionId, method, params ?? {}, timeoutMs)
+        const routedRequest: GatewayRequest = storedSessionId
+          ? (method, params, timeoutMs) => requestForStoredSession(storedSessionId, method, params, timeoutMs)
           : requestGateway
 
         await withSessionNotFoundResume(
@@ -339,7 +341,7 @@ export function useSessionTileDelegate({
             assertSessionOwnerResolved(owner, { method: 'session.resume', sessionId: storedSessionId })
 
             return singleFlightSessionResume(storedSessionId, () =>
-              requestForSessionProfile<SessionResumeResult>(owner, requestGateway, 'session.resume', {
+              requestForSessionProfile(owner, requestGateway, 'session.resume', {
                 session_id: storedSessionId,
                 cols: 96,
                 omit_messages: true,
@@ -405,7 +407,9 @@ export function useSessionTileDelegate({
             ...(typeof info?.reasoning_effort === 'string' ? { reasoningEffort: info.reasoning_effort } : {}),
             ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
             messages:
-              state.messages.length > 0 ? state.messages : toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
+              state.messages.length > 0
+                ? state.messages
+                : toChatMessages(prefetch?.messages ?? toSessionMessages(resumed?.messages ?? []))
           }),
           storedSessionId
         )
@@ -424,9 +428,8 @@ export function useSessionTileDelegate({
 
         const storedSessionId = storedSessionIdForRuntime(runtimeId)
 
-        const routedRequest = storedSessionId
-          ? <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) =>
-              requestForStoredSession<T>(storedSessionId, method, params ?? {}, timeoutMs)
+        const routedRequest: GatewayRequest = storedSessionId
+          ? (method, params, timeoutMs) => requestForStoredSession(storedSessionId, method, params, timeoutMs)
           : requestGateway
 
         await withSessionNotFoundResume(

@@ -4,6 +4,7 @@
  */
 
 import { Button, cn, GlyphSpinner, host, Input, LruCache, RowButton, useQuery } from '@hermes/plugin-sdk'
+import type { PetGalleryEntry } from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 
 import { useBots } from './i18n'
@@ -29,11 +30,6 @@ const PET_THUMB_CACHE_MAX = 120
 const PET_THUMB_TIMEOUT_MS = 15000
 const petThumbCache = new LruCache<string, Promise<null | string>>(PET_THUMB_CACHE_MAX)
 
-interface PetThumbResult {
-  dataUri?: string
-  ok: boolean
-}
-
 function petThumbIcon(slug: string, spriteUrl: null | string | undefined): Promise<null | string> {
   if (!slug) {
     return Promise.resolve(null)
@@ -44,8 +40,8 @@ function petThumbIcon(slug: string, spriteUrl: null | string | undefined): Promi
 
     const pending = Promise.race([
       host
-        .request<PetThumbResult>('pet.thumb', { slug, url: spriteUrl || '' })
-        .then(result => (result?.ok && result.dataUri ? result.dataUri : null))
+        .request('pet.thumb', { slug, url: spriteUrl || '' })
+        .then(result => (result.ok ? result.dataUri : null))
         .catch(() => null),
       deadline
     ]).then(icon => {
@@ -114,16 +110,6 @@ function PetThumb({ slug, spriteUrl, size = 40 }: PetThumbProps) {
   )
 }
 
-/** One petdex companion as `pet.gallery` reports it. */
-interface PetGalleryEntry {
-  curated?: boolean
-  displayName?: string
-  installed?: boolean
-  slug: string
-  /** Full animation sheet (1536×1872 webp); empty for locally hatched pets. */
-  spritesheetUrl?: null | string
-}
-
 interface PetTabProps {
   image: null | string
   onImage: (image: null | string) => void
@@ -138,7 +124,7 @@ export function PetTab({ image, onImage }: PetTabProps) {
 
   const { data, isLoading } = useQuery({
     queryKey: [ID, 'pet-gallery'],
-    queryFn: () => host.request<{ pets?: PetGalleryEntry[] }>('pet.gallery', {}),
+    queryFn: () => host.request('pet.gallery', {}),
     staleTime: 300000
   })
 

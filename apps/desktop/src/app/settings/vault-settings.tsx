@@ -1,3 +1,6 @@
+import type { VaultItem, VaultKind, VaultSource } from '@hermes/shared'
+
+export type { VaultKind }
 import { useStore } from '@nanostores/react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -19,6 +22,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { triggerHaptic } from '@/lib/haptics'
 import { KeyRound, Lock, Plus, ShieldLock, Trash2 } from '@/lib/icons'
 import { $activeConnectionId } from '@/store/connections'
@@ -38,32 +42,13 @@ const vaultSourcesQueryKey = (owner: string) => ['vault-sources', owner] as cons
 
 export type VaultSourceName = 'bitwarden' | 'local' | 'onepassword'
 
-/** One login source as reported by `vault.sources` — the backend is authoritative for enabled/unlocked. */
-export interface VaultSource {
-  name: VaultSourceName
-  display_name: string
-  enabled: boolean
-  needs_unlock: boolean
-  unlocked: boolean
-  installed: boolean
-}
+export type { VaultItem, VaultSource }
 
-export type VaultKind = 'address' | 'login' | 'payment'
+/** One login source as reported by `vault.sources` — the backend is authoritative for enabled/unlocked. */
+
 const VAULT_KINDS: readonly VaultKind[] = ['login', 'payment', 'address']
 const IDENTIFIER_TYPES = ['email', 'phone', 'username'] as const
 type IdentifierType = (typeof IDENTIFIER_TYPES)[number]
-
-interface VaultItem {
-  id: string
-  kind: string
-  label: string
-  origin: null | string
-  created_at: string
-  identifier?: null | string
-  identifier_type?: null | string
-  backend?: VaultSourceName
-  has_otp?: boolean
-}
 
 /** Add-dialog prefill from a deep link (`/settings?tab=vault&kind=…`). NEVER secrets. */
 export interface VaultPrefill {
@@ -163,9 +148,8 @@ export function VaultSettings() {
   const connectionId = useStore($activeConnectionId)
   const owner = vaultOwnerKey(connectionId, scopeProfile)
 
-  const requestGateway = useCallback(
-    <T,>(method: string, params: Record<string, unknown> = {}) =>
-      requestGatewayForProfile<T>(scopeProfile, method, params),
+  const requestGateway = useCallback<GatewayRequest>(
+    (method, params) => requestGatewayForProfile(scopeProfile, method, params),
     [scopeProfile]
   )
 
@@ -193,7 +177,7 @@ export function VaultSettings() {
     // refetch instead of honouring the shared 60s cache.
     staleTime: 0,
     queryFn: async () => {
-      const result = await requestGateway<{ sources: VaultSource[] }>('vault.sources', {})
+      const result = await requestGateway('vault.sources', {})
 
       return result.sources
     }
@@ -207,14 +191,14 @@ export function VaultSettings() {
   }, [queryClient])
 
   const setSourceEnabled = useMutation({
-    mutationFn: ({ name, enabled }: { name: VaultSourceName; enabled: boolean }) =>
-      requestGateway<{ enabled: boolean }>('vault.source.set', { name, enabled }),
+    mutationFn: ({ name, enabled }: { name: string; enabled: boolean }) =>
+      requestGateway('vault.source.set', { name, enabled }),
     onSuccess: invalidateVault,
     onError: err => notifyError(err, v.sources.toggleFailed)
   })
 
   const lockSource = useMutation({
-    mutationFn: (name: VaultSourceName) => requestGateway<{ locked: boolean }>('vault.lock', { name }),
+    mutationFn: (name: string) => requestGateway('vault.lock', { name }),
     onSuccess: invalidateVault
   })
 
@@ -227,11 +211,11 @@ export function VaultSettings() {
   }, [])
 
   const unlockSource = useMutation({
-    mutationFn: ({ name }: { name: VaultSourceName }) => {
+    mutationFn: ({ name }: { name: string }) => {
       const password = pendingMasterPassword.current
       pendingMasterPassword.current = ''
 
-      return requestGateway<{ unlocked: boolean }>('vault.unlock', { name, password })
+      return requestGateway('vault.unlock', { name, password })
     },
     onSuccess: (_result, { name }) => {
       triggerHaptic('submit')
@@ -250,7 +234,7 @@ export function VaultSettings() {
     enabled: gatewayState === 'open',
     queryKey: VAULT_QUERY_KEY,
     queryFn: async () => {
-      const result = await requestGateway<{ items: VaultItem[] }>('vault.list', {})
+      const result = await requestGateway('vault.list', {})
 
       return result.items
     }
@@ -311,7 +295,7 @@ export function VaultSettings() {
       const secret = pendingSecret.current
       pendingSecret.current = null
 
-      return requestGateway<{ id: string }>('vault.add', { ...payload, secret: secret ?? {} })
+      return requestGateway('vault.add', { ...payload, secret: secret ?? {} })
     },
     onSuccess: () => {
       triggerHaptic('success')
@@ -358,7 +342,7 @@ export function VaultSettings() {
 
   const deleteItem = useCallback(
     async (item: VaultItem) => {
-      await requestGateway<{ removed: boolean }>('vault.remove', { id: item.id })
+      await requestGateway('vault.remove', { id: item.id })
       triggerHaptic('success')
       void invalidate()
     },
@@ -368,7 +352,7 @@ export function VaultSettings() {
   const kindLabel = useCallback((kind: string) => v.kinds[kind as VaultKind] ?? kind, [v.kinds])
 
   const sourceLabel = useCallback(
-    (name: VaultSourceName) => externalSources.find(s => s.name === name)?.display_name ?? name,
+    (name: string) => externalSources.find(s => s.name === name)?.display_name ?? name,
     [externalSources]
   )
 

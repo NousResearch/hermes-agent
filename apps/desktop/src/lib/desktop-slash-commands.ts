@@ -1,3 +1,7 @@
+import type { CommandCatalogMeta, CommandsCatalogResult, RpcMethods, SkillCatalogEntry } from '@hermes/shared'
+
+export type { SkillCatalogEntry }
+
 import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
 
 import desktopSlashRegistry from './desktop-slash-registry.json'
@@ -7,32 +11,14 @@ export interface CommandsCatalogSection {
   pairs: [string, string][]
 }
 
-export interface CommandCatalogMeta {
-  argument_mode?: 'mixed' | 'options' | 'text' | null
-  desktop?: string | null
-}
-
-export interface CommandsCatalogLike {
-  canon?: Record<string, string>
-  categories?: CommandsCatalogSection[]
-  commands?: Record<string, CommandCatalogMeta>
-  pairs?: [string, string][]
-  skill_count?: number
-  skills?: SkillCatalogMap
-  warning?: string
-}
+export type CommandsCatalogLike = CommandsCatalogResult
+export type { CommandCatalogMeta }
 
 /**
  * Per-skill ranking data from `commands.catalog`, keyed by slash command.
  * Absent on older backends — every helper below degrades to "no ranking,
  * hide nothing".
  */
-export interface SkillCatalogEntry {
-  /** Where the skill came from; matches `/api/skills` provenance ('agent' = 'local'). */
-  origin?: 'bundled' | 'hub' | 'local'
-  /** Observed activity (use + view + patch) — the same number Capabilities shows. */
-  usage?: number
-}
 
 export type SkillCatalogMap = Record<string, SkillCatalogEntry>
 
@@ -101,9 +87,9 @@ export type DesktopCommandSurface =
   | { kind: 'picker'; picker: DesktopPickerId }
   | {
       kind: 'rpc'
-      rpc: string
+      rpc: keyof RpcMethods
       timeoutMs?: number
-      buildParams: (ctx: SlashCommandBuildCtx) => Record<string, unknown>
+      buildParams: (ctx: SlashCommandBuildCtx) => RpcMethods[keyof RpcMethods]['params']
     }
   | { kind: 'exec' }
   | { kind: 'unavailable'; reason: DesktopUnavailableReason }
@@ -161,9 +147,9 @@ const unavailable = (reason: DesktopUnavailableReason): DesktopCommandSurface =>
  * The dispatcher calls `requestGateway(surface.rpc, surface.buildParams(ctx))`
  * and then runs `renderRpcResult` to format the response.
  */
-const rpc = (
-  rpcName: string,
-  buildParams: (ctx: SlashCommandBuildCtx) => Record<string, unknown>,
+const rpc = <M extends keyof RpcMethods>(
+  rpcName: M,
+  buildParams: (ctx: SlashCommandBuildCtx) => RpcMethods[M]['params'],
   timeoutMs?: number
 ): DesktopCommandSurface => ({ kind: 'rpc', rpc: rpcName, timeoutMs, buildParams })
 

@@ -10,6 +10,7 @@ import logging
 import contextlib
 
 from .method_ctx import bind_module
+from .contracts.events import SessionReclaimedPayload
 
 
 def _notify_session_boundary(event_type: str, session_id: str | None, platform: str | None = None) -> None:
@@ -297,10 +298,9 @@ def _announce_session_reclaimed(session: dict, end_reason: str) -> None:
     if end_reason not in _RECLAIM_END_REASONS:
         return
     try:
-        _broadcast_global_event("session.reclaimed", {
-            "session_id": str(session.get("_sid") or ""),
-            "stored_session_id": str(session.get("session_key") or ""),
-            "reason": end_reason})
+        _broadcast_global_event("session.reclaimed", SessionReclaimedPayload(
+            session_id=str(session.get("_sid") or ""), stored_session_id=str(session.get("session_key") or ""),
+            reason=end_reason))
     except Exception:
         logger.debug("session.reclaimed broadcast failed", exc_info=True)
 

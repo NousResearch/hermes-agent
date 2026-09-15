@@ -14,12 +14,12 @@ describe('turnController.recordTodos — preserves the parent field', () => {
 
   it('keeps parent on a valid nested subtask', () => {
     turnController.recordTodos([
-      { content: 'Ship feature', id: 'wp1', status: 'in_progress' },
+      { content: 'Ship feature', id: 'wp1', parent: null, status: 'in_progress' },
       { content: 'Write tests', id: 't1', parent: 'wp1', status: 'pending' }
     ])
 
     expect(getTurnState().todos).toEqual([
-      { content: 'Ship feature', id: 'wp1', status: 'in_progress' },
+      { content: 'Ship feature', id: 'wp1', parent: null, status: 'in_progress' },
       { content: 'Write tests', id: 't1', parent: 'wp1', status: 'pending' }
     ])
   })
@@ -27,12 +27,12 @@ describe('turnController.recordTodos — preserves the parent field', () => {
   it('drops a self-referential parent instead of keeping a self-loop', () => {
     turnController.recordTodos([{ content: 'x', id: 'a', parent: 'a', status: 'pending' }])
 
-    expect(getTurnState().todos).toEqual([{ content: 'x', id: 'a', status: 'pending' }])
+    expect(getTurnState().todos).toEqual([{ content: 'x', id: 'a', parent: null, status: 'pending' }])
   })
 
-  it('omits parent entirely when absent, matching pre-nesting payloads', () => {
+  it('names parent as null when absent, as the wire always does', () => {
     turnController.recordTodos([{ content: 'x', id: 'a', status: 'pending' }])
 
-    expect(getTurnState().todos).toEqual([{ content: 'x', id: 'a', status: 'pending' }])
+    expect(getTurnState().todos).toEqual([{ content: 'x', id: 'a', parent: null, status: 'pending' }])
   })
 })

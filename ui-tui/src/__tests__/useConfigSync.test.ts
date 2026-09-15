@@ -22,16 +22,14 @@ describe('applyDisplay', () => {
 
     applyDisplay(
       {
-        config: {
-          display: {
-            bell_on_complete: true,
-            details_mode: 'expanded',
-            inline_diffs: false,
-            show_reasoning: true,
-            streaming: false,
-            tui_compact: true,
-            tui_statusbar: false
-          }
+        display: {
+          bell_on_complete: true,
+          details_mode: 'expanded',
+          inline_diffs: false,
+          show_reasoning: true,
+          streaming: false,
+          tui_compact: true,
+          tui_statusbar: false
         }
       },
       setBell
@@ -52,10 +50,8 @@ describe('applyDisplay', () => {
 
     applyDisplay(
       {
-        config: {
-          approvals: { destructive_slash_confirm: false },
-          display: {}
-        }
+        approvals: { destructive_slash_confirm: false },
+        display: {}
       },
       setBell
     )
@@ -64,10 +60,8 @@ describe('applyDisplay', () => {
 
     applyDisplay(
       {
-        config: {
-          approvals: { destructive_slash_confirm: true },
-          display: {}
-        }
+        approvals: { destructive_slash_confirm: true },
+        display: {}
       },
       setBell
     )
@@ -78,15 +72,13 @@ describe('applyDisplay', () => {
   it('defaults destructive slash confirmation on and preserves it across config RPC failure', () => {
     const setBell = vi.fn()
 
-    applyDisplay({ config: { display: {} } }, setBell)
+    applyDisplay({ display: {} }, setBell)
     expect($uiState.get().destructiveSlashConfirm).toBe(true)
 
     applyDisplay(
       {
-        config: {
-          approvals: { destructive_slash_confirm: false },
-          display: {}
-        }
+        approvals: { destructive_slash_confirm: false },
+        display: {}
       },
       setBell
     )
@@ -98,17 +90,17 @@ describe('applyDisplay', () => {
   it('coerces legacy true + "on" alias to top', () => {
     const setBell = vi.fn()
 
-    applyDisplay({ config: { display: { tui_statusbar: true as unknown as 'on' } } }, setBell)
+    applyDisplay({ display: { tui_statusbar: true } }, setBell)
     expect($uiState.get().statusBar).toBe('top')
 
-    applyDisplay({ config: { display: { tui_statusbar: 'on' } } }, setBell)
+    applyDisplay({ display: { tui_statusbar: 'on' } }, setBell)
     expect($uiState.get().statusBar).toBe('top')
   })
 
   it('applies v1 parity defaults when display fields are missing', () => {
     const setBell = vi.fn()
 
-    applyDisplay({ config: { display: {} } }, setBell)
+    applyDisplay({ display: {} }, setBell)
 
     const s = $uiState.get()
     expect(setBell).toHaveBeenCalledWith(false)
@@ -122,26 +114,26 @@ describe('applyDisplay', () => {
   it('uses documented mouse_tracking with legacy tui_mouse fallback', () => {
     const setBell = vi.fn()
 
-    applyDisplay({ config: { display: { mouse_tracking: false } } }, setBell)
+    applyDisplay({ display: { mouse_tracking: false } }, setBell)
     expect($uiState.get().mouseTracking).toBe('off')
 
-    applyDisplay({ config: { display: { mouse_tracking: true, tui_mouse: false } } }, setBell)
+    applyDisplay({ display: { mouse_tracking: true, tui_mouse: false } }, setBell)
     expect($uiState.get().mouseTracking).toBe('all')
 
-    applyDisplay({ config: { display: { tui_mouse: false } } }, setBell)
+    applyDisplay({ display: { tui_mouse: false } }, setBell)
     expect($uiState.get().mouseTracking).toBe('off')
   })
 
   it('threads mouse_tracking presets through to $uiState', () => {
     const setBell = vi.fn()
 
-    applyDisplay({ config: { display: { mouse_tracking: 'wheel' } } }, setBell)
+    applyDisplay({ display: { mouse_tracking: 'wheel' } }, setBell)
     expect($uiState.get().mouseTracking).toBe('wheel')
 
-    applyDisplay({ config: { display: { mouse_tracking: 'buttons' } } }, setBell)
+    applyDisplay({ display: { mouse_tracking: 'buttons' } }, setBell)
     expect($uiState.get().mouseTracking).toBe('buttons')
 
-    applyDisplay({ config: { display: { mouse_tracking: 'all' } } }, setBell)
+    applyDisplay({ display: { mouse_tracking: 'all' } }, setBell)
     expect($uiState.get().mouseTracking).toBe('all')
   })
 
@@ -150,15 +142,13 @@ describe('applyDisplay', () => {
 
     applyDisplay(
       {
-        config: {
-          display: {
-            details_mode: 'collapsed',
-            sections: {
-              activity: 'hidden',
-              tools: 'expanded',
-              thinking: 'expanded',
-              bogus: 'expanded'
-            }
+        display: {
+          details_mode: 'collapsed',
+          sections: {
+            activity: 'hidden',
+            tools: 'expanded',
+            thinking: 'expanded',
+            bogus: 'expanded'
           }
         }
       },
@@ -179,10 +169,8 @@ describe('applyDisplay', () => {
 
     applyDisplay(
       {
-        config: {
-          display: {
-            sections: { tools: 'maximised' as unknown as string, activity: 'hidden' }
-          }
+        display: {
+          sections: { tools: 'maximised' as unknown as string, activity: 'hidden' }
         }
       },
       setBell
@@ -205,10 +193,10 @@ describe('applyDisplay', () => {
   it('accepts the new string statusBar modes', () => {
     const setBell = vi.fn()
 
-    applyDisplay({ config: { display: { tui_statusbar: 'bottom' } } }, setBell)
+    applyDisplay({ display: { tui_statusbar: 'bottom' } }, setBell)
     expect($uiState.get().statusBar).toBe('bottom')
 
-    applyDisplay({ config: { display: { tui_statusbar: 'top' } } }, setBell)
+    applyDisplay({ display: { tui_statusbar: 'top' } }, setBell)
     expect($uiState.get().statusBar).toBe('top')
   })
 })
@@ -325,20 +313,20 @@ describe('applyDisplay → busy_input_mode', () => {
   it('threads display.busy_input_mode into $uiState', () => {
     const setBell = vi.fn()
 
-    applyDisplay({ config: { display: { busy_input_mode: 'queue' } } }, setBell)
+    applyDisplay({ display: { busy_input_mode: 'queue' } }, setBell)
     expect($uiState.get().busyInputMode).toBe('queue')
 
-    applyDisplay({ config: { display: { busy_input_mode: 'steer' } } }, setBell)
+    applyDisplay({ display: { busy_input_mode: 'steer' } }, setBell)
     expect($uiState.get().busyInputMode).toBe('steer')
   })
 
   it('falls back to queue when value is missing or invalid (TUI-only default)', () => {
     const setBell = vi.fn()
 
-    applyDisplay({ config: { display: {} } }, setBell)
+    applyDisplay({ display: {} }, setBell)
     expect($uiState.get().busyInputMode).toBe('queue')
 
-    applyDisplay({ config: { display: { busy_input_mode: 'drop' } } }, setBell)
+    applyDisplay({ display: { busy_input_mode: 'drop' } }, setBell)
     expect($uiState.get().busyInputMode).toBe('queue')
   })
 })
@@ -351,20 +339,20 @@ describe('applyDisplay → tui_status_indicator', () => {
   it('threads display.tui_status_indicator into $uiState', () => {
     const setBell = vi.fn()
 
-    applyDisplay({ config: { display: { tui_status_indicator: 'emoji' } } }, setBell)
+    applyDisplay({ display: { tui_status_indicator: 'emoji' } }, setBell)
     expect($uiState.get().indicatorStyle).toBe('emoji')
 
-    applyDisplay({ config: { display: { tui_status_indicator: 'unicode' } } }, setBell)
+    applyDisplay({ display: { tui_status_indicator: 'unicode' } }, setBell)
     expect($uiState.get().indicatorStyle).toBe('unicode')
   })
 
   it('falls back to kaomoji default when missing or invalid', () => {
     const setBell = vi.fn()
 
-    applyDisplay({ config: { display: {} } }, setBell)
+    applyDisplay({ display: {} }, setBell)
     expect($uiState.get().indicatorStyle).toBe('kaomoji')
 
-    applyDisplay({ config: { display: { tui_status_indicator: 'rainbow' } } }, setBell)
+    applyDisplay({ display: { tui_status_indicator: 'rainbow' } }, setBell)
     expect($uiState.get().indicatorStyle).toBe('kaomoji')
   })
 })
@@ -381,7 +369,7 @@ describe('applyDisplay → voice.record_key (#18994)', () => {
     const setBell = vi.fn()
     const setVoiceRecordKey = vi.fn()
 
-    applyDisplay({ config: { display: {}, voice: { record_key: 'ctrl+space' } } }, setBell, setVoiceRecordKey)
+    applyDisplay({ display: {}, voice: { record_key: 'ctrl+space' } }, setBell, setVoiceRecordKey)
 
     expect(setVoiceRecordKey).toHaveBeenCalledWith(
       expect.objectContaining({ ch: 'space', mod: 'ctrl', named: 'space', raw: 'ctrl+space' })
@@ -392,7 +380,7 @@ describe('applyDisplay → voice.record_key (#18994)', () => {
     const setBell = vi.fn()
     const setVoiceRecordKey = vi.fn()
 
-    applyDisplay({ config: { display: {} } }, setBell, setVoiceRecordKey)
+    applyDisplay({ display: {} }, setBell, setVoiceRecordKey)
 
     expect(setVoiceRecordKey).toHaveBeenCalledWith(expect.objectContaining({ ch: 'b', mod: 'ctrl', raw: 'ctrl+b' }))
   })
@@ -402,7 +390,7 @@ describe('applyDisplay → voice.record_key (#18994)', () => {
 
     // applyDisplay is used in the setVoiceEnabled-less init path too;
     // omitting the third arg must not throw.
-    expect(() => applyDisplay({ config: { display: {}, voice: { record_key: 'alt+r' } } }, setBell)).not.toThrow()
+    expect(() => applyDisplay({ display: {}, voice: { record_key: 'alt+r' } }, setBell)).not.toThrow()
   })
 
   it('does not reset voiceRecordKey when cfg is null (transient RPC failure)', () => {

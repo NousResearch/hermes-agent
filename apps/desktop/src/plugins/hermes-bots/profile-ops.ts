@@ -9,6 +9,7 @@
  */
 
 import { forgetSessionUnread, host, queryClient } from '@hermes/plugin-sdk'
+import type { RpcMethods } from '@hermes/plugin-sdk'
 
 import { isBackfilledFacePng } from './avatar-image'
 import {
@@ -52,10 +53,14 @@ const avatarFaceOnly = new Set<string>()
  *  every roster row is source-scoped: the first roster paint after launch
  *  queued one pooled backend spawn per registered profile (60 profiles, 3
  *  slots → a queue that never drained). */
-function requestAssetOnActiveSource<T>(bot: RosterRow, method: string, params: Record<string, unknown>) {
+function requestAssetOnActiveSource<M extends 'profiles.get_asset' | 'profiles.set_asset'>(
+  bot: RosterRow,
+  method: M,
+  params: RpcMethods[M]['params']
+) {
   const route = botConnectionRoute(bot)
 
-  return host.request<T>(method, { ...params, name: route ? route.targetProfile || route.profile : bot.name })
+  return host.request(method, { ...params, name: route ? route.targetProfile || route.profile : bot.name })
 }
 
 /** Backfill: local meta has art the server lacks -> profiles.set_asset.
@@ -155,13 +160,6 @@ function rasterizeSvgToPng(svgEl: Element, size: number): Promise<null | string>
   })
 }
 
-/** `profiles.get_asset` reply for the `avatar` asset. */
-interface ProfilesGetAssetResult {
-  /** Data URL. */
-  data?: string
-  found?: boolean
-}
-
 /** Fetch server-side avatars for roster rows flagged has_avatar when the
  *  local cache doesn't already have an image for them. Fire-and-forget. */
 export function pullServerAvatars(roster: RosterRow[]) {
@@ -180,14 +178,14 @@ export function pullServerAvatars(roster: RosterRow[]) {
 
     avatarFetchInflight.add(key)
 
-    const assetRequest = requestAssetOnActiveSource<ProfilesGetAssetResult>(bot, 'profiles.get_asset', {
+    const assetRequest = requestAssetOnActiveSource(bot, 'profiles.get_asset', {
       name: bot.name,
       asset: 'avatar'
     })
 
     assetRequest
       .then(res => {
-        if (res?.found && res.data) {
+        if (res.found && res.data) {
           const current = $botMeta.get()
           const mine = current[key] || {}
 
@@ -368,13 +366,6 @@ export async function duplicateBot(bot: RosterRow, roster: RosterRow[]) {
 }
 
 /** `cli.exec` reply, as the legacy delete path reads it. */
-interface CliExecResult {
-  blocked?: boolean
-  code?: number
-  hint?: string
-  output?: string
-}
-
 /** Permanently delete a bot's Hermes profile, then remove plugin-local state
  * that would otherwise leave stale appearance/unread data behind.
  *
@@ -405,12 +396,12 @@ export async function deleteBot(bot: RosterRow) {
       throw new Error('Source-scoped profile deletion requires host.deleteProfile.')
     }
 
-    const result: CliExecResult = await host.request('cli.exec', {
+    const result = await host.request('cli.exec', {
       argv: ['profile', 'delete', bot.name, '--yes']
     })
 
-    if (result?.blocked || result?.code !== 0) {
-      throw new Error(result?.hint || result?.output || `Could not delete profile ${bot.name}.`)
+    if (result.blocked || result.code !== 0) {
+      throw new Error(result.hint || result.output || `Could not delete profile ${bot.name}.`)
     }
   }
 

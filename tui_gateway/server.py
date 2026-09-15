@@ -19,6 +19,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable: split modules)
 
+from pydantic import TypeAdapter, ValidationError
+
 # Several of these look unused here but are resolved BARE by split-module bodies rebound onto this
 # namespace (method_ctx.bind_module) — deleting one breaks a handler at call time, not import time.
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope  # noqa: F401
@@ -35,6 +37,17 @@ from agent.skill_commands import describe_skill_invocation  # noqa: F401
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX  # noqa: F401
 from tui_gateway import git_probe
 from tui_gateway._env import env_float, env_int
+from tui_gateway.contracts.base import Params, Payload, Result
+from tui_gateway.contracts.common import ProjectRef, SessionLiveInfo, Usage
+from tui_gateway.contracts.events import (
+    ErrorPayload, NotificationClearPayload, NotificationShowPayload, ReviewSummaryPayload,
+    SessionInfoPayload, SessionResumeProgressPayload, SessionUsagePayload, StatusUpdatePayload)
+from tui_gateway.contracts.sessions import LiveSessionSnapshot
+from tui_gateway.contracts.server_requests import (
+    ApprovalRequestParams, ClarifyAnswer, ClarifyAnswers, ClarifyBatch, ClarifyQuestion,
+    ClarifySingle, EmptyRequestParams, PreviewActRequestParams,
+    ReadRangeRequestParams, SecretRequestParams, TourRequestParams, VaultCodeRequestParams,
+    VaultSaveLoginRequestParams, VaultUnlockRequestParams)
 from tui_gateway.turn_marker import clear_turn_marker, read_turn_marker, record_turn_start  # noqa: F401
 from tui_gateway.contracts import registry as _contracts
 # User-facing copy shared with the split method modules (they close over this namespace).
@@ -426,14 +439,14 @@ def _open_profile_session_db(profile_home):
 
 
 @contextlib.contextmanager
-def _profile_db(params: dict | None = None, *, writer: bool = False):
-    """Yield the SessionDB for ``params['profile']`` (None when unavailable); closes dedicated
+def _profile_db(params=None, *, writer: bool = False):
+    """Yield the SessionDB for ``params.profile`` (None when unavailable); closes dedicated
     profile handles, leaves the launch-profile shared handle open.
 
     Foreign-profile handles are read-only unless ``writer=True``: that store belongs to ITS
     gateway/dashboard, and a writer here would take its write lock per RPC. Mirrors
     hermes_cli.web_routers.profiles._read_profile_db."""
-    profile = (params.get("profile") or "").strip() or None if isinstance(params, dict) else None
+    profile = str(getattr(params, "profile", "") or "").strip() or None
     # Launch/own profile → the shared _get_db() handle (left open); another profile → a dedicated
     # handle closed below (app-global remote mode). db is None when unavailable.
     if (profile_home := _profile_home(profile)) is None:
@@ -545,7 +558,7 @@ def _profile_scoped(handler):
     might have poisoned (#107422).
     """
     def wrapper(rid, params):
-        home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
+        home = _profile_home(getattr(params, "profile", None))
         with _session_profile_runtime_scope({"profile_home": str(home) if home else None}):
             return handler(rid, params)
     return wrapper
@@ -618,19 +631,27 @@ def write_json(obj: dict) -> bool:
     return (current_transport() or _stdio_transport).write(obj)
 
 
-def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
-    _contracts.check_payload(event, payload)
-    params: dict = {"type": event, "session_id": sid, **({"payload": payload} if payload is not None else {})}
+def _event_frame(event: str, sid: str, payload: "Payload | None" = None) -> dict:
+    contract = _contracts.EVENTS[event]
+    expected = contract.payload
+    if expected is None:
+        if payload is not None:
+            raise TypeError(f"event {event!r} does not accept a payload")
+    elif not isinstance(payload, expected):
+        raise TypeError(f"event {event!r} payload must be {expected.__name__}")
+    params: dict = {"type": event, "session_id": sid}
+    if payload is not None:
+        params["payload"] = payload.model_dump(mode="json")
     return {"jsonrpc": "2.0", "method": "event", "params": params}
 
 
-def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
+def _emit(event: str, sid: str, payload: "Payload | None" = None) -> bool:
     return write_json(_event_frame(event, sid, payload))
 
 
 from tui_gateway import server_requests as _server_requests  # noqa: E402
 
-_server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload))
+_server_requests.bind_sinks(write_json, _emit)
 
 
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background
@@ -652,13 +673,13 @@ def unregister_live_transport(transport: Transport | None) -> None:
         _live_transports.discard(transport)
 
 
-def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
+def _broadcast_global_event(event: str, payload: Payload | None = None) -> None:
     """Fan a session-less, surface-global event (``skin.changed``) to every connected client — background
     emitters bottom out at stdio in ``write_json``'s ladder. No registered transports (stdio TUI, tests) → ``_emit``."""
     with _live_transports_lock:
         targets = list(_live_transports)
     if not targets:
-        return _emit(event, "", payload)
+        return write_json(_event_frame(event, "", payload))
     frame = _event_frame(event, "", payload)
     for transport in targets:
         try:
@@ -733,15 +754,15 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
     payload = _approval_request_payload(data)
     request_id = str(payload.get("request_id") or "")
     session_key = str((_sessions.get(sid) or {}).get("session_key") or "")
+    params = ApprovalRequestParams(session_id=sid, **payload)
 
-    def on_result(result: dict | None) -> None:
+    def on_result(result: Result | None) -> None:
         if result is None:  # withdrawn: the queue entry resolves on its own path
             return
-        choice = str(result.get("choice") or "deny")
-        _approval.resolve_gateway_approval(session_key, choice, resolve_all=bool(result.get("all")),
-                                           request_id=request_id or None)
+        _approval.resolve_gateway_approval(session_key, result.choice,
+                                           resolve_all=bool(result.all), request_id=request_id or None)
 
-    settle = server_requests.send_async("approval", sid, payload, on_result)
+    settle = server_requests.send_async("approval", sid, params, on_result)
     if request_id:
         _approval.register_gateway_settle(session_key, request_id, settle)
 
@@ -757,7 +778,7 @@ def _status_update(sid: str, kind: str, text: str | None = None):
         from agent.conversation_compression import is_compaction_progress_status
         if is_compaction_progress_status(body):
             out_kind = "compacting"
-    _emit("status.update", sid, {"kind": out_kind, "text": body})
+    _emit("status.update", sid, StatusUpdatePayload(kind=out_kind, text=body))
 
 
 def _image_meta(path: Path) -> dict:
@@ -772,8 +793,10 @@ def _image_meta(path: Path) -> dict:
     return meta
 
 
-def _ok(rid, result: dict) -> dict:
-    return {"jsonrpc": "2.0", "id": rid, "result": result}
+def _ok(rid, result: Result) -> dict:
+    if not isinstance(result, Result):
+        raise TypeError("RPC results must be Result instances")
+    return {"jsonrpc": "2.0", "id": rid, "result": result.model_dump(mode="json")}
 
 
 def _err(rid, code: int, msg: str, data=None) -> dict:
@@ -782,10 +805,43 @@ def _err(rid, code: int, msg: str, data=None) -> dict:
 
 
 def register_method(name: str, fn) -> None:
-    """The ONE registration seam (``@method`` here and ``HandlerRegistry.install`` for the split
-    modules). ``tests/tui_gateway/contracts/test_generated.py::test_every_method_has_a_contract`` and the
-    generator's ``assert_complete`` fail when a registered name has no contract."""
-    _methods[name] = fn
+    """Install one declared method with its model boundary around the raw handler."""
+    contract = _contracts.METHODS[name]
+    adapter = TypeAdapter(contract.result)
+
+    def wrapper(rid, params, *extras):
+        try:
+            model = contract.params.model_validate(params)
+        except ValidationError as exc:
+            # loc arrives as a tuple; a list keeps in-process frames equal to their JSON form.
+            data = [
+                {"loc": list(error["loc"]), "msg": error["msg"], "type": error["type"]}
+                for error in exc.errors(include_input=False, include_url=False)
+            ]
+            return _err(rid, 4000, f"invalid params for {name}", data=data)
+        response = fn(rid, model, *extras)
+        if isinstance(response, dict):
+            if "error" not in response:
+                raise TypeError(f"RPC handler {name!r} returned a dict that is not an error frame")
+            return response
+        if not isinstance(response, Result):
+            raise TypeError(f"RPC handler {name!r} must return a Result instance")
+        try:
+            result = adapter.validate_python(response)
+        except ValidationError as exc:
+            raise TypeError(f"RPC handler {name!r} returned an invalid result") from exc
+        return _ok(rid, result)
+
+    wrapper._hermes_raw_handler = fn
+    _methods[name] = wrapper
+
+
+def invoke(name: str, params: Params, **trusted):
+    """Call a declared raw handler for a trusted in-process path without revalidating its model."""
+    raw = getattr(_methods[name], "_hermes_raw_handler", None)
+    if raw is None:
+        raise RuntimeError(f"RPC handler {name!r} is not registered through register_method")
+    return raw(None, params, **trusted)
 
 
 def method(name: str):
@@ -816,24 +872,13 @@ def handle_request(req: dict) -> dict | None:
     if not (fn := _methods.get(method)):
         return _err(rid, -32601, f"unknown method: {method} — the client and the Hermes backend are out of sync "
                     "(different versions); run `hermes update` and restart both")
-    # Test doubles register straight into ``_methods`` without a contract; every production
-    # handler comes through ``register_method`` and therefore has one.
-    contract = _contracts.METHODS.get(method)
-    if contract is not None:
-        params, problem = _contracts.validate_params(contract, params)
-        if problem is not None:
-            return _err(rid, 4000, problem)
     token = _current_rpc_method.set(method)
     try:
-        response = fn(rid, params)
+        return fn(rid, params)
     except ProfileUnavailableError as exc:
         return _err(rid, 4064, str(exc))
     finally:
         _current_rpc_method.reset(token)
-    if contract is not None and isinstance(response, dict) and isinstance(response.get("result"), dict):
-        _contracts.check_params_accepted(contract, params)
-        _contracts.check_result(contract, response["result"])
-    return response
 
 
 def _current_session_steer_authority(session_id: str) -> tuple[Transport | None, dict | None]:
@@ -949,12 +994,12 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
             return _err(rid, 5032, session.get("agent_error") or "agent initialization failed before completing")
         if not notified_slow and waited >= _AGENT_BUILD_SLOW_NOTICE_AFTER:
             notified_slow = True  # one keyed, replace-in-place notice (toast / status bar)
-            _emit("notification.show", sid, {
-                "text": "Still starting the agent (tool discovery / model setup) — your message will be sent as soon as it's ready.",
-                "level": "info", "kind": "agent", "ttl_ms": None,
-                "key": _AGENT_BUILD_SLOW_NOTICE_KEY, "id": _AGENT_BUILD_SLOW_NOTICE_KEY})
+            _emit("notification.show", sid, NotificationShowPayload(
+                text="Still starting the agent (tool discovery / model setup) — your message will be sent as soon as it's ready.",
+                level="info", kind="agent", ttl_ms=None,
+                key=_AGENT_BUILD_SLOW_NOTICE_KEY, id=_AGENT_BUILD_SLOW_NOTICE_KEY))
     if notified_slow:
-        _emit("notification.clear", sid, {"key": _AGENT_BUILD_SLOW_NOTICE_KEY})
+        _emit("notification.clear", sid, NotificationClearPayload(key=_AGENT_BUILD_SLOW_NOTICE_KEY))
     return _err(rid, 5032, err) if (err := session.get("agent_error")) else None
 
 
@@ -1016,7 +1061,8 @@ def _wire_session_agent(sid: str, key: str, agent) -> bool:
         load_permanent_allowlist()
     _wire_callbacks(sid)
     with contextlib.suppress(Exception):  # bare agents without the attribute must not break startup
-        agent.background_review_callback = lambda message, _sid=sid: _emit("review.summary", _sid, {"text": str(message)})
+        agent.background_review_callback = lambda message, _sid=sid: _emit(
+            "review.summary", _sid, ReviewSummaryPayload(text=str(message)))
         agent.memory_notifications = _load_memory_notifications()
     return notify_registered
 
@@ -1061,10 +1107,12 @@ def _announce_built_agent(sid: str, key: str, current: dict, agent) -> None:
         seed_credits_at_session_start(agent)
     _start_session_services(sid, key, current)
     info = _session_info(agent, current)
+    config_warning = None
     if cfg_warn := _probe_config_health(_load_cfg()):
-        info["config_warning"] = cfg_warn
+        config_warning = cfg_warn
         logger.warning(cfg_warn)
-    _emit("session.info", sid, info)
+    _emit("session.info", sid, SessionInfoPayload(
+        **info.model_dump(mode="json"), config_warning=config_warning))
     _schedule_mcp_late_refresh(sid, agent)  # servers slower than the bounded discovery wait land here
 
 
@@ -1139,7 +1187,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
             _announce_built_agent(sid, key, current, agent)
         except Exception as e:
             current["agent_error"] = str(e)
-            _emit("error", sid, {"message": agent_init_failed_message(e)})
+            _emit("error", sid, ErrorPayload(message=agent_init_failed_message(e)))
         finally:
             _finish_agent_build(
                 sid, key, current, notify_registered=notify_registered, scopes=scopes, session_db=session_db)
@@ -1152,7 +1200,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
 
 
 def _sess_nowait(params, rid):
-    sid = params.get("session_id") or ""
+    sid = getattr(params, "session_id", "") or ""
     s = _sessions.get(sid)
     if s:
         return (s, None)
@@ -1181,7 +1229,7 @@ def _sess_building(params, rid):
     reader thread, where waiting on a cold build stalled every RPC behind it ("text is instant, images hang")."""
     s, err = _sess_nowait(params, rid)
     if not err:
-        _start_agent_build(params.get("session_id") or "", s)
+        _start_agent_build(getattr(params, "session_id", "") or "", s)
     return (None, err) if err else (s, None)
 
 
@@ -1316,12 +1364,13 @@ def _enable_gateway_prompts() -> None:
 # ── Blocking prompt factory ──────────────────────────────────────────
 
 
-def _ask(method: str, sid: str, params: dict, timeout: float | None = 300) -> str:
+def _ask(method: str, sid: str, params: Params, timeout: float | None = 300) -> str:
     """Server→client request whose answer is one string under ``value`` (sudo, secret, vault prompts, GUI reads,
     MCP setup). Empty string when the renderer skipped, timed out, or was cancelled."""
     from tui_gateway import server_requests
+
     result = server_requests.send(method, sid, params, timeout=timeout)
-    value = (result or {}).get("value", "")
+    value = result.value if result is not None else ""
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 
 
@@ -1343,17 +1392,19 @@ def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
     ``{"answers", "timed_out"?}`` as JSON — a response with no ``answers`` is a cancel-all."""
     from tui_gateway import server_requests
     if questions:
-        wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
-                for e in questions]
-        result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
-                                      qids=[e["qid"] for e in questions])
-        if not result or "answers" not in result:
+        wire = [ClarifyQuestion(qid=e["qid"], question=e["question"], choices=e["choices"],
+                                multi_select=bool(e["multi_select"])) for e in questions]
+        result = server_requests.send(
+            "clarify", sid, ClarifyBatch(session_id=sid, kind="batch", questions=wire, answers=None),
+            timeout=_clarify_timeout_seconds(), qids=[e["qid"] for e in questions])
+        if not isinstance(result, ClarifyAnswers):
             return ""
-        return json.dumps(result, ensure_ascii=False)
-    params = {"question": q, "choices": c, "multi_select": True} if multi_select else {"question": q, "choices": c}
-    result = server_requests.send("clarify", sid, params, timeout=_clarify_timeout_seconds())
-    answer = (result or {}).get("answer", "")
-    return answer if isinstance(answer, str) else ""
+        return json.dumps(result.model_dump(mode="json"), ensure_ascii=False)
+    result = server_requests.send(
+        "clarify", sid,
+        ClarifySingle(session_id=sid, kind="single", question=q, choices=c, multi_select=bool(multi_select)),
+        timeout=_clarify_timeout_seconds())
+    return result.answer if isinstance(result, ClarifyAnswer) else ""
 
 
 # A tour action is a DOM op the renderer answers in ms; the generous deadline exists only because a
@@ -1387,7 +1438,7 @@ def _tour_request(sid: str, payload: dict) -> str:
     state = session.get("tour_bridge")
     if state == "unanswered":
         return _TOUR_BRIDGE_UNAVAILABLE
-    answer = _ask("tour", sid, dict(payload),
+    answer = _ask("tour", sid, TourRequestParams(session_id=sid, **payload),
                   timeout=_TOUR_TIMEOUT_S if state == "answered" else _TOUR_PROBE_TIMEOUT_S)
     if answer:
         session["tour_bridge"] = "answered"
@@ -1945,7 +1996,7 @@ def _restart_slash_worker(sid: str, session: dict):
     _attach_worker(sid, session, new_worker)
 
 
-def _get_usage(agent) -> dict:
+def _get_usage(agent) -> Usage:
     g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
     usage = {
         "model": getattr(agent, "model", "") or "",
@@ -1990,7 +2041,7 @@ def _get_usage(agent) -> dict:
             spent = agent.get_credits_spent_micros()
             if spent is not None:
                 usage["dev_credits_spent_micros"] = int(spent)
-    return usage
+    return Usage.model_validate(usage)
 
 
 def _probe_credentials(agent) -> str:
@@ -2039,15 +2090,15 @@ def _current_profile_name() -> str:
 DESKTOP_BACKEND_CONTRACT = 7
 
 
-def _session_usage_snapshot(session: dict | None) -> dict:
+def _session_usage_snapshot(session: dict | None) -> Usage:
     sess = session or {}
     mirror_usage = _metadata_mirror(session).get("usage")
     if sess.get("agent") is not None and not (sess.get("_compute_host_active") and isinstance(mirror_usage, dict)):
         return _get_usage(sess["agent"])
-    return dict(mirror_usage) if isinstance(mirror_usage, dict) else {}
+    return Usage.model_validate(mirror_usage) if isinstance(mirror_usage, dict) else Usage()
 
 
-def _project_info_for_cwd(cwd: str) -> dict | None:
+def _project_info_for_cwd(cwd: str) -> ProjectRef | None:
     """The first-class Project owning ``cwd`` (per-profile projects.db) so TUI status, desktop status bar and
     ``/status`` name the workspace identically. Only explicit named projects resolve."""
     if not str(cwd or "").strip():
@@ -2056,8 +2107,8 @@ def _project_info_for_cwd(cwd: str) -> dict | None:
         from hermes_cli import projects_db as pdb
         with pdb.connect_closing() as conn:
             project = pdb.project_for_path(conn, cwd)
-        return None if project is None else {
-            "id": project.id, "slug": project.slug, "name": project.name, "primary_path": project.primary_path}
+        return None if project is None else ProjectRef(
+            id=project.id, slug=project.slug, name=project.name, primary_path=project.primary_path)
     except Exception:
         logger.debug("failed to resolve project for cwd", exc_info=True)
         return None
@@ -2069,7 +2120,7 @@ def _turn_started_at(session: dict | None) -> float | None:
     return float(inflight["started_at"]) if isinstance(inflight, dict) and inflight.get("started_at") else None
 
 
-def _session_info(agent, session: dict | None = None) -> dict:
+def _session_info(agent, session: dict | None = None) -> SessionLiveInfo:
     if session is None:
         session = next((c for c in _sessions.values() if c.get("agent") is agent), None)
     sess = session or {}
@@ -2117,7 +2168,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "stored_session_id": session_key or "", "desktop_contract": DESKTOP_BACKEND_CONTRACT,
         "version": "", "release_date": "", "update_behind": None, "update_command": "",
         "usage": _session_usage_snapshot(session),
-        "profile_name": profile_name_for_home(sess.get("profile_home")) or _current_profile_name(),
+        "profile_name": str(profile_name_for_home(sess.get("profile_home")) or _current_profile_name() or ""),
     }
     with contextlib.suppress(Exception):
         from hermes_cli import __version__, __release_date__
@@ -2149,7 +2200,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         info["update_command"] = recommended_update_command()
     if live_agent and (warn := _probe_credentials(agent)):
         info["credential_warning"] = warn
-    return info
+    return SessionLiveInfo.model_validate(info)
 
 
 def _tool_ctx(name: str, args: dict) -> str:
@@ -2165,7 +2216,7 @@ def _emit_session_info_for_session(sid: str, session: dict) -> None:
     agent = session.get("agent")
     if agent is not None or _metadata_mirror(session):
         with contextlib.suppress(Exception):
-            _emit("session.info", sid, _session_info(agent, session))
+            _emit("session.info", sid, SessionInfoPayload(**_session_info(agent, session).model_dump(mode="json")))
 
 
 def broadcast_session_info() -> None:
@@ -2207,7 +2258,7 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
             if not added:
                 return  # discovery added nothing → don't churn the client
             info = _session_info(agent, session)
-        _emit("session.info", sid, info)  # outside the lock — write_json must not block under _sessions_lock
+        _emit("session.info", sid, SessionInfoPayload(**info.model_dump(mode="json")))  # outside the lock — write_json must not block under _sessions_lock
     threading.Thread(target=_wait_then_refresh, name=f"tui-mcp-late-refresh-{sid}", daemon=True).start()
 
 
@@ -2439,7 +2490,8 @@ def _init_session(
     _register_session_cwd(_sessions[sid])
     _wire_session_agent(sid, key, agent)  # no eager slash-worker pre-warm (see _start_agent_build)
     _start_session_services(sid, key, _sessions.get(sid, {}))
-    _emit("session.info", sid, _session_info(agent, _sessions.get(sid, {})))
+    _emit("session.info", sid, SessionInfoPayload(**_session_info(
+        agent, _sessions.get(sid, {})).model_dump(mode="json")))
     _schedule_mcp_late_refresh(sid, agent)
 
 
@@ -2465,14 +2517,13 @@ def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
 # ── Methods: session ─────────────────────────────────────────────────
 
 
-def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "", profile: str | None = None) -> dict:
+def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "", profile: str | None = None) -> SessionLiveInfo:
     """session.info for a not-yet-built session (session.create's shape); tools/skills land with the deferred build."""
-    return {
-        "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd),
-        "model": model or _resolve_model(), "tools": {}, "skills": {}, "lazy": True,
-        "desktop_contract": DESKTOP_BACKEND_CONTRACT, "profile_name": _response_profile_name(profile),
-        **({"provider": provider} if provider else {}),
-    }
+    return SessionLiveInfo(
+        cwd=cwd, branch=git_probe.branch(cwd), project=_project_info_for_cwd(cwd),
+        model=model or _resolve_model(), tools={}, skills={}, lazy=True,
+        desktop_contract=DESKTOP_BACKEND_CONTRACT, profile_name=_response_profile_name(profile), provider=provider,
+    )
 
 
 def _deferred_session_record(
@@ -2610,7 +2661,8 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
         try:
             if session is None:
                 return
-            _emit("session.resume_progress", sid, {"phase": "history", "status": "loading"})
+            _emit("session.resume_progress", sid, SessionResumeProgressPayload(
+                phase="history", status="loading"))
             db.reopen_session(stored_id)
             raw_history, display_history, prefix = _load_resume_transcript(
                 db, stored_id, model_history_only=model_history_only)
@@ -2628,8 +2680,8 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
             if todo_state is not None and session.get("todo_state") is None:
                 session["todo_state"] = todo_state
             session["resume_history_ready"].set()
-            _emit("session.resume_progress", sid,
-                  {"message_count": session["resume_message_count"], "phase": "history", "status": "complete"})
+            _emit("session.resume_progress", sid, SessionResumeProgressPayload(
+                message_count=session["resume_message_count"], phase="history", status="complete"))
             _maybe_schedule_auto_continue(sid, session, stored_id)
             _start_agent_build(sid, session)
         except Exception as exc:
@@ -2639,8 +2691,9 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
             session.update(resume_hydrating=False, resume_history_error=message, agent_error=message)
             session["resume_history_ready"].set()
             session["agent_ready"].set()
-            _emit("session.resume_progress", sid, {"message": message, "phase": "history", "status": "failed"})
-            _emit("error", sid, {"message": message})
+            _emit("session.resume_progress", sid, SessionResumeProgressPayload(
+                message=message, phase="history", status="failed"))
+            _emit("error", sid, ErrorPayload(message=message))
             with _sessions_lock:
                 discarded = _sessions.pop(sid, None) if _sessions.get(sid) is session else None
             if (lease := (discarded or {}).get("active_session_lease")) is not None:
@@ -2717,7 +2770,7 @@ def _find_live_session_by_key(session_key: str, profile_home=_ANY_PROFILE) -> tu
     return None
 
 
-def _fallback_session_info(session: dict) -> dict:
+def _fallback_session_info(session: dict) -> SessionLiveInfo:
     agent = session.get("agent")
     if agent is not None:
         return _session_info(agent)
@@ -2729,10 +2782,10 @@ def _fallback_session_info(session: dict) -> dict:
     # so a client can clear a stale label instead of retaining it — the same contract `_lazy_session_info`
     # above already follows.
     cwd = _session_cwd(session)
-    return {
-        "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd), "lazy": True,
-        "model": _resolve_model(), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-    }
+    return SessionLiveInfo(
+        cwd=cwd, branch=git_probe.branch(cwd), project=_project_info_for_cwd(cwd), lazy=True,
+        model=_resolve_model(), skills={}, tools={}, desktop_contract=DESKTOP_BACKEND_CONTRACT,
+    )
 
 
 def _reconcile_display_with_live(db_display: list[dict], in_memory: list[dict]) -> list[dict]:
@@ -2774,7 +2827,7 @@ def _live_visible_history(session: dict, db, in_memory_fallback: list[dict]) -> 
 
 def _live_session_payload(
     sid: str, session: dict, *, cols: int | None = None, touch: bool = False,
-    transport: Transport | None = None, omit_messages: bool = False) -> dict:
+    transport: Transport | None = None, omit_messages: bool = False) -> LiveSessionSnapshot:
     with session["history_lock"]:
         if cols is not None:
             session["cols"] = cols
@@ -2811,7 +2864,7 @@ def _live_session_payload(
                        ("pending_connection", _pending_connection_request_payload(sid))):
         if value:
             payload[key] = value
-    return _attach_todo_state(payload, session)
+    return LiveSessionSnapshot.model_validate(_attach_todo_state(payload, session))
 
 
 def _main_runtime_from_agent(agent) -> dict | None:
@@ -3104,7 +3157,7 @@ def _start_usage_ticker(sid: str, agent, interval: float = 1.0) -> tuple[threadi
                 last = usage
                 if stop.is_set():
                     break  # turn ended while snapshotting; message.complete carries the authoritative usage
-                _emit("session.usage", sid, {"usage": usage})
+                _emit("session.usage", sid, SessionUsagePayload(usage=Usage.model_validate(usage)))
     thread = _RealThread(target=_loop, daemon=True)
     thread.start()
     return stop, thread
@@ -3151,17 +3204,6 @@ def _compute_mcp_rev() -> str:
         rev_src = json.dumps({k: cfg.get(k) for k in ("mcp", "mcp_servers", "tools")}, sort_keys=True, default=str)
         return hashlib.sha1(rev_src.encode()).hexdigest()[:12]
     return ""
-
-
-def _finish_reload(rid, params: dict, *, coalesced: bool) -> dict:
-    """Shared tail for both reload paths: honor ``always`` (persist the confirm opt-out) and return the ok payload."""
-    if bool(params.get("always", False)):
-        try:
-            from cli import save_config_value
-            save_config_value("approvals.mcp_reload_confirm", False)
-        except Exception as _exc:
-            logger.warning("Failed to persist mcp_reload_confirm=false: %s", _exc)
-    return _ok(rid, {"status": "reloaded", "loaded_rev": _mcp_reload_loaded_rev, **({"coalesced": True} if coalesced else {})})
 
 
 _TUI_HIDDEN: frozenset[str] = frozenset({"sethome", "set-home", "commands", "approve", "deny"})

@@ -8,6 +8,12 @@ Bodies are rebound onto server.py's globals (method_ctx.bind_module) and referen
 
 import logging
 
+from .contracts.base import Params
+from .contracts.config_free_tier_control import (
+    FreeTierAckNoticeResult,
+    FreeTierProvisionResult,
+    FreeTierStatusResult,
+)
 from .method_ctx import HandlerRegistry, bind_module
 
 logger = logging.getLogger(__name__)
@@ -18,7 +24,7 @@ _profile_scoped = _registry.profile_scoped
 
 @method("free_tier.status")
 @_profile_scoped
-def _(rid, params: dict) -> dict:
+def _(rid, params: Params) -> FreeTierStatusResult | dict:
     """``{has_guest, enabled, available, notice_pending, model, label}`` for the focused profile.
     ``available`` = an identity exists AND the tier is on: the free tier (connectors, and the model
     when nothing else carries inference) is there for this install. Whether inference actually runs
@@ -39,14 +45,14 @@ def _(rid, params: dict) -> dict:
             # Why there is no identity, when the last attempt to make one failed:
             # ``{error, error_code, retryable, retry_after}`` (the mint memo's verdict).
             payload.update(anon_auth.last_mint_failure() or {})
-        return _ok(rid, payload)
+        return FreeTierStatusResult.model_validate(payload)
     except Exception as e:
         return _err(rid, 5090, str(e))
 
 
 @method("free_tier.provision")
 @_profile_scoped
-def _(rid, params: dict) -> dict:
+def _(rid, params: Params) -> FreeTierProvisionResult | dict:
     """Explicit retry of the free-tier set-up for the focused profile: adopt the shared store's
     identity, else mint one (blocking, short timeout). The boot bootstrap normally did this already;
     the desktop calls this when the record says the identity is missing (portal down at boot, gate
@@ -58,7 +64,7 @@ def _(rid, params: dict) -> dict:
         from hermes_cli import free_tier_bootstrap
         enabled = anon_auth.guest_enabled()
         if enabled and not anon_auth.has_guest():
-            if free_tier_bootstrap.current_record() is not None and not params.get("profile"):
+            if free_tier_bootstrap.current_record() is not None and not params.profile:
                 # The launch profile: refresh the boot record too, so ``setup.status`` and the
                 # ``setup.ready`` listeners move with the outcome.
                 free_tier_bootstrap.retry_bootstrap_mint(force=True)
@@ -71,22 +77,23 @@ def _(rid, params: dict) -> dict:
         payload = {"has_guest": has_guest, "enabled": enabled}
         if enabled and not has_guest:
             payload.update(anon_auth.last_mint_failure() or {})
-        return _ok(rid, payload)
+        return FreeTierProvisionResult.model_validate(payload)
     except Exception as e:
         return _err(rid, 5092, str(e))
 
 
 @method("free_tier.ack_notice")
 @_profile_scoped
-def _(rid, params: dict) -> dict:
+def _(rid, params: Params) -> FreeTierAckNoticeResult | dict:
     """Mark the availability notice shown on the free-tier identity. ``acked`` is false when there is
     no free-tier identity to mark (nothing to show again either)."""
     try:
         from hermes_cli import anon_auth
-        return _ok(rid, {"acked": bool(anon_auth.mark_guest_notice_shown())})
+        return FreeTierAckNoticeResult(acked=bool(anon_auth.mark_guest_notice_shown()))
     except Exception as e:
         return _err(rid, 5091, str(e))
 
 
 def register(server) -> None:
+    """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
     bind_module(globals(), server, skip=("_",))

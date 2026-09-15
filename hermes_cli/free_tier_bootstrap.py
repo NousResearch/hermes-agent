@@ -223,8 +223,9 @@ def _bootstrap_then_retry() -> None:
 
 def _broadcast(record: SetupRecord) -> None:
     try:
+        from tui_gateway.contracts.events import SetupReadyPayload
         from tui_gateway.server import _broadcast_global_event
-        _broadcast_global_event(SETUP_READY_EVENT, record.as_payload())
+        _broadcast_global_event(SETUP_READY_EVENT, SetupReadyPayload(**record.as_payload()))
     except Exception as exc:  # no serve process (plain CLI): nobody to tell
         logger.debug("setup.ready not broadcast: %s", exc)
 

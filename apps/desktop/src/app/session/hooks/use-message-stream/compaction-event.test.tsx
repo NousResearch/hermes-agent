@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
+import { sessionLiveInfo } from '@/test/contract'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -87,11 +88,11 @@ describe('useMessageStream compaction lifecycle', () => {
     emit('status.update', { kind: 'compacting' })
 
     // A running heartbeat is not terminal evidence and must not hide real work.
-    emit('session.info', { running: true })
+    emit('session.info', sessionLiveInfo({ running: true }))
     expect($compactingSessions.get()).toEqual({ [SID]: true })
 
     // A server-reported terminal turn is trusted reconnect evidence.
-    emit('session.info', { running: false })
+    emit('session.info', sessionLiveInfo({ running: false }))
     expect($compactingSessions.get()).toEqual({})
   })
 })

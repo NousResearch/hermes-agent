@@ -23,6 +23,7 @@ function makeBlock(overrides: Partial<BillingBlock> = {}): BillingBlock {
     model: 'gpt-5',
     provider: 'openai',
     provider_label: 'OpenAI',
+    unverified: null,
     ...overrides
   }
 }

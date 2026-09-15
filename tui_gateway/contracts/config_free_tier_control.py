@@ -11,32 +11,32 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, StrictInt
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import OpenModel, ProfileParams, SessionLiveInfo
 from .connectors_operation import ConnectionOperationStatus
+from .tools_commands import DispatchType
 from .registry import method
 
 # ── config.get ────────────────────────────────────────────────────────────────────────────────
 
 
-class ConfigGetParams(ProfileParams):
+class ConfigGetParams(Params):
     """``key`` selects one getter from ``_CONFIG_GETTERS``; ``cwd`` feeds the ``project`` getter,
     ``session_id`` lets ``reasoning`` / ``fast`` answer with the session's live pin."""
 
-    key: str
-    cwd: str | None = None
-    session_id: str | None = None
+    key: str = ""
+    cwd: str = ""
+    session_id: str = ""
 
 
-class ConfigProviderRef(OpenModel):
-    """``hermes_cli/models.py::list_available_providers`` row."""
+class ConfigProviderRef(Result):
+    """``hermes_cli/models.py::list_available_providers`` emits every field."""
 
     id: str
     label: str
-    aliases: list[str] = Field(default_factory=list)
-    authenticated: bool = False
+    aliases: list[str]
+    authenticated: bool
 
 
 class ConfigGetResult(Result):
@@ -53,7 +53,8 @@ class ConfigGetResult(Result):
     home: str | None = None
     cwd: str | None = None
     branch: str | None = None
-    config: dict[str, JsonValue] | None = None
+    # WHY JsonValue: effective YAML is user-owned and extensible.
+    config: JsonValue | None = None
     prompt: str | None = None
     mtime: float | None = None
     mcp_rev: str | None = None
@@ -72,12 +73,13 @@ class ConfigSetScope(WireEnum):
     once = "once"
 
 
-class ConfigSetParams(ProfileParams):
+class ConfigSetParams(Params):
     """``key`` picks the setter (``_CONFIG_SETTERS``, ``details_mode.<section>``, display toggles);
     ``value`` is the raw word/string the setter normalises (falsy non-strings are reported back in
     the error). ``scope`` applies to ``yolo`` / ``reasoning``; ``confirm_expensive_model`` to ``model``."""
 
     key: str
+    # WHY JsonValue: config setters preserve raw YAML fragments until each key normalizes them.
     value: JsonValue = ""
     session_id: str | None = None
     scope: str | None = None
@@ -91,7 +93,8 @@ class ConfigSetResult(Result):
     ``info``; ``yolo`` reports its ``scope``. ``value`` is a bool only for the display toggles."""
 
     key: str
-    value: str | bool | None = None
+    # WHY JsonValue: setters echo normalized strings, booleans, and raw value-compatible results.
+    value: JsonValue
     warning: str | None = None
     confirm_required: bool | None = None
     confirm_message: str | None = None
@@ -101,7 +104,8 @@ class ConfigSetResult(Result):
     cwd: str | None = None
     branch: str | None = None
     history_reset: bool | None = None
-    info: SessionLiveInfo | None = None
+    # WHY JsonValue: ``methods_config_set._set_personality`` returns the producer-owned session snapshot.
+    info: JsonValue | None = None
 
 
 method("config.set", params=ConfigSetParams, result=ConfigSetResult,
@@ -122,15 +126,20 @@ class SetupStatusResult(Result):
     other_providers: bool | None = None
     inference_provider: str | None = None
     profile: str | None = None
+    # Present only when the last free-tier mint failed (``anon_auth.MintFailure.as_payload``), flat —
+    # the same block ``setup.status`` / ``setup.ready`` carry, so a client keys on ``error_code`` alike.
+    error_code: str | None = None
+    retryable: bool | None = None
+    retry_after: int | None = None
     ok: bool | None = None
     error: str | None = None
 
 
-method("setup.status", params=ProfileParams, result=SetupStatusResult,
+method("setup.status", params=Params, result=SetupStatusResult,
        doc="Loose provider check: is ANY provider auth state discoverable for the (launch or named) profile.")
 
 
-class SetupRuntimeCheckParams(ProfileParams):
+class SetupRuntimeCheckParams(Params):
     provider: str | None = None
 
 
@@ -177,6 +186,14 @@ method("diagnostics.share_nous", params=DiagnosticsShareNousParams, result=Diagn
 # ── free tier ─────────────────────────────────────────────────────────────────────────────────
 
 
+class FreeTierModel(WireEnum):
+    welcome = "nous/welcome"
+
+
+class FreeTierLabel(WireEnum):
+    free_tier = "Nous · free tier"
+
+
 class FreeTierStatusResult(Result):
     """``available`` = an identity exists AND the tier is on; whether inference runs on it is
     ``setup.runtime_check.free_tier``'s question."""
@@ -185,21 +202,32 @@ class FreeTierStatusResult(Result):
     enabled: bool
     available: bool
     notice_pending: bool
-    model: str
-    label: str
+    model: FreeTierModel
+    label: FreeTierLabel
+    # Present only when the last free-tier mint failed (``anon_auth.MintFailure.as_payload``), flat —
+    # the same block ``setup.status`` / ``setup.ready`` carry, so a client keys on ``error_code`` alike.
+    error: str | None = None
+    error_code: str | None = None
+    retryable: bool | None = None
+    retry_after: int | None = None
 
 
-method("free_tier.status", params=ProfileParams, result=FreeTierStatusResult,
+method("free_tier.status", params=Params, result=FreeTierStatusResult,
        doc="Pure read of the focused profile's free-tier identity state (no network, no side effects).")
 
 
 class FreeTierProvisionResult(Result):
     has_guest: bool
     enabled: bool
+    # Present only when the last free-tier mint failed (``anon_auth.MintFailure.as_payload``), flat —
+    # the same block ``setup.status`` / ``setup.ready`` carry, so a client keys on ``error_code`` alike.
     error: str | None = None
+    error_code: str | None = None
+    retryable: bool | None = None
+    retry_after: int | None = None
 
 
-method("free_tier.provision", params=ProfileParams, result=FreeTierProvisionResult,
+method("free_tier.provision", params=Params, result=FreeTierProvisionResult,
        doc="Explicit retry of the free-tier identity mint when the boot bootstrap could not create it.")
 
 
@@ -207,14 +235,14 @@ class FreeTierAckNoticeResult(Result):
     acked: bool
 
 
-method("free_tier.ack_notice", params=ProfileParams, result=FreeTierAckNoticeResult,
+method("free_tier.ack_notice", params=Params, result=FreeTierAckNoticeResult,
        doc="Mark the one-time availability notice as shown on the free-tier identity.")
 
 
 # ── model.options ─────────────────────────────────────────────────────────────────────────────
 
 
-class ModelOptionsParams(ProfileParams):
+class ModelOptionsParams(Params):
     session_id: str | None = None
     explicit_only: bool = False
     include_unconfigured: bool = False
@@ -244,26 +272,28 @@ class ModelCapabilities(Result):
     can_disable_reasoning: bool | None = None
 
 
-class ModelOptionProvider(OpenModel):
-    """One ``hermes_cli/inventory.py::build_models_payload`` provider row (the union of every field
-    the builder sets; ``pricing_pending`` / ``free_tier_pending`` mark the cached-only path)."""
+class ModelOptionProvider(Result):
+    """Closed ``hermes_cli/inventory.py::build_model_options_payload`` provider row."""
 
     slug: str
     name: str
-    models: list[str] = Field(default_factory=list)
-    total_models: int | None = None
-    is_current: bool | None = None
-    is_user_defined: bool | None = None
-    source: str | None = None
+    models: list[str]
+    total_models: int
+    is_current: bool
+    is_user_defined: bool
+    source: str
     aliases: list[str] | None = None
     api_url: str | None = None
+    native_catalog_empty: bool | None = None
     auth_type: str | None = None
     authenticated: bool | None = None
     key_env: str | None = None
     warning: str | None = None
     featured_models: list[str] | None = None
-    capabilities: dict[str, ModelCapabilities] | None = None
-    pricing: dict[str, ModelPricing] | None = None
+    # WHY JsonValue: provider model IDs are dynamic map keys from inventory.py.
+    capabilities: JsonValue | None = None
+    # WHY JsonValue: provider model IDs are dynamic map keys from inventory.py.
+    pricing: JsonValue | None = None
     pricing_pending: bool | None = None
     free_tier: bool | None = None
     free_tier_pending: bool | None = None
@@ -273,8 +303,8 @@ class ModelOptionProvider(OpenModel):
 
 class ModelOptionsResult(Result):
     providers: list[ModelOptionProvider]
-    model: str = ""
-    provider: str = ""
+    model: str
+    provider: str
 
 
 method("model.options", params=ModelOptionsParams, result=ModelOptionsResult,
@@ -284,17 +314,16 @@ method("model.options", params=ModelOptionsParams, result=ModelOptionsResult,
 # ── connectors ────────────────────────────────────────────────────────────────────────────────
 
 
-class ConnectorsListParams(ProfileParams):
+class ConnectorsListParams(Params):
     session_id: str
 
 
-class ConnectorRow(OpenModel):
-    """One ``manage_connections`` status entry after ``connector_ui_payload`` redaction; the
-    connector service owns the closed key set, so unknown metadata passes through."""
+class ConnectorRow(Result):
+    """Closed connector catalog row emitted by ``ConnectorClient.list_connectors``."""
 
-    connector: str = ""
-    connected: bool | None = None
-    enabled: bool | None = None
+    connector: str
+    connected: bool
+    enabled: bool
     connectionStatus: str | None = None
     name: str | None = None
     description: str | None = None
@@ -309,7 +338,7 @@ method("connectors.list", params=ConnectorsListParams, result=ConnectorsListResu
        doc="Connector catalog + connection state for one owned session (``available=False`` when the toolset is off).")
 
 
-class ConnectorsConnectParams(ProfileParams):
+class ConnectorsConnectParams(Params):
     session_id: str
     connectors: list[str]
     reconnect: bool = False
@@ -380,17 +409,41 @@ class WaitBarrierUntil(Result):
     reason: str = ""
 
 
-class WaitBarrierTarget(Result):
-    type: Literal["session", "pid"]
-    target: str | int
+class WaitBarrierSession(Result):
+    type: Literal["session"]
+    target: str
     reason: str = ""
+
+
+class WaitBarrierPid(Result):
+    type: Literal["pid"]
+    target: int
+    reason: str = ""
+
+
+class GoalStatus(WireEnum):
+    """``hermes_cli/goals.py::GoalState.status`` minus ``cleared``, which the snapshot drops."""
+
+    active = "active"
+    paused = "paused"
+    done = "done"
+
+
+class GoalVerdict(WireEnum):
+    """``hermes_cli/goals.py::GoalState.last_verdict``."""
+
+    done = "done"
+    blocked = "blocked"
+    continue_ = "continue"
+    wait = "wait"
+    skipped = "skipped"
 
 
 class GoalSnapshot(Result):
     """``methods_session_control.py::_safe_goal_snapshot`` — the frontend-safe GoalState subset."""
 
     title: str
-    status: str
+    status: GoalStatus
     turns_used: int
     max_turns: int
     contract: GoalContractSnapshot
@@ -399,17 +452,30 @@ class GoalSnapshot(Result):
     created_at: float | None = None
     updated_at: float | None = None
     paused_reason: str | None = None
-    last_verdict: str | None = None
+    last_verdict: GoalVerdict | None = None
     last_reason: str | None = None
-    wait_barrier: WaitBarrierUntil | WaitBarrierTarget | None = Field(default=None, discriminator="type")
+    wait_barrier: WaitBarrierUntil | WaitBarrierSession | WaitBarrierPid | None = Field(default=None, discriminator="type")
+
+
+class LoopStatus(WireEnum):
+    """``hermes_cli/loops.py::LoopState.status`` minus ``cleared``."""
+
+    active = "active"
+    paused = "paused"
+    done = "done"
+
+
+class LoopMode(WireEnum):
+    interval = "interval"
+    self_paced = "self_paced"
 
 
 class LoopSnapshot(Result):
     """``_safe_loop_snapshot`` — persisted LoopState fields, never its route."""
 
     prompt: str
-    status: str
-    mode: str
+    status: LoopStatus
+    mode: LoopMode
     interval_seconds: float
     current_delay: float
     times: int
@@ -425,9 +491,16 @@ class LoopSnapshot(Result):
     last_stop_reason: str | None = None
 
 
+class HeartbeatStatus(WireEnum):
+    """``hermes_cli/heartbeat.py::HeartbeatState.status`` minus ``cleared``."""
+
+    active = "active"
+    paused = "paused"
+
+
 class HeartbeatSnapshot(Result):
     prompt: str
-    status: str
+    status: HeartbeatStatus
     interval_seconds: int
     created_at: float
     last_fired_at: float
@@ -445,7 +518,7 @@ class SessionControlSnapshot(Result):
     updated_at: float
 
 
-class SessionControlReadParams(ProfileParams):
+class SessionControlReadParams(Params):
     session_id: str
 
 
@@ -474,13 +547,14 @@ class SessionControlAction(WireEnum):
 
 
 class SessionControlArgs(Params):
-    """``subgoal.add`` reads ``text``; ``subgoal.remove`` reads the 1-based ``index``."""
+    """``subgoal.add`` reads ``text``; ``subgoal.remove`` reads the 1-based ``index``. Strict: a
+    string or float index is a client bug, not a value to coerce."""
 
     text: str | None = None
-    index: int | None = None
+    index: StrictInt | None = None
 
 
-class SessionControlParams(ProfileParams):
+class SessionControlParams(Params):
     """``action`` is validated by the handler (unknown / gate actions answer ``4004``), so it stays a
     string on the wire; ``SessionControlAction`` lists the accepted set."""
 
@@ -490,9 +564,9 @@ class SessionControlParams(ProfileParams):
 
 
 class SessionControlDispatch(Result):
-    """``_dispatch_envelope`` — the command result's user-visible envelope, every key always present."""
+    """``_dispatch_envelope`` always serializes all user-visible directive fields."""
 
-    type: str | None
+    type: DispatchType | None
     output: str | None
     notice: str | None
     message: str | None
@@ -511,34 +585,64 @@ method("session.control", params=SessionControlParams, result=SessionControlResu
 # ── verification.status ───────────────────────────────────────────────────────────────────────
 
 
-class VerificationStatusParams(ProfileParams):
+class VerificationStatusParams(Params):
     session_id: str | None = None
     session_key: str | None = None
     cwd: str | None = None
 
 
-class VerificationEvidenceRow(OpenModel):
-    """One ``verification_events`` row (``agent/verification_evidence.py``)."""
+class VerificationKind(WireEnum):
+    test = "test"
+    lint = "lint"
+    typecheck = "typecheck"
+    build = "build"
+    format = "format"
+    check = "check"
+    verify = "verify"
+    ad_hoc = "ad_hoc"
 
-    id: int | None = None
-    created_at: str | None = None
-    session_id: str | None = None
-    cwd: str | None = None
-    root: str | None = None
-    command: str | None = None
-    canonical_command: str | None = None
-    kind: str | None = None
-    scope: str | None = None
-    status: str | None = None
-    exit_code: int | None = None
-    output_summary: str | None = None
+
+class VerificationScope(WireEnum):
+    full = "full"
+    targeted = "targeted"
+
+
+class VerificationOutcome(WireEnum):
+    passed = "passed"
+    failed = "failed"
+
+
+class VerificationStatus(WireEnum):
+    disabled = "disabled"
+    not_applicable = "not_applicable"
+    unverified = "unverified"
+    stale = "stale"
+    passed = "passed"
+    failed = "failed"
+    unknown = "unknown"
+
+
+class VerificationEvidenceRow(Result):
+    """Closed SQLite ``verification_events`` row from ``agent/verification_evidence.py:51-63``."""
+
+    id: int
+    created_at: str
+    session_id: str
+    cwd: str
+    root: str
+    command: str
+    canonical_command: str
+    kind: VerificationKind
+    scope: VerificationScope
+    status: VerificationOutcome
+    exit_code: int
+    output_summary: str
 
 
 class VerificationStatusInfo(Result):
-    """``verification_status()``: ``disabled`` / ``not_applicable`` / ``unverified`` / ``stale`` or the
-    latest event's own status; ``root`` and friends only once a workspace was identified."""
+    """``verification_status`` produces its closed status set at ``agent/verification_evidence.py:533-566``."""
 
-    status: str
+    status: VerificationStatus
     evidence: VerificationEvidenceRow | None = None
     root: str | None = None
     session_id: str | None = None

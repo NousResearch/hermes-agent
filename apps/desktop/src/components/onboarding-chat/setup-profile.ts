@@ -10,11 +10,13 @@
  * gateway and session hooks.
  */
 
+import type { SeedMessage } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import type { HandoffReceipt } from '@/app/contrib/handoff-leg'
 import { handoffReceiptKey, readHandoffReceipt } from '@/app/contrib/handoff-receipt'
 import type { GatewayRequest } from '@/app/session/hooks/use-prompt-actions/utils'
+import { seedMessage } from '@/app/session/hooks/use-session-actions/create-overrides'
 import { CONNECTOR_LEAD_ORDER } from '@/components/onboarding-chat/options'
 import { connectorTitle } from '@/lib/connector-tools'
 import { activeGatewayConnectionId } from '@/store/gateway'
@@ -256,10 +258,10 @@ export async function buildFirstTaskSeedMessages(
   task: string,
   answers: OnboardingAnswers,
   plan: HandoffPlan = 'build'
-): Promise<{ content: string; display_kind?: 'hidden'; role: 'assistant' | 'user' }[]> {
+): Promise<SeedMessage[]> {
   const root = plan === 'plugin' ? await window.hermesDesktop?.desktopPluginsRoot?.() : undefined
 
-  return [{ content: buildFirstTaskRunbook(task, answers, plan, root), display_kind: 'hidden', role: 'user' }]
+  return [seedMessage('user', buildFirstTaskRunbook(task, answers, plan, root), 'hidden')]
 }
 
 /** The hidden note sent to the welcome chat once the build session is live. The check-ins after it come from the

@@ -1,4 +1,5 @@
-import type { AsyncDelegationRecord } from '../gatewayTypes.js'
+import type { SubagentDelegationSnapshot } from '@hermes/shared/gateway-events'
+
 import type { SubagentProgress } from '../types.js'
 
 // Pure merge + layout logic for the docked agents panel. Kept ink-free so it is
@@ -87,8 +88,8 @@ const liveElapsed = (item: SubagentProgress, nowMs: number): null | number => {
  * `result ready ⏎` cue is the whole point — the batch row comes back. */
 const dropCoveredBatches = (
   subagents: readonly SubagentProgress[],
-  asyncDelegations: readonly AsyncDelegationRecord[]
-): readonly AsyncDelegationRecord[] => {
+  asyncDelegations: readonly SubagentDelegationSnapshot[]
+): readonly SubagentDelegationSnapshot[] => {
   const live = new Set(subagents.filter(s => IN_FLIGHT.has(s.status)).map(s => s.id))
 
   if (live.size === 0) {
@@ -107,7 +108,7 @@ const dropCoveredBatches = (
  * freshest tool/elapsed signal), then recently finished rows newest-first. */
 export const buildAgentRows = (
   subagents: SubagentProgress[],
-  asyncDelegations: readonly AsyncDelegationRecord[],
+  asyncDelegations: readonly SubagentDelegationSnapshot[],
   nowMs: number,
   maxRows: number = PANEL_MAX_ROWS
 ): AgentRows => {

@@ -1,7 +1,9 @@
 import { atom } from 'nanostores'
 
+import type { GatewayRequest } from '@/lib/gateway-rpc'
+
 export type ApprovalMode = 'manual' | 'off' | 'smart'
-export type ApprovalModeRequester = (method: string, params?: Record<string, unknown>) => Promise<unknown>
+export type ApprovalModeRequester = GatewayRequest
 
 const APPROVAL_MODES = new Set<ApprovalMode>(['manual', 'smart', 'off'])
 const revisions = new Map<string, number>()

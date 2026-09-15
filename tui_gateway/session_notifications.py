@@ -7,6 +7,8 @@ from __future__ import annotations
 import contextlib
 
 from .method_ctx import bind_module
+from .contracts.events import StatusUpdatePayload, TerminalClosePayload, TerminalOutputPayload
+from .contracts.tools_commands import CommandDispatchParams
 
 
 def _notif_locked_sessions(fn, default):
@@ -166,7 +168,7 @@ def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwa
 
 
 def _notif_loop_status(sid: str, text: str) -> None:
-    _emit("status.update", sid, {"kind": "loop", "text": text})
+    _emit("status.update", sid, StatusUpdatePayload(kind="loop", text=text))
 
 
 def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) -> None:
@@ -176,17 +178,16 @@ def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) 
     _notif_release_turn(session)
     try:
         parts = wakeup.lstrip()[1:].split(None, 1)
-        resp = _methods["command.dispatch"](
-            rid, {"name": parts[0] if parts else "", "arg": parts[1] if len(parts) > 1 else "", "session_id": sid})
-        payload = (resp or {}).get("result") or {}
-        if out := str(payload.get("output") or "").strip():
+        payload = invoke("command.dispatch", CommandDispatchParams(
+            name=parts[0] if parts else "", arg=parts[1] if len(parts) > 1 else "", session_id=sid))
+        if out := str(payload.output or "").strip():
             _notif_loop_status(sid, out)
-        if payload.get("type") == "send" and payload.get("message"):
+        if payload.type == "send" and payload.message:
             if not _notif_claim_turn(session):
                 mgr.abandon_tick()
                 return
             _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, payload["message"])
+            _run_prompt_submit(rid, sid, session, payload.message)
             return
     except Exception:
         pass
@@ -219,7 +220,7 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
         return
     started = False
     try:
-        _emit("status.update", sid, {"kind": "heartbeat", "text": f"♥ heartbeat #{mgr.state.fire_count} firing…"})
+        _emit("status.update", sid, StatusUpdatePayload(kind="heartbeat", text=f"♥ heartbeat #{mgr.state.fire_count} firing…"))
         started = bool(_run_prompt_submit(f"__heartbeat__{int(time.time() * 1000)}", sid, session, prompt))
     except Exception as exc:
         _notif_log_failure("heartbeat dispatch failed", exc)
@@ -386,7 +387,7 @@ def _notif_poll_kanban(sid: str, session: dict) -> None:
         _notif_log_failure("kanban notification poll failed", exc)
         texts = []
     for text in texts:
-        _emit("status.update", sid, {"kind": "process", "text": text})
+        _emit("status.update", sid, StatusUpdatePayload(kind="process", text=text))
     if texts:
         session.setdefault("_kanban_pending", []).extend(texts)
     if not session.get("_kanban_pending") or not _notif_claim_turn(session):
@@ -450,7 +451,7 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
         from tools.process_registry_notifications import async_delegation_display_text, process_completion_display_text
         display_text = (async_delegation_display_text(evt) if is_delegation
                         else process_completion_display_text([evt]) if evt_type == "completion" else text)
-        _emit("status.update", sid, {"kind": "process", "text": display_text})
+        _emit("status.update", sid, StatusUpdatePayload(kind="process", text=display_text))
         emitted.add(dedup_key)
     if evt_type == "completion" and completions is not None:
         completions.append((evt, text))
@@ -655,9 +656,9 @@ def _wire_desktop_sinks() -> None:
             return next((sid for sid, s in _sessions.items() if str(s.get("session_key") or "") == session_key), "")
     if getattr(process_registry, "on_output", None) is None:
         process_registry.on_output = lambda session, chunk: _emit(
-            "agent.terminal.output", _owner_sid(session), {"process_id": session.id, "chunk": chunk})
+            "agent.terminal.output", _owner_sid(session), TerminalOutputPayload(process_id=session.id, chunk=chunk))
     if getattr(process_registry, "on_close", None) is None:
-        process_registry.on_close = lambda session, pid: _emit("terminal.close", _owner_sid(session), {"process_id": pid})
+        process_registry.on_close = lambda session, pid: _emit("terminal.close", _owner_sid(session), TerminalClosePayload(process_id=pid))
     if not _desktop_ui_wired:
         with contextlib.suppress(Exception):
             from tools import desktop_ui

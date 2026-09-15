@@ -6,6 +6,17 @@ method_ctx.bind_module), so they reference server.py globals bare.
 
 import contextlib
 
+from tui_gateway.contracts.events import (
+    BackgroundCompletePayload, BtwCompletePayload, ErrorPayload, PreviewRestartCompletePayload,
+    PreviewRestartProgressPayload, SessionInfoPayload, VoiceTranscriptPayload)
+from tui_gateway.contracts.prompt_voice import (
+    ApprovalPendingParams, ApprovalPendingResult, ApprovalReceivedParams, ApprovalReceivedResult,
+    ApprovalRespondParams, ApprovalRespondResult, AttachedImageResult, ClarifyLockParams,
+    ClarifyLockResult, ClipboardPasteParams, FileAttachParams, FileAttachResult, ImageAttachBytesParams,
+    ImageAttachParams, ImageDetachParams, ImageDetachResult, InputDetectDropParams, InputDetectDropResult,
+    PdfAttachParams, PdfAttachResult, PdfPage, PreviewRestartParams, PromptSubmitParams,
+    PromptSubmitResult, RequestAnswerParams, RequestAnswerResult, SideAgentParams, TaskIdResult)
+
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -169,6 +180,7 @@ def _pending_reaction_notes(session: dict) -> str:
 def _typed_stop_phrase_response(rid, text):
     """RPC reply ending the voice chat when a bare stop phrase is TYPED while backend voice
     mode is on (typed twin of the spoken stop phrase), or None for a normal message."""
+    from tui_gateway.contracts.events import VoiceTranscriptPayload
     if not (isinstance(text, str) and _voice_mode_enabled()):
         return None
     try:
@@ -182,9 +194,9 @@ def _typed_stop_phrase_response(rid, text):
     except Exception:
         return None
     _end_voice_chat(stop_loop=True, stop_tts=True)
-    _voice_emit("voice.transcript", {"stop_phrase": True, "typed": True})
+    _voice_emit("voice.transcript", VoiceTranscriptPayload(stop_phrase=True, typed=True))
     logger.info("prompt.submit: typed stop phrase — voice chat ended")
-    return _ok(rid, {"voice_stopped": True})
+    return PromptSubmitResult(voice_stopped=True)
 
 
 _HOSTED_TASK_FIELDS = {"room_id", "task_id", "thread_id", "turn_id", "execution_generation", "member_id"}
@@ -203,7 +215,7 @@ def _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback):
     return None if valid else _err(rid, 4120, "invalid hosted room turn proof")
 
 
-def _legacy_group_fence_error(rid, session, params):
+def _legacy_group_fence_error(rid, session, params: PromptSubmitParams):
     """Fence direct prompts into a hosted room from older Desktop builds (they know the
     ``Group: <room-id>`` title but not the authority marker; a direct prompt would start a
     second renderer driver)."""
@@ -222,7 +234,7 @@ def _legacy_group_fence_error(rid, session, params):
             peer = probe_peer_room_reservation(
                 default_db_path(), room_id=room_id, target_profile=(
                     profile_name_for_home(session.get("profile_home"))
-                    or str(params.get("profile") or "").strip()
+                    or str(params.profile or "").strip()
                     or str(_current_profile_name() or "default").strip()))
     except RoomProbeUnavailableError:
         return _err(rid, 5122, _GROUP_PROBE_FAILED_MSG)
@@ -238,28 +250,28 @@ def _legacy_group_fence_error(rid, session, params):
     return None
 
 
-def _parse_truncation_params(rid, sid, session, params, history):
+def _parse_truncation_params(rid, sid, session, params: PromptSubmitParams, history):
     """Coerce + admit the truncation params; ``(target_row_id, client_ordinal, err)``.
     Malformed (4004) -> unconfirmed (4029; checked BEFORE target resolution so a
     leaked-state request never pays the durable read or heal-stamps live dicts).  An
     ordinal/id alone is not consent: a leftover ordinal on an ORDINARY submit is
     indistinguishable from a real rewind, and the cut is a destructive replace."""
     target_row_id = client_ordinal = None
-    if (truncate_row_id := params.get("truncate_before_row_id")) is not None:
+    if (truncate_row_id := params.truncate_before_row_id) is not None:
         target_row_id, err = _coerce_truncate_int(rid, truncate_row_id, "truncate_before_row_id")
         if err is not None:
             return None, None, err
-    if (truncate_user_ordinal := params.get("truncate_before_user_ordinal")) is not None:
+    if (truncate_user_ordinal := params.truncate_before_user_ordinal) is not None:
         client_ordinal, err = _coerce_truncate_int(rid, truncate_user_ordinal)
         if err is not None:
             return None, None, err
-    if is_truthy_value(params.get("confirm_truncate")):
+    if is_truthy_value(params.confirm_truncate):
         return target_row_id, client_ordinal, None
     logger.warning(
         "prompt.submit: REFUSED unconfirmed truncation of session %s (%d messages held; "
         "ordinal=%s, row_id=%s, message_id=%s). The client attached truncation parameters without "
         "confirm_truncate — likely stale truncation parameters on an ordinary submit.",
-        sid, len(history), client_ordinal, target_row_id, params.get("truncate_before_message_id"))
+        sid, len(history), client_ordinal, target_row_id, params.truncate_before_message_id)
     return None, None, _err(
         rid, 4029,
         "truncation parameters require confirm_truncate=true; "
@@ -267,7 +279,7 @@ def _parse_truncation_params(rid, sid, session, params, history):
         "(update your Hermes client if a rewind was intended)")
 
 
-def _resolve_truncation_ordinal(rid, sid, session, params, history):
+def _resolve_truncation_ordinal(rid, sid, session, params: PromptSubmitParams, history):
     """Resolve the truncation target to ``(ordinal, cut_index, err)``: unresolvable target
     (4018, fail closed — never degrade a missing row_id/message_id into an ordinal cut) ->
     ordinal drift (4030) -> ordinal-only on a durable session (4004)."""
@@ -275,7 +287,7 @@ def _resolve_truncation_ordinal(rid, sid, session, params, history):
         rid, sid, session, params, history)
     if err is not None:
         return None, None, err
-    truncate_message_id = params.get("truncate_before_message_id")
+    truncate_message_id = params.truncate_before_message_id
     # Client ordinals count the full displayed lineage; after compression ancestors live in
     # display_history_prefix, so count their user turns once to translate ordinals.
     prefix_user_count = len(_history_user_indices(session.get("display_history_prefix") or []))
@@ -353,7 +365,7 @@ def _row_ids_of(messages) -> set:
     return {row_id for message in messages if isinstance((row_id := _message_row_id(message)), int)}
 
 
-def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids):
+def _truncate_history_for_submit(rid, sid, session, params: PromptSubmitParams, requested_rebind_ids):
     """Rewind/regenerate cut under ``history_lock``: ``(err, survivor_fields)``; the fields
     are the client rowId-rebind payload."""
     history = _history_without_ephemeral_scaffolding(session.get("history", []))
@@ -363,7 +375,7 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
     from agent.context_compressor import history_before_user_originated_turn
     truncated, _live_view = history_before_user_originated_turn(history, cut_index)
     # Second gate: ordinal 0 would DELETE every durable row; wiping needs its own opt-in.
-    if not truncated and history and not is_truthy_value(params.get("confirm_empty_truncate")):
+    if not truncated and history and not is_truthy_value(params.confirm_empty_truncate):
         logger.warning(
             "prompt.submit: REFUSED empty truncation of session %s "
             "(%d messages would be wiped; ordinal=%d).",
@@ -501,17 +513,18 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
         with session["history_lock"]:
             session["running"] = False
             session["last_active"] = time.time()
-        _emit("session.info", sid, _session_info(session.get("agent"), session))
+        _emit("session.info", sid, SessionInfoPayload(**_session_info(
+            session.get("agent"), session).model_dump(mode="json")))
         return
     with session["history_lock"]:
         if session.get("_turn_cancel_requested") or not session.get("running"):
             session["running"] = False
             _clear_inflight_turn(session)
             # Without this emit the turn vanishes silently after {"status": "streaming"}.
-            _emit("error", sid, {"message": (
+            _emit("error", sid, ErrorPayload(message=(
                 "Turn cancelled before the agent was ready"
                 if session.get("_turn_cancel_requested")
-                else "Session no longer running before the agent was ready")})
+                else "Session no longer running before the agent was ready")))
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind,
@@ -523,7 +536,7 @@ _TRUNCATION_PARAMS = (
 
 
 def _lock_in_submit_turn(
-    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task):
+    rid, sid, session, text, params: PromptSubmitParams, has_truncation, requested_rebind_ids, hosted_task):
     """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
     cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
     fields = {}
@@ -532,7 +545,7 @@ def _lock_in_submit_turn(
         # mid-run would build a second agent racing the child on the same stored session.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
             return _err(rid, 4009, "subagent still running — wait for it to finish"), fields
-        if is_truthy_value(params.get("confirm_truncate")) and not has_truncation:
+        if is_truthy_value(params.confirm_truncate) and not has_truncation:
             return _err(
                 rid, 4004,
                 "confirm_truncate requires truncate_before_user_ordinal, truncate_before_message_id, or truncate_before_row_id",
@@ -556,17 +569,18 @@ _CLIENT_SURFACES = frozenset({"hud", "voice-live"})
 
 
 @method("prompt.submit")
-def _(rid, params: dict) -> dict:
+def _(rid, params: PromptSubmitParams, _turn_author=None, _hosted_task=None, _hosted_terminal_callback=None) -> PromptSubmitResult | dict:
+    from tui_gateway.contracts.prompt_voice import PromptSubmitResult
     from hermes_cli.input_sanitize import sanitize_user_prompt_text
-    sid = params.get("session_id", "")
-    raw_text = params.get("text", "")
+    sid = params.session_id
+    raw_text = params.text
     text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
     # Off-screen sends (widget intents) type the row so no client renders a bubble;
     # whitelisted to "hidden" — this RPC must not mint kinds.
-    display_kind = "hidden" if params.get("display_kind") == "hidden" else None
+    display_kind = "hidden" if params.display_kind == "hidden" else None
     if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
         return stopped
-    if params.get("interrupted"):
+    if params.interrupted:
         # Client-side barge-in: latch so this turn's model message carries the note.
         from tools.tts_streaming import mark_speech_interrupted
         mark_speech_interrupted()
@@ -576,12 +590,12 @@ def _(rid, params: dict) -> dict:
     from tools.bot_relay import DeliveryAuthor
 
     # Only the relay handler can build a DeliveryAuthor. A dict here is a client claiming a sender.
-    raw_author = params.get("_turn_author")
+    raw_author = _turn_author
     if raw_author is not None and not isinstance(raw_author, DeliveryAuthor):
         return _err(rid, 4124, "turn author is stamped by the gateway, never by a client")
     turn_author = raw_author.author if raw_author is not None else None
-    hosted_task = params.get("_hosted_task")
-    hosted_terminal_callback = params.get("_hosted_terminal_callback")
+    hosted_task = _hosted_task
+    hosted_terminal_callback = _hosted_terminal_callback
     internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
     err = (
         _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback)
@@ -594,13 +608,13 @@ def _(rid, params: dict) -> dict:
         reason = getattr(limit_message, "reason", None)
         return _err(rid, 4090, str(limit_message), {"reason": reason} if reason else None)
     # Rewritten every submit: a session alternates app window / HUD / live voice; a stale value misinforms.
-    session["client_surface"] = params.get("surface") if params.get("surface") in _CLIENT_SURFACES else ""
+    session["client_surface"] = params.surface if params.surface in _CLIENT_SURFACES else ""
     # Live-voice delegations carry the recent spoken transcript for the MODEL INPUT only (the persisted
     # user row stays the words the user said); anything else clears it.
-    voice_context = params.get("voice_context")
+    voice_context = params.voice_context
     session["voice_live_context"] = (
         voice_context[:6000] if session["client_surface"] == "voice-live" and isinstance(voice_context, str) else "")
-    has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
+    has_truncation = any(getattr(params, k) is not None for k in _TRUNCATION_PARAMS)
     if has_truncation and isinstance(text, str):
         # A rewind replays what the transcript shows: re-expand a skill invocation or
         # `/work fix it` sends nine literal chars.
@@ -629,10 +643,10 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4091, "hosted room member session is busy")
             busy_transport = t or session.get("transport")
         busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author)
+            rid, sid, session, text, busy_transport, queued=params.queued, turn_author=turn_author)
         if busy_response is not None:
             return busy_response
-    raw_rebind_ids = params.get("rebind_survivor_row_ids")
+    raw_rebind_ids = params.rebind_survivor_row_ids
     requested_rebind_ids = (
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
         if isinstance(raw_rebind_ids, list) else None)
@@ -646,10 +660,9 @@ def _(rid, params: dict) -> dict:
                          turn_author.get("id"))
         isolated_response = _submit_prompt_to_compute_host(
             rid, sid, session, text, display_kind=display_kind)
-        if not isolated_response.get("error"):
+        if not isinstance(isolated_response, dict):
             # The truncation already happened inline above (memory + DB).
-            isolated_response["result"].update(survivor_fields)
-            return isolated_response
+            return isolated_response.model_copy(update=survivor_fields)
         # An ordinal/id alone is not consent. A client that carries a leftover ordinal into an ORDINARY
         # submit sends a request that is indistinguishable, field by field, from a real rewind — same
         # method, same shape, an in-range target — and the cut it asks for is a destructive
@@ -673,7 +686,7 @@ def _(rid, params: dict) -> dict:
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
     run_thread.start()
-    return _ok(rid, {"status": "streaming", **survivor_fields})
+    return PromptSubmitResult(status="streaming", **survivor_fields)
 
 
 # ── attachments ─────────────────────────────────────────────────────────────
@@ -686,7 +699,8 @@ def _attached_image_result(session, image_path, **extra) -> dict:
 
 
 @method("clipboard.paste")
-def _(rid, params: dict) -> dict:
+def _(rid, params: ClipboardPasteParams) -> AttachedImageResult | dict:
+    from tui_gateway.contracts.prompt_voice import AttachedImageResult
     session, err = _sess_building(params, rid)
     if err:
         return err
@@ -702,19 +716,20 @@ def _(rid, params: dict) -> dict:
     # Save-first (CLI keybinding parity): more robust than a has_image() precheck.
     if not save_clipboard_image(img_path):
         session["image_counter"] = max(0, session["image_counter"] - 1)
-        return _ok(rid, {"attached": False, "message": (
+        return AttachedImageResult(attached=False, message=(
             "Clipboard has image but extraction failed" if has_clipboard_image()
-            else "No image found in clipboard")})
+            else "No image found in clipboard"))
     session.setdefault("attached_images", []).append(str(img_path))
-    return _ok(rid, _attached_image_result(session, img_path))
+    return AttachedImageResult(**_attached_image_result(session, img_path))
 
 
 @method("image.attach")
-def _(rid, params: dict) -> dict:
+def _(rid, params: ImageAttachParams) -> AttachedImageResult | dict:
+    from tui_gateway.contracts.prompt_voice import AttachedImageResult
     session, err = _sess_building(params, rid)
     if err:
         return err
-    raw = str(params.get("path", "") or "").strip()
+    raw = str(params.path or "").strip()
     if not raw:
         return _err(rid, 4015, "path required")
     try:
@@ -730,7 +745,7 @@ def _(rid, params: dict) -> dict:
         if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
             return _err(rid, 4016, f"unsupported image: {image_path.name}")
         session.setdefault("attached_images", []).append(str(image_path))
-        return _ok(rid, _attached_image_result(
+        return AttachedImageResult(**_attached_image_result(
             session, image_path,
             remainder=remainder, text=remainder or f"[User attached image: {image_path.name}]"))
     except Exception as e:
@@ -738,13 +753,14 @@ def _(rid, params: dict) -> dict:
 
 
 @method("image.attach_bytes")
-def _(rid, params: dict) -> dict:
+def _(rid, params: ImageAttachBytesParams) -> AttachedImageResult | dict:
     """Attach an image from base64 bytes (remote client); reply mirrors ``image.attach``.
     ``filename``/``ext`` hint the extension, else magic bytes decide (fallback ``.png``)."""
+    from tui_gateway.contracts.prompt_voice import AttachedImageResult
     session, err = _sess_building(params, rid)
     if err:
         return err
-    raw_b64 = str(params.get("content_base64") or params.get("data") or "").strip()
+    raw_b64 = str(params.content_base64 or params.data or "").strip()
     if not raw_b64:
         return _err(rid, 4015, "content_base64 required")
     img_bytes, err = _decode_attach_payload(
@@ -752,8 +768,8 @@ def _(rid, params: dict) -> dict:
         label="image", empty_msg="image is empty")
     if err is not None:
         return err
-    filename = str(params.get("filename", "") or "")
-    ext_hint = str(params.get("ext", "") or "").strip().lower()
+    filename = str(params.filename or "")
+    ext_hint = str(params.ext or "").strip().lower()
     if ext_hint and not ext_hint.startswith("."):
         ext_hint = "." + ext_hint
     ext = _sniff_image_ext(img_bytes, filename or (f"x{ext_hint}" if ext_hint else ""))
@@ -763,7 +779,7 @@ def _(rid, params: dict) -> dict:
         img_path = _queue_attached_image(session, img_bytes, ext, prefix="upload")
     except Exception as e:
         return _err(rid, 5027, f"write failed: {e}")
-    return _ok(rid, _attached_image_result(
+    return AttachedImageResult(**_attached_image_result(
         session, img_path,
         remainder="", text=f"[User attached image: {img_path.name}]", bytes=len(img_bytes)))
 
@@ -780,7 +796,7 @@ def _pdf_attach_source(rid, params, td_path, raw_path, raw_b64):
             return None, None, _err(rid, 4017, "payload is not a PDF (missing %PDF- magic bytes)")
         pdf_path = td_path / "input.pdf"
         pdf_path.write_bytes(pdf_bytes)
-        return pdf_path, str(params.get("filename", "") or "uploaded.pdf"), None
+        return pdf_path, str(params.filename or "uploaded.pdf"), None
     try:
         from cli import _resolve_attachment_path
         resolved = _resolve_attachment_path(raw_path)
@@ -799,8 +815,8 @@ def _pdf_attach_source(rid, params, td_path, raw_path, raw_b64):
 def _pdf_page_range(rid, params):
     """Validate first/last page against the per-call cap: ``(first, last, err)``."""
     try:
-        first_page = int(params.get("first_page") or 1)
-        last_page = None if params.get("last_page") is None else int(params.get("last_page"))
+        first_page = int(params.first_page or 1)
+        last_page = None if params.last_page is None else int(params.last_page)
     except (TypeError, ValueError):
         return None, None, _err(rid, 4015, "first_page/last_page must be integers")
     if first_page < 1:
@@ -816,9 +832,10 @@ def _pdf_page_range(rid, params):
 
 
 @method("pdf.attach")
-def _(rid, params: dict) -> dict:
+def _(rid, params: PdfAttachParams) -> PdfAttachResult | dict:
     """Attach a PDF by rendering each page to PNG (``pdftoppm``; 5028 if missing) and
     queuing the pages as images.  Host ``path`` or base64 ``content_base64``."""
+    from tui_gateway.contracts.prompt_voice import PdfAttachResult, PdfPage
     import shutil
     import subprocess
     import tempfile
@@ -827,8 +844,8 @@ def _(rid, params: dict) -> dict:
         return err
     if shutil.which("pdftoppm") is None:
         return _err(rid, 5028, "pdftoppm not installed (poppler-utils package required)")
-    raw_path = str(params.get("path", "") or "").strip()
-    raw_b64 = str(params.get("content_base64") or params.get("data") or "").strip()
+    raw_path = str(params.path or "").strip()
+    raw_b64 = str(params.content_base64 or params.data or "").strip()
     if not raw_path and not raw_b64:
         return _err(rid, 4015, "path or content_base64 required")
     with tempfile.TemporaryDirectory(prefix="pdf_attach_") as td:
@@ -866,73 +883,70 @@ def _(rid, params: dict) -> dict:
                 page_int = first_page + len(attached_pages)
             dst = _queue_attached_image(
                 session, src.read_bytes(), ".png", prefix=f"pdf_p{page_num}")
-            attached_pages.append({"path": str(dst), "page": page_int, **_image_meta(dst)})
-        return _ok(rid, {
-            "attached": True, "filename": display_name, "pages_attached": len(attached_pages),
-            "pages": attached_pages, "count": len(session["attached_images"]),
-            "text": f"[User attached PDF: {display_name} ({len(attached_pages)} page(s))]"})
+            attached_pages.append(PdfPage(path=str(dst), page=page_int, **_image_meta(dst)))
+        return PdfAttachResult(
+            attached=True, filename=display_name, pages_attached=len(attached_pages),
+            pages=attached_pages, count=len(session["attached_images"]),
+            text=f"[User attached PDF: {display_name} ({len(attached_pages)} page(s))]")
 
 
 @method("file.attach")
-def _(rid, params: dict) -> dict:
+def _(rid, params: FileAttachParams) -> FileAttachResult | dict:
     """Stage a non-image file into the session workspace; returns a workspace-relative
     ``@file:`` ref.  ``data_url`` carries the bytes when ``path`` isn't gateway-visible."""
+    from tui_gateway.contracts.prompt_voice import FileAttachResult
     session, err = _sess_building(params, rid)
     if err:
         return err
     raw, data_url, name = (
-        str(params.get(k, "") or "").strip() for k in ("path", "data_url", "name"))
+        str(value or "").strip() for value in (params.path, params.data_url, params.name))
     if not raw and not data_url:
         return _err(rid, 4015, "path or data_url required")
     try:
         stored_path, uploaded = _stage_session_file_attachment(
             session, raw_path=raw, data_url=data_url, name=name)
         ref_path = _attachment_ref_path(session, stored_path)
-        return _ok(rid, {
-            "attached": True, "name": stored_path.name, "path": str(stored_path),
-            "ref_path": ref_path, "ref_text": f"@file:{_format_ref_value(ref_path)}",
-            "uploaded": uploaded})
+        return FileAttachResult(
+            attached=True, name=stored_path.name, path=str(stored_path),
+            ref_path=ref_path, ref_text=f"@file:{_format_ref_value(ref_path)}", uploaded=uploaded)
     except Exception as e:
         return _err(rid, 5028, str(e))
 
 
 @method("image.detach")
-def _(rid, params: dict) -> dict:
+def _(rid, params: ImageDetachParams) -> ImageDetachResult | dict:
+    from tui_gateway.contracts.prompt_voice import ImageDetachResult
     session, err = _sess_building(params, rid)
     if err:
         return err
-    raw = str(params.get("path", "") or "").strip()
+    raw = str(params.path or "").strip()
     if not raw:
         return _err(rid, 4015, "path required")
     before = len(images := session.setdefault("attached_images", []))
     session["attached_images"] = [path for path in images if path != raw]
-    return _ok(rid, {
-        "detached": len(session["attached_images"]) != before,
-        "count": len(session["attached_images"])})
+    return ImageDetachResult(detached=len(session["attached_images"]) != before, count=len(session["attached_images"]))
 
 
 @method("input.detect_drop")
-def _(rid, params: dict) -> dict:
+def _(rid, params: InputDetectDropParams) -> InputDetectDropResult | dict:
+    from tui_gateway.contracts.prompt_voice import InputDetectDropResult
     session, err = _sess_nowait(params, rid)
     if err:
         return err
     try:
         from cli import _detect_file_drop
-        dropped = _detect_file_drop(str(params.get("text", "") or ""))
+        dropped = _detect_file_drop(str(params.text or ""))
         if not dropped:
-            return _ok(rid, {"matched": False})
+            return InputDetectDropResult(matched=False)
         drop_path, remainder = dropped["path"], dropped["remainder"]
         if dropped["is_image"]:
             session.setdefault("attached_images", []).append(str(drop_path))
-            return _ok(rid, {
-                "matched": True, "is_image": True, "path": str(drop_path),
-                "count": len(session["attached_images"]),
-                "text": remainder or f"[User attached image: {drop_path.name}]",
-                **_image_meta(drop_path)})
+            return InputDetectDropResult(
+                matched=True, is_image=True, path=str(drop_path), count=len(session["attached_images"]),
+                text=remainder or f"[User attached image: {drop_path.name}]", **_image_meta(drop_path))
         text = f"[User attached file: {drop_path}]" + (f"\n{remainder}" if remainder else "")
-        return _ok(rid, {
-            "matched": True, "is_image": False, "path": str(drop_path), "name": drop_path.name,
-            "text": text})
+        return InputDetectDropResult(
+            matched=True, is_image=False, path=str(drop_path), name=drop_path.name, text=text)
     except Exception as e:
         return _err(rid, 5027, str(e))
 
@@ -945,6 +959,11 @@ def _final_response_text(result) -> str:
 
 def _spawn_side_agent(
     rid, session, task_id, parent, event, body, *, cwd="", extra=None, cleanup=None):
+    from tui_gateway.contracts.events import BackgroundCompletePayload, BtwCompletePayload, PreviewRestartCompletePayload
+    from tui_gateway.contracts.prompt_voice import TaskIdResult
+    from tui_gateway.contracts.events import (
+        BackgroundCompletePayload, BtwCompletePayload, PreviewRestartCompletePayload)
+    from tui_gateway.contracts.prompt_voice import TaskIdResult
     """Run ``body()`` on a daemon thread under the session's profile home (the ContextVar
     doesn't propagate across threads) and cwd; its text — or ``error: <exc>`` — lands on
     ``parent`` as ``event`` with ``task_id`` (+ ``extra``).  Replies ``{task_id}``."""
@@ -963,16 +982,16 @@ def _spawn_side_agent(
         try:
             with _session_profile_runtime_scope(session):
                 text = body()
-            _emit(event, parent, {"task_id": task_id, **extra, "text": text})
+            _emit(event, parent, {"background.complete": BackgroundCompletePayload, "btw.complete": BtwCompletePayload, "preview.restart.complete": PreviewRestartCompletePayload}[event](task_id=task_id, text=text, **extra))
         except Exception as e:
-            _emit(event, parent, {"task_id": task_id, **extra, "text": f"error: {e}"})
+            _emit(event, parent, {"background.complete": BackgroundCompletePayload, "btw.complete": BtwCompletePayload, "preview.restart.complete": PreviewRestartCompletePayload}[event](task_id=task_id, text=f"error: {e}", **extra))
         finally:
             if cleanup is not None:
                 cleanup()
             _clear_session_context(session_tokens)
 
     threading.Thread(target=run, daemon=True).start()
-    return _ok(rid, {"task_id": task_id})
+    return TaskIdResult(task_id=task_id)
 
 
 def _side_agent_args(rid, params, prefix):
@@ -980,14 +999,15 @@ def _side_agent_args(rid, params, prefix):
     session, err = _sess(params, rid)
     if err:
         return None, None, None, None, err
-    text, parent = params.get("text", ""), params.get("session_id", "")
+    text, parent = params.text, params.session_id
     if not text:
         return None, None, None, None, _err(rid, 4012, "text required")
     return session, text, parent, f"{prefix}_{uuid.uuid4().hex[:6]}", None
 
 
 @method("prompt.background")
-def _(rid, params: dict) -> dict:
+def _(rid, params: SideAgentParams) -> TaskIdResult | dict:
+    from tui_gateway.contracts.prompt_voice import TaskIdResult
     session, text, parent, task_id, err = _side_agent_args(rid, params, "bg")
     if err:
         return err
@@ -1004,9 +1024,10 @@ def _(rid, params: dict) -> dict:
 
 
 @method("prompt.btw")
-def _(rid, params: dict) -> dict:
+def _(rid, params: SideAgentParams) -> TaskIdResult | dict:
     """Side question over a snapshot of the live conversation (``agent/side_question.py``);
     history, alternation and prompt cache stay untouched.  Answer: ``btw.complete``."""
+    from tui_gateway.contracts.prompt_voice import TaskIdResult
     session, text, parent, task_id, err = _side_agent_args(rid, params, "btw")
     if err:
         return err
@@ -1048,15 +1069,16 @@ _PREVIEW_RESTART_HISTORY_NOTE = (
 
 
 @method("preview.restart")
-def _(rid, params: dict) -> dict:
+def _(rid, params: PreviewRestartParams) -> TaskIdResult | dict:
+    from tui_gateway.contracts.events import PreviewRestartProgressPayload
     session, err = _sess(params, rid)
     if err:
         return err
-    url, cwd, context = (str(params.get(k) or "").strip() for k in ("url", "cwd", "context"))
+    url, cwd, context = (str(value or "").strip() for value in (params.url, params.cwd, params.context))
     if not url:
         return _err(rid, 4012, "url required")
     task_id = f"preview_{uuid.uuid4().hex[:6]}"
-    parent = params.get("session_id", "")
+    parent = params.session_id
     parent_history = _preview_restart_history(session)
     prompt = "\n".join(
         line
@@ -1086,7 +1108,7 @@ def _(rid, params: dict) -> dict:
             if parent_history else "")
         _emit(
             "preview.restart.progress", parent,
-            {"task_id": task_id, "text": f"Starting hidden restart agent{history_note}"})
+            PreviewRestartProgressPayload(task_id=task_id, text=f"Starting hidden restart agent{history_note}"))
         # Deliberately NOT closed via AIAgent.close(): it would kill the background
         # server this task exists to leave running.
         result = AIAgent(
@@ -1114,12 +1136,13 @@ def _(rid, params: dict) -> dict:
 
 
 @method("clarify.lock")
-def _(rid, params: dict) -> dict:
-    request_id = str(params.get("request_id") or "")
-    question_id = str(params.get("question_id") or "")
+def _(rid, params: ClarifyLockParams) -> ClarifyLockResult | dict:
+    from tui_gateway.contracts.prompt_voice import ClarifyLockResult
+    request_id = params.request_id
+    question_id = params.question_id
     if not request_id or not question_id:
         return _err(rid, 4002, "request_id and question_id required")
-    answer = params.get("answer", "")
+    answer = params.answer
     answer = answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
     if (proxied := _lock_compute_host_clarify(rid, request_id, question_id, answer)) is not None:
         return proxied
@@ -1130,65 +1153,76 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4002, str(e))
     if remaining is None:
         # The wait already ended (timeout / cancel) while the card was still visible: not an error.
-        return _ok(rid, {"status": "expired"})
-    return _ok(rid, {"status": "ok", "remaining": remaining})
+        return ClarifyLockResult(status="expired")
+    return ClarifyLockResult(status="ok", remaining=remaining)
 
 
 @method("request.answer")
-def _(rid, params: dict) -> dict:
+def _(rid, params: RequestAnswerParams) -> RequestAnswerResult | dict:
     """Answer an open server→client request from a client that did not receive it (a Bot Mode room
     window answering a member's prompt mirrored from its resume snapshot). The response-frame path is
     the norm; this is the proxy for it. ``expired`` when the request already ended."""
-    request_id = str(params.get("id") or "")
-    result = params.get("result")
+    from tui_gateway.contracts.prompt_voice import RequestAnswerResult
+    request_id = params.id
+    result = params.result
     if not request_id or not isinstance(result, dict):
         return _err(rid, 4002, "id and an object result required")
     from tui_gateway import server_requests
     frame = {"jsonrpc": "2.0", "id": request_id, "result": result}
     if server_requests.resolve_response(frame) or _relay_compute_host_response(frame):
-        return _ok(rid, {"status": "ok"})
-    return _ok(rid, {"status": "expired"})
+        return RequestAnswerResult(status="ok")
+    return RequestAnswerResult(status="expired")
 
 
 # ── approvals ───────────────────────────────────────────────────────────────
 
-def _approval_reply(rid, result_key, call):
-    """``_ok({result_key: call(tools.approval)})``, 5004 on any failure."""
+def _approval_reply(rid, call):
+    """Map approval-store failures to the existing domain error frame."""
     try:
-        import tools.approval as approval
-        return _ok(rid, {result_key: call(approval)})
+        return call()
     except Exception as e:
         return _err(rid, 5004, str(e))
 
 
 @method("approval.pending")
-def _(rid, params: dict) -> dict:
+def _(rid, params: ApprovalPendingParams) -> ApprovalPendingResult | dict:
+    from tui_gateway.contracts.prompt_voice import ApprovalPendingResult
     session, err = _sess(params, rid)
     if err:
         return err
-    return _approval_reply(
-        rid, "approvals", lambda a: a.list_gateway_approvals(session["session_key"]))
+
+    def call():
+        from tools.approval import list_gateway_approvals
+        return ApprovalPendingResult(approvals=list_gateway_approvals(session["session_key"]))
+
+    return _approval_reply(rid, call)
 
 
 @method("approval.received")
-def _(rid, params: dict) -> dict:
+def _(rid, params: ApprovalReceivedParams) -> ApprovalReceivedResult | dict:
+    from tui_gateway.contracts.prompt_voice import ApprovalReceivedResult
     session, err = _sess(params, rid)
     if err:
         return err
-    if not isinstance(request_id := params.get("request_id"), str) or not request_id:
+    if not params.request_id:
         return _err(rid, 4006, "request_id required")
-    return _approval_reply(
-        rid, "acknowledged", lambda a: a.ack_gateway_approval(session["session_key"], request_id))
+
+    def call():
+        from tools.approval import ack_gateway_approval
+        return ApprovalReceivedResult(
+            acknowledged=ack_gateway_approval(session["session_key"], params.request_id))
+
+    return _approval_reply(rid, call)
 
 
-def _approval_respond_session_fallback(params: dict):
+def _approval_respond_session_fallback(params: ApprovalRespondParams):
     """Durable-identity fallback for a stale live sid (re-minted after a reconnect while
     the prompt stayed on screen): (1) the ``request_id`` against every live session's
     pending approvals, then (2) ``session_id`` as a STORED id.  Live session or None.
 
     See #91684.
     """
-    request_id = str(params.get("request_id") or "")
+    request_id = params.request_id or ""
     if request_id:
         try:
             from tools.approval import list_gateway_approvals
@@ -1202,7 +1236,7 @@ def _approval_respond_session_fallback(params: dict):
                     return session
         except Exception:
             logger.debug("approval.respond request_id fallback failed", exc_info=True)
-    if target := str(params.get("session_id") or ""):
+    if target := params.session_id:
         try:
             if (live := _find_live_session_by_key(target)) is not None:
                 return live[1]
@@ -1212,7 +1246,8 @@ def _approval_respond_session_fallback(params: dict):
 
 
 @method("approval.respond")
-def _(rid, params: dict) -> dict:
+def _(rid, params: ApprovalRespondParams) -> ApprovalRespondResult | dict:
+    from tui_gateway.contracts.prompt_voice import ApprovalRespondResult
     session, err = _sess(params, rid)
     if err:
         # Session-not-found (4001) only: resolve by durable identity before failing.
@@ -1221,11 +1256,12 @@ def _(rid, params: dict) -> dict:
         session = _approval_respond_session_fallback(params)
         if session is None:
             return err
-    return _approval_reply(
-        rid, "resolved",
-        lambda a: a.resolve_gateway_approval(
-            session["session_key"], params.get("choice", "deny"),
-            resolve_all=params.get("all", False), request_id=params.get("request_id")))
+    def call():
+        from tools.approval import resolve_gateway_approval
+        return ApprovalRespondResult(resolved=resolve_gateway_approval(
+            session["session_key"], params.choice, resolve_all=params.all, request_id=params.request_id))
+
+    return _approval_reply(rid, call)
 
 
 def register(server) -> None:

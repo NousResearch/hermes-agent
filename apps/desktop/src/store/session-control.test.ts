@@ -16,7 +16,6 @@ import {
   applySessionControlUpdate,
   clearAllSessionControl,
   clearSessionControl,
-  parseSessionControlSnapshot,
   refreshSessionControl,
   refreshSupportedSessionControlAfterTurn,
   runSessionControlAction,
@@ -39,6 +38,9 @@ const FULL_SNAPSHOT: SessionControlSnapshot = {
     subgoals: ['write tests', 'repair state'],
     title: 'Repair session control',
     turns_used: 3,
+    last_reason: null,
+    last_verdict: null,
+    paused_reason: null,
     updated_at: 1_700_000_100,
     wait_barrier: { reason: 'waiting for deploy', type: 'until', until_at: 1_700_000_200 }
   },
@@ -64,7 +66,9 @@ const FULL_SNAPSHOT: SessionControlSnapshot = {
     status: 'active',
     ticks_fired: 3,
     times: 3,
-    until: ''
+    until: '',
+    last_stop_reason: null,
+    paused_reason: null
   },
   revision: 'revision-1',
   updated_at: 1_700_000_100
@@ -96,39 +100,6 @@ describe('session-control store', () => {
     $gateway.set(null as never)
     resetBackgroundPollingGuard()
     clearAllSessionControl()
-  })
-
-  it('parses the exact persisted goal, loop, heartbeat, and wait-barrier shapes into fresh data', () => {
-    const parsed = parseSessionControlSnapshot(FULL_SNAPSHOT)
-
-    expect(parsed).toEqual(FULL_SNAPSHOT)
-    expect(parsed).not.toBe(FULL_SNAPSHOT)
-    expect(parsed!.goal).not.toBe(FULL_SNAPSHOT.goal)
-    expect(parsed!.goal!.contract).not.toBe(FULL_SNAPSHOT.goal!.contract)
-    expect(parsed!.loop!.mode).toBe('interval')
-    expect(parsed!.goal!.wait_barrier).toEqual({ reason: 'waiting for deploy', type: 'until', until_at: 1_700_000_200 })
-  })
-
-  it.each([
-    ['unknown goal status', { ...FULL_SNAPSHOT, goal: { ...FULL_SNAPSHOT.goal!, status: 'waiting' } }],
-    ['non-finite top-level timestamp', { ...FULL_SNAPSHOT, updated_at: Number.NaN }],
-    ['malformed goal contract', { ...FULL_SNAPSHOT, goal: { ...FULL_SNAPSHOT.goal!, contract: { outcome: 3 } } }],
-    [
-      'gate output that is not in the allowlisted summary',
-      {
-        ...FULL_SNAPSHOT,
-        goal: { ...FULL_SNAPSHOT.goal!, gates: [{ ...FULL_SNAPSHOT.goal!.gates[0], last_output_tail: 'leak' }] }
-      }
-    ],
-    [
-      'wait target that does not match its discriminator',
-      { ...FULL_SNAPSHOT, goal: { ...FULL_SNAPSHOT.goal!, wait_barrier: { reason: 'pid', target: '7', type: 'pid' } } }
-    ],
-    ['unknown loop mode', { ...FULL_SNAPSHOT, loop: { ...FULL_SNAPSHOT.loop!, mode: 'fixed' } }],
-    ['malformed heartbeat', { ...FULL_SNAPSHOT, heartbeat: { ...FULL_SNAPSHOT.heartbeat!, fire_count: 'five' } }],
-    ['unknown top-level field', { ...FULL_SNAPSHOT, unsupported: true }]
-  ])('rejects %s without accepting a partial snapshot', (_name, value) => {
-    expect(parseSessionControlSnapshot(value)).toBeNull()
   })
 
   it('falls back once on the unsupported transition and suppresses future compatibility retries', async () => {
@@ -261,7 +232,7 @@ describe('session-control store', () => {
     expect($sessionControlBySession.get().s2).toBeUndefined()
     expect(request).toHaveBeenCalledWith('session.control', {
       action: 'subgoal.add',
-      args: { text: 'verify hydration' },
+      args: { index: null, profile: null, text: 'verify hydration' },
       session_id: 's1'
     })
 

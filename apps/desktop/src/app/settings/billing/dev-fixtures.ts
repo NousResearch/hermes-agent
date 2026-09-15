@@ -1,9 +1,43 @@
 import type { BillingResult } from './api'
-import type { BillingStateResponse, SubscriptionStateResponse, SubscriptionTierOption } from './types'
+import type {
+  BillingStateResult,
+  CurrentSubscription,
+  SubscriptionResumeResult,
+  SubscriptionStateResult,
+  SubscriptionTierOption,
+  UsageModel
+} from './types'
 
-const current = (
-  overrides: Partial<NonNullable<SubscriptionStateResponse['current']>> = {}
-): NonNullable<SubscriptionStateResponse['current']> => ({
+/** The success half of every billing mutation envelope (the refusal fields are null). */
+export const OK_ENVELOPE: SubscriptionResumeResult = {
+  actor: null,
+  code: null,
+  error: null,
+  message: null,
+  ok: true,
+  payload: null,
+  portal_url: null,
+  recovery: null,
+  retry_after: null
+}
+
+export const usageModel = (overrides: Partial<UsageModel> = {}): UsageModel => ({
+  available: true,
+  has_topup: true,
+  ok: true,
+  plan_bar: null,
+  plan_name: null,
+  renews_at: null,
+  renews_display: null,
+  status: 'active',
+  subscription_remaining_display: null,
+  topup_bar: null,
+  topup_remaining_display: null,
+  total_spendable_display: null,
+  ...overrides
+})
+
+const current = (overrides: Partial<CurrentSubscription> = {}): CurrentSubscription => ({
   cancel_at_period_end: false,
   cancellation_effective_at: null,
   cancellation_effective_display: null,
@@ -29,15 +63,21 @@ export const todayBillingState = {
   },
   balance_display: '$996.47',
   balance_usd: '996.47',
+  can_change_plan: true,
   can_charge: false,
   card: {
     brand: 'visa',
+    display: null,
     last4: '3206',
-    masked: 'visa ....3206'
+    masked: 'visa ....3206',
+    resolved_via: null
   },
   charge_presets: ['100', '250', '500'],
   charge_presets_display: ['$100', '$250', '$500'],
   cli_billing_enabled: false,
+  error: null,
+  free_tier: false,
+  free_tier_model: null,
   is_admin: true,
   logged_in: true,
   max_usd: '1000',
@@ -51,25 +91,25 @@ export const todayBillingState = {
   },
   ok: true,
   org_name: 'sid-5',
+  org_slug: null,
+  payment_method: null,
   portal_url: 'https://portal.nousresearch.com/billing',
   role: 'OWNER',
-  usage: {
-    available: true,
-    has_topup: true,
+  usage: usageModel({
     plan_name: 'Ultra',
     renews_at: '2026-07-11T08:14:55.000Z',
     renews_display: 'Jul 11',
-    status: 'active',
     subscription_remaining_display: '$120',
     topup_remaining_display: '$876.47',
     total_spendable_display: '$996.47'
-  }
-} satisfies BillingStateResponse
+  })
+} satisfies BillingStateResult
 
 export const todaySubscriptionState = {
   can_change_plan: true,
   context: 'team',
   current: current(),
+  error: null,
   is_admin: true,
   logged_in: true,
   ok: true,
@@ -89,7 +129,7 @@ export const todaySubscriptionState = {
     }
   ],
   usage: todayBillingState.usage
-} satisfies SubscriptionStateResponse
+} satisfies SubscriptionStateResult
 
 export const postTrainBillingState = {
   ...todayBillingState,
@@ -122,9 +162,7 @@ export const postTrainBillingState = {
     spent_this_month_usd: '180'
   },
   org_name: 'Acme Research',
-  usage: {
-    available: true,
-    has_topup: true,
+  usage: usageModel({
     plan_bar: {
       fill_fraction: 0.4,
       kind: 'plan',
@@ -136,7 +174,6 @@ export const postTrainBillingState = {
     plan_name: 'Pro',
     renews_at: '2026-07-31T00:00:00Z',
     renews_display: 'Jul 31',
-    status: 'active',
     subscription_remaining_display: '$40',
     topup_bar: {
       fill_fraction: 0.75,
@@ -148,8 +185,8 @@ export const postTrainBillingState = {
     },
     topup_remaining_display: '$75',
     total_spendable_display: '$115'
-  }
-} satisfies BillingStateResponse
+  })
+} satisfies BillingStateResult
 
 export const postTrainSubscriptionState = {
   ...todaySubscriptionState,
@@ -174,13 +211,14 @@ export const postTrainSubscriptionState = {
     }
   ],
   usage: postTrainBillingState.usage
-} satisfies SubscriptionStateResponse
+} satisfies SubscriptionStateResult
 
 export const loggedOutBillingState = {
   ...todayBillingState,
   auto_reload: null,
   balance_display: '$0.00',
   balance_usd: null,
+  can_change_plan: false,
   can_charge: false,
   card: null,
   charge_presets: [],
@@ -190,8 +228,8 @@ export const loggedOutBillingState = {
   org_name: null,
   portal_url: 'https://portal.nousresearch.com/login',
   role: null,
-  usage: undefined
-} satisfies BillingStateResponse
+  usage: null
+} satisfies BillingStateResult
 
 export const loggedOutSubscriptionState = {
   ...todaySubscriptionState,
@@ -204,8 +242,8 @@ export const loggedOutSubscriptionState = {
   portal_url: 'https://portal.nousresearch.com/login',
   role: null,
   tiers: [],
-  usage: undefined
-} satisfies SubscriptionStateResponse
+  usage: null
+} satisfies SubscriptionStateResult
 
 // Full four-tier personal catalog. tier_ids are cuid-like (Prisma) on purpose:
 // tier art keys off the lowercase NAME, never the id (ids differ per env). Dollar
@@ -259,18 +297,13 @@ export const freePersonalBillingState = {
   balance_display: '$12.00',
   balance_usd: '12.00',
   org_name: 'Personal',
-  usage: {
-    available: true,
-    has_topup: true,
+  usage: usageModel({
     plan_name: 'Free',
-    renews_at: null,
-    renews_display: null,
-    status: 'active',
     subscription_remaining_display: '$0',
     topup_remaining_display: '$12.00',
     total_spendable_display: '$12.00'
-  }
-} satisfies BillingStateResponse
+  })
+} satisfies BillingStateResult
 
 export const freePersonalSubscriptionState = {
   ...todaySubscriptionState,
@@ -281,7 +314,7 @@ export const freePersonalSubscriptionState = {
   org_name: 'Personal',
   tiers: catalogWithCurrent(null),
   usage: freePersonalBillingState.usage
-} satisfies SubscriptionStateResponse
+} satisfies SubscriptionStateResult
 
 // Personal subscriber on Plus: exercises the "Change plan" plan card, the current
 // marker, upgrades (Super/Ultra), and the disabled downgrade (Free).
@@ -292,7 +325,7 @@ export const subscriberPersonalBillingState = {
     ...postTrainBillingState.usage,
     plan_name: 'Plus'
   }
-} satisfies BillingStateResponse
+} satisfies BillingStateResult
 
 export const subscriberPersonalSubscriptionState = {
   ...todaySubscriptionState,
@@ -309,7 +342,7 @@ export const subscriberPersonalSubscriptionState = {
   org_name: 'Personal',
   tiers: catalogWithCurrent('cltier111plus1111personal'),
   usage: subscriberPersonalBillingState.usage
-} satisfies SubscriptionStateResponse
+} satisfies SubscriptionStateResult
 
 // Personal subscriber on Plus with a downgrade to Free already scheduled at period
 // end: exercises the plan-card pending state + undo, and the grid's "Scheduled"
@@ -326,7 +359,7 @@ export const pendingDowngradeSubscriptionState = {
     tier_id: 'cltier111plus1111personal',
     tier_name: 'Plus'
   })
-} satisfies SubscriptionStateResponse
+} satisfies SubscriptionStateResult
 
 // Personal subscriber on Plus with a cancellation (not a downgrade) scheduled at
 // period end: exercises the plan-card "Cancels on …" copy + undo, with NO Scheduled
@@ -343,11 +376,11 @@ export const pendingCancellationSubscriptionState = {
     tier_id: 'cltier111plus1111personal',
     tier_name: 'Plus'
   })
-} satisfies SubscriptionStateResponse
+} satisfies SubscriptionStateResult
 
-const okBilling = (data: BillingStateResponse): BillingResult<BillingStateResponse> => ({ data, ok: true })
+const okBilling = (data: BillingStateResult): BillingResult<BillingStateResult> => ({ data, ok: true })
 
-const okSubscription = (data: SubscriptionStateResponse): BillingResult<SubscriptionStateResponse> => ({
+const okSubscription = (data: SubscriptionStateResult): BillingResult<SubscriptionStateResult> => ({
   data,
   ok: true
 })
@@ -363,13 +396,13 @@ function withUsage(
     remaining,
     subscriptionCurrent = current({ credits_remaining: remaining, monthly_credits: '220' })
   }: {
-    autoReload?: BillingStateResponse['auto_reload']
+    autoReload?: BillingStateResult['auto_reload']
     canCharge?: boolean
-    card?: BillingStateResponse['card']
+    card?: BillingStateResult['card']
     cliBillingEnabled?: boolean
     monthlyCapSpent?: string
     remaining: string
-    subscriptionCurrent?: SubscriptionStateResponse['current']
+    subscriptionCurrent?: SubscriptionStateResult['current']
   }
 ) {
   const billing = {
@@ -394,14 +427,14 @@ function withUsage(
       subscription_remaining_display: `$${remaining}`,
       total_spendable_display: '$142.50'
     }
-  } satisfies BillingStateResponse
+  } satisfies BillingStateResult
 
   const subscription = {
     ...todaySubscriptionState,
     current: subscriptionCurrent,
     org_name: `${name} Fixture`,
     usage: billing.usage
-  } satisfies SubscriptionStateResponse
+  } satisfies SubscriptionStateResult
 
   return { billing: okBilling(billing), subscription: okSubscription(subscription) }
 }
@@ -461,8 +494,8 @@ export const billingDevFixtures = {
 } satisfies Record<
   string,
   {
-    billing: BillingResult<BillingStateResponse>
-    subscription: BillingResult<SubscriptionStateResponse>
+    billing: BillingResult<BillingStateResult>
+    subscription: BillingResult<SubscriptionStateResult>
   }
 >
 

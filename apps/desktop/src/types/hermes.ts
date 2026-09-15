@@ -1,4 +1,7 @@
-import type { ConnectionRequestPayload } from '@hermes/shared'
+import type { JsonValue, MessageReaction, ProjectInfo } from '@hermes/shared'
+
+export type { ProjectFolder, ProjectInfo, SessionCreateResult, SessionResumeResult } from '@hermes/shared'
+export type { MessageReaction }
 
 export interface ConfigFieldSchema {
   category?: string
@@ -474,14 +477,6 @@ export interface PaginatedSessions {
   errors?: Array<{ profile: string; error: string }>
 }
 
-export interface SessionCreateResponse {
-  info?: SessionRuntimeInfo
-  message_count?: number
-  messages?: SessionMessage[]
-  session_id: string
-  stored_session_id?: string
-}
-
 export interface SessionInfo {
   archived?: boolean
   cwd?: null | string
@@ -570,14 +565,6 @@ export type TimelineDisplayMetadata =
   | { display_text: string }
   | { reactions: MessageReaction[] }
 
-/** One emoji reaction on a message. One per author, iOS-Tapback style. */
-export interface MessageReaction {
-  emoji: string
-  author: 'agent' | 'user'
-  /** Epoch seconds. */
-  at: number
-}
-
 export interface SessionMessage {
   /**
    * Full tool arguments for a gateway-projected tool row (`role: 'tool'`).
@@ -610,7 +597,7 @@ export interface SessionMessage {
    * A backend older than this app can still serve this as unparsed JSON text,
    * so readers must narrow before indexing into it.
    */
-  display_metadata?: string | TimelineDisplayMetadata
+  display_metadata?: JsonValue | TimelineDisplayMetadata
   role: 'assistant' | 'system' | 'tool' | 'user'
   /**
    * Durable `messages.id` from the backend. The renderer's own message ids are
@@ -644,112 +631,42 @@ export interface SessionMessagesResponse {
   session_id: string
 }
 
-export interface SessionResumeResult {
-  /** Present when the backend found a fresh crash-interrupted turn and
-   *  scheduled its automatic continuation; the turn arrives as a normal
-   *  message.start stream right after this resume. */
-  auto_continue?: {
-    attempt: number
-    interrupted_at: number
-  }
-  hydrating?: boolean
-  inflight?: null | {
-    assistant?: string
-    /** Mid-turn redirect corrections, oldest first. The turn's original prompt
-     *  stays in `user`; these are the follow-ups typed while it ran. */
-    corrections?: string[]
-    /** Parallel to `corrections`: the length of `assistant` already streamed
-     *  when each correction was accepted. Lets a resume rebuild arrival order —
-     *  the correction bubble lands after the output the user had already seen
-     *  and before the output it redirected (#73793). Omitted by older
-     *  gateways. */
-    correction_offsets?: number[]
-    /** Retained failed turn: the error the terminal frame carried (the frame
-     *  itself may have been lost to a disconnect). */
-    error?: string
-    /** Structured {layer, code, retryable} descriptor for the retained failed
-     *  turn (see agent/error_surface.py). Omitted by older gateways. */
-    error_surface?: unknown
-    recoverable?: boolean
-    status?: string
-    streaming?: boolean
-    user?: string
-  }
-  queued?: null | {
-    user?: string
-  }
-  // The oldest gateway approval still waiting for a response. This is returned
-  // on resume so a reconnect can restore a prompt whose original event was
-  // emitted while the client transport was detached.
-  pending_approval?: {
-    allow_permanent?: boolean
-    choices?: string[]
-    command?: string
-    description?: string
-    request_id?: string
-    smart_denied?: boolean
-  }
-  // Server→client requests still unanswered for this session (clarify, sudo,
-  // vault prompts, …). The shared channel re-delivers them to the request
-  // handlers before this response resolves; listed here so resume can tell an
-  // authoritative "nothing pending" from a request the handler declined.
-  open_requests?: Array<{ id: string; method: string; params: Record<string, unknown> & { session_id?: string } }>
-  // The connection operation still blocking this session; resume restores the backend-owned card projection.
-  pending_connection?: ConnectionRequestPayload
-  info?: SessionRuntimeInfo
-  message_count: number
-  messages: SessionMessage[]
-  messages_omitted?: boolean
-  resumed: string
-  running?: boolean
-  session_id: string
-  session_key?: string
-  started_at?: number
-  status?: string
-  /** Latest full task snapshot. Revisions let the renderer reject a response
-   * that raced with a newer live update. */
-  todo_state?: {
-    revision?: number
-    todos?: unknown
-  }
-  /** Epoch seconds the current turn started, or null when idle. */
-  turn_started_at?: number | null
-}
-
+/** The runtime block both the gateway `SessionLiveInfo` and the REST session payload satisfy.
+ *  It keeps the REST-only warnings the generated contract does not carry. */
 export interface SessionRuntimeInfo {
-  approval_mode?: 'manual' | 'off' | 'smart'
-  branch?: string
-  config_warning?: string
-  credential_warning?: string
+  approval_mode?: string
+  branch?: null | string
+  config_warning?: null | string
+  credential_warning?: null | string
   cwd?: string
-  desktop_contract?: number
+  desktop_contract?: null | number | string
   fast?: boolean
-  install_warning?: string
-  model?: string
+  install_warning?: null | string
+  model?: null | string
   personality?: string
   provider?: string
   reasoning_effort?: string
   running?: boolean
   service_tier?: string
-  skills?: Record<string, string[]> | string[]
-  tools?: Record<string, string[]>
-  usage?: Partial<UsageStats>
+  skills?: null | Record<string, string[]> | string[]
+  tools?: null | Record<string, string[]>
+  usage?: null | Partial<UsageStats>
   version?: string
   yolo?: boolean
 }
 
 export interface UsageStats {
   /** Rolling tokens-per-second over the last ~10 API calls (tui_gateway `_get_usage`). */
-  avg_tps?: number
-  /** Session prompt-cache hit rate, 0–100. Omitted (not 0) when the provider reports no cache reads. */
-  cache_hit_pct?: number
+  avg_tps?: null | number
+  /** Session prompt-cache hit rate, 0–100. Null/omitted (not 0) when the provider reports no cache reads. */
+  cache_hit_pct?: null | number
   calls: number
-  context_max?: number
-  context_percent?: number
-  context_estimated?: boolean
-  context_source?: string
-  context_used?: number
-  cost_usd?: number
+  context_max?: null | number
+  context_percent?: null | number
+  context_estimated?: boolean | null
+  context_source?: null | string
+  context_used?: null | number
+  cost_usd?: null | number
   input: number
   output: number
   total: number
@@ -1021,27 +938,6 @@ export interface ProfileDesktopOverlay {
 // ── Projects ───────────────────────────────────────────────────────────────
 // A first-class, per-profile, human-named workspace spanning one or more
 // folders. Mirrors hermes_cli/projects_db.Project.to_dict().
-export interface ProjectFolder {
-  path: string
-  label: null | string
-  is_primary: boolean
-  added_at: number
-}
-
-export interface ProjectInfo {
-  id: string
-  slug: string
-  name: string
-  description: null | string
-  icon: null | string
-  color: null | string
-  board_slug: null | string
-  primary_path: null | string
-  archived: boolean
-  created_at: number
-  folders: ProjectFolder[]
-}
-
 export interface ProjectsPayload {
   projects: ProjectInfo[]
   active_id: null | string

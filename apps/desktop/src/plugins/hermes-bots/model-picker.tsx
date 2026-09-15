@@ -17,6 +17,7 @@ import {
   SelectValue,
   useQuery
 } from '@hermes/plugin-sdk'
+import type { ModelOptionsResult } from '@hermes/plugin-sdk'
 import { useState } from 'react'
 
 import { labeled } from './dialog-parts'
@@ -56,17 +57,6 @@ function boundedModelOptionsFetch<T>(fetch: Promise<T>, settleMs = MODEL_OPTIONS
   })
 
   return Promise.race([fetch, deadline]).finally(() => scope.clearTimeout(timerId))
-}
-
-/** One provider row of the gateway's `model.options` inventory. Entries in
- *  `models` are bare slugs on current gateways and objects on older ones. */
-interface ModelProviderOption {
-  models?: Array<string | { id?: string; name?: string }>
-  name?: string
-  slug: string
-}
-interface ModelOptionsResult {
-  providers?: ModelProviderOption[]
 }
 
 function useModelOptions(bot: null | RosterRow = null) {
@@ -210,9 +200,7 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
 
   const activeProvider = providers.find(p => p.slug === value.provider) || null
 
-  const models = activeProvider
-    ? (activeProvider.models || []).map(m => (typeof m === 'string' ? m : m.id || m.name || ''))
-    : []
+  const models = activeProvider ? activeProvider.models : []
 
   return (
     <div className="grid grid-cols-[1fr_1.4fr] gap-2.5">
@@ -229,7 +217,7 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
               setUseFreeText(true)
             } else {
               const prov = providers.find(p => p.slug === v)
-              const provModels = (prov?.models || []).map(m => (typeof m === 'string' ? m : m.id || m.name || ''))
+              const provModels = prov?.models ?? []
               const first = provModels[0] || ''
               onChange({
                 provider: v,

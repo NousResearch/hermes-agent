@@ -38,7 +38,14 @@ it('answers the vault.code server request with the trimmed code, never the ambie
   const respond = vi.fn()
   $activeSessionId.set('session-b')
   $gateway.set({ request: ambient } as never)
-  rememberServerRequest({ fail: vi.fn(), id: 'req-c', method: 'vault.code', params: {}, respond })
+  rememberServerRequest({
+    fail: vi.fn(),
+    id: 'req-c',
+    method: 'vault.code',
+    params: { hint: null, profile: null, session_id: 'session-a', site: 'github.com' },
+    respond,
+    sessionId: 'session-a'
+  })
   setVaultCodeRequest({ hint: '', requestId: 'req-c', sessionId: 'session-a', site: 'github.com' })
 
   render(<PromptOverlays sessionId="session-a" />)
@@ -62,7 +69,14 @@ it('Skip answers an empty code and clears the card', async () => {
   setSessionOwnerHint('session-a', { connectionId: 'conn-1', profile: 'owner' })
   const respond = vi.fn()
   $gateway.set({ request: vi.fn() } as never)
-  rememberServerRequest({ fail: vi.fn(), id: 'req-d', method: 'vault.code', params: {}, respond })
+  rememberServerRequest({
+    fail: vi.fn(),
+    id: 'req-d',
+    method: 'vault.code',
+    params: { hint: null, profile: null, session_id: 'session-a', site: 'github.com' },
+    respond,
+    sessionId: 'session-a'
+  })
   setVaultCodeRequest({ hint: '', requestId: 'req-d', sessionId: 'session-a', site: 'github.com' })
 
   render(<PromptOverlays sessionId="session-a" />)

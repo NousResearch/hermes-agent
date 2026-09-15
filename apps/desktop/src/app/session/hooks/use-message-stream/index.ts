@@ -1,3 +1,4 @@
+import type { ServerRequestMap } from '@hermes/shared'
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
@@ -892,7 +893,7 @@ export function useMessageStream({
   // registry owns. The request answers itself over the socket it arrived on,
   // so no owner routing is involved here — only which card to show.
   const handleServerRequest = useCallback(
-    (request: ScopedServerRequest): boolean =>
+    <M extends keyof ServerRequestMap>(request: ScopedServerRequest<M>): void =>
       dispatchServerRequest(
         request,
         { activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall },

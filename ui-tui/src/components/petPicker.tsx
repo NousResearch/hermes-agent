@@ -1,4 +1,5 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
+import type { PetGalleryEntry, PetGalleryResult } from '@hermes/shared/gateway-events'
 import { useEffect, useMemo, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
@@ -12,19 +13,6 @@ const VISIBLE = 10
 const MIN_WIDTH = 40
 const MAX_WIDTH = 90
 
-interface GalleryPet {
-  slug: string
-  displayName: string
-  installed: boolean
-  curated?: boolean
-}
-
-interface Gallery {
-  enabled: boolean
-  active: string
-  pets: GalleryPet[]
-}
-
 /**
  * Interactive petdex picker overlay. Pulls the gallery via `pet.gallery`,
  * filters as you type, and adopts the highlighted pet with `pet.select`
@@ -32,7 +20,7 @@ interface Gallery {
  * no restart. This is the interactive sibling of the text `/pet <slug>` path.
  */
 export function PetPicker({ gw, maxWidth, onClose, t }: PetPickerProps) {
-  const [gallery, setGallery] = useState<Gallery | null>(null)
+  const [gallery, setGallery] = useState<PetGalleryResult | null>(null)
   const [query, setQuery] = useState('')
   const [idx, setIdx] = useState(0)
   const [busy, setBusy] = useState(false)
@@ -45,7 +33,7 @@ export function PetPicker({ gw, maxWidth, onClose, t }: PetPickerProps) {
   const width = clampOverlayWidth(preferredWidth, maxWidth)
 
   useEffect(() => {
-    gw.request<Gallery>('pet.gallery')
+    gw.request('pet.gallery', {})
       .then(r => {
         setGallery(r)
         setErr('')
@@ -67,7 +55,8 @@ export function PetPicker({ gw, maxWidth, onClose, t }: PetPickerProps) {
       ? pets.filter(p => p.slug.toLowerCase().includes(needle) || p.displayName.toLowerCase().includes(needle))
       : pets
 
-    const rank = (p: GalleryPet) => (enabled && p.slug === active ? 4 : 0) + (p.installed ? 2 : 0) + (p.curated ? 1 : 0)
+    const rank = (p: PetGalleryEntry) =>
+      (enabled && p.slug === active ? 4 : 0) + (p.installed ? 2 : 0) + (p.curated ? 1 : 0)
 
     return [...matched].sort((a, b) => rank(b) - rank(a))
   }, [gallery, query, enabled, active])

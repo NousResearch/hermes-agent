@@ -248,6 +248,21 @@ describe('firstVisibleGroupIndex', () => {
 
     expect(firstVisibleGroupIndex(groups, 600, 8)).toBe(0)
   })
+
+  it('keeps the cut stable while the unbudgeted streaming tail grows', () => {
+    const history = [group('old', 50), group('mid', 30), group('recent', 30)]
+    const initial = [...history, group('streaming', 1)]
+    const grown = [...history, group('streaming', 5_000)]
+
+    expect(firstVisibleGroupIndex(initial, 60, 0, 1)).toBe(1)
+    expect(firstVisibleGroupIndex(grown, 60, 0, 1)).toBe(1)
+  })
+
+  it('charges a completed tail to the budget as before', () => {
+    const groups = [group('old', 50), group('recent', 30), group('completed', 5_000)]
+
+    expect(firstVisibleGroupIndex(groups, 60)).toBe(2)
+  })
 })
 
 describe('liveTailStart', () => {

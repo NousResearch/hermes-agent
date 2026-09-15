@@ -9,6 +9,7 @@ Commands:
   setup.py --client-secret /path/to.json    # Store OAuth client credentials
   setup.py --auth-url                       # Print the OAuth URL for user to visit
   setup.py --auth-code CODE                 # Exchange auth code for token
+  setup.py --auth-code CODE --allow-scope-downgrade  # Intentionally reduce access
   setup.py --revoke                         # Revoke and delete stored token
   setup.py --install-deps                   # Install Python dependencies only
 
@@ -55,6 +56,31 @@ SCOPES = [
     "https://www.googleapis.com/auth/documents",
 ]
 
+# Google can return a broader scope instead of a requested narrow scope.  Scope
+# downgrade checks therefore compare the capabilities each scope represents,
+# while retaining the original scope itself so unknown scopes remain distinct.
+_SCOPE_IMPLICATIONS = {
+    "https://www.googleapis.com/auth/gmail.modify": {
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.send",
+    },
+    "https://www.googleapis.com/auth/calendar": {
+        "https://www.googleapis.com/auth/calendar.readonly",
+    },
+    "https://www.googleapis.com/auth/drive": {
+        "https://www.googleapis.com/auth/drive.readonly",
+    },
+    "https://www.googleapis.com/auth/contacts": {
+        "https://www.googleapis.com/auth/contacts.readonly",
+    },
+    "https://www.googleapis.com/auth/spreadsheets": {
+        "https://www.googleapis.com/auth/spreadsheets.readonly",
+    },
+    "https://www.googleapis.com/auth/documents": {
+        "https://www.googleapis.com/auth/documents.readonly",
+    },
+}
+
 # Exact pins: keep in sync with pyproject.toml [project.optional-dependencies].google
 # and tools/lazy_deps.py LAZY_DEPS['skill.google_workspace'].
 # Pinning all protects against version drift and ensures the security floors
@@ -94,17 +120,24 @@ def _missing_scopes_from_payload(payload: dict) -> list[str]:
     raw = payload.get("scopes") or payload.get("scope")
     if not raw:
         return []
-    granted = {s.strip() for s in (raw.split() if isinstance(raw, str) else raw) if s.strip()}
+    granted = _effective_scope_capabilities(raw)
     return sorted(scope for scope in SCOPES if scope not in granted)
 
 
-def _format_missing_scopes(missing_scopes: list[str]) -> str:
-    bullets = "\n".join(f"  - {scope}" for scope in missing_scopes)
-    return (
-        "Token is valid but missing required Google Workspace scopes:\n"
-        f"{bullets}\n"
-        "Run the Google Workspace setup again from this same Hermes profile to refresh consent."
-    )
+def _scope_values(payload: dict) -> set[str]:
+    raw = payload.get("scopes") or payload.get("scope")
+    if not raw:
+        return set()
+    values = raw.split() if isinstance(raw, str) else raw
+    return {str(value).strip() for value in values if str(value).strip()}
+
+
+def _effective_scope_capabilities(scopes) -> set[str]:
+    values = scopes.split() if isinstance(scopes, str) else scopes
+    effective = {str(value).strip() for value in (values or []) if str(value).strip()}
+    for scope in tuple(effective):
+        effective.update(_SCOPE_IMPLICATIONS.get(scope, ()))
+    return effective
 
 
 def _missing_required_packages() -> list[str]:
@@ -240,8 +273,6 @@ def check_auth(quiet: bool = False):
         missing_scopes = _missing_scopes_from_payload(payload)
         if missing_scopes:
             print(f"AUTHENTICATED (partial): Token valid but missing {len(missing_scopes)} scopes:")
-            for s in missing_scopes:
-                print(f"  - {s}")
         if not quiet:
             print(f"AUTHENTICATED: Token valid at {TOKEN_PATH}")
         return True
@@ -258,8 +289,6 @@ def check_auth(quiet: bool = False):
             missing_scopes = _missing_scopes_from_payload(_load_token_payload(TOKEN_PATH))
             if missing_scopes:
                 print(f"AUTHENTICATED (partial): Token refreshed but missing {len(missing_scopes)} scopes:")
-                for s in missing_scopes:
-                    print(f"  - {s}")
             if not quiet:
                 print(f"AUTHENTICATED: Token refreshed at {TOKEN_PATH}")
             return True
@@ -377,19 +406,24 @@ def get_auth_url():
     auth_url, state = flow.authorization_url(
         access_type="offline",
         prompt="consent",
+        include_granted_scopes="true",
     )
     _save_pending_auth(state=state, code_verifier=flow.code_verifier)
     # Print just the URL so the agent can extract it cleanly
     print(auth_url)
 
 
-def exchange_auth_code(code: str):
+def exchange_auth_code(code: str, *, allow_scope_downgrade: bool = False):
     """Exchange the authorization code for a token and save it."""
     if not CLIENT_SECRET_PATH.exists():
         print("ERROR: No client secret stored. Run --client-secret first.")
         sys.exit(1)
 
     pending_auth = _load_pending_auth()
+    # An auth-code completion attempt consumes its PKCE state.  Retaining it
+    # after any outcome would let a stale callback be retried against the same
+    # local session.
+    PENDING_AUTH_PATH.unlink(missing_ok=True)
     raw_callback = code
     code, returned_state = _extract_code_and_state(code)
     if returned_state and returned_state != pending_auth["state"]:
@@ -420,9 +454,9 @@ def exchange_auth_code(code: str):
         # Accept partial scopes — user may deselect some permissions in the consent screen
         os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
         flow.fetch_token(code=code)
-    except Exception as e:
-        print(f"ERROR: Token exchange failed: {e}")
-        print("The code may have expired. Run --auth-url to get a fresh URL.")
+    except Exception:
+        print("ERROR: Token exchange failed.")
+        print("The pending session was consumed. Run --auth-url to get a new authorization URL.")
         sys.exit(1)
 
     creds = flow.credentials
@@ -438,13 +472,31 @@ def exchange_auth_code(code: str):
         # granted_scopes was extracted from the callback URL
         token_payload["scopes"] = granted_scopes
 
+    old_payload = _load_token_payload(TOKEN_PATH) if TOKEN_PATH.exists() else {}
+    old_capabilities = _effective_scope_capabilities(_scope_values(old_payload))
+    new_capabilities = _effective_scope_capabilities(_scope_values(token_payload))
+    if (
+        old_capabilities
+        and new_capabilities < old_capabilities
+        and not allow_scope_downgrade
+    ):
+        print(
+            "SCOPE_DOWNGRADE_BLOCKED: The new authorization grants fewer "
+            "capabilities than the existing token."
+        )
+        print("The existing token was left unchanged. Run --auth-url for a new authorization URL.")
+        print(
+            "To intentionally reduce access, start a new authorization URL "
+            "and pass --allow-scope-downgrade with its --auth-code."
+        )
+        sys.exit(1)
+
     missing_scopes = _missing_scopes_from_payload(token_payload)
     if missing_scopes:
-        print(f"WARNING: Token missing some Google Workspace scopes: {', '.join(missing_scopes)}")
+        print(f"WARNING: Token is missing {len(missing_scopes)} Google Workspace scopes.")
         print("Some services may not be available.")
 
     TOKEN_PATH.write_text(json.dumps(token_payload, indent=2), encoding="utf-8")
-    PENDING_AUTH_PATH.unlink(missing_ok=True)
     print(f"OK: Authenticated. Token saved to {TOKEN_PATH}")
     print(f"Profile-scoped token location: {display_hermes_home()}/google_token.json")
 
@@ -492,7 +544,15 @@ def main():
     group.add_argument("--auth-code", metavar="CODE", help="Exchange auth code for token")
     group.add_argument("--revoke", action="store_true", help="Revoke and delete stored token")
     group.add_argument("--install-deps", action="store_true", help="Install Python dependencies")
+    parser.add_argument(
+        "--allow-scope-downgrade",
+        action="store_true",
+        help="Allow --auth-code to replace an existing token with fewer capabilities",
+    )
     args = parser.parse_args()
+
+    if args.allow_scope_downgrade and not args.auth_code:
+        parser.error("--allow-scope-downgrade is only valid with --auth-code")
 
     if args.check:
         sys.exit(0 if check_auth() else 1)
@@ -503,7 +563,10 @@ def main():
     elif args.auth_url:
         get_auth_url()
     elif args.auth_code:
-        exchange_auth_code(args.auth_code)
+        exchange_auth_code(
+            args.auth_code,
+            allow_scope_downgrade=args.allow_scope_downgrade,
+        )
     elif args.revoke:
         revoke()
     elif args.install_deps:

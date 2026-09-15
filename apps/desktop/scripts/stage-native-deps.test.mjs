@@ -258,6 +258,63 @@ test('cross-target: foreign target with no prebuild throws (fail closed)', () =>
   }
 })
 
+// ─── non-ASCII path regression (#70779) ─────────────────────────────
+//
+// Recursive cpSync of node-pty's conpty prebuild directory fails with
+// EIO/errno 5 (and on Node 24 can fail-fast the process) whenever the
+// source or destination path contains non-ASCII characters — Turkish
+// 'ı', CJK, accented Latin — which is exactly the shape of a Windows
+// user profile like C:\Users\Pınar. The fix stages the directory file
+// by file; these tests pin that a non-ASCII path in src, dest, or both
+// stages the full nested conpty tree.
+
+function makeFakeConptyTree(prebuildDir) {
+  const conptyDir = join(prebuildDir, 'conpty')
+  fs.mkdirSync(conptyDir, { recursive: true })
+  fs.writeFileSync(join(conptyDir, 'conpty.dll'), Buffer.from([0x4d, 0x5a]))
+  fs.writeFileSync(join(conptyDir, 'OpenConsole.exe'), Buffer.from([0x4d, 0x5a]))
+}
+
+test('non-ASCII src path: conpty directory stages file-by-file (#70779)', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    // Source tree rooted under a Turkish-accented directory name.
+    const srcRoot = join(tmp, 'Pınar', 'hermes', 'node-pty')
+    const destRoot = join(tmp, 'dest')
+    makeFakeNodePty(srcRoot, { prebuildPlatform: 'win32', prebuildArch: 'x64' })
+    makeFakeConptyTree(join(srcRoot, 'prebuilds', 'win32-x64'))
+
+    stageNodePtyInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64' })
+
+    const stagedConpty = join(destRoot, 'prebuilds', 'win32-x64', 'conpty')
+    assert.equal(existsSync(join(stagedConpty, 'conpty.dll')), true, 'conpty.dll must be staged from a non-ASCII src path')
+    assert.equal(existsSync(join(stagedConpty, 'OpenConsole.exe')), true, 'OpenConsole.exe must be staged from a non-ASCII src path')
+    const prebuildNode = join(destRoot, 'prebuilds', 'win32-x64', 'pty.node')
+    assert.equal(existsSync(prebuildNode), true, 'prebuild .node must still be staged')
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('non-ASCII dest path: conpty directory stages file-by-file (#70779)', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'node-pty')
+    // Destination rooted under a CJK directory name.
+    const destRoot = join(tmp, '配置', 'hermes', 'dist')
+    makeFakeNodePty(srcRoot, { prebuildPlatform: 'win32', prebuildArch: 'x64' })
+    makeFakeConptyTree(join(srcRoot, 'prebuilds', 'win32-x64'))
+
+    stageNodePtyInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64' })
+
+    const stagedConpty = join(destRoot, 'prebuilds', 'win32-x64', 'conpty')
+    assert.equal(existsSync(join(stagedConpty, 'conpty.dll')), true, 'conpty.dll must be staged into a non-ASCII dest path')
+    assert.equal(existsSync(join(stagedConpty, 'OpenConsole.exe')), true, 'OpenConsole.exe must be staged into a non-ASCII dest path')
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
 test('host-target: host build/Release IS staged for a matching target', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
   try {

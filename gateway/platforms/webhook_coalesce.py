@@ -4,8 +4,8 @@ Rapid distinct events on one logical entity (five pushes to a PR, a burst of tic
 carry a fresh delivery ID, so idempotency cannot suppress them and every event wakes an agent
 run. Coalescing groups events by a payload-derived key and debounces them: only the LATEST event
 of a group is dispatched once the quiet window passes, bounded by ``max_wait_seconds`` past the
-group's first event so a steady stream cannot starve dispatch. Port of RooCodeInc/Roomote#1478
-(one durable review task per PR, stale heads superseded). #92066
+group's first event so a steady stream cannot starve dispatch (one durable run per entity, stale
+heads superseded). #92066
 """
 
 from __future__ import annotations

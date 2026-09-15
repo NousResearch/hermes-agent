@@ -51,9 +51,16 @@ def _payload(pr_number=None, action: str = "synchronize") -> bytes:
     ({**_coalesce_route(), "deliver_only": True, "deliver": "telegram"}, "deliver_only"),
     ({**_coalesce_route(), "cron_job": "sweeper"}, "cron_job"),
 ])
-async def test_invalid_coalesce_config_rejected_at_connect(route, match):
+async def test_invalid_coalesce_config_rejected_at_connect(route, match, tmp_path, monkeypatch):
     with pytest.raises(ValueError, match=match):
         await _make_adapter(routes={"pr": route}).connect()
+    # The same block on a hot-reloaded dynamic route is skipped (warned), never admitted — it would
+    # otherwise raise inside the request handler.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "webhook_subscriptions.json").write_text(json.dumps({"dyn": route}), encoding="utf-8")
+    adapter = _make_adapter()
+    adapter._reload_dynamic_routes()
+    assert "dyn" not in adapter._routes
 
 
 @pytest.mark.asyncio

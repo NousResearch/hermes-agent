@@ -361,6 +361,12 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.warning("[webhook] Dynamic route '%s' skipped: INSECURE_NO_AUTH is only allowed on loopback "
                            "hosts. Current host: '%s'.", name, self._host)
             return False
+        try:
+            # Hot-reloaded from the request handler: a malformed block must skip the route, not 500 the request.
+            validate_coalesce_config(name, route)
+        except ValueError as e:
+            logger.warning("[webhook] Dynamic route '%s' skipped: %s", name, e)
+            return False
         return True
 
     def _reload_dynamic_routes(self) -> None:

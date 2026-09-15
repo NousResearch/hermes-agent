@@ -1597,7 +1597,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // NS-434 follow-up: attach the visualViewport keyboard-inset listeners
   // ONLY while the chat tab is actually visible. ChatPage stays mounted
   // (display:none) on every other dashboard route, so unconditional
-  // listeners made the scroll pin (`window.scrollTo(0, 0)`) fire whenever a
+  // listeners made the composer reveal (`window.scrollBy`) fire whenever a
   // soft keyboard opened on Settings/Sessions/etc., fighting iOS Safari's
   // own scroll-into-view for the focused input there. The handlers read
   // through refs populated by the main PTY effect, so attach/detach here is

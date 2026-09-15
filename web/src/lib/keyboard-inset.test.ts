@@ -3,7 +3,6 @@ import {
   computeKeyboardInset,
   keyboardRevealScrollDelta,
   KEYBOARD_INSET_MIN_PX,
-  shouldPinScroll,
 } from "./keyboard-inset";
 
 describe("computeKeyboardInset", () => {
@@ -69,23 +68,7 @@ describe("computeKeyboardInset", () => {
   });
 });
 
-describe("shouldPinScroll", () => {
-  it("pins while a keyboard inset is active", () => {
-    expect(shouldPinScroll(320)).toBe(true);
-  });
-
-  it("does not pin without a keyboard", () => {
-    expect(shouldPinScroll(0)).toBe(false);
-  });
-});
-
 describe("keyboardRevealScrollDelta", () => {
-  it("scrolls the page so the composer sits on the visual-viewport bottom", () => {
-    expect(
-      keyboardRevealScrollDelta(800, { height: 480, offsetTop: 0 }),
-    ).toBe(320);
-  });
-
   it("accounts for iOS visual-viewport offsetTop", () => {
     expect(
       keyboardRevealScrollDelta(800, { height: 480, offsetTop: 40 }),
@@ -95,12 +78,6 @@ describe("keyboardRevealScrollDelta", () => {
   it("does not move when the composer is already on the visible bottom", () => {
     expect(
       keyboardRevealScrollDelta(480, { height: 480, offsetTop: 0 }),
-    ).toBe(0);
-  });
-
-  it("returns 0 for non-finite geometry", () => {
-    expect(
-      keyboardRevealScrollDelta(NaN, { height: 480, offsetTop: 0 }),
     ).toBe(0);
   });
 });

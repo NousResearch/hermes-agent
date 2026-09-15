@@ -1,5 +1,6 @@
 """Tests for agent/system_prompt.py — context-file cwd wiring."""
 
+import logging
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -834,4 +835,99 @@ class TestConversationStartedTwoLine:
         vol = self._volatile(agent)
         assert "Conversation started:" not in vol
         assert "as of the last context rebuild" not in vol
+
+
+def _reset_tool_use_enforcement_auto_skip_log():
+    """Clear the process-lifetime once-flag so each test can observe the notice."""
+    import agent.system_prompt as sp
+    reset = getattr(sp, "_reset_tool_use_enforcement_auto_skip_log", None)
+    if callable(reset):
+        reset()
+        return
+    if hasattr(sp, "_tool_use_enforcement_auto_skip_logged"):
+        sp._tool_use_enforcement_auto_skip_logged = False
+
+
+def _is_auto_skip_record(record):
+    msg = record.getMessage()
+    return "inference.local" in msg and "tool_use_enforcement" in msg
+
+
+class TestToolUseEnforcementAutoSkipLog:
+    """When tool_use_enforcement is auto and the model string matches none of
+    TOOL_USE_ENFORCEMENT_MODELS, guidance stays out — but operators must get a
+    one-time warning pointing at the explicit override. Fail-open branches
+    (explicit true/false/list, no tools, matched family) stay silent.
+    """
+
+    def test_auto_unmatched_alias_logs_skip_without_injecting(self, caplog):
+        _reset_tool_use_enforcement_auto_skip_log()
+        agent = _make_agent(valid_tool_names=["terminal"], model="inference.local",
+                            _tool_use_enforcement="auto")
+        with caplog.at_level(logging.WARNING, logger="agent.system_prompt"):
+            stable = _stable_prompt(agent)
+        assert "Tool-use enforcement" not in stable  # still not injected
+        assert any("inference.local" in r.getMessage() and "tool_use_enforcement" in r.getMessage()
+                   for r in caplog.records)  # THIS fails on current main
+        skip = next(r.getMessage() for r in caplog.records if _is_auto_skip_record(r))
+        assert "tool_use_enforcement: true" in skip
+        assert "not injected" in skip.lower() or "was not injected" in skip
+
+    def test_auto_matched_family_injects_without_skip_log(self, caplog):
+        _reset_tool_use_enforcement_auto_skip_log()
+        agent = _make_agent(valid_tool_names=["terminal"], model="openai/gpt-4.1",
+                            _tool_use_enforcement="auto")
+        with caplog.at_level(logging.WARNING, logger="agent.system_prompt"):
+            stable = _stable_prompt(agent)
+        assert "Tool-use enforcement" in stable
+        assert not any(_is_auto_skip_record(r) for r in caplog.records)
+
+    def test_auto_unmatched_without_tools_is_silent(self, caplog):
+        _reset_tool_use_enforcement_auto_skip_log()
+        agent = _make_agent(valid_tool_names=[], model="inference.local",
+                            _tool_use_enforcement="auto")
+        with caplog.at_level(logging.WARNING, logger="agent.system_prompt"):
+            stable = _stable_prompt(agent)
+        assert "Tool-use enforcement" not in stable
+        assert not any(_is_auto_skip_record(r) for r in caplog.records)
+
+    def test_explicit_false_is_silent(self, caplog):
+        _reset_tool_use_enforcement_auto_skip_log()
+        agent = _make_agent(valid_tool_names=["terminal"], model="inference.local",
+                            _tool_use_enforcement=False)
+        with caplog.at_level(logging.WARNING, logger="agent.system_prompt"):
+            stable = _stable_prompt(agent)
+        assert "Tool-use enforcement" not in stable
+        assert not any(_is_auto_skip_record(r) for r in caplog.records)
+
+    def test_explicit_true_injects_without_skip_log(self, caplog):
+        _reset_tool_use_enforcement_auto_skip_log()
+        agent = _make_agent(valid_tool_names=["terminal"], model="inference.local",
+                            _tool_use_enforcement=True)
+        with caplog.at_level(logging.WARNING, logger="agent.system_prompt"):
+            stable = _stable_prompt(agent)
+        assert "Tool-use enforcement" in stable
+        assert not any(_is_auto_skip_record(r) for r in caplog.records)
+
+    def test_explicit_list_non_match_is_silent(self, caplog):
+        _reset_tool_use_enforcement_auto_skip_log()
+        agent = _make_agent(valid_tool_names=["terminal"], model="inference.local",
+                            _tool_use_enforcement=["does-not-match"])
+        with caplog.at_level(logging.WARNING, logger="agent.system_prompt"):
+            stable = _stable_prompt(agent)
+        assert "Tool-use enforcement" not in stable
+        assert not any(_is_auto_skip_record(r) for r in caplog.records)
+
+    def test_auto_skip_logs_only_once(self, caplog):
+        _reset_tool_use_enforcement_auto_skip_log()
+        agent = _make_agent(valid_tool_names=["terminal"], model="inference.local",
+                            _tool_use_enforcement="auto")
+        with caplog.at_level(logging.WARNING, logger="agent.system_prompt"):
+            _stable_prompt(agent)
+            first = [r for r in caplog.records if _is_auto_skip_record(r)]
+            caplog.clear()
+            _stable_prompt(agent)
+            second = [r for r in caplog.records if _is_auto_skip_record(r)]
+        assert len(first) == 1
+        assert second == []
 

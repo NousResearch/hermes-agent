@@ -1034,6 +1034,64 @@ def _tool_calls_by_id(messages: List[Dict[str, Any]]) -> Dict[str, tuple]:
     return out
 
 
+def _trailing_assistant_batch_index(messages: List[Dict[str, Any]]) -> int:
+    """Index of the trailing live assistant batch: last non-tool message, if assistant.
+
+    Shared definition of "possibly in flight" with ``_sanitize_tool_pairs``
+    (#79278): a multi-call batch between result appends is still live, while
+    older unmatched calls are settled orphans. Single source of truth so the
+    prune passes and the sanitizer never disagree on what is pending.
+    Returns ``-1`` when the trailing message is not an assistant turn.
+    """
+    idx = next(
+        (
+            i
+            for i in range(len(messages) - 1, -1, -1)
+            if isinstance(messages[i], dict) and messages[i].get("role") != "tool"
+        ),
+        -1,
+    )
+    if idx >= 0 and messages[idx].get("role") == "assistant" and messages[idx].get("tool_calls"):
+        return idx
+    return -1
+
+
+def _first_pending_tool_call_index(messages: List[Dict[str, Any]]) -> int:
+    """Index of the trailing assistant batch when it holds a not-yet-executed call.
+
+    Only the trailing live batch (see ``_trailing_assistant_batch_index``) can
+    be pending: a settled historical orphan must not exempt later completed
+    calls from argument reclamation, or every later call keeps its full args
+    and the pressure pass can never reclaim the tail (#105598). Matching
+    reuses the canonical alias policy (``id`` / ``call_id`` /
+    ``response_item_id`` / composite ``call|item``), so a completed Responses
+    call answered under a sibling spelling still counts as executed. Calls
+    without any id variant cannot be matched to a result and count as
+    pending. Returns ``len(messages)`` when nothing is pending.
+    """
+    from agent.message_sanitization import tool_call_id_variants, tool_result_id_variants
+
+    batch_idx = _trailing_assistant_batch_index(messages)
+    if batch_idx < 0:
+        return len(messages)
+    seen_results: set = set()
+    for j in range(batch_idx + 1, len(messages)):
+        msg = messages[j]
+        if (
+            isinstance(msg, dict)
+            and msg.get("role") == "tool"
+            and msg.get("tool_call_id")
+        ):
+            seen_results |= set(tool_result_id_variants(msg.get("tool_call_id")))
+    for tc in messages[batch_idx].get("tool_calls") or []:
+        if not isinstance(tc, dict):
+            continue
+        variants = set(tool_call_id_variants(tc))
+        if not variants or variants.isdisjoint(seen_results):
+            return batch_idx
+    return len(messages)
+
+
 def _collect_path_mentions(text: str, relevant_files: list[str], *, limit: int = 12) -> None:
     for match in _PATH_MENTION_RE.findall(text):
         _dedupe_append(relevant_files, match.rstrip(".,:;"), limit=limit)
@@ -2705,13 +2763,20 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def _pressure_demote_tail(
         self, result: List[Dict[str, Any]], prune_boundary: int, protect_tail_tokens: int,
         call_id_to_tool: Dict[str, tuple[str, str]], min_prune_chars: int,
+        pending_start: int | None = None,
     ) -> int:
         """Pass 4: demote inside the protected tail when it alone exceeds the soft budget (#61932).
         Keeps a short recent floor verbatim; overrides the skill guard (else the dead-end recurs).
+        Pending tool calls (no later tool result) are exempt from argument truncation:
+        shrinking them corrupts an unsent action instead of saving re-sent history (#105574).
+        The boundary is computed in ``_prune_old_tool_results`` before Pass 3 and reused here
+        so both passes agree on what is pending.
         Returns the number of tool results demoted (arg truncations are logged but not counted)."""
         soft_ceiling = int(protect_tail_tokens * 1.5)
         demote_end = len(result) - min(_PRESSURE_KEEP_RECENT_MESSAGES, len(result))
         start = max(0, prune_boundary)
+        if pending_start is None:
+            pending_start = _first_pending_tool_call_index(result)
 
         def _protected_region_tokens() -> int:
             return sum(_estimate_msg_budget_tokens(result[i]) for i in range(start, len(result)))
@@ -2724,8 +2789,29 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars):
                 demoted += 1
                 pressure_hits += 1
+            if i >= pending_start:
+                return
+            before = {
+                (_tc_get(tc, "id") or ""): (
+                    str(_tc_get(_tc_get(tc, "function", {}), "name", "unknown")),
+                    len(str(_tc_get(_tc_get(tc, "function", {}), "arguments", "") or "")),
+                )
+                for tc in (result[i].get("tool_calls") or [])
+                if isinstance(tc, dict)
+            }
             if self._truncate_tool_call_args_at(result, i):
                 pressure_hits += 1
+                for tc in result[i].get("tool_calls") or []:
+                    if not isinstance(tc, dict):
+                        continue
+                    name, old_len = before.get(_tc_get(tc, "id") or "", ("unknown", 0))
+                    new_len = len(str(_tc_get(_tc_get(tc, "function", {}), "arguments", "") or ""))
+                    if old_len > new_len:
+                        logger.warning(
+                            "Pass-4 pressure demotion truncated tool-call args in the protected tail "
+                            "(message %d, tool %s: %d -> %d chars)",
+                            i, name, old_len, new_len,
+                        )
 
         if demote_end <= prune_boundary or _protected_region_tokens() <= soft_ceiling:
             return 0
@@ -2763,6 +2849,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         result = [m.copy() for m in messages]
         call_id_to_tool = _tool_calls_by_id(result)
         prune_boundary = self._prune_boundary(result, protect_tail_count, protect_tail_tokens)
+        # Pending boundary first: a not-yet-executed call must survive both Pass 3
+        # and Pass 4 arg truncation (#105574). Tool-result demotion still applies.
+        pending_start = _first_pending_tool_call_index(result)
         pruned = self._dedupe_tool_results(result)
         # Just-loaded / tail-referenced skills keep full skill_view bodies through the ordinary passes.
         # Without this, a skill loaded moments before a compaction can be demoted to metadata while the
@@ -2770,11 +2859,12 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         protected_skills = _collect_protected_skill_names(result, prune_boundary)
         # Pass 2: summarize old tool results. Pass 3: shrink large tool_call arguments INSIDE the parsed JSON so
         # the result stays valid; otherwise providers 400 on every turn until the call leaves the window.
+        # Pass 3 skips pending calls (index >= pending_start): same exemption as Pass 4.
         pruned += sum(
             self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars, protected_skills)
             for i in range(max(0, prune_boundary))
         )
-        for i in range(max(0, prune_boundary)):
+        for i in range(max(0, min(prune_boundary, pending_start))):
             self._truncate_tool_call_args_at(result, i)
         # Pass 3.5: retire image payloads inside the protected tail; re-sent embeds otherwise make
         # compression look ineffective and trip anti-thrash. Newest frames stay live.
@@ -2783,6 +2873,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         if protect_tail_tokens is not None and protect_tail_tokens > 0 and result:
             pruned += self._pressure_demote_tail(
                 result, prune_boundary, protect_tail_tokens, call_id_to_tool, min_prune_chars,
+                pending_start,
             )
         return result, pruned
 
@@ -3878,8 +3969,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         # In-flight protection: compression can fire before the executor appends the result, so the last non-tool
         # assistant's calls are presumed pending and kept verbatim (skip trailing tool results first: a multi-call
         # batch between appends is still in flight). Unanswered survivors are stubbed pre-API by sanitize_api_messages.
-        idx = next((i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") != "tool"), -1)
-        trailing_inflight = messages[idx] if idx >= 0 and messages[idx].get("role") == "assistant" else None
+        # The trailing batch is the shared "possibly in flight" definition (see _trailing_assistant_batch_index).
+        trailing_idx = _trailing_assistant_batch_index(messages)
+        trailing_inflight = messages[trailing_idx] if trailing_idx >= 0 else None
         stripped_count = 0
         for msg in messages:
             tcs = msg.get("tool_calls")

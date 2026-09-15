@@ -8,6 +8,8 @@ gate in :mod:`tools.approval`.
 import contextvars
 import logging
 import os
+import threading
+from contextlib import contextmanager
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled, is_truthy_value
 
@@ -16,6 +18,43 @@ logger = logging.getLogger("tools.approval")
 
 def _ctx(name: str, default: "str | None" = "") -> contextvars.ContextVar:
     return contextvars.ContextVar(name, default=default)
+
+
+class ApprovalResolverCapability:
+    """Revocable proof that one exact API run has an inbound approval resolver."""
+
+    __slots__ = ("session_key", "_lock", "_active", "_revoked")
+
+    def __init__(self, session_key: str):
+        self.session_key = session_key or ""
+        self._lock = threading.Lock()
+        self._active = False
+        self._revoked = False
+
+    def activate(self) -> bool:
+        """Mark the resolver usable unless its owning run was already revoked."""
+        with self._lock:
+            if self._revoked:
+                return False
+            self._active = True
+            return True
+
+    def revoke(self) -> None:
+        """Permanently disable this run's approval capability."""
+        with self._lock:
+            self._revoked = True
+            self._active = False
+
+    def is_active(self) -> bool:
+        """Return whether the owning run still has a live inbound resolver."""
+        with self._lock:
+            return self._active
+
+    @contextmanager
+    def active_scope(self):
+        """Hold the lifecycle lock while publishing one resolver-owned event."""
+        with self._lock:
+            yield self._active
 
 
 # Per-thread/per-task gateway session identity: gateway runs agent turns concurrently in executor threads, so a
@@ -82,6 +121,39 @@ def reset_current_session_key(token: contextvars.Token[str]) -> None:
     _approval_session_key.reset(token)
 
 
+_approval_resolver_session_key: contextvars.ContextVar[ApprovalResolverCapability | None] = _ctx(
+    "approval_resolver_session_key", None)
+
+
+def create_approval_resolver(session_key: str) -> ApprovalResolverCapability:
+    """Create an inactive capability for one API run before its resolver is registered."""
+    return ApprovalResolverCapability(session_key)
+
+
+def set_current_approval_resolver(
+    resolver: ApprovalResolverCapability,
+) -> contextvars.Token[ApprovalResolverCapability | None]:
+    """Bind the exact capability backed by a live inbound approval resolver."""
+    return _approval_resolver_session_key.set(resolver)
+
+
+def reset_current_approval_resolver(token: contextvars.Token[ApprovalResolverCapability | None]) -> None:
+    """Restore the prior resolver-backed approval capability."""
+    _approval_resolver_session_key.reset(token)
+
+
+def _has_current_approval_resolver() -> bool:
+    """Return true only for an API run whose exact approval key has an inbound resolver."""
+    resolver = _approval_resolver_session_key.get()
+    return (
+        _get_session_platform() == "api_server"
+        and resolver is not None
+        and resolver.is_active()
+        and bool(resolver.session_key)
+        and resolver.session_key == get_current_session_key(default="")
+    )
+
+
 _Tokens = tuple[contextvars.Token[str], contextvars.Token[str], contextvars.Token[str]]
 
 
@@ -105,6 +177,13 @@ def get_current_session_key(default: str = "default") -> str:
         return session_key
     from gateway.session_context import get_session_env
     return get_session_env("HERMES_SESSION_KEY", default)
+
+
+def _api_approval_resolver_available(session_key: str) -> bool:
+    """Return whether an API approval wait still has its exact live resolver."""
+    if _get_session_platform() != "api_server":
+        return True
+    return _has_current_approval_resolver() and get_current_session_key(default="") == session_key
 
 
 def _session_env(name: str) -> str:
@@ -138,11 +217,15 @@ def _is_unattended_platform_approval_context() -> bool:
     """True when the session platform is a programmatic/unattended surface.
 
     Webhook, msgraph_webhook, and api_server sessions bind ``HERMES_SESSION_PLATFORM`` like chat gateways
-    do, but there is no human who can resolve a pending approval. Treating them as gateway approval contexts
+    do, but there is no human who can resolve a pending approval unless the exact API run key is backed by
+    the ``/v1/runs/{run_id}/approval`` resolver. Treating listener-less sessions as gateway approval contexts
     blocks the session for the full approval timeout (60-300s) and then fails closed anyway — the deadlock
     in #37284/#87509.
     """
-    return _get_session_platform() in _UNATTENDED_APPROVAL_PLATFORMS
+    return (
+        _get_session_platform() in _UNATTENDED_APPROVAL_PLATFORMS
+        and not _has_current_approval_resolver()
+    )
 
 
 def _is_single_query_approval_context() -> bool:
@@ -163,8 +246,10 @@ def _is_gateway_approval_context() -> bool:
     delivery routing): falling through would submit a pending approval with no
     listener and block the job indefinitely; unattended platforms likewise.
 
-    Unattended programmatic platforms (webhook, msgraph_webhook, api_server) are excluded for the same
-    reason: those adapters have no ``send_exec_approval`` and no way to receive ``/approve`` replies.
+    Unattended programmatic platforms (webhook, msgraph_webhook, and listener-less api_server routes) are excluded
+    for the same reason: those adapters have no ``send_exec_approval`` and no way to receive ``/approve`` replies.
+    A ``/v1/runs`` turn is the narrow exception because its exact run key is bound to the authenticated approval
+    resolver for ``POST /v1/runs/{run_id}/approval``.
     Submitting a pending approval there blocks the session for the full approval timeout (60-300 s) with no
     human who can resolve it (#37284, 87509). Their dangerous-command handling is governed by
     ``approvals.unattended_mode`` config (default deny), mirroring cron.

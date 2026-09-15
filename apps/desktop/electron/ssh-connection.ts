@@ -251,6 +251,12 @@ function target(user, host) {
   return user ? `${user}@${host}` : host
 }
 
+// Quote for the login shell sshd invokes. fish treats `\` inside `'…'`; POSIX
+// does not. Close the quote and escape outside it so both decode identically.
+function loginShellQuote(value: string) {
+  return `'${String(value).replace(/['\\]/g, ch => (ch === `'` ? `'\\''` : `'\\\\'`))}'`
+}
+
 function buildExecArgs(conn, remoteCommand, connectTimeoutMs?) {
   return [
     ...baseSshOptions(conn.controlPath, connectTimeoutMs),
@@ -559,6 +565,7 @@ class SshConnection {
   _tunnelRestartDelayMs: number
   _opened: boolean
   _mux: boolean
+  _posixRemote: boolean | null = null
   _tunnels: Map<string, any>
 
   constructor(cfg, opts: any = {}) {
@@ -786,8 +793,27 @@ class SshConnection {
 
   // One-shot remote command over the control connection. Resolves stdout;
   // rejects with a classified error on non-zero exit or timeout.
+  //
+  // sshd hands the command to the user's LOGIN shell. Payloads are POSIX sh, so
+  // fish rejects `help="$(…)"`. On Linux/Darwin wrap in `sh -c`; Windows stays raw.
   async exec(remoteCommand, { timeoutMs, stdinData }: any = {}) {
-    const args = buildExecArgs(this, remoteCommand, this._connectTimeoutMs)
+    if (this._posixRemote === null) {
+      try {
+        const probe: any = await runSsh(buildExecArgs(this, 'uname -s', this._connectTimeoutMs), {
+          timeoutMs: timeoutMs ?? this._execTimeoutMs,
+          spawnFn: this._spawnFn
+        })
+
+        if (probe.code !== 255) {
+          this._posixRemote = probe.code === 0 && /^(Linux|Darwin)$/.test(String(probe.stdout || '').trim())
+        }
+      } catch {
+        // transport failure: leave uncached, send this payload raw
+      }
+    }
+
+    const command = this._posixRemote ? `sh -c ${loginShellQuote(remoteCommand)}` : remoteCommand
+    const args = buildExecArgs(this, command, this._connectTimeoutMs)
     let result
 
     try {

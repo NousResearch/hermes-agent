@@ -101,6 +101,22 @@ def is_intentional_silence_agent_result(agent_result: dict | None, response: Any
     return isinstance(agent_result, dict) and not agent_result.get("failed") and is_intentional_silence_response(response)
 
 
+def is_invisible_only_response(response: Any) -> bool:
+    """True for non-empty output made only of whitespace and Unicode format controls.
+
+    Models sometimes use U+200B/U+FEFF to approximate an empty response. Those code points are
+    non-empty to the gateway but render as a blank chat message. Require at least one format
+    control so ordinary whitespace-only output keeps following the normal empty-response path.
+    """
+    if not isinstance(response, str) or not response:
+        return False
+    categories = [unicodedata.category(ch) for ch in response]
+    return "Cf" in categories and all(
+        ch.isspace() or category == "Cf"
+        for ch, category in zip(response, categories)
+    )
+
+
 def display_kind_for_event(event: Any) -> str | None:
     """The persisted user-row kind for a gateway turn: only self-injected events are machinery."""
     return INTERNAL_NOTIFICATION_DISPLAY_KIND if getattr(event, "internal", False) else None
@@ -124,7 +140,7 @@ def is_partial_silence_marker(text: Any) -> bool:
     is held back so a raw marker is never shown and then retracted.  Divergence
     from every marker, or exceeding the cap, resumes normal streaming.
     """
-    return any(
+    return is_invisible_only_response(text) or any(
         c and any(marker.startswith(c) for marker in LIVE_GATEWAY_SILENT_MARKERS)
         for c in _canonical_silence_candidates(text)
     )

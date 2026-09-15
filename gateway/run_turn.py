@@ -23,7 +23,9 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
-from gateway.response_filters import display_kind_for_event, is_machinery_display_kind
+from gateway.response_filters import (
+    display_kind_for_event, is_invisible_only_response, is_machinery_display_kind,
+)
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
@@ -80,6 +82,10 @@ def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> 
 
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
+
+    def _allows_human_silence_markers(self) -> bool:
+        """Whether successful human turns may deliberately produce no outbound message."""
+        return bool(getattr(getattr(self, "config", None), "allow_human_silence_markers", False))
 
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
@@ -1391,10 +1397,22 @@ class GatewayTurnMixin:
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
             response = ""
         _intentional_silence = self._is_intentional_silence(agent_result, response)
+        if (
+            not _intentional_silence
+            and self._allows_human_silence_markers()
+            and isinstance(agent_result, dict)
+            and not agent_result.get("failed")
+            and is_invisible_only_response(response)
+        ):
+            _intentional_silence = True
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
         # opened the chain: an internal follow-up may go silent, a human one must not.
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
-        if _intentional_silence and not is_machinery_display_kind(_silence_kind):
+        if (
+            _intentional_silence
+            and not is_machinery_display_kind(_silence_kind)
+            and not self._allows_human_silence_markers()
+        ):
             logger.warning(
                 "silence marker rejected on a user turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",
@@ -3517,9 +3535,30 @@ class GatewayTurnMixin:
         _already_streamed = self._run_agent_stream_confirmed_final_delivery(
             _sc, first_response, previewed=bool(_delivery_result.get("response_previewed")),
         )
-        # Same silence predicate as the normal path, else this branch leaks the literal marker.
-        if self._is_intentional_silence(_delivery_result, first_response):
-            if is_machinery_display_kind(turn_ctx.persist_user_display_kind):
+        _invisible_only = is_invisible_only_response(first_response)
+        if _invisible_only and not (
+            self._allows_human_silence_markers() and not _delivery_result.get("failed")
+        ):
+            from gateway.run import _normalize_empty_agent_response, _sanitize_gateway_final_response
+
+            first_response = _normalize_empty_agent_response(_delivery_result, "")
+            first_response = _sanitize_gateway_final_response(turn_ctx.source.platform, first_response)
+            _already_streamed = False
+        # Same silence predicate as the normal path, else this branch leaks a literal marker or
+        # format-only output before the queued follow-up starts.
+        _intentional_silence = self._is_intentional_silence(_delivery_result, first_response)
+        if (
+            not _intentional_silence
+            and self._allows_human_silence_markers()
+            and not _delivery_result.get("failed")
+            and _invisible_only
+        ):
+            _intentional_silence = True
+        if _intentional_silence:
+            if (
+                is_machinery_display_kind(turn_ctx.persist_user_display_kind)
+                or self._allows_human_silence_markers()
+            ):
                 logger.info(
                     "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                     session_key or "?",

@@ -1058,6 +1058,27 @@ Points at a custom OpenAI-compatible endpoint. Uses `OPENAI_API_KEY` for auth.
 The summary model **must** have a context window at least as large as your main agent model's. The compressor sends the full middle section of the conversation to the summary model — if that model's context window is smaller than the main model's, the summarization call will fail with a context length error. When this happens, the middle turns are **dropped without a summary**, losing conversation context silently. If you override the model, verify its context length meets or exceeds your main model's.
 :::
 
+## Intentional silence on human turns
+
+By default, an exact silence marker (`[SILENT]`, `SILENT`, `NO_REPLY`, or `NO REPLY`) from a human-origin turn is replaced with a visible retry notice. This protects ordinary request/reply bots from accidentally dropping a request.
+
+Ambient or free-response bots sometimes receive every message in a shared channel and must decide contextually whether to participate. Opt those gateways into true no-delivery semantics:
+
+```yaml
+gateway:
+  allow_human_silence_markers: true
+```
+
+Or set it with:
+
+```bash
+hermes config set gateway.allow_human_silence_markers true
+```
+
+When enabled, a successful human-origin turn containing only an exact silence marker produces no outbound message. Prompts should instruct the agent to return exactly `[SILENT]`, with no explanation or additional characters, when no response is warranted. Format-only output such as a zero-width space is also held back and suppressed so it cannot render as a blank platform message. Failed turns and substantive prose are never hidden.
+
+The setting is opt-in and requires a gateway restart.
+
 ## Gateway Turn Lease Timeout
 
 The gateway serializes turns by their resolved session ID so two routing keys

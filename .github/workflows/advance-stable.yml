@@ -1,0 +1,50 @@
+name: Advance stable release branch
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  advance-stable:
+    if: github.event.release.prerelease == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the release tag with full history
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Advance stable to the release tag commit
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          stable_ref=refs/heads/stable
+          tag_ref="refs/tags/${RELEASE_TAG}"
+          git check-ref-format "$tag_ref"
+          release_commit=$(git rev-parse --verify "${tag_ref}^{commit}")
+
+          stable_remote=$(git ls-remote --heads origin "$stable_ref")
+          if [[ -n "$stable_remote" ]]; then
+            git fetch --no-tags origin "$stable_ref"
+            stable_commit=$(git rev-parse --verify 'FETCH_HEAD^{commit}')
+
+            if [[ "$stable_commit" == "$release_commit" ]]; then
+              echo "stable already points to release commit $release_commit"
+              exit 0
+            fi
+
+            if ! git merge-base --is-ancestor "$stable_commit" "$release_commit"; then
+              echo "Refusing to move stable backwards or across divergent history" >&2
+              exit 1
+            fi
+          fi
+
+          git push origin "${release_commit}:${stable_ref}"

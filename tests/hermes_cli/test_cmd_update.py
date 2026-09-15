@@ -841,6 +841,26 @@ class TestCmdUpdateBranchFlag:
         merge_cmds = [c for c in commands if "merge --ff-only" in c]
         assert any("origin/bb/gui" in c and "origin/main" not in c for c in merge_cmds), merge_cmds
 
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_normal_update_pulls_configured_branch(self, mock_run, _mock_which):
+        mock_run.side_effect = self._branch_side_effect(
+            current_branch="feature", target_branch="stable", commit_count="0"
+        )
+        args = SimpleNamespace(branch=None)
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"updates": {"branch": "stable"}},
+        ):
+            cmd_update(args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert any("fetch origin stable" in command for command in commands)
+        assert any("cherry origin/stable" in command for command in commands)
+        assert any("checkout stable" in command for command in commands)
+        assert any("origin/stable" in command for command in commands if "rev-list" in command)
+
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
@@ -941,6 +961,25 @@ class TestCmdUpdateCheckBranchFlag:
 
     @patch("hermes_cli.config.detect_install_method", return_value="git")
     @patch("subprocess.run")
+    def test_check_uses_configured_branch(self, mock_run, _mock_method):
+        mock_run.side_effect = self._check_side_effect(
+            target_branch="stable", verify_ok=True, commit_count="0"
+        )
+        args = SimpleNamespace(check=True, branch=None)
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"updates": {"branch": "stable"}},
+        ):
+            cmd_update(args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert not any("fetch" in command and "upstream" in command for command in commands)
+        assert any("fetch origin stable" in command for command in commands)
+        assert any("origin/stable" in command for command in commands if "rev-list" in command)
+
+    @patch("hermes_cli.config.detect_install_method", return_value="git")
+    @patch("subprocess.run")
     def test_check_branch_missing_on_origin_exits_cleanly(
         self, mock_run, _mock_method, capsys
     ):
@@ -989,6 +1028,37 @@ class TestCmdUpdateCheckBranchFlag:
         # Compare ref is upstream/main (upstream fetch succeeded).
         rev_list_cmds = [c for c in commands if "rev-list" in c]
         assert any("upstream/main" in c for c in rev_list_cmds), rev_list_cmds
+
+
+@pytest.mark.parametrize(
+    ("explicit", "configured", "expected"),
+    [
+        (None, None, "main"),
+        (None, "stable", "stable"),
+        ("foo", "stable", "foo"),
+        (None, "", "main"),
+        (None, "   ", "main"),
+        (None, [], "main"),
+        ("", "stable", "main"),
+    ],
+)
+def test_update_branch_resolution_precedence(explicit, configured, expected):
+    updates = {} if configured is None else {"branch": configured}
+    with patch("hermes_cli.config.load_config", return_value={"updates": updates}):
+        assert main_install_repair._resolve_update_branch(SimpleNamespace(branch=explicit)) == expected
+
+
+def test_update_branch_resolution_reads_profile_config():
+    """Exercise the real merged-config loader, not only the resolver's unit seam."""
+    from hermes_cli.config import _LOAD_CONFIG_CACHE
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home()
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("updates:\n  branch: stable\n", encoding="utf-8")
+    _LOAD_CONFIG_CACHE.clear()
+
+    assert main_install_repair._resolve_update_branch(SimpleNamespace(branch=None)) == "stable"
 
 
 class TestCmdUpdateZipBranchRefusal:

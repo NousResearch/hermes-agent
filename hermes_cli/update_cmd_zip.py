@@ -370,12 +370,12 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
     # prevent. Refuse rather than lie.
     branch = _m()._resolve_update_branch(args)
     if branch != "main":
-        print(f"✗ --branch={branch} is not supported on the Windows ZIP-fallback update path.")
+        print(f"✗ Update branch '{branch}' is not supported on the Windows ZIP-fallback update path.")
         print(
             "  This path runs when git file I/O is broken on the system. "
             "Either resolve the git-side breakage (typically an antivirus "
             "or NTFS filter holding files open) and rerun `hermes update "
-            f"--branch {branch}`, or update against main with `hermes update`."
+            f"--branch {branch}`, or update against main with `hermes update --branch main`."
         )
         _m().sys.exit(1)
     _abort_zip_update_if_dirty_tree()

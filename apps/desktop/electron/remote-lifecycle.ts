@@ -516,21 +516,58 @@ async function removeLockfile(ssh, ownershipId) {
   }
 }
 
+const PROBE_VERDICT_ATTEMPTS = 3
+const PROBE_VERDICT_RETRY_MS = 500
+
+// Liveness and ownership probes print exactly one of two sentinels. An exec
+// that resolves with neither — the channel died before the remote shell ran,
+// which is exactly the state of an SSH session mid-teardown right after the
+// served token was resolved — is indeterminate, not the negative verdict:
+// reading it as DEAD tore down a live backend as "exited while its served
+// token was being resolved", and reading it as FOREIGN skipped the reap while
+// still removing the lockfile, leaving one orphaned `serve --isolated` per
+// attempt (#111810). Retry over a short window; with no definite answer fail
+// closed with a transient error so callers keep the ownership record.
+async function execProbeVerdict(ssh, command, sentinels, failureMessage) {
+  for (let attempt = 0; attempt < PROBE_VERDICT_ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      await new Promise(resolve => setTimeout(resolve, PROBE_VERDICT_RETRY_MS))
+    }
+
+    let out
+
+    try {
+      out = String((await ssh.exec(command)) || '').trim()
+    } catch (cause) {
+      const error: any = new Error(failureMessage)
+      error.kind = 'transient-transport-error'
+      error.cause = cause
+      throw error
+    }
+
+    if (sentinels.includes(out)) {
+      return out
+    }
+  }
+
+  const error: any = new Error(failureMessage)
+  error.kind = 'transient-transport-error'
+  throw error
+}
+
 async function remotePidAlive(ssh, pid) {
   if (!pid || !Number.isInteger(Number(pid))) {
     return false
   }
 
-  try {
-    const out = (await ssh.exec(`kill -0 ${Number(pid)} 2>/dev/null && echo ALIVE || echo DEAD`)).trim()
+  const verdict = await execProbeVerdict(
+    ssh,
+    `kill -0 ${Number(pid)} 2>/dev/null && echo ALIVE || echo DEAD`,
+    ['ALIVE', 'DEAD'],
+    'Could not verify the SSH backend process.'
+  )
 
-    return out === 'ALIVE'
-  } catch (cause) {
-    const error: any = new Error('Could not verify the SSH backend process.')
-    error.kind = 'transient-transport-error'
-    error.cause = cause
-    throw error
-  }
+  return verdict === 'ALIVE'
 }
 
 // Stable kernel process-start identity used to fence a later managed-update
@@ -587,8 +624,7 @@ async function pidIsOurDashboard(
     return false
   }
 
-  try {
-    const script =
+  const script =
       'import os,shlex,subprocess,sys\n' +
       `pid=${Number(pid)}\n` +
       `expected=os.path.expanduser(${shq(hermesPath)})\n` +
@@ -635,15 +671,14 @@ async function pidIsOurDashboard(
       'except (ValueError,IndexError):pass\n' +
       'print("OWNED" if ok else "FOREIGN")'
 
-    const out = await ssh.exec(`python3 -c ${shq(script)}`)
+  const verdict = await execProbeVerdict(
+    ssh,
+    `python3 -c ${shq(script)}`,
+    ['OWNED', 'FOREIGN'],
+    'Could not verify SSH backend process ownership.'
+  )
 
-    return String(out || '').trim() === 'OWNED'
-  } catch (cause) {
-    const error: any = new Error('Could not verify SSH backend process ownership.')
-    error.kind = 'transient-transport-error'
-    error.cause = cause
-    throw error
-  }
+  return verdict === 'OWNED'
 }
 
 // Kill the stale dashboard ONLY if provably ours, then drop the lockfile.
@@ -1660,7 +1695,12 @@ async function connect(deps) {
       void 0
     }
 
-    await cleanupStale(ssh, ownershipId, ownedSpawn)
+    // This record IS the child this attempt spawned. A liveness probe that
+    // cannot be settled must not become "leave it running": assume alive so
+    // cleanupStale re-runs the ownership proof, which keeps the record when
+    // nothing can be proven and lets the next connect reap by exact ownership.
+    const pidAlive = await remotePidAlive(ssh, pid).catch(() => true)
+    await cleanupStale(ssh, ownershipId, ownedSpawn, pidAlive)
     throw error
   }
 }

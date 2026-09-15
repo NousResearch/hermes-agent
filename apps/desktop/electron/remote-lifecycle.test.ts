@@ -1959,3 +1959,53 @@ test.skipIf(process.platform === 'win32')(
     }
   }
 )
+
+// The liveness and ownership probes answer over the same SSH channel that is
+// often mid-teardown right after the served token resolved. An exec that
+// returns neither sentinel is indeterminate (#111810): read as DEAD it tore
+// down a live backend; read as FOREIGN it skipped the reap while removing the
+// lockfile — one orphaned `serve --isolated` per failed attempt.
+test('connect() does not declare a live dashboard dead when the liveness probe answers nothing once', async () => {
+  let liveness = 0
+
+  const ssh = fakeSsh([
+    [/uname/, 'Linux\nx86_64'],
+    [/\[ -x/, 'OK'],
+    [/cat .*lock\.json/, ''],
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [/python3 -c/, ''],
+    [/printf '%s\\n'/, ''],
+    [/setsid/, '777\n'],
+    [(cmd: string) => /kill -0 777/.test(cmd) && !cmd.includes('while'), () => (liveness++ === 0 ? '' : 'ALIVE\n')],
+    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=51999\n']
+  ])
+
+  const result = await connect(connectDeps(ssh, { platform: { os: 'Linux', arch: 'x86_64' } }))
+
+  assert.equal(result.reused, false)
+  assert.equal(result.pid, 777)
+  assert.ok(!ssh.calls.some(c => /(^|[^-\d])kill(?: -\w+)? 777\b/.test(c) && !/kill -0/.test(c)), 'must not reap a live backend')
+})
+
+test('cleanupStale reaps after one lost ownership answer and keeps the lockfile when none ever settles', async () => {
+  let ownership = 0
+
+  const flaky = fakeSsh([
+    [/print\("OWNED"/, () => (ownership++ === 0 ? '' : 'OWNED\n')],
+    [/kill 777 &&/, 'TERMINATED\n']
+  ])
+
+  await cleanupStale(flaky, OWNERSHIP_ID, ownedLock({ pid: 777 }))
+  assert.ok(flaky.calls.some(c => /kill 777 &&/.test(c)), 'must reap the owned backend')
+  assert.ok(flaky.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)))
+
+  const silent = fakeSsh([[/print\("OWNED"/, '']])
+
+  await assert.rejects(
+    cleanupStale(silent, OWNERSHIP_ID, ownedLock({ pid: 777 })),
+    (error: any) => error.kind === 'transient-transport-error'
+  )
+
+  assert.ok(!silent.calls.some(c => /(^|[^-\d])kill(?: -\w+)? 777\b/.test(c) && !/kill -0/.test(c)), 'must not kill unproven')
+  assert.ok(!silent.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)), 'record must survive for the next connect to reap')
+})

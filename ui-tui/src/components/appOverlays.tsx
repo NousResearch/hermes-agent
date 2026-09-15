@@ -56,12 +56,7 @@ function PromptCell({ children, cols, id }: { children: ReactNode; cols: number;
   )
 }
 
-/**
- * The completion dropdown's panel: the visible slice of rows plus a
- * hidden-count footer when the list exceeds the window. Factored out of
- * PromptZone so it renders in the normal flow on its own — the absolute
- * geometry PromptZone wraps around it is positioning, not content.
- */
+/** Completion dropdown panel: visible rows plus a hidden-count footer when the list exceeds the window. */
 export function CompletionMenuPanel({
   cols,
   completions,
@@ -96,10 +91,8 @@ export function CompletionMenuPanel({
       <Box flexDirection="column" width={Math.max(28, cols - 6)}>
         {(() => {
           const visible = completions.slice(start, start + viewportSize)
-          // Two-column grid: the name track auto-sizes to the widest
-          // visible command, so descriptions align — and wrapped
-          // description lines stay inside their own column instead of
-          // running under the names.
+          // Name column auto-sizes to the widest visible command; wrapped
+          // descriptions stay in their own column.
           const nameW = Math.max(...visible.map(item => stringWidth(item.display))) + 2
 
           return visible.map((item, i) => {
@@ -120,10 +113,7 @@ export function CompletionMenuPanel({
                   </Text>
                 </Box>
                 {item.meta ? (
-                  // Descriptions in the neutral gray, NOT a gold-family
-                  // tone — label vs muted are near-twins on some skins,
-                  // which made command and description read as one run.
-                  // Active row: meta rides the chip, so it uses row ink.
+                  // Neutral gray (not gold): label vs muted are near-twins on some skins.
                   <Text backgroundColor={row.backgroundColor} color={active ? row.color : t.color.statusFg}>
                     {item.meta}
                   </Text>

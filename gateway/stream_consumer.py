@@ -680,6 +680,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             return
         if not self._turn_split_delivery:
             final_payload = self._clean_for_display(final_raw)
+            # An empty final segment cannot replace substantive pre-tool text in a cumulative
+            # transport. Edit-based transports already sealed that text as a separate message.
+            if (self._cumulative_transport() and _is_invisible_only_response(final_payload)
+                    and not _is_invisible_only_response(self._clean_for_display(self._accumulated))):
+                return
             if final_payload and final_payload != self._clean_for_display(self._accumulated):
                 self._accumulated = final_raw
                 self._stream_ledger = final_raw
@@ -708,10 +713,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     def _should_edit(self, tick: "_Tick") -> bool:
         """Decide whether this tick flushes an edit/frame."""
-        # Segment boundaries are interim flushes even though ``tick.is_interim`` is false. Hold any
-        # buffer that could still resolve to silence so tool boundaries cannot leak a blank/marker.
-        if (tick.is_interim or tick.got_segment_break) and _is_partial_silence_marker(
-            self._clean_for_display(self._accumulated)
+        # Tool AND commentary boundaries flush a complete segment: hold non-content, but deliver
+        # legitimate words such as "No" even though they prefix a silence marker mid-stream.
+        clean = self._clean_for_display(self._accumulated)
+        if not tick.got_done and (
+            _is_invisible_only_response(clean) or _is_intentional_silence_response(clean)
         ):
             return False
         if not tick.is_interim:
@@ -729,8 +735,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                                or len(self._accumulated) >= self.cfg.buffer_threshold)
         # Defer mid-stream edits while the buffer could still resolve to a silence
         # marker ("NO"→"NO_REPLY"); got_done always resolves the buffer.
-        return should_edit and not _is_partial_silence_marker(
-            self._clean_for_display(self._accumulated))
+        return should_edit and not _is_partial_silence_marker(clean)
 
     async def _split_first_send(self, tick: "_Tick") -> bool:
         """No message to edit yet and the buffer overflows: seal only the head chunks; the

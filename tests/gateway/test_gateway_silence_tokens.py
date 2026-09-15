@@ -1,6 +1,5 @@
 """Gateway intentional-silence token behavior."""
 
-import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -92,30 +91,100 @@ def test_blank_and_prose_mentions_are_not_silence():
 
 def test_failed_agent_result_never_counts_as_intentional_silence():
     assert is_intentional_silence_agent_result({"failed": False}, "NO_REPLY")
-    assert not is_intentional_silence_agent_result({"failed": True}, "NO_REPLY")
+    for unsuccessful in (
+        {"failed": True}, {"partial": True}, {"completed": False},
+        {"interrupted": True}, {"error": "provider failed"},
+    ):
+        assert not is_intentional_silence_agent_result(unsuccessful, "NO_REPLY")
 
 
-def test_opted_in_human_turn_suppresses_silence_marker(monkeypatch, tmp_path):
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text,status,expected", [
+    ("[SILENT]", {}, ""),
+    ("\u200b\ufeff", {}, ""),
+    ("\u200b\ufeff", {"failed": True, "error": "provider failed"}, "Something went wrong"),
+    ("\u200b\ufeff", {"partial": True}, "I had to stop"),
+    ("\u200b\ufeff", {"completed": False}, "no response was generated"),
+    ("", {}, "no response was generated"),
+    ("Use [SILENT] when no answer is needed.", {}, "Use [SILENT] when no answer is needed."),
+    ("Hello\u200b there", {}, "Hello\u200b there"),
+])
+async def test_opted_in_human_turn_only_suppresses_successful_non_content(
+    monkeypatch, tmp_path, text, status, expected,
+):
     runner = _runner(monkeypatch, tmp_path)
     runner.config.allow_human_silence_markers = True
     runner._run_agent = AsyncMock(return_value={
-        "final_response": "[SILENT]",
+        "final_response": text,
         "messages": [
             {"role": "user", "content": "side chatter"},
-            {"role": "assistant", "content": "[SILENT]"},
+            {"role": "assistant", "content": text},
         ],
-        "tools": [],
-        "history_offset": 0,
-        "last_prompt_tokens": 0,
-        "api_calls": 1,
-        "failed": False,
+        "tools": [], "history_offset": 0, "last_prompt_tokens": 0,
+        "api_calls": 1, "failed": False, **status,
     })
+    response = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1,
+    )
+    if expected:
+        assert expected in response
+    else:
+        assert response == ""
+        appended = [call.args[1] for call in runner.session_store.append_to_transcript.call_args_list]
+        assert {"role": "assistant", "content": text}.items() <= appended[-1].items()
+        assert [msg["role"] for msg in appended if msg.get("role") in {"user", "assistant"}] == ["user", "assistant"]
 
-    response = asyncio.run(runner._handle_message_with_agent(
-        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
-    ))
 
-    assert response == ""
+@pytest.mark.asyncio
+@pytest.mark.parametrize("default_enabled,profile_enabled", [(False, True), (True, False), (True, None)])
+async def test_silence_opt_in_belongs_to_the_routed_profile(
+    monkeypatch, tmp_path, default_enabled, profile_enabled,
+):
+    from gateway.config import load_gateway_config
+    from hermes_cli.config import set_config_value
+
+    profile_home = tmp_path / "secondary"
+    profile_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    if profile_enabled is not None:
+        set_config_value("gateway.allow_human_silence_markers", str(profile_enabled).lower())
+    assert load_gateway_config().allow_human_silence_markers is bool(profile_enabled)
+
+    runner = _runner(monkeypatch, tmp_path)
+    runner.config.allow_human_silence_markers = default_enabled
+    runner.config.multiplex_profiles = True
+    runner._resolve_profile_home_for_source = lambda source: profile_home
+    runner._deliver_queued_first_response = AsyncMock()
+    source = _source()
+    source.profile = "secondary"
+    result = {"final_response": "[SILENT]", "failed": False, "api_calls": 1}
+    _, silent, _ = await runner._hmwa_shape_agent_response(
+        result, source, [], SimpleNamespace(session_id="s"), None,
+        None, 1, "s", "telegram", 0,
+    )
+    assert silent is bool(profile_enabled)
+
+    turn_ctx = SimpleNamespace(
+        session_key="secondary-key", stream_consumer_holder=[None],
+        persist_user_display_kind=None, source=source, _status_thread_metadata=None,
+        event_message_id=None, inbound_message_id="msg-42", run_generation=1,
+    )
+    await runner._run_agent_deliver_first_response(turn_ctx, None, result, result, None)
+    assert runner._deliver_queued_first_response.await_count == (0 if profile_enabled else 1)
+
+
+@pytest.mark.asyncio
+async def test_silent_streamed_turn_does_not_send_a_standalone_footer(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    adapter = MagicMock()
+    adapter.send = AsyncMock()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    response = await runner._hmwa_deliver_turn_response(
+        _event(), _source(), SimpleNamespace(session_id="s"), "key", 1,
+        {"already_sent": True, "failed": False}, [], "[SILENT]", "Tokens: 100", True,
+    )
+    adapter.send.assert_not_awaited()
+    assert not response
 
 
 @pytest.mark.asyncio
@@ -142,33 +211,28 @@ async def test_human_turn_gets_a_visible_fallback_for_a_silence_marker(monkeypat
     assert "Try again or rephrase" in response
 
 
-def test_non_opted_in_invisible_output_is_normalized(monkeypatch, tmp_path):
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed,expected", [
+    (False, "no response was generated"), (True, "Something went wrong"),
+])
+async def test_non_opted_in_invisible_output_is_normalized(monkeypatch, tmp_path, failed, expected):
     invisible = "\u200b\ufeff"
-    for failed, expected in (
-        (False, "no response was generated"),
-        (True, "Something went wrong"),
-    ):
-        runner = _runner(monkeypatch, tmp_path)
-        runner._run_agent = AsyncMock(return_value={
-            "final_response": invisible,
-            "messages": [
-                {"role": "user", "content": "side chatter"},
-                {"role": "assistant", "content": invisible},
-            ],
-            "tools": [],
-            "history_offset": 0,
-            "last_prompt_tokens": 0,
-            "api_calls": 1,
-            "failed": failed,
-            "error": "provider failed" if failed else None,
-        })
-
-        response = asyncio.run(runner._handle_message_with_agent(
-            _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
-        ))
-
-        assert expected in response
-        assert invisible not in response
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": invisible,
+        "messages": [
+            {"role": "user", "content": "side chatter"},
+            {"role": "assistant", "content": invisible},
+        ],
+        "tools": [], "history_offset": 0, "last_prompt_tokens": 0,
+        "api_calls": 1, "failed": failed,
+        "error": "provider failed" if failed else None,
+    })
+    response = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1,
+    )
+    assert expected in response
+    assert invisible not in response
 
 
 @pytest.mark.asyncio
@@ -206,8 +270,10 @@ async def test_internal_silence_token_suppresses_delivery_but_preserves_transcri
         ("\u200b\ufeff", True, "Something went wrong"),
     ],
 )
-async def test_queued_human_turn_gets_visible_fallback(first_response, failed, expected):
+@pytest.mark.parametrize("allow_silence", [False, True])
+async def test_queued_human_turn_only_suppresses_successful_non_content(first_response, failed, expected, allow_silence):
     runner = gateway_run.GatewayRunner(GatewayConfig())
+    runner.config.allow_human_silence_markers = allow_silence
     runner._deliver_queued_first_response = AsyncMock()
     turn_ctx = SimpleNamespace(
         session_key="agent:main:telegram:group:-1001:12345",
@@ -231,55 +297,11 @@ async def test_queued_human_turn_gets_visible_fallback(first_response, failed, e
     )
 
     queued_call = runner._deliver_queued_first_response.await_args
-    assert queued_call is not None
-    assert expected in queued_call.args[0]
-
-
-def test_opted_in_human_turn_suppresses_invisible_only_output(monkeypatch, tmp_path):
-    runner = _runner(monkeypatch, tmp_path)
-    runner.config.allow_human_silence_markers = True
-    invisible = "\u200b\ufeff"
-    runner._run_agent = AsyncMock(return_value={
-        "final_response": invisible,
-        "messages": [
-            {"role": "user", "content": "side chatter"},
-            {"role": "assistant", "content": invisible},
-        ],
-        "tools": [],
-        "history_offset": 0,
-        "last_prompt_tokens": 0,
-        "api_calls": 1,
-        "failed": False,
-    })
-
-    response = asyncio.run(runner._handle_message_with_agent(
-        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
-    ))
-
-    assert response == ""
-
-
-@pytest.mark.parametrize("first_response", ["NO_REPLY", "\u200b\ufeff"])
-def test_opted_in_queued_human_turn_suppresses_non_content(first_response):
-    runner = gateway_run.GatewayRunner(GatewayConfig(allow_human_silence_markers=True))
-    runner._deliver_queued_first_response = AsyncMock()
-    turn_ctx = SimpleNamespace(
-        session_key="agent:main:telegram:group:-1001:12345",
-        stream_consumer_holder=[None],
-        persist_user_display_kind=None,
-        source=_source(),
-        _status_thread_metadata=None,
-        event_message_id=None,
-        inbound_message_id="msg-42",
-        run_generation=1,
-    )
-    result = {"final_response": first_response, "failed": False}
-
-    asyncio.run(runner._run_agent_deliver_first_response(
-        turn_ctx, None, result, result, None,  # type: ignore[arg-type]
-    ))
-
-    runner._deliver_queued_first_response.assert_not_awaited()
+    if allow_silence and not failed:
+        assert queued_call is None
+    else:
+        assert queued_call is not None
+        assert expected in queued_call.args[0]
 
 
 @pytest.mark.asyncio

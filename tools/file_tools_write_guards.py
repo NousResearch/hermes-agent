@@ -269,19 +269,41 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
     exempt_home_keys = tuple(
         os.path.normcase(os.path.abspath(home)) for home in _hermes_exempt_homes()
     )
+    try:
+        from hermes_constants import get_hermes_home, named_profile_home
+
+        lexical_home = os.path.abspath(os.path.normpath(str(get_hermes_home())))
+        if real_home_key and os.path.normcase(os.path.realpath(lexical_home)) != real_home_key:
+            lexical_home = real_home
+        lexical_home_key = os.path.normcase(lexical_home)
+        lexical_profile_home = named_profile_home(lexical_home)
+        lexical_exempt_home_keys = (lexical_home_key,)
+        if lexical_profile_home is not None:
+            lexical_root_key = os.path.normcase(os.path.abspath(
+                str(lexical_profile_home.parent.parent)
+            ))
+            if lexical_root_key != lexical_home_key:
+                lexical_exempt_home_keys += (lexical_root_key,)
+    except (OSError, RuntimeError, ValueError):
+        lexical_home_key = real_home_key
+        lexical_exempt_home_keys = exempt_home_keys
 
     def _within(candidate_key: str, home_key: str) -> bool:
         return candidate_key == home_key or candidate_key.startswith(home_key + os.sep)
 
-    for candidate in (normalized, resolved):
+    candidate_namespaces = (
+        (normalized, lexical_home_key, lexical_exempt_home_keys),
+        (resolved, real_home_key, exempt_home_keys),
+    )
+    for candidate, active_home_key, candidate_exempt_home_keys in candidate_namespaces:
         candidate_key = os.path.normcase(os.path.abspath(candidate))
         candidate_in_active_home = bool(
-            real_home_key and _within(candidate_key, real_home_key)
+            active_home_key and _within(candidate_key, active_home_key)
         )
         candidate_in_parent_root = any(
             _within(candidate_key, exempt_home_key)
             and not candidate_in_active_home
-            for exempt_home_key in exempt_home_keys
+            for exempt_home_key in candidate_exempt_home_keys
         )
         if candidate_in_parent_root:
             continue

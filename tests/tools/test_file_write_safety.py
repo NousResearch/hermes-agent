@@ -969,6 +969,49 @@ class TestProfileHomeExemptsHermesRoot:
         assert target.read_text(encoding="utf-8") == "original"
         assert len(approvals["calls"]) == 1
 
+    def test_symlinked_default_home_keeps_ordinary_direct_file_ungated(
+        self, tmp_path, monkeypatch, approvals
+    ):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        real_root = tmp_path / "real-home"
+        real_root.mkdir()
+        lexical_root = tmp_path / ".hermes"
+        lexical_root.symlink_to(real_root, target_is_directory=True)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        token = set_hermes_home_override(str(lexical_root))
+        try:
+            res = self._write(lexical_root / "scratch.txt", "ok")
+        finally:
+            reset_hermes_home_override(token)
+
+        assert not res.get("error"), res
+        assert (real_root / "scratch.txt").read_text(encoding="utf-8") == "ok"
+        assert approvals["calls"] == []
+
+    def test_symlinked_named_profile_keeps_parent_root_store_ungated(
+        self, tmp_path, monkeypatch, approvals
+    ):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        real_root = tmp_path / "real-home"
+        real_profile = real_root / "profiles" / "worker"
+        real_profile.mkdir(parents=True)
+        (real_root / "config.yaml").write_text("model: x\n", encoding="utf-8")
+        lexical_root = tmp_path / ".hermes"
+        lexical_root.symlink_to(real_root, target_is_directory=True)
+        lexical_profile = lexical_root / "profiles" / "worker"
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        token = set_hermes_home_override(str(lexical_profile))
+        try:
+            res = self._write(lexical_root / "AGENTS.md", "root notes")
+        finally:
+            reset_hermes_home_override(token)
+
+        assert not res.get("error"), res
+        assert (real_root / "AGENTS.md").read_text(encoding="utf-8") == "root notes"
+        assert approvals["calls"] == []
+
     def test_only_a_real_hermes_root_is_exempt(self, tmp_path, monkeypatch, approvals):
         """Negatives hold with a named profile active: a checkout's ``.hermes/config.yaml`` and
         protected basenames stay gated (fail-closed, unwritten), and a coincidental

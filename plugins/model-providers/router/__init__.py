@@ -51,6 +51,10 @@ class _CacheState:
 # otherwise profile B's clamp would be built from profile A's key (and A's warm/disk flags).
 _state_by_home: dict[str, _CacheState] = {}
 
+# A stale verdict beats no verdict: a past-TTL mirror is still served while a
+# background refresh runs.
+_DISK_TTL_SECONDS = 24 * 60 * 60
+
 
 def _state() -> Any:
     """Holder of ``_efforts_cache``/``_warm_started``/``_disk_checked``: this module when unscoped

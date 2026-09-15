@@ -68,7 +68,11 @@ async def test_mixed_failed_capture_keeps_lease_until_safe_collection(tmp_path, 
         assert db._conn.execute('SELECT count(*) FROM session_admissions').fetchone()[0] == 0
         assert db._conn.execute('SELECT count(*) FROM input_custody_refs').fetchone()[0] == 0
         db._execute_write(lambda conn: conn.execute('UPDATE input_custody_preparations SET expires_at=0'))
-        # Reopen initialization is idempotent, and the committed capture intent survives errors.
+        # A new connection reads the committed intent after the failed publisher is gone.
+        from hermes_state import SessionDB
+        db.close()
+        db = SessionDB(db_path=tmp_path / 'state.db')
+        owner.db = db
         initialize_working_copies(db, epoch=owner.epoch)
         collect_working_copies(db, epoch=owner.epoch)
         for _ in range(4):

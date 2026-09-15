@@ -168,6 +168,7 @@ class TestEnvAssignments:
             "SSH_AUTH_SOCK=$HOME/.ssh/agent.sock",
             "SSH_AUTH_SOCK=$XDG_RUNTIME_DIR/ssh-agent.$USER.sock",
             "SSH_AUTH_SOCK=/run/user/$UID/keyring/ssh",
+            "export SSH_AUTH_SOCK=$(gpgconf --list-dirs agent-ssh-socket)",
             "DOCKER_AUTH_CONFIG=/home/u/.docker",
             "MY_KEY_PATH=~/.ssh/id_rsa",
             "SECRET_DIR=/etc",

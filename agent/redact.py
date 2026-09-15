@@ -319,8 +319,10 @@ _PASSWORD_KEY_RE = re.compile(r"passwd|password|pass|pw", re.IGNORECASE)
 # Further ``$VAR`` interpolations may appear anywhere in the path (``/run/user/$UID/ssh``,
 # ``$XDG_RUNTIME_DIR/agent.$USER.sock``, ``$A:$B`` lists); crypt digests never parse as one
 # because their ``$`` fields start with a digit or carry ``=``/``,``.
+# A leading ``$(`` is a command substitution (``SSH_AUTH_SOCK=$(gpgconf --list-dirs
+# agent-ssh-socket)``): the value token stops at whitespace, so only ``$(gpgconf`` is seen.
 _SHELL_VAR_REF = r"\$(?:\{[A-Za-z_]\w*[^}]*\}|[A-Za-z_]\w*)"
-_PATH_OR_VAR_VALUE_RE = re.compile(rf"^(?:{_SHELL_VAR_REF}|~|/)(?:[\w./:-]|{_SHELL_VAR_REF})*$")
+_PATH_OR_VAR_VALUE_RE = re.compile(rf"^(?:{_SHELL_VAR_REF}|\$\(|~|/)(?:[\w./:-]|{_SHELL_VAR_REF})*$")
 
 
 def _is_word_start(s: str, i: int) -> bool:

@@ -661,6 +661,12 @@ class TestPayloadBuilder:
         }
         assert isinstance(p["duration"], int)
 
+        # i2v: the fast i2v endpoint takes the same even enum (19 snaps to 18 — a tie picks the lower entry, like veo 7→6),
+        # no seed key.
+        p = _build_payload(meta, prompt="animate", image_url="https://example.com/f.png", duration=19, aspect_ratio="9:16",
+                           resolution="720p", negative_prompt=None, audio=None, seed=7)
+        assert p == {"prompt": "animate", "image_url": "https://example.com/f.png", "aspect_ratio": "9:16", "resolution": "720p", "duration": 18}
+
     def test_kling_o3_payload(self):
         """Kling O3: string duration, i2v drops aspect_ratio, no seed."""
         from plugins.video_gen.fal import FAL_FAMILIES, _build_payload

@@ -43,7 +43,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
         "openrouter/pareto-code", "thinkingmachines/inkling:free", "thinkingmachines/inkling-small:free",
         "minimax/minimax-m3:free", "z-ai/glm-5.2:free", "poolside/laguna-s-2.1:free", "poolside/laguna-xs-2.1:free",
         "nvidia/nemotron-3-super-120b-a12b:free", "nvidia/nemotron-3-ultra-550b-a55b:free",
-        "nvidia/nemotron-3.5-lightning:free",
+        "inclusionai/ling-3.0-flash:free", "nvidia/nemotron-3.5-lightning:free",
     )
 ]
 

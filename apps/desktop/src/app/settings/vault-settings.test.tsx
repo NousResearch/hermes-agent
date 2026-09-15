@@ -9,12 +9,16 @@ const { requestGateway } = vi.hoisted(() => ({
   requestGateway: vi.fn()
 }))
 
-// The panel routes every RPC through the owner profile's socket (never the ambient gateway);
-// the mock receives (method, params) after the profile argument.
+// The panel routes every RPC through the owner connection/profile socket (never the ambient gateway);
+// this legacy fixture ignores owner identity and keeps its method/params assertions focused.
 vi.mock('@/store/gateway', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
-  requestGatewayForProfile: (_profile: string, method: string, params?: Record<string, unknown>) =>
-    requestGateway(method, params ?? {})
+  requestGatewayForAgent: (
+    _connectionId: null | string,
+    _profile: string,
+    method: string,
+    params?: Record<string, unknown>
+  ) => requestGateway(method, params ?? {})
 }))
 
 import { queryClient } from '@/lib/query-client'
@@ -60,7 +64,7 @@ describe('VaultSettings', () => {
     renderVault()
 
     await waitFor(() => expect(screen.getByText('Nothing saved yet')).toBeTruthy())
-    expect(requestGateway).toHaveBeenCalledWith('vault.list', {})
+    expect(requestGateway).toHaveBeenCalledWith('vault.list', { profile: 'default' })
   })
 
   it('lists items with label, kind badge, identifier, and origin — never passwords', async () => {
@@ -115,6 +119,7 @@ describe('VaultSettings', () => {
 
     await waitFor(() =>
       expect(requestGateway).toHaveBeenCalledWith('vault.add', {
+        profile: 'default',
         kind: 'login',
         label: 'GitHub work',
         origin: 'https://github.com',
@@ -138,7 +143,9 @@ describe('VaultSettings', () => {
     await waitFor(() => expect(screen.getByText('Delete this item?')).toBeTruthy())
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
 
-    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('vault.remove', { id: 'vault_abc123' }))
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith('vault.remove', { profile: 'default', id: 'vault_abc123' })
+    )
   })
 
   it('unlocks a password manager from Settings; the master password leaves only via vault.unlock', async () => {
@@ -195,7 +202,11 @@ describe('VaultSettings', () => {
     )
 
     await waitFor(() =>
-      expect(requestGateway).toHaveBeenCalledWith('vault.unlock', { name: 'onepassword', password: 'correct horse' })
+      expect(requestGateway).toHaveBeenCalledWith('vault.unlock', {
+        profile: 'default',
+        name: 'onepassword',
+        password: 'correct horse'
+      })
     )
     await waitFor(() => expect(screen.getByText('Unlocked')).toBeTruthy())
     expect(screen.queryByPlaceholderText('Master password')).toBeNull()

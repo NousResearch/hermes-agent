@@ -102,6 +102,37 @@ describe('waitForBackendRelease (#74805 first-attempt race)', () => {
     expect(result.lingeringPids).toEqual([4021])
   })
 
+  it('collects a straggler before declaring an initially clear gate safe', async () => {
+    const clock = fakeClock()
+    let killedAt: number | null = null
+    let served = false
+
+    const deps = makeDeps({
+      now: clock.now,
+      sleep: clock.sleep,
+      collectStragglerPids: () => {
+        if (served) {
+          return []
+        }
+
+        served = true
+
+        return [7777]
+      },
+      killProcessTree: pid => {
+        killedAt = clock.now()
+        deps.kills.push(pid)
+      },
+      isPidAlive: pid => pid === 7777 && killedAt !== null && clock.now() < killedAt + RELEASE_GATE_POLL_MS
+    })
+
+    const result = await waitForBackendRelease([], deps, 'test')
+
+    expect(deps.kills).toEqual([7777])
+    expect(result.unlocked).toBe(true)
+    expect(clock.now()).toBeGreaterThanOrEqual(RELEASE_GATE_POLL_MS)
+  })
+
   it('kills and then waits out stragglers that respawn mid-teardown', async () => {
     // A pool entry registered mid-teardown appears on pass 2; the gate must
     // signal it AND add it to the exit-wait set.
@@ -144,6 +175,43 @@ describe('waitForBackendRelease (#74805 first-attempt race)', () => {
     expect(result.lingeringPids).toEqual([])
     // The gate must have dwelled until the straggler actually exited.
     expect(clock.now()).toBeGreaterThanOrEqual((stragglerKilledAt ?? 0) + 2 * RELEASE_GATE_POLL_MS)
+  })
+
+  it('collects a later-pass straggler before a previously busy gate can pass', async () => {
+    const clock = fakeClock()
+    let served = false
+    let killedAt: number | null = null
+
+    const deps = makeDeps({
+      now: clock.now,
+      sleep: clock.sleep,
+      collectStragglerPids: () => {
+        if (served || clock.now() < RELEASE_GATE_POLL_MS) {
+          return []
+        }
+
+        served = true
+
+        return [7777]
+      },
+      killProcessTree: pid => {
+        killedAt = clock.now()
+        deps.kills.push(pid)
+      },
+      isPidAlive: pid => {
+        if (pid === 4021) {
+          return clock.now() < RELEASE_GATE_POLL_MS
+        }
+
+        return pid === 7777 && killedAt !== null && clock.now() < killedAt + 2 * RELEASE_GATE_POLL_MS
+      }
+    })
+
+    const result = await waitForBackendRelease([4021], deps, 'later-pass')
+
+    expect(deps.kills).toEqual([7777])
+    expect(clock.now()).toBe(3 * RELEASE_GATE_POLL_MS)
+    expect(result).toEqual({ unlocked: true, lingeringPids: [] })
   })
 
   it('ignores invalid PIDs in the seed and straggler sets', async () => {

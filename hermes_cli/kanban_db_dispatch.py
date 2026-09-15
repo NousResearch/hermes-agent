@@ -40,6 +40,12 @@ DEFAULT_LOG_BACKUP_COUNT = 1
 # and call kanban_block/kanban_complete before max_runtime_seconds kills it.
 KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
 
+# A healthy worker is still alive for a while after kanban_complete /
+# kanban_request_review returns (final assistant turn, session persistence), so
+# a run's retained worker is only reaped once ended_at is at least this old
+# (two default dispatch ticks).
+TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
+
 # ---------------------------------------------------------------------------
 # Respawn guard constants
 # ---------------------------------------------------------------------------
@@ -368,39 +374,54 @@ def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[s
     fds open and no ``running``-only sweep can see it once ``tasks.worker_pid`` is
     cleared. Keys on the closed ``task_runs`` row's retained pid + spawn
     fingerprint: a legacy row (NULL fingerprint) or a recycled PID is never
-    signalled; a pid that is simply gone just has its evidence cleared. Returns
-    the task ids whose worker was terminated."""
+    signalled; a pid that is simply gone just has its evidence cleared. A run
+    that ended less than ``TERMINAL_WORKER_REAP_GRACE_SECONDS`` ago is left
+    alone so a worker still finalising after its own transition is not killed.
+    One row's failure (signal, /proc probe) is logged and skips only that row.
+    Returns the task ids whose worker was terminated."""
     rows = conn.execute(
         "SELECT id, task_id, worker_pid, worker_started_at, claim_lock FROM task_runs "
-        "WHERE ended_at IS NOT NULL AND worker_pid IS NOT NULL AND worker_started_at IS NOT NULL"
+        "WHERE ended_at IS NOT NULL AND ended_at <= ? "
+        "AND worker_pid IS NOT NULL AND worker_started_at IS NOT NULL",
+        (int(time.time()) - TERMINAL_WORKER_REAP_GRACE_SECONDS,),
     ).fetchall()
     host_prefix = _kb._host_prefix()
     reaped: list[str] = []
     for row in rows:
-        pid, fingerprint = int(row["worker_pid"]), int(row["worker_started_at"])
-        if pid == os.getpid() or not str(row["claim_lock"] or "").startswith(host_prefix):
-            continue
-        alive = _worker_alive(pid, fingerprint)
-        termination = None
-        if alive:
-            termination = _terminate_reclaimed_worker(
-                pid, row["claim_lock"], signal_fn=signal_fn, started_at=fingerprint)
-            if not termination["terminated"]:
-                continue  # still alive: try again next tick
-        with _kb.write_txn(conn):
-            conn.execute(
-                "UPDATE task_runs SET worker_pid = NULL, worker_started_at = NULL "
-                "WHERE id = ? AND worker_pid = ? AND worker_started_at = ?",
-                (row["id"], pid, fingerprint),
+        try:
+            _reap_terminal_worker_row(conn, row, host_prefix, signal_fn, reaped)
+        except Exception:
+            _kb._log.debug(
+                "kanban dispatch: terminal worker reap failed for run %s (task %s)",
+                row["id"], row["task_id"], exc_info=True,
             )
-            if alive:
-                _kb._append_event(
-                    conn, row["task_id"], "terminal_worker_reaped",
-                    {"pid": pid, "worker_started_at": fingerprint, **termination}, run_id=row["id"],
-                )
-        if alive:
-            reaped.append(row["task_id"])
     return reaped
+
+
+def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: list[str]) -> None:
+    pid, fingerprint = int(row["worker_pid"]), int(row["worker_started_at"])
+    if pid == os.getpid() or not str(row["claim_lock"] or "").startswith(host_prefix):
+        return
+    alive = _worker_alive(pid, fingerprint)
+    termination = None
+    if alive:
+        termination = _terminate_reclaimed_worker(
+            pid, row["claim_lock"], signal_fn=signal_fn, started_at=fingerprint)
+        if not termination["terminated"]:
+            return  # still alive: try again next tick
+    with _kb.write_txn(conn):
+        conn.execute(
+            "UPDATE task_runs SET worker_pid = NULL, worker_started_at = NULL "
+            "WHERE id = ? AND worker_pid = ? AND worker_started_at = ?",
+            (row["id"], pid, fingerprint),
+        )
+        if alive:
+            _kb._append_event(
+                conn, row["task_id"], "terminal_worker_reaped",
+                {"pid": pid, "worker_started_at": fingerprint, **termination}, run_id=row["id"],
+            )
+    if alive:
+        reaped.append(row["task_id"])
 
 
 def _worker_survived_termination(termination: dict) -> bool:

@@ -11,6 +11,7 @@ the next tick — never a recycled PID, never a legacy row without a fingerprint
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -45,12 +46,14 @@ def _sleeper():
     return proc
 
 
-def _completed_card_with_worker(conn, proc) -> tuple[str, int]:
+def _completed_card_with_worker(conn, proc, *, ended_ago: int = 600) -> tuple[str, int]:
     tid = kb.create_task(conn, title="finished", assignee="coder")
     kb.claim_task(conn, tid, claimer=kb._claimer_id())
     run_id = kb._current_run_id(conn, tid)
     kbd._set_worker_pid(conn, tid, proc.pid)
     assert kb.complete_task(conn, tid, result="done", expected_run_id=run_id) is True
+    # Default: the run closed long enough ago that the reaper's grace window has passed.
+    conn.execute("UPDATE task_runs SET ended_at = ended_at - ? WHERE id=?", (ended_ago, run_id))
     return tid, run_id
 
 
@@ -94,5 +97,53 @@ def test_recycled_pid_and_legacy_row_are_never_signalled(conn):
         assert conn.execute("SELECT worker_pid FROM task_runs WHERE id=?", (legacy_run,)).fetchone()["worker_pid"] == legacy.pid
     finally:
         for p in (stranger, legacy):
+            p.kill()
+            p.wait()
+
+
+def test_fresh_terminal_run_is_left_alone_until_grace_passes(conn):
+    """A worker is still alive for a moment after its own kanban_complete returns
+    (final turn, session persistence): a just-closed run is not signalled."""
+    proc = _sleeper()
+    signals = []
+
+    def signal_fn(pid, sig):
+        signals.append((pid, sig))
+        os.kill(pid, sig)
+
+    try:
+        tid, run_id = _completed_card_with_worker(conn, proc, ended_ago=0)
+
+        assert kbd.reap_terminal_workers(conn, signal_fn=signal_fn) == []
+
+        assert signals == [] and proc.poll() is None
+        run = conn.execute("SELECT worker_pid FROM task_runs WHERE id=?", (run_id,)).fetchone()
+        assert run["worker_pid"] == proc.pid  # evidence kept for a later tick
+        conn.execute(
+            "UPDATE task_runs SET ended_at = ended_at - ? WHERE id=?",
+            (kbd.TERMINAL_WORKER_REAP_GRACE_SECONDS, run_id),
+        )
+        assert kbd.reap_terminal_workers(conn, signal_fn=signal_fn) == [tid]
+        assert [pid for pid, _ in signals] == [proc.pid]
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_one_failing_row_does_not_abort_the_sweep(conn):
+    """A signal failure on one run is logged and skipped; the other rows are still reaped."""
+    broken, healthy = _sleeper(), _sleeper()
+    try:
+        _completed_card_with_worker(conn, broken)
+        tid, _ = _completed_card_with_worker(conn, healthy)
+
+        def signal_fn(pid, sig):
+            if pid == broken.pid:
+                raise RuntimeError("boom")
+            healthy.kill()
+
+        assert kbd.reap_terminal_workers(conn, signal_fn=signal_fn) == [tid]
+    finally:
+        for p in (broken, healthy):
             p.kill()
             p.wait()

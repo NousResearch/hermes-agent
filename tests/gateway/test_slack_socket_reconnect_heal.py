@@ -14,6 +14,7 @@ from outliving a teardown.
 
 import asyncio
 import sys
+from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -295,3 +296,128 @@ class TestSocketModeRestart:
         await adapter._socket_watchdog_loop()
 
         assert reasons == ["transport disconnected"]
+
+    @pytest.mark.asyncio
+    async def test_restart_completes_when_close_async_hangs(self, adapter):
+        """#106849: hung close_async must not wedge the reconnect lock forever."""
+        started: list[int] = []
+        hang = asyncio.Event()  # never set
+        handler = MagicMock()
+        handler.client = MagicMock()
+
+        async def _hang_close():
+            await hang.wait()
+
+        handler.close_async = _hang_close
+        adapter._handler = handler
+        adapter._socket_mode_task = None
+        adapter._running = True
+        adapter._app = MagicMock()
+        adapter._app_token = "xapp"
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch.object(
+                    adapter,
+                    "_start_socket_mode_handler",
+                    side_effect=lambda: started.append(1),
+                )
+            )
+            if hasattr(_slack_mod, "_SOCKET_HANDLER_CLOSE_TIMEOUT_S"):
+                stack.enter_context(
+                    patch.object(_slack_mod, "_SOCKET_HANDLER_CLOSE_TIMEOUT_S", 0.05)
+                )
+            await asyncio.wait_for(
+                adapter._restart_socket_mode("transport disconnected"), timeout=1.0
+            )
+        assert started == [1]
+
+    @pytest.mark.asyncio
+    async def test_watchdog_restarts_when_aiohttp_session_closed(self, adapter):
+        """#106849: closed ClientSession must trigger restart even if transport probe is opaque."""
+        reasons: list[str] = []
+
+        async def _fake_restart(reason):
+            reasons.append(reason)
+            adapter._running = False
+
+        live = MagicMock()
+        live.done.return_value = False
+        adapter._socket_mode_task = live
+        session = MagicMock()
+        session.closed = True
+        client = MagicMock()
+        client.aiohttp_client_session = session
+        adapter._handler = MagicMock()
+        adapter._handler.client = client
+        adapter._restart_socket_mode = _fake_restart
+        adapter._socket_transport_connected = AsyncMock(return_value=None)  # opaque
+        adapter._socket_ping_pong_stale = MagicMock(return_value=False)
+        adapter._socket_watchdog_interval_s = 0.01
+        await asyncio.wait_for(adapter._socket_watchdog_loop(), timeout=0.5)
+        assert reasons == ["session closed"]
+
+    @pytest.mark.asyncio
+    async def test_watchdog_does_not_restart_when_session_attr_missing(self, adapter):
+        """Fail-open: missing aiohttp_client_session is not a session-closed signal."""
+        reasons: list[str] = []
+
+        async def _fake_restart(reason):
+            reasons.append(reason)
+            adapter._running = False
+
+        live = MagicMock()
+        live.done.return_value = False
+        adapter._socket_mode_task = live
+        client = MagicMock(spec=["is_connected"])
+        adapter._handler = MagicMock()
+        adapter._handler.client = client
+        adapter._restart_socket_mode = _fake_restart
+        adapter._socket_transport_connected = AsyncMock(return_value=None)
+        adapter._socket_ping_pong_stale = MagicMock(return_value=False)
+        adapter._socket_watchdog_interval_s = 0.01
+
+        async def _stop_soon():
+            await asyncio.sleep(0.05)
+            adapter._running = False
+
+        stopper = asyncio.create_task(_stop_soon())
+        try:
+            await asyncio.wait_for(adapter._socket_watchdog_loop(), timeout=0.5)
+        finally:
+            stopper.cancel()
+        assert reasons == []
+
+    @pytest.mark.asyncio
+    async def test_watchdog_does_not_restart_when_session_still_open(self, adapter):
+        """Fail-open: session.closed is False must not trigger the session-closed probe."""
+        reasons: list[str] = []
+
+        async def _fake_restart(reason):
+            reasons.append(reason)
+            adapter._running = False
+
+        live = MagicMock()
+        live.done.return_value = False
+        adapter._socket_mode_task = live
+        session = MagicMock()
+        session.closed = False
+        client = MagicMock()
+        client.aiohttp_client_session = session
+        adapter._handler = MagicMock()
+        adapter._handler.client = client
+        adapter._restart_socket_mode = _fake_restart
+        adapter._socket_transport_connected = AsyncMock(return_value=None)
+        adapter._socket_ping_pong_stale = MagicMock(return_value=False)
+        adapter._socket_watchdog_interval_s = 0.01
+
+        async def _stop_soon():
+            await asyncio.sleep(0.05)
+            adapter._running = False
+
+        stopper = asyncio.create_task(_stop_soon())
+        try:
+            await asyncio.wait_for(adapter._socket_watchdog_loop(), timeout=0.5)
+        finally:
+            stopper.cancel()
+        assert reasons == []

@@ -598,7 +598,7 @@ def _speak_whole_file(text: str) -> None:
     # provider request limits and long-form chunking.
     try:
         from tools.tts_text_normalize import prepare_spoken_text
-        tts_text = prepare_spoken_text(text, max_chars=None)
+        tts_text = prepare_spoken_text(text, max_chars=None, preserve_paragraphs=True)
     except Exception:
         tts_text = text
         for pattern, repl in _LEGACY_TTS_STRIP:

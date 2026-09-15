@@ -733,3 +733,32 @@ Override these on your provider class for richer integration:
 - `get_setup_schema()` → return `{name, badge, tag, env_vars: [{key, prompt, url}]}` to power picker rows in `hermes tools` / `hermes setup` (the picker category for STT is not yet shipped — this metadata is available to plugins for forward compatibility).
 
 See `agent/transcription_provider.py` for the full ABC including docstrings.
+
+
+## Paragraph pauses for local speech
+
+Piper, KittenTTS and NeuTTS insert 600 ms of silence between paragraphs in full-response
+speech. Blank lines are retained by CLI and gateway cleanup until the TTS tool builds
+speech segments; a single newline remains an ordinary sentence break. The pause also
+survives when a paragraph starts a new provider-sized request.
+
+Configure the gap independently for each local provider:
+
+```yaml
+tts:
+  piper:
+    paragraph_pause_ms: 600
+  kittentts:
+    paragraph_pause_ms: 600
+  neutts:
+    paragraph_pause_ms: 600
+```
+
+`paragraph_pause_ms` must be an integer from 0 to 10000. Set it to `0` to keep the
+previous flattened-text behavior. Single-paragraph input retains the existing synthesis
+path. Remote and command providers still receive flattened text and are not affected.
+This setting does not add cross-call pauses to sentence-streaming playback.
+
+Pauses are inserted into PCM audio before output encoding, using the actual sample
+rate, sample width and channel count. NeuTTS loads its model and encodes the reference
+voice once per provider-sized request, not once per paragraph.

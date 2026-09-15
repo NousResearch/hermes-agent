@@ -340,6 +340,170 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert content.endswith("\r\n")
 
 
+def test_vbscript_engine_available_fail_open_and_dll_probe(monkeypatch, tmp_path):
+    """Probe is dll-is_file on win32; fail-open True on non-Windows / errors."""
+    assert gateway_windows._vbscript_engine_available() is True
+
+    monkeypatch.setattr(gateway_windows.sys, "platform", "win32")
+    monkeypatch.setenv("SystemRoot", str(tmp_path / "missing-root"))
+    monkeypatch.delenv("WINDIR", raising=False)
+    assert gateway_windows._vbscript_engine_available() is False
+
+    present_root = tmp_path / "present-root"
+    dll = present_root / "System32" / "vbscript.dll"
+    dll.parent.mkdir(parents=True)
+    dll.write_bytes(b"mz")
+    monkeypatch.setenv("SystemRoot", str(present_root))
+    assert gateway_windows._vbscript_engine_available() is True
+
+    def _boom(self):
+        raise OSError("stat failed")
+
+    monkeypatch.setattr(Path, "is_file", _boom)
+    assert gateway_windows._vbscript_engine_available() is True
+
+
+def test_install_scheduled_task_uses_js_when_no_vbscript_engine(monkeypatch, tmp_path):
+    """Win11 25H2+ without vbscript.dll must still use wscript, but a .js launcher.
+
+    Host-agnostic: same mocked-schtasks shape as the fail-open recreate test.
+    """
+    calls = []
+    script_path = tmp_path / "Hermes_Gateway_alice.cmd"
+    xml_seen = {}
+
+    monkeypatch.setattr(gateway_windows, "_vbscript_engine_available", lambda: False, raising=False)
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"DOMAIN\\alice")
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (r"C:\venv\Scripts\python.exe", Path(r"C:\venv"), []),
+    )
+
+    def fake_schtasks(args):
+        calls.append(tuple(args))
+        if args[0] == "/Delete":
+            return (0, "SUCCESS", "")
+        if args[0] == "/Create":
+            xml_path = Path(args[args.index("/XML") + 1])
+            xml_seen["text"] = xml_path.read_text(encoding="utf-16")
+            return (0, "SUCCESS", "")
+        raise AssertionError(f"unexpected schtasks args: {args}")
+
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+    ok, _detail = gateway_windows._install_scheduled_task("Hermes_Gateway_alice", script_path)
+
+    assert ok is True
+    xml = xml_seen["text"]
+    assert "<Command>wscript.exe</Command>" in xml
+    assert "//B //Nologo" in xml
+    assert "Hermes_Gateway_alice.js" in xml
+    assert "Hermes_Gateway_alice.vbs" not in xml
+    assert "cmd.exe" not in xml.lower()
+    assert "powershell.exe" not in xml.lower()
+    assert "<Command>pythonw.exe</Command>" not in xml
+    assert "<Command>python.exe</Command>" not in xml
+
+    js = gateway_windows._build_gateway_js_script(
+        r"C:\venv\Scripts\python.exe",
+        r"C:\Hermes",
+        r"C:\Hermes",
+        "--profile work",
+    )
+    assert "python.exe" in js
+    assert "pythonw.exe" not in js
+    assert "hermes_cli.main" in js
+    assert "gateway run" in js
+    assert "cmd.exe" not in js.lower()
+    assert "WScript.CreateObject(\"WScript.Shell\")" in js
+    assert "env.Item(" not in js
+    assert 'env("HERMES_HOME")' in js
+    assert 'env("PYTHONPATH")' in js
+    assert "sh.Run(" in js
+    assert ", 0, false" in js.lower()
+    assert js.endswith("\r\n")
+
+
+def test_gateway_js_script_is_console_less(monkeypatch):
+    """The .js launcher must avoid cmd.exe and Run console python hidden."""
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (r"C:\venv\Scripts\python.exe", Path(r"C:\venv"), []),
+    )
+    content = gateway_windows._build_gateway_js_script(
+        r"C:\venv\Scripts\python.exe",
+        r"C:\Hermes",
+        r"C:\Hermes",
+        "--profile work",
+    )
+    assert "cmd.exe" not in content.lower()
+    assert 'WScript.CreateObject("WScript.Shell")' in content
+    assert "python.exe" in content
+    assert "pythonw.exe" not in content
+    assert "hermes_cli.main" in content
+    assert "gateway run" in content
+    assert "env.Item(" not in content
+    assert 'env("HERMES_HOME")' in content
+    assert 'env("PYTHONPATH")' in content
+    assert "sh.Run(" in content
+    assert ", 0, false" in content.lower()
+    for var in ("HERMES_HOME", "PYTHONIOENCODING", "HERMES_GATEWAY_DETACHED", "VIRTUAL_ENV", "PYTHONPATH"):
+        assert var in content
+    assert "--profile" in content and "work" in content
+    assert content.endswith("\r\n")
+
+
+def test_startup_launcher_uses_js_when_no_vbscript_engine(monkeypatch, tmp_path):
+    """Startup fallback must not drop a dead .vbs when the VBScript engine is gone."""
+    monkeypatch.setattr(gateway_windows, "_vbscript_engine_available", lambda: False, raising=False)
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_startup_dir", lambda: tmp_path)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
+
+    entry = gateway_windows.get_startup_entry_path()
+    assert entry.suffix == ".js"
+    assert entry.name.endswith("Hermes_Gateway_alice.js")
+
+    script_path = tmp_path / "Hermes_Gateway_alice.cmd"
+    content = gateway_windows._build_startup_launcher(script_path)
+    assert "wscript.exe" in content.lower()
+    assert "Hermes_Gateway_alice.js" in content
+    assert ".vbs" not in content
+    assert "Option Explicit" not in content
+    assert "cmd.exe" not in content.lower()
+    assert ", 0, false" in content.lower()
+    assert content.endswith("\r\n")
+
+
+def test_uninstall_startup_leftovers_include_js_and_vbs(monkeypatch, tmp_path, capsys):
+    """Switching engines must not leave a dead .vbs/.js login item or task launcher."""
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    startup = tmp_path / "Startup"
+    startup.mkdir()
+    monkeypatch.setattr(gateway_windows, "_startup_dir", lambda: startup)
+    script_dir = tmp_path / "gateway-service"
+    script_dir.mkdir()
+    cmd = script_dir / "Hermes_Gateway.cmd"
+    vbs = script_dir / "Hermes_Gateway.vbs"
+    js = script_dir / "Hermes_Gateway.js"
+    for path in (cmd, vbs, js):
+        path.write_text("x", encoding="utf-8")
+    (startup / "Hermes_Gateway.vbs").write_text("x", encoding="utf-8")
+    (startup / "Hermes_Gateway.js").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: cmd)
+
+    gateway_windows.uninstall()
+
+    assert not (startup / "Hermes_Gateway.vbs").exists()
+    assert not (startup / "Hermes_Gateway.js").exists()
+    assert not vbs.exists()
+    assert not js.exists()
+    assert not cmd.exists()
+
+
 
 
 

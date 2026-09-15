@@ -44,6 +44,30 @@ def test_allowlist_without_default_skips_default_card(kanban_home, all_assignees
     assert res.skipped_nonspawnable == [tid]
 
 
+def test_default_assignee_outside_allowlist_leaves_card_unassigned(
+    kanban_home, all_assignees_spawnable,
+):
+    """Invariant: a ``default_assignee`` this home may not claim must not be
+    persisted onto an unassigned shared-board card (no row write, no
+    ``assigned`` event) — another home owns that card."""
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  dispatch_profiles:\n    - sage\n  default_assignee: default\n",
+        encoding="utf-8",
+    )
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="unassigned card")
+        res = kbd.dispatch_once(
+            conn, dry_run=False, spawn_fn=lambda _t, _w: 4242,
+            default_assignee="default",
+        )
+        task = kb.get_task(conn, tid)
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+    assert res.spawned == []
+    assert res.auto_assigned_default == []
+    assert task.assignee is None
+    assert "assigned" not in kinds
+
+
 def test_unset_allowlist_keeps_default_claimable(kanban_home, all_assignees_spawnable):
     """No key = upstream behaviour: any existing profile, ``default`` included."""
     with kbc.connect() as conn:

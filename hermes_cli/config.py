@@ -3467,7 +3467,14 @@ def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:
 
 
 def set_config_value(key: str, value: str, force: bool = False):
-    """Set a configuration value at a dotted ``key``; ``value`` is auto-coerced to bool/int/float.
+    """Set a configuration value at a dotted ``key``; ``value`` is auto-coerced by
+    :func:`_coerce_config_set_value` to bool/None/int/float and, for a value whose first
+    non-space character is ``[`` or ``{``, to a list/mapping. A comma-joined ``a,b,c`` is
+    NOT a list literal: it is stored verbatim as a string, which isinstance-gated readers
+    silently ignore. Coercion is skipped entirely when the key's ``DEFAULT_CONFIG`` default
+    is a ``str`` -- the value is kept verbatim so enum members such as ``approvals.mode="off"``
+    never become booleans, which also means a ``[...]`` written to such a key is stored as a
+    string, not a list.
     ``force`` skips the unknown-key warning AND authorizes replacing a mapping section with a
     scalar. Without it, scalar writes over mappings are refused and bare ``model`` is redirected
     to ``model.default``."""

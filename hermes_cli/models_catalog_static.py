@@ -290,7 +290,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-3.1-flash-lite-preview", "google/gemini-3.1-flash-lite",
     ],
     "novita": [
-        "deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4-pro", "zai-org/glm-5.3",
+        "deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4-pro-0813", "zai-org/glm-5.3",
         "moonshotai/kimi-k3", "minimax/minimax-m3", "qwen/qwen3.8-flash",
     ],
     # Bare ids derived from the picker snapshot so both stay in sync.

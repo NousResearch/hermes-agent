@@ -11,7 +11,7 @@ novita = ProviderProfile(
     base_url="https://api.novita.ai/openai/v1", auth_type="api_key",
     default_aux_model="deepseek/deepseek-v4-flash",
     fallback_models=(
-        "deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4-pro", "zai-org/glm-5.3",
+        "deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4-pro-0813", "zai-org/glm-5.3",
         "moonshotai/kimi-k3", "minimax/minimax-m3", "qwen/qwen3.8-flash",
     ),
 )

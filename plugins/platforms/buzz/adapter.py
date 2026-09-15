@@ -1138,7 +1138,7 @@ class BuzzAdapter(BasePlatformAdapter):
                 backoff = min(backoff * 2, 30.0)
 
     async def _ws_read_loop(self, websocket, subscriptions: Dict[str, Optional[str]]) -> None:
-        """Read frames until the relay closes; an idle read raises ConnectionError to reconnect."""
+        """Read frames until the relay closes; a close or an idle read raises ConnectionError to reconnect."""
         frame_iter = websocket.__aiter__()
         while True:
             read_task = asyncio.ensure_future(frame_iter.__anext__())
@@ -1155,7 +1155,9 @@ class BuzzAdapter(BasePlatformAdapter):
                     )
                 raw = read_task.result()
             except StopAsyncIteration:
-                return
+                # A clean relay close is still a disconnect: raising sends it through the same
+                # backoff + "retrying" path instead of reconnecting in a hot loop.
+                raise ConnectionError("relay closed the WebSocket") from None
             finally:
                 if not read_task.done():
                     read_task.cancel()

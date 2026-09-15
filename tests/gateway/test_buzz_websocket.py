@@ -255,6 +255,46 @@ async def test_websocket_loop_reconnects_when_discovery_send_sees_closed_socket(
 
 
 @pytest.mark.asyncio
+async def test_websocket_loop_backs_off_and_publishes_retrying_on_clean_relay_close(monkeypatch):
+    """A relay that accepts, then cleanly closes after subscribe, is a disconnect like any other.
+
+    StopAsyncIteration used to return from the read loop without raising, so the
+    loop reconnected in a hot loop with no backoff and health stayed "connected".
+    """
+    adapter = _make_adapter()
+    states = []
+    monkeypatch.setattr(adapter, "_write_runtime_status_safe", lambda status, **kw: states.append(kw["platform_state"]))
+
+    async def clean_close():
+        raise StopAsyncIteration
+
+    sockets = []
+
+    def fake_connect(*args, **kwargs):
+        ws = _ScriptedWebSocket(clean_close)
+        sockets.append(ws)
+        return ws
+
+    import websockets as _ws_mod
+
+    monkeypatch.setattr(_ws_mod, "connect", fake_connect)
+
+    task = asyncio.create_task(adapter._websocket_loop())
+    try:
+        await asyncio.sleep(0.3)
+    finally:
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, 5.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+
+    assert len(sockets) == 1, f"clean close must back off before reconnecting, got {len(sockets)} connects in 0.3s"
+    assert sockets[0].exited, "the closed connection was not exited before backing off"
+    assert states == ["retrying"], f"a clean relay close must publish retrying, got {states}"
+
+
+@pytest.mark.asyncio
 async def test_websocket_loop_dispatches_frames_and_closes_cleanly(monkeypatch):
     """The watchdog refactor preserves the healthy path: frames dispatch to
     _handle_event and a server-side close (StopAsyncIteration) exits the

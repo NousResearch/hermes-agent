@@ -220,10 +220,20 @@ pub(crate) fn resolve_hermes_desktop_exe(install_root: &std::path::Path) -> Opti
             ("win-arm64-unpacked", "Hermes.exe"),
         ]
     } else if cfg!(target_os = "macos") {
-        &[
-            ("mac/Hermes.app/Contents/MacOS", "Hermes"),
-            ("mac-arm64/Hermes.app/Contents/MacOS", "Hermes"),
-        ]
+        // Native-architecture bundle first, then the architecture-neutral
+        // legacy `mac` layout. Never the opposite architecture: launching an
+        // arm64 bundle on x64 (or vice versa) fails at exec time.
+        if cfg!(target_arch = "x86_64") {
+            &[
+                ("mac-x64/Hermes.app/Contents/MacOS", "Hermes"),
+                ("mac/Hermes.app/Contents/MacOS", "Hermes"),
+            ]
+        } else {
+            &[
+                ("mac-arm64/Hermes.app/Contents/MacOS", "Hermes"),
+                ("mac/Hermes.app/Contents/MacOS", "Hermes"),
+            ]
+        }
     } else {
         &[("linux-unpacked", "hermes")]
     };
@@ -1022,8 +1032,9 @@ mod tests {
     fn make_release_tree(install_root: &Path) -> PathBuf {
         let release = install_root.join("apps").join("desktop").join("release");
         if cfg!(target_os = "macos") {
+            let mac_dir = if cfg!(target_arch = "x86_64") { "mac-x64" } else { "mac-arm64" };
             let macos_dir = release
-                .join("mac-arm64")
+                .join(mac_dir)
                 .join("Hermes.app")
                 .join("Contents")
                 .join("MacOS");

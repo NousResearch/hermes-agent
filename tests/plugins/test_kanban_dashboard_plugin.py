@@ -117,6 +117,25 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_create_task_persists_and_serializes_workflow_role(client):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "QA the export",
+            "assignee": "qa-reviewer",
+            "workflow_role": "review",
+        },
+    )
+    assert created.status_code == 200, created.text
+    task = created.json()["task"]
+    assert task["workflow_role"] == "review"
+    task_id = task["id"]
+
+    shown = client.get(f"/api/plugins/kanban/tasks/{task_id}")
+    assert shown.status_code == 200, shown.text
+    assert shown.json()["task"]["workflow_role"] == "review"
+
+
 def test_patch_board_sets_project_directory(client, tmp_path):
     """Board-level default_workdir must be editable after creation."""
     kb.create_board("late-config")

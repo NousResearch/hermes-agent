@@ -3,7 +3,7 @@ import fs, { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import {
   installGetWindowsNativeBinding,
@@ -12,6 +12,30 @@ import {
   stageNodePtyInto,
   classifyNativeBinary
 } from '../scripts/stage-native-deps.mjs'
+
+// Recursive fs.cpSync crashes in Node's native copy path when the *source*
+// path contains non-ASCII characters on Windows: Node 22 throws a catchable
+// EIO/errno 5 (#60447, #70779) and Node 24 fail-fasts with 0xC0000409 before
+// any handler runs. Simulate the catchable Node 22 form on every platform so
+// staging is proven to never depend on recursive cpSync. Single-file copies
+// are unaffected on real Windows and delegate to the real implementation.
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    cpSync: (src, dest, options) => {
+      if (options?.recursive) {
+        throw Object.assign(new Error(`EIO: Access is denied. '${src}'`), {
+          errno: 5,
+          code: 'EIO',
+          path: String(src),
+          syscall: 'cp'
+        })
+      }
+      return actual.cpSync(src, dest, options)
+    }
+  }
+})
 
 const { join } = path
 
@@ -356,6 +380,63 @@ test('validation rejects a staged binary with the wrong platform magic', () => {
       () => stageNodePtyInto(srcRoot, destRoot, { platform: 'linux', arch: 'x64' }),
       /platform mismatch/i
     )
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+// ─── non-ASCII source paths (Windows recursive cpSync crash) ───────
+
+test('non-ASCII source path: staging survives recursive cpSync failure and stages directories per-file', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    // Mirror the reporter layout: the repo and its dist tree live under a
+    // non-ASCII user directory (C:\Users\Pınar\...).
+    const userDir = join(tmp, 'Pınar')
+    const srcRoot = join(userDir, 'hermes-agent', 'node_modules', 'node-pty')
+    const destRoot = join(userDir, 'hermes-agent', 'apps', 'desktop', 'dist', 'node_modules', 'node-pty')
+    const prebuildDir = join(srcRoot, 'prebuilds', `${process.platform}-${process.arch}`)
+    const buildReleaseDir = join(srcRoot, 'build', 'Release')
+
+    makeFakeNodePty(srcRoot, {
+      prebuildPlatform: process.platform,
+      prebuildArch: process.arch
+    })
+    // conpty/ — the directory whose recursive copy was the reported crash
+    // site (EIO on the conpty prebuild dir).
+    fs.mkdirSync(join(prebuildDir, 'conpty'), { recursive: true })
+    fs.writeFileSync(join(prebuildDir, 'conpty', 'conpty.dll'), 'conpty payload')
+    fs.writeFileSync(join(prebuildDir, 'conpty', 'OpenConsole.exe'), 'console payload')
+    fs.writeFileSync(join(prebuildDir, 'stray.pdb'), 'debug symbols must be skipped')
+    // build/Release with a nested subdirectory — exercises the wholesale
+    // directory branch of copyBuildRelease too.
+    makeFakeNode(join(buildReleaseDir, 'deep', 'nested', 'payload.node'), process.platform)
+    fs.writeFileSync(join(buildReleaseDir, 'README.md'), 'not a native payload')
+
+    const returned = stageNodePtyInto(srcRoot, destRoot, {
+      platform: process.platform,
+      arch: process.arch
+    })
+
+    assert.equal(returned, destRoot)
+    // Single-file copies (delegated cpSync) still work.
+    assert.ok(existsSync(join(destRoot, 'package.json')))
+    assert.ok(existsSync(join(destRoot, 'lib', 'index.js')))
+    // The conpty directory payload landed byte-identical via per-file copies.
+    const stagedPrebuild = join(destRoot, 'prebuilds', `${process.platform}-${process.arch}`)
+    assert.ok(
+      fs.readFileSync(join(stagedPrebuild, 'conpty', 'conpty.dll')).equals(Buffer.from('conpty payload'))
+    )
+    assert.ok(
+      fs.readFileSync(join(stagedPrebuild, 'conpty', 'OpenConsole.exe')).equals(Buffer.from('console payload'))
+    )
+    // Extension filtering is preserved alongside the copy-path change.
+    assert.ok(!existsSync(join(stagedPrebuild, 'stray.pdb')))
+    // Nested build/Release directories are staged through the same rule.
+    const stagedNested = join(destRoot, 'build', 'Release', 'deep', 'nested', 'payload.node')
+    assert.ok(existsSync(stagedNested), 'nested build/Release payload must be staged')
+    assert.equal(classifyNativeBinary(stagedNested), process.platform)
+    assert.ok(!existsSync(join(destRoot, 'build', 'Release', 'README.md')))
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })
   }

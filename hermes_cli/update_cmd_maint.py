@@ -46,6 +46,12 @@ _PRE_UPDATE_SNAPSHOT_KEEP = 1
 # small hard-to-regenerate state, not a multi-GB state.db (24 GB cost ~60s + 24 GB/update).
 _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE = 1 << 30  # 1 GiB
 
+# Parent publishes this after a successful full zip so the Windows hermes.exe hand-off
+# child (existing Popen env={**os.environ, HERMES_UPDATE_REEXEC: "1"}) can skip writing
+# a second zip. Do not invent a second reexec flag; skip also requires this path to be
+# an existing regular file with size > 0.
+_UPDATE_BACKUP_ZIP_ENV = "HERMES_UPDATE_BACKUP_ZIP"
+
 _SQLITE_WAL_BUG_DETAIL = "SQLite {} still has the WAL-reset corruption bug"
 
 
@@ -717,6 +723,28 @@ def _resolve_pre_update_backup_mode(args) -> str:
     return mode
 
 
+def _verifiable_handoff_full_backup_zip() -> Optional[Path]:
+    """Parent full zip reusable by a Windows exe hand-off child, or None (fail-open).
+
+    Skip the child's full zip only when HERMES_UPDATE_REEXEC=1 *and* the parent
+    published a path that is an existing regular file with size > 0. Missing /
+    empty / whitespace env, a non-file, size 0, or a failed stat all return None
+    so the child writes its own zip.
+    """
+    if os.environ.get("HERMES_UPDATE_REEXEC") != "1":
+        return None
+    raw = os.environ.get(_UPDATE_BACKUP_ZIP_ENV)
+    if raw is None or not str(raw).strip():
+        return None
+    try:
+        path = Path(str(raw).strip())
+        if not path.is_file() or path.stat().st_size <= 0:
+            return None
+    except OSError:
+        return None
+    return path
+
+
 def _verify_state_db_after_snapshot(snapshot_id: str) -> None:
     """Verify live state.db after the snapshot: a concurrent process (antivirus, killed
     gateway, Windows filter driver) can corrupt it and we'd otherwise exit 0 silently."""
@@ -808,6 +836,10 @@ def _run_full_backup() -> None:
     except OSError:
         size_bytes = 0
 
+    # Inherited by the Windows exe hand-off child via env={**os.environ, ...}.
+    if size_bytes > 0:
+        os.environ[_UPDATE_BACKUP_ZIP_ENV] = str(out_path)
+
     from hermes_cli.sizefmt import format_bytes
     # display_hermes_home so the user sees ~/.hermes/...
     try:
@@ -847,6 +879,20 @@ def _run_pre_update_backup(args) -> Optional[str]:
     if mode != "full":
         if snapshot_id:
             print()
+        return snapshot_id
+
+    reused = _verifiable_handoff_full_backup_zip()
+    if reused is not None:
+        try:
+            from hermes_cli.update_receipt import record_skip
+            record_skip(
+                "pre_update_full_backup",
+                f"reused parent Windows exe hand-off zip {reused}",
+            )
+        except Exception:
+            pass
+        print(f"◆ Pre-update backup: skipped (reusing parent hand-off zip {reused})")
+        print()
         return snapshot_id
 
     _run_full_backup()

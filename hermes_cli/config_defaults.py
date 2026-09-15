@@ -352,6 +352,11 @@ DEFAULT_CONFIG = {
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
         # per-page char budget for web_extract; larger pages truncate, full text kept in cache/web
         "extract_char_limit": 15000,
+        # SearXNG provider HTTP request timeout in seconds (default: 15, matching the historical
+        # hardcoded value). A self-hosted instance fanning out to many upstream engines often needs
+        # more; must be a positive, finite number — zero, negative, NaN and non-numeric values are
+        # rejected with a clear error instead of silently reverting or hanging. See #99399.
+        "searxng_timeout": 15,
         # Keyless free-tier ring: with NO web backend configured or keyed, web_search/web_extract
         # rotate round-robin across exa, parallel, firecrawl, keenable public free tiers, failing
         # over on rate limits. Never pre-empts a configured/keyed backend. false = disable.

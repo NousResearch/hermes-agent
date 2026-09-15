@@ -227,6 +227,21 @@ def _is_local_validation_error(api_error: Any) -> bool:
     return not (isinstance(api_error, TypeError) and "nonetype" in _text and "not iterable" in _text)
 
 
+def _image_shrink_exhausted(classified: Any, _retry: Any) -> bool:
+    """True when this turn's single image-shrink attempt has already run and recovered nothing.
+
+    ``turn_recovery`` sets ``image_shrink_retry_attempted`` *before* it runs the shrink, so a
+    set flag here means the shrink found no inlined image to rewrite. A payload-scoped size
+    cap looks identical to a per-image one at this layer and the excess may be text, so
+    re-sending the same oversized body changes nothing: the caller falls back instead of
+    spending ``max_retries`` byte-identical sends.
+    """
+    return (
+        getattr(classified, "reason", None) == FailoverReason.image_too_large
+        and bool(getattr(_retry, "image_shrink_retry_attempted", False))
+    )
+
+
 # Non-retryable per the classifier, yet handled by the overflow/backoff paths instead.
 _RETRYABLE_CLIENT_REASONS = frozenset({
     FailoverReason.rate_limit, FailoverReason.overloaded, FailoverReason.context_overflow,
@@ -268,6 +283,28 @@ def settle_unrecovered_error(
             action=action, active_system_prompt=active_system_prompt, retry_count=retry_count,
             compression_attempts=compression_attempts, result=result,
         )
+
+    # An image-size rejection gets exactly one extra attempt: ``recover_after_classification``
+    # sets ``image_shrink_retry_attempted`` *before* it runs the shrink, so reaching this point
+    # with the flag set means the shrink had nothing to rewrite — the excess is not in an
+    # inlined image (a long transcript or tool result on a host whose cap is payload-scoped).
+    # Retrying would re-send a byte-identical oversized body ``max_retries`` times, so fall
+    # back now: earlier, these rejections were ``format_error`` and fell back immediately.
+    if _image_shrink_exhausted(classified, _retry) and not is_context_length_error:
+        if agent._has_pending_fallback():
+            agent._buffer_status(
+                "⚠️ Image still over the model's size limit after shrinking — trying fallback..."
+            )
+        if agent._try_activate_fallback():
+            active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
+            retry_count = compression_attempts = 0
+            return _verdict("break")
+        return _verdict("return", nonretryable_client_error_result(
+            agent, api_error, classified, status_code=status_code, api_kwargs=api_kwargs,
+            api_messages=api_messages, messages=messages, conversation_history=conversation_history,
+            api_call_count=api_call_count, approx_tokens=approx_tokens, provider=_provider,
+            base_url=_base, model=_model,
+        ))
 
     # ``FailoverReason.billing`` (402) is deliberately NOT excluded: pool rotation and
     # eager fallback already gave up, so retrying only burns paid requests on a depleted

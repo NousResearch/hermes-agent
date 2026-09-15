@@ -166,10 +166,20 @@ _PAYLOAD_TOO_LARGE_PATTERNS = (
 # tile-patch budget (ceil(w/32)×ceil(h/32)) exceeds its 30000-patch ceiling
 # with wording that names no image-size vocabulary — without this pattern it
 # fell to format_error (non-retryable), bypassing the shrink recovery (#106337).
+# Byte caps that providers enforce with a 400 instead of a 413, so the request never
+# reaches the status path and the shrink pass never runs. NVIDIA NIM caps the whole
+# payload at 26214400 bytes ("Please make sure your payload is below 26214400 bytes in
+# size", code ``invalid_image_format``); Alibaba DashScope caps the base64 image string
+# via Jackson ("String value length (28049408) exceeds the maximum allowed (28000000,
+# from `StreamReadConstraints.getMaxStringLength()`)"). Both were classified
+# format_error — non-retryable, no shrink attempt — and surfaced the raw 400. The
+# method-scoped Jackson pattern is used for DashScope because the bare class name also
+# appears when Jackson caps a *token* length, which is not an image condition.
+# (both measured first-hand against the live endpoints, not from docs)
 _IMAGE_TOO_LARGE_PATTERNS = (
     "image exceeds", "image too large", "image_too_large", "image size exceeds", "image dimensions exceed",
     "dimensions exceed max allowed size", "max allowed size: 8000", "media exceeds", "media too large",
-    "patches after processing",
+    "patches after processing", "make sure your payload is below", "streamreadconstraints.getmaxstringlength",
 )
 
 # Undecodable image bytes → strip-and-retry, never shrink. xAI wordings
@@ -784,9 +794,103 @@ def _classify_402(error_msg: str, result_fn: Callable[..., Any]) -> Any:
     return result_fn(**(_V_RATE_LIMIT if transient else _V_BILLING))
 
 
+# Byte size above which the shrink pass will actually rewrite a data-URL image part
+# (mirrors conversation_compression._IMAGE_SHRINK_TARGET_BYTES; asserted equal in
+# tests/agent/test_image_shrink_recovery.py so the two cannot drift). Below it a shrink
+# attempt is a no-op, so routing such a request there would only burn the retry.
+_INLINED_IMAGE_SHRINK_HINT_BYTES = 4 * 1024 * 1024
+
+# Part types ``try_shrink_image_parts_in_messages`` rewrites. Kept in step with it so the
+# rule below cannot route a part the shrink pass would skip (which would spend the one
+# retry for nothing).
+_SHRINKABLE_IMAGE_PART_TYPES = frozenset({"image_url", "input_image"})
+
+# The structural oversize rule has to preempt the *keyword* multimodal rule, which
+# otherwise claims "input should be a valid string" first. It must not also preempt the
+# branches that follow, which own their 400s outright on structured evidence: a replayed
+# encrypted blob, an unsupported parameter, a malformed message array or a proxy memory
+# ceiling carrying an unrelated image is not an oversize rejection, and blaming it on
+# image bytes would spend the shrink retry on a request the shrink cannot fix. No
+# provider wording measured for the oversize case collides with these families.
+_NOT_OVERSIZED_CONTENT_CODES = (
+    frozenset({"invalid_encrypted_content", "invalid_request_body"})
+    | frozenset(_400_VALIDATION_CODES)
+    | _MEMORY_CEILING_ERROR_CODES
+)
+_NOT_OVERSIZED_CONTENT_PATTERNS = (
+    _400_VALIDATION_PATTERNS
+    + _MALFORMED_TOOL_ARGS_PATTERNS
+    + (_REASONING_MANDATORY_PATTERN,)
+    + _INVALID_MESSAGE_BODY_PATTERNS
+)
+
+
+def _has_shrinkable_inlined_image(value: Any) -> bool:
+    """True when a rejected content list holds a ``data:`` image part the shrink pass rewrites.
+
+    The Anthropic-native ``{"type": "image", "source": {...}}`` shape is deliberately not
+    read: a host that rejects an Anthropic image for size says so in image vocabulary
+    ("image exceeds 5 MB maximum"), which ``_IMAGE_TOO_LARGE_PATTERNS`` already matches
+    before this rule is reached.
+    """
+    if not isinstance(value, list):
+        return False
+    for part in value:
+        if not isinstance(part, dict) or part.get("type") not in _SHRINKABLE_IMAGE_PART_TYPES:
+            continue
+        image = part.get("image_url")
+        url = image.get("url") if isinstance(image, dict) else image
+        if isinstance(url, str) and url.startswith("data:image/") and len(url) > _INLINED_IMAGE_SHRINK_HINT_BYTES:
+            return True
+    return False
+
+
+def _oversized_message_content_rejection(c: _Ctx) -> bool:
+    """True when a 400 rejects a *message* ``content`` field whose value carries a large inline image.
+
+    Nebius Token Factory caps a single image at 10 MiB and reports the violation through the field that
+    failed to coerce — pydantic-v2 ``{"type": "string_type", "loc": ["body","messages",N,"content","str"],
+    "msg": "Input should be a valid string", "input": [...]}`` — naming no size vocabulary at all. The
+    keyword ``"input should be a valid string"`` therefore matched the multimodal *tool*-content rule
+    (#104731) first, spent the one multimodal retry stripping tool images that were never there, and
+    surfaced the 400 unshrunk. Identical requests carrying a small image succeed — same list-type content
+    shape, same model — so the image bytes are the trigger, not the shape. Tool-scoped locs stay with
+    #104731, and content that holds no shrinkable inline image stays with the keyword rules. Every
+    other branch of ``_classify_400`` keeps its claim on the 400: this rule outranks only the
+    keyword multimodal rule, so a structured code or a validation/malformed-args/reasoning/
+    malformed-body/memory-ceiling verdict still wins.
+    """
+    body = c.body
+    if not isinstance(body, dict):
+        return False
+    if c.code in _NOT_OVERSIZED_CONTENT_CODES or any(p in c.msg for p in _NOT_OVERSIZED_CONTENT_PATTERNS):
+        return False
+    details = body.get("detail")
+    if not isinstance(details, list):
+        return False
+    for detail in details:
+        if not isinstance(detail, dict) or detail.get("type") != "string_type":
+            continue
+        loc = detail.get("loc")
+        # JSON permits a scalar here (pydantic echoes whatever it was given), and iterating
+        # one would raise TypeError inside classify_api_error, which callers do not guard.
+        if not isinstance(loc, (list, tuple)):
+            continue
+        parts = [str(part).lower() for part in loc]
+        if parts[-2:] != ["content", "str"] or "tool" in parts:
+            continue
+        if _has_shrinkable_inlined_image(detail.get("input")):
+            return True
+    return False
+
+
 def _classify_400(c: _Ctx) -> Verdict:
     """400 Bad Request — image/tool shapes, request-shape rejections, overflow, or generic."""
     msg, code = c.msg, c.code
+    # Size caps reported *through* a message content field must beat the keyword
+    # multimodal rule, which would otherwise claim "input should be a valid string".
+    if _oversized_message_content_rejection(c):
+        return _V_IMAGE_TOO_LARGE
     verdict = _first_match(msg, _IMAGE_TOOL_RULES)
     if verdict is not None:
         return verdict

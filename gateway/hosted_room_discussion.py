@@ -602,8 +602,13 @@ def _build_prompt(
         line = f"  {_format_message(event, room)}"
         if (line_bytes := len(line.encode("utf-8")) + 1) > available:
             if not selected and available > 32:
-                selected.append(_truncate_utf8_text(line, max_bytes=available))
-            selected.append("  [Earlier content omitted to fit this turn.]")
+                truncated = _truncate_utf8_text(line, max_bytes=available)
+                selected.append(truncated)
+                available -= len(truncated.encode("utf-8")) + 1
+            # The notice is optional; retained text and metadata keep their budget.
+            notice = "  [Earlier content omitted to fit this turn.]"
+            if len(notice.encode("utf-8")) + 1 <= available:
+                selected.append(notice)
             break
         selected.append(line)
         available -= line_bytes

@@ -151,6 +151,24 @@ def test_new_canonical_prompt_reserves_bounded_file_media_metadata(service):
     assert reconstruct(service, task).payload == task["payload"]
 
 
+def test_metadata_and_omission_notice_do_not_overflow_canonical_prompt(service):
+    item = upload(service, "boundary", name="file.txt", data=b"notes")
+    send(service, "file", [item], text="@writer Review")
+    send(service, "older", text="o" * 64895)
+    newest = "@writer " + "n" * 65522
+    send(service, "latest", text=newest)
+
+    service.prepare_room(service.bindings()[0])
+    task, = driver.list_tasks(service.db_path, room_id="room", status="queued")
+    prompt = task["payload"]["prompt"]
+    assert len(prompt.encode("utf-8")) <= driver.MAX_PROMPT_BYTES
+    assert newest in prompt
+    assert 'Staged file "file.txt" (text/plain, 5 bytes)' in prompt
+    assert "  User (user): @writer Review" not in prompt
+    assert task["payload"]["attachments"] == [{**item, "event_id": "user-file"}]
+    assert reconstruct(service, task).payload == task["payload"]
+
+
 def test_text_only_prompt_and_pre_metadata_admission_stay_frozen(service):
     send(service, "text", text="@writer Review")
     text_task = plan(service)

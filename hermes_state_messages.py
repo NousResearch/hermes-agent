@@ -1225,9 +1225,18 @@ class SessionMessagesMixin:
         Uses the idx_messages_platform_msg_id partial index for efficient lookup. Used by the gateway's
         transient-failure dedupe guard (#47237) to skip re-persisting a user message that was already saved
         on a prior retry of the same inbound platform message.
+
+        Mirrors the visibility contract of ``has_gateway_input_owner`` (main
+        3114916ee4): soft-archived rewind/undo rows (``active=0``,
+        ``compacted=0`` — the user took the turn back) do NOT count as
+        existing, so a platform redelivery of a rewound turn is re-persisted
+        instead of being silently swallowed. Compaction-archived rows
+        (``compacted=1``) DO count — re-inserting a summarized-away turn
+        would resurrect it after in-place compaction.
         """
         return self._read_one(
-            "SELECT 1 FROM messages WHERE session_id = ? AND platform_message_id = ? LIMIT 1",
+            "SELECT 1 FROM messages WHERE session_id = ? AND platform_message_id = ? "
+            "AND (active = 1 OR compacted = 1) LIMIT 1",
             (session_id, platform_message_id)) is not None
 
     def _is_explicit_fork_child_row(self, session: Dict[str, Any]) -> bool:

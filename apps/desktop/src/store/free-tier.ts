@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { onboardingSurfaceActive } from '@/store/onboarding-presence'
 import type { FreeTierStatus } from '@/types/hermes'
 
@@ -10,7 +11,7 @@ export const FREE_TIER_MODEL = 'nous/welcome'
 /** The provider slug the free-tier route and a signed-in Nous account share. */
 export const NOUS_PROVIDER_ID = 'nous'
 
-export type FreeTierRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+export type FreeTierRequester = GatewayRequest
 
 /**
  * The backend's free-tier verdict, cached for the chrome that paints it (the
@@ -37,7 +38,7 @@ function isFreeTierStatus(value: unknown): value is FreeTierStatus {
  */
 export async function refreshFreeTierStatus(requestGateway: FreeTierRequester): Promise<FreeTierStatus | null> {
   try {
-    const status = await requestGateway<FreeTierStatus>('free_tier.status')
+    const status = await requestGateway('free_tier.status', {})
 
     if (!isFreeTierStatus(status)) {
       return $freeTierStatus.get()
@@ -125,7 +126,7 @@ export function friendlyWait(seconds: number): string {
  */
 export async function provisionFreeTier(requestGateway: FreeTierRequester): Promise<FreeTierStatus | null> {
   try {
-    await requestGateway('free_tier.provision')
+    await requestGateway('free_tier.provision', {})
   } catch {
     // The status read below still reports what the backend knows.
   }
@@ -137,7 +138,7 @@ export async function provisionFreeTier(requestGateway: FreeTierRequester): Prom
  *  keyed on `notice_pending` drops away together. */
 export async function ackFreeTierNotice(requestGateway: FreeTierRequester): Promise<boolean> {
   try {
-    const result = await requestGateway<{ acked?: boolean }>('free_tier.ack_notice')
+    const result = await requestGateway('free_tier.ack_notice', {})
 
     if (result?.acked !== true) {
       return false

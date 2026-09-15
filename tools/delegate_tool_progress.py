@@ -9,6 +9,7 @@ import threading
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
 from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+from tui_gateway.contracts.events import SubagentEventPayload
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -325,8 +326,14 @@ class _ChildProgressRelay:
     def _relay(self, event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
         if self.parent_cb:
             # kwargs override identity (e.g. status, duration_seconds).
+            identity = {**self._identity_kwargs(), **kwargs}
+            payload = SubagentEventPayload(
+                **identity,
+                **({"tool_name": tool_name} if tool_name else {}),
+                **({"text": preview} if preview else {}),
+            )
             with _quiet("Parent callback failed: %s"):
-                self.parent_cb(event_type, tool_name, preview, args, **{**self._identity_kwargs(), **kwargs})
+                self.parent_cb(event_type, tool_name, preview, args, subagent_payload=payload, **identity)
 
     def _tree_line(self, text: str) -> None:
         """Print one tree-view line above the CLI spinner (no-op without a spinner)."""

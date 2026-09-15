@@ -7,10 +7,10 @@ and voice / wake-word control (``methods_voice.py``).
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import StrictInt
 
-from .base import JsonValue, Params, Result, WireEnum
-from .common import OpenModel, PendingApproval, SessionParams
+from .base import JsonValue, MethodParams, Params, Result, WireEnum
+from .common import PendingApproval, SessionParams
 from .registry import method
 
 # ── prompt.submit ─────────────────────────────────────────────────────────────────────────────
@@ -29,24 +29,21 @@ class PromptSubmitParams(SessionParams):
     consent: ``confirm_truncate`` plus one durable target (``truncate_before_row_id`` preferred,
     ``truncate_before_message_id``, or the legacy ``truncate_before_user_ordinal``)."""
 
+    # JsonValue: methods_prompt.py:548 forwards non-string trusted payloads unchanged into
+    # prompt_turn.py:505; desktop's submit.ts:757 and TUI's submissionCore.ts:83 send strings.
     text: JsonValue = ""
     display_kind: str | None = None  # only "hidden" is honoured; anything else renders as a user row
-    interrupted: bool | None = None  # client-side barge-in: the turn's model message carries the note
-    queued: bool | None = None  # client queue drain — the busy path must hold it, never redirect/steer
+    interrupted: bool | None = None  # methods_prompt.py:555 reads an omitted barge-in flag as None
+    queued: bool | None = None  # methods_prompt.py:618 reads an omitted queue-drain flag as None
     surface: str | None = None  # a ClientSurface value; unknown values clear the surface
     voice_context: str | None = None  # recent spoken transcript, model input only (voice-live)
-    truncate_before_user_ordinal: int | None = None
-    truncate_before_row_id: int | None = None
+    # Strict: lax int turns True into 1 and would silently truncate at row/ordinal 1 (the #82756 class).
+    truncate_before_user_ordinal: StrictInt | None = None
+    truncate_before_row_id: StrictInt | None = None
     truncate_before_message_id: str | None = None
-    confirm_truncate: bool | None = None
-    confirm_empty_truncate: bool | None = None
+    confirm_truncate: bool | None = None  # methods_prompt.py:256 reads an omitted consent flag as None
+    confirm_empty_truncate: bool | None = None  # methods_prompt.py:366 reads an omitted empty-cut consent flag as None
     rebind_survivor_row_ids: list[int] | None = None
-    # In-process only: injected by the hosted-room / bot-relay handlers, never accepted from a
-    # client (a client dict for ``_turn_author`` answers 4124). Excluded from the rendered wire.
-    hosted_task: JsonValue | None = Field(default=None, exclude=True, alias="_hosted_task")
-    turn_author: JsonValue | None = Field(default=None, exclude=True, alias="_turn_author")
-    hosted_terminal_callback: JsonValue | None = Field(
-        default=None, exclude=True, alias="_hosted_terminal_callback")
 
 
 class PromptSubmitStatus(WireEnum):
@@ -105,7 +102,7 @@ method("clipboard.paste", params=ClipboardPasteParams, result=AttachedImageResul
 
 
 class ImageAttachParams(SessionParams):
-    path: str  # a host path, optionally followed by remainder text (drop syntax accepted)
+    path: str = ""  # methods_prompt.py:703 defaults a missing path before rejecting it
 
 
 method("image.attach", params=ImageAttachParams, result=AttachedImageResult,
@@ -113,13 +110,13 @@ method("image.attach", params=ImageAttachParams, result=AttachedImageResult,
 
 
 class ImageAttachBytesParams(SessionParams):
-    """``content_base64`` (or the ``data`` alias) carries the bytes; ``filename`` / ``ext`` only hint
-    the extension — magic bytes decide."""
+    """``content_base64`` carries bytes; legacy ``data`` is an optional alias. ``filename`` / ``ext``
+    only hint the extension — magic bytes decide."""
 
     content_base64: str | None = None
-    data: str | None = None
-    filename: str | None = None
-    ext: str | None = None
+    data: str | None = None  # legacy alias, selected by methods_prompt.py:733
+    filename: str = ""  # methods_prompt.py:741 defaults a missing filename
+    ext: str = ""  # methods_prompt.py:742 defaults a missing extension hint
 
 
 method("image.attach_bytes", params=ImageAttachBytesParams, result=AttachedImageResult,
@@ -127,13 +124,12 @@ method("image.attach_bytes", params=ImageAttachBytesParams, result=AttachedImage
 
 
 class PdfAttachParams(SessionParams):
-    """Host ``path`` or base64 ``content_base64`` / ``data``; ``first_page`` / ``last_page`` bound the
-    render (per-call page cap enforced server-side)."""
+    """Host ``path`` or base64 ``content_base64`` / legacy ``data``; page bounds are handler-defaulted."""
 
-    path: str | None = None
+    path: str = ""  # methods_prompt.py:816 defaults a missing path
     content_base64: str | None = None
-    data: str | None = None
-    filename: str | None = None
+    data: str | None = None  # legacy alias, selected by methods_prompt.py:817
+    filename: str = ""  # methods_prompt.py:769 defaults a missing upload filename
     first_page: int | None = None
     last_page: int | None = None
 
@@ -160,9 +156,9 @@ class FileAttachParams(SessionParams):
     """``path`` when the file is gateway-visible, else ``data_url`` carries the bytes; ``name`` labels
     an uploaded file."""
 
-    path: str | None = None
-    data_url: str | None = None
-    name: str | None = None
+    path: str = ""  # methods_prompt.py:870 defaults a missing path
+    data_url: str = ""  # methods_prompt.py:870 defaults a missing data URL
+    name: str = ""  # methods_prompt.py:870 defaults a missing upload name
 
 
 class FileAttachResult(Result):
@@ -179,7 +175,7 @@ method("file.attach", params=FileAttachParams, result=FileAttachResult,
 
 
 class ImageDetachParams(SessionParams):
-    path: str
+    path: str = ""  # methods_prompt.py:890 defaults a missing path before rejecting it
 
 
 class ImageDetachResult(Result):
@@ -192,7 +188,7 @@ method("image.detach", params=ImageDetachParams, result=ImageDetachResult,
 
 
 class InputDetectDropParams(SessionParams):
-    text: str | None = None
+    text: str = ""  # methods_prompt.py:907 defaults a missing composer value
 
 
 class InputDetectDropResult(ImageMeta):
@@ -202,6 +198,7 @@ class InputDetectDropResult(ImageMeta):
     matched: bool
     is_image: bool | None = None
     path: str | None = None
+    name: str | None = None
     count: int | None = None
     text: str | None = None
 
@@ -210,11 +207,11 @@ method("input.detect_drop", params=InputDetectDropParams, result=InputDetectDrop
        doc="Recognise a terminal file drop pasted into the composer and turn it into an attachment.")
 
 
-# ── side agents ───────────────────────────────────────────────────────────────────────────────
+# ── side agents ─────────────────────────────────────────────────────────────
 
 
 class SideAgentParams(SessionParams):
-    text: str
+    text: str = ""  # methods_prompt.py:969 defaults a missing side-agent prompt
 
 
 class TaskIdResult(Result):
@@ -240,14 +237,14 @@ method("preview.restart", params=PreviewRestartParams, result=TaskIdResult,
        doc="Spawn a hidden agent that brings the desktop preview's dev server back up.")
 
 
-# ── batch clarify locks / proxied request answers ─────────────────────────────────────────────
+# ── batch clarify locks / proxied request answers ───────────────────────────
 
 
-class ClarifyLockParams(Params):
+class ClarifyLockParams(MethodParams):
     request_id: str
     question_id: str
-    answer: JsonValue = ""  # non-string answers are JSON-encoded server-side
-    profile: str | None = None
+    # A client may select a structured choice; the handler serializes it for the lock store.
+    answer: JsonValue
 
 
 class ClarifyLockStatus(WireEnum):
@@ -267,10 +264,11 @@ method("clarify.lock", params=ClarifyLockParams, result=ClarifyLockResult,
        doc="Lock one answer of a batch clarify request (editable until every question is locked).")
 
 
-class RequestAnswerParams(Params):
+class RequestAnswerParams(MethodParams):
     id: str  # the open server→client request id
+    # JsonValue: methods_prompt.py:1133 relays arbitrary server-request results; desktop's
+    # group-turns.ts:638 supplies the concrete clarify {answer} shape.
     result: dict[str, JsonValue]
-    profile: str | None = None
 
 
 class RequestAnswerResult(Result):
@@ -281,7 +279,7 @@ method("request.answer", params=RequestAnswerParams, result=RequestAnswerResult,
        doc="Answer an open server→client request from a client that never received the frame.")
 
 
-# ── approvals ─────────────────────────────────────────────────────────────────────────────────
+# ── approvals ───────────────────────────────────────────────────────────────
 
 
 class ApprovalPendingParams(SessionParams):
@@ -297,7 +295,7 @@ method("approval.pending", params=ApprovalPendingParams, result=ApprovalPendingR
 
 
 class ApprovalReceivedParams(SessionParams):
-    request_id: str
+    request_id: str | None = None
 
 
 class ApprovalReceivedResult(Result):
@@ -312,8 +310,8 @@ class ApprovalRespondParams(SessionParams):
     """``choice`` is one of the offered ``approval`` choices (once / session / always / deny); ``all``
     resolves every pending approval, ``request_id`` a specific one, neither the oldest."""
 
-    choice: str | None = None  # default "deny"
-    all: bool | None = None
+    choice: str = "deny"  # methods_prompt.py:1213 defaults a missing choice
+    all: bool = False  # methods_prompt.py:1214 defaults a missing all flag
     request_id: str | None = None
 
 
@@ -325,7 +323,7 @@ method("approval.respond", params=ApprovalRespondParams, result=ApprovalRespondR
        doc="Deliver the user's decision on a dangerous command (falls back to durable identity on a stale sid).")
 
 
-# ── voice ─────────────────────────────────────────────────────────────────────────────────────
+# ── voice ───────────────────────────────────────────────────────────────────
 
 
 class VoiceToggleAction(WireEnum):
@@ -335,9 +333,8 @@ class VoiceToggleAction(WireEnum):
     tts = "tts"
 
 
-class VoiceToggleParams(Params):
+class VoiceToggleParams(MethodParams):
     action: VoiceToggleAction = VoiceToggleAction.status
-    profile: str | None = None
 
 
 class VoiceToggleResult(Result):
@@ -363,10 +360,9 @@ class VoiceRecordAction(WireEnum):
     stop = "stop"
 
 
-class VoiceRecordParams(Params):
+class VoiceRecordParams(MethodParams):
     action: VoiceRecordAction = VoiceRecordAction.start
-    session_id: str | None = None  # where voice.transcript / voice.status events are addressed
-    profile: str | None = None
+    session_id: str | None = None  # methods_voice.py:720 retains the prior event target when omitted
 
 
 class VoiceRecordStatus(WireEnum):
@@ -384,9 +380,8 @@ method("voice.record", params=VoiceRecordParams, result=VoiceRecordResult,
        doc="VAD-bounded push-to-talk; the transcript arrives as a voice.transcript event.")
 
 
-class VoiceTtsParams(Params):
-    text: str
-    profile: str | None = None
+class VoiceTtsParams(MethodParams):
+    text: str = ""  # methods_voice.py:767 defaults a missing text before rejecting it
 
 
 class VoiceTtsResult(Result):
@@ -397,10 +392,10 @@ method("voice.tts", params=VoiceTtsParams, result=VoiceTtsResult,
        doc="Speak text through the backend TTS engine (barge-in aware).")
 
 
-# ── wake word ─────────────────────────────────────────────────────────────────────────────────
+# ── wake word ───────────────────────────────────────────────────────────────
 
 
-class WakeStartParams(Params):
+class WakeStartParams(MethodParams):
     """``surface`` names the caller ("tui" | "gui"); ``persist`` is the explicit gesture that also
     flips ``wake_word.enabled`` on; ``client_capture`` asks for PCM streamed via wake.feed."""
 
@@ -408,7 +403,6 @@ class WakeStartParams(Params):
     persist: bool | None = None
     client_capture: bool | None = None
     session_id: str | None = None  # session the wake.detected event is addressed to
-    profile: str | None = None
 
 
 class WakeStartResult(Result):
@@ -431,9 +425,8 @@ method("wake.start", params=WakeStartParams, result=WakeStartResult,
        doc="Arm the wake-word listener for the calling surface; refusals explain why.")
 
 
-class WakeStopParams(Params):
+class WakeStopParams(MethodParams):
     persist: bool | None = None
-    profile: str | None = None
 
 
 class WakeOwnerResult(Result):
@@ -452,8 +445,8 @@ method("wake.stop", params=WakeStopParams, result=WakeStopResult,
        doc="Stop this surface's listener; persist also writes wake_word.enabled: false.")
 
 
-class WakeControlParams(Params):
-    profile: str | None = None
+class WakeControlParams(MethodParams):
+    pass
 
 
 class WakePauseResult(WakeOwnerResult):
@@ -472,14 +465,14 @@ method("wake.resume", params=WakeControlParams, result=WakeResumeResult,
        doc="Reclaim the mic after a pause; no-op if the listener isn't armed.")
 
 
-class WakeStatusParams(Params):
+class WakeStatusParams(MethodParams):
     surface: str | None = None
     client_capture: bool | None = None
-    profile: str | None = None
 
 
-class WakeInputDevice(OpenModel):
-    """``tools/wake_word.py::_describe_input_device`` — PortAudio diagnostics for the configured mic."""
+class WakeInputDevice(Result):
+    """``tools/wake_word.py::_describe_input_device`` emits only the fields below; desktop's
+    ``store/wake-word.ts:122`` reads the same closed diagnostic row."""
 
     selector: int | str | None = None
     name: str | None = None
@@ -515,13 +508,12 @@ method("wake.status", params=WakeStatusParams, result=WakeStatusResult,
        doc="Everything a client needs to draw the wake-word state and decide whether to (re)arm.")
 
 
-class WakeFeedParams(Params):
-    """``pcm`` (or the ``pcm_b64`` alias): base64 int16 mono little-endian, 16 kHz only."""
+class WakeFeedParams(MethodParams):
+    """``pcm`` carries base64 PCM; legacy ``pcm_b64`` is an optional alias (methods_voice.py:589)."""
 
     pcm: str | None = None
-    pcm_b64: str | None = None
-    sample_rate: int | None = None
-    profile: str | None = None
+    pcm_b64: str | None = None  # legacy alias, selected by methods_voice.py:589
+    sample_rate: int | None = None  # None: methods_voice.py:601 accepts an omitted rate
 
 
 class WakeFeedResult(WakeOwnerResult):

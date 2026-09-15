@@ -98,7 +98,7 @@ export type {
   ProjectFolder,
   ProjectInfo,
   ProjectsPayload,
-  SessionCreateResponse,
+  SessionCreateResult,
   SessionInfo,
   SessionMessage,
   SessionMessagesResponse,

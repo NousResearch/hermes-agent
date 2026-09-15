@@ -19,8 +19,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable: split modules)
 
-# Several of these look unused here but are resolved BARE by split-module bodies rebound onto this
-# namespace (method_ctx.bind_module) — deleting one breaks a handler at call time, not import time.
+from pydantic import TypeAdapter, ValidationError
+
+# Several of these look unused here but are reached as ``srv.<name>`` by the split modules —
+# deleting one breaks a handler at call time, not import time.
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope  # noqa: F401
 from hermes_constants import (
     get_hermes_home, get_hermes_home_override, profile_name_for_home,
@@ -35,9 +37,21 @@ from agent.skill_commands import describe_skill_invocation  # noqa: F401
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX  # noqa: F401
 from tui_gateway import git_probe
 from tui_gateway._env import env_float, env_int
+from tui_gateway.contracts.base import Params, Payload, Result
+from tui_gateway.rpc_frames import err_frame as _err, ok_frame as _ok  # the frame builders every sibling reaches as srv._ok / srv._err
+from tui_gateway.contracts.common import ProjectRef, SessionLiveInfo, Usage
+from tui_gateway.contracts.events import (
+    ErrorPayload, NotificationClearPayload, NotificationShowPayload, ReviewSummaryPayload,
+    SessionInfoPayload, SessionResumeProgressPayload, SessionUsagePayload, StatusUpdatePayload)
+from tui_gateway.contracts.sessions import LiveSessionSnapshot
+from tui_gateway.contracts.server_requests import (
+    ApprovalRequestParams, ClarifyAnswer, ClarifyAnswers, ClarifyBatch, ClarifyQuestion,
+    ClarifySingle, EmptyRequestParams, PreviewActRequestParams,
+    ReadRangeRequestParams, SecretRequestParams, TourRequestParams, VaultCodeRequestParams,
+    VaultSaveLoginRequestParams, VaultUnlockRequestParams)
 from tui_gateway.turn_marker import clear_turn_marker, read_turn_marker, record_turn_start  # noqa: F401
 from tui_gateway.contracts import registry as _contracts
-# User-facing copy shared with the split method modules (they close over this namespace).
+# User-facing copy shared with the split method modules (reached as ``srv.<name>``).
 from tui_gateway.user_messages import (  # noqa: F401
     AGENT_STILL_STARTING, agent_init_failed_message, busy_message, resume_failed_message, turn_error_text)
 from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
@@ -426,14 +440,14 @@ def _open_profile_session_db(profile_home):
 
 
 @contextlib.contextmanager
-def _profile_db(params: dict | None = None, *, writer: bool = False):
-    """Yield the SessionDB for ``params['profile']`` (None when unavailable); closes dedicated
+def _profile_db(params=None, *, writer: bool = False):
+    """Yield the SessionDB for ``params.profile`` (None when unavailable); closes dedicated
     profile handles, leaves the launch-profile shared handle open.
 
     Foreign-profile handles are read-only unless ``writer=True``: that store belongs to ITS
     gateway/dashboard, and a writer here would take its write lock per RPC. Mirrors
     hermes_cli.web_routers.profiles._read_profile_db."""
-    profile = (params.get("profile") or "").strip() or None if isinstance(params, dict) else None
+    profile = str(getattr(params, "profile", "") or "").strip() or None
     # Launch/own profile → the shared _get_db() handle (left open); another profile → a dedicated
     # handle closed below (app-global remote mode). db is None when unavailable.
     if (profile_home := _profile_home(profile)) is None:
@@ -545,7 +559,7 @@ def _profile_scoped(handler):
     might have poisoned (#107422).
     """
     def wrapper(rid, params):
-        home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
+        home = _profile_home(getattr(params, "profile", None))
         with _session_profile_runtime_scope({"profile_home": str(home) if home else None}):
             return handler(rid, params)
     return wrapper
@@ -618,18 +632,27 @@ def write_json(obj: dict) -> bool:
     return (current_transport() or _stdio_transport).write(obj)
 
 
-def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
-    _contracts.check_payload(event, payload)
-    params: dict = {"type": event, "session_id": sid, **({"payload": payload} if payload is not None else {})}
+def _event_frame(event: str, sid: str, payload: "Payload | None" = None) -> dict:
+    contract = _contracts.EVENTS[event]
+    expected = contract.payload
+    if expected is None:
+        if payload is not None:
+            raise TypeError(f"event {event!r} does not accept a payload")
+    elif not isinstance(payload, expected):
+        raise TypeError(f"event {event!r} payload must be {expected.__name__}")
+    params: dict = {"type": event, "session_id": sid}
+    if payload is not None:
+        params["payload"] = payload.model_dump(mode="json")
     return {"jsonrpc": "2.0", "method": "event", "params": params}
 
 
-def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
+def _emit(event: str, sid: str, payload: "Payload | None" = None) -> bool:
     return write_json(_event_frame(event, sid, payload))
 
 
 from tui_gateway import server_requests as _server_requests  # noqa: E402
 
+# Late-bound on purpose: tests (and transports) swap write_json / _emit on this module after import.
 _server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload))
 
 
@@ -652,13 +675,13 @@ def unregister_live_transport(transport: Transport | None) -> None:
         _live_transports.discard(transport)
 
 
-def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
+def _broadcast_global_event(event: str, payload: Payload | None = None) -> None:
     """Fan a session-less, surface-global event (``skin.changed``) to every connected client — background
     emitters bottom out at stdio in ``write_json``'s ladder. No registered transports (stdio TUI, tests) → ``_emit``."""
     with _live_transports_lock:
         targets = list(_live_transports)
     if not targets:
-        return _emit(event, "", payload)
+        return write_json(_event_frame(event, "", payload))
     frame = _event_frame(event, "", payload)
     for transport in targets:
         try:
@@ -670,6 +693,10 @@ def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
 def _approval_request_payload(data: dict | None) -> dict:
     """Build the client-safe representation of a pending approval."""
     payload = dict(data or {})
+    # Producers (tools/approval.py, file_tools_write_guards.py, approval_prompt.py) each send a different subset
+    # of the scope flags; the closed ApprovalRequestParams wants every key present (null when unknown).
+    for key in ("pattern_key", "pattern_keys", "allow_permanent", "allow_session", "smart_denied"):
+        payload.setdefault(key, None)
     if "choices" not in payload:
         choices = ["once"]
         if not payload.get("smart_denied") and payload.get("allow_session") is not False:
@@ -733,15 +760,15 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
     payload = _approval_request_payload(data)
     request_id = str(payload.get("request_id") or "")
     session_key = str((_sessions.get(sid) or {}).get("session_key") or "")
+    params = ApprovalRequestParams(session_id=sid, **payload)
 
-    def on_result(result: dict | None) -> None:
+    def on_result(result: Result | None) -> None:
         if result is None:  # withdrawn: the queue entry resolves on its own path
             return
-        choice = str(result.get("choice") or "deny")
-        _approval.resolve_gateway_approval(session_key, choice, resolve_all=bool(result.get("all")),
-                                           request_id=request_id or None)
+        _approval.resolve_gateway_approval(session_key, result.choice,
+                                           resolve_all=bool(result.all), request_id=request_id or None)
 
-    settle = server_requests.send_async("approval", sid, payload, on_result)
+    settle = server_requests.send_async("approval", sid, params, on_result)
     if request_id:
         _approval.register_gateway_settle(session_key, request_id, settle)
 
@@ -757,7 +784,7 @@ def _status_update(sid: str, kind: str, text: str | None = None):
         from agent.conversation_compression import is_compaction_progress_status
         if is_compaction_progress_status(body):
             out_kind = "compacting"
-    _emit("status.update", sid, {"kind": out_kind, "text": body})
+    _emit("status.update", sid, StatusUpdatePayload(kind=out_kind, text=body))
 
 
 def _image_meta(path: Path) -> dict:
@@ -772,20 +799,54 @@ def _image_meta(path: Path) -> dict:
     return meta
 
 
-def _ok(rid, result: dict) -> dict:
-    return {"jsonrpc": "2.0", "id": rid, "result": result}
-
-
-def _err(rid, code: int, msg: str, data=None) -> dict:
-    error = {"code": code, "message": msg, **({"data": data} if data is not None else {})}
-    return {"jsonrpc": "2.0", "id": rid, "error": error}
-
-
 def register_method(name: str, fn) -> None:
-    """The ONE registration seam (``@method`` here and ``HandlerRegistry.install`` for the split
-    modules). ``tests/tui_gateway/contracts/test_generated.py::test_every_method_has_a_contract`` and the
-    generator's ``assert_complete`` fail when a registered name has no contract."""
-    _methods[name] = fn
+    """Install one declared method with its model boundary around the raw handler."""
+    contract = _contracts.METHODS[name]
+    adapter = TypeAdapter(contract.result)
+
+    def wrapper(rid, params, *extras):
+        try:
+            model = contract.params.model_validate(params)
+        except ValidationError as exc:
+            # loc arrives as a tuple; a list keeps in-process frames equal to their JSON form.
+            data = [
+                {"loc": list(error["loc"]), "msg": error["msg"], "type": error["type"]}
+                for error in exc.errors(include_input=False, include_url=False)
+            ]
+            # The first field path names what is wrong. Only an unknown key points at a client/backend
+            # version skew (the TUI's own detector keys on that message); a missing or mistyped field is
+            # the caller's bug or the user's typo, and "run hermes update" would misdiagnose it.
+            first = data[0] if data else {}
+            loc = ".".join(str(part) for part in first.get("loc", ())) or "params"
+            message = f"invalid params for {name}: {loc}: {first.get('msg', 'invalid')}"
+            if first.get("type") == "extra_forbidden":
+                message += " — the client and the Hermes backend are out of sync (different versions); run `hermes update` and restart both"
+            return _err(rid, 4000, message, data=data)
+        response = fn(rid, model, *extras)
+        if isinstance(response, dict):
+            if "error" not in response:
+                raise TypeError(f"RPC handler {name!r} returned a dict that is not an error frame")
+            return response
+        if not isinstance(response, Result):
+            raise TypeError(f"RPC handler {name!r} must return a Result instance")
+        try:
+            result = adapter.validate_python(response)
+        except ValidationError as exc:
+            raise TypeError(f"RPC handler {name!r} returned an invalid result") from exc
+        return _ok(rid, result)
+
+    wrapper._hermes_raw_handler = fn
+    _methods[name] = wrapper
+
+
+def invoke(name: str, params: Params, *, rid=None, **trusted):
+    """Call a declared raw handler for a trusted in-process path without revalidating its model.
+
+    Pass the outer ``rid`` when the caller may relay the handler's error frame to the client: ``_err`` stamps it."""
+    raw = getattr(_methods[name], "_hermes_raw_handler", None)
+    if raw is None:
+        raise RuntimeError(f"RPC handler {name!r} is not registered through register_method")
+    return raw(rid, params, **trusted)
 
 
 def method(name: str):
@@ -816,24 +877,13 @@ def handle_request(req: dict) -> dict | None:
     if not (fn := _methods.get(method)):
         return _err(rid, -32601, f"unknown method: {method} — the client and the Hermes backend are out of sync "
                     "(different versions); run `hermes update` and restart both")
-    # Test doubles register straight into ``_methods`` without a contract; every production
-    # handler comes through ``register_method`` and therefore has one.
-    contract = _contracts.METHODS.get(method)
-    if contract is not None:
-        params, problem = _contracts.validate_params(contract, params)
-        if problem is not None:
-            return _err(rid, 4000, problem)
     token = _current_rpc_method.set(method)
     try:
-        response = fn(rid, params)
+        return fn(rid, params)
     except ProfileUnavailableError as exc:
         return _err(rid, 4064, str(exc))
     finally:
         _current_rpc_method.reset(token)
-    if contract is not None and isinstance(response, dict) and isinstance(response.get("result"), dict):
-        _contracts.check_params_accepted(contract, params)
-        _contracts.check_result(contract, response["result"])
-    return response
 
 
 def _current_session_steer_authority(session_id: str) -> tuple[Transport | None, dict | None]:
@@ -856,6 +906,16 @@ def _current_session_steer_authority(session_id: str) -> tuple[Transport | None,
         return transport, session
 
 
+def _handler_error(req: dict, exc: Exception) -> dict:
+    """One error frame for a handler crash, inline or pooled. The model boundary raises ``TypeError`` on a
+    contract slip (a handler returning a dict, an emit handing a dict to a typed event); on stdio the
+    entry loop writes whatever ``dispatch`` returns and has no catch of its own, so an unwound inline
+    handler would end ``hermes --tui``. ``handle_request`` itself still raises: the pool worker and the
+    tests want the exception, not a frame."""
+    logger.exception("RPC handler crashed method=%r id=%r", req.get("method"), req.get("id"), exc_info=exc)
+    return _err(req.get("id"), -32000, f"handler error: {exc}")
+
+
 def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
     """Route inbound RPCs — long handlers to the pool (returns None; the worker writes its own
     response via the bound transport), everything else inline (returns the response dict).
@@ -874,7 +934,10 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
         if isinstance(normalized, dict):
             return normalized
         if normalized[1] not in _LONG_HANDLERS:
-            return handle_request(req)
+            try:
+                return handle_request(req)
+            except Exception as exc:
+                return _handler_error(req, exc)
         ctx = contextvars.copy_context()  # the pool worker must see the bound transport
         if normalized[1] in _CONNECTOR_RPC_METHODS:
             ctx.run(_capture_connector_rpc_owner, normalized[2])
@@ -883,7 +946,7 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
             try:
                 resp = handle_request(req)
             except Exception as exc:
-                resp = _err(req.get("id"), -32000, f"handler error: {exc}")
+                resp = _handler_error(req, exc)
             if resp is not None:
                 t.write(resp)
         _pool.submit(lambda: ctx.run(run))
@@ -949,12 +1012,12 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
             return _err(rid, 5032, session.get("agent_error") or "agent initialization failed before completing")
         if not notified_slow and waited >= _AGENT_BUILD_SLOW_NOTICE_AFTER:
             notified_slow = True  # one keyed, replace-in-place notice (toast / status bar)
-            _emit("notification.show", sid, {
-                "text": "Still starting the agent (tool discovery / model setup) — your message will be sent as soon as it's ready.",
-                "level": "info", "kind": "agent", "ttl_ms": None,
-                "key": _AGENT_BUILD_SLOW_NOTICE_KEY, "id": _AGENT_BUILD_SLOW_NOTICE_KEY})
+            _emit("notification.show", sid, NotificationShowPayload(
+                text="Still starting the agent (tool discovery / model setup) — your message will be sent as soon as it's ready.",
+                level="info", kind="agent", ttl_ms=None,
+                key=_AGENT_BUILD_SLOW_NOTICE_KEY, id=_AGENT_BUILD_SLOW_NOTICE_KEY))
     if notified_slow:
-        _emit("notification.clear", sid, {"key": _AGENT_BUILD_SLOW_NOTICE_KEY})
+        _emit("notification.clear", sid, NotificationClearPayload(key=_AGENT_BUILD_SLOW_NOTICE_KEY))
     return _err(rid, 5032, err) if (err := session.get("agent_error")) else None
 
 
@@ -1016,7 +1079,8 @@ def _wire_session_agent(sid: str, key: str, agent) -> bool:
         load_permanent_allowlist()
     _wire_callbacks(sid)
     with contextlib.suppress(Exception):  # bare agents without the attribute must not break startup
-        agent.background_review_callback = lambda message, _sid=sid: _emit("review.summary", _sid, {"text": str(message)})
+        agent.background_review_callback = lambda message, _sid=sid: _emit(
+            "review.summary", _sid, ReviewSummaryPayload(text=str(message)))
         agent.memory_notifications = _load_memory_notifications()
     return notify_registered
 
@@ -1061,10 +1125,12 @@ def _announce_built_agent(sid: str, key: str, current: dict, agent) -> None:
         seed_credits_at_session_start(agent)
     _start_session_services(sid, key, current)
     info = _session_info(agent, current)
+    config_warning = None
     if cfg_warn := _probe_config_health(_load_cfg()):
-        info["config_warning"] = cfg_warn
+        config_warning = cfg_warn
         logger.warning(cfg_warn)
-    _emit("session.info", sid, info)
+    _emit("session.info", sid, SessionInfoPayload(
+        **info.model_dump(mode="json"), config_warning=config_warning))
     _schedule_mcp_late_refresh(sid, agent)  # servers slower than the bounded discovery wait land here
 
 
@@ -1139,7 +1205,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
             _announce_built_agent(sid, key, current, agent)
         except Exception as e:
             current["agent_error"] = str(e)
-            _emit("error", sid, {"message": agent_init_failed_message(e)})
+            _emit("error", sid, ErrorPayload(message=agent_init_failed_message(e)))
         finally:
             _finish_agent_build(
                 sid, key, current, notify_registered=notify_registered, scopes=scopes, session_db=session_db)
@@ -1152,7 +1218,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
 
 
 def _sess_nowait(params, rid):
-    sid = params.get("session_id") or ""
+    sid = getattr(params, "session_id", "") or ""
     s = _sessions.get(sid)
     if s:
         return (s, None)
@@ -1181,7 +1247,7 @@ def _sess_building(params, rid):
     reader thread, where waiting on a cold build stalled every RPC behind it ("text is instant, images hang")."""
     s, err = _sess_nowait(params, rid)
     if not err:
-        _start_agent_build(params.get("session_id") or "", s)
+        _start_agent_build(getattr(params, "session_id", "") or "", s)
     return (None, err) if err else (s, None)
 
 
@@ -1316,12 +1382,13 @@ def _enable_gateway_prompts() -> None:
 # ── Blocking prompt factory ──────────────────────────────────────────
 
 
-def _ask(method: str, sid: str, params: dict, timeout: float | None = 300) -> str:
+def _ask(method: str, sid: str, params: Params, timeout: float | None = 300) -> str:
     """Server→client request whose answer is one string under ``value`` (sudo, secret, vault prompts, GUI reads,
     MCP setup). Empty string when the renderer skipped, timed out, or was cancelled."""
     from tui_gateway import server_requests
+
     result = server_requests.send(method, sid, params, timeout=timeout)
-    value = (result or {}).get("value", "")
+    value = result.value if result is not None else ""
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 
 
@@ -1343,17 +1410,19 @@ def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
     ``{"answers", "timed_out"?}`` as JSON — a response with no ``answers`` is a cancel-all."""
     from tui_gateway import server_requests
     if questions:
-        wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
-                for e in questions]
-        result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
-                                      qids=[e["qid"] for e in questions])
-        if not result or "answers" not in result:
+        wire = [ClarifyQuestion(qid=e["qid"], question=e["question"], choices=e["choices"],
+                                multi_select=bool(e["multi_select"])) for e in questions]
+        result = server_requests.send(
+            "clarify", sid, ClarifyBatch(session_id=sid, kind="batch", questions=wire, answers=None),
+            timeout=_clarify_timeout_seconds(), qids=[e["qid"] for e in questions])
+        if not isinstance(result, ClarifyAnswers):
             return ""
-        return json.dumps(result, ensure_ascii=False)
-    params = {"question": q, "choices": c, "multi_select": True} if multi_select else {"question": q, "choices": c}
-    result = server_requests.send("clarify", sid, params, timeout=_clarify_timeout_seconds())
-    answer = (result or {}).get("answer", "")
-    return answer if isinstance(answer, str) else ""
+        return json.dumps(result.model_dump(mode="json"), ensure_ascii=False)
+    result = server_requests.send(
+        "clarify", sid,
+        ClarifySingle(session_id=sid, kind="single", question=q, choices=c, multi_select=bool(multi_select)),
+        timeout=_clarify_timeout_seconds())
+    return result.answer if isinstance(result, ClarifyAnswer) else ""
 
 
 # A tour action is a DOM op the renderer answers in ms; the generous deadline exists only because a
@@ -1387,7 +1456,7 @@ def _tour_request(sid: str, payload: dict) -> str:
     state = session.get("tour_bridge")
     if state == "unanswered":
         return _TOUR_BRIDGE_UNAVAILABLE
-    answer = _ask("tour", sid, dict(payload),
+    answer = _ask("tour", sid, TourRequestParams(session_id=sid, **payload),
                   timeout=_TOUR_TIMEOUT_S if state == "answered" else _TOUR_PROBE_TIMEOUT_S)
     if answer:
         session["tour_bridge"] = "answered"
@@ -1945,7 +2014,7 @@ def _restart_slash_worker(sid: str, session: dict):
     _attach_worker(sid, session, new_worker)
 
 
-def _get_usage(agent) -> dict:
+def _get_usage(agent) -> Usage:
     g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
     usage = {
         "model": getattr(agent, "model", "") or "",
@@ -1990,7 +2059,7 @@ def _get_usage(agent) -> dict:
             spent = agent.get_credits_spent_micros()
             if spent is not None:
                 usage["dev_credits_spent_micros"] = int(spent)
-    return usage
+    return Usage.model_validate(usage)
 
 
 def _probe_credentials(agent) -> str:
@@ -2039,15 +2108,15 @@ def _current_profile_name() -> str:
 DESKTOP_BACKEND_CONTRACT = 7
 
 
-def _session_usage_snapshot(session: dict | None) -> dict:
+def _session_usage_snapshot(session: dict | None) -> Usage:
     sess = session or {}
     mirror_usage = _metadata_mirror(session).get("usage")
     if sess.get("agent") is not None and not (sess.get("_compute_host_active") and isinstance(mirror_usage, dict)):
         return _get_usage(sess["agent"])
-    return dict(mirror_usage) if isinstance(mirror_usage, dict) else {}
+    return Usage.model_validate(mirror_usage) if isinstance(mirror_usage, dict) else Usage()
 
 
-def _project_info_for_cwd(cwd: str) -> dict | None:
+def _project_info_for_cwd(cwd: str) -> ProjectRef | None:
     """The first-class Project owning ``cwd`` (per-profile projects.db) so TUI status, desktop status bar and
     ``/status`` name the workspace identically. Only explicit named projects resolve."""
     if not str(cwd or "").strip():
@@ -2056,8 +2125,8 @@ def _project_info_for_cwd(cwd: str) -> dict | None:
         from hermes_cli import projects_db as pdb
         with pdb.connect_closing() as conn:
             project = pdb.project_for_path(conn, cwd)
-        return None if project is None else {
-            "id": project.id, "slug": project.slug, "name": project.name, "primary_path": project.primary_path}
+        return None if project is None else ProjectRef(
+            id=project.id, slug=project.slug, name=project.name, primary_path=project.primary_path)
     except Exception:
         logger.debug("failed to resolve project for cwd", exc_info=True)
         return None
@@ -2069,7 +2138,7 @@ def _turn_started_at(session: dict | None) -> float | None:
     return float(inflight["started_at"]) if isinstance(inflight, dict) and inflight.get("started_at") else None
 
 
-def _session_info(agent, session: dict | None = None) -> dict:
+def _session_info(agent, session: dict | None = None) -> SessionLiveInfo:
     if session is None:
         session = next((c for c in _sessions.values() if c.get("agent") is agent), None)
     sess = session or {}
@@ -2117,7 +2186,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "stored_session_id": session_key or "", "desktop_contract": DESKTOP_BACKEND_CONTRACT,
         "version": "", "release_date": "", "update_behind": None, "update_command": "",
         "usage": _session_usage_snapshot(session),
-        "profile_name": profile_name_for_home(sess.get("profile_home")) or _current_profile_name(),
+        "profile_name": str(profile_name_for_home(sess.get("profile_home")) or _current_profile_name() or ""),
     }
     with contextlib.suppress(Exception):
         from hermes_cli import __version__, __release_date__
@@ -2149,7 +2218,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         info["update_command"] = recommended_update_command()
     if live_agent and (warn := _probe_credentials(agent)):
         info["credential_warning"] = warn
-    return info
+    return SessionLiveInfo.model_validate(info)
 
 
 def _tool_ctx(name: str, args: dict) -> str:
@@ -2165,7 +2234,7 @@ def _emit_session_info_for_session(sid: str, session: dict) -> None:
     agent = session.get("agent")
     if agent is not None or _metadata_mirror(session):
         with contextlib.suppress(Exception):
-            _emit("session.info", sid, _session_info(agent, session))
+            _emit("session.info", sid, SessionInfoPayload.of(_session_info(agent, session)))
 
 
 def broadcast_session_info() -> None:
@@ -2207,7 +2276,7 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
             if not added:
                 return  # discovery added nothing → don't churn the client
             info = _session_info(agent, session)
-        _emit("session.info", sid, info)  # outside the lock — write_json must not block under _sessions_lock
+        _emit("session.info", sid, SessionInfoPayload.of(info))  # outside the lock — write_json must not block under _sessions_lock
     threading.Thread(target=_wait_then_refresh, name=f"tui-mcp-late-refresh-{sid}", daemon=True).start()
 
 
@@ -2439,7 +2508,7 @@ def _init_session(
     _register_session_cwd(_sessions[sid])
     _wire_session_agent(sid, key, agent)  # no eager slash-worker pre-warm (see _start_agent_build)
     _start_session_services(sid, key, _sessions.get(sid, {}))
-    _emit("session.info", sid, _session_info(agent, _sessions.get(sid, {})))
+    _emit("session.info", sid, SessionInfoPayload.of(_session_info(agent, _sessions.get(sid, {}))))
     _schedule_mcp_late_refresh(sid, agent)
 
 
@@ -2465,14 +2534,13 @@ def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
 # ── Methods: session ─────────────────────────────────────────────────
 
 
-def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "", profile: str | None = None) -> dict:
+def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "", profile: str | None = None) -> SessionLiveInfo:
     """session.info for a not-yet-built session (session.create's shape); tools/skills land with the deferred build."""
-    return {
-        "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd),
-        "model": model or _resolve_model(), "tools": {}, "skills": {}, "lazy": True,
-        "desktop_contract": DESKTOP_BACKEND_CONTRACT, "profile_name": _response_profile_name(profile),
-        **({"provider": provider} if provider else {}),
-    }
+    return SessionLiveInfo(
+        cwd=cwd, branch=git_probe.branch(cwd), project=_project_info_for_cwd(cwd),
+        model=model or _resolve_model(), tools={}, skills={}, lazy=True,
+        desktop_contract=DESKTOP_BACKEND_CONTRACT, profile_name=_response_profile_name(profile), provider=provider,
+    )
 
 
 def _deferred_session_record(
@@ -2610,7 +2678,8 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
         try:
             if session is None:
                 return
-            _emit("session.resume_progress", sid, {"phase": "history", "status": "loading"})
+            _emit("session.resume_progress", sid, SessionResumeProgressPayload(
+                phase="history", status="loading"))
             db.reopen_session(stored_id)
             raw_history, display_history, prefix = _load_resume_transcript(
                 db, stored_id, model_history_only=model_history_only)
@@ -2628,8 +2697,8 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
             if todo_state is not None and session.get("todo_state") is None:
                 session["todo_state"] = todo_state
             session["resume_history_ready"].set()
-            _emit("session.resume_progress", sid,
-                  {"message_count": session["resume_message_count"], "phase": "history", "status": "complete"})
+            _emit("session.resume_progress", sid, SessionResumeProgressPayload(
+                message_count=session["resume_message_count"], phase="history", status="complete"))
             _maybe_schedule_auto_continue(sid, session, stored_id)
             _start_agent_build(sid, session)
         except Exception as exc:
@@ -2639,8 +2708,9 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
             session.update(resume_hydrating=False, resume_history_error=message, agent_error=message)
             session["resume_history_ready"].set()
             session["agent_ready"].set()
-            _emit("session.resume_progress", sid, {"message": message, "phase": "history", "status": "failed"})
-            _emit("error", sid, {"message": message})
+            _emit("session.resume_progress", sid, SessionResumeProgressPayload(
+                message=message, phase="history", status="failed"))
+            _emit("error", sid, ErrorPayload(message=message))
             with _sessions_lock:
                 discarded = _sessions.pop(sid, None) if _sessions.get(sid) is session else None
             if (lease := (discarded or {}).get("active_session_lease")) is not None:
@@ -2717,7 +2787,7 @@ def _find_live_session_by_key(session_key: str, profile_home=_ANY_PROFILE) -> tu
     return None
 
 
-def _fallback_session_info(session: dict) -> dict:
+def _fallback_session_info(session: dict) -> SessionLiveInfo:
     agent = session.get("agent")
     if agent is not None:
         return _session_info(agent)
@@ -2729,10 +2799,10 @@ def _fallback_session_info(session: dict) -> dict:
     # so a client can clear a stale label instead of retaining it — the same contract `_lazy_session_info`
     # above already follows.
     cwd = _session_cwd(session)
-    return {
-        "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd), "lazy": True,
-        "model": _resolve_model(), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-    }
+    return SessionLiveInfo(
+        cwd=cwd, branch=git_probe.branch(cwd), project=_project_info_for_cwd(cwd), lazy=True,
+        model=_resolve_model(), skills={}, tools={}, desktop_contract=DESKTOP_BACKEND_CONTRACT,
+    )
 
 
 def _reconcile_display_with_live(db_display: list[dict], in_memory: list[dict]) -> list[dict]:
@@ -2774,7 +2844,7 @@ def _live_visible_history(session: dict, db, in_memory_fallback: list[dict]) -> 
 
 def _live_session_payload(
     sid: str, session: dict, *, cols: int | None = None, touch: bool = False,
-    transport: Transport | None = None, omit_messages: bool = False) -> dict:
+    transport: Transport | None = None, omit_messages: bool = False) -> LiveSessionSnapshot:
     with session["history_lock"]:
         if cols is not None:
             session["cols"] = cols
@@ -2811,7 +2881,7 @@ def _live_session_payload(
                        ("pending_connection", _pending_connection_request_payload(sid))):
         if value:
             payload[key] = value
-    return _attach_todo_state(payload, session)
+    return LiveSessionSnapshot.model_validate(_attach_todo_state(payload, session))
 
 
 def _main_runtime_from_agent(agent) -> dict | None:
@@ -3104,7 +3174,7 @@ def _start_usage_ticker(sid: str, agent, interval: float = 1.0) -> tuple[threadi
                 last = usage
                 if stop.is_set():
                     break  # turn ended while snapshotting; message.complete carries the authoritative usage
-                _emit("session.usage", sid, {"usage": usage})
+                _emit("session.usage", sid, SessionUsagePayload(usage=Usage.model_validate(usage)))
     thread = _RealThread(target=_loop, daemon=True)
     thread.start()
     return stop, thread
@@ -3151,17 +3221,6 @@ def _compute_mcp_rev() -> str:
         rev_src = json.dumps({k: cfg.get(k) for k in ("mcp", "mcp_servers", "tools")}, sort_keys=True, default=str)
         return hashlib.sha1(rev_src.encode()).hexdigest()[:12]
     return ""
-
-
-def _finish_reload(rid, params: dict, *, coalesced: bool) -> dict:
-    """Shared tail for both reload paths: honor ``always`` (persist the confirm opt-out) and return the ok payload."""
-    if bool(params.get("always", False)):
-        try:
-            from cli import save_config_value
-            save_config_value("approvals.mcp_reload_confirm", False)
-        except Exception as _exc:
-            logger.warning("Failed to persist mcp_reload_confirm=false: %s", _exc)
-    return _ok(rid, {"status": "reloaded", "loaded_rev": _mcp_reload_loaded_rev, **({"coalesced": True} if coalesced else {})})
 
 
 _TUI_HIDDEN: frozenset[str] = frozenset({"sethome", "set-home", "commands", "approve", "deny"})
@@ -3253,8 +3312,765 @@ _paste_counter = 0
 from .mcp_rpc_helpers import summarize_server as _mcp_summarize_server  # noqa: E402, F401
 
 
-# ── Split @method handler modules (see method_ctx.py): imported last so every global the handlers close
-# over exists; register() rebinds them onto this namespace.
+# ── Split modules (see method_ctx.py), imported last so every facade name they reach as ``srv.<name>``
+# exists. First the sibling helpers this facade calls or re-exports — register() below publishes the
+# same objects, so runtime and static resolution agree; then the modules themselves, to register.
+from .methods_connectors import (  # noqa: E402
+    _CONNECTOR_RPC_METHODS,
+    _capture_connector_rpc_owner,
+    _connection_update,
+    _connector_owner_matches,
+    _connector_rpc,
+    _connector_rpc_error,
+    _connector_rpc_origin,
+    _dispatch_connector_rpc,
+    _install_update_hook,
+    _live_operation,
+    _operation_view,
+    _owned_session,
+    _reissue,
+)
+from .prompt_turn import (  # noqa: E402
+    _ROUTING_REOPEN_PATIENCE_S,
+    _TurnScopes,
+    _absorb_turn_result,
+    _active_goal_manager,
+    _admit_prompt_turn,
+    _after_complete_turn,
+    _bot_mode_delivery_text,
+    _commit_turn_history,
+    _complete_turn_payload,
+    _dispatch_followup_turn,
+    _finish_turn,
+    _goal_followup_after_turn,
+    _hook_failure,
+    _invoke_agent,
+    _is_bot_mode_session,
+    _is_successful_goal_turn,
+    _plan_goal_compression_recovery,
+    _prepare_turn_input,
+    _record_turn_marker,
+    _recover_turn_exception,
+    _reopen_routed_session_row,
+    _result_status,
+    _route_turn_images,
+    _routing_provenance_db,
+    _run_post_turn_followups,
+    _run_prompt_submit,
+    _start_turn_voice,
+    _turn_outcome,
+)
+from .agent_callbacks import (  # noqa: E402
+    _CHILD_DELTA_EVENTS,
+    _CHILD_RUN_STALE_S,
+    _active_child_runs,
+    _agent_cbs,
+    _apply_personality_to_session,
+    _apply_project_workspace,
+    _available_personalities,
+    _background_agent_kwargs,
+    _cfg_max_turns,
+    _child_mirrors,
+    _child_mirrors_lock,
+    _child_run_active,
+    _ephemeral_preview_agent_kwargs,
+    _load_fallback_model,
+    _mirror_subagent_to_child,
+    _parse_tui_skills_env,
+    _preview_restart_callbacks,
+    _preview_restart_history,
+    _preview_tool_result_preview,
+    _prompt_text,
+    _rebuild_session_agent,
+    _reset_session_agent,
+    _side_agent_session_db,
+    _validate_personality,
+    _wire_callbacks,
+)
+from .compute_host_bridge import (  # noqa: E402
+    _COMPUTE_HOST_COMPRESS_WAIT_CAP_SECS,
+    _adopt_late_compute_host_compress_ack,
+    _apply_compute_host_metadata_mirror,
+    _compute_host_adopt_frame_meta,
+    _compute_host_compress_wait_seconds,
+    _compute_host_request_session,
+    _compute_host_session_info,
+    _compute_host_supervisor,
+    _compute_host_supervisor_lock,
+    _compute_host_turn_frame,
+    _get_compute_host_supervisor,
+    _history_lock,
+    _lock_compute_host_clarify,
+    _metadata_mirror,
+    _on_compute_host_turn_done,
+    _open_request_matches,
+    _relay_compute_host_response,
+    _relay_compute_host_rpc,
+    _send_compute_host_control,
+    _session_uses_compute_host,
+    _submit_prompt_to_compute_host,
+    _turn_isolation_enabled,
+)
+from .methods_session import (  # noqa: E402
+    _BRANCH_COPY_FIELDS,
+    _LISTING_DENY_SOURCES,
+    _active_pet,
+    _b64,
+    _branch_source_history,
+    _branch_title,
+    _build_branch_agent,
+    _compress_live,
+    _compress_via_compute_host,
+    _compute_host_ack_error,
+    _cwd_info,
+    _denied_source,
+    _find_live_unpersisted,
+    _int_param,
+    _legacy_spawn_tree_entry,
+    _listing_rows,
+    _make_agent_in_context,
+    _new_runtime_ids,
+    _persist_branch,
+    _pet_config_followup,
+    _pet_display_cfg,
+    _pet_emit,
+    _pet_gen_abort,
+    _pet_kitty_cells,
+    _pet_pick_provider,
+    _profile_build_scope,
+    _profile_session_db,
+    _release_db,
+    _resume_adopt_stranded,
+    _resume_cold,
+    _resume_deferred,
+    _resume_eager,
+    _resume_follow_tip,
+    _resume_guard,
+    _resume_lazy,
+    _resume_live_unpersisted,
+    _resume_locate,
+    _resume_response,
+    _resume_reuse_live,
+    _resume_reuse_live_locked,
+    _save_via_compute_host,
+    _seed_branch_row,
+    _seed_row,
+    _session_list_by_title,
+    _session_row_summary,
+    _snapshot_sessions,
+    _status_row,
+    _str_param,
+    _title_read,
+    _try_get_session,
+    _unarchive_recoverable,
+    _visible_branch_history,
+)
+from .methods_voice import (  # noqa: E402
+    _VOICE_TOGGLE_ACTIONS,
+    _any_session_running,
+    _arm_barge_listener_if_enabled,
+    _arm_full_duplex_listener,
+    _caller_transport,
+    _deliver_fd_transcript,
+    _end_voice_chat,
+    _fd_barge_params,
+    _fd_listener_active,
+    _fd_listener_lock,
+    _fd_speak_pipelines,
+    _fd_trip,
+    _fd_tts_pending,
+    _frame_fields,
+    _full_duplex_listener,
+    _owner_result,
+    _persist_wake_enabled,
+    _release_gateway_wake_owner,
+    _release_wake_for_transport,
+    _resume_voice_wake,
+    _running_sessions,
+    _set_voice_tts,
+    _speak_text_with_barge,
+    _tts_lease_async,
+    _tts_stream_begin,
+    _tts_stream_lock,
+    _tts_stream_state,
+    _tts_stream_stop,
+    _voice_cfg_dict,
+    _voice_cfg_number,
+    _voice_emit,
+    _voice_event_sid,
+    _voice_mode_enabled,
+    _voice_sid_lock,
+    _voice_status_payload,
+    _voice_tts_enabled,
+    _voice_wake_owner,
+    _vr_on_status,
+    _vr_on_stop_phrase,
+    _vr_transcript,
+    _wake_detect_handler,
+    _wake_lock,
+    _wake_owner_snapshot,
+    _wake_owner_surface,
+    _wake_owner_transport,
+    _wake_probe,
+    _wake_resume_if_owner,
+    _wake_resume_retry_active,
+    _wake_resume_retry_lock,
+)
+from .session_auto_continue import (  # noqa: E402
+    _AUTO_CONTINUE_FRESHNESS_MINUTES_DEFAULT,
+    _ac_inflight_original,
+    _ac_set_queue,
+    _ac_try_correction,
+    _auto_continue_config,
+    _auto_continue_note,
+    _drain_queued_prompt,
+    _drop_queued_duplicates_of_inflight_user,
+    _emit_terminal_turn_error,
+    _enqueue_prompt,
+    _handle_busy_submit,
+    _inflight_snapshot,
+    _interrupt_busy_session,
+    _maybe_schedule_auto_continue,
+    _queued_prompt_snapshot,
+    _restore_agent_history_after_turn_error,
+    _retire_turn_marker,
+    _sanitize_queued_entry_vs_inflight_user,
+    _session_home,
+)
+from .session_history import (  # noqa: E402
+    _AUTO_CONTINUE_NOTE_PREFIX,
+    _HISTORY_ASSISTANT_DETAIL_KEYS,
+    _HISTORY_AUDIO_KINDS,
+    _HISTORY_IMAGE_KINDS,
+    _HISTORY_ROLES,
+    _HISTORY_TEXT_KINDS,
+    _TURN_FAILURE_DETAIL_LIMIT,
+    _TURN_PROMPT_ECHO_MAX_PROMPT,
+    _TURN_PROMPT_ECHO_WINDOW,
+    _active_image_routing_identity,
+    _append_inflight_delta,
+    _build_image_ref_message,
+    _build_persist_message_with_image_refs,
+    _build_persist_user_message,
+    _clear_inflight_turn,
+    _coerce_message_text,
+    _coerce_seed_history,
+    _content_display_text,
+    _expand_skill_invocation_for_replay,
+    _fail_inflight_turn,
+    _history_dict_text,
+    _history_part_image_url,
+    _history_text_only_part,
+    _history_to_messages,
+    _inflight_text,
+    _is_display_hidden_marker,
+    _is_text_only_busy_payload,
+    _legacy_display_kind,
+    _record_inflight_correction,
+    _skill_scaffold_projection,
+    _start_inflight_turn,
+    _strip_prompt_echo,
+    _turn_failure_detail,
+)
+from .session_lifecycle import (  # noqa: E402
+    _AUTOMATIC_SESSION_END_REASONS,
+    _NON_GATEWAY_SOURCES,
+    _RECLAIM_END_REASONS,
+    _SESSION_OWNERSHIP_UNAVAILABLE,
+    _announce_session_reclaimed,
+    _attach_worker,
+    _cancel_ws_orphan_reap,
+    _claim_active_session_slot,
+    _close_session_by_id,
+    _close_sessions_for_transport,
+    _closed_session_activity,
+    _ensure_active_session_slot,
+    _finalize_session,
+    _interrupt_session_turn,
+    _is_gateway_owned_source,
+    _lease_retry,
+    _lifecycle_own_sid,
+    _lock_vault_managers,
+    _notify_session_boundary,
+    _other_runtime_lease_guard,
+    _own_live_lease_ids,
+    _pending_ws_reaps,
+    _pop_session_by_id,
+    _reattach_refusal,
+    _rebind_live_transport,
+    _release_active_session_slot,
+    _schedule_ws_orphan_reap,
+    _session_has_active_delegations,
+    _teardown_popped_session,
+    _teardown_session,
+    _transfer_active_session_slot,
+    _ws_orphan_turn_activity_is_fresh,
+    _ws_session_is_detached,
+)
+from .session_notifications import (  # noqa: E402
+    _DEDUP_EXTRA_FIELDS,
+    _KANBAN_EVENT_FORMATTERS,
+    _KANBAN_NOTIFY_KINDS,
+    _KANBAN_POLL_SECONDS,
+    _LOOP_POLL_SECONDS,
+    _async_delegation_display_metadata,
+    _collect_kanban_notifications,
+    _desktop_ui_wired,
+    _format_kanban_event_text,
+    _hud_surface_note,
+    _kb_board_key,
+    _kb_first_line,
+    _kb_poll_board,
+    _maybe_fire_tui_heartbeat_tick,
+    _maybe_fire_tui_loop_tick,
+    _notif_claim_turn,
+    _notif_current_keys,
+    _notif_dispatch_completions,
+    _notif_dispatch_event,
+    _notif_handle_event,
+    _notif_handle_ready,
+    _notif_live_session_matches,
+    _notif_locked_sessions,
+    _notif_log_failure,
+    _notif_loop_status,
+    _notif_other_profile_session_owns,
+    _notif_poll_kanban,
+    _notif_release_turn,
+    _notif_resolve_event_key,
+    _notif_session_matches,
+    _notif_slash_loop_tick,
+    _notif_submit,
+    _notification_event_belongs_elsewhere,
+    _notification_event_dedup_key,
+    _notification_event_requires_owner,
+    _notification_poller_loop,
+    _notification_pollers,
+    _poll_bot_live_delivery_once,
+    _prepend_note,
+    _session_owns_notification_event,
+    _start_notification_poller,
+    _wire_desktop_sinks,
+)
+from .session_reaper import (  # noqa: E402
+    _BACKEND_NONCE,
+    _HEARTBEAT_REFRESH_S,
+    _ORPHAN_SWEEP_SOURCES,
+    _backend_id_for_this_process,
+    _enforce_session_cap,
+    _exit_flush_handlers_installed,
+    _exit_flush_prev_handlers,
+    _flush_dirty_sessions,
+    _flush_session_messages,
+    _flush_sessions_before_exit,
+    _gateway_started_at,
+    _handle_exit_flush_signal,
+    _heartbeat_refresher_lock,
+    _heartbeat_refresher_started,
+    _max_live_sessions,
+    _reap_idle_sessions,
+    _reaper_daemon_timer,
+    _reaper_hostname,
+    _reaper_session_snapshot,
+    _reclaim_orphaned_leases,
+    _refresh_backend_heartbeat,
+    _repair_missing_ws_orphan_reaps,
+    _schedule_session_cap_enforcement,
+    _schedule_startup_orphan_sweep,
+    _session_is_evictable,
+    _session_is_lru_evictable,
+    _session_orphan_reaper_enabled,
+    _start_backend_heartbeat_refresher,
+    _startup_orphan_sweep_lock,
+    _startup_orphan_sweep_ran,
+    _sweep_orphaned_session_rows,
+    _transport_is_dead,
+)
+from .session_transports import (  # noqa: E402
+    _attach_session_transport,
+    _detach_session_transport,
+    _detach_transport_from_sessions,
+    _session_has_live_transport,
+    _session_live_transports,
+    _session_transport_contains,
+    _session_transport_lock,
+    _transport_is_live_peer,
+    _warn_foreign_login,
+)
+from .session_workdir import (  # noqa: E402
+    _LAUNCH_CWD_NOT_A_WORKSPACE,
+    _WORKDIR_DB_OPEN_FAILED,
+    _WORKDIR_SEED_FIELDS,
+    _completion_cwd,
+    _context_cwd_is_launch_artifact,
+    _display_session_cwd,
+    _effective_terminal_backend,
+    _emit_settled_session_info,
+    _ensure_session_db_row,
+    _heal_dead_cwd,
+    _history_without_ephemeral_scaffolding,
+    _is_local_terminal_backend,
+    _normalize_completion_path,
+    _persist_branch_seed,
+    _persist_session_cwd_and_schedule_git_meta,
+    _persist_session_git_meta,
+    _persisted_session_cwd,
+    _reconcile_session_cwd_from_terminal,
+    _register_session_cwd,
+    _rewind_active_session_history,
+    _session_cwd,
+    _session_db,
+    _session_source,
+    _set_session_cwd,
+    _terminal_task_cwd_with_source,
+    _workdir_owner_db,
+    _workdir_reraise_disk_full,
+    _workdir_row_model_config,
+    _workdir_terminal_cfg,
+    _workdir_valid_generation,
+)
+from .tool_progress import (  # noqa: E402
+    _PROGRESS_HANDLERS,
+    _SUBAGENT_FIELDS,
+    _SUMMARY_COUNTERS,
+    _TODO_TOOL_NAMES,
+    _TUI_VERBOSE_TEXT_MAX_CHARS,
+    _TUI_VERBOSE_TEXT_MAX_LINES,
+    _attach_todo_state,
+    _cache_todo_state,
+    _cap_tui_verbose_text,
+    _connector_lifecycle_is_stale,
+    _connector_tool_lifecycle,
+    _emit_tool_lifecycle,
+    _fmt_tool_duration,
+    _normalize_todo_state,
+    _on_tool_complete,
+    _on_tool_progress,
+    _on_tool_start,
+    _progress_subagent,
+    _redact_tui_verbose_text,
+    _session_todo_state,
+    _todo_state_from_history,
+    _tool_args_text,
+    _tool_result_text,
+    _tool_summary,
+    _verbose_text,
+)
+from .methods_complete_helpers import (  # noqa: E402
+    _DETAILS_MODES,
+    _DETAILS_SECTIONS,
+    _FUZZY_CACHE_MAX_FILES,
+    _FUZZY_CACHE_TTL_S,
+    _FUZZY_FALLBACK_EXCLUDES,
+    _abs_completion_prefix_exists,
+    _details_completions,
+    _details_root_meta,
+    _fuzzy_basename_rank,
+    _fuzzy_cache,
+    _fuzzy_cache_lock,
+    _git_repo_files,
+    _list_repo_files,
+    _model_picker_context,
+    _walk_repo_files,
+)
+from .prompt_attachments import (  # noqa: E402
+    _ATTACHMENT_REF_NEEDS_QUOTING_RE,
+    _ATTACH_BYTES_MAX_BYTES,
+    _IMAGE_MAGIC,
+    _PDF_ATTACH_MAX_BYTES,
+    _PDF_ATTACH_MAX_PAGES,
+    _allowed_image_extensions,
+    _attachment_ref_path,
+    _b64_payload,
+    _decode_attach_base64,
+    _decode_attach_payload,
+    _format_ref_value,
+    _queue_attached_image,
+    _sanitize_attachment_name,
+    _session_home_dir,
+    _session_images_dir,
+    _sniff_image_ext,
+    _stage_session_file_attachment,
+)
+from .model_switch import (  # noqa: E402
+    _RUNTIME_KEYS,
+    _apply_model_switch,
+    _apply_switch_reasoning,
+    _commit_agent_switch,
+    _current_model_runtime,
+    _expensive_model_confirm,
+    _launch_profile_scope_needed,
+    _merge_preflight_warning,
+    _pending_switch_selection_warning,
+    _profile_runtime_scope_tokens,
+    _release_profile_runtime_scope_tokens,
+    _restart_completed_failed_agent_build,
+    _restore_agent_model_runtime,
+    _session_profile_runtime_scope,
+    _snapshot_agent_model_runtime,
+    _switch_request,
+    _sync_agent_model_with_config,
+    _sync_bot_capabilities,
+)
+from .session_compression import (  # noqa: E402
+    CompressionLockHeld,
+    _COMPRESSION_INT_KEYS,
+    _apply_live_compression_config,
+    _apply_pending_model_switch,
+    _compress_session_history,
+    _compressor_ctor_default,
+    _derived_default_threshold_percent,
+    _sync_agent_compression_with_config,
+    _sync_session_key_after_compress,
+    _tui_compression_config_signature,
+)
+from .methods_browser import (  # noqa: E402
+    _CDP_SCHEMES,
+    _browser_connect,
+    _browser_disconnect,
+    _cdp_http_reachable,
+    _connect_local_default,
+    _is_default_local_cdp,
+    _resolve_browser_cdp_url,
+)
+from .methods_projects import (  # noqa: E402
+    _DIR_EXISTS_CACHE,
+    _PROJECT_TREE_EXCLUDED_SOURCES,
+    _build_project_tree,
+    _dir_exists_cached,
+    _discover_repos_payload,
+    _is_repo_junk,
+    _is_session_cwd_junk,
+    _non_workspace_dirs,
+    _project_info,
+    _project_tree_inputs,
+    _project_tree_row,
+    _projects_payload,
+    _repo_discovery_policy,
+    _repo_discovery_policy_is_default,
+    _repo_discovery_policy_key,
+    _require_project,
+    _scan_discovered_repos_remote,
+)
+from .methods_slash import (  # noqa: E402
+    _FAST_TIERS,
+    _ISOLATED_SESSION_READ_COMMANDS,
+    _LIVE_SLASH_OUTPUT,
+    _NO_AGENT,
+    _NO_AGENT_USAGE,
+    _compress_live_with_feedback,
+    _compute_host_slash,
+    _format_live_model_output,
+    _live_session_messages,
+    _live_slash_command_output,
+    _mirror_slash_side_effects,
+)
+from .methods_config_set import (  # noqa: E402
+    _CONFIG_SETTERS,
+    _FAST_WORDS,
+    _REASONING_DISPLAY_WORDS,
+    _cfgset_await_agent,
+    _cfgset_model_ok,
+    _emit_all_session_info,
+    _emit_session_info,
+    _kv,
+    _raw_word,
+    _set_details_section,
+    _set_display_toggle,
+    _set_word,
+    _stash_pending_model_switch,
+    _toggle_setters,
+    _word,
+    _word_setters,
+    _write_display_sections,
+)
+from .change_watcher import (  # noqa: E402
+    _CHANGE_BROADCAST_FLOOR_S,
+    _CHANGE_WATCHES,
+    _bot_relay_outbox_seen,
+    _broadcast_skin_if_changed,
+    _broadcast_watched_changes,
+    _change_broadcast_at,
+    _change_checked_at,
+    _change_sigs,
+    _ensure_skin_watcher,
+    _last_skin_sig,
+    _newest_mtime_ns,
+    _note_skin_broadcast,
+    _skin_sig,
+    _skin_watcher_started,
+    resolve_skin,
+)
+from .methods_complete import (  # noqa: E402
+    _AT_DIRECTIVE_HINTS,
+    _BUILTIN_AT_PREFIXES,
+    _SLASH_EXTRAS,
+    _at_root_items,
+    _dir_listing_items,
+    _fuzzy_basename_items,
+    _item,
+    _plugin_reference_items,
+    _profile_mention_items,
+    _session_agent,
+)
+from .methods_prompt import (  # noqa: E402
+    _CLIENT_SURFACES,
+    _GROUP_PROBE_FAILED_MSG,
+    _HOSTED_TASK_FIELDS,
+    _PREVIEW_RESTART_HISTORY_NOTE,
+    _PREVIEW_RESTART_RULES,
+    _STALE_TARGET_MSG,
+    _TRUNCATION_PARAMS,
+    _approval_reply,
+    _approval_respond_session_fallback,
+    _attached_image_result,
+    _coerce_truncate_int,
+    _final_response_text,
+    _find_user_turn_by_row_id,
+    _history_user_indices,
+    _hosted_submit_error,
+    _legacy_group_fence_error,
+    _load_durable_truncation_history,
+    _lock_in_submit_turn,
+    _mem_db_pair_agrees,
+    _message_row_id,
+    _parse_truncation_params,
+    _pdf_attach_source,
+    _pdf_page_range,
+    _pending_reaction_notes,
+    _persist_session_row_for_submit,
+    _resolve_truncate_row_id,
+    _resolve_truncation_ordinal,
+    _row_ids_of,
+    _run_after_agent_ready,
+    _side_agent_args,
+    _spawn_side_agent,
+    _storage_error_data,
+    _truncate_history_for_submit,
+    _typed_stop_phrase_response,
+)
+from .methods_session_control import (  # noqa: E402
+    _ACTION_COMMAND_MAP,
+    _SESSION_CONTROL_SLASHES,
+    _VALID_ACTIONS,
+    _dispatch_command,
+    _dispatch_envelope,
+    _execute_heartbeat_action,
+    _execute_manager_action,
+    _execute_subgoal_action,
+    _extract_wait_barrier,
+    _goal_blocks_loop_tick,
+    _load_goal_state,
+    _load_heartbeat_state,
+    _load_loop_state,
+    _manager_error_message,
+    _publish_session_control_snapshot,
+    _safe_goal_snapshot,
+    _safe_heartbeat_snapshot,
+    _safe_loop_snapshot,
+    _snapshot_control,
+    _snapshot_revision,
+    _snapshot_updated_at,
+    _validate_action_args,
+)
+from .billing_view import (  # noqa: E402
+    _serialize_auto_reload,
+    _serialize_billing_error,
+    _serialize_billing_state,
+    _serialize_payment_method,
+    _serialize_subscription_preview,
+    _serialize_usage_bar,
+    _serialize_usage_model,
+    _usage_payload,
+    _wire_str,
+)
+from .methods_profiles import (  # noqa: E402
+    _ASSET_EXTS,
+    _ASSET_MAGIC,
+    _best_effort,
+    _canonical_session_row,
+    _clean_names,
+    _clean_revisions,
+    _configure_cfg_sections,
+    _configure_model,
+    _configure_ui_meta,
+    _describe_toolsets,
+    _env_has_content,
+    _hermes_home_scope,
+    _inherit_launch_model,
+    _latest_message_preview,
+    _latest_profile_session_rows,
+    _lazy,
+    _mirror_launch_credentials,
+    _mirror_secret,
+    _mirror_voice_sections,
+    _model_provider_params,
+    _pin_profile_model,
+    _profile_session_fields,
+    _profile_ui_meta_fields,
+    _read_profile_yaml,
+    _resolve_profile,
+    _resurrect_recoverable_canonical,
+    _save_mcp_toggles,
+    _save_toolset_pin,
+    _try,
+    _unlink_asset_files,
+)
+from .methods_browser_control import (  # noqa: E402
+    _broker_event_writer,
+)
+from .methods_tools import (  # noqa: E402
+    _PLUGINS_ACTIONS,
+    _SKILLS_ACTIONS,
+    _SLASH_BUILTINS,
+    _bundle_key_for,
+    _busy_error,
+    _capture_run_kwargs,
+    _captured_exec,
+    _catalog_plugin_commands,
+    _catalog_quick_commands,
+    _catalog_registry,
+    _catalog_skills,
+    _configure_session_tools,
+    _dispatch_bundle,
+    _dispatch_plugin,
+    _dispatch_quick,
+    _dispatch_skill,
+    _exec_out,
+    _is_profile_skill_command,
+    _is_snapshot_restore,
+    _joined_output,
+    _mcp_named_server,
+    _mcp_reload_confirm_required,
+    _plugin_command_handler,
+    _plugin_rows,
+    _rewind_or_err,
+    _rewind_prelude,
+    _run_action,
+    _run_plugin_command,
+    _session_home_scope,
+    _session_key_or_err,
+    _user_turn_indices,
+)
+from .methods_config import (  # noqa: E402
+    _CONFIG_GETTERS,
+    _CONFIG_GET_ERR,
+    _THINKING_MODES,
+    _readiness_check,
+    _reconcile_repo_discovery,
+    _safe_client_label,
+    _stamped_project_tree,
+)
+from .methods_session_foreign import (  # noqa: E402
+    _foreign_history_request,
+)
+from .methods_images import (  # noqa: E402
+    _image_to_data_url,
+)
+from .methods_subagents import (  # noqa: E402
+    _SUBAGENT_SNAPSHOT_FIELDS,
+    _SUBAGENT_TAIL_BYTES,
+    _owned_subagent_records,
+)
 from . import (  # noqa: E402
     methods_voice as _methods_voice, methods_browser as _methods_browser, methods_slash as _methods_slash,
     methods_complete_helpers as _methods_complete_helpers, session_auto_continue as _session_auto_continue,

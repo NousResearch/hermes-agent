@@ -1,3 +1,4 @@
+import type { ConnectionOperationTarget, ConnectionRequestPayload } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -17,16 +18,28 @@ import {
 } from './connection-request'
 import { $gateway } from './gateway'
 
-const WIRE = {
+const target = (name: string): ConnectionOperationTarget => ({
+  action: 'connect',
+  attempt: null,
+  connect_url: null,
+  detail: null,
+  hint: null,
+  kind: 'connector',
+  name,
+  state: 'pending',
+  tools: null
+})
+
+const WIRE: ConnectionRequestPayload = {
   deadline_at: 1_800_000_000,
   op_id: 'op-1',
   tool_call_id: 'call-1',
   timeout_seconds: 120,
-  targets: [
-    { action: 'connect' as const, kind: 'connector' as const, name: 'gmail', state: 'pending' as const },
-    { action: 'connect' as const, kind: 'connector' as const, name: 'notion', state: 'pending' as const }
-  ]
+  targets: [target('gmail'), target('notion')]
 }
+
+/** The wire answer for Continue: every field named, no targets. */
+const CONTINUE = { settled_by: 'continue', targets: [] }
 
 type Gateway = NonNullable<ReturnType<typeof $gateway.get>>
 
@@ -43,16 +56,19 @@ type Snapshot = Parameters<typeof applyOperationStatus>[1]
 type Frame = Parameters<typeof applyConnectionUpdate>[1]
 
 /** Every `connection.update` frame carries the operation snapshot; `states` overrides per-target state. */
-function frame(
-  states: Record<string, Snapshot['targets'][number]['state']>,
-  extra: Partial<Frame> = {}
-): Frame {
+function frame(states: Record<string, Snapshot['targets'][number]['state']>, extra: Partial<Frame> = {}): Frame {
   return {
+    actor: null,
     deadline_at: WIRE.deadline_at,
+    detail: null,
+    from: null,
     op_id: 'op-1',
     settled: false,
+    settled_at: null,
     settled_by: null,
+    target: null,
     targets: WIRE.targets.map(target => ({ ...target, state: states[target.name] ?? target.state })),
+    to: null,
     ...extra
   }
 }
@@ -84,9 +100,7 @@ describe('connection-request store', () => {
   })
 
   it('rejects a payload with no tool call id: a card that cannot name its row has no row to live on', () => {
-    const { tool_call_id: _omitted, ...snapshot } = WIRE
-
-    expect(normalizeConnectionRequest(snapshot, 's1')).toBeNull()
+    expect(normalizeConnectionRequest({ ...WIRE, tool_call_id: null }, 's1')).toBeNull()
   })
 
   it('rejects a payload with no targets, no op id or no deadline', () => {
@@ -104,17 +118,18 @@ describe('connection-request store', () => {
       op_id: 'op-1',
       settled: false,
       settled_by: null,
-      targets: [
-        { action: 'connect', connect_url: 'https://l/gmail', kind: 'connector', name: 'gmail', state: 'initiated' },
-        { action: 'connect', kind: 'connector', name: 'notion', state: 'pending' }
-      ]
+      settled_at: null,
+      targets: [{ ...target('gmail'), connect_url: 'https://l/gmail', state: 'initiated' }, target('notion')]
     })
 
     expect(overlaid.deadlineAt).toBe(WIRE.deadline_at)
     expect(overlaid.targets[0]).toMatchObject({ connectUrl: 'https://l/gmail', state: 'initiated' })
 
     const updated = applyConnectionUpdate(overlaid, {
-      ...frame({ gmail: 'connected' }, { actor: 'backend_watcher', from: 'initiated', target: 'gmail', to: 'connected' }),
+      ...frame(
+        { gmail: 'connected' },
+        { actor: 'backend_watcher', from: 'initiated', target: 'gmail', to: 'connected' }
+      ),
       deadline_at: 42 // a frame must never move the deadline the card already holds from the request
     })
 
@@ -129,7 +144,10 @@ describe('connection-request store', () => {
 
     expect(foreign).toBe(req)
 
-    const settled = applyConnectionUpdate(req, frame({ gmail: 'not_connected', notion: 'not_connected' }, { settled: true, settled_by: 'deadline' }))
+    const settled = applyConnectionUpdate(
+      req,
+      frame({ gmail: 'not_connected', notion: 'not_connected' }, { settled: true, settled_by: 'deadline' })
+    )
 
     expect(settled.settled).toBe(true)
     expect(settled.settledBy).toBe('deadline')
@@ -174,10 +192,16 @@ describe('connection-request store', () => {
     expect(await skipConnectionTarget(req, 'notion')).toBe(true)
     expect(rpc.mock.calls[0][0]).toBe('connection.respond')
     expect(rpc.mock.calls[0][1]).toMatchObject({ op_id: 'op-1', session_id: 'a' })
-    expect(rpc.mock.calls[0][1].result).toEqual({ targets: [{ name: 'notion', status: 'skipped' }] })
+    expect(rpc.mock.calls[0][1].result).toEqual({
+      settled_by: null,
+      targets: [{ detail: null, name: 'notion', state: null, status: 'skipped', tools: null }]
+    })
     expect($connectionRequests.get().a).toBeDefined()
 
-    updateConnectionRequest('a', frame({ gmail: 'connected', notion: 'skipped' }, { settled: true, settled_by: 'all_resolved' }))
+    updateConnectionRequest(
+      'a',
+      frame({ gmail: 'connected', notion: 'skipped' }, { settled: true, settled_by: 'all_resolved' })
+    )
     expect(await respondToConnectionRequest(req, { settled_by: 'continue' })).toBe(false)
     expect(hasConnectionRequest('a')).toBe(false)
   })
@@ -188,16 +212,16 @@ describe('connection-request store', () => {
     setConnectionRequest(request('a'))
 
     expect(await skipConnectionRequest('a')).toBe(true)
-    expect(rpc.mock.calls[0][1].result).toEqual({ settled_by: 'continue' })
+    expect(rpc.mock.calls[0][1].result).toEqual(CONTINUE)
   })
 
-  it('continue is a one-field payload', async () => {
+  it('continue names no targets', async () => {
     const rpc = vi.fn().mockResolvedValue({ status: 'ok', settled: true })
     $gateway.set(fakeGateway(rpc))
     const req = request('a')
     setConnectionRequest(req)
 
     await continueConnectionRequest(req)
-    expect(rpc.mock.calls[0][1].result).toEqual({ settled_by: 'continue' })
+    expect(rpc.mock.calls[0][1].result).toEqual(CONTINUE)
   })
 })

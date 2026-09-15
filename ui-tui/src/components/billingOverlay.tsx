@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto'
 
 import { Box, Text, useInput } from '@hermes/ink'
+import type { BillingStateResult } from '@hermes/shared/gateway-events'
 import { useRef, useState } from 'react'
 
 import type { BillingOverlayState } from '../app/interfaces.js'
-import type { BillingStateResponse } from '../gatewayTypes.js'
 import type { Theme } from '../theme.js'
 
 import { ActionRow, footer, MenuRow, type MenuRowSpec, UsageBars, useMenu } from './overlayPrimitives.js'
@@ -19,7 +19,7 @@ interface BillingOverlayProps {
   t: Theme
 }
 
-function autoReloadLine(s: BillingStateResponse): null | string {
+function autoReloadLine(s: BillingStateResult): null | string {
   if (!s.auto_reload) {
     return null
   }
@@ -76,7 +76,7 @@ interface ScreenProps {
   ctx: BillingOverlayState['ctx']
   onClose: () => void
   onPatch: (next: Partial<BillingOverlayState>) => void
-  s: BillingStateResponse
+  s: BillingStateResult
   t: Theme
 }
 
@@ -182,8 +182,8 @@ function OverviewScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
 // ── Screen 2: Buy credits ─────────────────────────────────────────────
 
 function BuyScreen({ ctx, onPatch, s, t }: ScreenProps) {
-  const presets = s.charge_presets_display
-  const rawPresets = s.charge_presets
+  const presets = s.charge_presets_display ?? []
+  const rawPresets = s.charge_presets ?? []
   // No card on file → the buy screen becomes the ADD-CARD path: cards are added
   // on the portal (never in-terminal), and "check again" re-fetches state so the
   // flow continues right here once the card is saved. Card present → the normal
@@ -408,7 +408,7 @@ function ConfirmScreen({
   onBack: () => void
   onClose: () => void
   onPatch: (next: Partial<BillingOverlayState>) => void
-  s: BillingStateResponse
+  s: BillingStateResult
   t: Theme
 }) {
   // rows: Pay $X now / Cancel

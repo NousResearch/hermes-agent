@@ -1,11 +1,12 @@
-import type { ModelOptionProvider, ModelPricing } from '@hermes/shared'
+import type { ModelOptionProvider, SavedKeyModelPricing } from '@hermes/shared'
 import { fuzzyRank, modelSearchText } from '@hermes/shared'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
+import { catalogProviderMatches, modelOptionsQueryKey, providerPricing, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { foldIncludes, normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -34,7 +35,7 @@ interface ModelPickerDialogProps {
   onSelect: (selection: { provider: string; model: string }) => void
   ownerConnectionId?: string
   profile?: string
-  request?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  request?: GatewayRequest
   /**
    * Optional class for DialogContent. Use it to lift the picker onto a higher
    * rung of the overlay ladder when it opens over another fixed overlay (the
@@ -318,7 +319,7 @@ function ModelResults({
             )}
             {models.map(model => {
               const isCurrent = model === currentModel && catalogProviderMatches(provider, currentProvider)
-              const price = provider.pricing?.[model]
+              const price = providerPricing(provider, model)
               const locked = unavailable.has(model)
               // Managed local model loading into memory right now: show the
               // real load percent inline (keyed by exact model id — remote
@@ -419,7 +420,7 @@ function DownloadingModelRow({ jobId, target }: { jobId: string; target: string 
 
 // Compact In/Out $/Mtok price tag, mirroring the CLI picker's price columns.
 // Renders nothing when pricing is unavailable for the model.
-function ModelPrice({ price, isCurrent }: { price?: ModelPricing; isCurrent: boolean }) {
+function ModelPrice({ price, isCurrent }: { price?: SavedKeyModelPricing; isCurrent: boolean }) {
   const { t } = useI18n()
   const copy = t.modelPicker
 

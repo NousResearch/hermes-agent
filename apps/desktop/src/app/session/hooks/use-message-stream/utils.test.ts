@@ -53,7 +53,7 @@ describe('delegateTaskPayloads', () => {
       'tool.start'
     )
 
-    expect(spec).toMatchObject({ event_type: 'subagent.start', goal: 'do it', status: 'running' })
+    expect(spec).toMatchObject({ goal: 'do it', status: 'running', tool_name: 'delegate_task', text: null })
   })
 
   it('maps completion (with error) to a failed subagent.complete', () => {
@@ -62,7 +62,7 @@ describe('delegateTaskPayloads', () => {
       'complete'
     )
 
-    expect(spec).toMatchObject({ event_type: 'subagent.complete', status: 'failed' })
+    expect(spec).toMatchObject({ status: 'failed', tool_name: null })
   })
 
   it.each(['timeout', 'error', 'failed', 'failure', 'TIMEOUT'])(
@@ -73,7 +73,7 @@ describe('delegateTaskPayloads', () => {
         'complete'
       )
 
-      expect(spec).toMatchObject({ event_type: 'subagent.complete', status: 'failed' })
+      expect(spec).toMatchObject({ status: 'failed', tool_name: null })
     }
   )
 
@@ -83,6 +83,6 @@ describe('delegateTaskPayloads', () => {
       'complete'
     )
 
-    expect(spec).toMatchObject({ event_type: 'subagent.complete', status: 'completed' })
+    expect(spec).toMatchObject({ status: 'completed', summary: 'done', tool_name: null })
   })
 })

@@ -1,6 +1,7 @@
+import type { SessionControlSnapshot } from '@hermes/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $sessionControlBySession, clearAllSessionControl, type SessionControlSnapshot } from '@/store/session-control'
+import { $sessionControlBySession, clearAllSessionControl } from '@/store/session-control'
 
 import { handleControlEvent } from './session-control'
 import type { GatewayEventContext } from './types'

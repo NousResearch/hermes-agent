@@ -27,6 +27,7 @@ vi.mock('@/hermes', () => ({
       this.connectionState = 'closed'
     }
     onEvent = vi.fn(() => () => {})
+    onAnyServerRequest = vi.fn(() => () => {})
     onState = vi.fn(() => () => {})
   }
 }))

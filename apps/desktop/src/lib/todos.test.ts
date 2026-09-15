@@ -13,8 +13,8 @@ import {
 describe('todoTree', () => {
   it('orders parents before children with depths', () => {
     const tree = todoTree([
-      { content: 'WP1', id: 'wp1', status: 'in_progress' },
-      { content: 'WP2', id: 'wp2', status: 'pending' },
+      { content: 'WP1', id: 'wp1', parent: null, status: 'in_progress' },
+      { content: 'WP2', id: 'wp2', parent: null, status: 'pending' },
       { content: 'T1', id: 't1', parent: 'wp1', status: 'pending' },
       { content: 'T2', id: 't2', parent: 'wp1', status: 'pending' }
     ])
@@ -59,24 +59,24 @@ describe('parseTodos', () => {
   it('parses todo arrays with valid ids, content, and statuses', () => {
     expect(
       parseTodos([
-        { content: 'Gather ingredients', id: 'prep', status: 'completed' },
-        { content: 'Boil water', id: 'boil', status: 'in_progress' },
-        { content: 'Serve', id: 'serve', status: 'pending' }
+        { content: 'Gather ingredients', id: 'prep', parent: null, status: 'completed' },
+        { content: 'Boil water', id: 'boil', parent: null, status: 'in_progress' },
+        { content: 'Serve', id: 'serve', parent: null, status: 'pending' }
       ])
     ).toEqual([
-      { content: 'Gather ingredients', id: 'prep', status: 'completed' },
-      { content: 'Boil water', id: 'boil', status: 'in_progress' },
-      { content: 'Serve', id: 'serve', status: 'pending' }
+      { content: 'Gather ingredients', id: 'prep', parent: null, status: 'completed' },
+      { content: 'Boil water', id: 'boil', parent: null, status: 'in_progress' },
+      { content: 'Serve', id: 'serve', parent: null, status: 'pending' }
     ])
   })
 
   it('parses nested todo payloads from wrapped objects and JSON strings', () => {
-    expect(parseTodos({ todos: [{ content: 'Plate', id: 'plate', status: 'pending' }] })).toEqual([
-      { content: 'Plate', id: 'plate', status: 'pending' }
+    expect(parseTodos({ todos: [{ content: 'Plate', id: 'plate', parent: null, status: 'pending' }] })).toEqual([
+      { content: 'Plate', id: 'plate', parent: null, status: 'pending' }
     ])
 
     expect(parseTodos('{"todos":[{"id":"plate","content":"Plate","status":"pending"}]}')).toEqual([
-      { content: 'Plate', id: 'plate', status: 'pending' }
+      { content: 'Plate', id: 'plate', parent: null, status: 'pending' }
     ])
   })
 
@@ -111,32 +111,32 @@ describe('latestSessionTodos', () => {
 
   it('returns the last todo list across the transcript (result beats args)', () => {
     const messages = [
-      { parts: [todoPart([{ content: 'Old', id: 'a', status: 'pending' }])] },
+      { parts: [todoPart([{ content: 'Old', id: 'a', parent: null, status: 'pending' }])] },
       { parts: [{ type: 'text', text: 'hi' }] },
       {
         parts: [
-          todoPart([{ content: 'Stale', id: 'a', status: 'pending' }], {
-            result: { todos: [{ content: 'Fresh', id: 'a', status: 'completed' }] }
+          todoPart([{ content: 'Stale', id: 'a', parent: null, status: 'pending' }], {
+            result: { todos: [{ content: 'Fresh', id: 'a', parent: null, status: 'completed' }] }
           })
         ]
       }
     ]
 
-    expect(latestSessionTodos(messages)).toEqual([{ content: 'Fresh', id: 'a', status: 'completed' }])
+    expect(latestSessionTodos(messages)).toEqual([{ content: 'Fresh', id: 'a', parent: null, status: 'completed' }])
   })
 
   it('prefers the live carried `todos` field over args', () => {
     const messages = [
       {
         parts: [
-          todoPart([{ content: 'Args', id: 'a', status: 'pending' }], {
-            todos: [{ content: 'Live', id: 'a', status: 'in_progress' }]
+          todoPart([{ content: 'Args', id: 'a', parent: null, status: 'pending' }], {
+            todos: [{ content: 'Live', id: 'a', parent: null, status: 'in_progress' }]
           })
         ]
       }
     ]
 
-    expect(latestSessionTodos(messages)).toEqual([{ content: 'Live', id: 'a', status: 'in_progress' }])
+    expect(latestSessionTodos(messages)).toEqual([{ content: 'Live', id: 'a', parent: null, status: 'in_progress' }])
   })
 
   it('returns null when no todo tool calls exist', () => {
@@ -147,44 +147,44 @@ describe('latestSessionTodos', () => {
 
 describe('mergeTodoItems', () => {
   const list = [
-    { content: 'Fix C', id: 'c', status: 'in_progress' as const },
-    { content: 'Fix D', id: 'd', status: 'pending' as const },
-    { content: 'Fix A', id: 'a', status: 'pending' as const }
+    { content: 'Fix C', id: 'c', parent: null, status: 'in_progress' as const },
+    { content: 'Fix D', id: 'd', parent: null, status: 'pending' as const },
+    { content: 'Fix A', id: 'a', parent: null, status: 'pending' as const }
   ]
 
   it('updates status by id and keeps the rest of the list', () => {
     expect(mergeTodoItems(list, [{ id: 'c', status: 'completed' }])).toEqual([
-      { content: 'Fix C', id: 'c', status: 'completed' },
-      { content: 'Fix D', id: 'd', status: 'pending' },
-      { content: 'Fix A', id: 'a', status: 'pending' }
+      { content: 'Fix C', id: 'c', parent: null, status: 'completed' },
+      { content: 'Fix D', id: 'd', parent: null, status: 'pending' },
+      { content: 'Fix A', id: 'a', parent: null, status: 'pending' }
     ])
   })
 
   it('appends a new item and fills missing content', () => {
     expect(mergeTodoItems(list, [{ id: 'v', status: 'pending' }])).toEqual([
       ...list,
-      { content: '(no description)', id: 'v', status: 'pending' }
+      { content: '(no description)', id: 'v', parent: null, status: 'pending' }
     ])
   })
 })
 
 describe('nextTodosFromToolEvent', () => {
   const current = [
-    { content: 'Fix C', id: 'c', status: 'pending' as const },
-    { content: 'Fix D', id: 'd', status: 'pending' as const }
+    { content: 'Fix C', id: 'c', parent: null, status: 'pending' as const },
+    { content: 'Fix D', id: 'd', parent: null, status: 'pending' as const }
   ]
 
   it('replaces from the full tool result', () => {
     expect(
       nextTodosFromToolEvent(current, {
         todos: [
-          { content: 'Fix C', id: 'c', status: 'completed' },
-          { content: 'Fix D', id: 'd', status: 'in_progress' }
+          { content: 'Fix C', id: 'c', parent: null, status: 'completed' },
+          { content: 'Fix D', id: 'd', parent: null, status: 'in_progress' }
         ]
       })
     ).toEqual([
-      { content: 'Fix C', id: 'c', status: 'completed' },
-      { content: 'Fix D', id: 'd', status: 'in_progress' }
+      { content: 'Fix C', id: 'c', parent: null, status: 'completed' },
+      { content: 'Fix D', id: 'd', parent: null, status: 'in_progress' }
     ])
   })
 
@@ -194,8 +194,8 @@ describe('nextTodosFromToolEvent', () => {
         args: { merge: true, todos: [{ id: 'c', status: 'completed' }] }
       })
     ).toEqual([
-      { content: 'Fix C', id: 'c', status: 'completed' },
-      { content: 'Fix D', id: 'd', status: 'pending' }
+      { content: 'Fix C', id: 'c', parent: null, status: 'completed' },
+      { content: 'Fix D', id: 'd', parent: null, status: 'pending' }
     ])
   })
 
@@ -206,9 +206,9 @@ describe('nextTodosFromToolEvent', () => {
   it('still replaces when merge is off', () => {
     expect(
       nextTodosFromToolEvent(current, {
-        args: { todos: [{ content: 'Only this', id: 'c', status: 'completed' }] }
+        args: { todos: [{ content: 'Only this', id: 'c', parent: null, status: 'completed' }] }
       })
-    ).toEqual([{ content: 'Only this', id: 'c', status: 'completed' }])
+    ).toEqual([{ content: 'Only this', id: 'c', parent: null, status: 'completed' }])
   })
 })
 

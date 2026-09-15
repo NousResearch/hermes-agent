@@ -63,5 +63,5 @@ def test_codex_bridge_emits_one_authoritative_tui_tool_lifecycle(monkeypatch):
         "tool.start",
         "tool.complete",
     ]
-    assert lifecycle[0][1]["tool_id"] == "codex_exec_tool-1"
-    assert lifecycle[1][1]["tool_id"] == "codex_exec_tool-1"
+    assert lifecycle[0][1].tool_id == "codex_exec_tool-1"
+    assert lifecycle[1][1].tool_id == "codex_exec_tool-1"

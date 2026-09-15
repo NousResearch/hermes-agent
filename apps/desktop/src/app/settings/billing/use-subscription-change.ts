@@ -3,7 +3,7 @@ import { useRef, useState } from 'react'
 
 import type { BillingRefusal } from './api'
 import { useBillingApi } from './api'
-import type { SubscriptionPreviewResponse } from './types'
+import type { SubscriptionPreviewResult } from './types'
 
 export interface DowngradeTarget {
   tierId: string
@@ -19,9 +19,9 @@ export interface DowngradeTarget {
 export type DowngradePhase =
   | { kind: 'previewFailed'; refusal: BillingRefusal }
   | { kind: 'previewing' }
-  | { kind: 'ready'; preview: SubscriptionPreviewResponse }
-  | { kind: 'scheduleFailed'; preview: SubscriptionPreviewResponse; refusal: BillingRefusal }
-  | { kind: 'scheduling'; preview: SubscriptionPreviewResponse }
+  | { kind: 'ready'; preview: SubscriptionPreviewResult }
+  | { kind: 'scheduleFailed'; preview: SubscriptionPreviewResult; refusal: BillingRefusal }
+  | { kind: 'scheduling'; preview: SubscriptionPreviewResult }
 
 export interface ActiveDowngrade {
   phase: DowngradePhase

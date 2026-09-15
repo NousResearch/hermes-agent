@@ -40,8 +40,7 @@ def hermes_root(tmp_path, monkeypatch):
 
 
 def _call(method, params=None):
-    handler = server._methods[method]
-    return handler(1, params or {})
+    return server.handle_request({"id": 1, "method": method, "params": params or {}})
 
 
 def _result(resp):

@@ -1,40 +1,54 @@
-"""The committed TypeScript + OpenRPC contract files are exactly what ``tui_gateway/contracts``
-renders, and the contract catalog covers the whole wire.
+"""Runtime catalog and generated-contract invariants.
 
-Regenerate with ``.venv/bin/python scripts/gen_gateway_contracts.py`` when a model changes. The
-two files are listed in ``scripts/ci/classify_changes.py::_PY_RELEVANT_CONTRACT_FILES`` so a
-TS-only PR that edits them still runs this test.
+``server._event_frame`` proves a payload's SHAPE once it has found the event's contract; it cannot prove
+that every emitted event NAME has one (an undeclared or mistyped literal is a ``KeyError`` on the first
+execution of that path). The source inventory below keeps that closure mechanical, and the same scan
+refuses a dict literal at a typed emit helper — the producer-side crossing the frame check catches only
+at runtime.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft7Validator
 
 REPO = Path(__file__).resolve().parents[3]
 GEN = REPO / "scripts" / "gen_gateway_contracts.py"
+META_SCHEMA = REPO / "tests" / "tui_gateway" / "contracts" / "fixtures" / "openrpc-meta-schema.json"
 
 
 @pytest.fixture(scope="module")
 def gen():
-    spec = importlib.util.spec_from_file_location("gen_gateway_contracts", GEN)
+    spec = importlib.util.spec_from_file_location("gen_gateway_contracts_generated", GEN)
+    assert spec is not None
     module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
 
-def test_generated_files_are_current(gen):
-    """Both committed artefacts equal an in-memory regeneration (byte-for-byte)."""
-    stale = [path.relative_to(REPO) for path, text in gen.render_all().items()
-             if (path.read_text(encoding="utf-8") if path.exists() else None) != text]
-    assert not stale, f"stale generated contract files {stale}: run scripts/gen_gateway_contracts.py"
+def _generator(*args: str) -> subprocess.CompletedProcess[str]:
+    environment = {**os.environ, "PYTHONPATH": str(REPO)}
+    return subprocess.run(
+        [sys.executable, str(GEN), *args],  # the runner's interpreter, whatever venv layout selected it
+        cwd=REPO,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
 
 
-# The emitter inventory the old gateway-events.json scan used, kept as the completeness oracle:
-# names must come from CODE the gateway runs, never from the contract tables themselves.
+# The emitter inventory: names must come from CODE the gateway runs, never from the contract tables.
 _EMIT_HELPERS = ("_emit", "_broadcast_global_event", "_voice_emit", "_pet_emit", "_emit_tool_lifecycle")
 _LITERAL_EMIT = re.compile(r"\b(?:%s)\(\s*\"([a-z_][a-z0-9_.]*)\"" % "|".join(_EMIT_HELPERS))
 _REQUEST_HELPERS = ("server_requests\\.send", "server_requests\\.send_async", "_ask", "_read_block")
@@ -45,6 +59,10 @@ _SUBAGENT_RELAY = re.compile(r"\"(subagent\.[a-z_]+)\"")
 _DESKTOP_UI_EMIT = re.compile(r"desktop_ui\.(?:emit|emit_or_error)\(\s*\"([a-z_][a-z0-9_.]*)\"")
 _BROKER_FRAME = re.compile(r"^FRAME_[A-Z_]+ = \"(browser\.controller\.[a-z_]+)\"", re.M)
 _SETUP_READY = re.compile(r"^SETUP_READY_EVENT = \"([a-z_.]+)\"", re.M)
+# A dict literal where the typed helpers expect a Payload instance (the event-name string, the session
+# id, then ``{``): the exact producer-side crossing that lands as TypeError after state already changed.
+_DICT_PAYLOAD = re.compile(r"\b(?:_emit|_broadcast_global_event|_voice_emit|_pet_emit|desktop_ui\.emit|desktop_ui\.emit_or_error)"
+                           r"\(\s*\"[a-z_][a-z0-9_.]*\"\s*,(?:(?:[^,()]|\([^()]*\))*,)?\s*\{")
 
 
 def _read(path: Path) -> str:
@@ -82,10 +100,58 @@ def sent_server_requests() -> set[str]:
     return names
 
 
+def test_generated_files_are_current(gen):
+    """Both committed artefacts equal an in-memory regeneration (byte-for-byte): the TypeScript and
+    OpenRPC the clients compile against never drift from the models with CI green."""
+    stale = [path.relative_to(REPO) for path, text in gen.render_all().items()
+             if (path.read_text(encoding="utf-8") if path.exists() else None) != text]
+    assert not stale, f"stale generated contract files {stale}: run scripts/gen_gateway_contracts.py"
+
+
 def test_catalog_covers_the_whole_wire():
-    """Every registered method, every emitted event and every sent server request has a contract,
-    and no contract is orphaned (a deleted handler must take its contract with it)."""
+    """Every registered method, every emitted event name and every sent server request has a contract,
+    and no contract is orphaned (a deleted handler or emitter must take its contract with it)."""
     from tui_gateway import server
     from tui_gateway.contracts import registry
 
     registry.assert_complete(server._methods, emitted_event_names(), sent_server_requests())
+
+
+def test_no_producer_hands_a_dict_to_a_typed_emit_helper():
+    """Gateway siblings and the desktop-only tools (whose ``desktop_ui`` sink is ``server._emit``)."""
+    from tools.registry import _tool_module_candidates
+
+    offenders = []
+    for src in sorted([*(REPO / "tui_gateway").glob("*.py"), *_tool_module_candidates(REPO / "tools")]):
+        for match in _DICT_PAYLOAD.finditer(_read(src)):
+            line = _read(src).count("\n", 0, match.start()) + 1
+            offenders.append(f"{src.relative_to(REPO)}:{line}")
+    assert offenders == [], f"dict literal payloads at typed emit helpers: {offenders}"
+
+
+def test_openrpc_validates_against_vendored_meta_schema(gen):
+    schema = json.loads(META_SCHEMA.read_text(encoding="utf-8"))
+    document = json.loads(gen.render_openrpc())
+
+    assert list(Draft7Validator(schema).iter_errors(document)) == []
+
+
+def test_rendering_is_deterministic(gen):
+    first = tuple(gen.render_all(Path("/tmp/pr3-determinism-one")).values())
+    second = tuple(gen.render_all(Path("/tmp/pr3-determinism-two")).values())
+
+    assert first == second
+
+
+def test_check_detects_stale_output_in_an_explicit_output_directory(tmp_path):
+    result = _generator("--out-dir", str(tmp_path))
+    assert result.returncode == 0, result.stderr
+
+    fresh = _generator("--check", "--out-dir", str(tmp_path))
+    assert fresh.returncode == 0, fresh.stderr
+
+    generated = tmp_path / "gateway-contract.generated.ts"
+    generated.write_text(generated.read_text(encoding="utf-8") + " ", encoding="utf-8")
+    stale = _generator("--check", "--out-dir", str(tmp_path))
+    assert stale.returncode == 1
+    assert "gateway-contract.generated.ts" in stale.stderr

@@ -152,8 +152,8 @@ function isInstallMethodToastSnoozed(): boolean {
  * Runs on every session open; closing the toast snoozes it for a cooldown so it
  * doesn't nag on every thread switch.
  */
-export function reportBackendContract(contract: number | undefined): void {
-  if ((contract ?? 0) >= REQUIRED_BACKEND_CONTRACT) {
+export function reportBackendContract(contract: null | number | string | undefined): void {
+  if (Number(contract ?? 0) >= REQUIRED_BACKEND_CONTRACT) {
     dismissNotification(SKEW_TOAST_ID)
     // Backend caught up — forget any prior snooze so a future regression warns
     // immediately rather than staying silent for the rest of the window.
@@ -183,7 +183,7 @@ export function reportBackendContract(contract: number | undefined): void {
   })
 }
 
-export function reportInstallMethodWarning(message: string | undefined): void {
+export function reportInstallMethodWarning(message: null | string | undefined): void {
   if (!message) {
     dismissNotification(INSTALL_METHOD_TOAST_ID)
 

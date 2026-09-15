@@ -1,7 +1,6 @@
-import type { SubagentStatus } from '@hermes/shared/gateway-events'
+import type { SpawnTreeLoadResult, SubagentStatus } from '@hermes/shared/gateway-events'
 import { atom } from 'nanostores'
 
-import type { SpawnTreeLoadResponse } from '../gatewayTypes.js'
 import type { SubagentProgress } from '../types.js'
 
 export interface SpawnSnapshot {
@@ -101,7 +100,7 @@ function summarizeLabel(subagents: readonly SubagentProgress[]): string {
  * server payload (arbitrary list) into the same SubagentProgress shape
  * used for live data — defensive against cross-version reads.
  */
-export const pushDiskSnapshot = (r: SpawnTreeLoadResponse, path: string) => {
+export const pushDiskSnapshot = (r: SpawnTreeLoadResult, path: string) => {
   const raw = Array.isArray(r.subagents) ? r.subagents : []
   const normalised = raw.map(normaliseSubagent)
 

@@ -10,6 +10,7 @@
  */
 
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
+import type { PromptSubmitResult } from '@hermes/shared'
 
 import type { ClientSessionState } from '@/app/types'
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
@@ -20,6 +21,7 @@ import {
   completeOpenTimelineParts,
   textPart
 } from '@/lib/chat-messages'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 
 import {
   appendText,
@@ -32,7 +34,7 @@ import {
   withSessionNotFoundResume
 } from './utils'
 
-type RequestGateway = <T = unknown>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
+type RequestGateway = GatewayRequest
 
 /**
  * Post-rewrite durable identity information from a truncating `prompt.submit`.
@@ -43,11 +45,6 @@ type RequestGateway = <T = unknown>(method: string, params?: Record<string, unkn
  */
 export type SurvivorUserRowIds = readonly (null | number)[] | Map<number, null | number>
 
-interface PromptSubmitResult {
-  status?: string
-  survivor_user_row_ids?: unknown
-  survivor_row_id_map?: unknown
-}
 
 export function survivorRowIdsFrom(result: PromptSubmitResult | undefined): SurvivorUserRowIds | undefined {
   const rawMap = result?.survivor_row_id_map
@@ -223,7 +220,7 @@ export async function resolveDurableRowId(
   let messages: DurableHistoryMessage[]
 
   try {
-    const result = await requestGateway<{ messages?: unknown }>('session.history', { session_id: sessionId })
+    const result = await requestGateway('session.history', { session_id: sessionId })
 
     messages = Array.isArray(result?.messages) ? (result.messages as DurableHistoryMessage[]) : []
   } catch {
@@ -333,7 +330,7 @@ export async function runRewindSubmit(
   }
 
   const submitFor = (targetId: string) =>
-    requestGateway<PromptSubmitResult>(
+    requestGateway(
       'prompt.submit',
       {
         session_id: targetId,

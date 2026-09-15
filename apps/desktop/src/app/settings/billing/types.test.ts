@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import type { BillingStateResponse, SubscriptionStateResponse } from './types'
+import type { BillingStateResult, SubscriptionStateResult } from './types'
 
 const fullBillingState = {
   auto_reload: {
@@ -13,6 +13,7 @@ const fullBillingState = {
   },
   balance_display: '$142.50',
   balance_usd: '142.50',
+  can_change_plan: true,
   can_charge: true,
   card: {
     brand: 'visa',
@@ -24,6 +25,9 @@ const fullBillingState = {
   charge_presets: ['25', '50', '100'],
   charge_presets_display: ['$25', '$50', '$100'],
   cli_billing_enabled: true,
+  error: null,
+  free_tier: false,
+  free_tier_model: null,
   is_admin: true,
   logged_in: true,
   max_usd: '10000',
@@ -37,11 +41,14 @@ const fullBillingState = {
   },
   ok: true,
   org_name: 'Acme Research',
+  org_slug: null,
+  payment_method: null,
   portal_url: 'https://portal.nousresearch.com/billing',
   role: 'OWNER',
   usage: {
     available: true,
     has_topup: true,
+    ok: true,
     plan_bar: {
       fill_fraction: 0.4,
       kind: 'plan',
@@ -66,21 +73,27 @@ const fullBillingState = {
     topup_remaining_display: '$75',
     total_spendable_display: '$115'
   }
-} satisfies BillingStateResponse
+} satisfies BillingStateResult
 
 const deployedTodayBillingState = {
   auto_reload: null,
   balance_display: '$0.00',
   balance_usd: null,
+  can_change_plan: null,
   can_charge: false,
   card: {
     brand: 'mastercard',
+    display: null,
     last4: '4444',
-    masked: 'mastercard ....4444'
+    masked: 'mastercard ....4444',
+    resolved_via: null
   },
   charge_presets: [],
   charge_presets_display: [],
   cli_billing_enabled: false,
+  error: null,
+  free_tier: false,
+  free_tier_model: null,
   is_admin: true,
   logged_in: true,
   max_usd: null,
@@ -88,14 +101,18 @@ const deployedTodayBillingState = {
   monthly_cap: null,
   ok: true,
   org_name: 'Fresh Deploy',
+  org_slug: null,
+  payment_method: null,
   portal_url: null,
-  role: 'OWNER'
-} satisfies BillingStateResponse
+  role: 'OWNER',
+  usage: null
+} satisfies BillingStateResult
 
 const loggedOutSubscriptionState = {
   can_change_plan: false,
   context: 'personal',
   current: null,
+  error: null,
   is_admin: false,
   logged_in: false,
   ok: true,
@@ -103,8 +120,9 @@ const loggedOutSubscriptionState = {
   org_name: null,
   portal_url: 'https://portal.nousresearch.com/login',
   role: null,
-  tiers: []
-} satisfies SubscriptionStateResponse
+  tiers: [],
+  usage: null
+} satisfies SubscriptionStateResult
 
 describe('desktop billing wire types', () => {
   it('pins realistic billing and subscription RPC payload shapes', () => {

@@ -1,3 +1,4 @@
+import type { SudoParams } from '@hermes/shared'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -60,7 +61,8 @@ describe('PromptOverlays', () => {
         method: 'sudo',
         params: { command, session_id: 's1' },
         profile: 'default',
-        respond
+        respond,
+        sessionId: 's1'
       },
       deps,
       's1'
@@ -81,7 +83,8 @@ describe('PromptOverlays', () => {
   it('explains when an older backend omits command context without blocking cancellation', () => {
     $gateway.set({ request: vi.fn() } as never)
     const respond = vi.fn()
-    rememberServerRequest({ fail: vi.fn(), id: 'legacy-sudo', method: 'sudo', params: {}, respond })
+    // SAFETY: an older backend's frame has no `command`; the contract type says it always does.
+    rememberServerRequest({ fail: vi.fn(), id: 'legacy-sudo', method: 'sudo', params: {} as SudoParams, respond, sessionId: 's1' })
     setSudoRequest({ requestId: 'legacy-sudo', sessionId: 's1' })
     renderPrompts()
 
@@ -98,7 +101,14 @@ describe('PromptOverlays', () => {
 
     $activeSessionId.set('s1')
     $gateway.set({ request } as never)
-    rememberServerRequest({ fail: vi.fn(), id: 'sudo-1', method: 'sudo', params: {}, respond })
+    rememberServerRequest({
+      fail: vi.fn(),
+      id: 'sudo-1',
+      method: 'sudo',
+      params: { command: 'ls', session_id: 's1' },
+      respond,
+      sessionId: 's1'
+    })
     setSudoRequest({ requestId: 'sudo-1', sessionId: 's1' })
 
     renderPrompts()
@@ -139,7 +149,14 @@ describe('PromptOverlays', () => {
 
     $activeSessionId.set('s1')
     $gateway.set({ request } as never)
-    rememberServerRequest({ fail: vi.fn(), id: 'secret-1', method: 'secret', params: {}, respond })
+    rememberServerRequest({
+      fail: vi.fn(),
+      id: 'secret-1',
+      method: 'secret',
+      params: { env_var: 'TEST_SECRET', metadata: null, prompt: 'Paste a secret', session_id: 's1' },
+      respond,
+      sessionId: 's1'
+    })
     setSecretRequest({ envVar: 'TEST_SECRET', prompt: 'Paste a secret', requestId: 'secret-1', sessionId: 's1' })
 
     renderPrompts()

@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import type { ContextBreakdown } from '@/types/hermes'
 
 interface ContextBreakdownOptions {
   busy: boolean
   enabled: boolean
-  requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequest
   sessionId: null | string
 }
 
@@ -38,7 +39,7 @@ export function useContextBreakdown({ busy, enabled, requestGateway, sessionId }
     let cancelled = false
     setLoading(true)
 
-    void requestGateway<ContextBreakdown>('session.context_breakdown', { session_id: sessionId })
+    void requestGateway('session.context_breakdown', { session_id: sessionId })
       .then(breakdown => {
         if (!cancelled && breakdown) {
           setFetched({ breakdown, sessionId })

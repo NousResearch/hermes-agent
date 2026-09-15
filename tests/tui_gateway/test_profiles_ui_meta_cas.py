@@ -70,7 +70,7 @@ def test_ui_meta_revision_survives_key_deletion(home):
     assert deleted["ui_meta"] is True
     assert deleted["ui_meta_revisions"] == {"shared-room": 2}
     row = _default_profile()
-    assert "shared-room" not in row.get("ui_meta", {})
+    assert "shared-room" not in (row.get("ui_meta") or {})
     assert row["ui_meta_revisions"]["shared-room"] == 2
 
     stale_recreate = _configure(

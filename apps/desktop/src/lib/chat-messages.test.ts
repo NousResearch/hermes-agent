@@ -797,7 +797,7 @@ describe('upsertToolPart', () => {
     const [part] = progressed
     const args = part && 'args' in part ? (part.args as Record<string, unknown>) : {}
 
-    expect(args.todos).toEqual([{ content: 'Boil water', id: 'boil', status: 'in_progress' }])
+    expect(args.todos).toEqual([{ content: 'Boil water', id: 'boil', parent: null, status: 'in_progress' }])
   })
 
   it('archives todo state on completion and accepts explicit empty clears', () => {
@@ -834,7 +834,7 @@ describe('upsertToolPart', () => {
 
     const clearedResult = cleared[0] && 'result' in cleared[0] ? toolResultRecord(cleared[0]) : {}
 
-    expect(completedResult.todos).toEqual([{ content: 'Boil water', id: 'boil', status: 'in_progress' }])
+    expect(completedResult.todos).toEqual([{ content: 'Boil water', id: 'boil', parent: null, status: 'in_progress' }])
     expect(clearedResult.todos).toEqual([])
   })
 

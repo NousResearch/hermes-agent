@@ -1,3 +1,9 @@
+import type { RpcMethods } from '@hermes/shared'
+
+import { type GatewayRequest, paramsSessionId, type RoutableParams } from '@/lib/gateway-rpc'
+
+/** Every generated RPC result; the turn lease only inspects the turn-status field. */
+type AnyRpcResult = RpcMethods[keyof RpcMethods]['result']
 import { requestGatewayForAgent, requestGatewayForProfile, retainGatewayForSessionTurn } from '@/store/gateway'
 
 import { resetBackgroundPollingGuardAfterRebind } from './session-gone-latch'
@@ -70,7 +76,10 @@ export const isSessionOwnerRoute = (owner: SessionOwnerScope): owner is SessionO
 
 const isRoute = isSessionOwnerRoute
 
-function routeParams(route: SessionProfileRoute, params: Record<string, unknown>): Record<string, unknown> {
+function routeParams<M extends keyof RpcMethods>(
+  route: SessionProfileRoute,
+  params: RpcMethods[M]['params']
+): RpcMethods[M]['params'] {
   if (!route.targetProfile || !Object.prototype.hasOwnProperty.call(params, 'profile')) {
     return params
   }
@@ -78,32 +87,30 @@ function routeParams(route: SessionProfileRoute, params: Record<string, unknown>
   return { ...params, profile: route.targetProfile }
 }
 
-function promptSessionId(method: string, params: Record<string, unknown>): string {
-  return method === 'prompt.submit' && typeof params.session_id === 'string' ? params.session_id.trim() : ''
+function promptSessionId(method: string, params: RoutableParams): string {
+  return method === 'prompt.submit' ? paramsSessionId(params) : ''
 }
 
 const TERMINAL_TURN_ACK_STATUSES = new Set(['complete', 'completed', 'error'])
 
-function turnKeepsRunning(result: unknown): boolean {
-  if (!result || typeof result !== 'object' || !('status' in result)) {
+function turnKeepsRunning(result: AnyRpcResult): boolean {
+  if (!result || !('status' in result)) {
     // Older gateways may ACK without the newer structured status. Retaining
     // until the terminal event is safer than recreating the client-gone cut.
     return true
   }
 
-  const status = (result as { status?: unknown }).status
-
   // Queued, redirected and future status values are non-terminal by default.
   // Releasing only an explicit terminal ACK avoids recreating client_gone
   // when a gateway accepts a turn without calling it "streaming".
-  return typeof status !== 'string' || !TERMINAL_TURN_ACK_STATUSES.has(status)
+  return !TERMINAL_TURN_ACK_STATUSES.has(String(result.status ?? ''))
 }
 
-async function withRoutedTurnLease<T>(
+async function withRoutedTurnLease<T extends AnyRpcResult>(
   connectionId: null | string,
   profile: string,
   method: string,
-  params: Record<string, unknown>,
+  params: RoutableParams,
   request: () => Promise<T>
 ): Promise<T> {
   const sessionId = promptSessionId(method, params)
@@ -129,9 +136,9 @@ async function withRoutedTurnLease<T>(
   }
 }
 
-async function requestWithRebindGuard<T>(
+async function requestWithRebindGuard<T extends AnyRpcResult>(
   method: string,
-  params: Record<string, unknown>,
+  params: RoutableParams,
   request: () => Promise<T>
 ): Promise<T> {
   const result = await request()
@@ -168,19 +175,14 @@ export function sessionRpcNeedsProfileRoute(ownerProfile: SessionOwnerScope | un
  * serves that profile (keeps the primary's reauth-aware reconnect path).
  * The route is decided at CALL time, not at swap time.
  */
-export function requestForSessionProfile<T>(
+export function requestForSessionProfile<M extends keyof RpcMethods>(
   ownerProfile: SessionOwnerScope | undefined,
-  ambientRequest: <R>(
-    method: string,
-    params?: Record<string, unknown>,
-    timeoutMs?: number,
-    signal?: AbortSignal
-  ) => Promise<R>,
-  method: string,
-  params: Record<string, unknown> = {},
+  ambientRequest: GatewayRequest,
+  method: M,
+  params: RpcMethods[M]['params'],
   timeoutMs?: number,
   signal?: AbortSignal
-): Promise<T> {
+): Promise<RpcMethods[M]['result']> {
   if (isRoute(ownerProfile)) {
     const connectionId = ownerProfile.connectionId.trim()
 
@@ -188,14 +190,14 @@ export function requestForSessionProfile<T>(
       return Promise.reject(new Error('Session owner route is missing connectionId'))
     }
 
-    const routedParams = routeParams(ownerProfile, params)
+    const routedParams = routeParams<M>(ownerProfile, params)
 
     const profile = normKey(ownerProfile.profile)
 
     return withRoutedTurnLease(connectionId, profile, method, routedParams, () =>
       timeoutMs === undefined && signal === undefined
-        ? requestGatewayForAgent<T>(connectionId, profile, method, routedParams)
-        : requestGatewayForAgent<T>(connectionId, profile, method, routedParams, timeoutMs, signal)
+        ? requestGatewayForAgent(connectionId, profile, method, routedParams)
+        : requestGatewayForAgent(connectionId, profile, method, routedParams, timeoutMs, signal)
     )
   }
 
@@ -207,19 +209,19 @@ export function requestForSessionProfile<T>(
     // for a deadline (the plugin host bridge in contrib/wiring is the only one
     // that does).
     if (signal !== undefined) {
-      return requestWithRebindGuard(method, params, () => ambientRequest<T>(method, params, timeoutMs, signal))
+      return requestWithRebindGuard(method, params, () => ambientRequest(method, params, timeoutMs, signal))
     }
 
     if (timeoutMs !== undefined) {
-      return requestWithRebindGuard(method, params, () => ambientRequest<T>(method, params, timeoutMs))
+      return requestWithRebindGuard(method, params, () => ambientRequest(method, params, timeoutMs))
     }
 
-    return requestWithRebindGuard(method, params, () => ambientRequest<T>(method, params))
+    return requestWithRebindGuard(method, params, () => ambientRequest(method, params))
   }
 
   const profile = normKey(ownerProfile)
 
   return withRoutedTurnLease(null, profile, method, params, () =>
-    requestGatewayForProfile<T>(profile, method, params, timeoutMs, signal)
+    requestGatewayForProfile(profile, method, params, timeoutMs, signal)
   )
 }

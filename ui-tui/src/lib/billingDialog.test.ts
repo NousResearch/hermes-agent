@@ -11,6 +11,7 @@ function makeBlock(overrides: Partial<BillingBlock> = {}): BillingBlock {
     model: 'x',
     provider: 'openrouter',
     provider_label: 'OpenRouter',
+    unverified: null,
     ...overrides
   }
 }

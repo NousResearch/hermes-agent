@@ -23,8 +23,8 @@ describe('todoTone', () => {
 describe('todoTree', () => {
   it('orders parents before children with depths', () => {
     const tree = todoTree([
-      { content: 'WP1', id: 'wp1', status: 'in_progress' },
-      { content: 'WP2', id: 'wp2', status: 'pending' },
+      { content: 'WP1', id: 'wp1', parent: null, status: 'in_progress' },
+      { content: 'WP2', id: 'wp2', parent: null, status: 'pending' },
       { content: 'T1', id: 't1', parent: 'wp1', status: 'pending' },
       { content: 'T2', id: 't2', parent: 'wp1', status: 'pending' }
     ])
@@ -60,8 +60,8 @@ describe('todoTree', () => {
 
   it('flattens a todo list with no parents unchanged, all at depth 0', () => {
     const tree = todoTree([
-      { content: 'A', id: 'a', status: 'pending' },
-      { content: 'B', id: 'b', status: 'completed' }
+      { content: 'A', id: 'a', parent: null, status: 'pending' },
+      { content: 'B', id: 'b', parent: null, status: 'completed' }
     ])
 
     expect(tree.map(([t, d]) => [t.id, d])).toEqual([

@@ -21,12 +21,114 @@
  */
 
 import type { PluginContext } from '@hermes/plugin-sdk'
+import type {
+  ClarifyParams,
+  OpenRequestEntry,
+  PendingApproval,
+  SessionLiveInfo,
+  SessionResumeResult
+} from '@hermes/plugin-sdk'
 import { vi } from 'vitest'
 
 /** One message in a scripted session transcript, in the gateway's own shape. */
 export interface ScriptedMessage {
-  content: string
   role: string
+  text: string
+}
+
+/** The `info` block every session result carries. The room engine reads the
+ *  transcript and the prompt fields, never this, so it is the empty wire. */
+function scriptedSessionInfo(): SessionLiveInfo {
+  return {
+    model: null,
+    provider: '',
+    reasoning_effort: '',
+    service_tier: '',
+    fast: false,
+    yolo: false,
+    approval_mode: '',
+    tools: null,
+    skills: null,
+    cwd: '',
+    branch: null,
+    project: null,
+    terminal_backend: '',
+    personality: '',
+    running: false,
+    turn_started_at: null,
+    title: '',
+    stored_session_id: '',
+    desktop_contract: null,
+    version: '',
+    release_date: '',
+    update_behind: null,
+    update_command: '',
+    usage: null,
+    profile_name: null,
+    mcp_servers: [],
+    system_prompt: null,
+    credential_warning: null,
+    lazy: null
+  }
+}
+
+/** A `session.resume` reply carrying only the fields a test cares about. The
+ *  rest is the contract's own "nothing here" wire. */
+export function resumeSnapshot(overrides: Partial<SessionResumeResult> = {}): SessionResumeResult {
+  return {
+    session_id: '',
+    message_count: 0,
+    messages: [],
+    pending_connection: null,
+    info: scriptedSessionInfo(),
+    stored_session_id: null,
+    resumed: null,
+    session_key: null,
+    messages_omitted: null,
+    hydrating: null,
+    running: null,
+    turn_started_at: null,
+    started_at: null,
+    status: null,
+    inflight: null,
+    queued: null,
+    pending_approval: null,
+    open_requests: null,
+    todo_state: null,
+    auto_continue: null,
+    ...overrides
+  }
+}
+
+/** The clarify request as the snapshot carries it: an open server→client
+ *  request frame whose params are the clarify question, flattened to the JSON
+ *  the contract types every open request's params as. */
+export function clarifyOpenRequest(params: ClarifyParams, id = 'req-clarify-1'): OpenRequestEntry {
+  return {
+    id,
+    method: 'clarify',
+    params:
+      params.kind === 'batch'
+        ? { ...params, questions: params.questions.map(question => ({ ...question })) }
+        : { ...params }
+  }
+}
+
+/** A command approval blocking inside a member's session. */
+export function pendingApproval(overrides: Partial<PendingApproval> = {}): PendingApproval {
+  return {
+    request_id: 'req-approval-1',
+    command: '',
+    description: '',
+    pattern_key: null,
+    pattern_keys: null,
+    allow_permanent: null,
+    allow_session: null,
+    smart_denied: null,
+    choices: null,
+    tool_name: null,
+    ...overrides
+  }
 }
 
 export interface ScriptedSession {
@@ -83,10 +185,10 @@ export interface GatewayOptions {
   /** Per profile: report inflight/running on its first N `session.resume`s. */
   busyResumes?: Record<string, number>
   /** Per profile: carry `pending_approval` on its first `until` resumes. */
-  approvalUntil?: Record<string, { payload: Record<string, unknown>; until: number }>
-  /** Per profile: carry open server requests on its first `until` resumes. */
-  /** `payload` is an open-request frame `{ id, method: 'clarify', params }`. */
-  clarifyUntil?: Record<string, { payload: Record<string, unknown>; until: number }>
+  approvalUntil?: Record<string, { payload: PendingApproval; until: number }>
+  /** Per profile: carry the clarify open-request frame on its first `until`
+   *  resumes. */
+  clarifyUntil?: Record<string, { payload: OpenRequestEntry; until: number }>
   /** Land a competing writer's `ui_meta` under `key` during the FIRST
    *  `profiles.configure`, then reject it as a CAS conflict — the race the
    *  sync worker's pull-merge-retry exists for. */
@@ -324,7 +426,7 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
       }
 
       const prompt = String(params.text ?? '')
-      session.messages.push({ content: prompt, role: 'user' })
+      session.messages.push({ role: 'user', text: prompt })
       calls.push({
         profile: session.profile,
         prompt,
@@ -334,7 +436,7 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
       })
       const reply = await turn({ n: calls.length, profile: session.profile, prompt, session })
 
-      for (const message of typeof reply === 'string' ? [{ content: reply, role: 'assistant' }] : reply) {
+      for (const message of typeof reply === 'string' ? [{ role: 'assistant', text: reply }] : reply) {
         session.messages.push(message)
       }
 

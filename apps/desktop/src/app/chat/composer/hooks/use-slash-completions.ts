@@ -5,7 +5,6 @@ import { useCallback, useEffect } from 'react'
 import type { HermesGateway } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
-  type CommandsCatalogLike,
   desktopSkinSlashCompletions,
   desktopSlashDescription,
   type DesktopThemeCommandOption,
@@ -75,7 +74,7 @@ export function useSlashCompletions(options: {
       return
     }
 
-    void cachedSlashCompletion('catalog', () => gateway.request<CommandsCatalogLike>('commands.catalog'))
+    void cachedSlashCompletion('catalog', () => gateway.request('commands.catalog', {}))
       .then(catalog => {
         filterDesktopCommandsCatalog(catalog)
       })
@@ -154,7 +153,7 @@ export function useSlashCompletions(options: {
       try {
         if (!query) {
           const catalog = filterDesktopCommandsCatalog(
-            await cachedSlashCompletion('catalog', () => gateway.request<CommandsCatalogLike>('commands.catalog'))
+            await cachedSlashCompletion('catalog', () => gateway.request('commands.catalog', {}))
           )
 
           // Prefer the categorized layout so the popover renders section headers
@@ -195,7 +194,7 @@ export function useSlashCompletions(options: {
         }
 
         const result = await cachedSlashCompletion(`slash:${text.toLowerCase()}`, () =>
-          gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', { text })
+          gateway.request('complete.slash', { text })
         )
 
         // Arg-completion items (replace_from > 1) carry just the arg stub —

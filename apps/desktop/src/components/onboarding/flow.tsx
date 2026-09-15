@@ -9,6 +9,7 @@ import { Loader } from '@/components/ui/loader'
 import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { ExternalLink, Loader2 } from '@/lib/icons'
+import { providerPricing } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
 import {
   cancelOnboardingFlow,
@@ -265,7 +266,7 @@ function ConfirmingModelPanel({
     p => String(p.slug).toLowerCase() === flow.providerSlug.toLowerCase()
   )
 
-  const price = providerRow?.pricing?.[flow.currentModel]
+  const price = providerPricing(providerRow, flow.currentModel)
   const freeTier = providerRow?.free_tier
 
   return (

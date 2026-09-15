@@ -352,7 +352,7 @@ def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeyp
         def register_peer_route(self, **kwargs):
             captured["registered"] = kwargs
 
-    monkeypatch.setattr(srv, "get_hosted_room_service", lambda: FakeService())
+    monkeypatch.setattr(methods_groups, "get_hosted_room_service", lambda: FakeService())
     monkeypatch.setattr(
         "tui_gateway.hosted_room_peer_http.PeerRunsHTTPClient",
         FakeClient,
@@ -376,10 +376,12 @@ def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeyp
 
 
 def test_register_rejects_plaintext_non_loopback(home, monkeypatch):
+    from gateway.hosted_room_peer import catalog_mapping
+
     class FakeService:
         db_path = hosted_rooms_default_db_path()
 
-    monkeypatch.setattr(srv, "get_hosted_room_service", lambda: FakeService())
+    monkeypatch.setattr(methods_groups, "get_hosted_room_service", lambda: FakeService())
     response = srv._methods["groups.peer.register"](
         4,
         {
@@ -388,7 +390,8 @@ def test_register_rejects_plaintext_non_loopback(home, monkeypatch):
             "target_url": "http://peer.example.test:8377",
             "target_profile": "reviewer",
             "grant": "signed.room.grant",
-            "catalog": {},
+            # A well-formed catalog: the URL check must be what rejects this, not params validation.
+            "catalog": catalog_mapping(installation_id="install-peer", persistent_process=True),
         },
     )
     assert response["error"]["code"] == 5120
@@ -401,7 +404,7 @@ def test_register_requires_roomlink_protocol_v2(home, monkeypatch):
     class FakeService:
         db_path = hosted_rooms_default_db_path()
 
-    monkeypatch.setattr(srv, "get_hosted_room_service", lambda: FakeService())
+    monkeypatch.setattr(methods_groups, "get_hosted_room_service", lambda: FakeService())
     response = srv._methods["groups.peer.register"](
         5,
         {
@@ -439,7 +442,6 @@ def test_create_list_send_and_log_roundtrip(home):
             {
                 "room_id": "room-1",
                 "event_id": "event-1",
-                "actor": {"kind": "user", "id": "desktop-user"},
                 "payload": {"text": "hello", "thread_id": "thread-1"},
             },
         )
@@ -448,7 +450,7 @@ def test_create_list_send_and_log_roundtrip(home):
     assert sent["driver_started"] is True
     assert sent["event"]["seq"] == 1
     assert sent["event"]["kind"] == "message.user"
-    assert sent["event"]["actor"] == {"kind": "user", "id": "desktop"}
+    assert {"kind": "user", "id": "desktop"}.items() <= sent["event"]["actor"].items()  # RoomActor dumps its None fields too
 
     replay = _result(
         srv._methods["groups.log"](
@@ -507,7 +509,6 @@ def test_rpc_retry_is_idempotent_and_conflict_is_visible(home):
     params = {
         "room_id": "room-1",
         "event_id": "event-1",
-        "actor": {"kind": "user", "id": "desktop-user"},
         "payload": {"text": "hello", "thread_id": "thread-1"},
     }
     first = _result(srv._methods["groups.send"](2, params))
@@ -621,19 +622,33 @@ def test_client_event_id_cannot_squat_disband_receipt(home, monkeypatch):
 
 def test_send_does_not_trust_client_supplied_actor_identity(home):
     _create_room()
+    # The closed params model has no ``actor`` key: a spoof attempt is rejected outright (4000) and
+    # nothing is appended to the room.
+    spoofed = srv._methods["groups.send"](
+        2,
+        {
+            "room_id": "room-1",
+            "event_id": "event-1",
+            "actor": {"kind": "user", "id": "spoofed-user"},
+            "payload": {"text": "hello", "thread_id": "thread-1"},
+        },
+    )
+    assert spoofed["error"]["code"] == 4000
+    assert [e["loc"] for e in spoofed["error"]["data"]] == [["actor"]]
+    assert _result(srv._methods["groups.state"](3, {"room_id": "room-1"}))["room"]["latest_seq"] == 0
+
     sent = _result(
         srv._methods["groups.send"](
-            2,
+            4,
             {
                 "room_id": "room-1",
                 "event_id": "event-1",
-                "actor": {"kind": "user", "id": "spoofed-user"},
                 "payload": {"text": "hello", "thread_id": "thread-1"},
             },
         )
     )
 
-    assert sent["event"]["actor"] == {"kind": "user", "id": "desktop"}
+    assert {"kind": "user", "id": "desktop"}.items() <= sent["event"]["actor"].items()  # RoomActor dumps its None fields too
 
 
 def test_create_ignores_client_supplied_authority_identity(home):
@@ -717,7 +732,6 @@ def test_legacy_room_adoption_emits_one_lineage_receipt(home):
             {
                 "room_id": "missing",
                 "event_id": "event-1",
-                "actor": {"kind": "user", "id": "desktop-user"},
                 "payload": {},
             },
         ),
@@ -753,7 +767,7 @@ def test_retry_and_approval_controls_forward_only_exact_local_coordinates(
             calls.append(("approve", room_id, kwargs)) or {"resolved": 1}
         ),
     )
-    monkeypatch.setattr(srv, "get_hosted_room_service", lambda: service)
+    monkeypatch.setattr(methods_groups, "get_hosted_room_service", lambda: service)
 
     retried = _result(
         srv._methods["groups.retry"](
@@ -825,7 +839,7 @@ def test_retry_and_approval_controls_forward_only_exact_local_coordinates(
 def test_mutating_controls_fail_closed_without_a_supervised_worker(
     home, monkeypatch, method_name, params
 ):
-    monkeypatch.setattr(srv, "get_hosted_room_service", lambda: None)
+    monkeypatch.setattr(methods_groups, "get_hosted_room_service", lambda: None)
 
     result = srv._methods[method_name](1, params)
 
@@ -923,7 +937,7 @@ def test_disband_stops_and_revokes_before_tombstoning(home, monkeypatch):
         def revoke_room_routes(self, room_id):
             calls.append(("revoke", room_id))
 
-    monkeypatch.setattr(srv, "get_hosted_room_service", lambda: FakeService())
+    monkeypatch.setattr(methods_groups, "get_hosted_room_service", lambda: FakeService())
     _result(srv._methods["groups.disband"](9, {"room_id": "room-1"}))
 
     assert calls == [("stop", "room-1"), ("revoke", "room-1")]
@@ -942,7 +956,7 @@ def test_failed_remote_revocation_keeps_room_recoverable(home, monkeypatch):
         def revoke_room_routes(self, _room_id):
             raise RuntimeError("peer is offline")
 
-    monkeypatch.setattr(srv, "get_hosted_room_service", lambda: FakeService())
+    monkeypatch.setattr(methods_groups, "get_hosted_room_service", lambda: FakeService())
     result = srv._methods["groups.disband"](11, {"room_id": "room-1"})
 
     assert result["error"]["code"] == 5114
@@ -968,7 +982,7 @@ def test_disband_does_not_revoke_routes_while_stop_is_unacknowledged(
         def revoke_room_routes(self, _room_id):
             calls.append(("revoke", True))
 
-    monkeypatch.setattr(srv, "get_hosted_room_service", lambda: FakeService())
+    monkeypatch.setattr(methods_groups, "get_hosted_room_service", lambda: FakeService())
     result = srv._methods["groups.disband"](13, {"room_id": "room-1"})
 
     assert result["error"]["code"] == 5114
@@ -988,7 +1002,7 @@ def test_approve_routes_one_exact_peer_action(home, monkeypatch):
             captured.update(kwargs)
             return {"resolved": 1}
 
-    monkeypatch.setattr(srv, "get_hosted_room_service", lambda: FakeService())
+    monkeypatch.setattr(methods_groups, "get_hosted_room_service", lambda: FakeService())
     result = _result(
         srv._methods["groups.approve"](
             8,

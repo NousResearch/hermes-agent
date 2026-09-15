@@ -1,4 +1,4 @@
-import { JsonRpcGatewayError } from '@hermes/shared'
+import { JsonRpcGatewayError, type PromptSubmitParams } from '@hermes/shared'
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getSession } from '@/hermes'
 import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { type GatewayRequest, type RoutableParams } from '@/lib/gateway-rpc'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
 import { requestGatewayForAgent } from '@/store/gateway'
@@ -28,6 +29,8 @@ import {
 } from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
 import { $wakeWord, resetWakeWordState } from '@/store/wake-word'
+import { promptSubmitResult } from '@/test/contract'
+import { gatewayRequestMock } from '@/test/gateway-request'
 import type { SessionInfo } from '@/types/hermes'
 
 import { clearSingleFlightSessionResumeState } from './single-flight-resume'
@@ -143,7 +146,7 @@ function Harness({
   onSeedState?: (state: Record<string, unknown>) => void
   openMemoryGraph?: () => void
   refreshSessions: () => Promise<void>
-  requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
+  requestGateway: GatewayRequest
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
   runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
   seedMessages?: unknown[]
@@ -357,9 +360,9 @@ describe('usePromptActions /stop', () => {
   })
 
   it('interrupts the target desktop turn before keeping the background-process cleanup', async () => {
-    const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
+    const calls: Array<{ method: string; params?: RoutableParams }> = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'session.interrupt') {
@@ -437,9 +440,9 @@ describe('usePromptActions HUD surface', () => {
   async function submitFrom(window: 'app' | 'hud') {
     $hudMode.set(window === 'hud')
 
-    const submitted: (Record<string, unknown> | undefined)[] = []
+    const submitted: (RoutableParams | undefined)[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       if (method === 'prompt.submit') {
         submitted.push(params)
       }
@@ -484,14 +487,14 @@ describe('usePromptActions slash session targeting', () => {
     // minted a NEW session, so the status query asked a session that never had
     // a goal. submit.ts already resumes the routed chat here; both pipelines
     // must resolve identically.
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
     const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
     let boundRuntimeId: null | string = null
 
     const createBackendSessionForSend = vi.fn(async () => 'rt-brand-new-WRONG')
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'session.resume') {
@@ -587,7 +590,7 @@ describe('usePromptActions /wake', () => {
   it('starts the GUI-owned listener through wake.start and never spawns the slash worker', async () => {
     const seeds: Record<string, unknown>[] = []
 
-    const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>, _timeoutMs?: number) => {
+    const requestGateway = vi.fn(async (method: string, _params?: RoutableParams, _timeoutMs?: number) => {
       if (method === 'wake.start') {
         return {
           owner_surface: 'gui',
@@ -696,7 +699,7 @@ describe('usePromptActions /compress', () => {
   it('routes through session.compress (not slash.exec) with the compute-host ceiling timeout and renders the summary', async () => {
     const seeds: Record<string, unknown>[] = []
 
-    const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>, _timeoutMs?: number) => {
+    const requestGateway = vi.fn(async (method: string, _params?: RoutableParams, _timeoutMs?: number) => {
       if (method === 'session.compress') {
         return {
           removed: 8,
@@ -738,14 +741,14 @@ describe('usePromptActions /compress', () => {
   it('replaces the transcript from the response messages', async () => {
     const seeds: Record<string, unknown>[] = []
 
-    const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>, _timeoutMs?: number) => {
+    const requestGateway = vi.fn(async (method: string, _params?: RoutableParams, _timeoutMs?: number) => {
       if (method === 'session.compress') {
         return {
           removed: 2,
           summary: { headline: 'Compressed: 4 → 2 messages' },
           messages: [
-            { role: 'user', content: 'summarized context' },
-            { role: 'assistant', content: 'sure, here is the summary' }
+            { role: 'user', text: 'summarized context' },
+            { role: 'assistant', text: 'sure, here is the summary' }
           ]
         } as never
       }
@@ -784,8 +787,8 @@ describe('usePromptActions /compress', () => {
         return {
           host_ack: { output: 'Compressed 4 → 2 messages' },
           messages: [
-            { role: 'user', content: 'compute-host summary' },
-            { role: 'assistant', content: 'compute-host answer' }
+            { role: 'user', text: 'compute-host summary' },
+            { role: 'assistant', text: 'compute-host answer' }
           ]
         } as never
       }
@@ -850,7 +853,7 @@ describe('usePromptActions /compress', () => {
 
   it('passes a focus topic through as focus_topic', async () => {
     const requestGateway = vi.fn(
-      async (_method: string, _params?: Record<string, unknown>, _timeoutMs?: number) => ({ removed: 0 }) as never
+      async (_method: string, _params?: RoutableParams, _timeoutMs?: number) => ({ removed: 0 }) as never
     )
 
     let handle: HarnessHandle | null = null
@@ -1286,11 +1289,11 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     const persistedModes = new Map<string, string>()
     const sessionProfiles = new Map([[focusedSessionId, focusedProfile]])
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       if (method === 'slash.exec') {
         const sessionId = String(params?.session_id ?? '')
         const profile = sessionProfiles.get(sessionId)
-        const command = String(params?.command ?? '')
+        const command = params && 'command' in params ? String(params.command) : ''
 
         if (profile && command === 'approvals off') {
           persistedModes.set(profile, 'off')
@@ -1326,10 +1329,10 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
   })
 
   it('submits /goal send directives returned directly by slash.exec instead of rendering no output', async () => {
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
     const states: Record<string, unknown>[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'slash.exec') {
@@ -1453,11 +1456,11 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
       busy: true
     })
 
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
     const states: Record<string, unknown>[] = []
     const busyRef = { current: true }
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'slash.exec') {
@@ -1643,9 +1646,9 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     $queuedPromptsBySession.set({})
     publishSessionState(tabRuntimeId, createClientSessionState(tabStoredId))
 
-    const submitted: (Record<string, unknown> | undefined)[] = []
+    const submitted: (RoutableParams | undefined)[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       if (method === 'prompt.submit') {
         submitted.push(params)
       }
@@ -1691,9 +1694,9 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
       'The user has provided the following instruction alongside the skill invocation: fix it'
 
     const states: Record<string, unknown>[] = []
-    const submitted: (Record<string, unknown> | undefined)[] = []
+    const submitted: (RoutableParams | undefined)[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       if (method === 'prompt.submit') {
         submitted.push(params)
       }
@@ -1777,10 +1780,10 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
   })
 
   it('dispatches a slash command with a multiline arg instead of "empty slash command" (#41323, #55510)', async () => {
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
     const states: Record<string, unknown>[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'slash.exec') {
@@ -1899,9 +1902,9 @@ describe('usePromptActions desktop slash pickers', () => {
 
   it('marks a timed-out handoff as failed so the next attempt can retry', async () => {
     vi.useFakeTimers()
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'handoff.state') {
@@ -2170,7 +2173,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
       []
 
     const requestGateway = vi.fn(
-      async (method: string, _params?: Record<string, unknown>) =>
+      async (method: string, _params?: RoutableParams) =>
         (method === 'session.resume' ? { session_id: 'rt-session-b' } : {}) as never
     )
 
@@ -2221,7 +2224,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     // Same window, but B's runtime binding is already known centrally — the
     // drain should adopt the authoritative binding directly (no resume
     // round-trip) rather than trusting the leftover foreground id.
-    const requestGateway = vi.fn(async (_method: string, _params?: Record<string, unknown>) => ({}) as never)
+    const requestGateway = vi.fn(async (_method: string, _params?: RoutableParams) => ({}) as never)
 
     let handle: HarnessHandle | null = null
     render(
@@ -2302,7 +2305,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     // the queue entry. The drain must instead go through session.resume to
     // rebind the correct runtime before submitting.
     const requestGateway = vi.fn(
-      async (method: string, _params?: Record<string, unknown>, _timeoutMs?: number) =>
+      async (method: string, _params?: RoutableParams, _timeoutMs?: number) =>
         (method === 'session.resume' ? { session_id: 'rt-session-a-rebound' } : {}) as never
     )
 
@@ -2636,10 +2639,10 @@ describe('usePromptActions redirectPrompt', () => {
   it('resumes the stored session and retries once when session.redirect reports "session not found"', async () => {
     const STORED_SESSION_ID = 'stored-db-xyz789'
     const RECOVERED_SESSION_ID = 'rt-recovered-456'
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
     let redirectAttempts = 0
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'session.redirect') {
@@ -2877,9 +2880,9 @@ describe('usePromptActions file attachment sync', () => {
       value: { readFileDataUrl: vi.fn(async () => 'data:text/plain;base64,aGVsbG8=') }
     })
 
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'file.attach') {
@@ -2930,9 +2933,9 @@ describe('usePromptActions file attachment sync', () => {
       refText: '@file:`C:\\Users\\alice\\Downloads\\report.txt`'
     }
 
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'file.attach') {
@@ -3217,9 +3220,9 @@ describe('usePromptActions file attachment sync', () => {
       value: { readFileDataUrl }
     })
 
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'file.attach') {
@@ -3280,12 +3283,14 @@ describe('usePromptActions file attachment sync', () => {
       refText: '@file:`/Users/mahmoud/Downloads/DEVIS_signed.pdf`'
     }
 
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const submits: PromptSubmitParams[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+    const requestGateway = gatewayRequestMock({
+      'prompt.submit': params => {
+        submits.push(params)
 
-      return {} as never
+        return promptSubmitResult()
+      }
     })
 
     let handle: HarnessHandle | null = null
@@ -3297,9 +3302,9 @@ describe('usePromptActions file attachment sync', () => {
 
     expect(ok).toBe(true)
     // No path → no file.attach, no byte read: the ref passes through unchanged.
-    expect(calls.map(c => c.method)).toEqual(['prompt.submit'])
+    expect(requestGateway.mock.calls.map(([method]) => method)).toEqual(['prompt.submit'])
     expect(readFileDataUrl).not.toHaveBeenCalled()
-    expect(calls[0]?.params?.text).toContain('@file:`/Users/mahmoud/Downloads/DEVIS_signed.pdf`')
+    expect(submits[0]?.text).toContain('@file:`/Users/mahmoud/Downloads/DEVIS_signed.pdf`')
   })
 
   it('passes a Windows path directly for a native Windows local backend', async () => {
@@ -3317,9 +3322,9 @@ describe('usePromptActions file attachment sync', () => {
       refText: '@file:`C:\\Users\\alice\\Downloads\\report.txt`'
     }
 
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'file.attach') {
@@ -3426,10 +3431,10 @@ describe('usePromptActions sleep/wake session recovery', () => {
     // first prompt.submit with the stale runtime id fails. The hook resumes the
     // durable stored id (which survives gateway restarts), gets a fresh live id,
     // and retries the send transparently.
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
     let submitAttempts = 0
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'prompt.submit') {
@@ -3469,11 +3474,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
   })
 
   it('publishes the recovered runtime binding before retrying through the remote owner router', async () => {
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
     let bindingPublished = false
     let submitAttempts = 0
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'prompt.submit') {
@@ -3534,10 +3539,10 @@ describe('usePromptActions sleep/wake session recovery', () => {
       { id: 'a1', parts: [textPart('reply')], role: 'assistant', timestamp: 1 }
     ] as never)
 
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
     let submitAttempts = 0
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'prompt.submit') {
@@ -3583,10 +3588,10 @@ describe('usePromptActions sleep/wake session recovery', () => {
   it('carries the owning profile from the cache into the recovery resume', async () => {
     setSessions(() => [sessionInfo({ id: STORED_SESSION_ID, profile: 'work' })])
 
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
     let submitAttempts = 0
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'prompt.submit') {
@@ -3635,10 +3640,10 @@ describe('usePromptActions sleep/wake session recovery', () => {
     setSessions(() => [])
     vi.mocked(getSession).mockResolvedValue(sessionInfo({ id: STORED_SESSION_ID, profile: 'work' }))
 
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
     let submitAttempts = 0
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'prompt.submit') {
@@ -3681,10 +3686,10 @@ describe('usePromptActions sleep/wake session recovery', () => {
   })
 
   it('background queue resume uses the queued stored id and leaves foreground runtime selected', async () => {
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
     let submitAttempts = 0
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'prompt.submit') {
@@ -3749,10 +3754,10 @@ describe('usePromptActions sleep/wake session recovery', () => {
   })
 
   it('resumes the stored session and retries once when session.interrupt reports "session not found"', async () => {
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
     let interruptAttempts = 0
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'session.interrupt') {
@@ -3886,10 +3891,10 @@ describe('usePromptActions sleep/wake session recovery', () => {
     // With a stored session selected, that must recover exactly like
     // "session not found" — resume + retry — not surface an error that leaves
     // activeSessionId null and lets the next send mint a new session.
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
     let submitAttempts = 0
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'prompt.submit') {
@@ -3940,10 +3945,10 @@ describe('usePromptActions sleep/wake session recovery', () => {
     // still selected in the sidebar. A follow-up submit must continue that
     // conversation via session.resume — createBackendSessionForSend would
     // silently fork the user's chat in two.
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
     const createBackendSessionForSend = vi.fn(async () => 'brand-new-session-WRONG')
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'session.resume') {
@@ -4242,12 +4247,12 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     // context the resumed runtime id belongs to B and A's text lands in the
     // wrong chat — permanently lost from A.
     let releaseResume: () => void = () => {}
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
 
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_A }
     const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'session.resume') {
@@ -4304,12 +4309,14 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
 
     setSessions(() => [sessionInfo({ id: TIP_ID, _lineage_root_id: ROOT_ID })])
 
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const submits: PromptSubmitParams[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+    const requestGateway = gatewayRequestMock({
+      'prompt.submit': params => {
+        submits.push(params)
 
-      return {} as never
+        return promptSubmitResult()
+      }
     })
 
     let handle: HarnessHandle | null = null
@@ -4327,7 +4334,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     const ok = await handle!.submitText('message into the rotated session', { composerScope: ROOT_ID })
 
     expect(ok).toBe(true)
-    expect(calls.some(c => c.method === 'prompt.submit')).toBe(true)
+    expect(submits).toHaveLength(1)
   })
 
   it('aborts submit when the composer scope disagrees with the resolved target (#59305)', async () => {
@@ -4337,12 +4344,14 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     // composerScope carries the composer's own snapshot of "what session was
     // loaded" into submit.ts, which must refuse to send when it disagrees with
     // the session the submit is actually about to target.
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const submits: PromptSubmitParams[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+    const requestGateway = gatewayRequestMock({
+      'prompt.submit': params => {
+        submits.push(params)
 
-      return {} as never
+        return promptSubmitResult()
+      }
     })
 
     let handle: HarnessHandle | null = null
@@ -4358,16 +4367,18 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     const ok = await handle!.submitText('typed while B was on screen', { composerScope: STORED_SESSION_B })
 
     expect(ok).toBe(false)
-    expect(calls.some(c => c.method === 'prompt.submit')).toBe(false)
+    expect(submits).toHaveLength(0)
   })
 
   it('submits normally when the composer scope agrees with the resolved target', async () => {
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const submits: PromptSubmitParams[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+    const requestGateway = gatewayRequestMock({
+      'prompt.submit': params => {
+        submits.push(params)
 
-      return {} as never
+        return promptSubmitResult()
+      }
     })
 
     let handle: HarnessHandle | null = null
@@ -4383,18 +4394,18 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     const ok = await handle!.submitText('typed while A was on screen', { composerScope: STORED_SESSION_A })
 
     expect(ok).toBe(true)
-    expect(calls.some(c => c.method === 'prompt.submit')).toBe(true)
+    expect(submits).toHaveLength(1)
   })
 
   it('aborts recovery submit when the user switches sessions during timeout resume', async () => {
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
     let submitAttempts = 0
 
     let releaseResume: () => void = () => {}
 
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_A }
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'prompt.submit') {
@@ -4450,12 +4461,12 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     // prompt.submit never fired: the message vanished, no DB row was ever
     // persisted, and the desktop stranded on a route whose REST reads 404
     // ("Session not found").
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
     const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
     let routeToken = '/'
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       return {} as never
@@ -4501,12 +4512,12 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     // tell: every switch path retargets it synchronously, so it no longer
     // equals the id create returned. The submit must abort, not adopt the
     // switched-to context as its re-pinned baseline.
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
     const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
     let routeToken = '/'
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       return {} as never
@@ -4573,12 +4584,14 @@ describe('usePromptActions new-chat first-send delivery (#63078)', () => {
       return NEW_RUNTIME_ID
     })
 
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const submits: PromptSubmitParams[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+    const requestGateway = gatewayRequestMock({
+      'prompt.submit': params => {
+        submits.push(params)
 
-      return {} as never
+        return promptSubmitResult()
+      }
     })
 
     let handle: HarnessHandle | null = null
@@ -4602,7 +4615,7 @@ describe('usePromptActions new-chat first-send delivery (#63078)', () => {
     // The FULL RPC transcript: exactly one prompt.submit, addressed to the
     // created runtime session, carrying the user's text — no session.resume
     // detour and, critically, no silent drop before the submit.
-    expect(calls).toEqual([
+    expect(requestGateway.mock.calls.map(([method, params]) => ({ method, params }))).toEqual([
       {
         method: 'prompt.submit',
         params: { session_id: NEW_RUNTIME_ID, text: 'first message of a new chat' }
@@ -4690,9 +4703,9 @@ describe('usePromptActions new-chat first-send delivery (#63078)', () => {
       return NEW_RUNTIME_ID
     })
 
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'file.attach') {
@@ -4777,9 +4790,9 @@ describe('usePromptActions new-chat first-send delivery (#63078)', () => {
       return NEW_RUNTIME_ID
     })
 
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'file.attach') {
@@ -4853,13 +4866,13 @@ describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
     // chats — a send from a second chat must ride through it and reach
     // prompt.submit instead of silently aborting.
     let releaseResume: () => void = () => {}
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
 
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_ID }
     const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
     let routeToken = `/${STORED_ID}::`
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'session.resume') {
@@ -4910,7 +4923,7 @@ describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
   it('submits once through authoritative recovery when routed resume publication lags (#90428)', async () => {
     const staleStoredId = 'stored-previous-selection'
     const staleRuntimeId = 'rt-previous-selection'
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: staleStoredId }
     const activeSessionIdRef: MutableRefObject<string | null> = { current: staleRuntimeId }
 
@@ -4920,7 +4933,7 @@ describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
 
     const resumeStoredSession = vi.fn(async () => undefined)
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'session.resume') {
@@ -4968,7 +4981,7 @@ describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
     const FOREGROUND_RUNTIME_ID = 'rt-foreground-b'
     const QUEUED_STORED_ID = 'stored-queued-c'
     const QUEUED_RUNTIME_ID = 'rt-queued-c-recovered'
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
     const stateWrites: { sessionId: string; storedSessionId: null | string | undefined }[] = []
     // Load-bearing shape (per #91357 review): foreground B must actually NEED
     // routed recovery — no active runtime and an empty ownership cache — so the
@@ -4989,7 +5002,7 @@ describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
       runtimeIdByStoredSessionIdRef.current.set(FOREGROUND_STORED_ID, FOREGROUND_RUNTIME_ID)
     })
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'session.resume') {
@@ -5052,13 +5065,13 @@ describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
     // The churn tolerance must not weaken the real guard: selection AND route
     // moving to another actual chat is a user switch and must abort.
     let releaseResume: () => void = () => {}
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
 
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_ID }
     const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
     let routeToken = `/${STORED_ID}::`
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'session.resume') {
@@ -5112,7 +5125,7 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
   })
 
   it('does not submit to runtime A when the cache proves B is bound to a different runtime (forward mismatch)', async () => {
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
 
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_B }
     const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_A }
@@ -5121,7 +5134,7 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
       current: new Map([[STORED_SESSION_B, 'rt-session-b-known']])
     }
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'session.resume') {
@@ -5167,7 +5180,7 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
     // then creates a fresh session B — if activeSessionIdRef hasn't been
     // re-homed to B's own runtime yet by the time submit fires, A must not
     // be accepted just because B itself was never cached.
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
 
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_B }
     const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_A }
@@ -5176,7 +5189,7 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
       current: new Map([['stored-project-old', RUNTIME_SESSION_A]])
     }
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'session.resume') {
@@ -5216,7 +5229,7 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
   it('still submits directly when the cache positively maps the selected session to the runtime', async () => {
     // Direct submit is safe only when the cache explicitly proves the selected
     // stored session owns the active runtime.
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
 
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_B }
     const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_A }
@@ -5225,7 +5238,7 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
       current: new Map([[STORED_SESSION_B, RUNTIME_SESSION_A]])
     }
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       return {} as never
@@ -5253,12 +5266,12 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
   })
 
   it('resumes the selected session when its ownership cache entry is missing', async () => {
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: RoutableParams }[] = []
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_B }
     const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_A }
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = { current: new Map() }
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       calls.push({ method, params })
 
       if (method === 'session.resume') {
@@ -5559,7 +5572,7 @@ describe('usePromptActions stale-closure session routing', () => {
   })
 
   type GatewayCall = [string, Record<string, unknown>?]
-  type GatewayRequestFn = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
+  type GatewayRequestFn = <T>(method: string, params?: RoutableParams, timeoutMs?: number) => Promise<T>
   type GatewayMock = GatewayRequestFn & { mock: { calls: unknown[][] } }
 
   function gatewayCalls(requestGateway: GatewayMock): GatewayCall[] {
@@ -5698,7 +5711,7 @@ describe('usePromptActions stale-closure session routing', () => {
 })
 
 describe('usePromptActions editMessage stale-target recovery (#82462)', () => {
-  type GatewayRequestFn = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
+  type GatewayRequestFn = <T>(method: string, params?: RoutableParams, timeoutMs?: number) => Promise<T>
   type GatewayMock = GatewayRequestFn & { mock: { calls: unknown[][] } }
 
   afterEach(() => {

@@ -1,3 +1,5 @@
+import type { SessionControlUpdatePayload } from '@hermes/shared'
+
 import { applySessionControlUpdate } from '@/store/session-control'
 
 import type { GatewayEventContext } from './types'
@@ -13,8 +15,11 @@ export function handleControlEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
-  const control = payload && typeof payload === 'object' ? (payload as { control?: unknown }).control : undefined
-  applySessionControlUpdate(sessionId, control)
+  const control = (payload as SessionControlUpdatePayload | undefined)?.control
+
+  if (control) {
+    applySessionControlUpdate(sessionId, control)
+  }
 
   return true
 }

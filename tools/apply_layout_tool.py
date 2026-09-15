@@ -9,6 +9,7 @@ can self-correct without a registry-listing tool.
 
 from tools import desktop_ui
 from tools.registry import registry, tool_error
+from tui_gateway.contracts.events import LayoutApplyPayload
 
 
 def apply_layout_tool(preset: str) -> str:
@@ -17,7 +18,7 @@ def apply_layout_tool(preset: str) -> str:
     if not name:
         return tool_error("preset is required — a layout preset id, e.g. 'default' or 'focus'.")
     return desktop_ui.emit_or_error(
-        "layout.apply", {"preset": name}, f"Failed to apply layout '{name}': ",
+        "layout.apply", LayoutApplyPayload(preset=name), f"Failed to apply layout '{name}': ",
         "Layout apply is only available in the Hermes desktop app.", {"success": True, "preset": name},
     )
 

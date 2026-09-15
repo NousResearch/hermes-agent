@@ -1,4 +1,5 @@
 import type { ToolCallMessagePart } from '@assistant-ui/react'
+import type { RpcMethods } from '@hermes/shared'
 import { map } from 'nanostores'
 
 import { endFirstBuildConnect, isFirstBuildSession } from '@/app/contrib/handoff-receipt'
@@ -6,6 +7,7 @@ import {
   connectionRows,
   connectorAuthorizationUrl,
   type ConnectorRow,
+  connectorRowFromWire,
   connectorText,
   recordOf
 } from '@/lib/connector-tools'
@@ -22,10 +24,10 @@ export interface FirstBuildConnectorRow extends ConnectorRow {
   connectUrl?: string
 }
 
-export type FirstBuildConnectorRequest = <T>(
-  method: string,
-  params: { session_id: string; connectors?: string[]; reconnect?: boolean }
-) => Promise<T>
+export type FirstBuildConnectorRequest = <M extends 'connectors.connect' | 'connectors.list'>(
+  method: M,
+  params: RpcMethods[M]['params']
+) => Promise<RpcMethods[M]['result']>
 
 export interface FirstBuildConnectorState {
   toolCallId: string
@@ -218,7 +220,7 @@ export function watchFirstBuildRows(
     }
 
     try {
-      const result = await request<{ available: boolean; connectors: ConnectorRow[] }>('connectors.list', {
+      const result = await request('connectors.list', {
         session_id: runtimeId
       })
 
@@ -235,7 +237,12 @@ export function watchFirstBuildRows(
           return row.phase === 'connected' ? row : { ...row, enabled: false, phase: 'error', error: 'unavailable' }
         }
 
-        return { ...row, ...live, phase: live.connected ? 'connected' : 'waiting', error: undefined }
+        return {
+          ...row,
+          ...connectorRowFromWire(live),
+          phase: live.connected ? 'connected' : 'waiting',
+          error: undefined
+        }
       })
 
       $firstBuildConnections.setKey(storedId, { ...state, rows })

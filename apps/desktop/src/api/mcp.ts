@@ -1,3 +1,5 @@
+import type { RpcMethods } from '@hermes/shared'
+
 import type { McpCatalogResponse, McpServerSummary } from '@/types/hermes'
 
 import { capabilityScoped, hermesApi, type ProfileScope, profileScoped } from './client'
@@ -48,16 +50,26 @@ export function saveMcpServers(
   })
 }
 
+/** The MCP OAuth handshake RPCs, in call order. */
+export type McpOAuthMethod =
+  | 'mcp.servers.oauth.callback'
+  | 'mcp.servers.oauth.cancel'
+  | 'mcp.servers.oauth.poll'
+  | 'mcp.servers.oauth.start'
+
 /** Capture the source before the first await. Every OAuth RPC, including
  *  cleanup after a foreground switch, belongs to this (connection, profile).
  *  Import the store lazily: it consumes the API barrel during initialization. */
 export function mcpOAuthRpc(scope?: ProfileScope) {
   const { connectionId = null, profile = 'default' } = capabilityScoped(scope)
 
-  return async <T>(action: 'start' | 'poll' | 'callback' | 'cancel', params: Record<string, unknown>): Promise<T> => {
+  return async <M extends McpOAuthMethod>(
+    method: M,
+    params: RpcMethods[M]['params']
+  ): Promise<RpcMethods[M]['result']> => {
     const { requestGatewayForAgent } = await import('@/store/gateway')
 
-    return requestGatewayForAgent<T>(connectionId, profile, `mcp.servers.oauth.${action}`, params, 60_000)
+    return requestGatewayForAgent(connectionId, profile, method, params, 60_000)
   }
 }
 

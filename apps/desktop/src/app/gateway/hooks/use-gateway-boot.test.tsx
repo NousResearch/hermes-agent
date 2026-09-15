@@ -468,7 +468,7 @@ describe('primary failure foreground isolation', () => {
       await advanceBackoff()
       expect(isActivePrimary()).toBe(false)
       expect($gatewayState.get()).toBe('open')
-      await expect(requestGatewayForAgent(foregroundId, 'default', 'ping')).resolves.toEqual({ pong: true })
+      await expect(requestGatewayForAgent(foregroundId, 'default', 'ping', {})).resolves.toEqual({ pong: true })
       expect($desktopBoot.get().error).toBeNull()
       expect($desktopBoot.get().visible).toBe(false)
     }
@@ -548,7 +548,7 @@ describe('primary failure foreground isolation', () => {
       expect(activeGateway()).toBe(foreground)
       expect($connection.get()?.connectionId).toBe('local')
       expect($gatewayState.get()).toBe('open')
-      await expect(requestGatewayForAgent('local', 'default', 'ping')).resolves.toEqual({ pong: true })
+      await expect(requestGatewayForAgent('local', 'default', 'ping', {})).resolves.toEqual({ pong: true })
       expect(overlay.queryByRole('heading')).toBeNull()
       expect($desktopBoot.get().error).toBeNull()
       expect($desktopBoot.get().visible).toBe(false)
@@ -891,7 +891,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     // Publishing the secondary must not relabel the primary socket. Returning
     // to its source should reuse that socket, not dial the secondary endpoint.
     const socketsAfterSwitch = FakeWebSocket.instances.length
-    await expect(requestGatewayForAgent('primary-vps', 'default', 'ping')).resolves.toEqual({ pong: true })
+    await expect(requestGatewayForAgent('primary-vps', 'default', 'ping', {})).resolves.toEqual({ pong: true })
     expect(FakeWebSocket.instances).toHaveLength(socketsAfterSwitch)
   })
 
@@ -1129,7 +1129,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($gatewayState.get()).toBe('open')
     expect(FakeWebSocket.instances).toHaveLength(1)
 
-    await expect(requestGatewayForAgent('primary-vps', 'default', 'ping')).resolves.toEqual({ pong: true })
+    await expect(requestGatewayForAgent('primary-vps', 'default', 'ping', {})).resolves.toEqual({ pong: true })
     expect(FakeWebSocket.instances).toHaveLength(1)
   })
 

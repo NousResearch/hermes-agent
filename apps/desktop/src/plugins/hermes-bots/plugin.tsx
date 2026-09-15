@@ -68,10 +68,10 @@ import {
   selectedRosterBot,
   sessionOwnsWorkspace
 } from './roster-pane'
-import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
+import { botRosterMeta, botWorkspaceOwnerKey, rosterRowFromProfile, setBotsWorkspaceOwner } from './routing'
 import { startHideSweepScheduler } from './session-sweep'
 import { bumpBotOpenGeneration, getBotOpenGeneration, ID, setPluginCtx } from './shared'
-import type { GroupChat, RosterRow } from './types'
+import type { GroupChat } from './types'
 import { loadBotSections } from './user-sections'
 
 // ── plugin ───────────────────────────────────────────────────────────────────
@@ -706,13 +706,13 @@ export default {
 
           if (!roster) {
             try {
-              const res = await host.request<{ profiles?: RosterRow[] }>('profiles.list', {
+              const res = await host.request('profiles.list', {
                 include_sessions: false
               })
 
               // Same resolver as the cached path — renamed bots (display_name
               // / ui_meta title) stay taggable when the roster cache is cold.
-              mentionedBots = resolveRosterMentions(text, res?.profiles ?? [], live).map(bot => ({
+              mentionedBots = resolveRosterMentions(text, res.profiles.map(rosterRowFromProfile), live).map(bot => ({
                 ...bot,
                 remoteSource: false
               }))

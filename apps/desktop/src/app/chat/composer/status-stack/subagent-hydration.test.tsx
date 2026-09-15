@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import * as gateway from '@/store/gateway'
 import { _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/session'
 import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
+import { subagentEvent, subagentRosterRow } from '@/store/subagents.test-util'
 
 import { ComposerStatusStack } from './index'
 
@@ -31,7 +32,7 @@ it('hydrates the empty owner composer and exposes an extended owner-routed trans
     if (method === 'subagent.list') {
       return {
         subagents: [
-          { subagent_id: 'worker', goal: 'Recovered work', started_at: 1000, status: 'running', last_tool: 'read_file' }
+          subagentRosterRow({ subagent_id: 'worker', goal: 'Recovered work', started_at: 1000, last_tool: 'read_file' })
         ],
         delegations: []
       } as never
@@ -83,16 +84,21 @@ it('does not resurrect a child completed while the roster snapshot was in flight
     return {} as never
   })
   setSessionOwnerHint('parent', { connectionId: 'remote-owner', profile: 'research' })
-  upsertSubagent('parent', { subagent_id: 'worker', goal: 'Finishing work' })
+  upsertSubagent('parent', subagentEvent({ subagent_id: 'worker', goal: 'Finishing work' }))
   render(
     <MemoryRouter>
       <ComposerStatusStack queue={null} sessionId="parent" />
     </MemoryRouter>
   )
   await waitFor(() => expect(resolve).toBeTypeOf('function'))
-  act(() => upsertSubagent('parent', { subagent_id: 'worker', status: 'completed' }, false, 'subagent.complete'))
+  act(() =>
+    upsertSubagent('parent', subagentEvent({ subagent_id: 'worker', status: 'completed' }), false, 'subagent.complete')
+  )
   await act(async () =>
-    resolve({ subagents: [{ subagent_id: 'worker', goal: 'Finishing work', status: 'running' }], delegations: [] })
+    resolve({
+      subagents: [subagentRosterRow({ subagent_id: 'worker', goal: 'Finishing work' })],
+      delegations: []
+    })
   )
   expect(screen.queryByText('Finishing work')).toBeNull()
   expect($subagentsBySession.get().parent[0].status).toBe('completed')

@@ -1,10 +1,5 @@
-import type {
-  BillingMutationResponse,
-  BillingStateResponse,
-  SubscriptionPreviewResponse,
-  SubscriptionStateResponse,
-  SubscriptionUpgradeResponse
-} from '../../../gatewayTypes.js'
+import type { SubscriptionStateResult } from '@hermes/shared/gateway-events'
+
 import { openExternalUrl } from '../../../lib/openExternalUrl.js'
 import type { SubscriptionOverlayCtx } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
@@ -20,7 +15,7 @@ type Sys = (text: string) => void
  * `org_id` pins the page to the correct account in multi-org situations.
  * Falls back to bare `/manage-subscription` if org_id is absent.
  */
-function buildManageUrl(s: SubscriptionStateResponse, tierId?: string): string | null {
+function buildManageUrl(s: SubscriptionStateResult, tierId?: string): string | null {
   // portal_url is already an absolute URL resolved by resolve_portal_base_url()
   // on the Python side (e.g. https://portal.nousresearch.com/billing). Strip any
   // path so we can attach /manage-subscription cleanly.
@@ -61,11 +56,11 @@ function buildManageUrl(s: SubscriptionStateResponse, tierId?: string): string |
 const buildSubscriptionCtx = (
   ctx: SlashRunCtx,
   sys: Sys,
-  initialState: SubscriptionStateResponse
+  initialState: SubscriptionStateResult
 ): SubscriptionOverlayCtx => ({
   fetchCard: () =>
     ctx.gateway
-      .rpc<BillingStateResponse>('billing.state', {})
+      .rpc('billing.state', {})
       .then(r => (r?.ok ? (r.card ?? null) : null))
       .catch(() => null),
   openManageLink: (tierId?: string) => {
@@ -96,17 +91,17 @@ const buildSubscriptionCtx = (
   },
   preview: tierId =>
     ctx.gateway
-      .rpc<SubscriptionPreviewResponse>('subscription.preview', { subscription_type_id: tierId })
+      .rpc('subscription.preview', { subscription_type_id: tierId })
       .then(r => r ?? null)
       .catch(() => null),
   refreshState: () =>
     ctx.gateway
-      .rpc<SubscriptionStateResponse>('subscription.state', {})
+      .rpc('subscription.state', {})
       .then(r => r ?? null)
       .catch(() => null),
   requestRemoteSpending: () =>
     ctx.gateway
-      .rpc<BillingMutationResponse>('billing.step_up', { session_id: ctx.sid ?? undefined })
+      .rpc('billing.step_up', { session_id: ctx.sid ?? undefined })
       // Carry the typed denial (session_revoked / remote_spending_revoked /
       // rate_limited / …) so the stepup screen shows the right recovery.
       .then(r => ({ error: r?.error, granted: !!(r && r.ok && r.granted), message: r?.message }))
@@ -116,23 +111,23 @@ const buildSubscriptionCtx = (
       })),
   resume: () =>
     ctx.gateway
-      .rpc<BillingMutationResponse>('subscription.resume', {})
+      .rpc('subscription.resume', {})
       .then(r => r ?? null)
       .catch(() => null),
   scheduleCancellation: () =>
     ctx.gateway
-      .rpc<BillingMutationResponse>('subscription.change', { cancel: true })
+      .rpc('subscription.change', { cancel: true })
       .then(r => r ?? null)
       .catch(() => null),
   scheduleChange: tierId =>
     ctx.gateway
-      .rpc<BillingMutationResponse>('subscription.change', { subscription_type_id: tierId })
+      .rpc('subscription.change', { subscription_type_id: tierId })
       .then(r => r ?? null)
       .catch(() => null),
   sys,
   upgrade: (tierId, idempotencyKey) =>
     ctx.gateway
-      .rpc<SubscriptionUpgradeResponse>('subscription.upgrade', {
+      .rpc('subscription.upgrade', {
         subscription_type_id: tierId,
         ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {})
       })
@@ -152,9 +147,9 @@ export const subscriptionCommands: SlashCommand[] = [
       const sys: Sys = ctx.transcript.sys
 
       ctx.gateway
-        .rpc<SubscriptionStateResponse>('subscription.state', {})
+        .rpc('subscription.state', {})
         .then(
-          ctx.guarded<SubscriptionStateResponse>(s => {
+          ctx.guarded(s => {
             if (!s.logged_in) {
               sys('Not logged into Nous Portal — run /portal to log in, then /subscription.')
 

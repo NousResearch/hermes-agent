@@ -11,6 +11,7 @@ import type * as HermesSdk from '@hermes/plugin-sdk'
 import { cleanup, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
+import { cronJobRow } from './cron-test-utils'
 import type { RoutineJob } from './types'
 
 // Radix calls these on open; jsdom doesn't implement them.
@@ -31,7 +32,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
 const { RoutineDetailDialog, RoutineRow, routineDetailIssue, routineDetailRows, routineLastResult } =
   await import('./cron')
 
-const activeJob: RoutineJob = {
+const activeJob: RoutineJob = cronJobRow({
   deliver: 'bot-chat',
   enabled: true,
   job_id: 'job-1',
@@ -42,7 +43,7 @@ const activeJob: RoutineJob = {
   prompt_preview: 'Summarize yesterday and post it.',
   repeat: 'forever',
   schedule: 'every 1440m'
-}
+})
 
 const valueOf = (rows: Array<{ label: string; value: string }>, label: string) =>
   rows.find(row => row.label === label)?.value
@@ -54,7 +55,7 @@ afterEach(() => {
 
 describe('the facts the row never showed', () => {
   it('carries only the fields the gateway actually sent', () => {
-    const rows = routineDetailRows({ enabled: true, job_id: 'bare', name: 'Bare', schedule: 'every 1h' })
+    const rows = routineDetailRows(cronJobRow({ enabled: true, job_id: 'bare', name: 'Bare', schedule: 'every 1h' }))
     const labels = rows.map(row => row.label)
 
     // A job that has never run carries no last_run_at/last_status/model; those

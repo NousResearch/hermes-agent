@@ -1,3 +1,4 @@
+import type { ClarifyBatch, ClarifyParams, ClarifyQuestion, ClarifySingle } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -24,8 +25,31 @@ function mountStream() {
   stream = renderMessageStream(SID)
 }
 
-const clarifyRequest = ({ request_id, ...params }: Record<string, unknown>) =>
-  act(() => void stream.handleRequest('clarify', { ...params, session_id: SID }, request_id as string))
+const single = (fields: Partial<Pick<ClarifySingle, 'choices' | 'multi_select' | 'question' | 'session_id'>>): ClarifySingle => ({
+  choices: null,
+  kind: 'single',
+  multi_select: false,
+  question: '',
+  session_id: SID,
+  ...fields
+})
+
+const question = (qid: string, text: string): ClarifyQuestion => ({
+  choices: null,
+  multi_select: false,
+  qid,
+  question: text
+})
+
+const batch = (questions: ClarifyQuestion[]): ClarifyBatch => ({
+  answers: null,
+  kind: 'batch',
+  questions,
+  session_id: SID
+})
+
+const clarifyRequest = (requestId: string, params: ClarifyParams) =>
+  act(() => void stream.handleRequest('clarify', params, requestId))
 
 const toolStart = (payload: Record<string, unknown>) =>
   act(() => stream.handleEvent({ payload, session_id: SID, type: 'tool.start' }))
@@ -73,7 +97,7 @@ describe('clarify request stream hydration', () => {
   it('mounts an answerable clarify row when the tool.start row was missed', () => {
     mountStream()
 
-    clarifyRequest({ choices: ['yes', 'no'], question: 'Ship it?', request_id: 'req-1' })
+    clarifyRequest('req-1', single({ choices: ['yes', 'no'], question: 'Ship it?' }))
 
     const parts = clarifyParts()
     expect(parts).toHaveLength(1)
@@ -87,7 +111,7 @@ describe('clarify request stream hydration', () => {
   it('reveals a clarify prompt raised by the active session', () => {
     mountStream()
 
-    clarifyRequest({ choices: ['yes', 'no'], question: 'Ship it?', request_id: 'req-reveal' })
+    clarifyRequest('req-reveal', single({ choices: ['yes', 'no'], question: 'Ship it?' }))
 
     expect(scrollToBottom).toHaveBeenCalledOnce()
   })
@@ -99,7 +123,7 @@ describe('clarify request stream hydration', () => {
       () =>
         void stream.handleRequest(
           'clarify',
-          { choices: ['yes', 'no'], question: 'Ship it?', session_id: 'session-background' },
+          single({ choices: ['yes', 'no'], question: 'Ship it?', session_id: 'session-background' }),
           'req-background'
         )
     )
@@ -110,14 +134,10 @@ describe('clarify request stream hydration', () => {
   it('preserves multi-select through the store and hydrated tool row', () => {
     mountStream()
 
-    clarifyRequest({
-      choices: ['read', 'write'],
-      multi_select: true,
-      question: 'Which permissions?',
-      request_id: 'req-multi'
-    })
+    clarifyRequest('req-multi', single({ choices: ['read', 'write'], multi_select: true, question: 'Which permissions?' }))
 
-    expect($clarifyRequests.get()[SID]?.multiSelect).toBe(true)
+    const parked = $clarifyRequests.get()[SID]
+    expect(parked?.kind === 'single' && parked.multi_select).toBe(true)
 
     const part = clarifyParts()[0]
     expect(part?.type).toBe('tool-call')
@@ -140,7 +160,7 @@ describe('clarify request stream hydration', () => {
     // separately-generated request_id. They must still collapse to ONE card
     // (correlated by question), not two.
     toolStart({ args: { choices: ['a'], question: 'Pick' }, name: 'clarify', tool_id: 'call-abc' })
-    clarifyRequest({ choices: ['a'], question: 'Pick', request_id: 'req-2' })
+    clarifyRequest('req-2', single({ choices: ['a'], question: 'Pick' }))
 
     expect(clarifyParts()).toHaveLength(1)
   })
@@ -148,7 +168,7 @@ describe('clarify request stream hydration', () => {
   it('does not duplicate when clarify.request arrives before the tool.start row', () => {
     mountStream()
 
-    clarifyRequest({ choices: ['a'], question: 'Pick', request_id: 'req-3' })
+    clarifyRequest('req-3', single({ choices: ['a'], question: 'Pick' }))
     toolStart({ args: { choices: ['a'], question: 'Pick' }, name: 'clarify', tool_id: 'call-xyz' })
 
     expect(clarifyParts()).toHaveLength(1)
@@ -174,7 +194,7 @@ describe('clarify request stream hydration', () => {
       }
     ])
 
-    clarifyRequest({ choices: ['a', 'b'], question: 'Pick', request_id: 'req-codex' })
+    clarifyRequest('req-codex', single({ choices: ['a', 'b'], question: 'Pick' }))
 
     const messages = stream.state().messages
     expect(messages).toHaveLength(2)
@@ -204,7 +224,7 @@ describe('clarify request stream hydration', () => {
       }
     ])
 
-    clarifyRequest({ choices: ['safe', 'fast'], question: 'Which path?', request_id: 'req-deepseek' })
+    clarifyRequest('req-deepseek', single({ choices: ['safe', 'fast'], question: 'Which path?' }))
 
     const messages = stream.state().messages
     expect(messages).toHaveLength(2)
@@ -235,7 +255,7 @@ describe('clarify request stream hydration', () => {
       }
     ])
 
-    clarifyRequest({ choices: ['safe', 'fast'], question: 'Which path?', request_id: 'req-ui' })
+    clarifyRequest('req-ui', single({ choices: ['safe', 'fast'], question: 'Which path?' }))
     toolComplete({
       args: { choices: ['safe', 'fast'], question: 'Which path?' },
       name: 'clarify',
@@ -255,7 +275,7 @@ describe('clarify request stream hydration', () => {
     const state = stream.states.get(SID)!
     state.interrupted = true
 
-    clarifyRequest({ choices: ['a', 'b'], question: 'Pick', request_id: 'req-late' })
+    clarifyRequest('req-late', single({ choices: ['a', 'b'], question: 'Pick' }))
 
     expect($clarifyRequests.get()[SID]).toBeUndefined()
     expect(stream.state().messages).toHaveLength(1)
@@ -265,7 +285,7 @@ describe('clarify request stream hydration', () => {
     mountStream()
 
     toolStart({ args: { choices: ['a'], question: 'Pick' }, name: 'clarify', tool_id: 'call-provider' })
-    clarifyRequest({ choices: ['a'], question: 'Pick', request_id: 'req-expire' })
+    clarifyRequest('req-expire', single({ choices: ['a'], question: 'Pick' }))
     clarifyExpire('req-other')
 
     expect($clarifyRequests.get()[SID]?.requestId).toBe('req-expire')
@@ -290,28 +310,17 @@ describe('clarify request stream hydration', () => {
       name: 'clarify',
       tool_id: 'call-batch'
     })
-    clarifyRequest({
-      questions: [
-        { qid: 'q0', question: 'Drink?' },
-        { qid: 'q1', question: 'Productive when?' }
-      ],
-      request_id: 'req-batch'
-    })
+    clarifyRequest('req-batch', batch([question('q0', 'Drink?'), question('q1', 'Productive when?')]))
 
     expect(clarifyParts()).toHaveLength(1)
-    expect($clarifyRequests.get()[SID]?.questions).toHaveLength(2)
+    const parked = $clarifyRequests.get()[SID]
+    expect(parked?.kind === 'batch' ? parked.questions : []).toHaveLength(2)
   })
 
   it('does not duplicate when the batch clarify.request arrives before tool.start', () => {
     mountStream()
 
-    clarifyRequest({
-      questions: [
-        { qid: 'q0', question: 'Drink?' },
-        { qid: 'q1', question: 'Productive when?' }
-      ],
-      request_id: 'req-batch-2'
-    })
+    clarifyRequest('req-batch-2', batch([question('q0', 'Drink?'), question('q1', 'Productive when?')]))
     toolStart({
       args: { questions: [{ question: 'Drink?' }, { question: 'Productive when?' }] },
       name: 'clarify',
@@ -319,6 +328,7 @@ describe('clarify request stream hydration', () => {
     })
 
     expect(clarifyParts()).toHaveLength(1)
-    expect($clarifyRequests.get()[SID]?.questions).toHaveLength(2)
+    const parked = $clarifyRequests.get()[SID]
+    expect(parked?.kind === 'batch' ? parked.questions : []).toHaveLength(2)
   })
 })

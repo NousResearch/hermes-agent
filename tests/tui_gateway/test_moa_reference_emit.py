@@ -64,9 +64,9 @@ def test_moa_reference_relayed_with_label_and_index(server, emits):
     event, sid, payload = emits[0]
     assert event == "moa.reference"
     assert sid == "sid-1"
-    assert payload["label"] == "openrouter:openai/gpt-5.5"
-    assert payload["text"] == "Paris is the capital of France."
-    assert payload["index"] == 1
-    assert payload["count"] == 2
+    assert payload.label == "openrouter:openai/gpt-5.5"
+    assert payload.text == "Paris is the capital of France."
+    assert payload.index == 1
+    assert payload.count == 2
 
 

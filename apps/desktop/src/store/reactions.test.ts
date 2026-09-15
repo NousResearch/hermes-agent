@@ -6,7 +6,7 @@ import type { MessageReaction } from '@/types/hermes'
 const at = 1_700_000_000
 
 function reaction(emoji: string, author: MessageReaction['author']): MessageReaction {
-  return { emoji, author, at }
+  return { emoji, author, at, seen: null }
 }
 
 describe('applyReaction', () => {

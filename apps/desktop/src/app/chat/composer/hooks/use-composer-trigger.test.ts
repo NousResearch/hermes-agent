@@ -4,18 +4,19 @@ import { createRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
+import { commandsCatalogResult } from '@/test/contract'
 
 import { composerPlainText, renderComposerContents, RICH_INPUT_SLOT } from '../rich-editor'
 
 import { useComposerTrigger } from './use-composer-trigger'
 
 beforeEach(() => {
-  rememberDesktopCommandsCatalog({
+  rememberDesktopCommandsCatalog(commandsCatalogResult({
     commands: {
       '/goal': { argument_mode: 'mixed', desktop: null },
       '/personality': { argument_mode: 'options', desktop: null }
     }
-  })
+  }))
 })
 
 afterEach(() => {

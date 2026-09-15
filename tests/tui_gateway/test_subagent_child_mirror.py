@@ -43,11 +43,15 @@ def server():
 
 @pytest.fixture()
 def emits(server, monkeypatch):
+    """Captured ``(event, sid, payload)`` with the closed payload model dumped to its wire keys
+    (``None`` fields dropped) so the assertions read like the JSON a client sees."""
     captured: list = []
     monkeypatch.setattr(
         server,
         "_emit",
-        lambda event, sid, payload=None: captured.append((event, sid, payload)),
+        lambda event, sid, payload=None: captured.append(
+            (event, sid, None if payload is None else payload.model_dump(exclude_none=True))
+        ),
     )
     monkeypatch.setattr(server, "_tool_progress_enabled", lambda sid: True)
     return captured

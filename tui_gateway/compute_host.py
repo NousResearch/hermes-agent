@@ -202,7 +202,12 @@ class ComputeHost:
                 return
             from tui_gateway import server_requests
             if isinstance(params.get("lock"), dict):
-                response = server._methods["clarify.lock"](request_id, params["lock"])
+                from tui_gateway.contracts.prompt_voice import ClarifyLockParams
+                result = server.invoke("clarify.lock", ClarifyLockParams(**params["lock"]))
+                # invoke() hands back the handler's error frame as a dict (4002 on a stale lock); the parent
+                # relays an ``error`` response to the client, so keep the domain error instead of dumping it.
+                response = ({"jsonrpc": "2.0", "id": request_id, "error": result["error"]} if isinstance(result, dict)
+                            else {"jsonrpc": "2.0", "id": request_id, "result": result.model_dump(mode="json")})
             else:
                 response_frame = params.get("frame") if isinstance(params.get("frame"), dict) else params
                 resolved = server_requests.resolve_response(response_frame)
@@ -252,7 +257,7 @@ class ComputeHost:
             with session["history_lock"]:
                 meta = _history_meta(session)
                 interrupted = bool(session.get("_turn_cancel_requested"))
-            session_info = server._session_info(session.get("agent"), session)
+            session_info = server._session_info(session.get("agent"), session).model_dump(mode="json")
             with self._progress_lock:
                 self._progress_counter += 1
             self._reply(
@@ -423,16 +428,15 @@ class ComputeHost:
         route_name = str(frame.get("route_name") or "")
         command = str(frame.get("command") or "")
         if route_name in {"session.save", "session.compress"}:
-            params = {"session_id": sid}
-            if route_name == "session.compress":
-                focus_topic = command.removeprefix("/compress").strip()
-                if focus_topic:
-                    params["focus_topic"] = focus_topic
-            response = server._methods[route_name](frame.get("request_id"), params)
-            if "error" in response:
-                failure = _CONTROL_FAILURES[route_name]
-                return {"error": str(response["error"].get("message") or failure)}
-            ack = {"result": response.get("result") or {}}
+            from tui_gateway.contracts.sessions import SessionCompressParams, SessionSaveParams
+
+            params = (SessionCompressParams(
+                session_id=sid, focus_topic=command.removeprefix("/compress").strip() or None)
+                if route_name == "session.compress" else SessionSaveParams(session_id=sid))
+            result = server.invoke(route_name, params)
+            if isinstance(result, dict):
+                return {"error": _CONTROL_FAILURES[route_name]}
+            ack = {"result": result.model_dump(mode="json")}
             if route_name == "session.save":
                 return ack
             with session["history_lock"]:
@@ -442,7 +446,7 @@ class ComputeHost:
             with session["history_lock"]:
                 messages = server._history_to_messages(list(session.get("history") or []))
                 ack = {"output": output, **_history_meta(session), "messages": messages}
-        ack["session_info"] = server._session_info(session.get("agent"), session)
+        ack["session_info"] = server._session_info(session.get("agent"), session).model_dump(mode="json")
         return ack
 
     def _live_turns(self) -> list[concurrent.futures.Future]:

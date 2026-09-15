@@ -1,5 +1,6 @@
 'use client'
 
+import type { ApprovalChoice } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type FC, useCallback, useEffect, useMemo, useState } from 'react'
 
@@ -48,9 +49,6 @@ import type { ToolPart } from './fallback-model'
 // raised it. The command/description text comes from `$approvalRequest` (the
 // event payload), which is the only place that data reliably exists.
 export const APPROVAL_TOOLS = new Set(['terminal', 'execute_code', 'patch', 'write_file'])
-
-// Canonical gateway choices (ui-tui/src/components/prompts.tsx).
-type ApprovalChoice = 'once' | 'session' | 'always' | 'deny'
 
 export const PendingToolApproval: FC<{ part: ToolPart }> = ({ part }) => {
   // The tool row lives in whichever session's transcript rendered it — read

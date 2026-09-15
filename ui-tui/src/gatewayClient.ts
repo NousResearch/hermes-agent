@@ -4,12 +4,12 @@ import { existsSync } from 'node:fs'
 import { delimiter, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
-import type { GatewayEvent } from '@hermes/shared/gateway-events'
+import type { GatewayEvent, RpcMethods } from '@hermes/shared/gateway-events'
 import {
+  type AnyServerRequest,
   DEFAULT_HEARTBEAT_DEADLINE_MS,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   JsonRpcRequestChannel,
-  type ServerRequest,
   wireFrameText
 } from '@hermes/shared/json-rpc-channel'
 import { reconnectBackoffDelayMs } from '@hermes/shared/reconnect-backoff'
@@ -143,7 +143,7 @@ export class GatewayClient extends EventEmitter {
   // Server→client requests (clarify, approval, sudo, …) follow the same
   // mount-order contract as events: an attached session mid-turn can send one
   // the instant the socket opens, before the Ink handler is registered.
-  private bufferedRequests: ServerRequest[] = []
+  private bufferedRequests: AnyServerRequest[] = []
   private pendingExit: number | null | undefined
   private ready = false
   private readyTimer: ReturnType<typeof setTimeout> | null = null
@@ -161,7 +161,7 @@ export class GatewayClient extends EventEmitter {
     // useInput / createGatewayEventHandler can legitimately attach many
     // listeners. Default 10-cap triggers spurious warnings.
     this.setMaxListeners(0)
-    this.channel.onRequest(request => {
+    this.channel.onAnyServerRequest(request => {
       if (this.subscribed) {
         this.emit('request', request)
       } else {
@@ -735,7 +735,11 @@ export class GatewayClient extends EventEmitter {
 
   private notConnected = (method: string) => new Error(`gateway not connected: ${method}`)
 
-  request<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
+  request<M extends keyof RpcMethods>(
+    method: M,
+    params: RpcMethods[M]['params'],
+    timeoutMs?: number
+  ): Promise<RpcMethods[M]['result']> {
     const attachUrl = resolveGatewayAttachUrl()
 
     if (attachUrl) {
@@ -749,7 +753,7 @@ export class GatewayClient extends EventEmitter {
       }
 
       return this.ensureAttachedWebSocket(method).then(() =>
-        this.channel.request<T>(method, params, timeoutMs, undefined, () => this.notConnected(method))
+        this.channel.request(method, params, timeoutMs, undefined, () => this.notConnected(method))
       )
     }
 
@@ -761,7 +765,7 @@ export class GatewayClient extends EventEmitter {
       return Promise.reject(new Error('gateway not running'))
     }
 
-    return this.channel.request<T>(method, params, timeoutMs, undefined, () => this.notConnected(method))
+    return this.channel.request(method, params, timeoutMs, undefined, () => this.notConnected(method))
   }
 
   kill(reason = 'requested') {

@@ -2,21 +2,13 @@ import { writeFileSync } from 'node:fs'
 
 import type { ScrollBoxHandle } from '@hermes/ink'
 import { evictInkCaches } from '@hermes/ink'
-import type { InflightTurn, SessionResumeResult, Usage } from '@hermes/shared/gateway-events'
+import type { InflightTurn, Usage } from '@hermes/shared/gateway-events'
 import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
 import { ZERO } from '../domain/usage.js'
 import { type GatewayClient } from '../gatewayClient.js'
-import type {
-  SessionActivateResponse,
-  SessionCloseResponse,
-  SessionCreateResponse,
-  SessionTitleResponse,
-  SetupStatusResponse
-} from '../gatewayTypes.js'
-import { asRpcResult } from '../lib/rpc.js'
 import type { Msg, PanelSection, SessionInfo } from '../types.js'
 
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
@@ -136,7 +128,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const closeSession = useCallback(
     (targetSid?: null | string) =>
-      targetSid ? rpc<SessionCloseResponse>('session.close', { session_id: targetSid }) : Promise.resolve(null),
+      targetSid ? rpc('session.close', { session_id: targetSid }) : Promise.resolve(null),
     [rpc]
   )
 
@@ -185,7 +177,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const startNewSession = useCallback(
     async (msg?: string, title?: string, keepCurrent = false) => {
-      const setup = await rpc<SetupStatusResponse>('setup.status', {})
+      const setup = await rpc('setup.status', {})
 
       if (setup?.provider_configured === false) {
         panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
@@ -200,7 +192,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         await closeSession(previousSid)
       }
 
-      const r = await rpc<SessionCreateResponse>('session.create', { cols: colsRef.current })
+      const r = await rpc('session.create', { cols: colsRef.current })
 
       if (!r) {
         patchUiState({ status: 'ready' })
@@ -230,16 +222,12 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         sys(`warning: ${describeCredentialWarning(info.credential_warning)}`)
       }
 
-      if (info?.config_warning) {
-        sys(`warning: ${info.config_warning}`)
-      }
-
       if (msg) {
         sys(msg)
       }
 
       if (requestedTitle) {
-        rpc<SessionTitleResponse>('session.title', {
+        rpc('session.title', {
           session_id: r.session_id,
           title: requestedTitle
         })
@@ -289,16 +277,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'switching session…' })
 
-      gw.request<SessionActivateResponse>('session.activate', { session_id: id })
-        .then(raw => {
-          const r = asRpcResult<SessionActivateResponse>(raw)
-
-          if (!r) {
-            sys('error: invalid response: session.activate')
-
-            return patchUiState({ status: 'ready' })
-          }
-
+      gw.request('session.activate', { session_id: id })
+        .then(r => {
           const info = r.info ?? null
           const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
 
@@ -311,7 +291,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             busy: running,
             info,
             sid: r.session_id,
-            status: statusFromLiveSession(r.status, running),
+            status: statusFromLiveSession(r.status ?? undefined, running),
             usage: usageFrom(info)
           })
           hydrateLiveSessionInflight(r.inflight)
@@ -331,7 +311,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'resuming…' })
 
-      rpc<SetupStatusResponse>('setup.status', {}).then(setup => {
+      rpc('setup.status', {}).then(setup => {
         if (setup?.provider_configured === false) {
           panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
           patchUiState({ status: 'setup required' })
@@ -341,16 +321,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         const previousSid = getUiState().sid
 
-        gw.request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
-          .then(raw => {
-            const r = asRpcResult<SessionResumeResult>(raw)
-
-            if (!r) {
-              sys('error: invalid response: session.resume')
-
-              return patchUiState({ status: 'ready' })
-            }
-
+        gw.request('session.resume', { cols: colsRef.current, session_id: id })
+          .then(r => {
             const info = r.info ?? null
             const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
 

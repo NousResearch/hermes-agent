@@ -41,9 +41,16 @@ vi.mock('@assistant-ui/react', () => ({
 
 /** Seed a live `clarify` server request; the card answers it synchronously with
  *  `respondToServerRequest`, so the returned spy sees the response frame. */
-function liveServerRequest(id: string) {
+function liveServerRequest(id: string, sessionId = 'session-1', fail = vi.fn()) {
   const respond = vi.fn()
-  rememberServerRequest({ fail: vi.fn(), id, method: 'clarify', params: {}, respond })
+  rememberServerRequest({
+    fail,
+    id,
+    method: 'clarify',
+    params: { choices: null, kind: 'single', multi_select: false, question: '', session_id: sessionId },
+    respond,
+    sessionId
+  })
 
   return respond
 }
@@ -120,7 +127,8 @@ function renderLiveClarify({ multiSelect = false }: { multiSelect?: boolean } = 
   $gateway.set({ request } as never)
   setClarifyRequest({
     choices: ['staging', 'production'],
-    multiSelect,
+    kind: 'single',
+    multi_select: multiSelect,
     question: 'Which deployment target?',
     requestId: 'request-1',
     sessionId: 'session-1'
@@ -469,7 +477,8 @@ describe('ClarifyTool recommended option', () => {
     $gateway.set({ request: vi.fn() } as never)
     setClarifyRequest({
       choices: ['staging (Recommended)', 'production'],
-      multiSelect: false,
+      kind: 'single',
+      multi_select: false,
       question: 'Which deployment target?',
       requestId: 'request-1',
       sessionId: 'session-1'
@@ -510,7 +519,8 @@ describe('ClarifyTool pending marker', () => {
     $gateway.set({ request: vi.fn().mockResolvedValue({ ok: true }) } as never)
     setClarifyRequest({
       choices: null,
-      multiSelect: false,
+      kind: 'single',
+      multi_select: false,
       question: 'Anything else?',
       requestId: 'request-1',
       sessionId: 'session-1'
@@ -566,25 +576,24 @@ function liveBatchProps(): ToolCallMessagePartProps {
 
 function renderLiveBatch(lockedAnswers?: Record<string, string>, multiSelect = false) {
   const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
-  const respond = liveServerRequest('request-batch')
+  const fail = vi.fn()
+  const respond = liveServerRequest('request-batch', 'session-1', fail)
 
   $activeSessionId.set('session-1')
   $gateway.set({ request } as never)
   setClarifyRequest({
-    choices: null,
-    lockedAnswers,
-    multiSelect: false,
-    question: '',
+    kind: 'batch',
+    lockedAnswers: lockedAnswers ?? null,
     questions: [
-      { choices: ['red', 'blue'], multiSelect, qid: 'q0', question: 'Color?' },
-      { choices: null, multiSelect: false, qid: 'q1', question: 'Name?' }
+      { choices: ['red', 'blue'], multi_select: multiSelect, qid: 'q0', question: 'Color?' },
+      { choices: null, multi_select: false, qid: 'q1', question: 'Name?' }
     ],
     requestId: 'request-batch',
     sessionId: 'session-1'
   })
   renderClarify(<ClarifyTool {...liveBatchProps()} />)
 
-  return { request, respond }
+  return { fail, request, respond }
 }
 
 describe('readClarifyBatchResult', () => {
@@ -734,14 +743,16 @@ describe('ClarifyTool batch card', () => {
     expect(screen.getByText('1 of 2 answered')).toBeTruthy()
   })
 
-  it('Skip cancels the whole batch with an empty response (no answers)', async () => {
-    const { request, respond } = renderLiveBatch()
+  it('Skip withdraws the whole batch as unanswered instead of sending answers', async () => {
+    const { fail, request, respond } = renderLiveBatch()
 
     fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
 
     await waitFor(() => {
-      expect(respond).toHaveBeenCalledWith({})
+      expect(fail).toHaveBeenCalledTimes(1)
     })
+    expect(respond).not.toHaveBeenCalled()
+    expect(hasOpenServerRequest('request-batch')).toBe(false)
     expect(request).not.toHaveBeenCalled()
   })
 
@@ -820,7 +831,8 @@ describe('ClarifyTool owner routing', () => {
 
     setClarifyRequest({
       choices: ['staging', 'production'],
-      multiSelect: false,
+      kind: 'single',
+      multi_select: false,
       question: 'Which deployment target?',
       requestId: 'request-1',
       sessionId: 'session-a'
@@ -842,12 +854,11 @@ describe('ClarifyTool owner routing', () => {
     liveServerRequest('request-batch')
 
     setClarifyRequest({
-      choices: null,
-      multiSelect: false,
-      question: '',
+      kind: 'batch',
+      lockedAnswers: null,
       questions: [
-        { choices: ['red', 'blue'], multiSelect: false, qid: 'q0', question: 'Color?' },
-        { choices: null, multiSelect: false, qid: 'q1', question: 'Name?' }
+        { choices: ['red', 'blue'], multi_select: false, qid: 'q0', question: 'Color?' },
+        { choices: null, multi_select: false, qid: 'q1', question: 'Name?' }
       ],
       requestId: 'request-batch',
       sessionId: 'session-a'
@@ -869,15 +880,15 @@ describe('ClarifyTool owner routing', () => {
 
   it('answers a batch skip/cancel through its server request, never profile B ambient', async () => {
     const ambient = armCrossProfileOwner()
-    const respond = liveServerRequest('request-batch')
+    const fail = vi.fn()
+    const respond = liveServerRequest('request-batch', 'session-a', fail)
 
     setClarifyRequest({
-      choices: null,
-      multiSelect: false,
-      question: '',
+      kind: 'batch',
+      lockedAnswers: null,
       questions: [
-        { choices: ['red', 'blue'], multiSelect: false, qid: 'q0', question: 'Color?' },
-        { choices: null, multiSelect: false, qid: 'q1', question: 'Name?' }
+        { choices: ['red', 'blue'], multi_select: false, qid: 'q0', question: 'Color?' },
+        { choices: null, multi_select: false, qid: 'q1', question: 'Name?' }
       ],
       requestId: 'request-batch',
       sessionId: 'session-a'
@@ -887,8 +898,9 @@ describe('ClarifyTool owner routing', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
 
     await waitFor(() => {
-      expect(respond).toHaveBeenCalledWith({})
+      expect(fail).toHaveBeenCalledTimes(1)
     })
+    expect(respond).not.toHaveBeenCalled()
     expect(gatewayMocks.requestGatewayForAgent).not.toHaveBeenCalled()
     expect(ambient).not.toHaveBeenCalled()
   })
@@ -928,7 +940,8 @@ describe('ClarifyTool visible-card scoping', () => {
 
     setClarifyRequest({
       choices: ['staging', 'production'],
-      multiSelect: false,
+      kind: 'single',
+      multi_select: false,
       question: QUESTION,
       requestId,
       sessionId

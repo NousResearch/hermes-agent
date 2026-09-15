@@ -1,10 +1,12 @@
+import type { ApprovalChoice, ApprovalPendingResult } from '@hermes/shared'
 import { atom, computed, type ReadableAtom } from 'nanostores'
+
+import type { HermesGateway } from '@/hermes'
 
 import { $clarifyRequest, $clarifyRequests } from './clarify'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
 import { respondToServerRequest } from './server-requests'
 import { $activeSessionId } from './session'
-import { ambientRequestFor } from './session-gone-latch'
 import { requestForOwnedSession } from './session-states'
 
 // Blocking interactive prompts the gateway raises mid-turn. Each is a
@@ -81,7 +83,7 @@ function keyedPromptStore<T extends KeyedPrompt>(): PromptStore<T> {
 export interface ApprovalRequest extends KeyedPrompt {
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   allowPermanent?: boolean
-  choices?: string[]
+  choices?: ApprovalChoice[]
   command: string
   description: string
   requestId?: string
@@ -89,18 +91,13 @@ export interface ApprovalRequest extends KeyedPrompt {
   smartDenied?: boolean
 }
 
-interface ApprovalGateway {
-  request: (method: string, params: Record<string, unknown>) => Promise<unknown>
-}
+/** The socket the approval RPCs ride when the live server request is gone. */
+export type ApprovalGateway = Pick<HermesGateway, 'request'>
 
-interface PendingApprovalPayload {
-  allow_permanent?: boolean
-  choices?: unknown
-  command?: unknown
-  description?: unknown
-  request_id?: unknown
-  smart_denied?: boolean
-}
+const APPROVAL_CHOICES: readonly ApprovalChoice[] = ['once', 'session', 'always', 'deny']
+
+// `approval.pending` renders choices as plain strings; the response contract wants the closed set.
+const isApprovalChoice = (choice: string): choice is ApprovalChoice => APPROVAL_CHOICES.some(known => known === choice)
 
 export interface SudoRequest extends KeyedPrompt {
   command?: string
@@ -168,7 +165,7 @@ export async function receiveApprovalRequest(gateway: ApprovalGateway | null, re
 
   if (gateway && request.requestId && request.sessionId) {
     try {
-      await requestForOwnedSession(request.sessionId, ambientRequestFor(gateway), 'approval.received', {
+      await requestForOwnedSession(request.sessionId, gateway.request.bind(gateway), 'approval.received', {
         request_id: request.requestId,
         session_id: request.sessionId
       })
@@ -190,10 +187,10 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
   }
 
   const previous = approval.$all.get()[keyFor(sessionId)]
-  let rawResult: unknown
+  let result: ApprovalPendingResult
 
   try {
-    rawResult = await requestForOwnedSession(sessionId, ambientRequestFor(gateway), 'approval.pending', {
+    result = await requestForOwnedSession(sessionId, gateway.request.bind(gateway), 'approval.pending', {
       session_id: sessionId
     })
   } catch (error) {
@@ -206,11 +203,8 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
     throw error
   }
 
-  const result =
-    rawResult && typeof rawResult === 'object' ? (rawResult as { approvals?: PendingApprovalPayload[] }) : {}
-
   // Live requests/responses outrank a replay that was already in flight.
-  if (approval.$all.get()[keyFor(sessionId)] !== previous || !Array.isArray(result.approvals)) {
+  if (approval.$all.get()[keyFor(sessionId)] !== previous) {
     return
   }
 
@@ -222,19 +216,15 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
     return
   }
 
-  if (typeof pending.request_id !== 'string') {
-    return
-  }
-
-  if (previous?.requestId === pending.request_id) {
+  if (pending.request_id === null || previous?.requestId === pending.request_id) {
     return
   }
 
   await receiveApprovalRequest(gateway, {
     allowPermanent: pending.allow_permanent !== false,
-    choices: Array.isArray(pending.choices) ? pending.choices.filter(choice => typeof choice === 'string') : undefined,
-    command: typeof pending.command === 'string' ? pending.command : '',
-    description: typeof pending.description === 'string' ? pending.description : 'dangerous command',
+    choices: pending.choices?.filter(isApprovalChoice),
+    command: pending.command ?? '',
+    description: pending.description ?? 'dangerous command',
     requestId: pending.request_id,
     sessionId,
     smartDenied: pending.smart_denied === true
@@ -251,10 +241,10 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
 export async function answerApproval(
   gateway: ApprovalGateway | null,
   request: Pick<ApprovalRequest, 'requestId' | 'serverRequestId' | 'sessionId'>,
-  choice: string,
+  choice: ApprovalChoice,
   all = false
 ): Promise<void> {
-  if (respondToServerRequest(request.serverRequestId, { choice, ...(all ? { all: true } : {}) })) {
+  if (respondToServerRequest('approval', request.serverRequestId, { choice, ...(all ? { all: true } : {}) })) {
     return
   }
 
@@ -262,11 +252,15 @@ export async function answerApproval(
     throw new Error('Hermes gateway is not connected')
   }
 
-  await requestForOwnedSession(request.sessionId, ambientRequestFor(gateway), 'approval.respond', {
+  if (!request.sessionId) {
+    throw new Error('Hermes approval names no session to answer')
+  }
+
+  await requestForOwnedSession(request.sessionId, gateway.request.bind(gateway), 'approval.respond', {
     ...(all ? { all: true } : {}),
     choice,
     ...(request.requestId ? { request_id: request.requestId } : {}),
-    session_id: request.sessionId ?? undefined
+    session_id: request.sessionId
   })
 }
 

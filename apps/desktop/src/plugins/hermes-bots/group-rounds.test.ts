@@ -440,8 +440,8 @@ describe('per-member delta', () => {
     const alphaSession = room.gateway.sessions.get(String(alphaFirst?.stored))
     const betaSession = room.gateway.sessions.get(String(betaFirst?.stored))
 
-    expect(alphaSession?.messages.some(message => message.content.includes('BETA_ONLY'))).toBe(false)
-    expect(betaSession?.messages.some(message => message.content.includes('ALPHA_ONLY'))).toBe(false)
+    expect(alphaSession?.messages.some(message => message.text.includes('BETA_ONLY'))).toBe(false)
+    expect(betaSession?.messages.some(message => message.text.includes('ALPHA_ONLY'))).toBe(false)
   })
 })
 
@@ -511,8 +511,8 @@ describe('threads', () => {
     const alphaMessages = room.gateway.sessions.get(String(alphaCall?.stored))?.messages || []
     const betaMessages = room.gateway.sessions.get(String(betaCall?.stored))?.messages || []
 
-    expect(alphaMessages.some(message => message.content.includes('BETA_TOPIC'))).toBe(false)
-    expect(betaMessages.some(message => message.content.includes('ALPHA_TOPIC'))).toBe(false)
+    expect(alphaMessages.some(message => message.text.includes('BETA_TOPIC'))).toBe(false)
+    expect(betaMessages.some(message => message.text.includes('ALPHA_TOPIC'))).toBe(false)
   })
 
   it('surfaces an empty member seat instead of swallowing the send; empty text stays silent', async () => {

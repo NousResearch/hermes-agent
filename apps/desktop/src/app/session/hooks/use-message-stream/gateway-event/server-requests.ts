@@ -1,11 +1,13 @@
-import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
-import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
+import type { ClarifyParams, PreviewActParams, ServerRequestMap, TourParams, TourStep as WireTourStep } from '@hermes/shared'
+
+import { type PreviewReadResult, readActivePreview } from '@/app/chat/right-rail/preview-reader'
+import { readActiveTerminal, type TerminalReadResult } from '@/app/right-sidebar/terminal/buffer'
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
 import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
-import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
-import type { TourAction, TourStep } from '@/lib/tour'
-import { normalizeChoices, normalizeQuestions, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
+import type { PreviewActAction, PreviewActResult } from '@/lib/preview-act/act-in-page'
+import type { TourAction, TourResult, TourStep } from '@/lib/tour'
+import { type ClarifyRequest, displayChoices, setClarifyRequest } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import {
@@ -34,26 +36,20 @@ const loadPreviewEngine = () => {
 
   return import(/* @vite-ignore */ '/src/app/chat/right-rail/preview-act.ts?hot=' + Date.now())
     .catch(stable)
+    // SAFETY: the hot URL serves the same module as `stable`, only cache-busted.
     .then(mod => mod.actOnActivePreview as Awaited<ReturnType<typeof stable>>['actOnActivePreview'])
 }
 
-const str = (v: unknown): string => (typeof v === 'string' ? v : '')
-const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined)
-
-/** Answer a string-valued request with a JSON-encoded result ('' = nothing / unavailable). */
-const answerValue = (request: ScopedServerRequest, result: unknown) =>
-  request.respond({ value: result ? JSON.stringify(result) : '' })
-
-export interface ServerRequestContext {
+export interface ServerRequestContext<M extends keyof ServerRequestMap = keyof ServerRequestMap> {
   deps: Pick<GatewayEventDeps, 'activeSessionIdRef' | 'sessionInterrupted' | 'updateSessionState' | 'upsertToolCall'>
-  request: ScopedServerRequest
-  /** The session the request names ('' when unscoped). */
+  request: ScopedServerRequest<M>
+  /** The session the request names. */
   sessionId: string
   /** The named session is the one on screen. */
   isActiveSession: boolean
 }
 
-type Handler = (ctx: ServerRequestContext) => void
+type Handler<M extends keyof ServerRequestMap> = (ctx: ServerRequestContext<M>) => void
 
 const markNeedsInput = (ctx: ServerRequestContext) => {
   if (ctx.sessionId) {
@@ -75,12 +71,37 @@ const notifyInput = (ctx: ServerRequestContext, body: string) => {
 // ── Blocking-input family (clarify / approval / sudo / secret / vault / MCP setup) ──
 // Every one is parked per-session (like clarify) so a BACKGROUND session's turn can
 // raise it and wait — the sidebar flags "needs input" and the card surfaces once the
-// user focuses that chat. The Python side blocks on the response frame; without a
-// handler the channel answers -32601 and the tool fails fast instead of stalling.
+// user focuses that chat. The Python side blocks on the response frame.
 
-const clarify: Handler = ctx => {
+/** The card to park for a clarify, or null when there is nothing to ask. */
+const clarifyRequestFrom = (params: ClarifyParams, requestId: string, sessionId: string): ClarifyRequest | null => {
+  const parked = { receivedAt: Date.now() / 1000, requestId, sessionId: sessionId || null }
+
+  if (params.kind === 'batch') {
+    // `answers` rides along only on a reconnect replay (locks the server already accepted).
+    return params.questions.length > 0
+      ? {
+          ...parked,
+          kind: 'batch',
+          lockedAnswers: params.answers,
+          questions: params.questions.map(question => ({ ...question, choices: displayChoices(question.choices) }))
+        }
+      : null
+  }
+
+  return params.question
+    ? {
+        ...parked,
+        choices: displayChoices(params.choices),
+        kind: 'single',
+        multi_select: params.multi_select,
+        question: params.question
+      }
+    : null
+}
+
+const clarify: Handler<'clarify'> = ctx => {
   const { deps, request, sessionId } = ctx
-  const p = request.params
 
   if (sessionId && deps.sessionInterrupted(sessionId)) {
     request.respond({ answer: '' })
@@ -88,54 +109,13 @@ const clarify: Handler = ctx => {
     return
   }
 
-  const question = str(p.question)
-  const rawChoices = p.choices
-  const choices = normalizeChoices(rawChoices)
-  const multiSelect = p.multi_select === true
-  // Batch (multi-question) clarify: `questions` replaces question/choices on the
-  // wire. `answers` rides along only on a reconnect replay (locks the server
-  // already accepted).
-  const questions = normalizeQuestions(p.questions)
+  const clarifyRequest = clarifyRequestFrom(request.params, request.id, sessionId)
 
-  const lockedAnswers =
-    typeof p.answers === 'object' && p.answers !== null
-      ? Object.fromEntries(
-          Object.entries(p.answers as Record<string, unknown>).filter(
-            (entry): entry is [string, string] => typeof entry[1] === 'string'
-          )
-        )
-      : undefined
-
-  if (questions.length === 0 && !question) {
+  if (!clarifyRequest) {
     request.respond({ answer: '' })
 
     return
   }
-
-  if (questions.length === 0 && rawChoices != null && choices.length === 0) {
-    warnDroppedChoices('gateway', question, rawChoices)
-  }
-
-  const clarifyRequest =
-    questions.length > 0
-      ? {
-          choices: null,
-          lockedAnswers,
-          multiSelect: false,
-          question: '',
-          questions,
-          receivedAt: Date.now() / 1000,
-          requestId: request.id,
-          sessionId: sessionId || null
-        }
-      : {
-          choices: choices.length > 0 ? choices : null,
-          multiSelect,
-          question,
-          receivedAt: Date.now() / 1000,
-          requestId: request.id,
-          sessionId: sessionId || null
-        }
 
   rememberServerRequest(request)
   setClarifyRequest(clarifyRequest)
@@ -168,24 +148,28 @@ const clarify: Handler = ctx => {
     }
   }
 
-  notifyInput(ctx, questions.length > 0 ? questions.map(q => q.question).join(' · ') : question)
+  notifyInput(
+    ctx,
+    clarifyRequest.kind === 'batch'
+      ? clarifyRequest.questions.map(question => question.question).join(' · ')
+      : clarifyRequest.question
+  )
 }
 
-const approval: Handler = ctx => {
+const approval: Handler<'approval'> = ctx => {
   const { request, sessionId } = ctx
   const p = request.params
-  const command = str(p.command)
-  const description = str(p.description) || 'dangerous command'
+  const description = p.description || 'dangerous command'
 
   rememberServerRequest(request)
   void receiveApprovalRequest(null, {
     // false only when a tirith warning forbids it; backend omits the field otherwise.
     allowPermanent: p.allow_permanent !== false,
-    choices: Array.isArray(p.choices) ? p.choices.filter((choice): choice is string => typeof choice === 'string') : undefined,
-    command,
+    choices: p.choices,
+    command: p.command,
     description,
     // The approval queue's own id — `approval.pending` / `approval.received` / `approval.respond` key on it.
-    requestId: str(p.request_id) || undefined,
+    requestId: p.request_id ?? undefined,
     serverRequestId: request.id,
     sessionId: sessionId || null,
     smartDenied: p.smart_denied === true
@@ -198,7 +182,7 @@ const approval: Handler = ctx => {
         { id: 'approve', text: translateNow('notifications.native.approveAction') },
         { id: 'reject', text: translateNow('notifications.native.rejectAction') }
       ],
-      body: command || description,
+      body: p.command || description,
       kind: 'approval',
       sessionId: sessionId || null,
       title: translateNow('notifications.native.approvalTitle')
@@ -206,10 +190,10 @@ const approval: Handler = ctx => {
   }
 }
 
-const sudo: Handler = ctx => {
+const sudo: Handler<'sudo'> = ctx => {
   rememberServerRequest(ctx.request)
   setSudoRequest({
-    command: str(ctx.request.params.command),
+    command: ctx.request.params.command,
     requestId: ctx.request.id,
     sessionId: ctx.sessionId || null
   })
@@ -217,31 +201,32 @@ const sudo: Handler = ctx => {
   notifyInput(ctx, translateNow('notifications.native.inputBody'))
 }
 
-const secret: Handler = ctx => {
-  const p = ctx.request.params
-  const envVar = str(p.env_var)
-  const promptText = str(p.prompt)
+const secret: Handler<'secret'> = ctx => {
+  const { env_var: envVar, prompt } = ctx.request.params
 
   rememberServerRequest(ctx.request)
-  setSecretRequest({ envVar, prompt: promptText, requestId: ctx.request.id, sessionId: ctx.sessionId || null })
+  setSecretRequest({ envVar, prompt, requestId: ctx.request.id, sessionId: ctx.sessionId || null })
   markNeedsInput(ctx)
-  notifyInput(ctx, promptText || envVar || translateNow('notifications.native.inputBody'))
+  notifyInput(ctx, prompt || envVar || translateNow('notifications.native.inputBody'))
 }
 
-const vaultCode: Handler = ctx => {
-  const p = ctx.request.params
-  const site = str(p.site)
+const vaultCode: Handler<'vault.code'> = ctx => {
+  const site = ctx.request.params.site ?? ''
 
   rememberServerRequest(ctx.request)
-  setVaultCodeRequest({ hint: str(p.hint), requestId: ctx.request.id, sessionId: ctx.sessionId || null, site })
+  setVaultCodeRequest({
+    hint: ctx.request.params.hint ?? '',
+    requestId: ctx.request.id,
+    sessionId: ctx.sessionId || null,
+    site
+  })
   markNeedsInput(ctx)
   notifyInput(ctx, translateNow('prompts.vaultCodeTitle', site))
 }
 
-const vaultSaveLogin: Handler = ctx => {
-  const p = ctx.request.params
-  const origin = str(p.origin)
-  const site = str(p.site) || origin
+const vaultSaveLogin: Handler<'vault.save_login'> = ctx => {
+  const { origin } = ctx.request.params
+  const site = ctx.request.params.site || origin
 
   rememberServerRequest(ctx.request)
   setVaultSaveLoginRequest({ origin, requestId: ctx.request.id, sessionId: ctx.sessionId || null, site })
@@ -249,10 +234,9 @@ const vaultSaveLogin: Handler = ctx => {
   notifyInput(ctx, translateNow('prompts.vaultSaveTitle', site))
 }
 
-const vaultUnlockPrompt: Handler = ctx => {
-  const p = ctx.request.params
-  const backend = str(p.backend)
-  const displayName = str(p.display_name) || backend
+const vaultUnlockPrompt: Handler<'vault.unlock_prompt'> = ctx => {
+  const { backend } = ctx.request.params
+  const displayName = ctx.request.params.display_name || backend
 
   rememberServerRequest(ctx.request)
   setVaultUnlockRequest({ backend, displayName, requestId: ctx.request.id, sessionId: ctx.sessionId || null })
@@ -262,19 +246,56 @@ const vaultUnlockPrompt: Handler = ctx => {
 
 // ── Desktop-surface bridges (answered immediately, no card) ─────────────────
 
-const terminalRead: Handler = ({ request }) => {
-  // read_terminal tool: serialize the renderer's xterm buffer. Empty = no live pane.
-  answerValue(request, readActiveTerminal({ count: num(request.params.count), start: num(request.params.start) }))
+type SurfaceRequest = ScopedServerRequest<'preview.act' | 'preview.read' | 'terminal.read' | 'tour' | 'window.read'>
+
+interface RefusedAction {
+  error: string
+  success: false
 }
 
-const previewRead: Handler = ({ request }) => {
+type WindowBelow = Awaited<ReturnType<NonNullable<NonNullable<typeof window.hermesDesktop>['readWindowBelow']>>>
+
+type SurfaceAnswer = null | PreviewActResult | PreviewReadResult | RefusedAction | TerminalReadResult | TourResult | WindowBelow
+
+/** Answer a string-valued request with a JSON-encoded result ('' = nothing / unavailable). */
+const answerValue = (request: SurfaceRequest, result: SurfaceAnswer) =>
+  request.respond({ value: result ? JSON.stringify(result) : '' })
+
+const refused = (error: string): RefusedAction => ({ error, success: false })
+
+const failureText = (error: Error | string) => (error instanceof Error ? error.message : String(error))
+
+const terminalRead: Handler<'terminal.read'> = ({ request }) => {
+  // read_terminal tool: serialize the renderer's xterm buffer. Empty = no live pane.
+  const { count, start } = request.params
+
+  answerValue(request, readActiveTerminal({ count: count ?? undefined, start: start ?? undefined }))
+}
+
+const previewRead: Handler<'preview.read'> = ({ request }) => {
   // read_preview tool: the active preview tab's page text is async. Empty = nothing open.
-  void readActivePreview({ count: num(request.params.count), start: num(request.params.start) }).then(result =>
+  const { count, start } = request.params
+
+  void readActivePreview({ count: count ?? undefined, start: start ?? undefined }).then(result =>
     answerValue(request, result)
   )
 }
 
-const previewAct: Handler = ({ isActiveSession, request, sessionId }) => {
+/** The wire operation as the preview engine takes it (nav verbs included; the engine routes those itself). */
+const previewAction = (p: PreviewActParams): Omit<PreviewActAction, 'kind'> & { kind: PreviewActParams['action'] } => ({
+  amount: p.amount ?? undefined,
+  full: p.full ?? undefined,
+  key: p.key ?? undefined,
+  kind: p.action,
+  max: p.max ?? undefined,
+  ref: p.ref ?? undefined,
+  selector: p.selector ?? undefined,
+  submit: p.submit ?? undefined,
+  text: p.text ?? undefined,
+  to: p.to ?? undefined
+})
+
+const previewAct: Handler<'preview.act'> = ({ isActiveSession, request, sessionId }) => {
   // drive_preview tool: click/type/scroll/press inside the guest page. Active
   // session only: a background turn must never reach into the page the user is
   // working in (desktop AGENTS.md: offer, don't hijack). Every mounted window can
@@ -284,38 +305,21 @@ const previewAct: Handler = ({ isActiveSession, request, sessionId }) => {
     return
   }
 
-  const p = request.params
-
   if (!isActiveSession) {
-    answerValue(request, {
-      error: 'The in-app browser only takes actions in the session the user is looking at.',
-      success: false
-    })
+    answerValue(request, refused('The in-app browser only takes actions in the session the user is looking at.'))
 
     return
   }
 
   void loadPreviewEngine()
-    .then(run =>
-      run({
-        amount: p.amount as never,
-        key: p.key as never,
-        kind: (str(p.action) || '') as never,
-        max: p.max as never,
-        ref: p.ref as never,
-        selector: p.selector as never,
-        submit: p.submit as never,
-        text: p.text as never,
-        to: p.to as PreviewActAction['to']
-      })
-    )
+    .then(run => run(previewAction(request.params)))
     .then(
       result => answerValue(request, result),
-      error => answerValue(request, { error: error instanceof Error ? error.message : String(error), success: false })
+      error => answerValue(request, refused(failureText(error)))
     )
 }
 
-const windowRead: Handler = ({ request }) => {
+const windowRead: Handler<'window.read'> = ({ request }) => {
   // read_window_below tool: main owns native window enumeration. Empty =
   // unavailable (older shell without the handler, Wayland, …) — without an
   // answer the tool would stall its full 30s deadline.
@@ -327,52 +331,51 @@ const windowRead: Handler = ({ request }) => {
   )
 }
 
-const tour: Handler = ({ isActiveSession, request, sessionId }) => {
+const tourStep = (step: WireTourStep): TourStep => ({
+  selector: step.selector ?? undefined,
+  side: step.side ?? undefined,
+  text: step.text ?? undefined,
+  title: step.title ?? undefined
+})
+
+const tourAction = (p: TourParams): TourAction => ({
+  ...tourStep(p),
+  kind: p.action,
+  startAt: p.step_index ?? undefined,
+  steps: p.steps?.map(tourStep)
+})
+
+const tour: Handler<'tour'> = ({ isActiveSession, request, sessionId }) => {
   // tour tool: one guided-tour action via driver.js, app DOM or preview guest
   // page. Active session only, same window-ownership rule as preview.act.
   if (sessionId && !isActiveSession) {
     return
   }
 
-  const p = request.params
-
   if (!$toursEnabled.get()) {
     // Refused in words, not silently dropped: a no-op would leave the agent
     // narrating a spotlight the user can't see.
-    answerValue(request, { error: 'The user has turned guided tours off.', success: false })
+    answerValue(request, refused('The user has turned guided tours off.'))
 
     return
   }
 
   if (!isActiveSession) {
-    answerValue(request, { error: 'Tours only run in the session the user is looking at.', success: false })
+    answerValue(request, refused('Tours only run in the session the user is looking at.'))
 
     return
   }
 
   void import('@/lib/tour')
-    .then(({ runTour }) =>
-      runTour(
-        {
-          kind: (str(p.action) || 'stop') as TourAction['kind'],
-          selector: p.selector as never,
-          side: p.side as TourStep['side'],
-          startAt: p.step_index as never,
-          steps: p.steps as TourStep[] | undefined,
-          text: p.text as never,
-          title: p.title as never
-        },
-        p.surface === 'preview' ? 'preview' : 'app'
-      )
-    )
+    .then(({ runTour }) => runTour(tourAction(request.params), request.params.surface ?? 'app'))
     .then(
       result => answerValue(request, result),
-      error => answerValue(request, { error: error instanceof Error ? error.message : String(error), success: false })
+      error => answerValue(request, refused(failureText(error)))
     )
 }
 
-/** Method → handler. Every `ServerRequestMap` key the desktop answers. */
-export const SERVER_REQUEST_HANDLERS: Record<string, Handler> = {
+/** Method → handler. tsc holds this to every `ServerRequestMap` key. */
+const HANDLERS: { [M in keyof ServerRequestMap]: Handler<M> } = {
   approval,
   clarify,
   'preview.act': previewAct,
@@ -387,21 +390,18 @@ export const SERVER_REQUEST_HANDLERS: Record<string, Handler> = {
   'window.read': windowRead
 }
 
-/** Dispatch one server→client request; false when the desktop has no handler for its method. */
-export function handleServerRequest(
-  request: ScopedServerRequest,
+/** Dispatch one server→client request to its typed handler. */
+export function handleServerRequest<M extends keyof ServerRequestMap>(
+  request: ScopedServerRequest<M>,
   deps: ServerRequestContext['deps'],
   activeSessionId: null | string
-): boolean {
-  const handler = SERVER_REQUEST_HANDLERS[request.method]
+): void {
+  const sessionId = request.params.session_id
 
-  if (!handler) {
-    return false
-  }
-
-  const sessionId = str(request.params.session_id)
-
-  handler({ deps, request, sessionId, isActiveSession: Boolean(sessionId) && sessionId === activeSessionId })
-
-  return true
+  HANDLERS[request.method]({
+    deps,
+    request,
+    sessionId,
+    isActiveSession: Boolean(sessionId) && sessionId === activeSessionId
+  })
 }

@@ -1,3 +1,4 @@
+import type { ApprovalChoice } from '@hermes/shared'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -6,6 +7,7 @@ import { $gateway } from '@/store/gateway'
 import { $approvalRequest, clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { $activeSessionId } from '@/store/session'
+import { approvalParams } from '@/test/contract'
 
 import { PendingApprovalFallback, PendingToolApproval } from './approval'
 import type { ToolPart } from './fallback-model'
@@ -34,7 +36,7 @@ function part(toolName: string): ToolPart {
 function setRequest(
   command = 'rm -rf /tmp/x',
   allowPermanent?: boolean,
-  extra: { choices?: string[]; requestId?: string; serverRequestId?: string; smartDenied?: boolean } = {}
+  extra: { choices?: ApprovalChoice[]; requestId?: string; serverRequestId?: string; smartDenied?: boolean } = {}
 ) {
   $activeSessionId.set('sess-1')
   setApprovalRequest({ allowPermanent, command, description: 'dangerous command', sessionId: 'sess-1', ...extra })
@@ -43,7 +45,14 @@ function setRequest(
 /** A live `approval` server request the card answers synchronously. */
 function liveApproval(id = 'srq-approval') {
   const respond = vi.fn()
-  rememberServerRequest({ fail: vi.fn(), id, method: 'approval', params: {}, respond })
+  rememberServerRequest({
+    fail: vi.fn(),
+    id,
+    method: 'approval',
+    params: approvalParams({ request_id: id, session_id: 'sess-1' }),
+    respond,
+    sessionId: 'sess-1'
+  })
 
   return respond
 }

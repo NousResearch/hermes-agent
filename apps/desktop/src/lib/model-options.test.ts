@@ -2,10 +2,12 @@ import { QueryClient } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelOptions } from '@/hermes'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
+import { modelOptionProvider, modelOptionsResult } from '@/test/contract'
 
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from './model-options'
 
-const globalOptions = { model: 'hermes-4', provider: 'nous', providers: [] }
+const globalOptions = modelOptionsResult({ model: 'hermes-4', provider: 'nous' })
 
 vi.mock('@/hermes', () => ({
   getGlobalModelOptions: vi.fn(() => Promise.resolve(globalOptions))
@@ -20,7 +22,7 @@ describe('requestModelOptions', () => {
     const gatewayPayload = {
       model: 'BeastMode',
       provider: 'moa',
-      providers: [{ models: ['BeastMode'], name: 'Mixture of Agents', slug: 'moa' }]
+      providers: [modelOptionProvider({ models: ['BeastMode'], name: 'Mixture of Agents', slug: 'moa' })]
     }
 
     const gateway = {
@@ -39,7 +41,7 @@ describe('requestModelOptions', () => {
     const restPayload = {
       model: 'profile-default',
       provider: 'openai-codex',
-      providers: [{ models: ['hermes-local'], name: 'Hermes Local vLLM', slug: 'hermes-local' }]
+      providers: [modelOptionProvider({ models: ['hermes-local'], name: 'Hermes Local vLLM', slug: 'hermes-local' })]
     }
 
     const gateway = {
@@ -61,7 +63,7 @@ describe('requestModelOptions', () => {
     const restPayload = {
       model: 'hermes-local',
       provider: 'hermes-local',
-      providers: [{ models: ['hermes-local'], name: 'Hermes Local vLLM', slug: 'hermes-local' }]
+      providers: [modelOptionProvider({ models: ['hermes-local'], name: 'Hermes Local vLLM', slug: 'hermes-local' })]
     }
 
     const gateway = {
@@ -136,23 +138,20 @@ describe('requestModelOptions', () => {
     const gatewayPayload = {
       model: 'chrome-model',
       provider: 'nous',
-      providers: [{ models: ['chrome-model'], name: 'Nous', slug: 'nous' }]
+      providers: [modelOptionProvider({ models: ['chrome-model'], name: 'Nous', slug: 'nous' })]
     }
 
     const routedPayload = {
       model: 'berry-model',
       provider: 'openai',
-      providers: [{ models: ['berry-model'], name: 'OpenAI', slug: 'openai' }]
+      providers: [modelOptionProvider({ models: ['berry-model'], name: 'OpenAI', slug: 'openai' })]
     }
 
     const gateway = {
       request: vi.fn(() => Promise.resolve(gatewayPayload))
     }
 
-    const request = vi.fn(() => Promise.resolve(routedPayload)) as unknown as <T>(
-      method: string,
-      params?: Record<string, unknown>
-    ) => Promise<T>
+    const request: GatewayRequest = vi.fn().mockResolvedValue(routedPayload)
 
     await expect(requestModelOptions({ gateway: gateway as never, request, sessionId: 'tile-1' })).resolves.toBe(
       routedPayload
@@ -173,10 +172,7 @@ describe('requestModelOptions', () => {
   it('keeps an empty owner-routed catalog instead of replacing it from ambient REST', async () => {
     const ownerPayload = { model: 'berry-local', provider: 'hermes-local', providers: [] }
 
-    const request = vi.fn(() => Promise.resolve(ownerPayload)) as unknown as <T>(
-      method: string,
-      params?: Record<string, unknown>
-    ) => Promise<T>
+    const request: GatewayRequest = vi.fn().mockResolvedValue(ownerPayload)
 
     await expect(requestModelOptions({ profile: 'berry', request, sessionId: 'tile-1' })).resolves.toBe(ownerPayload)
     expect(getGlobalModelOptions).not.toHaveBeenCalled()
@@ -200,8 +196,8 @@ describe('modelOptionsQueryKey', () => {
     const queryClient = new QueryClient()
 
     expect(sourceAKey).toEqual(['model-options', 'default', 'session-1', 'owner', 'source-a'])
-    queryClient.setQueryData(sourceAKey, { providers: [{ models: ['a/model'], slug: 'a' }] })
-    queryClient.setQueryData(sourceBKey, { providers: [{ models: ['b/model'], slug: 'b' }] })
+    queryClient.setQueryData(sourceAKey, { providers: [modelOptionProvider({ models: ['a/model'], slug: 'a' })] })
+    queryClient.setQueryData(sourceBKey, { providers: [modelOptionProvider({ models: ['b/model'], slug: 'b' })] })
 
     expect(queryClient.getQueryData(sourceAKey)).toMatchObject({ providers: [{ models: ['a/model'] }] })
     expect(queryClient.getQueryData(sourceBKey)).toMatchObject({ providers: [{ models: ['b/model'] }] })

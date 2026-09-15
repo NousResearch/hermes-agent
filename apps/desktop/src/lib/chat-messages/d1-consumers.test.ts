@@ -50,7 +50,7 @@ describe('D1 settlement and presentation consumers', () => {
   it('keeps envelope-only todo completion and explicit clearing after normalization', () => {
     const todos = [{ id: 'a', content: 'Do it', status: 'completed' }]
     const parts = upsertToolPart([], { name: 'todo_list', tool_id: 'todos', result: 'ok', todos }, 'complete', 2)
-    expect(todosFromMessageContent(normalize(parts))).toEqual(todos)
+    expect(todosFromMessageContent(normalize(parts))).toEqual([{ ...todos[0], parent: null }])
     const cleared = upsertToolPart(parts, { name: 'todo_list', tool_id: 'todos', todos: [] }, 'complete', 3)
     expect(todosFromMessageContent(normalize(cleared))).toEqual([])
   })

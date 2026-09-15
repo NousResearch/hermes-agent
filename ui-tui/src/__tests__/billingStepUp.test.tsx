@@ -12,9 +12,10 @@ vi.mock('@hermes/ink', async importOriginal => {
   return { ...mod, useInput: () => {} }
 })
 
+import type { BillingStateResult } from '@hermes/shared/gateway-events'
+
 import type { BillingOverlayState } from '../app/interfaces.js'
 import { BillingOverlay } from '../components/billingOverlay.js'
-import type { BillingStateResponse } from '../gatewayTypes.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 const t = DEFAULT_THEME
@@ -54,27 +55,33 @@ function render(overlay: BillingOverlayState): string {
   return stripAnsi(output)
 }
 
-const billState = (overrides: Partial<BillingStateResponse> = {}): BillingStateResponse =>
-  ({
-    auto_reload: null,
-    balance_display: '$12.00',
-    balance_usd: '12',
-    can_charge: true,
-    card: { brand: 'visa', last4: '4242', masked: 'visa ····4242' },
-    charge_presets: ['25', '50'],
-    charge_presets_display: ['$25', '$50'],
-    cli_billing_enabled: true,
-    is_admin: true,
-    logged_in: true,
-    max_usd: '1000',
-    min_usd: '10',
-    monthly_cap: null,
-    ok: true,
-    org_name: 'Acme',
-    portal_url: 'https://portal/billing',
-    role: 'OWNER',
-    ...overrides
-  }) as BillingStateResponse
+const billState = (overrides: Partial<BillingStateResult> = {}): BillingStateResult => ({
+  auto_reload: null,
+  balance_display: '$12.00',
+  balance_usd: '12',
+  can_change_plan: true,
+  can_charge: true,
+  card: { brand: 'visa', display: null, last4: '4242', masked: 'visa ····4242', resolved_via: null },
+  charge_presets: ['25', '50'],
+  charge_presets_display: ['$25', '$50'],
+  cli_billing_enabled: true,
+  error: null,
+  free_tier: false,
+  free_tier_model: null,
+  is_admin: true,
+  logged_in: true,
+  max_usd: '1000',
+  min_usd: '10',
+  monthly_cap: null,
+  ok: true,
+  org_name: 'Acme',
+  org_slug: null,
+  payment_method: null,
+  portal_url: 'https://portal/billing',
+  role: 'OWNER',
+  usage: null,
+  ...overrides
+})
 
 const ctx = {
   applyAutoReload: vi.fn(() => Promise.resolve(true)),
@@ -154,7 +161,7 @@ describe('BillingOverlay — overview (reordered, dollars)', () => {
 })
 
 describe('BillingOverlay — auto-reload card divergence', () => {
-  const autoReload = (card: NonNullable<BillingStateResponse['auto_reload']>['card']) => ({
+  const autoReload = (card: NonNullable<BillingStateResult['auto_reload']>['card']) => ({
     card,
     enabled: true,
     reload_to_display: '$100',

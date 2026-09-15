@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from .base import Params, Result
+from .base import MethodParams, Params, Result
 from .registry import method
 
 
-class PingParams(Params):
+class PingParams(MethodParams):
     pass
 
 

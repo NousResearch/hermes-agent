@@ -1,15 +1,15 @@
 import { type MutableRefObject, useCallback, useEffect } from 'react'
 
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { $currentCwd, setContextSuggestions } from '@/store/session'
 
-import type { ContextSuggestion } from '../../types'
 
 interface ContextSuggestionsOptions {
   activeSessionId: string | null
   activeSessionIdRef: MutableRefObject<string | null>
   currentCwd: string
   gatewayState: string | undefined
-  requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequest
 }
 
 export function useContextSuggestions({
@@ -34,7 +34,7 @@ export function useContextSuggestions({
     const stillCurrent = () => activeSessionIdRef.current === sessionId && $currentCwd.get() === cwd
 
     try {
-      const result = await requestGateway<{ items?: ContextSuggestion[] }>('complete.path', {
+      const result = await requestGateway('complete.path', {
         session_id: sessionId,
         word: '@file:',
         cwd: cwd || undefined

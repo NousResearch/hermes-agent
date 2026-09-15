@@ -1,23 +1,12 @@
 """Contracts: system / process / slash-command / rollback / cron / browser / config RPCs
-(handlers in ``tui_gateway/methods_tools.py``, browser helpers in ``methods_browser.py``).
-
-Several results here are pass-throughs of dicts another module owns (``tools/process_registry.py``,
-``tools/checkpoint_manager.py``, ``tools/cronjob_tools.py``): those declare every key the producer is
-known to emit plus ``extra="allow"`` so a new upstream key never trips the strict gate.
-"""
+(handlers in ``tui_gateway/methods_tools.py``, browser helpers in ``methods_browser.py``)."""
 
 from __future__ import annotations
 
 from pydantic import Field
 
-from .base import JsonValue, Params, Result, WireEnum
+from .base import MethodParams, Params, Result, WireEnum
 from .registry import method
-
-
-class _Open(Result):
-    """A pass-through row whose closed set is owned by another module."""
-
-    model_config = Result.model_config | {"extra": "allow"}
 
 
 # ── system.battery ────────────────────────────────────────────────────────────────────────────
@@ -33,15 +22,15 @@ class BatteryCategory(WireEnum):
     dim = "dim"
 
 
-class SystemBatteryParams(Params):
-    profile: str | None = None
+class SystemBatteryParams(MethodParams):
+    pass
 
 
 class SystemBatteryResult(Result):
     available: bool
-    percent: int | None = None
-    plugged: bool | None = None
-    category: BatteryCategory = BatteryCategory.dim
+    percent: int | None
+    plugged: bool | None
+    category: BatteryCategory
 
 
 method("system.battery", params=SystemBatteryParams, result=SystemBatteryResult,
@@ -51,9 +40,8 @@ method("system.battery", params=SystemBatteryParams, result=SystemBatteryResult,
 # ── process.* / agents.list ───────────────────────────────────────────────────────────────────
 
 
-class ProcessStopParams(Params):
+class ProcessStopParams(MethodParams):
     session_id: str | None = None
-    profile: str | None = None
 
 
 class ProcessStopResult(Result):
@@ -64,8 +52,8 @@ method("process.stop", params=ProcessStopParams, result=ProcessStopResult,
        doc="Kill every background process in the registry (``/stop``), answering the count killed.")
 
 
-class AgentsListParams(Params):
-    profile: str | None = None
+class AgentsListParams(MethodParams):
+    pass
 
 
 class AgentProcessRow(Result):
@@ -76,51 +64,49 @@ class AgentProcessRow(Result):
 
 
 class AgentsListResult(Result):
-    processes: list[AgentProcessRow] = Field(default_factory=list)
+    processes: list[AgentProcessRow]
 
 
 method("agents.list", params=AgentsListParams, result=AgentsListResult,
        doc="Registry-wide background process summary for ``/agents``.")
 
 
-class ProcessListParams(Params):
+class ProcessListParams(MethodParams):
     session_id: str
-    profile: str | None = None
 
 
-class ProcessEntry(_Open):
-    """``tools/process_registry.py::list_sessions`` row plus the gateway's ``output_tail``."""
+class ProcessEntry(Result):
+    """``tools/process_registry.py:2011-2034`` plus ``server.py:3154``."""
 
     session_id: str
-    command: str = ""
-    cwd: str | None = None
-    pid: int | None = None
-    owner_task_id: str | None = None
-    started_at: str | None = None
-    uptime_seconds: int | None = None
-    status: str = "running"
-    output_preview: str = ""
-    output_tail: str | None = None
-    session_scoped: bool | None = None
-    watch_patterns: list[str] | None = None
-    watch_hit: bool | None = None
-    notify_on_complete: bool | None = None
-    exit_code: int | None = None
-    detached: bool | None = None
+    command: str
+    cwd: str | None
+    pid: int | None
+    owner_task_id: str | None
+    started_at: str
+    uptime_seconds: int
+    status: str
+    output_preview: str
+    output_tail: str
+    session_scoped: bool | None
+    watch_patterns: list[str] | None
+    watch_hit: bool | None
+    notify_on_complete: bool | None
+    exit_code: int | None
+    detached: bool | None
 
 
 class ProcessListResult(Result):
-    processes: list[ProcessEntry] = Field(default_factory=list)
+    processes: list[ProcessEntry]
 
 
 method("process.list", params=ProcessListParams, result=ProcessListResult,
        doc="Background processes owned by the caller's session (desktop status stack poll).")
 
 
-class ProcessKillParams(Params):
+class ProcessKillParams(MethodParams):
     session_id: str
     process_id: str
-    profile: str | None = None
 
 
 class ProcessKillStatus(WireEnum):
@@ -130,8 +116,8 @@ class ProcessKillStatus(WireEnum):
     error = "error"
 
 
-class ProcessKillResult(_Open):
-    """``tools/process_registry.py::kill_process`` snapshot; ``error`` rides on the failure statuses."""
+class ProcessKillResult(Result):
+    """``tools/process_registry.py:1808-1907`` kill outcome."""
 
     status: ProcessKillStatus
     session_id: str | None = None
@@ -150,9 +136,8 @@ method("process.kill", params=ProcessKillParams, result=ProcessKillResult,
 # ── shell.exec / cli.exec ─────────────────────────────────────────────────────────────────────
 
 
-class ShellExecParams(Params):
-    command: str
-    profile: str | None = None
+class ShellExecParams(MethodParams):
+    command: str = ""
 
 
 class ShellExecResult(Result):
@@ -165,17 +150,16 @@ method("shell.exec", params=ShellExecParams, result=ShellExecResult,
        doc="Run a safe (non-dangerous) shell command captured for ``!cmd`` / inline substitution.")
 
 
-class CliExecParams(Params):
-    argv: list[str]
-    timeout: int | None = None
-    profile: str | None = None
+class CliExecParams(MethodParams):
+    argv: list[str] = Field(default_factory=list)
+    timeout: int = 240
 
 
 class CliExecResult(Result):
     blocked: bool
     code: int
     output: str
-    hint: str | None = None
+    hint: str | None
 
 
 method("cli.exec", params=CliExecParams, result=CliExecResult,
@@ -185,9 +169,8 @@ method("cli.exec", params=CliExecParams, result=CliExecResult,
 # ── command catalog / resolve / dispatch / slash.exec ─────────────────────────────────────────
 
 
-class CommandsCatalogParams(Params):
+class CommandsCatalogParams(MethodParams):
     session_id: str | None = None
-    profile: str | None = None
 
 
 class ArgumentMode(WireEnum):
@@ -197,38 +180,37 @@ class ArgumentMode(WireEnum):
 
 
 class CommandCatalogMeta(Result):
-    argument_mode: ArgumentMode | None = None
-    desktop: str | None = None
+    argument_mode: ArgumentMode | None
+    desktop: str | None
 
 
 class CommandCategory(Result):
     name: str
-    pairs: list[list[str]] = Field(default_factory=list)
+    pairs: list[list[str]]
 
 
 class SkillCatalogEntry(Result):
-    usage: int = 0
-    origin: str = "local"
+    usage: int
+    origin: str
 
 
 class CommandsCatalogResult(Result):
-    pairs: list[list[str]] = Field(default_factory=list)
-    sub: dict[str, list[str]] = Field(default_factory=dict)
-    canon: dict[str, str] = Field(default_factory=dict)
-    commands: dict[str, CommandCatalogMeta] = Field(default_factory=dict)
-    categories: list[CommandCategory] = Field(default_factory=list)
-    skills: dict[str, SkillCatalogEntry] = Field(default_factory=dict)
-    skill_count: int = 0
-    warning: str = ""
+    pairs: list[list[str]]
+    sub: dict[str, list[str]]
+    canon: dict[str, str]
+    commands: dict[str, CommandCatalogMeta]
+    categories: list[CommandCategory]
+    skills: dict[str, SkillCatalogEntry]
+    skill_count: int
+    warning: str
 
 
 method("commands.catalog", params=CommandsCatalogParams, result=CommandsCatalogResult,
        doc="Categorized slash metadata (registry, quick, plugin, skill) for completion menus.")
 
 
-class CommandResolveParams(Params):
+class CommandResolveParams(MethodParams):
     name: str | None = None
-    profile: str | None = None
 
 
 class CommandResolveResult(Result):
@@ -252,11 +234,10 @@ class DispatchType(WireEnum):
     prefill = "prefill"
 
 
-class CommandDispatchParams(Params):
+class CommandDispatchParams(MethodParams):
     name: str
     arg: str | None = None
     session_id: str | None = None
-    profile: str | None = None
 
 
 class CommandDispatchResult(Result):
@@ -264,38 +245,37 @@ class CommandDispatchResult(Result):
     ``send``/``prefill``/``skill`` a ``message`` (UIs render ``display``, never ``message``)."""
 
     type: DispatchType
-    output: str | None = None
-    target: str | None = None
-    message: str | None = None
-    notice: str | None = None
-    display: str | None = None
-    name: str | None = None
-    status: str | None = None
+    output: str | None
+    target: str | None
+    message: str | None
+    notice: str | None
+    display: str | None
+    name: str | None
+    status: str | None
 
 
 method("command.dispatch", params=CommandDispatchParams, result=CommandDispatchResult,
        doc="Run a quick/plugin/bundle/skill/built-in slash command and answer a structured directive.")
 
 
-class SlashExecParams(Params):
+class SlashExecParams(MethodParams):
     session_id: str
     command: str
-    profile: str | None = None
 
 
 class SlashExecResult(Result):
     """Plain worker/plugin text in ``output`` (+ ``warning``), or — when the command was rerouted to
     ``command.dispatch`` — that method's directive fields with ``type`` set."""
 
-    output: str | None = None
-    warning: str | None = None
-    type: DispatchType | None = None
-    target: str | None = None
-    message: str | None = None
-    notice: str | None = None
-    display: str | None = None
-    name: str | None = None
-    status: str | None = None
+    output: str | None
+    warning: str | None
+    type: DispatchType | None
+    target: str | None
+    message: str | None
+    notice: str | None
+    display: str | None
+    name: str | None
+    status: str | None
 
 
 method("slash.exec", params=SlashExecParams, result=SlashExecResult,
@@ -305,9 +285,8 @@ method("slash.exec", params=SlashExecParams, result=SlashExecResult,
 # ── insights.get / config.show ────────────────────────────────────────────────────────────────
 
 
-class InsightsGetParams(Params):
+class InsightsGetParams(MethodParams):
     days: int | None = None
-    profile: str | None = None
 
 
 class InsightsGetResult(Result):
@@ -320,19 +299,17 @@ method("insights.get", params=InsightsGetParams, result=InsightsGetResult,
        doc="Session/message counts over the last ``days`` for the (optionally scoped) profile store.")
 
 
-class ConfigShowParams(Params):
-    profile: str | None = None
+class ConfigShowParams(MethodParams):
+    pass
 
 
 class ConfigSection(Result):
     title: str
-    rows: list[list[str]] = Field(default_factory=list)
+    rows: list[list[str]]
 
 
 class ConfigShowResult(Result):
-    model_config = Result.model_config | {"extra": "allow"}
-
-    sections: list[ConfigSection] = Field(default_factory=list)
+    sections: list[ConfigSection]
 
 
 method("config.show", params=ConfigShowParams, result=ConfigShowResult,
@@ -342,36 +319,33 @@ method("config.show", params=ConfigShowParams, result=ConfigShowResult,
 # ── rollback.* ────────────────────────────────────────────────────────────────────────────────
 
 
-class RollbackListParams(Params):
+class RollbackListParams(MethodParams):
     session_id: str
-    profile: str | None = None
 
 
 class RollbackCheckpoint(Result):
-    hash: str = ""
-    timestamp: str = ""
-    message: str = ""
+    hash: str
+    timestamp: str
+    message: str
 
 
 class RollbackListResult(Result):
     enabled: bool
-    checkpoints: list[RollbackCheckpoint] = Field(default_factory=list)
+    checkpoints: list[RollbackCheckpoint]
 
 
 method("rollback.list", params=RollbackListParams, result=RollbackListResult,
        doc="Checkpoints for the session's cwd; ``enabled: false`` when checkpointing is off.")
 
 
-class RollbackRestoreParams(Params):
+class RollbackRestoreParams(MethodParams):
     session_id: str
     hash: str
     file_path: str | None = None
-    profile: str | None = None
 
 
-class RollbackRestoreResult(_Open):
-    """``tools/checkpoint_manager.py::restore`` outcome; ``history_removed`` is added for a full
-    (non-file) restore that also rewound the live transcript."""
+class RollbackRestoreResult(Result):
+    """``tools/checkpoint_manager.py:725-776`` plus ``methods_tools.py:935-948``."""
 
     success: bool
     restored_to: str | None = None
@@ -384,23 +358,22 @@ class RollbackRestoreResult(_Open):
     failed_deletes: list[str] | None = None
     history_removed: int | None = None
     error: str | None = None
-    debug: JsonValue | None = None
+    debug: str | None = None
 
 
 method("rollback.restore", params=RollbackRestoreParams, result=RollbackRestoreResult,
        doc="Restore the working tree (or one file) to a checkpoint by hash or 1-based index.")
 
 
-class RollbackDiffParams(Params):
+class RollbackDiffParams(MethodParams):
     session_id: str
     hash: str
-    profile: str | None = None
 
 
 class RollbackDiffResult(Result):
-    stat: str = ""
-    diff: str = ""
-    rendered: str | None = None
+    stat: str
+    diff: str
+    rendered: str | None
 
 
 method("rollback.diff", params=RollbackDiffParams, result=RollbackDiffResult,
@@ -418,7 +391,7 @@ class CronAction(WireEnum):
     resume = "resume"
 
 
-class CronManageParams(Params):
+class CronManageParams(MethodParams):
     action: CronAction = CronAction.list
     name: str | None = None
     include_disabled: bool | str | None = None
@@ -427,42 +400,49 @@ class CronManageParams(Params):
     repeat: int | str | None = None
     continuity: bool | str | None = None
     deliver: str | None = None
-    profile: str | None = None
 
 
-class CronJobRow(_Open):
-    """``tools/cronjob_job_args.py::_format_job``."""
+class CronMonitorState(Result):
+    """``cron/monitor.py:178-181`` persisted monitor state."""
+
+    last_output_hash: str
+    last_changed_at: str
+
+
+class CronJobRow(Result):
+    """Closed row from ``tools/cronjob_job_args.py::_format_job``; the ``_FORMAT_JOB_OPTIONAL_KEYS`` /
+    continuity / context_from / attach_to_session keys are only present when set."""
 
     job_id: str
-    name: str = ""
-    skill: str | None = None
-    skills: list[str] = Field(default_factory=list)
-    prompt_preview: str = ""
-    model: str | None = None
-    provider: str | None = None
-    base_url: str | None = None
-    schedule: str = "?"
-    repeat: int | str | None = None
-    deliver: str | None = None
-    next_run_at: str | None = None
-    last_run_at: str | None = None
-    last_status: str | None = None
-    last_delivery_error: str | None = None
-    last_delivery_unverified: bool | None = None
-    last_fire_error: str | None = None
-    last_error: str | None = None
-    enabled: bool = True
-    state: str | None = None
-    paused_at: str | None = None
-    paused_reason: str | None = None
-    workdir: str | None = None
+    name: str
+    skill: str | None
+    skills: list[str]
+    prompt_preview: str
+    model: str | None
+    provider: str | None
+    base_url: str | None
+    schedule: str
+    repeat: int | str | None
+    deliver: str | None
+    next_run_at: str | None
+    last_run_at: str | None
+    last_status: str | None
+    last_delivery_error: str | None
+    last_delivery_unverified: bool | None
+    last_fire_error: str | None
+    last_error: str | None
+    enabled: bool
+    state: str | None
+    paused_at: str | None
+    paused_reason: str | None
     script: str | None = None
     reasoning_effort: str | None = None
     monitor_script: str | None = None
     monitor_url: str | None = None
-    monitor_state: JsonValue | None = None
+    monitor_state: CronMonitorState | None = None
     no_agent: bool | None = None
     enabled_toolsets: list[str] | None = None
+    workdir: str | None = None
     continuity: bool | None = None
     context_from: list[str] | None = None
     attach_to_session: bool | None = None
@@ -470,16 +450,15 @@ class CronJobRow(_Open):
 
 class CronRemovedJob(Result):
     id: str
-    name: str = ""
-    schedule: str | None = None
+    name: str
+    schedule: str | None
 
 
-class CronManageResult(_Open):
-    """Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` → ``jobs``/``count``
-    (+ ``scoped`` when profile-scoped); ``add`` → the created job's summary + ``job``; ``remove`` →
-    ``removed_job``; ``pause``/``resume`` → ``job``. A tool-level failure lands in ``error``."""
+class CronManageResult(Result):
+    """``methods_tools.py:1059-1083`` adapts the listed ``cronjob`` action outcomes;
+    each action fills its own subset, so every optional key defaults."""
 
-    success: bool | None = None
+    success: bool
     error: str | None = None
     count: int | None = None
     jobs: list[CronJobRow] | None = None
@@ -496,7 +475,7 @@ class CronManageResult(_Open):
     next_run_at: str | None = None
     job: CronJobRow | None = None
     message: str | None = None
-    guidance: JsonValue | None = None
+    guidance: list[str] | None = None
     removed_job: CronRemovedJob | None = None
 
 
@@ -513,11 +492,10 @@ class BrowserAction(WireEnum):
     disconnect = "disconnect"
 
 
-class BrowserManageParams(Params):
+class BrowserManageParams(MethodParams):
     action: BrowserAction = BrowserAction.status
     url: str | None = None
     session_id: str | None = None
-    profile: str | None = None
 
 
 class BrowserManageResult(Result):

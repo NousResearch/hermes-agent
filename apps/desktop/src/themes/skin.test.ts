@@ -7,7 +7,7 @@ const withColors = (name: string, colors: Record<string, string>) => skinToDeskt
 
 describe('skinToDesktopTheme', () => {
   it('returns null without a name or colors', () => {
-    expect(skinToDesktopTheme({ name: 'x' })).toBeNull()
+    expect(skinToDesktopTheme({ name: 'x', colors: null })).toBeNull()
     expect(skinToDesktopTheme({ name: '', colors: { background: '#101010' } })).toBeNull()
   })
 

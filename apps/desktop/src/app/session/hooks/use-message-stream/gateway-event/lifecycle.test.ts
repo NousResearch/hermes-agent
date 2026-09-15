@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useStatusSnapshot } from '@/app/shell/hooks/use-status-snapshot'
 import { getStatus } from '@/hermes'
 import { $setupReadyTick } from '@/store/live-sync'
+import { setupRuntimeCheckResult, setupStatusResult } from '@/test/contract'
+import { gatewayRequestMock } from '@/test/gateway-request'
 
 import { handleLifecycleEvent } from './lifecycle'
 import type { GatewayEventContext } from './types'
@@ -13,17 +15,18 @@ vi.mock(import('@/hermes'), async importOriginal => ({
   getStatus: vi.fn()
 }))
 
-type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
-
 function setupReadyContext(fromActiveSource: boolean): GatewayEventContext {
   const payload = {
     error: '',
+    error_code: null,
     finished_at: 1_700_000_100,
     free_tier: true,
     has_identity: true,
     inference_provider: 'nous',
     other_providers: false,
-    provider_configured: true
+    provider_configured: true,
+    retry_after: null,
+    retryable: null
   }
 
   return {
@@ -48,11 +51,12 @@ async function flushAsync() {
 /** Mount the status snapshot on an open gateway and return its requester with
  *  the open-time readiness round already consumed. */
 async function mountedStatusSnapshot() {
-  const requestGateway = vi.fn(
-    async (method: string) => (method === 'setup.runtime_check' ? { ok: true } : { provider_configured: true }) as never
-  )
+  const requestGateway = gatewayRequestMock({
+    'setup.runtime_check': () => setupRuntimeCheckResult({ ok: true }),
+    'setup.status': () => setupStatusResult({ provider_configured: true })
+  })
 
-  renderHook(() => useStatusSnapshot('open', requestGateway as unknown as GatewayRequester))
+  renderHook(() => useStatusSnapshot('open', requestGateway))
   await flushAsync()
   requestGateway.mockClear()
   vi.mocked(getStatus).mockClear()

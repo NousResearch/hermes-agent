@@ -43,7 +43,7 @@ afterEach(() => {
 })
 
 it.each([false, true])('keeps artifact links below the queue with background work: %s', background => {
-  $todosBySession.set({ owner: [{ id: 'todo', content: 'Task item', status: 'in_progress' }] })
+  $todosBySession.set({ owner: [{ id: 'todo', content: 'Task item', parent: null, status: 'in_progress' }] })
   $previewStatusBySession.set({
     owner: [
       { cwd: '/tmp', id: 'file', label: 'index.html', target: '/tmp/index.html' },

@@ -11,8 +11,7 @@ from __future__ import annotations
 
 from pydantic import Field
 
-from .base import Params, Payload, Result, WireEnum
-from .common import ProfileParams
+from .base import MethodParams, Params, Payload, Result, WireEnum
 from .registry import event, method
 
 
@@ -117,7 +116,7 @@ event("connection.update", ConnectionUpdatePayload,
       doc="One transition or the settlement of an open connection operation.")
 
 
-class ConnectionOperationParams(ProfileParams):
+class ConnectionOperationParams(MethodParams):
     session_id: str
     op_id: str
 
@@ -130,8 +129,6 @@ class ConnectionAnswerTarget(Params):
     """One row's answer from the card. ``status`` is what the card observed for that row
     (``tools/connectors/mcp.py::_OUTCOME_STATES`` maps it onto a target state); ``state`` is the
     older spelling of the same field and one of the two is present."""
-
-    model_config = Params.model_config | {"extra": "allow"}
 
     name: str
     status: str | None = None

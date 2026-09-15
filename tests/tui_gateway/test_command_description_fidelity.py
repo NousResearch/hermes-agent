@@ -1,5 +1,6 @@
 """Command descriptions survive both catalog and completion transport."""
 
+from tui_gateway.contracts.tools_commands import CommandsCatalogParams
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
@@ -15,8 +16,8 @@ def test_full_descriptions_survive_catalog_and_completion(monkeypatch):
     monkeypatch.setattr(skill_commands, "scan_skill_commands", lambda: skills)
     monkeypatch.setattr(plugins, "get_plugin_commands", lambda: {"proof-plugin": {"description": description}})
     monkeypatch.setattr(server, "_load_cfg", lambda: {"quick_commands": {"proof-quick": {"description": description}}})
-    catalog = server._methods["commands.catalog"](1, {})["result"]
-    pairs = dict(catalog["pairs"])
+    catalog = server.invoke("commands.catalog", CommandsCatalogParams())
+    pairs = dict(catalog.pairs)
     for name in ("/proof-skill", "/proof-plugin", "/proof-quick"):
         assert pairs[name] == description
     completer = SlashCommandCompleter(skill_commands_provider=lambda: skills)

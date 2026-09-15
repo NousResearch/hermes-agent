@@ -1,10 +1,24 @@
+import type {
+  ProjectsTreeResult,
+  ProjectTreeLane,
+  ProjectTreeNode,
+  ProjectTreeRepo,
+  ProjectTreeSession,
+  RepoDiscoveryPolicy,
+  RepoDiscoveryPolicyParams,
+  RpcMethods
+} from '@hermes/shared'
+
+export type { RepoDiscoveryPolicy }
 import { atom } from 'nanostores'
 
 import type { NewSessionPlacement } from '@/app/chat/new-session-drag'
 import {
   liveSessionProjectId,
   NO_PROJECT_ID,
-  type SidebarProjectTree
+  type SidebarProjectTree,
+  type SidebarSessionGroup,
+  type SidebarWorkspaceTree
 } from '@/app/chat/sidebar/projects/workspace-groups'
 import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'
 import { getHermesConfig, hermesApi, type HermesGateway } from '@/hermes'
@@ -32,6 +46,7 @@ import {
   workspaceCwdForNewSession
 } from '@/store/session'
 import { $removedSessionIds, $sessionMutationsInFlight } from '@/store/session-removal'
+import type { SessionInfo } from '@/types/hermes'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
@@ -265,7 +280,10 @@ export async function followActiveSessionCwd(cwd: string): Promise<void> {
 // Issue a request on whichever gateway is currently active, reconnecting once
 // if the socket dropped. Projects are per-profile, so they intentionally follow
 // the active gateway just like the session list does.
-async function gatewayRequest<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+async function gatewayRequest<M extends keyof RpcMethods>(
+  method: M,
+  params: RpcMethods[M]['params']
+): Promise<RpcMethods[M]['result']> {
   let gateway = activeGateway()
 
   if (!gateway || gateway.connectionState !== 'open') {
@@ -276,7 +294,7 @@ async function gatewayRequest<T>(method: string, params: Record<string, unknown>
     throw new Error('Hermes gateway is not connected')
   }
 
-  return gateway.request<T>(method, params)
+  return gateway.request(method, params)
 }
 
 export function projectProfile(): null | string {
@@ -285,10 +303,7 @@ export function projectProfile(): null | string {
   return $profileScope.get() === ALL_PROFILES || profile === ALL_PROFILES ? null : profile
 }
 
-function projectParams(
-  params: Record<string, unknown> = {},
-  profile: null | string = projectProfile()
-): Record<string, unknown> {
+function projectParams<P>(params: P, profile: null | string = projectProfile()): P & { profile: string } {
   if (!profile) {
     throw new Error('Projects are unavailable while viewing all profiles')
   }
@@ -296,12 +311,12 @@ function projectParams(
   return { ...params, profile }
 }
 
-async function gatewayRequestOn<T>(
+async function gatewayRequestOn<M extends keyof RpcMethods>(
   gateway: HermesGateway,
-  method: string,
-  params: Record<string, unknown> = {}
-): Promise<T> {
-  return gateway.request<T>(method, params)
+  method: M,
+  params: RpcMethods[M]['params']
+): Promise<RpcMethods[M]['result']> {
+  return gateway.request(method, params)
 }
 
 function isRetryableProjectTreeReadError(error: unknown): boolean {
@@ -353,11 +368,7 @@ export async function refreshProjects(): Promise<void> {
   try {
     context = await activeProjectsContext()
 
-    const payload = await gatewayRequestOn<ProjectsPayload>(
-      context.gateway,
-      'projects.list',
-      projectParams({}, context.profile)
-    )
+    const payload = await gatewayRequestOn(context.gateway, 'projects.list', projectParams({}, context.profile))
 
     if (generation !== projectsRefreshGeneration || !stillOnProjectsContext(context)) {
       return
@@ -378,6 +389,78 @@ interface ProjectTreePayload {
   active_id: null | string
   scoped_session_ids: string[]
 }
+
+// `projects.tree` ships every row field optional; the sidebar row model requires them, so the
+// wire tree is normalized once here instead of at every read.
+const treeSession = (session: ProjectTreeSession): SessionInfo => ({
+  _lineage_ids: session._lineage_ids,
+  _lineage_root_id: session._lineage_root_id,
+  actual_cost_usd: session.actual_cost_usd,
+  archived: session.archived ?? undefined,
+  cwd: session.cwd,
+  ended_at: session.ended_at ?? null,
+  estimated_cost_usd: session.estimated_cost_usd,
+  git_branch: session.git_branch,
+  git_repo_root: session.git_repo_root,
+  handoff_platform: session.handoff_platform,
+  handoff_state: session.handoff_state,
+  id: session.id,
+  input_tokens: session.input_tokens ?? 0,
+  is_active: session.is_active ?? false,
+  last_active: session.last_active ?? 0,
+  message_count: session.message_count ?? 0,
+  model: session.model ?? null,
+  output_tokens: session.output_tokens ?? 0,
+  parent_session_id: session.parent_session_id,
+  pinned: session.pinned ?? undefined,
+  preview: session.preview ?? null,
+  profile: session.profile ?? undefined,
+  source: session.source ?? null,
+  started_at: session.started_at ?? 0,
+  title: session.title ?? null,
+  tool_call_count: session.tool_call_count ?? 0,
+  unread: session.unread ?? undefined
+})
+
+const treeLane = (lane: ProjectTreeLane): SidebarSessionGroup => ({
+  id: lane.id,
+  isKanban: lane.isKanban,
+  isMain: lane.isMain,
+  label: lane.label,
+  path: lane.path ?? null,
+  sessions: (lane.sessions ?? []).map(treeSession)
+})
+
+const treeRepo = (repo: ProjectTreeRepo): SidebarWorkspaceTree => ({
+  groups: (repo.groups ?? []).map(treeLane),
+  id: repo.id,
+  label: repo.label,
+  path: repo.path ?? null,
+  sessionCount: repo.sessionCount ?? 0
+})
+
+const treeProject = (node: ProjectTreeNode): SidebarProjectTree => ({
+  color: node.color,
+  icon: node.icon,
+  id: node.id,
+  isAuto: node.isAuto,
+  isNoProject: node.isNoProject,
+  label: node.label,
+  lastActive: node.lastActive,
+  path: node.path,
+  previewSessions: (node.previewSessions ?? []).map(treeSession),
+  repos: (node.repos ?? []).map(treeRepo),
+  sessionCount: node.sessionCount,
+  totalCostUsd: node.totalCostUsd,
+  totalTokens: node.totalTokens
+})
+
+/** The sidebar row model for one `projects.tree` response. */
+const treePayload = (result: ProjectsTreeResult): ProjectTreePayload => ({
+  active_id: result.active_id,
+  projects: (result.projects ?? []).map(treeProject),
+  scoped_session_ids: result.scoped_session_ids
+})
 
 // Expanded previews need the complete existing tree window before the renderer
 // finds its two recency groups. Keep the normal three-row payload unchanged.
@@ -420,10 +503,12 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
     let res: ProjectTreePayload
 
     try {
-      res = await gatewayRequestOn<ProjectTreePayload>(
-        gateway,
-        'projects.tree',
-        projectParams({ preview_limit: projectTreePreviewLimit() }, profile)
+      res = treePayload(
+        await gatewayRequestOn(
+          gateway,
+          'projects.tree',
+          projectParams({ preview_limit: projectTreePreviewLimit() }, profile)
+        )
       )
     } catch (error) {
       // A remote source switch can leave the first read RPC on a newly-opened
@@ -434,10 +519,12 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
         throw error
       }
 
-      res = await gatewayRequestOn<ProjectTreePayload>(
-        gateway,
-        'projects.tree',
-        projectParams({ preview_limit: projectTreePreviewLimit() }, profile)
+      res = treePayload(
+        await gatewayRequestOn(
+          gateway,
+          'projects.tree',
+          projectParams({ preview_limit: projectTreePreviewLimit() }, profile)
+        )
       )
     }
 
@@ -524,7 +611,7 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
   try {
     context = await activeProjectsContext()
 
-    const res = await gatewayRequestOn<{ project: SidebarProjectTree | null }>(
+    const res = await gatewayRequestOn(
       context.gateway,
       'projects.project_sessions',
       projectParams({ project_id: projectId }, context.profile)
@@ -534,7 +621,7 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
       return null
     }
 
-    return res.project ?? null
+    return res.project ? treeProject(res.project) : null
   } catch (error) {
     if (
       generation !== projectSessionsRefreshGeneration ||
@@ -546,12 +633,6 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
 
     throw error
   }
-}
-
-interface WorkspaceMovePayload {
-  branch?: null | string
-  cwd?: string
-  git_repo_root?: null | string
 }
 
 // Re-home a stored session into another project's root folder — the fix for a
@@ -570,7 +651,7 @@ export async function moveSessionToProject(
     throw new Error(translateNow('sidebar.projects.moveNoFolder'))
   }
 
-  const res = await gatewayRequest<WorkspaceMovePayload>('session.workspace.move', {
+  const res = await gatewayRequest('session.workspace.move', {
     cwd,
     session_key: sessionId,
     ...(profile ? { profile } : {})
@@ -587,11 +668,15 @@ export async function moveSessionToProject(
   void refreshProjectTree()
 }
 
-export interface RepoDiscoveryPolicy {
-  enabled: boolean
-  roots: string[]
-  exclude_paths: string[]
-}
+// `projects.record_repos` spells the legacy and the repo_scan_* spellings of the same policy.
+const recordReposPolicy = (policy: RepoDiscoveryPolicy): RepoDiscoveryPolicyParams => ({
+  enabled: policy.enabled,
+  exclude_paths: policy.exclude_paths,
+  repo_scan_enabled: policy.enabled,
+  repo_scan_exclude_paths: policy.exclude_paths,
+  repo_scan_roots: policy.roots,
+  roots: policy.roots
+})
 
 export function repoDiscoveryPolicyFromConfig(config: unknown): RepoDiscoveryPolicy {
   const desktopValue = config && typeof config === 'object' ? (config as { desktop?: unknown }).desktop : undefined
@@ -646,10 +731,11 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
     try {
       const context = await activeProjectsContext()
 
-      const discovered = await gatewayRequestOn<{
-        repos?: unknown
-        discovery_policy?: unknown
-      }>(context.gateway, 'projects.discover_repos', projectParams({ scan: true }, context.profile))
+      const discovered = await gatewayRequestOn(
+        context.gateway,
+        'projects.discover_repos',
+        projectParams({ scan: true }, context.profile)
+      )
 
       // A resolved response must be the discovery shape. Anything else (an
       // error/`accepted:false` body, or a backend that ignored `scan` and
@@ -712,7 +798,7 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
       await gatewayRequestOn(
         context.gateway,
         'projects.record_repos',
-        projectParams({ discovery_policy: policy, repos: [] }, context.profile)
+        projectParams({ discovery_policy: recordReposPolicy(policy), repos: [] }, context.profile)
       )
     } else {
       scanningGatewayGenerations.set(context.gateway, generation)
@@ -730,7 +816,13 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
       await gatewayRequestOn(
         context.gateway,
         'projects.record_repos',
-        projectParams({ discovery_policy: policy, repos }, context.profile)
+        projectParams(
+          {
+            discovery_policy: recordReposPolicy(policy),
+            repos: repos.map(repo => ({ label: repo.label, root: repo.root }))
+          },
+          context.profile
+        )
       )
     }
 
@@ -783,7 +875,7 @@ export interface CreateProjectInput {
 // leave the field untouched. The "🎲" affordance in the new-project dialog.
 export async function generateProjectIdea(name: string): Promise<string> {
   try {
-    const res = await gatewayRequest<{ text: string }>('llm.oneshot', {
+    const res = await gatewayRequest('llm.oneshot', {
       instructions:
         'You generate a single, concrete project idea as a short IDEA.md body: a one-line summary, ' +
         'then 3-5 bullet goals. No preamble, no code fences, under 120 words.',
@@ -882,7 +974,7 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
     // Capture the live route so reconnecting cannot retarget the write.
     const context = await activeProjectsContext(normalizeProfileKey($activeGatewayProfile.get()))
 
-    res = await gatewayRequestOn<{ project: ProjectInfo | null }>(
+    res = await gatewayRequestOn(
       context.gateway,
       'projects.create',
       projectParams(
@@ -981,8 +1073,8 @@ export async function updateProject(
 
   // Backend treats null/undefined as "leave unchanged"; "" clears (stores NULL).
   // Map explicit null → "" so "no color"/"no icon" actually clear.
-  await persistOrRollback(snap, () =>
-    gatewayRequest(
+  await persistOrRollback(snap, async () => {
+    await gatewayRequest(
       'projects.update',
       projectParams({
         id,
@@ -991,7 +1083,7 @@ export async function updateProject(
         ...(patch.icon === null && { icon: '' })
       })
     )
-  )
+  })
 }
 
 // Appearance for an AUTO (inherited git-repo) project has no projects.db row to
@@ -1060,12 +1152,12 @@ export async function addProjectFolder(
     }
   }
 
-  await persistOrRollback(snap, () =>
-    gatewayRequest(
+  await persistOrRollback(snap, async () => {
+    await gatewayRequest(
       'projects.add_folder',
       projectParams({ id, path, label: opts.label, is_primary: opts.isPrimary ?? false })
     )
-  )
+  })
   reconcileProjects()
 }
 
@@ -1107,13 +1199,13 @@ export async function deleteProject(id: string): Promise<void> {
   }
 
   await persistOrRollback(snap, async () => {
-    applyPayload(await gatewayRequest<ProjectsPayload>('projects.delete', projectParams({ id })))
+    applyPayload(await gatewayRequest('projects.delete', projectParams({ id })))
   })
   void refreshProjectTree()
 }
 
 export async function setActiveProject(id: null | string): Promise<void> {
-  const res = await gatewayRequest<{ active_id: null | string }>('projects.set_active', projectParams({ id }))
+  const res = await gatewayRequest('projects.set_active', projectParams({ id }))
   $activeProjectId.set(res.active_id ?? null)
 }
 

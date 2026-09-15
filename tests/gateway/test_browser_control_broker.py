@@ -67,11 +67,11 @@ def test_noop_round_trip_uses_controller_and_returns_result_without_enabling_bro
 
     def send(frame):
         assert frame["method"] == "browser.controller.command"
-        assert frame["params"]["action"] == "controller.noop"
+        assert frame["params"].action == "controller.noop"
         broker.complete(
-            frame["params"]["command_id"],
+            frame["params"].command_id,
             ok=True,
-            result={"echo": frame["params"]["arguments"]["echo"]},
+            result={"echo": frame["params"].arguments["echo"]},
         )
 
     broker.attach(scope, send)
@@ -123,7 +123,7 @@ def test_cancellation_targets_only_the_matching_pending_command_and_cleans_up():
     assert isinstance(outcome.get("error"), ControllerCancelled)
     cancel_frames = [frame for frame in frames if frame["method"] == "browser.controller.cancel"]
     assert len(cancel_frames) == 1
-    assert cancel_frames[0]["params"]["command_id"] == frames[0]["params"]["command_id"]
+    assert cancel_frames[0]["params"].command_id == frames[0]["params"].command_id
     assert broker.pending_count == 0
 
 
@@ -135,7 +135,7 @@ def test_detach_fails_pending_work_closed_and_late_completion_is_ignored():
 
     def send(frame):
         if frame["method"] == "browser.controller.command":
-            command_id.append(frame["params"]["command_id"])
+            command_id.append(frame["params"].command_id)
             command_ready.set()
 
     broker.attach(scope, send)

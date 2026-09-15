@@ -17,7 +17,7 @@ import type { SessionOwnerRoute } from '@/store/session-request-router'
 import { OverlayView } from '../overlays/overlay-view'
 import { PanelEmpty } from '../overlays/panel'
 
-import { type ForeignImportResult, type ForeignPage, type ForeignPreview, foreignRequest } from './api'
+import { foreignRequest } from './api'
 
 interface SessionImportViewProps {
   owner: SessionOwnerRoute
@@ -48,9 +48,9 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
     queryKey: ['foreign-sessions', ...scope, source],
     initialPageParam: 0,
     queryFn: ({ pageParam, signal }) =>
-      foreignRequest<ForeignPage>(
+      foreignRequest(
         owner,
-        'list',
+        'session.foreign.list',
         {
           source: source === 'all' ? null : source,
           offset: pageParam
@@ -73,7 +73,7 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
 
   const preview = useQuery({
     queryKey: ['foreign-preview', ...scope, selected],
-    queryFn: ({ signal }) => foreignRequest<ForeignPreview>(owner, 'preview', { id: selected }, signal),
+    queryFn: ({ signal }) => foreignRequest(owner, 'session.foreign.preview', { id: selected ?? '' }, signal),
     enabled: Boolean(current),
     retry: false
   })
@@ -91,7 +91,7 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
     setError('')
 
     try {
-      const result = await foreignRequest<ForeignImportResult>(owner, 'import', { id: current.id }, signal)
+      const result = await foreignRequest(owner, 'session.foreign.import', { id: current.id }, signal)
       setSessionOwnerHint(result.session_id, owner)
       void queryClient.invalidateQueries({ queryKey: ['foreign-preview', ...scope] })
       void queryClient.invalidateQueries({ queryKey: ['sessions'] })

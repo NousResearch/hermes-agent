@@ -10,6 +10,7 @@ import re
 
 from tools import desktop_ui
 from tools.registry import tool_error
+from tui_gateway.contracts.events import PreviewOpenPayload
 
 
 def _normalize_target(raw: str) -> str:
@@ -38,7 +39,7 @@ def open_preview_tool(url: str, label: str = "") -> str:
     label = (label or "").strip()
     return desktop_ui.emit_or_error(
         "preview.open",
-        {"url": target, "label": label},
+        PreviewOpenPayload(url=target, label=label),
         "Failed to open the preview pane: ",
         "The preview pane is only available in the Hermes desktop app.",
         {"success": True, "url": target, "label": label})
@@ -91,6 +92,7 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     if target is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
+
     from hermes_cli.plugin_compat import warn_once
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])

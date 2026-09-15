@@ -15,8 +15,7 @@ vi.mock('@/hermes', async importOriginal => ({
   startOAuthLogin: () => startOAuthLogin()
 }))
 
-const requestGateway = (async <T>(_method: string, _params?: Record<string, unknown>): Promise<T> =>
-  ({ available: true, has_guest: true }) as T) satisfies FreeTierRequester
+const requestGateway: FreeTierRequester = vi.fn().mockResolvedValue({ available: true, has_guest: true })
 
 const start = (id: string) => ({
   expires_in: 900,

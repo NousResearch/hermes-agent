@@ -24,7 +24,7 @@ import types
 
 import pytest
 
-from tui_gateway import server
+from tui_gateway import server, session_auto_continue
 from tui_gateway.turn_marker import (
     clear_turn_marker,
     read_turn_marker,
@@ -404,7 +404,7 @@ def test_hosted_room_marker_is_left_to_the_driver(schedule_env, marker_home):
 def test_stale_marker_is_cleared_not_continued(schedule_env, marker_home, monkeypatch):
     record_turn_start(marker_home, "session-key", "old prompt")
     monkeypatch.setattr(
-        server, "time", types.SimpleNamespace(time=lambda: time.time() + 3600)
+        session_auto_continue, "time", types.SimpleNamespace(time=lambda: time.time() + 3600)
     )
 
     result = server._maybe_schedule_auto_continue("sid", _session(), "session-key")
@@ -422,7 +422,7 @@ def test_config_widens_freshness_window(emits, schedule_env, marker_home, monkey
         lambda: {"desktop": {"auto_continue": {"freshness_minutes": 120}}},
     )
     monkeypatch.setattr(
-        server, "time", types.SimpleNamespace(time=lambda: time.time() + 3600)
+        session_auto_continue, "time", types.SimpleNamespace(time=lambda: time.time() + 3600)
     )
 
     result = server._maybe_schedule_auto_continue("sid", _session(), "session-key")

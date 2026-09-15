@@ -4,17 +4,10 @@ from __future__ import annotations
 
 from pydantic import Field
 
-from .base import JsonValue, Params, Payload, Result, WireEnum
+from .base import JsonValue, MethodParams, Params, Payload, Result, WireEnum
 
 
-class OpenModel(Result):
-    """A result/payload row whose known fields are typed but which the producer may extend
-    (the closed set is owned elsewhere: hermes_state rows, provider inventories)."""
-
-    model_config = Result.model_config | {"extra": "allow"}
-
-
-class Usage(OpenModel):
+class Usage(Result):
     """``tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``."""
 
     model: str = ""
@@ -51,26 +44,33 @@ class ProjectRef(Result):
     primary_path: str | None = None
 
 
-class McpServerStatus(OpenModel):
-    name: str = ""
-    status: str | None = None
-    tool_count: int | None = None
+class McpServerStatus(Result):
+    """``tools/mcp_tool_discovery.py:get_mcp_status`` status row."""
+
+    name: str
+    transport: str
+    tools: int
+    connected: bool
+    disabled: bool
+    status: str
     error: str | None = None
+    sampling: dict[str, int] | None = None
 
 
-class SessionLiveInfo(OpenModel):
+class SessionLiveInfo(Result):
     """``tui_gateway/server.py::_session_info`` — the ``session.info`` event and the ``info`` field of
     ``session.create`` / ``session.resume`` / ``session.activate`` results."""
 
-    model: str = ""
+    model: str | None = None
     provider: str = ""
     reasoning_effort: str = ""
     service_tier: str = ""
     fast: bool = False
     yolo: bool = False
     approval_mode: str = "manual"
-    tools: dict[str, list[str]] = Field(default_factory=dict)
-    skills: dict[str, list[str]] = Field(default_factory=dict)
+    # Lazy and compute-host mirror paths omit these until the live agent is available.
+    tools: dict[str, list[str]] | None = None
+    skills: dict[str, list[str]] | None = None
     cwd: str = ""
     branch: str | None = None
     project: ProjectRef | None = None
@@ -83,7 +83,7 @@ class SessionLiveInfo(OpenModel):
     desktop_contract: int | str | None = None
     version: str = ""
     release_date: str = ""
-    update_behind: JsonValue | None = None
+    update_behind: int | None = None  # ``hermes_cli.banner.get_update_result`` returns commits behind or None.
     update_command: str = ""
     usage: Usage | None = None
     profile_name: str | None = None
@@ -93,7 +93,7 @@ class SessionLiveInfo(OpenModel):
     lazy: bool | None = None
 
 
-class StoredSessionRow(OpenModel):
+class StoredSessionRow(Result):
     """One ``sessions`` row as ``hermes_state`` lists it (``session.list`` / ``session.info`` rows /
     ``sessions.changed``)."""
 
@@ -125,22 +125,25 @@ class StoredSessionRow(OpenModel):
     lineage_ids: list[str] | None = Field(default=None, alias="_lineage_ids")
 
 
-class TranscriptMessage(OpenModel):
-    """One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``):
-    ``text`` (never ``content``), display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the
-    durable ``row_id`` rewind targets, and for tool rows ``name`` + ``context`` preview + full ``args``.
-    Assistant detail sidecars (``reasoning``, …) ride as extra keys."""
+class TranscriptMessage(Result):
+    """One ``session_history._history_to_messages`` display projection."""
 
     role: str
     text: str | None = None
     timestamp: float | None = None
     row_id: int | None = None
     display_kind: str | None = None
+    # Display-kind metadata is producer-defined timeline data, so it remains recursive JSON.
     display_metadata: JsonValue | None = None
     name: str | None = None
     context: str | None = None
+    # Tool arguments originate in arbitrary tool schemas, so the projection carries recursive JSON.
     args: dict[str, JsonValue] | None = None
     reasoning: str | None = None
+    reasoning_content: str | None = None
+    reasoning_details: JsonValue | None = None
+    codex_reasoning_items: JsonValue | None = None
+    codex_message_items: JsonValue | None = None
 
 
 class SubagentStatus(WireEnum):
@@ -162,9 +165,9 @@ TERMINAL_SUBAGENT_STATUSES = frozenset({
 })
 
 
-class PendingApproval(OpenModel):
+class PendingApproval(Result):
     """One unresolved ``tools/approval.py`` gateway queue entry as ``server._approval_request_payload``
-    renders it (command redacted; ``choices`` precomputed). The key set is owned by the approval tool."""
+    renders it (command redacted; ``choices`` precomputed)."""
 
     request_id: str | None = None
     command: str | None = None
@@ -178,7 +181,7 @@ class PendingApproval(OpenModel):
     tool_name: str | None = None
 
 
-class MessageReaction(OpenModel):
+class MessageReaction(Result):
     """One persisted reaction row (``hermes_state_messages.set_message_reaction``); ``seen`` is
     stamped once announced."""
 
@@ -188,24 +191,17 @@ class MessageReaction(OpenModel):
     seen: bool | None = None
 
 
-class SessionParams(Params):
-    """Any method addressed at one live session."""
+class SessionParams(MethodParams):
+    """A method addressed at one live session."""
 
     session_id: str
-    profile: str | None = None
-
-
-class ProfileParams(Params):
-    """Any method the desktop may route to a named profile (``requestGatewayForProfile`` adds ``profile``)."""
-
-    profile: str | None = None
 
 
 class OkResult(Result):
     ok: bool = True
 
 
-class StatusResult(OpenModel):
+class StatusResult(Result):
     status: str
 
 
@@ -218,7 +214,7 @@ class EmptyPayload(Payload):
 
 
 __all__ = [
-    "TERMINAL_SUBAGENT_STATUSES", "EmptyPayload", "EmptyResult", "McpServerStatus", "MessageReaction", "OkResult", "OpenModel", "PendingApproval",
-    "ProfileParams", "ProjectRef", "SessionLiveInfo", "SessionParams", "StatusResult", "StoredSessionRow",
+    "TERMINAL_SUBAGENT_STATUSES", "EmptyPayload", "EmptyResult", "McpServerStatus", "MessageReaction", "OkResult", "PendingApproval",
+    "ProjectRef", "SessionLiveInfo", "SessionParams", "StatusResult", "StoredSessionRow",
     "SubagentStatus", "TranscriptMessage", "Usage",
 ]

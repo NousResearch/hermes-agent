@@ -1,3 +1,4 @@
+import type { SessionListRow } from '@hermes/shared'
 import { useCallback } from 'react'
 
 import type { useSessionActions } from '@/app/session/hooks/use-session-actions'
@@ -47,10 +48,7 @@ interface SetupStatus {
   free_tier?: boolean
 }
 
-interface GuideSession {
-  id: string
-  resolved_id?: string
-}
+type GuideSession = Pick<SessionListRow, 'id' | 'resolved_id'>
 
 async function adoptGuideSession(
   canonical: GuideSession,
@@ -103,7 +101,7 @@ export function useOnboardingKickoff({
 
       // Probe the guide's own socket before switching profiles so a refusal
       // leaves classic onboarding on the user's current backend.
-      const record = await requestGatewayForProfile<SetupStatus>(SETUP_PROFILE, 'setup.status', {})
+      const record = await requestGatewayForProfile(SETUP_PROFILE, 'setup.status', {})
 
       if (record.ready !== true || record.provider_configured !== true) {
         return false
@@ -126,7 +124,7 @@ export function useOnboardingKickoff({
 
       // Look the guide up by its exact title: a relaunch adopts the existing guide session before creating
       // one, so the backend's UNIQUE(title) constraint cannot leave an untitled duplicate behind.
-      const registryHit = await guideRequest<{ sessions?: GuideSession[] }>('session.list', {
+      const registryHit = await guideRequest('session.list', {
         include_hidden: true,
         title: SETUP_CHAT_TITLE
       })
@@ -134,7 +132,7 @@ export function useOnboardingKickoff({
       const canonical = registryHit?.sessions?.[0]
 
       if (canonical?.id) {
-        await adoptGuideSession(canonical, record.free_tier, resumeSession, guideRequest)
+        await adoptGuideSession(canonical, record.free_tier ?? undefined, resumeSession, guideRequest)
 
         // runGuideKickoff records the guided phase only after adoption.
         return true

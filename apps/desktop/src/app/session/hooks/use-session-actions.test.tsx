@@ -20,6 +20,7 @@ import {
   setSessionArchived
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { type GatewayRequest, paramsSessionId, type RoutableParams } from '@/lib/gateway-rpc'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
@@ -86,6 +87,7 @@ import {
 } from '@/store/session-states'
 import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unread'
 import { loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
+import { sessionResumeResult } from '@/test/contract'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
 import { deferred } from '../../../test/deferred'
@@ -170,7 +172,7 @@ function Harness({
   activeSessionIdRef?: MutableRefObject<null | string>
   navigate?: ReturnType<typeof vi.fn>
   onReady: (handle: HarnessHandle) => void
-  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequest
   selectedStoredSessionId?: null | string
   selectedStoredSessionIdRef?: MutableRefObject<null | string>
 }) {
@@ -212,7 +214,7 @@ describe('desktop branch creation idempotency', () => {
   it('coalesces duplicate stored-session branch attempts onto one backend child', async () => {
     const createReady = deferred<{ session_id: string; stored_session_id: string }>()
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       if (method === 'session.create') {
         return createReady.promise as never
       }
@@ -256,8 +258,8 @@ describe('desktop branch creation idempotency', () => {
       'session.create',
       expect.objectContaining({
         messages: [
-          { content: 'question', role: 'user' },
-          { content: 'answer', role: 'assistant' }
+          expect.objectContaining({ content: 'question', role: 'user' }),
+          expect.objectContaining({ content: 'answer', role: 'assistant' })
         ],
         parent_session_id: 'parent',
         source: 'desktop'
@@ -662,10 +664,10 @@ describe('active stored-session id rotation routing', () => {
 async function createWith(
   profileSetup: () => void,
   beforeCreate?: (handle: HarnessHandle) => Promise<void> | void
-): Promise<Record<string, unknown> | undefined> {
-  let createParams: Record<string, unknown> | undefined
+): Promise<RoutableParams | undefined> {
+  let createParams: RoutableParams | undefined
 
-  const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+  const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
     if (method === 'session.create') {
       createParams = params
 
@@ -911,9 +913,9 @@ describe('createBackendSessionForSend profile routing', () => {
     setCurrentReasoningEffort('high')
     setCurrentFastMode(false)
 
-    let createParams: Record<string, unknown> | undefined
+    let createParams: RoutableParams | undefined
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       if (method === 'session.create') {
         createParams = params
 
@@ -993,7 +995,7 @@ function ResumeHarness({
   onReady: (
     resume: (storedSessionId: string, replaceRoute?: boolean, ownerRoute?: SessionProfileRoute) => Promise<unknown>
   ) => void
-  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequest
   runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
   selectedStoredSessionId?: string | null
   sessionStateByRuntimeIdRef?: MutableRefObject<Map<string, ClientSessionState>>
@@ -1043,7 +1045,7 @@ function ResumeTimerHarness({
   requestGateway
 }: {
   onReady: (resume: (storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) => void
-  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequest
 }) {
   const activeSessionId = useStore($activeSessionId)
   const busyRef = useRef(false)
@@ -1098,7 +1100,7 @@ describe('resumeSession failure recovery', () => {
   })
 
   async function runResume(
-    requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>,
+    requestGateway: GatewayRequest,
     options: {
       runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
       sessionStateByRuntimeIdRef?: MutableRefObject<Map<string, ClientSessionState>>
@@ -1151,7 +1153,8 @@ describe('resumeSession failure recovery', () => {
         // ordering here (no channel in this harness).
         setClarifyRequest({
           choices: ['safe', 'fast'],
-          multiSelect: false,
+          kind: 'single',
+          multi_select: false,
           question: 'Which path?',
           receivedAt: Date.now(),
           requestId: 'req-resumed',
@@ -1226,11 +1229,9 @@ describe('resumeSession failure recovery', () => {
         // Request handler parks the batch card (with the server-locked answer)
         // from the re-delivered open request before the result lands.
         setClarifyRequest({
-          choices: null,
+          kind: 'batch',
           lockedAnswers: { q0: 'Blue' },
-          multiSelect: false,
-          question: '',
-          questions: questions.map(q => ({ ...q, multiSelect: false })),
+          questions: questions.map(q => ({ ...q, multi_select: false })),
           receivedAt: Date.now(),
           requestId: 'req-batch-resumed',
           sessionId: 'runtime-1'
@@ -1259,11 +1260,11 @@ describe('resumeSession failure recovery', () => {
     const state = stateMapRef.current.get('runtime-1')
     const request = $clarifyRequests.get()['runtime-1']
     expect(request).toMatchObject({
+      kind: 'batch',
       lockedAnswers: { q0: 'Blue' },
-      question: '',
       requestId: 'req-batch-resumed'
     })
-    expect(request.questions).toHaveLength(2)
+    expect(request.kind === 'batch' ? request.questions : []).toHaveLength(2)
     expect(
       state?.messages
         .flatMap(message => message.parts)
@@ -1330,7 +1331,7 @@ describe('resumeSession failure recovery', () => {
 
     const requestGateway = vi.fn((method: string) =>
       method === 'session.resume' ? runtimeResume.promise : Promise.resolve({} as never)
-    ) as <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+    ) as <T>(method: string, params?: RoutableParams) => Promise<T>
 
     vi.mocked(getLatestSessionMessages).mockResolvedValue({
       messages: [
@@ -1560,8 +1561,8 @@ describe('resumeSession failure recovery', () => {
     ]
 
     const continuationMessages = [
-      { content: 'prompt after compression', role: 'user', timestamp: 3 },
-      { content: 'answer after compression', role: 'assistant', timestamp: 4 }
+      { text: 'prompt after compression', role: 'user', timestamp: 3 },
+      { text: 'answer after compression', role: 'assistant', timestamp: 4 }
     ]
 
     vi.mocked(getLatestSessionMessages).mockResolvedValue({
@@ -1622,7 +1623,7 @@ describe('resumeSession failure recovery', () => {
     // Pre-arm to prove a successful resume clears it (entry-clear path).
     setResumeFailedSessionId('stored-1')
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       if (method === 'session.resume') {
         return { session_id: 'runtime-1', resumed: params?.session_id, messages: [], info: {} } as never
       }
@@ -1642,9 +1643,9 @@ describe('resumeSession failure recovery', () => {
     // gateway's default DEFERRED build (transcript returns immediately, agent
     // pre-warms in the background). The client must NOT force the synchronous
     // path (eager_build) and is only `lazy` for subagent watch windows.
-    let resumeParams: Record<string, unknown> | undefined
+    let resumeParams: RoutableParams | undefined
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       if (method === 'session.resume') {
         resumeParams = params
 
@@ -1666,7 +1667,7 @@ describe('resumeSession failure recovery', () => {
   it('arms the failure latch when resume succeeds with an empty transcript for a non-empty stored session', async () => {
     setSessions([storedSession({ message_count: 4 })])
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       if (method === 'session.resume') {
         return { session_id: 'runtime-1', resumed: params?.session_id, messages: [], info: {} } as never
       }
@@ -1723,7 +1724,7 @@ describe('resumeSession failure recovery', () => {
 
     setSessions([storedSession({ message_count: 4 })])
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       if (method === 'session.resume') {
         return { session_id: 'runtime-1', resumed: params?.session_id, messages: [], info: {} } as never
       }
@@ -1846,7 +1847,7 @@ function BranchHarness({
     activeSessionIdRef: MutableRefObject<string | null>
     selectedStoredSessionIdRef: MutableRefObject<string | null>
   }) => void
-  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequest
   selectedStoredSessionId?: string | null
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
@@ -1996,9 +1997,9 @@ describe('branchStoredSession desktop source tagging', () => {
   })
 
   it('tags desktop branch sessions as desktop sessions', async () => {
-    let createParams: Record<string, unknown> | undefined
+    let createParams: RoutableParams | undefined
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       if (method === 'session.create') {
         createParams = params
 
@@ -2153,9 +2154,9 @@ describe('branchStoredSession desktop source tagging', () => {
   // An untagged row (single-backend users, the overwhelmingly common case)
   // must keep the ambient path exactly as before — no behaviour change.
   it('keeps an untagged parent branch on the ambient socket', async () => {
-    let createParams: Record<string, unknown> | undefined
+    let createParams: RoutableParams | undefined
 
-    const ambientRequest = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const ambientRequest = vi.fn(async (method: string, params?: RoutableParams) => {
       if (method === 'session.create') {
         createParams = params
 
@@ -2183,9 +2184,9 @@ describe('branchStoredSession desktop source tagging', () => {
   })
 
   it('branches an open live chat via session.branch with a trimmed message count (bug #1/#3 fix)', async () => {
-    let branchParams: Record<string, unknown> | undefined
+    let branchParams: RoutableParams | undefined
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       if (method === 'session.branch') {
         branchParams = params
 
@@ -2233,9 +2234,9 @@ describe('branchStoredSession desktop source tagging', () => {
   })
 
   it('hydrates the complete persisted display transcript before branching a compacted live chat', async () => {
-    let branchParams: Record<string, unknown> | undefined
+    let branchParams: RoutableParams | undefined
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       if (method === 'session.branch') {
         branchParams = params
 
@@ -2333,9 +2334,9 @@ describe('branchStoredSession desktop source tagging', () => {
       session_id: 'stored-parent'
     } as never)
 
-    let createParams: Record<string, unknown> | undefined
+    let createParams: RoutableParams | undefined
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       if (method === 'session.create') {
         createParams = params
 
@@ -2370,9 +2371,9 @@ describe('branchStoredSession desktop source tagging', () => {
       session_id: 'stored-parent'
     } as never)
 
-    let createParams: Record<string, unknown> | undefined
+    let createParams: RoutableParams | undefined
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       if (method === 'session.create') {
         createParams = params
 
@@ -2399,9 +2400,9 @@ describe('branchStoredSession desktop source tagging', () => {
       session_id: 'stored-parent'
     } as never)
 
-    let createParams: Record<string, unknown> | undefined
+    let createParams: RoutableParams | undefined
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       if (method === 'session.create') {
         createParams = params
 
@@ -2442,7 +2443,7 @@ describe('resumeSession drops a redundant tile when the session loads into main'
     // The session is already an open tile (e.g. persisted across a restart)...
     $sessionTiles.set([{ storedSessionId: 'stored-1' }])
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       if (method === 'session.resume') {
         return { session_id: 'runtime-1', resumed: params?.session_id, messages: [], info: {} } as never
       }
@@ -2467,7 +2468,7 @@ describe('resumeSession drops a redundant tile when the session loads into main'
   it('leaves OTHER sessions tiles untouched', async () => {
     $sessionTiles.set([{ storedSessionId: 'stored-1' }, { storedSessionId: 'stored-2' }])
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       if (method === 'session.resume') {
         return { session_id: 'runtime-1', resumed: params?.session_id, messages: [], info: {} } as never
       }
@@ -2580,18 +2581,15 @@ describe('resumeSession warm-cache mapping integrity', () => {
             })
       )
       vi.mocked(requestGatewayForAgent).mockImplementation(async (_connection, _profile, _method, params) =>
-        params?.session_id === rowA.id
+        paramsSessionId(params) === rowA.id
           ? resumedA.promise
-          : {
+          : sessionResumeResult({
               session_id: 'rt-background-B',
               resumed: rowB.id,
               session_key: rowB.id,
-              messages: [],
               messages_omitted: true,
-              message_count: 1,
-              running: false,
-              info: {}
-            }
+              message_count: 1
+            })
       )
       let resume!: Parameters<Parameters<typeof ResumeHarness>[0]['onReady']>[0]
       render(
@@ -2711,16 +2709,13 @@ describe('resumeSession warm-cache mapping integrity', () => {
         await waitFor(() => expect(JSON.stringify($messages.get())).toContain('fresh persisted history'))
         expect($messages.get()).not.toBe(provisional)
         const authoritative = $messages.get()
-        resumed.resolve({
+        resumed.resolve(sessionResumeResult({
           session_id: 'runtime-first-paint',
           resumed: 'stored-first-paint',
           session_key: 'stored-first-paint',
-          messages: [],
           messages_omitted: true,
-          message_count: 1,
-          running: false,
-          info: {}
-        })
+          message_count: 1
+        }))
         await pending
         expect($messages.get()).toBe(authoritative)
         expect(JSON.stringify($messages.get())).not.toContain('cached display history')
@@ -2806,7 +2801,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     vi.mocked(getLatestSessionMessages).mockImplementation(async id => ({ messages: [], session_id: id }) as never)
     vi.mocked(requestGatewayForAgent).mockImplementation(async (_connectionId, _profile, method, params) => {
       if (method === 'session.activate') {
-        if (params?.session_id === 'runtime-legacy') {
+        if (paramsSessionId(params) === 'runtime-legacy') {
           throw new Error('Method not found')
         }
 
@@ -2830,7 +2825,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
         return {
           info: {},
           messages: [],
-          resumed: params?.session_id,
+          resumed: paramsSessionId(params),
           session_id: 'runtime-cold'
         } as never
       }
@@ -2912,7 +2907,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
         return {
           info: {},
           messages: [],
-          resumed: params?.session_id,
+          resumed: paramsSessionId(params),
           session_id: 'runtime-registry'
         } as never
       }
@@ -2951,7 +2946,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
       current: new Map([['rt-recycled', clientState('stored-B')]])
     }
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       if (method === 'session.resume') {
         return { session_id: 'rt-A-fresh', resumed: params?.session_id, messages: [], info: {} } as never
       }
@@ -3005,7 +3000,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
 
     const deferredResume = deferred<SessionResumeResult>()
 
-    const requestGatewayMock = vi.fn((method: string, _params?: Record<string, unknown>) => {
+    const requestGatewayMock = vi.fn((method: string, _params?: RoutableParams) => {
       if (method === 'session.resume') {
         return deferredResume.promise
       }
@@ -3013,7 +3008,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
       return Promise.resolve({})
     })
 
-    const requestGateway = <T,>(method: string, params?: Record<string, unknown>): Promise<T> =>
+    const requestGateway = <T,>(method: string, params?: RoutableParams): Promise<T> =>
       requestGatewayMock(method, params) as Promise<T>
 
     let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
@@ -3034,13 +3029,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
       })
     )
 
-    deferredResume.resolve({
-      session_id: 'rt-A',
-      resumed: 'stored-A',
-      message_count: 500,
-      messages: [],
-      info: {}
-    })
+    deferredResume.resolve(sessionResumeResult({ session_id: 'rt-A', resumed: 'stored-A', message_count: 500 }))
     await resumePromise
     expect($messages.get()).toBe(paintedTranscript)
   })
@@ -3154,7 +3143,8 @@ describe('resumeSession warm-cache mapping integrity', () => {
       if (method === 'session.activate') {
         setClarifyRequest({
           choices: ['safe', 'fast'],
-          multiSelect: false,
+          kind: 'single',
+          multi_select: false,
           question: 'Which path?',
           receivedAt: Date.now(),
           requestId: 'req-warm',
@@ -3245,7 +3235,8 @@ describe('resumeSession warm-cache mapping integrity', () => {
     if (keepStore) {
       setClarifyRequest({
         choices: ['safe', 'fast'],
-        multiSelect: false,
+        kind: 'single',
+        multi_select: false,
         question: 'Which path?',
         requestId: 'req-stale',
         sessionId: 'rt-A'
@@ -3346,22 +3337,22 @@ describe('resumeSession warm-cache mapping integrity', () => {
 
     setClarifyRequest({
       choices: ['new'],
-      multiSelect: false,
+      kind: 'single',
+      multi_select: false,
       question: 'New question?',
       receivedAt: Date.now() / 1000 + 60,
       requestId: 'req-newer',
       sessionId: 'rt-A'
     })
-    activated.resolve({
-      info: {},
-      message_count: 0,
-      messages: [],
-      messages_omitted: true,
-      resumed: 'stored-A',
-      running: false,
-      session_id: 'rt-A',
-      session_key: 'stored-A'
-    })
+    activated.resolve(
+      sessionResumeResult({
+        messages_omitted: true,
+        resumed: 'stored-A',
+        running: false,
+        session_id: 'rt-A',
+        session_key: 'stored-A'
+      })
+    )
     await resumePromise
 
     expect($clarifyRequests.get()['rt-A']).toMatchObject({ requestId: 'req-newer' })
@@ -3918,8 +3909,8 @@ describe('resumeSession warm-cache mapping integrity', () => {
     }
 
     const activatedMessages = [
-      { content: 'still here after wake', role: 'user', timestamp: 1 },
-      { content: 'still here after wake too', role: 'assistant', timestamp: 2 }
+      { text: 'still here after wake', role: 'user', timestamp: 1 },
+      { text: 'still here after wake too', role: 'assistant', timestamp: 2 }
     ]
 
     vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-A' } as never)
@@ -4353,18 +4344,15 @@ describe('resumeSession warm-cache mapping integrity', () => {
 
     vi.mocked(getLatestSessionMessages).mockReturnValue(persistedAuthority.promise as never)
 
-    const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, _params?: RoutableParams) => {
       if (method === 'session.activate') {
-        return {
-          info: {},
+        return sessionResumeResult({
           message_count: 2,
-          messages: [],
           messages_omitted: true,
           resumed: 'stored-1',
-          running: false,
           session_id: 'runtime-warm',
           session_key: 'stored-1'
-        } as never
+        }) as never
       }
 
       return {} as never
@@ -4505,9 +4493,9 @@ describe('openNewSessionTile workspace target', () => {
       } as never
     ])
 
-    let createParams: Record<string, unknown> | undefined
+    let createParams: RoutableParams | undefined
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, params?: RoutableParams) => {
       if (method === 'session.create') {
         createParams = params
 
@@ -4643,7 +4631,7 @@ describe('openNewSessionTile unlisted owner (#102792)', () => {
     })
   }
 
-  async function readyHandle(requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>) {
+  async function readyHandle(requestGateway: GatewayRequest) {
     let handle: HarnessHandle | null = null
     render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
     await waitFor(() => expect(handle).not.toBeNull())
@@ -5015,7 +5003,7 @@ describe('routed fresh chat keeps its exact owner across turns', () => {
   async function createRoutedFreshChat() {
     // Ambient dispatcher = the DEFAULT backend. It never heard of the session:
     // any session-scoped RPC landing here is exactly the bug.
-    const ambientRequest = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const ambientRequest = vi.fn(async (method: string, params?: RoutableParams) => {
       if (typeof params?.session_id === 'string') {
         throw new Error(`Session not found: ${params.session_id} (ambient/default backend, ${method})`)
       }

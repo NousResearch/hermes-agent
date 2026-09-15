@@ -7,6 +7,7 @@
  */
 
 import { Button, host, Input, useI18n } from '@hermes/plugin-sdk'
+import type { RpcMethods } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 // -- inline MCP setup (per-profile), driven by the mcp.servers.* gateway RPCs --
@@ -14,34 +15,23 @@ import { useEffect, useRef, useState } from 'react'
 // and the row falls back to the "run hermes mcp / Settings" hint. profile is
 // the target bot's profile name (its config is what we write).
 
-/** Body of an `mcp.servers.*` reply. Some gateway builds wrap it in a second
- *  `result` envelope, which every call site below unwraps — hence the
- *  self-reference. */
-interface McpServerPayload {
-  auth_url?: string
-  error?: string
-  error_message?: string
-  ok?: boolean
-  result?: McpServerPayload
-  session_id?: string
-  status?: string
-  verification_url?: string
-}
-
 /** `mcpRpc`'s outcome. `unsupported` separates an older gateway that doesn't
- *  know the method from a real failure. */
-interface McpRpcResult {
+ *  know the method from a real failure; `result` is the method's own reply. */
+interface McpRpcResult<M extends keyof RpcMethods> {
   error?: string
   ok: boolean
-  result?: McpServerPayload
+  result?: RpcMethods[M]['result']
   unsupported?: boolean
 }
 
-async function mcpRpc(method: string, params: Record<string, unknown>): Promise<McpRpcResult> {
+async function mcpRpc<M extends keyof RpcMethods>(
+  method: M,
+  params: RpcMethods[M]['params']
+): Promise<McpRpcResult<M>> {
   // Returns { ok, result } or { ok:false, unsupported:true } when the gateway
   // doesn't know the method (older backend) vs a real error.
   try {
-    const res = await host.request<McpServerPayload>(method, params)
+    const res = await host.request(method, params)
 
     return {
       ok: true,
@@ -96,14 +86,30 @@ interface McpSetupButtonProps {
   ensureProfile?: () => Promise<null | string>
   entry: McpCatalogEntry
   onDone?: () => void
-  // TODO(bot-mode-types): Edit Profile passes `botBackendProfileScope(...)`, which
-  // is a `{ connectionId, profile }` OBJECT for every source-scoped bot. That
-  // object is forwarded verbatim as the `profile` param of mcp.servers.add /
-  // set_api_key / test / oauth.*, where the gateway expects a profile NAME
-  // string — and mcpRpc goes through host.request, so the connection isn't
-  // routed either. Typed as-written.
   profile: McpSetupScope
 }
+
+/** The gateway's `profile` param is a NAME. Edit Profile hands down
+ *  `botBackendProfileScope(...)`, a `{ connectionId, profile }` scope for a
+ *  source-scoped bot; a bare name rides the active gateway. This is the one
+ *  place the two spellings are told apart. */
+/** A profile scope resolved to the connection it rides and the profile NAME the gateway wants. */
+interface ProfileScopeRoute {
+  connectionId: null | string | undefined
+  profile: null | string
+}
+
+export function profileScopeRoute(scope: McpSetupScope): ProfileScopeRoute {
+  if (scope && typeof scope === 'object') {
+    return { connectionId: scope.connectionId, profile: scope.profile || null }
+  }
+
+  return { connectionId: host.state.connectionId.get(), profile: scope || null }
+}
+
+export const profileScopeName = (scope: McpSetupScope): null | string => profileScopeRoute(scope).profile
+
+const mcpProfileName = profileScopeName
 
 export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSetupButtonProps) {
   const { t } = useI18n()
@@ -174,7 +180,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
 
     if (entry.fromCatalog && !entry.installed) {
       const add = await mcpRpc('mcp.servers.add', {
-        profile,
+        profile: mcpProfileName(profile),
         name: entry.name,
         preset: entry.name
       })
@@ -209,7 +215,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
       }
 
       const r = await mcpRpc('mcp.servers.set_api_key', {
-        profile: target,
+        profile: mcpProfileName(target),
         name: entry.name,
         env_var: k,
         value: val
@@ -225,11 +231,11 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
 
     // Verify via test.
     const t = await mcpRpc('mcp.servers.test', {
-      profile: target,
+      profile: mcpProfileName(target),
       name: entry.name
     })
 
-    if (t.ok && t.result && (t.result.ok || (t.result.result && t.result.result.ok))) {
+    if (t.ok && t.result?.ok) {
       setPhase('done')
       host.notify({
         kind: 'success',
@@ -238,19 +244,12 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
       onDone && onDone()
     } else {
       setPhase('error')
-      setMessage(
-        (t.result && (t.result.error || (t.result.result && t.result.result.error))) || 'Server test failed after setup'
-      )
+      setMessage(t.result?.error || 'Server test failed after setup')
     }
   }
 
   const beginOAuth = async () => {
     const epoch = ++oauthEpoch.current
-
-    const source =
-      profile && typeof profile === 'object'
-        ? { ...profile }
-        : { connectionId: host.state.connectionId.get(), profile: profile || host.state.profile.get() }
 
     setPhase('busy')
     setMessage('')
@@ -262,10 +261,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
       return
     }
 
-    const scope = {
-      ...source,
-      profile: typeof resolvedProfile === 'object' ? resolvedProfile.profile : resolvedProfile
-    }
+    const scope = { connectionId: profileScopeRoute(profile).connectionId, profile: profileScopeName(resolvedProfile) }
 
     try {
       setPhase('oauth')

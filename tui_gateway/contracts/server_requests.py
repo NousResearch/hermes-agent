@@ -1,20 +1,22 @@
 """Server→client requests: the backend asks the renderer a question (``server_requests.send``).
 
-Every entry is one request method: the ``params`` the frame carries (``session_id`` is added by
-the transport and declared on the shared base) and the ``result`` the client answers with. The
-``request.cancel`` event that withdraws an open request lives here too.
+Every entry declares the params carried by its request frame (``session_id`` is added by the
+transport) and the result returned by the client. ``request.cancel`` is the event-enveloped
+withdrawal of an open request.
 """
 
 from __future__ import annotations
 
+from typing import Annotated, Literal, Union
+
 from pydantic import Field
 
-from .base import JsonValue, Params, Payload, Result, WireEnum
+from .base import Params, Payload, Result, WireEnum
 from .registry import event, server_request
 
 
 class ServerRequestParams(Params):
-    """Every request frame's params start with the session the question belongs to."""
+    """Every request frame belongs to one gateway session."""
 
     session_id: str
 
@@ -33,29 +35,49 @@ class ClarifyQuestion(Params):
     qid: str
     question: str
     choices: list[str] | None = None
-    multi_select: bool = False
+    multi_select: bool
 
 
-class ClarifyRequestParams(ServerRequestParams):
-    """Single question: ``question`` / ``choices`` (/ ``multi_select``); batch: ``questions``.
-    ``answers`` rides only on a reconnect replay (locks the server already accepted)."""
+class ClarifySingle(ServerRequestParams):
+    """One clarify question; ``answer: ''`` is the client's explicit skip."""
 
-    question: str | None = None
+    kind: Literal["single"]
+    question: str
     choices: list[str] | None = None
-    multi_select: bool | None = None
-    questions: list[ClarifyQuestion] | None = None
+    multi_select: bool
+
+
+class ClarifyBatch(ServerRequestParams):
+    """Multiple questions. ``answers`` is ``None`` when first sent and carries locked answers only
+    on a reconnect replay."""
+
+    kind: Literal["batch"]
+    questions: list[ClarifyQuestion]
     answers: dict[str, str] | None = None
 
 
-class ClarifyResult(Result):
-    """Single: ``{answer}`` ('' = skip). Batch: ``{answers}`` for the whole set (early locks go through
-    the ``clarify.lock`` RPC); a response with neither is cancel-all."""
-
-    answer: str | None = None
-    answers: dict[str, str] | None = None
+# ``server_request`` accepts this alias through the registry's TypeAdapter-backed declaration.
+ClarifyRequestParams = Annotated[Union[ClarifySingle, ClarifyBatch], Field(discriminator="kind")]
 
 
-server_request("clarify", params=ClarifyRequestParams, result=ClarifyResult,
+class ClarifyAnswer(Result):
+    """A single answer; ``answer: ''`` is an explicit skip."""
+
+    answer: str
+
+
+class ClarifyAnswers(Result):
+    """The batch answer set. A deadline preserves locked answers with ``timed_out: true``."""
+
+    answers: dict[str, str]
+    timed_out: bool = False
+
+
+ClarifyResult = Union[ClarifyAnswer, ClarifyAnswers]
+
+
+# ``server_request`` accepts this union alias after A1's TypeAdapter registry change.
+server_request("clarify", params=ClarifyRequestParams, result=ClarifyResult,  # type: ignore[arg-type]
                doc="The clarify tool: ask the user one question or a batch.")
 
 
@@ -70,25 +92,23 @@ class ApprovalChoice(WireEnum):
 
 
 class ApprovalRequestParams(ServerRequestParams):
-    """``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side."""
+    """Closed payload from ``tools.approval`` after ``_approval_request_payload`` redacts the
+    command and derives ``choices``."""
 
     request_id: str
-    command: str = ""
-    description: str = ""
-    choices: list[ApprovalChoice] = Field(default_factory=list)
+    command: str
+    description: str
+    pattern_key: str | None = None
+    pattern_keys: list[str] | None = None
     allow_permanent: bool | None = None
     allow_session: bool | None = None
     smart_denied: bool | None = None
-    tool_name: str | None = None
-    session_id_hint: str | None = Field(default=None, alias="gateway_session_id")
-    # The approval queue entry carries tool-specific context the card may render; the closed set
-    # of keys is owned by tools/approval.py, so it stays open here.
-    model_config = Params.model_config | {"extra": "allow"}
+    choices: list[ApprovalChoice]
 
 
 class ApprovalResult(Result):
     choice: ApprovalChoice
-    all: bool | None = None
+    all: bool = False
 
 
 server_request("approval", params=ApprovalRequestParams, result=ApprovalResult,
@@ -112,14 +132,22 @@ server_request("sudo", params=SudoRequestParams, result=ValueResult,
                doc="Masked sudo password for the terminal tool.")
 
 
+class SecretMetadata(Params):
+    """``tools.skills_tool_setup._capture_required_environment_variables`` supplies these keys."""
+
+    skill_name: str
+    help: str | None = None
+    required_for: str | None = None
+
+
 class SecretRequestParams(ServerRequestParams):
     env_var: str
     prompt: str
-    metadata: dict[str, JsonValue] | None = None
+    metadata: SecretMetadata | None = None
 
 
 server_request("secret", params=SecretRequestParams, result=ValueResult,
-               doc="Masked value for a named env var (skills / setup flows).")
+               doc="Masked value for a named env var in a skill setup flow.")
 
 
 class VaultUnlockRequestParams(ServerRequestParams):
@@ -137,7 +165,7 @@ class VaultSaveLoginRequestParams(ServerRequestParams):
 
 
 server_request("vault.save_login", params=VaultSaveLoginRequestParams, result=ValueResult,
-               doc="Save a login for a site the agent is about to fill; the answer is JSON {identifier, password}.")
+               doc="Save a login for a site; the value is JSON {identifier, password}.")
 
 
 class VaultCodeRequestParams(ServerRequestParams):
@@ -165,42 +193,87 @@ server_request("window.read", params=EmptyRequestParams, result=ValueResult,
                doc="Enumerate the native window below the app (JSON text answer).")
 
 
-class PreviewActRequestParams(ServerRequestParams):
-    """``tools/drive_preview_tool.py`` and ``tools/annotate_preview_tool.py`` field sets."""
+class PreviewActAction(WireEnum):
+    elements = "elements"
+    click = "click"
+    hover = "hover"
+    type = "type"
+    scroll = "scroll"
+    press = "press"
+    strobe = "strobe"
+    back = "back"
+    forward = "forward"
+    reload = "reload"
+    pin = "pin"
+    hold = "hold"
+    unpin = "unpin"
 
-    action: str
+
+class PreviewScrollTo(WireEnum):
+    top = "top"
+    bottom = "bottom"
+
+
+class PreviewActRequestParams(ServerRequestParams):
+    """Closed DOM-operation shape from ``tools.drive_preview_tool`` and
+    ``tools.annotate_preview_tool``."""
+
+    action: PreviewActAction
     ref: str | None = None
     selector: str | None = None
     text: str | None = None
     key: str | None = None
     submit: bool | None = None
     full: bool | None = None
-    to: str | None = None
+    to: PreviewScrollTo | None = None
     amount: int | None = None
     max: int | None = None
 
 
 server_request("preview.act", params=PreviewActRequestParams, result=ValueResult,
-               doc="Click / type / scroll / annotate inside the in-app browser preview.")
+               doc="Click, type, scroll, or annotate inside the in-app browser preview.")
+
+
+class TourAction(WireEnum):
+    targets = "targets"
+    show = "show"
+    start = "start"
+    next = "next"
+    prev = "prev"
+    stop = "stop"
+
+
+class TourSurface(WireEnum):
+    app = "app"
+    preview = "preview"
+
+
+class TourSide(WireEnum):
+    top = "top"
+    right = "right"
+    bottom = "bottom"
+    left = "left"
 
 
 class TourStep(Params):
+    """Closed DOM step from ``tools.tour_tool``'s ``_STEP_SCHEMA``."""
+
     selector: str | None = None
     title: str | None = None
     text: str | None = None
-    side: str | None = None
-    model_config = Params.model_config | {"extra": "allow"}
+    side: TourSide | None = None
 
 
 class TourRequestParams(ServerRequestParams):
-    """``tools/tour_tool.py`` field set."""
+    """Closed guided-tour DOM operation from ``tools.tour_tool``."""
 
-    action: str
-    surface: str | None = None
+    # tools/tour_tool.py drops None fields before calling back, so every optional key defaults here.
+    action: TourAction
+    surface: TourSurface | None = None
     selector: str | None = None
     title: str | None = None
     text: str | None = None
-    side: str | None = None
+    side: TourSide | None = None
     steps: list[TourStep] | None = None
     step_index: int | None = None
 
@@ -212,18 +285,34 @@ server_request("tour", params=TourRequestParams, result=ValueResult,
 # ── withdrawal ────────────────────────────────────────────────────────────────────────────────
 
 
+class WithdrawnRequestMethod(WireEnum):
+    approval = "approval"
+    clarify = "clarify"
+    mcp_setup = "mcp.setup"
+    preview_act = "preview.act"
+    preview_read = "preview.read"
+    secret = "secret"
+    sudo = "sudo"
+    terminal_read = "terminal.read"
+    tour = "tour"
+    vault_code = "vault.code"
+    vault_save_login = "vault.save_login"
+    vault_unlock_prompt = "vault.unlock_prompt"
+    window_read = "window.read"
+
+
 class RequestCancelReason(WireEnum):
-    timeout = "timeout"
+    answered = "answered"
     interrupted = "interrupted"
+    notify_failed = "notify_failed"
     shutdown = "shutdown"
-    resolved = "resolved"
-    session_closed = "session_closed"
+    timeout = "timeout"
 
 
 class RequestCancelPayload(Payload):
     id: str
-    method: str
-    reason: str  # a RequestCancelReason value; callers in tools/approval may pass their own wording
+    method: WithdrawnRequestMethod
+    reason: RequestCancelReason
 
 
 event("request.cancel", RequestCancelPayload,

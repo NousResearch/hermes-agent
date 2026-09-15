@@ -1,9 +1,9 @@
 import type { Key } from '@hermes/ink'
 import { Text, useInput } from '@hermes/ink'
 import { mix } from '@hermes/shared/color'
+import type { UsageModel } from '@hermes/shared/gateway-events'
 import { type ReactNode, useState } from 'react'
 
-import type { UsageModelData } from '../gatewayTypes.js'
 import { liftForContrast } from '../lib/color.js'
 import type { Theme } from '../theme.js'
 
@@ -162,7 +162,7 @@ export function barCells(ratio: number, cells: number = BAR_CELLS): { bar: strin
  *   `Plus    [██████░░░░]  $14.00 of $20.00 · 30% used`
  * Renders nothing for a free account (no bars to draw — caller shows upsell).
  */
-export function UsageBars({ model, t }: { model: undefined | UsageModelData; t: Theme }) {
+export function UsageBars({ model, t }: { model: null | undefined | UsageModel; t: Theme }) {
   if (!model || !model.available) {
     return null
   }
@@ -215,7 +215,7 @@ export function UsageBars({ model, t }: { model: undefined | UsageModelData; t: 
  * /usage transcript panel). Returns one string per line: a plan bar, a top-up
  * bar, and a total-spendable summary, whichever apply. Dollars only.
  */
-export function usageBarsText(model: undefined | UsageModelData): string[] {
+export function usageBarsText(model: null | undefined | UsageModel): string[] {
   if (!model || !model.available) {
     return []
   }

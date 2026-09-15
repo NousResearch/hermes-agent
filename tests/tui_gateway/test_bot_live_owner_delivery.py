@@ -2,16 +2,23 @@
 import threading
 from types import SimpleNamespace
 
-from tui_gateway.method_ctx import rebind
+from tui_gateway import server as srv
 from tui_gateway import session_notifications, session_auto_continue
 from tui_gateway.turn_marker import record_turn_start, read_turn_marker
 
 
-def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
+def _facade(monkeypatch, fn, overrides):
+    """Run a split-module function with facade state swapped: siblings reach server.py through
+    ``srv.<name>``, so patching the facade is the seam (the old ``rebind`` ran them against a fake
+    globals dict)."""
+    for name, value in overrides.items():
+        monkeypatch.setattr(srv, name, value)
+    return fn
+
+
+def test_refused_input_commits_failed_mailbox_receipt(tmp_path, monkeypatch):
     import contextlib
     import contextvars
-    import logging
-    import time
     from tui_gateway import prompt_turn
     from tools import bot_live_delivery as mailbox
 
@@ -23,13 +30,11 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
     session = dict(agent=agent, session_key="chat", history_lock=threading.RLock(), running=True)
     retired = []
     noop = lambda *args, **kwargs: None
-    submit = rebind(prompt_turn._run_prompt_submit, {
-        "threading": threading, "time": time, "logger": logging.getLogger(__name__),
+    submit = _facade(monkeypatch, prompt_turn._run_prompt_submit, {
         "_sessions_lock": threading.RLock(), "_sessions": {},
         "_admit_prompt_turn": lambda *args: ([], agent),
         "_emit": noop, "bind_transport": noop, "reset_transport": noop,
         "_current_runtime_session_record": contextvars.ContextVar("refused_turn"),
-        "_TurnRun": prompt_turn._TurnRun,
         "_record_turn_marker": lambda *args, **kwargs: "marker",
         "_prepare_turn_input": lambda *args: None,
         "_finish_turn": noop, "_clear_inflight_turn": noop,
@@ -48,11 +53,11 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
     assert retired and session["running"] is False
 
 
-def test_imported_crash_marker_never_autocontinues(tmp_path):
+def test_imported_crash_marker_never_autocontinues(tmp_path, monkeypatch):
     record_turn_start(tmp_path, "chat", "imported", auto_continue=False)
     marker = read_turn_marker(tmp_path, "chat")
     assert marker["auto_continue"] is False
-    schedule = rebind(session_auto_continue._maybe_schedule_auto_continue, {
+    schedule = _facade(monkeypatch, session_auto_continue._maybe_schedule_auto_continue, {
         "_session_home": lambda session: tmp_path,
         "read_turn_marker": read_turn_marker,
     })
@@ -73,7 +78,7 @@ def test_local_work_blocks_mailbox_claim_without_consuming_envelope(monkeypatch,
         submitted.append((text, kwargs.get("turn_author")))
         kwargs["terminal_callback"]({"status": "settled", "text": "reply"})
         return True
-    poll = rebind(session_notifications._poll_bot_live_delivery_once, {
+    poll = _facade(monkeypatch, session_notifications._poll_bot_live_delivery_once, {
         "_session_home": lambda session: tmp_path,
         "_run_prompt_submit": submit,
         "_notif_release_turn": lambda session: session.update(running=False),

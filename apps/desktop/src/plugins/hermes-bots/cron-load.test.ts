@@ -21,6 +21,7 @@
 import type * as HermesSdk from '@hermes/plugin-sdk'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { cronJobRow } from './cron-test-utils'
 import type { RoutineJob } from './types'
 
 const request = vi.fn()
@@ -37,13 +38,13 @@ const LEGACY_PREFIX = 'You are running the scheduled routine "'
 
 /** The shape a pre-hardening routine was persisted with. */
 function legacyJob(id: string, title: string, bot: string): RoutineJob {
-  return {
+  return cronJobRow({
     enabled: true,
     job_id: id,
     name: `[bot:${bot}] ${title}`,
     prompt_preview: `${LEGACY_PREFIX}${title}" for agent '${bot}'`,
     state: 'scheduled'
-  }
+  })
 }
 
 /** Every cron.manage call, as `[action, name]`. */
@@ -83,13 +84,13 @@ describe('pausing a legacy delegated routine cannot fail the list', () => {
     const jobs: RoutineJob[] = [
       legacyJob('legacy-fails', 'Audit', 'research'),
       legacyJob('legacy-pauses', 'Build', 'research'),
-      {
+      cronJobRow({
         enabled: true,
         job_id: 'normal',
         name: '[bot:research] Report',
-        prompt: 'Summarize the day',
+        prompt_preview: 'Summarize the day',
         state: 'scheduled'
-      }
+      })
     ]
 
     request.mockImplementation(async (_method: string, params: Record<string, unknown>) => {

@@ -23,6 +23,7 @@ import { type HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { NEW_SESSION_TITLE, quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { currentModelCapabilities, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -86,7 +87,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   modelOptionsProfile?: string
   modelMenuContent?: React.ReactNode
   reasoningMenuContent?: React.ReactNode
-  requestModelOptionsForOwner?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestModelOptionsForOwner?: GatewayRequest
   onToggleSelectedPin: () => void
   onDeleteSelectedSession: () => void
   onCancel: () => Promise<void> | void

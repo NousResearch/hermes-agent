@@ -33,7 +33,7 @@ def _error(envelope):
     return envelope["error"]
 
 
-def _authority_page(tmp_path, gateway_id="install:" + "a" * 32, n=3):
+def _authority_page(tmp_path, gateway_id="install:" + "a" * 32, n=3, actor=None, kind="message.user"):
     """Build a real room + log on a SEPARATE 'remote authority' DB and return
     its replay page, as a replicating client would fetch via groups.log."""
     from gateway import hosted_rooms as rooms
@@ -51,8 +51,8 @@ def _authority_page(tmp_path, gateway_id="install:" + "a" * 32, n=3):
             db,
             room_id="room-1",
             event_id=f"e{index}",
-            kind="message.user",
-            actor={"kind": "user", "id": "tek"},
+            kind=kind,
+            actor=actor or {"kind": "user", "id": "tek"},
             payload={"text": f"msg {index}"},
             authority_gateway_id=gateway_id,
             authority_epoch=1,
@@ -91,6 +91,31 @@ def test_replicate_then_state_roundtrip(home, tmp_path):
     state = _result(srv._methods["groups.replica_state"](2, {"room_id": "room-1"}))
     assert state["last_seq"] == 3
     assert state["authority"] == page["authority"]
+
+
+def test_replicate_accepts_the_actor_profile_groups_log_emits(home, tmp_path):
+    """A member's events carry ``actor.profile`` on the authority's log page; the replica must ingest
+    that page as-is (the input actor model used to forbid the key the output actor model emits)."""
+    page = _authority_page(tmp_path, actor={"kind": "member", "id": "planner", "profile": "ops"}, kind="message.member")
+    assert page["events"][0]["actor"]["profile"] == "ops"
+
+    result = _result(srv._methods["groups.replicate"](
+        1, {"room_id": "room-1", "room_name": "Field Room", "members": MEMBERS, "page": page}))
+
+    assert result["ingested"] == 3
+
+
+def test_promote_confirm_is_a_real_boolean(home, tmp_path):
+    """The takeover gate reads ``confirm is True``; a string ``"true"`` must be refused at the model
+    boundary, not coerced into an acknowledgement."""
+    page = _authority_page(tmp_path)
+    _result(srv._methods["groups.replicate"](
+        1, {"room_id": "room-1", "room_name": "Field Room", "members": MEMBERS, "page": page}))
+
+    refused = _error(srv._methods["groups.promote"](2, {"room_id": "room-1", "confirm": "true"}))
+
+    assert refused["code"] == 4000
+    assert _result(srv._methods["groups.replica_state"](3, {"room_id": "room-1"}))["authority"] == page["authority"]
 
 
 def test_promote_requires_confirm_and_takes_over(home, tmp_path):

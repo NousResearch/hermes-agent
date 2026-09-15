@@ -42,6 +42,7 @@ except ImportError:  # pragma: no cover - dependency guidance only
 NAME_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 TIERS = ("official", "community")
+CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
 PLATFORMS = ("linux", "macos", "windows")
 CAPABILITY_KEYS = (
     "provides_tools",
@@ -59,6 +60,7 @@ KNOWN_KEYS = {
     "description",
     "maintainer",
     "tier",
+    "category",
     "requires_hermes",
     "docs_url",
     "platforms",
@@ -124,6 +126,10 @@ def validate_entry(data: object) -> tuple[list[str], list[str]]:
     tier = data.get("tier", "community")
     if tier not in TIERS:
         errors.append(f"tier {tier!r} must be one of {list(TIERS)}")
+
+    category = data.get("category", "desktop")
+    if category not in CATEGORIES:
+        errors.append(f"category {category!r} must be one of {list(CATEGORIES)}")
 
     if "requires_hermes" in data:
         _check_requires_hermes(data["requires_hermes"], errors)

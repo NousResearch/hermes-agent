@@ -35,6 +35,17 @@ import { forgetServerRequest } from './serverRequestStore.js'
 import { turnController } from './turnController.js'
 import { getTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
+import {
+  BACKEND_SLOW_START,
+  BACKEND_SLOW_START_STATUS,
+  backendReconnecting,
+  describeRpcError,
+  describeTurnFailure,
+  isBareErrorText,
+  promptTimeoutNotice,
+  stderrLooksLikeProblem,
+  stderrProblemActivity
+} from './userMessages.js'
 import { isWakeUserDisabled } from './wakeState.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
@@ -968,13 +979,26 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'gateway.stderr': {
+        // Every raw line is already in the /logs buffer (gatewayClient.pushLog).
+        // Only failure-looking lines earn an activity row, and a traceback's
+        // many lines collapse into one (pushActivity dedupes a repeated tail).
         if (!ev.payload) {
           return
         }
 
-        const line = String(ev.payload.line).slice(0, 120)
+        const line = String(ev.payload.line)
 
-        turnController.pushActivity(line, 'info')
+        if (stderrLooksLikeProblem(line)) {
+          turnController.pushActivity(stderrProblemActivity(line), 'warn')
+        }
+
+        return
+      }
+
+      case 'gateway.reconnecting': {
+        const { attempt, delay_ms: delayMs } = ev.payload ?? {}
+
+        setStatus(backendReconnecting(attempt, delayMs))
 
         return
       }
@@ -1100,25 +1124,22 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'gateway.start_timeout': {
-        const { cwd, python, stderr_tail: stderrTail } = ev.payload ?? {}
-        const trace = python || cwd ? ` · ${String(python || '')} ${String(cwd || '')}`.trim() : ''
+        // Still waiting (the ready timer does not give up) — say so, and point
+        // at /logs for the interpreter/cwd/stderr detail instead of printing
+        // paths here. Only failure-looking stderr lines are echoed inline so
+        // "wrong python" / "missing dep" stay diagnosable at a glance.
+        const { stderr_tail: stderrTail } = ev.payload ?? {}
 
-        setStatus('gateway startup timeout')
-        turnController.pushActivity(`gateway startup timed out${trace} · /logs to inspect`, 'error')
+        setStatus(BACKEND_SLOW_START_STATUS)
+        turnController.pushActivity(BACKEND_SLOW_START, 'warn')
 
-        // Surface the most useful stderr lines inline so users can tell
-        // "wrong python", "missing dep", and "config parse failure"
-        // apart without leaving the TUI.  Filter blank rows BEFORE
-        // taking the last N so trailing empty lines in the buffer
-        // don't crowd out actual content; truncate to match the
-        // 120-char clip used for `gateway.stderr` activity entries.
         const STDERR_LINE_CAP = 120
-        const STDERR_LINES_MAX = 8
+        const STDERR_LINES_MAX = 4
 
         const tailLines = (stderrTail ?? '')
           .split('\n')
           .map(l => l.trim())
-          .filter(Boolean)
+          .filter(l => l && stderrLooksLikeProblem(l))
           .slice(-STDERR_LINES_MAX)
 
         for (const line of tailLines) {
@@ -1265,6 +1286,15 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (!id) {
           return
+        }
+
+        // A password/secret/vault card that timed out vanished silently; say
+        // what happened and how to get it back. Clarify already records its
+        // own "(timed out)" line via tool.complete.
+        const timeoutNotice = promptTimeoutNotice(ev.payload?.method, ev.payload?.reason)
+
+        if (timeoutNotice) {
+          sys(timeoutNotice)
         }
 
         forgetServerRequest(id)
@@ -1462,7 +1492,26 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
 
         if (!wasInterrupted) {
-          const msgs: Msg[] = finalMessages.length ? finalMessages : [{ role: 'assistant', text: finalText }]
+          const payload = ev.payload ?? {}
+          // A failed turn with no reply: the backend's assistant-slot text is
+          // "Error: <raw provider body>". Render the structured error_surface
+          // (layer/code/retryable) as a plain title + Details + next step
+          // instead; a partial reply keeps its streamed text.
+          const failed = payload.status === 'error' && !payload.partial && isBareErrorText(finalText, payload.error)
+
+          // Only the trailing bare-error slot is replaced; interim segments the
+          // model streamed before the failure stay in the transcript.
+          const msgs: Msg[] = failed
+            ? [
+                ...finalMessages.filter(
+                  (m, i) => !(i === finalMessages.length - 1 && m.role === 'assistant' && isBareErrorText(m.text, payload.error))
+                ),
+                { role: 'assistant', text: describeTurnFailure(payload) }
+              ]
+            : finalMessages.length
+              ? finalMessages
+              : [{ role: 'assistant', text: finalText }]
+
           msgs.forEach(appendMessage)
 
           // Pet beat: celebrate a finished plan, otherwise a clean-finish wave.
@@ -1531,7 +1580,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             return
           }
 
-          sys(`error: ${message}`)
+          sys(`error: ${describeRpcError(new Error(message))}`)
           setStatus('ready')
         }
     }

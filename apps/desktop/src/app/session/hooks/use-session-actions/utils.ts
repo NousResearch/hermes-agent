@@ -751,7 +751,7 @@ type LiveSessionProjection = Pick<SessionResumeResult, 'inflight' | 'queued' | '
   [safelyPersistedInflightUser]?: true
 }
 
-type ReconciledSessionResumeResponse = SessionResumeResult & {
+type ReconciledSessionResumeResult = SessionResumeResult & {
   [safelyPersistedInflightUser]?: true
 }
 
@@ -1006,7 +1006,7 @@ export function dedupeInflightUserAgainstTranscript(
   persistedMessages: ChatMessage[],
   runtimeMessages: ChatMessage[],
   projection: SessionResumeResult
-): ReconciledSessionResumeResponse {
+): ReconciledSessionResumeResult {
   const inflightUser = projection.inflight?.user?.replace(/\s+/g, ' ').trim() ?? ''
 
   if (!inflightUser) {

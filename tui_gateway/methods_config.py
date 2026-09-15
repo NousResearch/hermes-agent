@@ -282,9 +282,11 @@ def _(rid, params: dict) -> dict:
             if record is None:
                 return {"provider_configured": bool(_has_any_provider_configured(strict_profile_scope=bool(profile))),
                         **scoped}
+            # ``failure_fields`` rides along only when the free-tier mint did not happen: the code,
+            # the sentence, and whether / when a retry can succeed (``free_tier.provision``).
             return {"provider_configured": record.provider_configured, "ready": True,
                     "free_tier": record.free_tier, "other_providers": record.other_providers,
-                    "inference_provider": record.inference_provider, **scoped}
+                    "inference_provider": record.inference_provider, **record.failure_fields(), **scoped}
         return _readiness_check(rid, params, probe)
     except Exception as e:
         return _err(rid, 5016, str(e))

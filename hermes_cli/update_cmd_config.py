@@ -16,12 +16,14 @@ def _reload_config_modules() -> None:
     """Force-reload config modules after git pull: the updater is the PRE-pull process, so the
     cached modules hold OLD code and ``check_config_version()`` would report "up to date" despite a
     pulled migration. ``_subprocess_compat`` / ``dashboard_procs`` reload too so the later dashboard
-    cleanup sees symbols the update added."""
+    cleanup sees symbols the update added. ``tools_config`` reloads as well: migrations import its
+    helpers at call time (``_migrate_to_45`` needs ``_configurable_keys``), and a pre-pull cache
+    lacks symbols the pull added (#111271)."""
     import importlib
     importlib.invalidate_caches()
     for mod_name in (
-        "hermes_cli.config_defaults", "hermes_cli.config", "hermes_cli.config_migrations",
-        "hermes_cli._subprocess_compat", "hermes_cli.dashboard_procs"):
+        "hermes_cli.config_defaults", "hermes_cli.config", "hermes_cli.tools_config",
+        "hermes_cli.config_migrations", "hermes_cli._subprocess_compat", "hermes_cli.dashboard_procs"):
         mod = sys.modules.get(mod_name)
         if mod is not None:
             try:
@@ -173,11 +175,20 @@ def _check_and_apply_config_migration(
         _run_migrate_config_fresh)
     print()
     print("→ Checking configuration for new options...")
-    # Reload BEFORE any config reads so all checks use the updated code.
-    _reload_config_modules()
-    from hermes_cli.config import get_missing_env_vars, get_missing_config_fields
+    # Evict EVERY cached Hermes module before touching migration code: the updater is the
+    # pre-pull process, and a migration step's call-time import (``_migrate_to_45`` →
+    # ``hermes_cli.tools_config._configurable_keys``) resolves against whatever old module
+    # object is still cached — reloading a hand-picked list re-fixes this per symptom
+    # (#111271). The purge is the class fix already used by the fleet-restart phase.
+    from hermes_cli.update_cmd import _m
     # A config-check failure must not break an otherwise-successful update.
     try:
+        _m()._purge_stale_hermes_modules()
+        # Reload BEFORE any config reads so all checks use the updated code.
+        _reload_config_modules()
+        # Post-purge this re-executes the NEW config.py against whatever root modules
+        # (hermes_constants, utils, ...) are still cached, so it can fail too.
+        from hermes_cli.config import get_missing_env_vars, get_missing_config_fields
         # Log, point at the manual command, and return. See #91360.
         missing_env = get_missing_env_vars(required_only=True)
         missing_config = get_missing_config_fields()

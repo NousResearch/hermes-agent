@@ -593,6 +593,22 @@ def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
     assert "NOT delivered" in payload["error"]
 
 
+def test_local_turn_reemits_empty_stdout_for_a_bare_silence_marker(tmp_path, capsys):
+    """#110782: the one-shot ``hermes chat -c "Bot Chat"`` transport applies the gateway's
+    silence rule — a successful bare marker reaches the sender as "", prose stays verbatim."""
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("thanks, bye", encoding="utf-8")
+    child = tmp_path / "quiet.py"
+    child.write_text("import sys\nprint(sys.argv[1])\n", encoding="utf-8")
+
+    assert bot_mode_dm._run_local_turn([sys.executable, str(child), "NO_REPLY"], str(dm_file)) == 0
+    assert capsys.readouterr().out == ""
+
+    prose = "The NO_REPLY marker means do not answer."
+    assert bot_mode_dm._run_local_turn([sys.executable, str(child), prose], str(dm_file)) == 0
+    assert capsys.readouterr().out.strip() == prose
+
+
 def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
     tmp_path, monkeypatch
 ):
@@ -923,3 +939,40 @@ def test_dm_dir_rejects_precreated_symlink(tmp_path, monkeypatch):
 
     with pytest.raises(PermissionError, match="not a directory"):
         bot_mode_dm._dm_dir()
+
+
+def test_cleanup_sweeps_stale_live_intents_and_keeps_fresh_ones(tmp_path, monkeypatch):
+    """``<dm file>.live.json`` holds the DM plaintext and outlives its runner for retries; the
+    housekeeping sweep must reap the orphans like it reaps the dm files themselves."""
+    import os
+
+    monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
+    stale = tmp_path / "dm-old.txt.live.json"
+    stale.write_text("{}", encoding="utf-8")
+    os.utime(stale, (1, 1))
+    fresh = tmp_path / "dm-new.txt.live.json"
+    fresh.write_text("{}", encoding="utf-8")
+
+    assert bot_mode_dm.cleanup_bot_dm_cache() >= 1
+    assert not stale.exists()
+    assert fresh.exists()
+
+
+def test_settled_live_wait_unlinks_the_intent_but_a_pending_one_keeps_it(tmp_path, monkeypatch, capsys):
+    from tools import bot_live_delivery as live
+
+    dm_file = tmp_path / "dm-x.txt"
+    dm_file.write_text("secret plaintext", encoding="utf-8")
+    intent = tmp_path / "dm-x.txt.live.json"
+    intent.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
+
+    monkeypatch.setattr(live, "read_delivery_result", lambda home, did: {"status": "queued"})
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", dm_file=dm_file) == 0
+    assert intent.exists(), "a pending delivery may still be retried from the same intent"
+    assert dm_file.exists()
+
+    monkeypatch.setattr(live, "read_delivery_result", lambda home, did: {"status": "settled", "reply": "ok"})
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", dm_file=dm_file) == 0
+    assert not intent.exists()
+    assert not dm_file.exists(), "the dm .txt holds the same plaintext as the settled intent"

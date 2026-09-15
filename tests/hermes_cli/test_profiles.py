@@ -201,6 +201,31 @@ class TestCreateProfile:
         assert (profile_dir / ".env").read_text().strip() == "KEY=val"
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
 
+    def test_clone_sync_imports_carries_manifest_but_never_links_profiles(self, profile_env):
+        """--sync-imports copies import-sync.json (a pointer at EXTERNAL agent trees) and nothing
+        else changes: the clone still gets its own config/skills copies, never a live link."""
+        from hermes_cli.agent_import_sync import SYNC_MANIFEST_NAME, load_sync_manifest
+
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model: test")
+        manifest = {"version": 1, "agents": {"claude-code": {
+            "source": str(profile_env / ".claude"), "digest": "d", "overwrite": False,
+            "last_import": 1, "imported_skills": ["s1"]}}}
+        (default_home / SYNC_MANIFEST_NAME).write_text(json.dumps(manifest))
+
+        plain = create_profile("plain", clone_config=True, no_alias=True)
+        assert not (plain / SYNC_MANIFEST_NAME).exists()
+
+        synced = create_profile("synced", clone_config=True, sync_imports=True, no_alias=True)
+        assert load_sync_manifest(synced)["agents"] == manifest["agents"]
+        # Editing the source afterwards does not reach the clone: still an independent island.
+        (default_home / "config.yaml").write_text("model: changed")
+        assert yaml.safe_load((synced / "config.yaml").read_text())["model"] == "test"
+
+    def test_sync_imports_requires_a_clone_source(self, profile_env):
+        with pytest.raises(ValueError, match="--sync-imports requires"):
+            create_profile("lonely", sync_imports=True, no_alias=True)
+
     def test_clone_all_does_not_copy_cron_jobs(self, profile_env):
         # Cron jobs are scheduled work bound to the source profile + origin channel; a clone
         # that inherits jobs.json fires every job twice (two gateways, same job ids).
@@ -862,7 +887,10 @@ class TestExportImport:
 
     def test_export_default_includes_profile_data(self, profile_env, tmp_path):
         """Profile data files end up in the archive (credentials excluded)."""
-        default_dir = get_profile_dir("default")
+        # Write through HERMES_HOME, not get_profile_dir("default"): the latter resolves to the
+        # OPERATOR's real install whenever basetest sits inside it, so this test used to
+        # overwrite the live config.yaml / .env / MEMORY.md with its fixtures.
+        default_dir = profile_env / ".hermes"
         (default_dir / "config.yaml").write_text("model: test")
         (default_dir / ".env").write_text("KEY=val")
         (default_dir / "SOUL.md").write_text("Be nice.")
@@ -891,7 +919,8 @@ class TestExportImport:
         symlinks inside *allowed* artifacts (e.g. ``skills/``) survive as
         symlinks; the link and its target are both retained.
         """
-        default_dir = get_profile_dir("default")
+        # Same reason as above: never resolve the operator's real default home from a test.
+        default_dir = profile_env / ".hermes"
         (default_dir / "config.yaml").write_text("ok")
         # Place broken symlink *inside* the allowed ``skills/`` tree so the
         # root-level allow-list passes the directory through; the

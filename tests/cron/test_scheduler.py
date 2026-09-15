@@ -48,7 +48,7 @@ class TestSummarizeCronFailureForDelivery:
             "Script failed: path/hash429abc.md source snapshot failure",
         )
 
-        assert "provider rate limit" not in summary
+        assert "rate-limited" not in summary
         assert "hash429abc.md" in summary
 
     def test_http_429_is_still_classified_as_a_rate_limit(self):
@@ -57,10 +57,10 @@ class TestSummarizeCronFailureForDelivery:
             "HTTP 429: Too Many Requests",
         )
 
-        assert "provider rate limit" in summary
-        # Chain wording is now honest (#85508): either the exhausted phrase
-        # (chain configured) or the "No fallback chain configured" guidance.
-        assert "fallback chain" in summary.lower()
+        assert "rate-limited" in summary
+        # Chain wording is honest (#85508): either "no backup provider succeeded" (chain
+        # configured) or the "no backup provider is configured" guidance.
+        assert "backup provider" in summary.lower()
 
     def test_no_agent_rate_limit_does_not_claim_a_fallback_chain(self):
         summary = _summarize_cron_failure_for_delivery(
@@ -71,8 +71,8 @@ class TestSummarizeCronFailureForDelivery:
         # Composed with #77648: a no_agent job never gets provider-shaped
         # classification at all — the generic cleaner reports the script's
         # own error instead.
-        assert "provider" not in summary.lower()
-        assert "fallback chain" not in summary.lower()
+        assert "ai model service" not in summary.lower()
+        assert "backup provider" not in summary.lower()
 
     def test_no_agent_timeout_is_identified_as_a_script_timeout(self):
         summary = _summarize_cron_failure_for_delivery(
@@ -82,8 +82,8 @@ class TestSummarizeCronFailureForDelivery:
 
         assert "script timed out" in summary
         assert "No model was invoked" in summary
-        assert "provider timeout" not in summary
-        assert "fallback chain" not in summary.lower()
+        assert "did not respond in time" not in summary
+        assert "backup provider" not in summary.lower()
 
 
 class TestPerJobToolsetMcpMerge:
@@ -1137,7 +1137,7 @@ class TestRunJobConfigLogging:
             with caplog.at_level(logging.WARNING):
                 run_job(job)
 
-        assert any("Failed to parse" in r.message and "config.yaml" in r.message for r in caplog.records), \
+        assert any("formatting error" in r.message and "config.yaml" in r.message for r in caplog.records), \
             f"Expected a config.yaml parse warning in logs, got: {[r.message for r in caplog.records]}"
 
 

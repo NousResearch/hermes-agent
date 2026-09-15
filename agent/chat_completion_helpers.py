@@ -2107,7 +2107,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
     except Exception as e:
         logger.warning("Failed to get summary response: %s", e)
-        final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
+        from agent.turn_failure_copy import site_copy
+        final_response = site_copy("max_iterations_no_summary", limit=agent.max_iterations)
     finally:
         from agent import relay_llm
         relay_llm.complete_logical_call(summary_api_request_id, outcome=summary_call_outcome)
@@ -2728,6 +2729,10 @@ class _StreamingCall(StreamingWaitMonitor):
         base_timeout, read_timeout, conn_cap = self._stream_timeouts()
         content_parts: list = []
         reasoning_parts: list = []
+        # OpenAI structured refusal (``delta.refusal``): the explanation streams here and
+        # ``delta.content`` stays empty, so an un-accumulated refusal looks like an empty
+        # stream and burns the empty-response retries (the non-streaming fix is #46013).
+        refusal_parts: list[str] = []
         reasoning_details: list = []  # OpenRouter replay data (signatures, encrypted blocks)
         pending_text_parts: list[str] = []
         tool_calls = _ToolCallAccumulator()
@@ -2812,6 +2817,13 @@ class _StreamingCall(StreamingWaitMonitor):
                 rd_delta = delta.model_extra.get("reasoning_details")
             for rd in rd_delta if isinstance(rd_delta, (list, tuple)) else ():
                 append_streamed_reasoning_detail(reasoning_details, rd)
+            # Not routed to the live display: the transport promotes a sole-payload
+            # refusal to content + ``content_filter`` and the loop surfaces it terminally.
+            delta_refusal = getattr(delta, "refusal", None)
+            if delta_refusal is None and isinstance(getattr(delta, "model_extra", None), dict):
+                delta_refusal = delta.model_extra.get("refusal")
+            if isinstance(delta_refusal, str) and delta_refusal:
+                refusal_parts.append(delta_refusal)
 
             # Text (list-of-blocks deltas flattened once); possible echoed SSE is
             # buffered until it can be judged.
@@ -2847,7 +2859,8 @@ class _StreamingCall(StreamingWaitMonitor):
             return self._adopt_final_response(stream.final_response)
         return self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
             finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
-            response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details)
+            response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details,
+            refusal_parts=refusal_parts)
 
     def _adopt_final_response(self, final_response):
         """Adapter returned a completed response for ``stream=True``: switch the
@@ -2896,7 +2909,8 @@ class _StreamingCall(StreamingWaitMonitor):
         return mock_tool_calls or None, has_truncated_tool_args
 
     def _finish_chat_stream(self, stream, role, content_parts, reasoning_parts, tool_calls_acc, finish_reason,
-        model_name, usage_obj, *, flush_pending, response_id=None, upstream_provider=None, reasoning_details=None):
+        model_name, usage_obj, *, flush_pending, response_id=None, upstream_provider=None, reasoning_details=None,
+        refusal_parts=None):
         """Assemble the non-streaming-shaped response after the chunk loop. A
         stream ending with no finish_reason is a drop, not a completion: return a
         partial-stream stub so the loop fails fast instead of executing empty
@@ -2905,7 +2919,7 @@ class _StreamingCall(StreamingWaitMonitor):
         full_reasoning = "".join(reasoning_parts) or None
         mock_tool_calls, has_truncated_tool_args = self._assemble_tool_calls(tool_calls_acc, finish_reason)
         # Zero-chunk guard: nothing usable = upstream error / malformed SSE.
-        if finish_reason is None and not content_parts and not reasoning_parts and not tool_calls_acc:
+        if finish_reason is None and not content_parts and not reasoning_parts and not refusal_parts and not tool_calls_acc:
             raise EmptyStreamError(
                 "Provider returned an empty stream with no finish_reason (possible upstream error or malformed SSE response).")
         if has_truncated_tool_args and finish_reason is None:
@@ -2932,7 +2946,9 @@ class _StreamingCall(StreamingWaitMonitor):
         if provider_stream_error is not None:
             raise provider_stream_error
         flush_pending()
-        message = SimpleNamespace(role=role, content=full_content, tool_calls=mock_tool_calls, reasoning_content=full_reasoning)
+        message = SimpleNamespace(role=role, content=full_content, tool_calls=mock_tool_calls, reasoning_content=full_reasoning,
+            # ``normalize_response`` reads ``message.refusal`` — same contract as the non-streaming object.
+            refusal="".join(refusal_parts or ()) or None)
         if reasoning_details:
             # Only when present: _build_assistant_message's passthrough persists them
             # for replay, and non-reasoning providers keep the attribute absent.

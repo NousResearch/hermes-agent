@@ -404,6 +404,18 @@ def _display_after_install(plugin_dir: Path, identifier: str) -> None:
     console.print()
 
 
+def _clone_failure_message(git_url: str, git_error: str) -> str:
+    """Plain-words clone failure: what to check (address, network, private repo), raw git text last.
+
+    The text reaches ``_fail`` -> Rich ``console.print``: escape the git output so ``[...]`` in it is
+    not parsed as markup."""
+    from rich.markup import escape
+    return (f"Could not download the plugin from {git_url}. Check the address (browse the catalog "
+            "with `hermes plugins search`), check your internet connection, or, if the repository "
+            "is private, sign in first with `gh auth login` (or set GITHUB_TOKEN in your .env).\n"
+            f"Details: {escape(git_error.strip())}")
+
+
 def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
     """The plugin path if it exists; else exit 1 (invalid name, or a listing of installed plugins)."""
     try:
@@ -411,9 +423,17 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
     except ValueError as e:
         _fail(console, f"[red]Error:[/red] {e}")
     if not target.exists():
-        installed = ", ".join(d.name for d in plugins_dir.iterdir() if d.is_dir()) or "(none)"
-        _fail(console, f"[red]Error:[/red] Plugin '{name}' not found in {plugins_dir}.\nInstalled plugins: {installed}")
+        _fail(console, _unknown_plugin_message(name, downloaded_only=True))
     return target
+
+
+def _unknown_plugin_message(name: str, *, downloaded_only: bool = False) -> str:
+    """``No plugin named ...`` with the exact-name rule and the two commands that resolve it."""
+    scope = (" This command only works on downloaded plugins; bundled ones can only be enabled or disabled."
+             if downloaded_only else " Bundled plugins can only be enabled or disabled.")
+    return (f"[red]No plugin named '{name}'.[/red] Run `hermes plugins list` to see the exact names "
+            f"(nested plugins use their full key, e.g. web/firecrawl).{scope} "
+            "To add one: `hermes plugins install <owner/repo>`.")
 
 
 # ── Install metadata + git plumbing ─────────────────────────────────────────────────────────
@@ -569,12 +589,7 @@ def _clone_plugin_repo(tmp_clone: Path, git_url: str, revision: Optional[str]) -
     except subprocess.TimeoutExpired as e:
         raise PluginOperationError("Git clone timed out after 60 seconds.") from e
     if result.returncode != 0:
-        error = _safe_git_error(result, git_url)
-        if re.search(r"could not read Username|Authentication failed|Repository not found", error):
-            error += (
-                "\n\nIf this repository is private, authenticate first: run `gh auth login`, set GITHUB_TOKEN "
-                "(or GH_TOKEN) in your .env, or store a credential in git's credential helper for this host.")
-        raise PluginOperationError(f"Git clone failed:\n{error}")
+        raise PluginOperationError(_clone_failure_message(git_url, _safe_git_error(result, git_url)))
     _scrub_cloned_origin(tmp_clone, git_exe, git_url)
     if revision:
         _checkout_exact_revision(tmp_clone, git_exe, revision, source_url=git_url)
@@ -1006,7 +1021,7 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     _refuse_legacy_relay(name)
     resolved = _resolve_plugin_key_and_source(name)
     if resolved is None:
-        _fail(console, f"[red]Plugin '{name}' is not installed or bundled.[/red]")
+        _fail(console, _unknown_plugin_message(name))
     key, source = resolved
     _refuse_legacy_relay(key)
 
@@ -1137,7 +1152,7 @@ def cmd_capabilities(name: Optional[str] = None) -> None:
         rows.append((key, entry[3], declared, granted, effective))
 
     if name is not None and not rows:
-        _fail(console, f"[red]Plugin '{name}' is not installed or bundled.[/red]")
+        _fail(console, _unknown_plugin_message(name))
     if not rows:
         console.print("[dim]No plugins declare or hold capabilities.[/dim]")
         return
@@ -1188,7 +1203,7 @@ def cmd_disable(name: str) -> None:
     console = _console()
     key = _resolve_plugin_key(name)
     if key is None:
-        _fail(console, f"[red]Plugin '{name}' is not installed or bundled.[/red]")
+        _fail(console, _unknown_plugin_message(name))
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
     if key not in enabled and key in disabled:

@@ -1151,17 +1151,21 @@ def _handle_update_called_process_error(
         if gateway_mode:
             _write_gateway_update_exit_code(desktop_build_ok)
     else:
-        print(f"✗ {stage}: {e}")
-        _print_called_process_error_tail(e)
         if _called_process_error_is_python_dep_install(e):
-            print(
-                "  The git update already finished. Re-downloading the source "
-                "ZIP cannot fix a dependency install error and would overwrite local files.")
+            print(f"✗ {stage} (the code update itself succeeded).")
+            _print_called_process_error_tail(e)
+            print()
+            print("  Hermes may not start until the dependencies are installed. Fix the error above")
+            print("  (usually network or disk space), then run `hermes update` again.")
             if _m()._is_windows():
-                print("  Retry through the venv interpreter:")
+                print("  If `hermes update` itself will not start, retry through the venv interpreter:")
                 print(
                     '    venv\\Scripts\\python.exe -c '
                     '"from hermes_cli.main import main; main()" update --yes')
+        else:
+            print(f"✗ {stage}.")
+            print(f"  Details: {e}")
+            _print_called_process_error_tail(e)
         _finalize_receipt("failed", 'Update receipt finalize failed: %s')
         sys.exit(1)
 

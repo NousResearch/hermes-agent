@@ -226,7 +226,7 @@ class TestLoadConfigParseFailure:
             assert after["approvals"]["deny"] == ["curl*evil.com*"]
             # Warning says we kept the previous config, not defaults
             err = capsys.readouterr().err
-            assert "previously loaded config" in err
+            assert "settings it loaded before the edit" in err
 
 
 
@@ -294,7 +294,7 @@ class TestSaveAndLoadRoundtrip:
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             with patch("builtins.open", side_effect=self._deny_config_reads(config_path)):
-                with pytest.raises(RuntimeError, match="Refusing to overwrite"):
+                with pytest.raises(RuntimeError, match="this change was not saved"):
                     save_config({"model": "test/replacement"})
 
         assert config_path.read_text(encoding="utf-8") == original
@@ -327,7 +327,7 @@ class TestSaveAndLoadRoundtrip:
         config_path.write_text(original, encoding="utf-8")
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            with pytest.raises(RuntimeError, match="not valid YAML"):
+            with pytest.raises(RuntimeError, match="formatting error"):
                 set_config_value("model.default", "gpt-4o")
 
         assert config_path.read_text(encoding="utf-8") == original
@@ -343,7 +343,7 @@ class TestSaveAndLoadRoundtrip:
         (tmp_path / ".env").write_text("TERMINAL_TIMEOUT=30\n", encoding="utf-8")
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            with pytest.raises(RuntimeError, match="not valid YAML"):
+            with pytest.raises(RuntimeError, match="formatting error"):
                 unset_config_value("terminal.timeout")
 
         assert config_path.read_text(encoding="utf-8") == original
@@ -399,7 +399,7 @@ class TestSaveAndLoadRoundtrip:
         original = "broken: [unterminated\n"
         config_path.write_text(original, encoding="utf-8")
 
-        with pytest.raises(RuntimeError, match="not valid YAML"):
+        with pytest.raises(RuntimeError, match="formatting error"):
             atomic_config_write(config_path, {"model": {"provider": "openai"}})
 
         assert config_path.read_text(encoding="utf-8") == original
@@ -1908,7 +1908,7 @@ class TestConfigCommandFailClosedSurface:
 
         assert excinfo.value.code == 1
         err = capsys.readouterr().err
-        assert "not valid YAML" in err
+        assert "formatting error" in err and "`hermes config edit`" in err
         assert config_path.read_text(encoding="utf-8") == original
 
     def test_config_command_unset_exits_cleanly_on_broken_yaml(self, tmp_path, capsys):
@@ -1923,7 +1923,7 @@ class TestConfigCommandFailClosedSurface:
                 config_command(self._args(config_command="unset", key="model.default"))
 
         assert excinfo.value.code == 1
-        assert "not valid YAML" in capsys.readouterr().err
+        assert "formatting error" in capsys.readouterr().err
         assert config_path.read_text(encoding="utf-8") == original
 
 

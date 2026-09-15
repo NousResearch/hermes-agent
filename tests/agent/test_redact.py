@@ -2,6 +2,7 @@
 
 import ast
 import logging
+import time
 
 import pytest
 
@@ -1243,6 +1244,69 @@ class TestFileReadNonReusableRedaction:
 
 
 
+
+
+class TestSecretFileAssignmentRedaction:
+    """#110567: ``file_read=True`` used to imply ``code_file=True`` and skip the assignment passes,
+    so an opaque prefix-less credential in a secret-bearing file reached the model in cleartext
+    while the terminal read of the same file masked it. ``secret_file=True`` re-enables the passes
+    with the non-reusable sentinel (#35519); unclassified reads are byte-identical to before."""
+
+    SYNTH = "3JcQ1UqZ8mNp4Rt6vWx2Yb9Ad0Ef7Gh5Ij2kS"  # 40-char opaque, no vendor prefix
+
+    @pytest.mark.parametrize("template, sentinel", [
+        ("ADS_API_TOKEN: {tok}", "«redacted-secret»"),          # YAML
+        ("export FOO_TOKEN='{tok}'", "«redacted-secret»"),      # shell rc
+        ("FOO_API_KEY={tok}", "«redacted-secret»"),             # dotenv
+        ('{{"api_key": "{tok}"}}', "«redacted-secret»"),        # JSON
+        ("5|      ADS_API_TOKEN: {tok}", "«redacted-secret»"),  # read_file line gutter
+        ("108:ADS_API_TOKEN: {tok}", "«redacted-secret»"),      # grep -n gutter
+        ("108-      ADS_API_TOKEN: {tok}", "«redacted-secret»"),  # grep -A/-B/-C context gutter
+        ("   108\tADS_API_TOKEN: {tok}", "«redacted-secret»"),   # cat -n / nl gutter (number + TAB)
+        ("   108\texport FOO_TOKEN={tok}", "«redacted-secret»"),
+        ("GITHUB_TOKEN: ghp_S1abcdefghijklmnopqrstuvwxyz0Pn2T", "«redacted:ghp_…»"),  # prefix label kept
+    ])
+    def test_secret_file_masks_assignment_with_non_reusable_sentinel(self, template, sentinel):
+        text = template.format(tok=self.SYNTH)
+        out = redact_sensitive_text(text, force=True, code_file=True, file_read=True, secret_file=True)
+        assert self.SYNTH not in out and "ghp_S1" not in out
+        assert sentinel in out
+        assert out.split(sentinel)[0].rstrip(" ='\"") in text  # key, gutter and quoting survive
+
+    def test_unclassified_read_and_non_secret_scalars_are_untouched(self):
+        for text in ("MAX_TOKENS: 100", '{"apiKey": "test"}', "api_key: test", f"5|ADS_API_TOKEN: {self.SYNTH}"):
+            assert redact_sensitive_text(text, force=True, file_read=True) == text
+        # Strong-key names whose value is a variable/path reference are shell-rc configuration, not
+        # secrets; the agent must still be able to read and edit them (password-class keys mask anyway).
+        rc = "export SSH_AUTH_SOCK=$HOME/.ssh/agent.sock\nexport DOCKER_AUTH_CONFIG=/home/u/.docker\n"
+        out = redact_sensitive_text(rc + f"ADS_API_TOKEN: {self.SYNTH}\n5|MAX_TOKENS: 100\nDB_PASSWORD=~/pw\n",
+                                    force=True, file_read=True, secret_file=True)
+        assert out.startswith(rc) and self.SYNTH not in out and "5|MAX_TOKENS: 100" in out and "~/pw" not in out
+        # The gutter-tolerant anchors must stay linear: a wide indented line is not a stall.
+        wide = "1|" + " " * 20000 + "token:"
+        started = time.perf_counter()
+        assert redact_sensitive_text(wide, force=True, file_read=True, secret_file=True) == wide
+        assert time.perf_counter() - started < 1.0
+
+
+class TestHermesHomePathClassification:
+    """``_is_secret_file_arg`` must see the RESOLVED Hermes home: a managed Windows home
+    (``%LOCALAPPDATA%\\hermes``) has no ``.hermes`` segment and a resolved path never spells
+    ``$HERMES_HOME``, so the literal test alone classified its ``config.yaml`` as ordinary YAML."""
+
+    def test_resolved_home_config_is_secret_bearing_but_project_config_is_not(self, tmp_path, monkeypatch):
+        import agent.file_safety as file_safety
+        from agent.redact import _is_secret_file_arg
+
+        home = tmp_path / "hermes"  # no ".hermes" segment
+        monkeypatch.setattr(file_safety, "_hermes_home_path", lambda: home)
+        monkeypatch.setattr(file_safety, "_hermes_root_path", lambda: home)
+        assert _is_secret_file_arg(str(home / "config.yaml"))
+        assert _is_secret_file_arg(str(home / "profiles" / "coder" / "config.yaml"))
+        assert _is_secret_file_arg(str(home / "backups" / "config" / "config.yaml.good.20260914-184559"))
+        assert not _is_secret_file_arg(str(home / "config.yaml.pdf"))  # only the backups/config/ copies
+        assert not _is_secret_file_arg(str(tmp_path / "proj" / "config.yaml"))
+        assert not _is_secret_file_arg("config.yaml")  # relative, not resolvable to the home
 
 
 class TestFireworksToken:

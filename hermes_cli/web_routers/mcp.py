@@ -8,7 +8,6 @@ web_server — reached via the late-binding seam so tests that mutate
 import asyncio
 import hashlib
 from contextlib import contextmanager
-from pathlib import Path
 import re
 import secrets
 import threading
@@ -18,7 +17,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from hermes_cli.web_deps import LateState, late
+from hermes_cli.web_deps import late
 from hermes_cli.web_server_mcp import _mcp_oauth_flows, _mcp_server_summary, _normalize_mcp_server_create
 from hermes_cli.web_models import MCPCatalogInstall, MCPEnabledToggle, MCPServerCreate, MCPServersReplace
 from hermes_cli.web_routers._common import (
@@ -42,26 +41,12 @@ _MAX_PENDING_MCP_OAUTH_FLOWS = 8
 
 @contextmanager
 def _profile_secret_scope(profile: Optional[str]):
-    """Home + secret scope for a probe-class request: config.yaml's ``${VAR}`` expansion
-    (``config._env_ref_lookup``) and the probe's own interpolation read plain ``os.environ``
-    while no scope is installed — the dashboard process's env, i.e. the DEFAULT profile's
-    values — so a secondary profile whose credential lives only in Bitwarden/1Password sent
-    the literal placeholder or the default's token (#109901). Same wrapping as the OAuth
-    worker (``_run_dashboard_mcp_oauth``). Home-only ``_config_profile_scope``, NOT
+    """Home + secret scope for a probe-class request (#109901). ``_config_profile_scope`` now binds
+    the secret scope itself; this stays the probe/OAuth callers' name. Home-only, NOT
     ``_profile_scope``: the body can block for seconds and the latter holds the process-global
-    skills lock. A scope miss still falls through to ``os.environ`` outside multiplexing."""
-    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
-    from hermes_cli.env_loader import hydrate_profile_secret_sources
-    from hermes_constants import get_hermes_home
-
+    skills lock."""
     with _config_profile_scope(profile):
-        home = Path(get_hermes_home())
-        hydrate_profile_secret_sources(home)  # first call may block on the source's fetch
-        token = set_secret_scope(build_profile_secret_scope(home))
-        try:
-            yield
-        finally:
-            reset_secret_scope(token)
+        yield
 
 
 def _secret_scoped(profile: Optional[str], fn):

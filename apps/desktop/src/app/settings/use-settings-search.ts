@@ -191,6 +191,24 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     },
     {
       context: appearanceContext,
+      description: appearance.autoSendDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.autoSend}`,
+      keywords: ['hands-free', 'auto-send', 'composer', 'idle', 'dictation'],
+      label: appearance.autoSendTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.autoSend, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
+      description: appearance.autoSendDelayDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.autoSendDelay}`,
+      keywords: ['hands-free', 'idle', 'delay', 'timeout', 'timer'],
+      label: appearance.autoSendDelayTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.autoSendDelay, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
       description: appearance.toolViewDesc,
       icon: Palette,
       id: `setting:${APPEARANCE_SETTING_IDS.toolView}`,

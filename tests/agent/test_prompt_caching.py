@@ -137,6 +137,29 @@ def test_native_three_part_system_split_survives_deepcopy_and_redecoration():
     assert [("cache_control" in part) for part in replanned.messages[0]["content"]] == [True, True, False]
 
 
+def test_legacy_layout_keeps_stable_boundary_and_four_markers_with_context_head():
+    """Envelope / MoA / non-tool-cache routes use ``apply_anthropic_cache_control``. With the
+    enlarged prefix the stable tier must remain its own marked block (cross-session hit, #70990)
+    and the system side must still spend exactly two of the four breakpoints."""
+    from agent.system_prompt import _SystemCachePrefix
+
+    def plan(context: str):
+        prefix = _SystemCachePrefix(f"stable prefix\n\n{context}", "stable prefix")
+        history = [
+            {"role": "system", "content": f"stable prefix\n\n{context}\n\nvolatile suffix"},
+            {"role": "user", "content": "u0"}, {"role": "assistant", "content": "a0"},
+            {"role": "user", "content": "u1"}, {"role": "assistant", "content": "a1"},
+        ]
+        return apply_anthropic_cache_control(history, native_anthropic=False, static_system_prefix=prefix)
+
+    a, b = plan("project A"), plan("project B")
+    marked_a = [p["text"] for p in a[0]["content"] if "cache_control" in p]
+    marked_b = [p["text"] for p in b[0]["content"] if "cache_control" in p]
+    assert marked_a[0] == marked_b[0] == "stable prefix"
+    assert len(marked_a) == 2
+    assert _count_cache_markers(a, []) == 4
+
+
 class TestPromptCachePlan:
     def test_copies_sections_and_keeps_canonical_tools_plain(self):
         import copy

@@ -183,6 +183,7 @@ def test_feasibility_check_passes_live_main_runtime():
     agent = _make_agent(main_context=200_000, threshold_percent=0.50)
     agent.model = "gpt-5.4"
     agent.provider = "openai-codex"
+    agent.requested_provider = "openai-codex"
     agent.base_url = "https://chatgpt.com/backend-api/codex"
     agent.api_key = "codex-token"
     agent.api_mode = "codex_responses"
@@ -201,6 +202,7 @@ def test_feasibility_check_passes_live_main_runtime():
         main_runtime={
             "model": "gpt-5.4",
             "provider": "openai-codex",
+            "requested_provider": "openai-codex",
             "base_url": "https://chatgpt.com/backend-api/codex",
             "api_key": "codex-token",
             "api_mode": "codex_responses",
@@ -445,7 +447,6 @@ def test_threshold_suggestion_kept_for_large_context_main(mock_get_client, mock_
 
     assert len(messages) == 1
     assert "threshold: 0.30" in messages[0]
-
 
 
 

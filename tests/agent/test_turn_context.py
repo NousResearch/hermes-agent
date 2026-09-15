@@ -502,6 +502,7 @@ class _TitlingAgent:
         self.session_id = "sess-1"
         self.model = "test/model"
         self.provider = "openrouter"
+        self.requested_provider = "custom:databricks"
         self.base_url = "https://openrouter.ai/api/v1"
         self.api_key = "sk-x"
         self.api_mode = "chat_completions"
@@ -524,6 +525,12 @@ def _title_turn(platform, message="Fix the login button"):
 @pytest.mark.parametrize("platform", ["cli", "telegram", "desktop", "acp", None])
 def test_prologue_titles_the_surfaces_a_person_reads(platform):
     assert _title_turn(platform).called
+
+
+def test_prologue_preserves_requested_provider_for_auxiliary_routing():
+    titler = _title_turn("cli")
+
+    assert titler.call_args.kwargs["main_runtime"]["requested_provider"] == "custom:databricks"
 
 
 @pytest.mark.parametrize("platform", ["cron", "CRON", "subagent"])

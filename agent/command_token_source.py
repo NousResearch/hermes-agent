@@ -16,6 +16,7 @@ import logging
 import subprocess
 import threading
 import time
+from collections.abc import Sequence
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,21 @@ logger = logging.getLogger(__name__)
 # Treat a token as spent slightly before expiry so a request can't be signed with one that dies in
 # flight (60s = usual OAuth cache leeway).
 _TOKEN_REFRESH_LEEWAY_SECONDS = 60.0
+
+KeyCommand = str | tuple[str, ...]
+
+
+def normalize_key_command(value: object) -> KeyCommand:
+    """Return a valid legacy shell string or literal argv tuple, else empty."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, Sequence) and value and all(
+        isinstance(part, str) and part for part in value
+    ):
+        return tuple(value)
+    return ""
+
+
 # Helpers answer from a local cache in milliseconds; this long means hung.
 _MINT_TIMEOUT_SECONDS = 15
 # No advertised expiry: nothing in the request path re-mints on 401 (the SDK retries 429/5xx only), so
@@ -43,18 +59,23 @@ def materialize_probe_api_key(api_key: object) -> str:
     return token.strip() if isinstance(token, str) else ""
 
 
-def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
+def _mint(command: str | Sequence[str], label: str) -> tuple[str, Optional[float]]:
     """Run *command*, returning ``(token, ttl_seconds_or_None)``."""
+    literal_argv = not isinstance(command, str)
     try:
         completed = subprocess.run(
-            command, shell=True, capture_output=True, text=True, timeout=_MINT_TIMEOUT_SECONDS,
+            list(command) if literal_argv else command,
+            shell=not literal_argv,
+            capture_output=True, text=True, timeout=_MINT_TIMEOUT_SECONDS,
         )
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
         raise CommandTokenError(
             f"key_cmd for provider {label!r} timed out after {_MINT_TIMEOUT_SECONDS}s"
-        ) from exc
-    except OSError as exc:
-        raise CommandTokenError(f"key_cmd for provider {label!r} could not be executed: {exc}") from exc
+        ) from None
+    except OSError:
+        raise CommandTokenError(
+            f"key_cmd for provider {label!r} could not be executed"
+        ) from None
 
     if completed.returncode != 0:
         # NEVER include stdout/stderr (may hold a token) or the command string (may embed
@@ -74,7 +95,9 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
         try:
             payload = json.loads(stdout)
         except json.JSONDecodeError:
-            payload = None
+            raise CommandTokenError(
+                f"key_cmd for provider {label!r} returned invalid JSON"
+            ) from None
         if isinstance(payload, dict):
             token = str(payload.get("access_token") or "").strip()
             if not token:
@@ -109,7 +132,7 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
 class CommandTokenSource:
     """Callable returning a bearer token, cached until shortly before expiry."""
 
-    def __init__(self, command: str, label: str = "custom") -> None:
+    def __init__(self, command: str | Sequence[str], label: str = "custom") -> None:
         self._command = command
         self._label = label or "custom"
         self._lock = threading.Lock()
@@ -137,7 +160,9 @@ class CommandTokenSource:
             return token
 
 
-def build_command_token_provider(key_cmd: str, provider_label: str = "custom") -> Optional[CommandTokenSource]:
+def build_command_token_provider(
+    key_cmd: str | Sequence[str], provider_label: str = "custom"
+) -> Optional[CommandTokenSource]:
     """A per-request token provider for *key_cmd*, or ``None`` when unset."""
-    command = str(key_cmd or "").strip()
+    command = normalize_key_command(key_cmd)
     return CommandTokenSource(command, provider_label) if command else None

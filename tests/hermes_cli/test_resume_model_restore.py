@@ -67,13 +67,25 @@ def test_session_gateway_runtime_tolerates_garbage():
 # ── _restore_session_model ──────────────────────────────────────────
 
 
-def test_restore_session_model_restores_model_and_provider():
+def test_restore_session_model_restores_model_and_provider(monkeypatch):
+    import hermes_cli.runtime_provider as runtime_provider
+
+    monkeypatch.setattr(
+        runtime_provider,
+        "resolve_runtime_provider",
+        lambda **_kwargs: {
+            "provider": "custom",
+            "requested_provider": "custom:feather",
+            "base_url": "https://f/v1",
+            "api_key": "resolved-key",
+        },
+    )
     stub = _make_stub()
     stub._restore_session_model(_row(model_config={
         "gateway_runtime": {"provider": "custom:feather", "base_url": "https://f/v1"},
     }))
     assert stub.model == "glm-4.7"
-    assert stub.provider == "custom:feather"
+    assert stub.provider == "custom"
     assert stub.requested_provider == "custom:feather"
     assert stub.base_url == "https://f/v1"
     # Stale launch-time explicit overrides must not leak into the restored
@@ -116,6 +128,89 @@ def test_restore_session_model_swaps_running_agent_in_place():
     stub = _make_stub(agent=_Agent())
     stub._restore_session_model(_row())
     assert calls["new_model"] == "glm-4.7"
+
+
+def test_restore_named_custom_resolves_runtime_identity_and_live_agent(monkeypatch):
+    import hermes_cli.runtime_provider as runtime_provider
+
+    calls = {}
+
+    def token_source():
+        raise AssertionError("credential source must remain opaque")
+
+    class _Agent:
+        def switch_model(self, **kwargs):
+            calls.update(kwargs)
+
+    credential_pool = object()
+    resolved = {
+        "provider": "custom",
+        "requested_provider": "custom:databricks",
+        "api_key": token_source,
+        "base_url": "https://workspace.invalid/anthropic",
+        "api_mode": "anthropic_messages",
+        "credential_pool": credential_pool,
+    }
+    resolver_calls = []
+    monkeypatch.setattr(
+        runtime_provider,
+        "resolve_runtime_provider",
+        lambda **kwargs: resolver_calls.append(kwargs) or resolved,
+    )
+    stub = _make_stub(agent=_Agent())
+
+    stub._restore_session_model(_row(
+        model="inventory-model",
+        model_config={"gateway_runtime": {
+            "provider": "custom:databricks",
+            "base_url": "https://workspace.invalid/stale-route",
+            "api_mode": "chat_completions",
+        }},
+    ))
+
+    assert resolver_calls == [{
+        "requested": "custom:databricks",
+        "target_model": "inventory-model",
+    }]
+    assert stub.model == "inventory-model"
+    assert stub.provider == "custom"
+    assert stub.requested_provider == "custom:databricks"
+    assert stub.api_key is token_source
+    assert stub.base_url == "https://workspace.invalid/anthropic"
+    assert stub.api_mode == "anthropic_messages"
+    assert stub._credential_pool is credential_pool
+    assert calls["new_model"] == "inventory-model"
+    assert calls["new_provider"] == "custom"
+    assert calls["new_requested_provider"] == "custom:databricks"
+    assert calls["api_key"] is token_source
+    assert calls["base_url"] == "https://workspace.invalid/anthropic"
+    assert calls["api_mode"] == "anthropic_messages"
+
+
+def test_restore_named_custom_resolution_failure_never_leaks_ambient_key(monkeypatch):
+    import hermes_cli.runtime_provider as runtime_provider
+
+    monkeypatch.setattr(
+        runtime_provider,
+        "resolve_runtime_provider",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("private failure")),
+    )
+    stub = _make_stub()
+
+    stub._restore_session_model(_row(
+        model="foreign-model",
+        model_config={"gateway_runtime": {
+            "provider": "custom:foreign",
+            "base_url": "https://foreign.invalid/v1",
+            "api_mode": "chat_completions",
+        }},
+    ))
+
+    assert stub.model == "foreign-model"
+    assert stub.provider == "custom:foreign"
+    assert stub.requested_provider == "custom:foreign"
+    assert stub.base_url == "https://foreign.invalid/v1"
+    assert stub.api_key == ""
 
 
 # ── _persist_model_switch_to_session ────────────────────────────────
@@ -277,6 +372,7 @@ def test_round_trip_persist_then_restore(tmp_path, monkeypatch):
     restored._restore_session_model(meta)
     assert restored.model == "deepseek-v4-flash-free"
     assert restored.provider == "custom:opencode-zen"
+    assert restored.requested_provider == "custom:opencode-zen"
     assert restored.base_url == "https://oz/v1"
 
 

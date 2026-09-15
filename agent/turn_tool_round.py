@@ -27,8 +27,10 @@ _HOUSEKEEPING_TOOLS = frozenset({"memory", "todo_list", "skill_manage", "session
 class ToolRoundVerdict:
     """``action``: ``"continue"`` (tools ran, next API call), ``"break"`` (turn ends:
     persistence failure, guardrail halt, post-tool compression end) or ``"return"``
-    (``result`` is the turn's result dict). The other fields are the loop locals the round
-    rebinds."""
+    (``result`` is the turn's result dict). ``"truncate"`` means the provider left a tool
+    call's arguments incomplete behind a non-``length`` ``finish_reason``: nothing was
+    staged, appended or executed, and the caller must run the bounded chunking recovery
+    (``hidden_truncation``). The other fields are the loop locals the round rebinds."""
 
     action: str
     messages: Any
@@ -40,6 +42,7 @@ class ToolRoundVerdict:
     _turn_exit_reason: Any
     truncated_tool_call_retries: Any
     result: Optional[Dict[str, Any]] = None
+    hidden_truncation: Any = None
 
 
 def run_tool_round(
@@ -55,12 +58,14 @@ def run_tool_round(
     process-only state."""
     from agent.conversation_loop import _invalid_tool_name_error_content
 
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ToolRoundVerdict:
+    def _verdict(action: str, result: Optional[Dict[str, Any]] = None,
+                 hidden_truncation: Any = None) -> ToolRoundVerdict:
         return ToolRoundVerdict(
             action=action, messages=messages, conversation_history=conversation_history,
             active_system_prompt=active_system_prompt, compression_attempts=compression_attempts,
             final_response=final_response, failed=failed, _turn_exit_reason=_turn_exit_reason,
             truncated_tool_call_retries=truncated_tool_call_retries, result=result,
+            hidden_truncation=hidden_truncation,
         )
 
     if not agent.quiet_mode:
@@ -77,6 +82,10 @@ def run_tool_round(
         conversation_history=conversation_history, api_call_count=api_call_count,
         effective_task_id=effective_task_id,
     )
+    if _tvv.action == "truncate":
+        # Nothing staged/appended/executed: the caller runs the bounded chunking recovery on
+        # the request (see agent.turn_truncation._recover_hidden_truncation_phase).
+        return _verdict("truncate", hidden_truncation=_tvv.hidden_truncation)
     if _tvv.action == "return":
         return _verdict("return", _tvv.result)
     if _tvv.action == "continue":

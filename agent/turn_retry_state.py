@@ -44,6 +44,11 @@ class TurnRetryState:
     # Restart signals (read by the outer loop after the attempt)
     restart_with_compressed_messages: bool = False
     restart_with_length_continuation: bool = False
+    # A tool call that the output limit cut off mid-arguments (``finish_reason="length"``, or a
+    # router-hidden ``tool_calls``/``stop``): re-issue with chunking guidance instead of a larger
+    # max_tokens — the boost only feeds the same oversized generation, so the retry carries no
+    # new output budget. Bounded by the turn-scoped ``_ChunkingProgress``, not by a boost ladder.
+    restart_with_chunking_nudge: bool = False
     # A fallback activation (incl. content-filter stream stalls) rolled partial content
     # off ``messages``; re-issue the call against the new provider.
     restart_with_rebuilt_messages: bool = False

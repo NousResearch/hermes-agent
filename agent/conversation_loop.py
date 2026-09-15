@@ -53,6 +53,7 @@ from agent.turn_request_assembly import assemble_api_request
 from agent.turn_response_check import check_api_response
 from agent.turn_response_intake import normalize_model_response
 from agent.turn_tool_round import run_tool_round
+from agent.turn_truncation import _ChunkingProgress, _recover_hidden_truncation_phase
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches
@@ -835,11 +836,20 @@ _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX = "[System: Your previous tool call "
 
 
 def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List[str]] = None) -> str:
-    if is_partial_stub and dropped_tools:
+    if dropped_tools:
         tool_list = ", ".join(dropped_tools[:3])
+        # The recovery is identical for an output-length truncation and a mid-stream drop:
+        # re-issuing the same oversized call only reproduces it (with ``length`` the loop
+        # would also burn its max_tokens boosts), so both name the cause the model can act
+        # on — the payload size.
+        _cause = (
+            "the stream timed out before it could be delivered"
+            if is_partial_stub else
+            "the output limit was reached before its arguments were complete"
+        )
         return (
             f"{_LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX}({tool_list}) was too large and "
-            "the stream timed out before it could be delivered. Do NOT retry the same tool call "
+            f"{_cause}. Do NOT retry the same tool call "
             "with the same large content. Instead, break the content into multiple smaller tool "
             "calls (e.g. use multiple patch calls or write smaller files). Each tool call's "
             "arguments must be under ~8K tokens to avoid stream timeouts.]"
@@ -1314,6 +1324,10 @@ class _LoopState:
     restart_count: int = 0
     _outer_error_count: int = 0  # outer-loop exceptions this turn (#92450), see _MAX_OUTER_LOOP_ERRORS
     truncated_tool_call_retries: int = 0
+    # Live holder for the chunking-recovery budget (mutated in place by the truncation phase;
+    # kept as an object because ``TurnRetryState`` is rebuilt every iteration, so a plain int
+    # could not bound a run of truncations with no tool round in between).
+    chunking_progress: Any = None
     truncated_response_parts: List[str] = field(default_factory=list)
     compression_attempts: int = 0
     _last_preflight_pressure: Optional[int] = None
@@ -1502,6 +1516,10 @@ def _run_conversation_turn(
         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
         **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
     )
+    # Chunking-recovery budget lives for the whole turn (the per-iteration TurnRetryState is
+    # rebuilt every attempt, so it cannot carry it). Shared by BOTH truncation paths: the
+    # provider-flagged finish_reason="length" one and the router-hidden tool_calls/stop one.
+    s.chunking_progress = _ChunkingProgress()
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
     if agent.api_mode == "codex_app_server":
@@ -1548,6 +1566,18 @@ def _run_conversation_turn(
             _v = _run_phase(
                 run_tool_round if s.assistant_message.tool_calls else finish_text_response, agent, s
             )
+            if _v.action == "truncate":
+                # Router-hidden truncation found after the finish_reason phase, so
+                # recover_from_truncation never ran: drive the SAME bounded chunking recovery
+                # here, on the turn-scoped _ChunkingProgress. The broken response was never
+                # staged, persisted or executed.
+                _ht = _run_phase(
+                    _recover_hidden_truncation_phase, agent, s,
+                    request=_v.hidden_truncation,
+                )
+                if _ht.action == "return" and _ht.result is not None:
+                    return _ht.result
+                continue
             if _v.action == "return":
                 return _v.result
             if _v.action == "break":

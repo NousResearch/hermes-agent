@@ -9,6 +9,7 @@ every transcript when the restore is declined or fails its health check. The
 tracked .gitignore must cover the runtime state set, mirroring the
 .hermes-bootstrap-complete / .install_method precedent (#38529 / #66189).
 """
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -27,8 +28,23 @@ FLAT_INSTALL_RUNTIME_STATE = (
     "state.db-wal",
     "state.db-shm",
     "state.db-journal",
+    "state.db.quarantine.lock",
+    "state.db.repair.lock",
+    "state.db.fts_rebuild.lock",
+    "state.db.auto-maintenance.lock",
+    "state.db.repair-attempts.json",
+    "state.db.repair-scratch",
+    "state.db.malformed-backup-20260915_060000",
+    "state.db.backup-staging-20260915_060000",
+    "state.db.zeroed-20260915-060000-1234.bak",
+    "state.db.notadb-20260915-060000-1234.bak",
+    "state.db.pre-clean-markers-backup-20260915_060000",
+    "state.db.pre-update-emergency-2026-09-15T06-00-00-000Z.bak",
     "state.db.retired-wal-20260914T000000Z-1234/manifest.json",
     "kanban.db",
+    "kanban.db.init.lock",
+    "kanban.db.dispatch.lock",
+    "kanban.db.corrupt.20260915.bak",
     "response_store.db",
     "response_store.db-wal",
     "gateway/discord_message_recovery.db",
@@ -129,6 +145,31 @@ def test_untracked_autostash_cannot_sweep_runtime_state(flat_install_repo):
         if not (flat_install_repo / rel).exists()
     ]
     assert missing == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fcntl is POSIX-only")
+def test_untracked_autostash_cannot_split_live_runtime_lock(flat_install_repo):
+    """Autostash must not unlink a held sidecar lock and let a second process
+    acquire a new inode at the same path while the first lock remains live."""
+    import fcntl
+
+    lock_path = flat_install_repo / "state.db.quarantine.lock"
+    with lock_path.open("a+b") as first:
+        fcntl.flock(first.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        held_stat = os.fstat(first.fileno())
+        held_identity = held_stat.st_dev, held_stat.st_ino
+
+        (flat_install_repo / "app.py").write_text("print('changed')\n")
+        _run_git(
+            flat_install_repo,
+            "stash", "push", "--include-untracked", "-m", "hermes-update-autostash",
+        )
+
+        assert lock_path.exists()
+        assert (lock_path.stat().st_dev, lock_path.stat().st_ino) == held_identity
+        with lock_path.open("a+b") as second:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(second.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
 def test_untracked_autostash_leaves_open_wal_database_readable(flat_install_repo):

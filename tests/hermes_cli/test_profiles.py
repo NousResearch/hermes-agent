@@ -867,6 +867,77 @@ class TestRenameProfile:
         assert not (tmp_path / ".hermes" / "profiles" / ".deleted").exists()
         assert not old_dir.exists() and new_dir.is_dir()
 
+    def test_rename_migrates_session_identity_without_live_gateway(self, profile_env):
+        """No live gateway → the CLI performs the durable rekey itself so a renamed profile's session
+        keys / profile_name / routing rows follow the new name (else inbound events on the old name's
+        chats resolve to a nonexistent profile and flood errors.log)."""
+        from hermes_state import SessionDB
+        tmp_path = profile_env
+        create_profile("oldname", no_alias=True)
+        old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
+        # Seed a session owned by the old profile in the profile's own store + the root routing index.
+        pdb = SessionDB(old_dir / "state.db")
+        pdb.create_session(
+            "sess1", "feishu", session_key="agent:oldname:feishu:dm:chatA",
+            profile_name="oldname", chat_id="chatA", chat_type="dm")
+        pdb.close()
+        root_db = SessionDB(tmp_path / ".hermes" / "state.db")
+        root_db.save_gateway_routing_entry(
+            "agent:oldname:feishu:dm:chatA",
+            json.dumps({"session_key": "agent:oldname:feishu:dm:chatA", "session_id": "sess1",
+                        "origin": {"platform": "feishu", "chat_id": "chatA", "profile": "oldname"}}),
+            scope=str(tmp_path / ".hermes" / "sessions"))
+        root_db.close()
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+             patch("hermes_cli.profiles._live_default_multiplexer", return_value=False):
+            rename_profile("oldname", "newname")
+
+        new_dir = tmp_path / ".hermes" / "profiles" / "newname"
+        moved_db = SessionDB(new_dir / "state.db")
+        row = moved_db._read_one(
+            "SELECT session_key, profile_name FROM sessions WHERE id = ?", ("sess1",))
+        assert row["session_key"] == "agent:newname:feishu:dm:chatA"
+        assert row["profile_name"] == "newname"
+        moved_db.close()
+        root_db2 = SessionDB(tmp_path / ".hermes" / "state.db")
+        routing = root_db2.load_gateway_routing_entries(
+            scope=str(tmp_path / ".hermes" / "sessions"))
+        assert "agent:oldname:feishu:dm:chatA" not in routing
+        assert "agent:newname:feishu:dm:chatA" in routing
+        root_db2.close()
+
+    def test_rename_delegates_identity_migration_to_live_gateway(self, profile_env):
+        """Under a live multiplexer the CLI must NOT rewrite the routing DB directly (the gateway holds
+        it in memory and would clobber the write); it delegates to the control verb instead."""
+        tmp_path = profile_env
+        create_profile("oldname", no_alias=True)
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+             patch("hermes_cli.profiles._live_default_multiplexer", return_value=True), \
+             patch("hermes_cli.profiles._notify_multiplexer"), \
+             patch("gateway.control_socket.migrate_gateway_profile_identity",
+                   return_value={"ok": True, "rekeyed": 1, "db": {}}) as verb, \
+             patch("hermes_state_registry.acquire") as acquire:
+            rename_profile("oldname", "newname")
+
+        # Delegated to the gateway; the CLI's own durable-rewrite branch never ran.
+        assert verb.call_count == 1
+        assert verb.call_args.args[1:] == ("oldname", "newname")
+        acquire.assert_not_called()
+
+
+    def test_live_gateway_failure_does_not_rewrite_db_directly(self, profile_env, capsys):
+        create_profile("oldname", no_alias=True)
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+             patch("hermes_cli.profiles._live_default_multiplexer", return_value=True), \
+             patch("hermes_cli.profiles._notify_multiplexer"), \
+             patch("gateway.control_socket.migrate_gateway_profile_identity", return_value=None), \
+             patch("hermes_state_registry.acquire") as acquire:
+            rename_profile("oldname", "newname")
+        acquire.assert_not_called()
+        assert "Restart the gateway" in capsys.readouterr().err
+
 
 # ===================================================================
 # TestExportImport

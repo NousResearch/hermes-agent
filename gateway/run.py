@@ -5116,9 +5116,43 @@ async def _start_gateway_start_control_socket(runner):
             except concurrent.futures.TimeoutError:
                 return {"multiplex": True, "pending": True, "served_profiles": runner.served_profile_names()}
 
+        def _migrate_profile_identity_handler(params: dict) -> dict:
+            """Migrate both durable stores and the routing index owned by this live gateway."""
+            old, new = str(params.get("old") or "").strip(), str(params.get("new") or "").strip()
+            if not old or not new or old == new:
+                return {"ok": False, "error": "old/new required and must differ"}
+            store = getattr(runner, "session_store", None)
+            if store is None:
+                return {"ok": False, "error": "live gateway has no session store"}
+            acquired = []
+            try:
+                from hermes_state_registry import acquire, release_or_close
+                db_counts: dict[str, dict[str, int]] = {}
+                routing_db = getattr(store, "_routing_db", None)
+                if routing_db is not None and hasattr(routing_db, "rekey_profile_state"):
+                    db_counts["routing"] = routing_db.rekey_profile_state(old, new)
+                routing_home = getattr(store, "_routing_home", None)
+                profile_path = Path(routing_home) / "profiles" / new / "state.db" if routing_home else None
+                if profile_path is not None and profile_path.exists():
+                    profile_db = acquire(profile_path)
+                    acquired.append(profile_db)
+                    db_counts["profile"] = profile_db.rekey_profile_state(old, new)
+                rekeyed = store.rekey_profile_routing(old, new)
+                return {"ok": True, "rekeyed": rekeyed, "db": db_counts}
+            except Exception as exc:
+                logger.warning("Profile identity migration failed for %r->%r: %s", old, new, exc)
+                return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            finally:
+                for db in acquired:
+                    try:
+                        release_or_close(db)
+                    except Exception:
+                        logger.debug("Failed to release renamed profile state DB", exc_info=True)
+
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler,
-                           "rescan-profiles": _rescan_profiles_handler})
+                           "rescan-profiles": _rescan_profiles_handler,
+                           "migrate-profile-identity": _migrate_profile_identity_handler})
         if not await _control_server.start():
             _control_server = None
         else:

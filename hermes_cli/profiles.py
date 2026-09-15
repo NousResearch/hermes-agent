@@ -1864,10 +1864,56 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # 5. Update active_profile if it pointed to old name
     _retarget_active_profile(old_canon, new_canon, f"✓ Active profile updated: {new_canon}")
 
-    # 6. Hot-serve the renamed profile now (mirrors create; a missed signal only delays it).
+    # 6. Migrate profile-name-keyed session/routing state (session keys, profile_name, heartbeats,
+    # delivery + routing index) from the old name to the new one. A stale ``agent:<old>:*`` routing
+    # key otherwise resolves to a profile that no longer exists on every inbound event.
+    _migrate_profile_identity(old_canon, new_canon, live_mux)
+
+    # 7. Hot-serve the renamed profile now (mirrors create; a missed signal only delays it).
     if live_mux:
         _notify_multiplexer(new_canon)
     return new_dir
+
+
+def _migrate_profile_identity(old_canon: str, new_canon: str, live_mux: bool) -> None:
+    """Rekey renamed-profile identity without racing a live gateway's in-memory routing index."""
+    if live_mux:
+        try:
+            from hermes_constants import get_default_hermes_root
+            from gateway.control_socket import migrate_gateway_profile_identity
+            answer = migrate_gateway_profile_identity(
+                get_default_hermes_root(), old_canon, new_canon)
+        except Exception as exc:
+            answer, failure = None, f"{type(exc).__name__}: {exc}"
+        else:
+            failure = answer.get("error") if isinstance(answer, dict) else None
+            if isinstance(answer, dict) and answer.get("ok") is True:
+                return
+        detail = f" ({failure})" if failure else ""
+        print(
+            "⚠ Profile was renamed, but the live gateway could not migrate session identity"
+            f"{detail}. Restart the gateway, then retry the identity migration.",
+            file=sys.stderr)
+        return
+
+    from hermes_state_registry import acquire, release_or_close
+    from hermes_constants import get_default_hermes_root
+    root = get_default_hermes_root()
+    for db_path in (root / "state.db", get_profile_dir(new_canon) / "state.db"):
+        if not db_path.exists():
+            continue
+        db = None
+        try:
+            db = acquire(db_path)
+            db.rekey_profile_state(old_canon, new_canon)
+        except Exception as exc:
+            click.echo(
+                f"⚠ Profile was renamed, but identity migration failed for {db_path}: "
+                f"{type(exc).__name__}: {exc}", err=True)
+        finally:
+            if db is not None:
+                with contextlib.suppress(Exception):
+                    release_or_close(db)
 
 
 # Profile env resolution (called from _apply_profile_override)

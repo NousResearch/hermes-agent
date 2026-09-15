@@ -10,6 +10,7 @@ lane = the worktree path. Linked worktrees fold under their MAIN repo (common-di
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any, Callable, Optional
 
 # cwd -> ``{"repo_root", "worktree_root"}`` (COMMON main root / this cwd's checkout root);
@@ -62,10 +63,19 @@ def _is_windows_path(path: str) -> bool:
 
 
 def _comparison_segments(path: str) -> list[str]:
-    """Segments for identity comparison: Windows paths casefold (even on POSIX); display
-    paths and emitted IDs keep their spelling."""
-    segs = _segments(path)
-    return [s.casefold() for s in segs] if _is_windows_path(path) else segs
+    """Path segments suitable for identity comparisons on any host.
+
+    Windows paths remain case-insensitive even when tests or remote backends run
+    on POSIX. Display paths and emitted IDs keep their original spelling.
+
+    Segments are NFC-normalized before comparing: the same on-disk folder can
+    reach us as NFC (typed paths, os.getcwd()) or NFD (macOS file pickers,
+    HFS+/APFS round-trips), and ``casefold()`` does not unify the two forms —
+    an accented project folder would otherwise render empty (#65014). Mirrors
+    ``comparisonSegments`` in the desktop's ``workspace-groups.ts``.
+    """
+    segs = [unicodedata.normalize("NFC", segment) for segment in _segments(path)]
+    return [segment.casefold() for segment in segs] if _is_windows_path(path) else segs
 
 
 def _path_key(path: str) -> str:

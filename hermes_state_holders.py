@@ -222,6 +222,23 @@ def foreign_state_db_holders(db_path: Path, *, include_scan_gaps: bool = False) 
         if candidate == db_path_str:
             db_dev = stat_result.st_dev
 
+    def _rule_from_argv(pid: int) -> Optional[List[str]]:
+        """Classify a process whose descriptors could not be read, by its argv: the argv when it
+        is a Hermes command not provably another home's (a holder, fail closed); ``None``
+        otherwise — after counting a scan gap unless the argv proves the process works on
+        another home's database. A readable argv that is not Hermes-shaped, such as
+        ``sqlite3 state.db ".backup"``, says nothing about what the process has open, so it is
+        a gap and never an all-clear (#104714 review: dropping it let doctor print "no other
+        process holds this database" over a holder it never inspected)."""
+        nonlocal uninspectable
+        argv = _read_proc_argv(pid)
+        if argv is not None and _argv_scoped_to_other_home(argv, db_path):
+            return None
+        if argv is not None and _looks_like_hermes(argv):
+            return argv
+        uninspectable += 1
+        return None
+
     if sys.platform.startswith("linux"):
         try:
             own_pid = os.getpid()
@@ -235,18 +252,9 @@ def foreign_state_db_holders(db_path: Path, *, include_scan_gaps: bool = False) 
                 try:
                     fds = os.listdir(fd_dir)
                 except OSError:
-                    argv = _read_proc_argv(pid)
-                    if (
-                        argv is not None
-                        and _looks_like_hermes(argv)
-                        and not _argv_scoped_to_other_home(argv, db_path)
-                    ):
-                        cmdline = " ".join(argv)
-                        holders.append((pid, f"uninspectable holder: {cmdline[:80]}"))
-                    elif argv is None:
-                        # Neither the fds nor the argv were readable: this process cannot be ruled
-                        # in or out as a holder.
-                        uninspectable += 1
+                    argv = _rule_from_argv(pid)
+                    if argv is not None:
+                        holders.append((pid, f"uninspectable holder: {' '.join(argv)[:80]}"))
                     continue
                 for fd in fds:
                     fd_path = f"{fd_dir}/{fd}"
@@ -255,18 +263,8 @@ def foreign_state_db_holders(db_path: Path, *, include_scan_gaps: bool = False) 
                     except OSError as exc:
                         if exc.errno in (errno.ENOENT, errno.ESRCH):
                             continue
-                        argv = _read_proc_argv(pid)
-                        if (
-                            argv is not None
-                            and _looks_like_hermes(argv)
-                            and not _argv_scoped_to_other_home(argv, db_path)
-                        ):
-                            holders.append(
-                                (
-                                    pid,
-                                    f"uninspectable descriptor: {fd_path}: {exc}",
-                                )
-                            )
+                        if _rule_from_argv(pid) is not None:
+                            holders.append((pid, f"uninspectable descriptor: {fd_path}: {exc}"))
                         continue
                     target_is_watched = canonical_sqlite_path(target) in watched
                     try:
@@ -278,20 +276,8 @@ def foreign_state_db_holders(db_path: Path, *, include_scan_gaps: bool = False) 
                             holders.append(
                                 (pid, f"uninspectable descriptor: {target}: {exc}")
                             )
-                        else:
-                            argv = _read_proc_argv(pid)
-                            if (
-                                argv is not None
-                                and _looks_like_hermes(argv)
-                                and not _argv_scoped_to_other_home(argv, db_path)
-                            ):
-                                holders.append(
-                                    (
-                                        pid,
-                                        "uninspectable descriptor: "
-                                        f"{target}: {exc}",
-                                    )
-                                )
+                        elif _rule_from_argv(pid) is not None:
+                            holders.append((pid, f"uninspectable descriptor: {target}: {exc}"))
                         continue
                     if (fd_stat.st_dev, fd_stat.st_ino) in watched_ids or (
                         target_is_watched

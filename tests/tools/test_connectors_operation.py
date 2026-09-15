@@ -59,6 +59,22 @@ def test_settle_is_exactly_once_and_stamps_not_connected():
     assert by["notion"]["state"] == "not_connected" and "detail" not in by["notion"]
 
 
+def test_settled_result_is_isolated_from_nested_mutations():
+    tools = ["search"]
+    operation = op.ConnectionOperation([op.Target("linear", "mcp", "install")])
+    operation.transition("linear", c.TargetState.initiated, c.Actor.renderer_flow)
+    operation.transition(
+        "linear", c.TargetState.connected, c.Actor.renderer_flow, tools=tools
+    )
+    operation.settle(c.SettleReason.all_resolved)
+
+    first = operation.result()
+    first["targets"][0]["tools"].append("changed-result")
+    tools.append("changed-input")
+
+    assert operation.result()["targets"][0]["tools"] == ["search"]
+
+
 def test_all_resolved_settles_on_connected_or_skipped_only():
     operation = op.ConnectionOperation(_two())
     operation.transition("gmail", c.TargetState.initiated, c.Actor.backend_watcher)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Callable, ClassVar, Dict, List, Optional
 
@@ -46,7 +47,7 @@ class Target:
             out["connect_url"] = self.connect_url
         if self.attempt:
             out["attempt"] = self.attempt
-        out.update(self.extra)
+        out.update(deepcopy(self.extra))
         return out
 
 
@@ -165,11 +166,11 @@ class ConnectionOperation:
         """The settled result (frozen at settle time), or the live snapshot before settlement."""
         with self._lock:
             if self._settled_snapshot is not None:
-                targets = [dict(t) for t in self._settled_snapshot["targets"]]
+                snapshot = deepcopy(self._settled_snapshot)
                 if not with_urls:
-                    for t in targets:
+                    for t in snapshot["targets"]:
                         t.pop("connect_url", None)
-                return dict(self._settled_snapshot, targets=targets)
+                return snapshot
             return self._snapshot_locked(with_urls=with_urls)
 
     def request_payload(self) -> Dict[str, Any]:

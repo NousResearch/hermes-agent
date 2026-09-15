@@ -1064,6 +1064,70 @@ def _build_anchor_index(turns: List[Dict[str, Any]]) -> str:
     )
 
 
+_OPERATIONAL_REFS_HEADING = "## Operational References (exact, do not paraphrase)"
+_OPERATIONAL_REF_PATTERN = re.compile(
+    r"(?P<label>task[_ ]?id|session[_ ]?id|worker(?:[_ ]?id)?|"
+    r"parent(?:[_ ]?task)?(?:[_ ]?id)?|child(?:[_ ]?task)?(?:[_ ]?id)?|"
+    r"browser[_ ]?task(?:[_ ]?id)?|result[_ ]?ref(?:erence)?|"
+    r"artifact[_ ]?ref(?:erence)?|evidence[_ ]?refs?|approval[_ ]?state|"
+    r"recovery[_ ]?id)\s*[:=]\s*[\"'`]?"
+    r"(?P<value>[A-Za-z0-9][A-Za-z0-9._:/@+\-|]{2,180})",
+    re.IGNORECASE,
+)
+_OPERATIONAL_REF_BUDGET_CHARS = 6_000
+
+
+def _build_operational_reference_envelope(turns: List[Dict[str, Any]]) -> str:
+    """Preserve execution handles that a prose summary must not rewrite.
+
+    Task/session/worker/browser identifiers and result/approval/recovery
+    handles are control-plane data, not narrative.  Extracting labelled values
+    locally keeps them available even when the auxiliary model omits them or
+    a deterministic fallback is used.  The bounded envelope is additive and
+    does not copy tool payloads.
+    """
+    sources: list[str] = []
+    for message in turns:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            sources.append(content)
+        elif content is not None:
+            try:
+                sources.append(json.dumps(content, ensure_ascii=False, default=str))
+            except (TypeError, ValueError):
+                sources.append(str(content))
+        # Some tool adapters carry the control-plane fields in the message
+        # envelope rather than inside content; include only the small JSON
+        # object and redact it below before it becomes summary material.
+        try:
+            sources.append(json.dumps(message, ensure_ascii=False, default=str))
+        except (TypeError, ValueError):
+            pass
+    text = _redact_compaction_text("\n".join(sources))
+    values: list[str] = []
+    seen: set[str] = set()
+    for match in _OPERATIONAL_REF_PATTERN.finditer(text):
+        label = re.sub(r"[_ ]+", "_", match.group("label").lower())
+        value = match.group("value").rstrip(".,;)]}")
+        rendered = f"{label}: {value}"
+        if rendered in seen:
+            continue
+        seen.add(rendered)
+        values.append(rendered)
+    if not values:
+        return ""
+    body = "\n".join(f"- {value}" for value in values)
+    if len(body) > _OPERATIONAL_REF_BUDGET_CHARS:
+        body = body[:_OPERATIONAL_REF_BUDGET_CHARS - 20].rstrip() + "\n- ...[truncated]"
+    return (
+        "\n\n" + _OPERATIONAL_REFS_HEADING + "\n" + body + "\n"
+        "These exact handles remain valid for continuing, recovering, or "
+        "auditing the operation; use them verbatim."
+    )
+
+
 def _digest_worthy(role: str, content: str) -> bool:
     """Filter no-signal rows out of the digest input.
 
@@ -4448,7 +4512,14 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # Re-inject AFTER the size cap: the markers live at the end of the
         # body, exactly where the truncation above cuts.
         summary = _reinject_pruned_skill_markers(summary, _pruned_names)
+        operational_turns = turns_to_summarize
+        if self._previous_summary:
+            operational_turns = [
+                {"role": "assistant", "content": self._previous_summary},
+                *turns_to_summarize,
+            ]
         summary = self._augment_summary_lean(summary, turns_to_summarize)
+        summary += _build_operational_reference_envelope(operational_turns)
         return summary
 
     def _demote_stale_tail_tools(
@@ -5066,6 +5137,13 @@ This compaction should PRIORITISE preserving all information related to the focu
             # [SKILL_PRUNED: ...] marker the summarizer paraphrased away.
             summary = _reinject_pruned_skill_markers(summary, _pruned_skill_names)
             summary = self._ground_historical_task_snapshot(summary, turns_to_summarize)
+            operational_turns = turns_to_summarize
+            if self._previous_summary:
+                operational_turns = [
+                    {"role": "assistant", "content": self._previous_summary},
+                    *turns_to_summarize,
+                ]
+            summary += _build_operational_reference_envelope(operational_turns)
             summary = self._augment_summary_lean(summary, turns_to_summarize)
             self._validate_summary_user_provenance(summary, has_user_turn)
             # Store for iterative updates on next compaction

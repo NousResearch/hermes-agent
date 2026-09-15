@@ -358,8 +358,9 @@ For the current Windows baseline see KI-006 in `KNOWN_ISSUES.md`.
 The follow-up HW-018 closure was validated on the current Windows working
 tree with the same broad suites that exposed the historical debt:
 
-- Desktop UI: **591 files / 5,669 tests passed**;
-- Desktop platform/Electron: **126 files / 1,760 tests passed, 5 skipped**;
+- Desktop UI: **591 files / 5,669 tests passed** with Vitest bounded to
+  `--maxWorkers=4` on the current Windows audit host;
+- Desktop platform/Electron: **126 files / 1,778 tests passed, 5 skipped**;
 - Desktop TypeScript typecheck: **0 errors**.
 
 The closure preserves strict POSIX mode checks, explicit Windows ACL/no-mux
@@ -380,8 +381,19 @@ controller and invokes both high-level surfaces against it for both projections:
 Both surfaces must return the same normalized envelope and the same
 browser/task/journal identities and event lineage for one logical session. The
 current test file passes **5/5** and the full Workstation suite passes
-**175/175**. This is adapter and transport evidence; it does not replace
+**247/247**. This is adapter and transport evidence; it does not replace
 packaged Electron, clean-machine or production soak evidence.
+
+### Provider-free workload benchmark
+
+`python -m workstation.workload_benchmark` produces deterministic structural
+counters from synthetic fixtures. The versioned expected values live in
+`workstation/benchmarks/workload_baseline.json` and are asserted by
+`workstation/tests/test_workload_benchmark.py`. The benchmark covers inline vs.
+reference-first tool results, deduplication, worker restart/ACK recovery,
+operational compaction references, structured policy classifications and event
+invalidation. It intentionally does not commit private databases or use
+wall-clock thresholds.
 
 ## Required browser-foundation invariants
 

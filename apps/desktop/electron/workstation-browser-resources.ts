@@ -1,6 +1,5 @@
-import type { BrowserTask } from './workstation-browser-task'
-
 import type { WorkstationBrowserState } from './workstation-browser-runtime'
+import type { BrowserTask } from './workstation-browser-task'
 
 export const WORKSTATION_RESOURCE_SCHEMA_VERSION = 1
 export const WORKSTATION_EVENT_SCHEMA_VERSION = 1
@@ -45,7 +44,10 @@ export interface WorkstationEventSnapshot {
   events: WorkstationJournalEvent[]
 }
 
-type ResourceState = Pick<WorkstationBrowserState, 'runtime' | 'ready' | 'paused' | 'controlOwner' | 'controlReady' | 'tabs' | 'tasks' | 'lastError'>
+type ResourceState = Pick<
+  WorkstationBrowserState,
+  'runtime' | 'ready' | 'paused' | 'controlOwner' | 'controlReady' | 'tabs' | 'tasks' | 'lastError'
+>
 
 function taskSessionId(task: BrowserTask): string | null {
   return task.sessionHost?.trim() || null
@@ -62,11 +64,18 @@ function taskHasLiveEvidence(state: ResourceState, taskId: string): boolean {
 }
 
 function taskExecutionStatus(state: ResourceState, task: BrowserTask): string {
-  if (state.paused) {return 'hold'}
+  if (state.paused) {
+    return 'hold'
+  }
+  if (task.humanControlLease) {
+    return 'waiting-for-human'
+  }
   if (task.leaseState === 'waiting' || task.sessionHost?.includes('waiting')) {
     return 'waiting-for-human'
   }
-  if (!taskHasLiveEvidence(state, task.taskId)) {return 'stalled'}
+  if (!taskHasLiveEvidence(state, task.taskId)) {
+    return 'stalled'
+  }
 
   return 'running'
 }
@@ -85,11 +94,14 @@ function taskResource(state: ResourceState, task: BrowserTask, updatedAt: string
     resource_id: `browser-task:${task.taskId}`,
     task_id: task.taskId,
     session_id: taskSessionId(task),
-    permissions: state.controlOwner === 'agent' && state.controlReady && !state.paused ? ['read', 'agent-control'] : ['read'],
+    // Human control is scoped to this task. A lease on task A must not remove
+    // agent-control from task B's resource projection.
+    permissions: !task.humanControlLease && state.controlReady && !state.paused ? ['read', 'agent-control'] : ['read'],
     state: {
       browser_status: task.status,
       execution_status: taskExecutionStatus(state, task),
       lease_state: task.leaseState,
+      human_control_lease: task.humanControlLease ?? null,
       recovery_state: task.recoveryState,
       parked: task.parked,
       tab_id: tabId,
@@ -108,11 +120,7 @@ function taskResource(state: ResourceState, task: BrowserTask, updatedAt: string
   }
 }
 
-function journalResource(
-  task: BrowserTask,
-  events: WorkstationJournalEvent[],
-  updatedAt: string
-): WorkstationResource {
+function journalResource(task: BrowserTask, events: WorkstationJournalEvent[], updatedAt: string): WorkstationResource {
   const bounded = events.slice(-MAX_JOURNAL_EVENTS_IN_RESOURCE)
   const latest = bounded[bounded.length - 1] ?? null
 
@@ -145,24 +153,27 @@ export function buildWorkstationResourceSnapshot(
   now: () => string = () => new Date().toISOString()
 ): WorkstationResourceSnapshot {
   const generatedAt = now()
-  const resources: WorkstationResource[] = [{
-    resource_type: 'browser',
-    resource_id: 'browser:electron-chromium',
-    task_id: null,
-    session_id: null,
-    permissions: state.controlOwner === 'agent' && state.controlReady && !state.paused ? ['read', 'agent-control'] : ['read'],
-    state: {
-      runtime: state.runtime,
-      ready: state.ready,
-      paused: state.paused,
-      control_owner: state.controlOwner,
-      control_ready: state.controlReady,
-      task_count: state.tasks.length,
-      tab_count: state.tabs.length,
-      last_error: state.lastError
-    },
-    updated_at: generatedAt
-  }]
+  const resources: WorkstationResource[] = [
+    {
+      resource_type: 'browser',
+      resource_id: 'browser:electron-chromium',
+      task_id: null,
+      session_id: null,
+      permissions:
+        state.controlOwner === 'agent' && state.controlReady && !state.paused ? ['read', 'agent-control'] : ['read'],
+      state: {
+        runtime: state.runtime,
+        ready: state.ready,
+        paused: state.paused,
+        control_owner: state.controlOwner,
+        control_ready: state.controlReady,
+        task_count: state.tasks.length,
+        tab_count: state.tabs.length,
+        last_error: state.lastError
+      },
+      updated_at: generatedAt
+    }
+  ]
 
   for (const task of state.tasks) {
     resources.push(taskResource(state, task, generatedAt))

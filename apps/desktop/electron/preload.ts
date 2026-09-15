@@ -42,8 +42,11 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     clearParkedTasks: () => ipcRenderer.invoke('hermes:workstation-browser:clear-parked-tasks'),
     pause: () => ipcRenderer.invoke('hermes:workstation-browser:pause'),
     resume: () => ipcRenderer.invoke('hermes:workstation-browser:resume'),
-    takeControl: () => ipcRenderer.invoke('hermes:workstation-browser:take-control'),
-    releaseControl: () => ipcRenderer.invoke('hermes:workstation-browser:release-control'),
+    takeControl: (taskId?: string, sessionId?: string) =>
+      ipcRenderer.invoke('hermes:workstation-browser:take-control', taskId, sessionId),
+    releaseControl: (taskId?: string) => ipcRenderer.invoke('hermes:workstation-browser:release-control', taskId),
+    renewControl: (taskId?: string) => ipcRenderer.invoke('hermes:workstation-browser:renew-control', taskId),
+    expireHumanControl: (taskId?: string) => ipcRenderer.invoke('hermes:workstation-browser:expire-control', taskId),
     cleanupCache: force => ipcRenderer.invoke('hermes:workstation-browser:cleanup-cache', force),
     getTaskJournal: taskId => ipcRenderer.invoke('hermes:workstation-browser:task-journal', taskId),
     onState: callback => {

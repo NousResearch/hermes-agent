@@ -1094,28 +1094,28 @@ humano. Para `stale_or_unknown_ref`, a ação correta continua sendo novo snapsh
 
 ---
 
-## 19. Controle humano: estado real, escopo atual e direção de hardening
+## 19. Controle humano: estado real e lease escopado
 
-É importante não documentar um isolamento que o código ainda não possui. No
-runtime atual, `controlOwner` é projetado no estado global do
-`WorkstationBrowserRuntime`; `assertAgentControl()` bloqueia ações do agente
-quando esse valor é `human`. Portanto **Take Control hoje é mais amplo do que
-um lease task-scoped formal**.
+The historical implementation projected `controlOwner` globally in
+`WorkstationBrowserRuntime`; that was the proven gap at the audit base. The
+current working tree replaces that authority with `BrowserHumanControlLease`
+owned by the bound `BrowserTask`, while retaining `controlOwner` only as a
+derived compatibility projection.
 
 Consequências práticas:
 
 - preservar a mesma tab/perfil durante handoff está implementado;
 - impedir colisão humano/agente está implementado;
-- não há prova de que duas BrowserTasks independentes possam manter owners de
-  controle diferentes simultaneamente no mesmo runtime;
-- não se deve afirmar que existe lease persistente por `taskId`/`tabId`/
-  `sessionId` com TTL enquanto esse contrato não estiver implementado e testado.
+- duas BrowserTasks independentes podem manter scopes diferentes; a lease de
+  uma só bloqueia ações do agente dentro daquela task;
+- a lease carrega owner, task/session/tab/page/profile scope, aquisição,
+  renovação, expiração e release, e é coberta pelos testes Electron focados;
+- restore limpa a autoridade humana process-local, portanto crash/restart não
+  deixa um lock stale bloqueando o sistema indefinidamente.
 
-Se o controle humano evoluir para lease escopado, reutilize `BrowserTask`,
-`sessionHost`, recovery state e os owners existentes. Um contrato robusto deve
-representar, no mínimo, owner, scope, aquisição, renovação, expiração/release e
-recovery após crash. Um lease stale não pode bloquear o sistema para sempre e o
-agente nunca pode mutar uma página coberta por lease humano válido.
+The implementation reuses `BrowserTask`, `sessionHost`, recovery state and the
+existing owners. An active human lease produces a structured control error for
+agent mutation in that scope; an unrelated task remains runnable.
 
 Anti-pattern: criar um `browser_locks.db` ou outro control plane somente para
 leases. A identidade da task e o lifecycle já existem; a evolução deve encaixar
@@ -1144,12 +1144,12 @@ result_ref + evidência + status projetado
    └──────────────► Human Card original
 ```
 
-Na revisão de `main` realizada em 2026-09-15, não foi localizada implementação
-canônica de `source_card_id`/`agent_task_id` ou da ação “Entregar isto ao
-Hermes”; portanto essa ponte deve permanecer marcada como **seam/gap de
-integração**, não como feature já concluída.
+Na revisão de `main` realizada em 2026-09-15, a ponte ainda era um seam/gap em
+`b6ac2d…`. O working tree atual fecha esse gap com a tabela de vínculo
+`hybrid_card_delegations` no `hermes_cli.kanban_db`, a ação “Entregar isto ao
+Hermes”, idempotência por attempt e projeção compacta de resultado/evidência.
 
-Quando for implementada, os invariantes são:
+Os invariantes implementados e testados são:
 
 - Human Card continua com colunas, descrição, archive/activity e lifecycle
   humano;
@@ -1211,6 +1211,11 @@ status. Antes de uma nova mudança, reexecute o CI atual. A lição permanente �
 **não corrija esses testes enfraquecendo o assert; corrija a interpretação
 host-independent do path**.
 
+Na base atual `origin/main@80d4ffce3cfba3ed03474a5b8ebcede4a7fc1770` mais o
+working tree desta auditoria, a mesma suíte passou **247/247**. A correção está
+em `workstation.path_utils`, compartilhada por ReleaseQualification e
+ScopedPolicyEngine, com containment incompatível tratado de forma fail-closed.
+
 ---
 
 ## 22. Context compaction, SessionDB e a diferença entre contexto e estado
@@ -1269,6 +1274,10 @@ Até essa prova existir:
 Esse padrão vale para qualquer issue persistente: um artefato histórico é uma
 pista, não uma licença para alterar o owner canônico sem reprodução atual.
 
+O teste determinístico atual em `tests/hermes_state/test_ki007_session_export.py`
+também cobre criação/bind, persistência, finalização, reconnect, rotação-like
+writer activity e close/export concorrente; não reproduziu `session: null`.
+
 ---
 
 ## 23. Evidência de workload real e benchmark de regressão
@@ -1315,9 +1324,13 @@ estruturais determinísticas:
 - capacidade de continuar uma tarefa usando apenas IDs/refs preservados.
 
 Evite thresholds frágeis de wall-clock no CI quando counters/ratios/budgets
-provam melhor a regressão. O objetivo do benchmark é impedir que refactors
-reintroduzam payloads gigantes, polling mecânico ou estado implícito, não criar
-mais um runtime paralelo.
+provam melhor a regressão. O baseline determinístico versionado agora está em
+`workstation/benchmarks/workload_baseline.json`, exercitado por
+`workstation/tests/test_workload_benchmark.py`; ele cobre refs/dedup, worker
+restart/ACK, compaction, policy errors e event invalidation sem commitar bancos
+privados. O objetivo do benchmark é impedir que refactors reintroduzam payloads
+gigantes, polling mecânico ou estado implícito, não criar mais um runtime
+paralelo.
 
 ---
 
@@ -1335,14 +1348,15 @@ Permanecem deliberadamente distintos desse slice:
 
 - busca semântica/catálogo de marketplace;
 - UI humana dedicada de gerenciamento de extensões;
-- hardening de update in-place entre duas versões.
+- integrações de marketplace e outras superfícies ainda futuras.
 
-Para update `v1 → v2`, o invariante desejado é **last-known-good**: falha de
-staging, replace, load, verification ou crash intermediário não pode destruir a
-última versão funcional. Só declare essa transição atômica/rollback-safe quando
-testes cobrirem os pontos de falha e restart. Reutilize `ChromeExtensionManager`,
-policy, controller e Journal existentes; não crie outro extension registry para
-resolver atualização.
+Para update `v1 → v2`, o invariante **last-known-good** agora é implementado por
+staging, journal de promoção, `commit_update`/`rollback_update` e recuperação no
+startup. Testes cobrem staging/replace/load/verification, interrupção do
+registry e restart; a versão funcional anterior permanece intacta até a
+verificação Electron. A busca de marketplace e a UI humana dedicada continuam
+deliberadamente futuras. Reutilize `ChromeExtensionManager`, policy, controller
+e Journal existentes; não crie outro extension registry para resolver atualização.
 
 ---
 
@@ -1378,3 +1392,178 @@ A regra de manutenção consolidada após a auditoria desta sessão é:
 > **prove o gap antes de implementar; preserve o owner existente; prove a
 > correção depois; e promova ao intelligence apenas o que sobrevive à mudança de
 > sessão como contrato arquitetural, invariant ou lição de engenharia.**
+
+---
+
+## 26. Adendo técnico da sessão — contratos que devem sobreviver à próxima mudança
+
+Esta seção reúne detalhes que foram confirmados no código e nos contratos de
+regressão durante a rodada atual. Ela complementa as seções anteriores; não
+introduz outro runtime, store ou autoridade. Se um detalhe abaixo divergir do
+checkout futuro, a regra de adjudicação da seção 25 continua valendo: código e
+teste executável do `main` vencem documentação histórica.
+
+### 26.1. Compaction: narrativa limitada, handles preservados
+
+O caminho real de compaction em `agent/context_compressor.py` tem duas camadas
+determinísticas antes/depois da chamada ao modelo auxiliar:
+
+1. `_build_operational_reference_envelope()` percorre conteúdo e envelope das
+   mensagens, aplica a mesma redação de boundary e extrai somente pares
+   rotulados (`task_id`, `session_id`, `worker_id`, `parent_task_id`,
+   `child_task_id`, `browser_task_id`, `result_ref`, `artifact_ref`,
+   `evidence_refs`, `approval_state` e `recovery_id`). Duplicatas são removidas
+   e o bloco fica limitado a 6.000 caracteres. O envelope é LLM-free: o modelo
+   não pode parafrasear ou omitir um identificador de controle.
+2. `_build_anchor_index()` colhe PRs/issues, SHAs, branches, caminhos, erros,
+   handles e URLs por regex, com limite de 7.000 caracteres e caps por
+   categoria. Esses valores exatos funcionam também como âncoras para
+   `session_search`; não são uma cópia da conversa inteira.
+
+O resultado continua sendo uma mensagem de handoff compatível com a alternância
+de papéis. Marcadores internos (`_compressed_summary`, delimitador de merge e
+marcador de fim) permitem que `split_user_originated_turn()` separe o scaffold
+oculto do pedido humano vivo. Assim, um carrier `role=user` não é colhido por
+engano como uma nova fala do usuário, e o conteúdo de mídia/API obsoleto é
+descartado antes de chegar ao próximo request. A compaction em lote também
+zera o resumo rolling de micro-compaction, porque o marcador de lote já contém
+uma janela maior; manter os dois seria uma fonte de recursão/duplicação.
+
+O contrato provider-free em
+`tests/agent/test_compaction_operational_refs.py` força uma compaction quando o
+LLM auxiliar falha e verifica que os handles permanecem byte-identificáveis no
+resumo. O teste não prova qualidade semântica do modelo; prova que o estado
+operacional não depende da memória narrativa do modelo.
+
+### 26.2. Erros do controller: compatibilidade textual + ação recomendada
+
+`POST /v1/action` mantém o campo textual `error` para clientes antigos, mas o
+Electron também devolve um envelope normalizado por
+`normalizeWorkstationControllerError()`:
+
+```json
+{
+  "error_code": "STALE_REF",
+  "message": "...",
+  "retryable": true,
+  "retry_after_ms": 0,
+  "state_changed": true,
+  "recommended_action": "RESNAPSHOT",
+  "resource_ref": "...",
+  "details": {}
+}
+```
+
+As classificações hoje cobertas no runtime são `USER_CONTROL_ACTIVE`,
+`NO_BOUND_TAB`, `STALE_REF`, `TIMEOUT`, `CONTROLLER_DOWN`,
+`INVALID_ARGUMENT` e `CAPABILITY_MISSING`. Conflitos de controle, tab ausente
+e ref stale usam HTTP 409; erros de argumento/capacidade usam 400. A resposta
+não deve induzir um retry idêntico: ref stale exige snapshot novo, controle
+humano exige esperar release e controller indisponível exige reconciliação.
+
+O adaptador Python (`tools/browser_workstation.py`) ainda preserva
+`WorkstationBrowserUnavailable` para descriptor ausente, URL não-loopback,
+timeout ou falha de conexão, e `WorkstationBrowserError` para HTTP inválido.
+Clientes antigos recebem uma mensagem limitada (até 1.000 caracteres) e não
+devem depender de fazer parsing de texto como contrato futuro; quando o
+boundary tipado for ampliado, a classificação deve ser transportada sem
+perder a compatibilidade de `error`.
+
+### 26.3. Política e paths: gramática do alvo antes do SO do runner
+
+`workstation.path_utils` classifica o texto original como
+`WINDOWS_ABSOLUTE`, `POSIX_ABSOLUTE` ou `RELATIVE` antes de usar qualquer
+`abspath`. `path_is_within()` retorna `None` para sintaxe incompatível ou
+drives diferentes, distinguindo “fora” de “não é comparável”; a
+`ScopedPolicyEngine` trata esse caso como boundary não provado e exige
+aprovação. `is_sensitive_path()` reconhece Windows (`Windows`, `Program Files`,
+shares administrativos e `.ssh/.gnupg/.aws`) e raízes POSIX (`/etc`, `/usr/bin`,
+`/bin`, `/sbin`, `/boot`) independentemente do host do teste.
+
+Esse contrato evita que `C:/clean` vire relativo em Ubuntu ou que
+`C:\\Windows\\System32\\calc.exe` caia em `REQUIRE_APPROVAL` por ser avaliado
+num runner POSIX. A policy ainda separa `DENY` para padrões destrutivos/caminhos
+protegidos, `REQUIRE_APPROVAL` para writes fora do workspace e ações de alto
+impacto, `SANDBOX` para execução não confiável e `ALLOW` para operações de baixo
+risco. Cada decisão mantém `task_id`, `session_id`, capability, alvo, razão,
+risk e constraints no audit trail em memória do engine; esse log não é um novo
+telemetry plane.
+
+### 26.4. BrowserTask e lease humano: campos, TTL e projeção
+
+`BrowserHumanControlLease` é parte do registro da task e contém
+`owner`, `taskId`, `sessionId`, `tabId`, `pageId`, `profileScope`,
+`acquiredAt`, `expiresAt` e `renewedAt`. O controller expõe
+`takeControl(taskId, sessionId)`, `releaseControl(taskId)`,
+`renewControl(taskId)` e `expireHumanControl(taskId)`; o TTL padrão é cinco
+minutos. Toda leitura de estado chama `hasActiveHumanControl()`, que expira o
+lease vencido antes de projetar permissões.
+
+O campo legado `controlOwner` é derivado da task visível (ou de um lease
+temporário da tab `default`), não é mais um lock global que possa bloquear
+tasks independentes. `workstation-browser-resources.ts` remove `agent-control`
+somente do recurso que possui lease humano; outra task continua executável.
+Restore após crash remove a autoridade humana process-local e nunca restaura
+um lock sem uma nova aquisição contra a página viva. O teste Electron cobre
+escopo por task, renew/release/expiry, seleção da task visível e limpeza no
+restart.
+
+### 26.5. Delegação Hybrid Kanban: uma ponte idempotente, não uma fusão
+
+As rotas autenticadas `/hybrid/cards/{card_id}/delegate`,
+`/retry-delegation` e `/cancel-delegation` chamam o domínio
+`hermes_cli.hybrid_kanban`. A tabela `hybrid_card_delegations` vive no mesmo
+SQLite por-board do Kanban; cada linha tem `human_card_id`, `agent_task_id`,
+`attempt`, `state`, refs de evidência, resumo e timestamps.
+
+Uma chamada repetida para uma tentativa ativa devolve a mesma task. Retry de
+uma delegação bloqueada reutiliza a task e registra atividade própria; falha ou
+cancelamento terminal não é ressuscitado silenciosamente. `new_attempt=true`
+cria uma nova Agent Task e preserva a tentativa anterior. A sincronização lê o
+estado canônico da Agent Task e projeta apenas `state`, resumo, `result_ref` e
+`evidence_refs` no cartão humano, com no máximo 2.000 caracteres de resumo.
+Mover/concluir o cartão não muda `tasks.status`, e uma transição agêntica não
+muda coluna humana sem ação/policy explícita. Os testes cobrem restart,
+double-click, retry, redelegação, terminal writeback e ausência de cópia do
+payload grande.
+
+### 26.6. Extensões: transação last-known-good no registry existente
+
+`ChromeExtensionManager` usa `extensions.json` como seu pequeno journal de
+transação. Durante `prepare_install_from_bytes()`, o registro grava `_update`
+com `state=promoting`, `previous_entry`, `backup_path` e `candidate_path`;
+somente depois move a instalação anterior para o backup e promove o candidato.
+O consumidor que carregar/verificar a extensão chama `commit_update()` após
+sucesso ou `rollback_update()` em falha. Um restart encontra `_update` e:
+
+- restaura o backup quando a promoção estava em andamento;
+- mantém o candidato se o estado já era `committed`, terminando apenas a
+  limpeza;
+- remove paths de staging somente depois de verificar que pertencem ao root de
+  extensões.
+
+Isso mantém a versão anterior funcional até o load/verification no Electron e
+evita que uma interrupção de replace, registry ou cleanup deixe uma extensão
+meia-promovida. Não é um segundo registry: o mesmo manager continua sendo dono
+de descoberta, instalação, load, verificação e remoção.
+
+### 26.7. Benchmark provider-free: medir estrutura, não maquiar resultado
+
+`python -m workstation.workload_benchmark` executa um workload sintético sem
+provider e usa diretamente `WorkerRegistry`, `RuntimeEventBus`,
+`ScopedPolicyEngine`, `EvidenceState` e o compactor. O fixture versionado em
+`workstation/benchmarks/workload_baseline.json` registra, entre outros:
+
+- cinco tool calls, quatro grandes resultados substituídos por refs e dois
+  dedup hits;
+- 11 referências operacionais preservadas em 553 caracteres;
+- resultado do worker recuperado após restart e removido somente após ACK;
+- três decisões de policy (`deny`, `require_approval`, `sandbox`), com o
+  caminho sensível negado;
+- três invalidações de recurso/evento, zero eventos descartados e zero checks de
+  polling.
+
+O benchmark não mede qualidade de provider, não grava bancos privados e não
+usa wall-clock como critério de aprovação. Ele detecta regressão estrutural:
+payload novamente inline, perda de refs após restart/ACK, compaction sem handles,
+policy que deixa atravessar um path sensível ou retorno ao polling mecânico.

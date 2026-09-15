@@ -3,12 +3,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 import logging
-import os
-from pathlib import Path
 import re
 from typing import Any, List, Optional
 
 from workstation.contracts import RiskLevel, utc_now
+from workstation.path_utils import PathSyntax, classify_path, is_sensitive_path, path_is_within
 from workstation.safety import APPROVAL_REQUIRED_ACTIONS, classify_action
 
 _log = logging.getLogger(__name__)
@@ -57,21 +56,6 @@ DANGEROUS_COMMAND_PATTERNS = [
     re.compile(r"dd\s+if=.*of=/dev/[sh]d[a-z]", re.IGNORECASE),
     re.compile(r"mkfs\.[a-z0-9]+\s+/dev/", re.IGNORECASE),
 ]
-
-# Sensitive system locations protected from arbitrary modification
-SENSITIVE_PATHS = [
-    r"^[a-zA-Z]:\\windows",
-    r"^[a-zA-Z]:\\program files",
-    r"^/etc",
-    r"^/usr/bin",
-    r"^/bin",
-    r"^/sbin",
-    r"^/boot",
-    r".*[\\/]\.ssh([\\/]|$)",
-    r".*[\\/]\.gnupg([\\/]|$)",
-    r".*[\\/]\.aws([\\/]|$)",
-]
-
 
 class ScopedPolicyEngine:
     """Scoped Autonomy Policy Engine for Hermes Workstation.
@@ -144,38 +128,39 @@ class ScopedPolicyEngine:
 
         # 2. Check filesystem write/delete operations against sensitive OS paths
         if scope.capability == "filesystem" and scope.action_name in ("write", "delete", "modify", "remove"):
-            target_path = os.path.abspath(scope.target or str(scope.parameters.get("path", "")))
-            for pat in SENSITIVE_PATHS:
-                if re.search(pat, target_path, re.IGNORECASE):
-                    res = PolicyEvaluation(
-                        decision=PolicyDecision.DENY,
-                        reason=f"Operation targets protected system path: '{target_path}'",
-                        risk_level=RiskLevel.CRITICAL,
-                    )
-                    self._record_audit(scope, res)
-                    return res
+            target_path = str(scope.target or scope.parameters.get("path", ""))
+            if is_sensitive_path(target_path):
+                res = PolicyEvaluation(
+                    decision=PolicyDecision.DENY,
+                    reason=f"Operation targets protected system path: '{target_path.strip()}'",
+                    risk_level=RiskLevel.CRITICAL,
+                )
+                self._record_audit(scope, res)
+                return res
 
         # 3. Check workspace boundary containment if workspace_root is defined
         if scope.workspace_root and scope.capability == "filesystem":
-            target_path = os.path.abspath(scope.target or str(scope.parameters.get("path", "")))
-            ws_root = os.path.abspath(scope.workspace_root)
-            try:
-                common = os.path.commonpath([ws_root, target_path])
-                if common != ws_root and scope.action_name in ("write", "delete", "modify"):
-                    res = PolicyEvaluation(
-                        decision=PolicyDecision.REQUIRE_APPROVAL,
-                        reason=f"Filesystem modification outside workspace root: {target_path}",
-                        risk_level=RiskLevel.HIGH,
-                        constraints=["require_explicit_human_confirmation"],
-                    )
-                    self._record_audit(scope, res)
-                    return res
-            except ValueError:
-                # Different drives on Windows
+            target_path = str(scope.target or scope.parameters.get("path", ""))
+            ws_root = str(scope.workspace_root)
+            target_class = classify_path(target_path)
+            root_class = classify_path(ws_root)
+            containment = path_is_within(ws_root, target_path)
+            if scope.action_name in ("write", "delete", "modify") and (
+                not target_class.is_absolute
+                or not root_class.is_absolute
+                or containment is not True
+            ):
+                if containment is None and target_class.syntax is root_class.syntax is PathSyntax.WINDOWS_ABSOLUTE:
+                    reason = f"Target path is on a different drive than workspace: {target_path.strip()}"
+                elif containment is None and target_class.syntax is not root_class.syntax:
+                    reason = f"Target path uses incompatible path syntax for workspace: {target_path.strip()}"
+                else:
+                    reason = f"Filesystem modification outside workspace root: {target_path.strip()}"
                 res = PolicyEvaluation(
                     decision=PolicyDecision.REQUIRE_APPROVAL,
-                    reason=f"Target path is on a different drive than workspace: {target_path}",
+                    reason=reason,
                     risk_level=RiskLevel.HIGH,
+                    constraints=["require_explicit_human_confirmation"],
                 )
                 self._record_audit(scope, res)
                 return res

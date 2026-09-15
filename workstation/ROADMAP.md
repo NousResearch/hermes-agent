@@ -216,7 +216,7 @@ The LAN, Tailscale, external-extension, memory/perception/drift and Lightpanda M
 - **Hardening remaining**:
   - Não existe ainda um catálogo/busca semântica da Chrome Web Store: o agente recebe ID ou URL pública, em vez de selecionar extensões a partir de resultados de marketplace.
   - Não há UI dedicada de gerenciamento de extensões no Desktop; a superfície atual é agent/tool + BrowserTask options page.
-  - Atualização in-place de uma extensão instalada ainda requer uma transação de runtime de duas versões; o slice atual é estrito para a instalação solicitada e faz rollback quando não consegue verificar a carga.
+  - Atualização in-place agora usa staging, journal de promoção e last-known-good: falha de replace, load, verificação ou restart restaura a versão anterior. A transação é coberta por `workstation/tests/test_extensions.py`.
 
 ## Hybrid Kanban — Experimental vertical slice (human + agent shared workspaces)
 
@@ -242,14 +242,16 @@ Implemented vertical slice:
 - authenticated Kanban plugin API, `kanban_hybrid` agent tool, and an Electron
   Desktop shared-board page for creating boards/columns/cards, editing Markdown
   text and dragging cards between columns;
-- restart persistence and Agentic-boundary behavior covered by Python tests.
+- restart persistence and Agentic-boundary behavior covered by Python tests;
+- explicit **“Entregar isto ao Hermes”** delegation creates a separate canonical
+  Agentic task in the same Kanban database, maintains a persistent bidirectional
+  link, and projects compact status/result/evidence back to the human card;
+- archive/restore and explicit hard-delete semantics, persisted activity,
+  horizontal column reorder, revision checks, and precise invalidation over the
+  existing plugin `/events` boundary are implemented and covered.
 
 Hardening remaining:
 
-- card detail activity rendering, archive/delete policy and horizontal column
-  drag/reorder UI;
-- push-based realtime events for Hybrid activity (the current Desktop
-  projection invalidates/refetches every 8 seconds and after mutations);
 - multi-user authorization beyond the existing authenticated Dashboard session
   boundary, comments/attachments/checklists and external-board connectors.
 
@@ -911,7 +913,7 @@ dependencies:
 - **agent governance primitives:** independent verifier/auditor roles for high-stakes
   multiagent workflows, with human authority remaining outside the agent society.
 
-### Human card → Hermes Agent Task delegation bridge — Planned
+### Human card → Hermes Agent Task delegation bridge — Implemented
 
 **Purpose:** turn the hybrid/Trello-like human Kanban into a true delegation
 interface for Hermes without collapsing human work management and agent execution
@@ -954,6 +956,17 @@ human board lifecycle while the linked Agent Task independently moves through
 queued/running/waiting/completed states, then verify that completion returns the
 result/evidence to the same human card and that restart/recovery preserves the
 link without introducing a second canonical Kanban/task store.
+
+Implementation evidence on the current mainline working tree:
+
+- `hybrid_card_delegations` is an additive table in the canonical
+  `hermes_cli.kanban_db` owner; no AgentTaskStore or parallel queue was added.
+- duplicate clicks are idempotent for an active attempt; retry is an explicit
+  reuse of the same attempt, while re-delegation creates a new attempt and
+  preserves prior evidence.
+- `tests/hermes_cli/test_hybrid_kanban.py` covers delegation, restart,
+  completion/failure/cancellation, independent movement and result/evidence
+  writeback.
 
 ### Research-derived acceptance principle
 

@@ -96,6 +96,12 @@ class HybridCardMove(HybridMoveBody):
     target_column_id: str
 
 
+class HybridDelegationBody(BaseModel):
+    session_id: Optional[str] = None
+    assignee: Optional[str] = Field(default=None, max_length=120)
+    new_attempt: bool = False
+
+
 # ---------------------------------------------------------------------------
 # Auth helper — WebSocket only (HTTP routes live behind the dashboard's
 # existing plugin-bypass; this is documented above).
@@ -487,6 +493,66 @@ def hybrid_create_card(board_id: str, payload: HybridCardBody, board: Optional[s
         conn.close()
 
 
+@router.post("/hybrid/cards/{card_id}/delegate")
+def hybrid_delegate_card(card_id: str, payload: HybridDelegationBody, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"card": hybrid_kanban.delegate_card(conn, card_id=card_id, actor_id="dashboard", session_id=payload.session_id, assignee=payload.assignee, new_attempt=payload.new_attempt, source="desktop")}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.post("/hybrid/cards/{card_id}/retry-delegation")
+def hybrid_retry_card_delegation(card_id: str, payload: HybridDelegationBody, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"card": hybrid_kanban.retry_card_delegation(conn, card_id=card_id, actor_id="dashboard", session_id=payload.session_id, source="desktop")}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.post("/hybrid/cards/{card_id}/cancel-delegation")
+def hybrid_cancel_card_delegation(card_id: str, payload: HybridDelegationBody, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"card": hybrid_kanban.cancel_card_delegation(conn, card_id=card_id, actor_id="dashboard", session_id=payload.session_id, source="desktop")}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.post("/hybrid/cards/{card_id}/archive")
+def hybrid_archive_card(card_id: str, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"ok": hybrid_kanban.archive_card(conn, card_id=card_id, source="dashboard", actor_id="dashboard")}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.post("/hybrid/cards/{card_id}/restore")
+def hybrid_restore_card(card_id: str, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"ok": hybrid_kanban.restore_card(conn, card_id=card_id, source="dashboard", actor_id="dashboard")}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
 @router.get("/hybrid/cards/{card_id}")
 def hybrid_get_card(card_id: str, board: Optional[str] = Query(None)):
     resolved = _resolve_board(board)
@@ -549,6 +615,30 @@ def hybrid_delete_column(column_id: str, board: Optional[str] = Query(None)):
         conn.close()
 
 
+@router.post("/hybrid/columns/{column_id}/archive")
+def hybrid_archive_column(column_id: str, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"ok": hybrid_kanban.archive_column(conn, column_id=column_id, source="dashboard", actor_id="dashboard")}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.post("/hybrid/columns/{column_id}/restore")
+def hybrid_restore_column(column_id: str, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"ok": hybrid_kanban.restore_column(conn, column_id=column_id, source="dashboard", actor_id="dashboard")}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
 @router.delete("/hybrid/boards/{board_id}")
 def hybrid_delete_board(board_id: str, board: Optional[str] = Query(None)):
     resolved = _resolve_board(board)
@@ -556,6 +646,30 @@ def hybrid_delete_board(board_id: str, board: Optional[str] = Query(None)):
     try:
         ok = hybrid_kanban.delete_board(conn, board_id=board_id, source="dashboard", actor_id="dashboard")
         return {"ok": ok}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.post("/hybrid/boards/{board_id}/archive")
+def hybrid_archive_board(board_id: str, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"ok": hybrid_kanban.archive_board(conn, board_id=board_id, source="dashboard", actor_id="dashboard")}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.post("/hybrid/boards/{board_id}/restore")
+def hybrid_restore_board(board_id: str, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"ok": hybrid_kanban.restore_board(conn, board_id=board_id, source="dashboard", actor_id="dashboard")}
     except hybrid_kanban.HybridKanbanError as exc:
         raise _hybrid_error(exc)
     finally:
@@ -3165,6 +3279,16 @@ async def stream_events(ws: WebSocket):
                     "created_at": r["created_at"],
                 })
                 new_cursor = r["id"]
+
+            # The canonical task event stream already reaches this boundary.
+            # Project only tasks that actually changed so Hybrid cards receive
+            # their own durable activity event and the UI invalidates without
+            # waiting for its secondary polling fallback.
+            for task_id in {r["task_id"] for r in rows if r["task_id"]}:
+                hybrid_kanban.sync_delegations_for_agent_task(
+                    event_conn,
+                    agent_task_id=task_id,
+                )
 
             h_rows = event_conn.execute(
                 "SELECT id, board_id, card_id, column_id, kind, actor_type, actor_id, session_id, source, payload, created_at "

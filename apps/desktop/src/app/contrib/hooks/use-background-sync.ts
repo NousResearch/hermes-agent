@@ -6,6 +6,7 @@ import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
 import { preserveLocalAssistantErrors, sealOpenToolParts, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
+import { $sidebarShowArchived } from '@/store/layout'
 import { $changeEventsAvailable, $cronChangeTick, $sessionsChangeTick } from '@/store/live-sync'
 import { $onBattery, batteryPollInterval } from '@/store/power'
 import { refreshActiveProfile } from '@/store/profile'
@@ -28,6 +29,7 @@ import {
   SESSION_WATCHDOG_TIMEOUT_MS,
   setSessionStalled
 } from '@/store/session-states'
+import { loadArchivedSessions } from '@/store/sidebar-archive'
 
 import type { ClientSessionState } from '../../types'
 import type { GatewayRequester } from '../types'
@@ -758,6 +760,14 @@ export function useBackgroundSync({
       // Projects sidebar without this (#100354). refreshProjectTree() keeps the
       // cached tree on failure, so a not-yet-ready backend costs nothing.
       void refreshProjectTree()
+
+      // The archived set is its own backend query, so none of the refreshes
+      // above touch it (#111397). Reload only while the Archived view is open
+      // — users who never open it pay nothing.
+      if ($sidebarShowArchived.get()) {
+        void loadArchivedSessions()
+      }
+
       requestActiveTranscriptRefresh(true)
       // Bot canonical chats live in workspace tiles, never in the main-pane
       // selection — without this they never see background deliveries

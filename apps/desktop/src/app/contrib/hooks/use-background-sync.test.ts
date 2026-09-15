@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
+import { $sidebarShowArchived } from '@/store/layout'
 import { $changeEventsAvailable, notifySessionsChanged, resetLiveSync } from '@/store/live-sync'
 import {
   $activeSessionId,
@@ -38,7 +39,8 @@ import {
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal()),
-  getLatestSessionMessages: vi.fn()
+  getLatestSessionMessages: vi.fn(),
+  listAllProfileSessions: vi.fn(async () => ({ sessions: [], total: 0 }))
 }))
 
 vi.mock('@/store/projects', async importOriginal => ({
@@ -46,7 +48,7 @@ vi.mock('@/store/projects', async importOriginal => ({
   refreshProjectTree: vi.fn(async () => undefined)
 }))
 
-const { getLatestSessionMessages } = await import('@/hermes')
+const { getLatestSessionMessages, listAllProfileSessions } = await import('@/hermes')
 const { refreshProjectTree } = await import('@/store/projects')
 
 const ACTIVE_RUNTIME_ID = 'runtime-active'
@@ -992,6 +994,79 @@ describe('typing-aware sessions.changed deferral', () => {
     })
 
     expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('archived-view reload on sessions.changed (#111397)', () => {
+  // Same stable-identity discipline as the typing harness: every prop must
+  // survive the tick-driven re-renders or the connect-reseed effect re-runs
+  // and pollutes the fetch counts under observation.
+  function renderArchivedSync() {
+    const stable = {
+      activeConnectionId: 'local',
+      activeGatewayProfile: 'default',
+      activeIsMessaging: false,
+      activeSessionId: null,
+      activeStoredSessionId: null,
+      freshDraftReady: false,
+      gatewayState: 'open',
+      refreshActiveTranscript: async () => undefined,
+      refreshCronJobs: vi.fn(),
+      refreshCurrentModel: vi.fn(),
+      refreshHermesConfig: vi.fn(),
+      refreshMessagingSessions: vi.fn(),
+      refreshSessions: vi.fn(async () => undefined),
+      requestGateway: vi.fn(async () => ({ sessions: [] })) as never,
+      updateSessionState: vi.fn(
+        (
+          _sessionId: string,
+          updater: (state: ReturnType<typeof createClientSessionState>) => ReturnType<typeof createClientSessionState>
+        ) => updater(createClientSessionState(ACTIVE_STORED_ID))
+      )
+    }
+
+    return renderHook(() => useBackgroundSync(stable))
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    $sidebarShowArchived.set(false)
+    vi.mocked(listAllProfileSessions).mockClear()
+  })
+
+  afterEach(() => {
+    $sidebarShowArchived.set(false)
+  })
+
+  it('re-fetches the archived set on a tick while the Archived view is open', async () => {
+    $sidebarShowArchived.set(true)
+    renderArchivedSync()
+
+    act(() => notifySessionsChanged())
+
+    await act(async () => {
+      // One SESSIONS_LIST_TICK_GAP_MS covers the immediate first pass and any
+      // trailing timer a burst would have armed.
+      vi.advanceTimersByTime(10_000)
+      await Promise.resolve()
+    })
+
+    // Assert on the fetch itself: the archived-only page the store asks for.
+    expect(listAllProfileSessions).toHaveBeenCalledWith(200, 0, 'only')
+  })
+
+  it('does not fetch archived rows on a tick while the view is closed', async () => {
+    renderArchivedSync()
+
+    act(() => notifySessionsChanged())
+
+    await act(async () => {
+      vi.advanceTimersByTime(11_000)
+      await Promise.resolve()
+    })
+
+    expect(listAllProfileSessions).not.toHaveBeenCalled()
   })
 })
 

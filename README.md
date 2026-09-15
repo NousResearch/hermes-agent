@@ -119,6 +119,49 @@ hermes doctor       # Diagnose any issues
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
 
+### Restricted or high-latency networks (no proxy needed)
+
+The installer and updater try the official endpoints first. If a dependency
+endpoint is slow or unreachable, configure only the affected channel before
+retrying; Hermes does not infer location or select a mirror from your IP.
+
+```bash
+# npm packages
+export npm_config_registry=https://registry.npmmirror.com
+
+# Python packages used by `uv sync` (the installer intentionally ignores local
+# uv.toml files; this environment variable is the supported override)
+export UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+
+# Python runtimes downloaded by uv
+export UV_PYTHON_INSTALL_MIRROR=https://gh-proxy.com/https://github.com/astral-sh/python-build-standalone/releases/download
+
+# Electron and Playwright downloads (optional; these are explicit opt-ins)
+export ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
+export PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright
+```
+
+For a GitHub mirror, use Git's standard URL rewrite only for the install or
+update command, then verify that the checkout still has the official remote:
+
+```bash
+git -c url."https://<your-mirror>/https://github.com/".insteadOf=https://github.com/ clone \
+  --depth 1 https://github.com/NousResearch/hermes-agent.git
+git remote -v
+```
+
+`npm` checks lockfile `sha512` integrity and `uv` checks the hashes recorded in
+`uv.lock`; changing an index does not disable those checks. Git verifies object
+hashes, but a mirror can still serve the wrong history, so pin and verify the
+expected commit when provenance matters. Playwright's browser download does
+not currently provide the same per-file checksum guarantee; use that override
+only when you accept the residual mirror risk. The optional cua-driver
+installer has no mirror or checksum hook and remains best-effort.
+
+If an install or update fails, inspect the channel-specific error before
+changing all sources: the official endpoint may be healthy while only GitHub,
+npm, PyPI, Electron, or Playwright is being throttled.
+
 ---
 
 ## Skip the API-key collection — Nous Portal

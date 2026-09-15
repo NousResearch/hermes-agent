@@ -42,7 +42,38 @@ def evaluate_update_admission(project_root: Path) -> Optional[UpdateRefusal]:
     ``None`` means the install is eligible for in-place update (git checkout or unknown-but-
     mutable). Never raises; on any internal error it falls back to the heuristic layer only.
     """
-    # Layer 1: baked provenance marker — authoritative when present.
+    # Resolve the install shape first: the source policy applies only to source trees.
+    try:
+        from hermes_cli.config import detect_install_method
+        install_method = detect_install_method(project_root)
+    except Exception as exc:
+        logger.debug("Install-method detection failed: %s", exc)
+        install_method = "unknown"
+
+    # Layer 1: checkout-local external-owner marker — authoritative for source installs.
+    try:
+        from hermes_cli.source_update_policy import read_source_update_policy
+
+        policy = read_source_update_policy(project_root) if install_method == "git" else None
+        if policy is not None:
+            command = policy.update_command or "the external release manager"
+            reason = policy.error or "invalid policy marker"
+            code = "source-policy-invalid" if not policy.valid else "source-policy"
+            message = (
+                "✗ This source installation is managed by an external release manager.\n"
+                f"  In-place update is disabled ({reason}). Update it with:\n    {command}"
+            )
+            return UpdateRefusal(code=code, message=message, update_command=command)
+    except Exception as exc:
+        # An inability to inspect an explicitly requested policy must not turn
+        # into permission to mutate a source checkout.
+        logger.debug("Source update policy check failed: %s", exc)
+        return _refusal("source-policy-invalid", "docker", lambda _: (
+            "✗ The source installation update policy could not be verified.\n"
+            "  In-place update is disabled; update it through the external release manager."
+        ))
+
+    # Layer 2: baked provenance marker — authoritative when present.
     try:
         from hermes_cli.image_provenance import read_image_provenance
 
@@ -61,11 +92,11 @@ def evaluate_update_admission(project_root: Path) -> Optional[UpdateRefusal]:
     except Exception as exc:
         logger.debug("Image provenance check failed (using heuristics): %s", exc)
 
-    # Layer 2: pre-existing filesystem heuristics, verbatim semantics.
+    # Layer 3: pre-existing filesystem heuristics, verbatim semantics.
     try:
-        from hermes_cli.config import detect_install_method, is_nix_install_method
+        from hermes_cli.config import is_nix_install_method
 
-        method = detect_install_method(project_root)
+        method = install_method
         if method == "docker":
             return _refusal("docker", method)
         if is_nix_install_method(method) or method == "apt":

@@ -42,6 +42,7 @@ async function mount(initial = '') {
   const { GroupMentionInput } = await import('./group-chat-parts')
   const onChange = vi.fn()
   const onSubmitDraft = vi.fn()
+  const onPaste = vi.fn()
 
   function Harness() {
     const [value, setValue] = useState(initial)
@@ -54,6 +55,7 @@ async function mount(initial = '') {
           onChange(next)
           setValue(next)
         }}
+        onPaste={onPaste}
         onSubmitDraft={onSubmitDraft}
         value={value}
       />
@@ -62,7 +64,7 @@ async function mount(initial = '') {
 
   render(<Harness />)
 
-  return { input: screen.getByLabelText('Message Core') as HTMLTextAreaElement, onChange, onSubmitDraft }
+  return { input: screen.getByLabelText('Message Core') as HTMLTextAreaElement, onChange, onSubmitDraft, onPaste }
 }
 
 /** Type `text`, then park the caret at `caret` (default: end of the text).
@@ -176,6 +178,18 @@ describe('insertion', () => {
 // #89884: the composer used to be a single-line Input whose form submitted on
 // every Enter, so multi-line room prompts were impossible.
 describe('keyboard (#89884)', () => {
+  it('forwards paste to the room attachment handler without resetting the chosen height', async () => {
+    const { input, onPaste, onSubmitDraft } = await mount('draft')
+    input.style.height = '120px' // The inline height Chromium writes during native resizing.
+    const clipboardData = { files: [new File(['notes'], 'notes.txt', { type: 'text/plain' })] }
+    fireEvent.paste(input, { clipboardData })
+    expect(onPaste).toHaveBeenCalledTimes(1)
+    expect(onPaste.mock.calls[0][0].clipboardData).toBe(clipboardData)
+    typeInto(input, 'draft continued')
+    expect(input.style.height).toBe('120px')
+    expect(onSubmitDraft).not.toHaveBeenCalled()
+  })
+
   it('submits on Enter and leaves Shift+Enter to the textarea', async () => {
     const { input, onSubmitDraft } = await mount('a room prompt')
 

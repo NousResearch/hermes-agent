@@ -69,6 +69,28 @@ def _format_slot(slot: dict[str, Any]) -> str:
     return f"{label} [reasoning={effort}]" if effort else label
 
 
+def _provider_mismatch_notice(
+    cfg: dict[str, Any], aggregator: dict[str, Any]
+) -> str | None:
+    main_provider = ""
+    if isinstance(cfg, dict):
+        model_section = cfg.get("model")
+        if isinstance(model_section, dict):
+            main_provider = str(model_section.get("provider") or "").strip()
+    agg_provider = str((aggregator or {}).get("provider") or "").strip()
+    if (
+        not main_provider
+        or not agg_provider
+        or main_provider == "moa"
+        or main_provider == agg_provider
+    ):
+        return None
+    return (
+        f"Aggregator is on {agg_provider}; the whole tool loop will be billed there, "
+        f"not to {main_provider}."
+    )
+
+
 def _print_config(config: dict[str, Any]) -> None:
     cfg = _moa_section(config)
     print("Mixture of Agents presets")
@@ -76,10 +98,16 @@ def _print_config(config: dict[str, Any]) -> None:
     print(f"Active in config: {cfg.get('active_preset') or '(off)'}")
     for name, preset in cfg["presets"].items():
         print(f"\n{'*' if name == cfg['default_preset'] else ' '} {name}")
-        print("  Reference models:")
+        print("  Reference models (advise once per user turn):")
         for idx, slot in enumerate(preset["reference_models"], start=1):
             print(f"    {idx}. {_format_slot(slot)}")
-        print(f"  Aggregator: {_format_slot(preset['aggregator'])}")
+        agg_slot = preset["aggregator"]
+        print(
+            f"  Aggregator: {_format_slot(agg_slot)} (acting model — runs every step and carries almost all of the cost)"
+        )
+        notice = _provider_mismatch_notice(config, agg_slot)
+        if notice:
+            print(f"    note: {notice}")
 
 
 def _moa_section(cfg: Any) -> dict[str, Any]:
@@ -111,11 +139,17 @@ def _cmd_configure(cfg: dict, args) -> None:
         if _prompt_choice("Add another reference model?", ["Add another", "Done"], 1) == 1:
             break
     print("Configure aggregator model.")
+    print(
+        "The aggregator is the acting model: it runs every tool-loop step, and almost all of the run's cost lands on its provider."
+    )
     current = dict(current)
     current["reference_models"] = refs
     current["aggregator"] = _pick_slot(current.get("aggregator"))
     moa["presets"][preset_name] = current
     moa.setdefault("default_preset", preset_name)
+    notice = _provider_mismatch_notice(cfg, current["aggregator"])
+    if notice:
+        print(notice)
     _save(cfg, moa)
     print(f"Saved MoA preset: {preset_name}")
     _print_config(cfg)

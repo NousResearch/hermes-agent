@@ -1540,6 +1540,8 @@ export const zh = defineLocale({
       moaTitle: '混合智能体（Mixture of Agents）',
       moaPreset: '预设',
       moaAggregator: '聚合模型',
+      moaAggregatorBilled: '执行模型 · 整个运行在此计费',
+      moaReferenceHint: '每轮仅建议一次',
       tasks: {
         vision: { label: '视觉', hint: '图片分析' },
         compression: { label: '压缩', hint: '上下文压缩' },

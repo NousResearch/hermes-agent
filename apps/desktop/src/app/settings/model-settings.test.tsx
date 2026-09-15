@@ -677,6 +677,18 @@ describe('ModelSettings MoA preset editor', () => {
       vi.useRealTimers()
     }
   })
+
+  it('labels the aggregator as the acting, billed model and references as advising', async () => {
+    await openReferenceEditor()
+
+    // The aggregator row must carry the acting/billed pill right next to its
+    // title — this is the slot that pays for the whole tool loop.
+    expect(screen.getByText('acting model · billed for the run')).toBeTruthy()
+    // Reference rows say what they actually do: advise once per user turn.
+    expect(screen.getAllByText('advises once per turn')).toHaveLength(2)
+    // The section blurb spells out the billing consequence.
+    expect(screen.getByText(/billed to its provider/i)).toBeTruthy()
+  })
 })
 
 describe('ModelSettings code-skew 503', () => {

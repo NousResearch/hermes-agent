@@ -1181,6 +1181,8 @@ export const zhHant = defineLocale({
       moaTitle: '混合代理（Mixture of Agents）',
       moaPreset: '預設',
       moaAggregator: '聚合模型',
+      moaAggregatorBilled: '執行模型 · 整個運行在此計費',
+      moaReferenceHint: '每輪僅建議一次',
       tasks: {
         vision: { label: '視覺', hint: '圖片分析' },
         compression: { label: '壓縮', hint: '上下文壓縮' },

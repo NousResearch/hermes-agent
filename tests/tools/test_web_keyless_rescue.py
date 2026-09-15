@@ -54,6 +54,13 @@ class _RaisingProvider(_KeyedBoomProvider):
         raise RuntimeError("connection reset by peer")
 
 
+class _GatewayFirecrawlBoomProvider(_KeyedBoomProvider):
+    """Managed-gateway Firecrawl double with no direct provider key."""
+
+    name = "firecrawl"
+    display_name = "Firecrawl"
+
+
 @pytest.fixture(autouse=True)
 def _keyed_keenable_env(monkeypatch):
     """Simulate a keyed Keenable setup with rescue enabled."""
@@ -82,6 +89,16 @@ class TestEligibility:
             "agent.web_search_provider.get_provider_env", lambda name: ""
         )
         assert web_tools_rescue._rescue_eligible(KeenableWebSearchProvider()) is False
+
+    def test_gateway_selected_ring_vendor_is_eligible_without_direct_key(self, monkeypatch):
+        # The persisted Nous route uses its subscriber token, not the keyless ring.
+        monkeypatch.setattr(
+            "agent.web_search_provider.get_provider_env", lambda name: ""
+        )
+        monkeypatch.setattr(
+            "tools.tool_backend_helpers.read_selection", lambda kind: "nous"
+        )
+        assert web_tools_rescue._rescue_eligible(_GatewayFirecrawlBoomProvider()) is True
 
     def test_non_ring_backend_is_eligible(self):
         class _SearxProvider(_KeyedBoomProvider):
@@ -129,6 +146,22 @@ class TestSearchRescue:
             out = self._dispatch(monkeypatch, _RaisingProvider())
         assert out["success"] is True
         assert "connection reset" in out["data"]["backend_error"]
+
+    def test_gateway_selected_firecrawl_failure_is_rescued(self, monkeypatch):
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "firecrawl"})
+        monkeypatch.setattr(
+            "agent.web_search_provider.get_provider_env", lambda name: ""
+        )
+        monkeypatch.setattr(
+            "tools.tool_backend_helpers.read_selection", lambda kind: "nous"
+        )
+        with patch.object(
+            keyless_mcp, "search_with_failover", return_value=_ring_ok()
+        ) as ring:
+            out = self._dispatch(monkeypatch, _GatewayFirecrawlBoomProvider())
+        assert out["success"] is True
+        assert out["data"]["rescued_from"] == "firecrawl"
+        ring.assert_called_once()
 
     def test_stateless_next_call_uses_chosen_backend(self, monkeypatch):
         calls = {"backend": 0}

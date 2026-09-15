@@ -33,8 +33,9 @@ def _keyless_rescue_enabled() -> bool:
 def _rescue_eligible(provider) -> bool:
     """True when a failed call on *provider* should get a one-shot rescue.
 
-    Eligible: a keyed/configured path — any non-ring backend, or a ring vendor in keyed mode. A ring
-    vendor already in keyless mode is NOT eligible: its failure means the ring was already walked.
+    Eligible: a keyed/configured path — any non-ring backend, a ring vendor in keyed mode, or a ring
+    vendor selected through the persisted Nous Tool Gateway route. A ring vendor selected directly in
+    keyless mode is NOT eligible: its failure means the ring was already walked.
     """
     if not _keyless_rescue_enabled() or provider is None:
         return False
@@ -42,6 +43,10 @@ def _rescue_eligible(provider) -> bool:
         from plugins.web.keyless_mcp import _KEYLESS_RING, use_keyless
         name = getattr(provider, "name", "")
         if name not in _KEYLESS_RING:
+            return True
+        from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
+        if read_selection("web") == NOUS_MANAGED_PROVIDER:
+            # The gateway uses the subscriber token, so this call has not walked the anonymous ring.
             return True
         from agent.web_search_provider import get_provider_env
         key_var = _RING_KEY_VARS.get(name, "")

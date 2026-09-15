@@ -282,7 +282,7 @@ function ConversationPill({
         <ConversationIndicator level={level} listening={listening} speaking={speaking} />
         <span>{c.endShort}</span>
       </Button>
-      <span className="sr-only" role="status">
+      <span className="text-xs text-muted-foreground" role="status">
         {label}
       </span>
     </div>

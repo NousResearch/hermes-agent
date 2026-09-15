@@ -1893,3 +1893,80 @@ def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
             (t,),
         ).fetchone()
         assert row is None
+
+
+def test_dispatch_records_spawn_failure_before_the_breaker_trips(
+    kanban_home, all_assignees_spawnable
+):
+    """Every spawn failure lands in ``DispatchResult.spawn_failed`` on failure
+    #1 -- well before the circuit breaker's ``failure_limit`` auto-blocks it.
+
+    ``auto_blocked`` is only populated when the breaker TRIPS, so with it as
+    the sole fault signal the first ``failure_limit - 1`` failures of a broken
+    venv / PATH / credential set are invisible to the dispatcher's health
+    telemetry. ``spawn_failed`` is the superset that makes failure #1 visible.
+    """
+
+    def boom(task, workspace):
+        raise RuntimeError("no such venv: /nonexistent/bin/python")
+
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="broken-venv", assignee="alice")
+        res = kbd.dispatch_once(conn, spawn_fn=boom, failure_limit=5)
+
+    assert t in res.spawn_failed, (
+        "an early spawn failure must be recorded in spawn_failed on failure #1; "
+        f"got spawn_failed={res.spawn_failed!r}"
+    )
+    assert t not in res.auto_blocked, (
+        "failure #1 of 5 must NOT trip the circuit breaker -- that gap is exactly "
+        "the window in which spawn_failed is the only fault signal available"
+    )
+
+
+def test_dispatch_spawn_failed_is_a_superset_of_auto_blocked(
+    kanban_home, all_assignees_spawnable
+):
+    """When the breaker finally trips, the task appears in BOTH buckets.
+
+    Pins the documented relationship (``auto_blocked`` is the breaker-trip
+    subset of ``spawn_failed``) so a future refactor cannot make them
+    disjoint and silently reintroduce the invisible-early-failure window.
+    """
+
+    def boom(task, workspace):
+        raise RuntimeError("no such venv: /nonexistent/bin/python")
+
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="breaker-trip", assignee="alice")
+        # failure_limit=1: the very first failure trips the breaker.
+        res = kbd.dispatch_once(conn, spawn_fn=boom, failure_limit=1)
+
+    assert t in res.auto_blocked, "failure_limit=1 must auto-block on failure #1"
+    assert t in res.spawn_failed, (
+        "a breaker-tripping failure is still a spawn failure; auto_blocked must "
+        "remain a SUBSET of spawn_failed"
+    )
+    assert set(res.auto_blocked) <= set(res.spawn_failed)
+
+
+@pytest.mark.parametrize("lane", ["ready", "review"])
+@pytest.mark.parametrize("failure_site", ["workspace", "launch"])
+def test_dispatch_failure_telemetry_in_both_lanes(
+    kanban_home, all_assignees_spawnable, monkeypatch, lane, failure_site,
+):
+    def boom(*args, **kwargs):
+        raise RuntimeError("test dispatch failure")
+
+    if failure_site == "workspace":
+        monkeypatch.setattr(kbw, "resolve_workspace", boom)
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="failure telemetry", assignee="alice")
+        if lane == "review":
+            claimed = kb.claim_task(conn, tid)
+            assert claimed
+            assert kb.request_review(conn, tid, summary="ready for review", expected_run_id=claimed.current_run_id)
+        result = kbd.dispatch_once(conn, spawn_fn=boom, failure_limit=5)
+        assert result.spawn_failed == [tid]
+        assert not result.auto_blocked
+        assert not result.spawned

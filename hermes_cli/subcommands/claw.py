@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Callable
 
 from hermes_cli.subcommands._shared import add_yes_flag
+from hermes_constants import display_hermes_home
 
 
 def build_claw_parser(subparsers, *, cmd_claw: Callable) -> None:
@@ -34,10 +35,15 @@ def build_claw_parser(subparsers, *, cmd_claw: Callable) -> None:
         "--migrate-secrets", action="store_true",
         help="Include allowlisted secrets (TELEGRAM_BOT_TOKEN, API keys, etc.). "
         "Required even under --preset full.")
+    # argparse formats help strings with %-templating (action._get_help_string()
+    # % params) for %(default)s etc. A literal '%' in the interpolated home path
+    # (unusual but possible in a custom HERMES_HOME/profile name) would otherwise
+    # crash --help with "TypeError: must be real number, not dict" — escape it.
+    _hermes_home = display_hermes_home().replace("%", "%%")
     claw_migrate.add_argument(
         "--no-backup", action="store_true",
-        help="Skip the pre-migration zip snapshot of ~/.hermes/ (by default a "
-        "single restore-point archive is written to ~/.hermes/backups/ "
+        help=f"Skip the pre-migration zip snapshot of {_hermes_home}/ (by default a "
+        f"single restore-point archive is written to {_hermes_home}/backups/ "
         "before apply; restorable with 'hermes import').")
     claw_migrate.add_argument(
         "--workspace-target", help="Absolute path to copy workspace instructions into")

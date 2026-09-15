@@ -47,7 +47,7 @@ hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 ```
 
 :::tip
-The `hermes config set` command automatically routes values to the right file — API keys are saved to `.env`, everything else to `config.yaml`.
+The `hermes config set` command automatically routes values to the right file — API keys and every documented environment variable (`DISCORD_HOME_CHANNEL`, `TELEGRAM_ALLOWED_USERS`, …) are saved to `.env`, dotted settings to `config.yaml`. A misspelled path under a known section (`gateway.discord.foo`) is refused with a did-you-mean before anything is written; pass `--force` to write it anyway.
 :::
 
 ## Configuration Precedence

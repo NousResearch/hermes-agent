@@ -65,7 +65,10 @@ Do not add a surface-specific goal parser. ACP has no goal command or goal loop 
   `{"description", "prompt", "url", "password": True, "category": provider|tool|messaging|setting}`.
   Non-secret settings go in config.yaml; if internal code needs an env mirror, bridge it in code
   (`gateway_timeout`; `terminal.cwd` → `TERMINAL_CWD`). `MESSAGING_CWD` is removed and `TERMINAL_CWD`
-  in `.env` is deprecated — the loader warns; canonical is `terminal.cwd`.
+  in `.env` is deprecated — the loader warns; canonical is `terminal.cwd`. `hermes config
+  set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_EXTRA_ENV_KEYS`
+  (or carrying a `setup_hidden_env` platform suffix) to `.env` via `config_env_routing.py` — the
+  file the platform setup flows write — never to the top level of config.yaml.
 - **Three loaders — know which you're in:** `load_cli_config()` (CLI, `cli.py`); `load_config()`
   (`hermes tools/setup`, most subcommands, `hermes_cli/config.py`, merges `DEFAULT_CONFIG`);
   `hermes_cli/config_effective.py::load_user_config_effective()` (gateway runtime via

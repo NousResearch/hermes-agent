@@ -93,7 +93,7 @@ def test_spawn_detached_marks_primary_breakaway_success(monkeypatch, tmp_path, c
     monkeypatch.setattr(
         gateway_windows,
         "_build_gateway_argv",
-        lambda: (argv, cwd, {"HERMES_GATEWAY_DETACHED": "1"}),
+        lambda home=None: (argv, cwd, {"HERMES_GATEWAY_DETACHED": "1"}),
     )
     monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(gateway_windows.subprocess, "Popen", fake_popen)
@@ -131,7 +131,7 @@ def test_spawn_detached_warns_and_marks_no_breakaway_fallback(
     monkeypatch.setattr(
         gateway_windows,
         "_build_gateway_argv",
-        lambda: (
+        lambda home=None: (
             argv,
             cwd,
             {"HERMES_GATEWAY_DETACHED": "1", "SECRET_SENTINEL": "do-not-log"},

@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# (session_db, session_id) for the active agent turn, or None outside one.
+# (session_db, session_id, api_key) for the active agent turn, or None outside one.
 _accounting: ContextVar[Optional[tuple]] = ContextVar("aux_accounting_context", default=None)
 
 # MoA advisor/aggregator usage is already folded into conversation_loop's
@@ -24,14 +24,14 @@ _accounting: ContextVar[Optional[tuple]] = ContextVar("aux_accounting_context", 
 _EXCLUDED_TASKS = frozenset({"moa_reference", "moa_aggregator"})
 
 
-def set_accounting_context(session_db: Any, session_id: Optional[str]):
+def set_accounting_context(session_db: Any, session_id: Optional[str], api_key: Optional[str] = None):
     """Publish the active session's accounting handles; returns the token for ``reset_accounting_context``.
 
     ``None`` handles (no DB / no session id) clear the context.
     """
     if session_db is None or not session_id:
         return _accounting.set(None)
-    return _accounting.set((session_db, session_id))
+    return _accounting.set((session_db, session_id, api_key))
 
 
 def reset_accounting_context(token) -> None:
@@ -59,7 +59,7 @@ def record_aux_usage(
         ctx = _accounting.get()
         if ctx is None:
             return
-        session_db, session_id = ctx
+        session_db, session_id, api_key = ctx
         raw_usage = getattr(response, "usage", None)
         if raw_usage is None:
             return
@@ -76,7 +76,7 @@ def record_aux_usage(
         model = str(getattr(response, "model", "") or "") or "unknown"
         estimated_cost = None
         try:
-            cost = estimate_usage_cost(model, usage, provider=provider, base_url=base_url)
+            cost = estimate_usage_cost(model, usage, provider=provider, base_url=base_url, api_key=api_key)
             if cost.amount_usd is not None:
                 estimated_cost = float(cost.amount_usd)
         except Exception:

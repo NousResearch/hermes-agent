@@ -92,6 +92,9 @@ class DispatchResult:
     reconciled_orphans: list[str] = field(default_factory=list)
     """``running`` cards requeued by :func:`reconcile_orphaned_running` (broken
     claim bookkeeping, dead/gone worker)."""
+    reaped_terminal_workers: list[str] = field(default_factory=list)
+    """Task ids whose worker outlived its closed run and was terminated by
+    :func:`reap_terminal_workers`."""
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
@@ -357,6 +360,47 @@ def _terminate_reclaimed_worker(
         info["sigkill"] = True
     info["terminated"] = not _worker_alive(pid, started_at)
     return info
+
+
+def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
+    """End host-local workers that outlived their run (issue #111791) — a worker
+    that called ``kanban_complete`` and then hung keeps its ``state.db`` sidecar
+    fds open and no ``running``-only sweep can see it once ``tasks.worker_pid`` is
+    cleared. Keys on the closed ``task_runs`` row's retained pid + spawn
+    fingerprint: a legacy row (NULL fingerprint) or a recycled PID is never
+    signalled; a pid that is simply gone just has its evidence cleared. Returns
+    the task ids whose worker was terminated."""
+    rows = conn.execute(
+        "SELECT id, task_id, worker_pid, worker_started_at, claim_lock FROM task_runs "
+        "WHERE ended_at IS NOT NULL AND worker_pid IS NOT NULL AND worker_started_at IS NOT NULL"
+    ).fetchall()
+    host_prefix = _kb._host_prefix()
+    reaped: list[str] = []
+    for row in rows:
+        pid, fingerprint = int(row["worker_pid"]), int(row["worker_started_at"])
+        if pid == os.getpid() or not str(row["claim_lock"] or "").startswith(host_prefix):
+            continue
+        alive = _worker_alive(pid, fingerprint)
+        termination = None
+        if alive:
+            termination = _terminate_reclaimed_worker(
+                pid, row["claim_lock"], signal_fn=signal_fn, started_at=fingerprint)
+            if not termination["terminated"]:
+                continue  # still alive: try again next tick
+        with _kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_runs SET worker_pid = NULL, worker_started_at = NULL "
+                "WHERE id = ? AND worker_pid = ? AND worker_started_at = ?",
+                (row["id"], pid, fingerprint),
+            )
+            if alive:
+                _kb._append_event(
+                    conn, row["task_id"], "terminal_worker_reaped",
+                    {"pid": pid, "worker_started_at": fingerprint, **termination}, run_id=row["id"],
+                )
+        if alive:
+            reaped.append(row["task_id"])
+    return reaped
 
 
 def _worker_survived_termination(termination: dict) -> bool:
@@ -1142,7 +1186,8 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
                      (int(pid), started_at, task_id))
         run_id = _kb._current_run_id(conn, task_id)
         if run_id is not None:
-            conn.execute("UPDATE task_runs SET worker_pid = ? WHERE id = ?", (int(pid), run_id))
+            conn.execute("UPDATE task_runs SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
+                         (int(pid), started_at, run_id))
         _kb._append_event(conn, task_id, "spawned", {"pid": int(pid), "started_at": started_at}, run_id=run_id)
 
 
@@ -1723,6 +1768,7 @@ def _run_reclaim_phase(
 ) -> None:
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
     reap_worker_zombies()
+    result.reaped_terminal_workers = reap_terminal_workers(conn)
     result.reclaimed = _kb.release_stale_claims(conn, failure_limit=failure_limit)
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)

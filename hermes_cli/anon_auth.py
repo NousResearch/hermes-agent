@@ -453,7 +453,7 @@ def classify_mint_exception(exc: BaseException) -> AuthError:
     except Exception:  # httpx unavailable (lazy proxy): the stdlib set stands
         pass
     code = ANON_UNREACHABLE if isinstance(exc, transport) else ANON_SERVER_ERROR
-    wrapped = _anon_err(ANON_FAILURE_COPY[code], code)
+    wrapped = _anon_err(ANON_FAILURE_COPY[code], code, retry_after=getattr(exc, "retry_after", None))
     wrapped.__cause__ = exc
     return wrapped
 

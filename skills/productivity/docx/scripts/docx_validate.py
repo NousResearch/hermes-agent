@@ -13,8 +13,9 @@ Checks (health-check tier, NOT full XSD schema validation):
   - r:embed / r:id references in document.xml resolve to relationships
   - embedded images are non-empty and start with known magic bytes
     (PNG/JPEG/GIF/BMP/TIFF/EMF/WMF/SVG); no PIL required
-  - paragraph and run style ids referenced by the document exist in
-    styles.xml
+  - paragraph, run, and table style ids referenced by document.xml and
+    optional comments.xml exist in styles.xml; malformed comments XML is
+    reported without stopping the remaining checks
 
 Output: {"ok": bool, "issues": [{"severity": "error"|"warning", ...}]}
 Exit code 1 when any error-severity issue is found (warnings exit 0).
@@ -122,14 +123,25 @@ def validate(path: str) -> dict:
         styles_root = etree.fromstring(zf.read("word/styles.xml"))
         defined = {s.get(f"{{{W}}}styleId")
                    for s in styles_root.iter(f"{{{W}}}style")}
-    for tag, attr in ((f"{{{W}}}pStyle", f"{{{W}}}val"),
-                      (f"{{{W}}}rStyle", f"{{{W}}}val"),
-                      (f"{{{W}}}tblStyle", f"{{{W}}}val")):
-        for el in doc_root.iter(tag):
-            sid = el.get(attr)
-            if sid and sid not in defined:
-                _issue(issues, "error", "missing-style",
-                       f"style id referenced but not defined: {sid}")
+    style_roots = [("word/document.xml", doc_root)]
+    if "word/comments.xml" in names:
+        try:
+            comments_root = etree.fromstring(zf.read("word/comments.xml"))
+        except etree.XMLSyntaxError as exc:
+            _issue(issues, "error", "bad-comments-xml", f"word/comments.xml: {exc}")
+        else:
+            style_roots.append(("word/comments.xml", comments_root))
+    for part_name, style_root in style_roots:
+        for tag, attr in ((f"{{{W}}}pStyle", f"{{{W}}}val"),
+                          (f"{{{W}}}rStyle", f"{{{W}}}val"),
+                          (f"{{{W}}}tblStyle", f"{{{W}}}val")):
+            for el in style_root.iter(tag):
+                sid = el.get(attr)
+                if sid and sid not in defined:
+                    detail = f"style id referenced but not defined: {sid}"
+                    if part_name == "word/comments.xml":
+                        detail = f"{part_name}: {detail}"
+                    _issue(issues, "error", "missing-style", detail)
 
     # --- python-docx can open it ------------------------------------------
     try:

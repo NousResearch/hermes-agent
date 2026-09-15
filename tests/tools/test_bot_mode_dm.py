@@ -976,3 +976,38 @@ def test_settled_live_wait_unlinks_the_intent_but_a_pending_one_keeps_it(tmp_pat
     assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", dm_file=dm_file) == 0
     assert not intent.exists()
     assert not dm_file.exists(), "the dm .txt holds the same plaintext as the settled intent"
+
+
+# ── a pending command approval is not a failed delivery (#111716) ─────────────
+
+
+def _approval_gate_pending(monkeypatch):
+    """terminal_tool's real approval gate answers "pending", so the payload is terminal_tool's own shape."""
+    import tools.terminal_tool as tt
+
+    monkeypatch.setattr(tt, "_check_all_guards", lambda *a, **k: {
+        "approved": False, "status": "pending_approval", "command": "cmd", "description": "command flagged",
+    })
+
+
+def test_relay_waiter_pending_approval_reports_queued_not_failed(monkeypatch):
+    """Relay: the envelope is already queued, so this is not a failure, and a resend would duplicate it."""
+    _approval_gate_pending(monkeypatch)
+
+    out = json.loads(bot_mode_dm._spawn_delivery("cmd", "@chii on mac", dm_file=None, task_id=None, agent=None))
+
+    assert "error" not in out
+    assert out["status"] == "sent_no_reply_wake"
+    assert "do not resend" in out["detail"].lower()
+
+
+def test_local_dm_pending_approval_says_nothing_was_sent(monkeypatch, tmp_path):
+    """Local DM: the spawn IS the delivery, so nothing was sent and the plaintext file must not linger."""
+    _approval_gate_pending(monkeypatch)
+    dm_file = tmp_path / "dm.txt"
+    dm_file.write_text("secret payload", encoding="utf-8")
+
+    out = json.loads(bot_mode_dm._spawn_delivery("cmd", "@chii", dm_file=str(dm_file), task_id=None, agent=None))
+
+    assert "nothing was sent" in out["error"].lower()
+    assert not dm_file.exists()

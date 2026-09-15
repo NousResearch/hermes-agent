@@ -955,15 +955,7 @@ export function ChatBar({
         return
       }
 
-      // Empty Enter while busy. With a steerable prompt queued this is the
-      // double-send: Cmd/Ctrl+Enter (or the queue button) parked the words,
-      // a second Enter injects them into the live turn without interrupting —
-      // the same path as the queue panel's steer button. Unsteerable entries
-      // (attachments, slash commands) still send-now via promote+interrupt.
-      // With nothing queued it stays a no-op — interrupting is explicit
-      // (Stop/Esc), never a stray Enter after sending. Gate on the live DOM
-      // payload so a message typed fast / via IME while busy still reaches
-      // submitDraft() instead of being mistaken for an empty Enter.
+      // Empty Enter while busy steers the queued prompt into the live turn; with nothing queued it's a no-op (interrupting stays explicit).
       if (busy && !hasLivePayload) {
         const head = queuedPrompts.find(entry => entry.id !== queueEdit?.entryId)
 

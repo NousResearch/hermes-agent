@@ -1760,6 +1760,90 @@ class TestProfileArg:
 
         assert plist_path == machine_home / "Library" / "LaunchAgents" / "ai.hermes.gateway-orcha.plist"
 
+    def test_launchd_plist_path_falls_back_to_home_when_uid_lookup_fails(self, tmp_path, monkeypatch):
+        """Sandboxed macOS shells can expose a UID that pwd cannot resolve (#57292)."""
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        machine_home = tmp_path / "Users" / "example"
+        machine_home.mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+        monkeypatch.setenv("HOME", str(machine_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+
+        def raise_key_error(uid):
+            raise KeyError(f"getpwuid(): uid not found: {uid}")
+
+        monkeypatch.setattr(pwd, "getpwuid", raise_key_error)
+
+        plist_path = gateway_cli.get_launchd_plist_path()
+
+        assert plist_path == machine_home / "Library" / "LaunchAgents" / "ai.hermes.gateway-mybot.plist"
+
+    def test_launchd_plist_path_prefers_hermes_real_home_when_uid_lookup_fails(self, tmp_path, monkeypatch):
+        """HERMES_REAL_HOME is the explicit operator override for unresolvable UIDs (#57292)."""
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        real_home = tmp_path / "real-home"
+        other_home = tmp_path / "other-home"
+        real_home.mkdir(parents=True)
+        other_home.mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setenv("HERMES_REAL_HOME", str(real_home))
+        monkeypatch.setenv("HOME", str(other_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+
+        def raise_key_error(uid):
+            raise KeyError(f"getpwuid(): uid not found: {uid}")
+
+        monkeypatch.setattr(pwd, "getpwuid", raise_key_error)
+
+        plist_path = gateway_cli.get_launchd_plist_path()
+
+        assert plist_path == real_home / "Library" / "LaunchAgents" / "ai.hermes.gateway-mybot.plist"
+
+    def test_launchd_plist_path_fallback_never_returns_profile_home(self, tmp_path, monkeypatch):
+        """When pwd fails and HOME IS the profile home, the fallback must skip it (#57292)."""
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        profile_home = profile_dir / "home"
+        profile_home.mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+        monkeypatch.setenv("HOME", str(profile_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+
+        def raise_key_error(uid):
+            raise KeyError(f"getpwuid(): uid not found: {uid}")
+
+        monkeypatch.setattr(pwd, "getpwuid", raise_key_error)
+
+        plist_path = gateway_cli.get_launchd_plist_path()
+
+        assert profile_home not in plist_path.parents
+        assert profile_dir not in plist_path.parents
+
+    def test_installed_service_kind_returns_none_when_uid_unresolvable(self, tmp_path, monkeypatch):
+        """`gateway restart`/`status` degrade to "not installed" instead of crashing (#57292)."""
+        machine_home = tmp_path / "Users" / "example"
+        machine_home.mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+        monkeypatch.setenv("HOME", str(machine_home))
+
+        def raise_key_error(uid):
+            raise KeyError(f"getpwuid(): uid not found: {uid}")
+
+        monkeypatch.setattr(pwd, "getpwuid", raise_key_error)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "_systemd_unit_installed", lambda: False)
+
+        assert gateway_cli._installed_service_kind_for(lambda: False) is None
+
 
 class TestRemapPathForUser:
     """Unit tests for _remap_path_for_user()."""

@@ -105,13 +105,7 @@ const list = vi.fn(async () => registry)
 const api = vi.fn(async () => ({ profiles: [] }))
 const setLastUsed = vi.fn(async (id: string) => ({ ok: true, registry: { ...registry, lastUsed: id } }))
 
-// What the (mocked) primary local descriptor reports as its profile. Null
-// mirrors startHermes()'s profile-less primary descriptor; a string mirrors
-// the fixed contract where the primary carries the profile it booted with.
-let primaryLocalDescriptorProfile: null | string = null
-
 beforeEach(() => {
-  primaryLocalDescriptorProfile = null
   localStorage.clear()
   _resetConnectionsForTests()
   $connectionsRegistry.set(null)
@@ -131,11 +125,9 @@ beforeEach(() => {
       connectionId: connectionId ?? undefined,
       mode: connectionId === 'local' ? 'local' : 'remote',
       // The primary local descriptor from startHermes() historically carried
-      // no profile key at all; the registry route fills it in (see the
-      // switch-back regression test at the bottom of this file).
-      ...(connectionId === 'local' && primaryLocalDescriptorProfile === null
-        ? {}
-        : { profile }),
+      // no profile key at all (see the switch-back regression test at the
+      // bottom of this file); every other route publishes its profile.
+      ...(connectionId === 'local' ? {} : { profile }),
       registryScoped: true
     })
   })
@@ -914,8 +906,6 @@ describe('selectConnection', () => {
     // startHermes shape). The remembered pair is the authority for "what was
     // last used here" — switching away and back must still restore 'mac',
     // and the commit must not die in targetIsActive() on the descriptor gap.
-    primaryLocalDescriptorProfile = null
-
     await selectConnection('homelab')
     expect(ensureGatewayAgent).toHaveBeenLastCalledWith('homelab', 'default', expect.anything())
 

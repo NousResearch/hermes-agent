@@ -993,6 +993,7 @@ def _record_task_failure(
     force_trip: bool = False,
     release_claim: bool = False,
     end_run: bool = False,
+    expected_run_id: Optional[int] = None,
     event_payload_extra: Optional[dict] = None,
 ) -> bool:
     """Record a non-success outcome and maybe trip the circuit breaker; every
@@ -1016,6 +1017,11 @@ def _record_task_failure(
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if row is None:
+            return False
+        # Budget-exhaustion finalizers carry the dispatcher-issued run id. A
+        # completed or superseded run must not alter task state, close a newer
+        # run, or append a failure event. Callers without an id keep legacy behavior.
+        if expected_run_id is not None and row["current_run_id"] != expected_run_id:
             return False
         retry_status = (
             _kb._retry_status_for_run(conn, task_id, row["current_run_id"])

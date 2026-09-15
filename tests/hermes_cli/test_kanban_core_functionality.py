@@ -318,10 +318,104 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
         _kb._pid_alive = original_alive
 
 
+def test_post_completion_timeout_record_is_ignored(kanban_home):
+    """A stale finalizer cannot append a timeout after completion wins."""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="completed at budget edge", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None and claimed.current_run_id is not None
+        original_run_id = claimed.current_run_id
+        assert kb.complete_task(conn, tid, summary="verified completion")
+        before_events = kb.list_events(conn, tid)
+
+        blocked = kbd._record_task_failure(
+            conn, tid, "Iteration budget exhausted (90/90)",
+            outcome="timed_out", release_claim=True, end_run=True,
+            expected_run_id=original_run_id,
+            event_payload_extra={"budget_used": 90, "budget_max": 90},
+        )
+
+        task = kb.get_task(conn, tid)
+        assert blocked is False
+        assert task is not None and task.status == "done"
+        assert task.consecutive_failures == 0
+        assert task.last_failure_error is None
+        assert [event.kind for event in kb.list_events(conn, tid)] == [
+            event.kind for event in before_events
+        ]
+        assert kb.latest_run(conn, tid).outcome == "completed"
+    finally:
+        conn.close()
 
 
+def test_stale_finalizer_cannot_timeout_newer_claimed_run(kanban_home):
+    """A finalizer for run N cannot mutate a newly claimed run N+1."""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="replacement claimed before old finalizer", assignee="worker")
+        first = kb.claim_task(conn, tid, claimer="worker:first")
+        assert first is not None and first.current_run_id is not None
+        old_run_id = first.current_run_id
+        assert kb.complete_task(conn, tid, summary="implementation completed")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'ready', completed_at = NULL WHERE id = ?", (tid,),
+            )
+        second = kb.claim_task(conn, tid, claimer="worker:second")
+        assert second is not None and second.current_run_id is not None
+        new_run_id = second.current_run_id
+        assert new_run_id != old_run_id
+        before_events = [event.kind for event in kb.list_events(conn, tid)]
+
+        blocked = kbd._record_task_failure(
+            conn, tid, "stale timeout from implementation worker",
+            outcome="timed_out", release_claim=True, end_run=True,
+            expected_run_id=old_run_id,
+        )
+
+        task = kb.get_task(conn, tid)
+        active_run = conn.execute(
+            "SELECT status, outcome, ended_at FROM task_runs WHERE id = ?", (new_run_id,),
+        ).fetchone()
+        assert blocked is False
+        assert task is not None and task.status == "running"
+        assert task.current_run_id == new_run_id
+        assert task.consecutive_failures == 0
+        assert task.last_failure_error is None
+        assert active_run is not None
+        assert active_run["status"] == "running"
+        assert active_run["outcome"] is None
+        assert active_run["ended_at"] is None
+        assert [event.kind for event in kb.list_events(conn, tid)] == before_events
+    finally:
+        conn.close()
 
 
+def test_matching_finalizer_run_id_records_legitimate_timeout(kanban_home):
+    """Run-id CAS preserves timeout accounting for the active run."""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="active worker timeout", assignee="worker")
+        claimed = kb.claim_task(conn, tid, claimer="worker:active")
+        assert claimed is not None and claimed.current_run_id is not None
+
+        blocked = kbd._record_task_failure(
+            conn, tid, "active worker exhausted budget",
+            outcome="timed_out", release_claim=True, end_run=True,
+            expected_run_id=claimed.current_run_id,
+        )
+
+        task = kb.get_task(conn, tid)
+        run = kb.latest_run(conn, tid)
+        assert blocked is False
+        assert task is not None and task.status == "ready"
+        assert task.current_run_id is None
+        assert task.consecutive_failures == 1
+        assert run is not None and run.outcome == "timed_out"
+        assert [event.kind for event in kb.list_events(conn, tid)][-1] == "timed_out"
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

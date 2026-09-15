@@ -26,6 +26,8 @@ import {
   glassSupportedOn,
   glassSurfaceKeep,
   hudFrostFor,
+  macVibrancyOptions,
+  nativeVibrancyFor,
   normalizeBook,
   normalizeMaterial,
   normalizeMode,
@@ -463,6 +465,26 @@ describe('glassActive', () => {
     expect(glassActive(glass(60))).toBe(true)
     expect(glassActive(glass(0))).toBe(false)
     expect(glassActive(clear(60))).toBe(false)
+  })
+})
+
+describe('nativeVibrancyFor', () => {
+  it('does not create a macOS vibrancy compositor surface while Glass is off', () => {
+    expect(nativeVibrancyFor(glass(0))).toBeNull()
+    expect(nativeVibrancyFor(clear(60))).toBeNull()
+  })
+
+  it('keeps the selected material when the user has enabled Glass', () => {
+    expect(nativeVibrancyFor(glass(60, 'header'))).toBe('header')
+  })
+})
+
+describe('macVibrancyOptions', () => {
+  it('lets AppKit idle the Glass compositor when Hermes is unfocused', () => {
+    const options = macVibrancyOptions(glass(60, 'header'))
+
+    expect(options).toEqual({ vibrancy: 'header' })
+    expect('visualEffectState' in options).toBe(false)
   })
 })
 

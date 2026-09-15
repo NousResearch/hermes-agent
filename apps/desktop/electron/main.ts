@@ -383,6 +383,8 @@ import {
   defaultTranslucencyState,
   glassActive,
   glassSupportedOn,
+  macVibrancyOptions,
+  nativeVibrancyFor,
   normalizeState as normalizeTranslucency,
   opacityNeedsSetting,
   translucencySupportedOn,
@@ -1085,7 +1087,7 @@ function applyWindowTranslucency(win, changed = { backing: true, material: true,
         // don't re-issue it on unrelated updates. Windows has no equivalent
         // animation option; setBackgroundMaterial is instantaneous.
         if (IS_MAC && typeof win.setVibrancy === 'function') {
-          win.setVibrancy(vibrancyForTranslucency(translucencyState), { animationDuration: 150 })
+          win.setVibrancy(nativeVibrancyFor(translucencyState), { animationDuration: 150 })
         }
 
         if (IS_WINDOWS && GLASS_SUPPORTED && typeof win.setBackgroundMaterial === 'function') {
@@ -1116,14 +1118,7 @@ function applyWindowTranslucency(win, changed = { backing: true, material: true,
 // deliberately not chat windows.
 function chatWindowSurfaceOptions() {
   return {
-    vibrancy: IS_MAC ? vibrancyForTranslucency(translucencyState) : undefined,
-    // Pin the material to its ACTIVE appearance: several NSVisualEffectView
-    // materials collapse to a shared inactive look when the window blurs
-    // (measured on macOS 26: sidebar, popover and under-window composited
-    // pixel-identically once unfocused), which would quietly erase the
-    // user's frost choice whenever they click elsewhere. Only observable
-    // under glass — everywhere else the page buries the material.
-    visualEffectState: IS_MAC ? ('active' as const) : undefined,
+    ...(IS_MAC ? macVibrancyOptions(translucencyState) : {}),
     // NOT `transparent: true` on Windows. The backdrop material already makes
     // the window translucent on its own: `IsTranslucent` answers yes off
     // `background_material_` alone, which is what gives the page its transparent

@@ -11,7 +11,7 @@
  * then fail to bundle.
  */
 
-import { glassActive, type TranslucencyState, windowOpacityFor } from '../../shared/src/translucency'
+import { glassActive, type GlassMaterial, type TranslucencyState, windowOpacityFor } from '../../shared/src/translucency'
 
 export {
   backgroundMaterialFor,
@@ -71,6 +71,26 @@ export {
  */
 export function windowBackingOptions(state: TranslucencyState, themedColor: string): { backgroundColor?: string } {
   return glassActive(state) ? {} : { backgroundColor: themedColor }
+}
+
+/**
+ * The native macOS material is opt-in. A sidebar vibrancy view still allocates
+ * a compositor surface even while Glass is visually off; leaving it attached
+ * makes unrelated secondary-display rendering share that expensive path.
+ */
+export function nativeVibrancyFor(state: TranslucencyState) {
+  return glassActive(state) ? state.material : null
+}
+
+/**
+ * Constructor options for macOS Glass. Deliberately do not pin
+ * `visualEffectState: 'active'`: when Hermes blurs, AppKit must be free to
+ * quiesce the material instead of keeping the display compositor active.
+ */
+export function macVibrancyOptions(state: TranslucencyState): { vibrancy?: GlassMaterial } {
+  const vibrancy = nativeVibrancyFor(state)
+
+  return vibrancy ? { vibrancy } : {}
 }
 
 /**

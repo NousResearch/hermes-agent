@@ -85,6 +85,11 @@ class TestParseMcpBody:
         with pytest.raises(keyless_mcp.KeylessMCPError, match="boom"):
             keyless_mcp._parse_mcp_body(body)
 
+    def test_valid_empty_result_is_a_soft_failure(self):
+        body = json.dumps({"result": {"content": []}})
+        with pytest.raises(keyless_mcp.KeylessMCPSoftError, match="no usable text"):
+            keyless_mcp._parse_mcp_body(body)
+
     def test_garbage_raises(self):
         with pytest.raises(keyless_mcp.KeylessMCPError):
             keyless_mcp._parse_mcp_body("<html>nope</html>")
@@ -472,6 +477,16 @@ class TestKeylessFailover:
         out = keyless_mcp.search_with_failover("exa", "q")
         assert out["success"] is False
         assert not called  # peer never tried
+
+    def test_search_fails_over_on_exa_empty_response(self, monkeypatch):
+        self._pin(monkeypatch, "exa")
+        empty_envelope = json.dumps({"result": {"content": []}})
+        monkeypatch.setattr(keyless_mcp, "mcp_call", lambda *args: empty_envelope)
+        monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, "exa", keyless_mcp.exa_search_keyless)
+        monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, "parallel", lambda q, l: self._ok("parallel"))
+        out = keyless_mcp.search_with_failover("exa", "\u6f22\u5b57")
+        assert out["success"] is True
+        assert out["data"]["served_by"] == "parallel"
 
     def test_search_all_throttled_reports_ring(self, monkeypatch):
         self._pin(monkeypatch, "exa")

@@ -32,7 +32,12 @@ class KeylessMCPError(RuntimeError):
     """A keyless MCP call failed (transport, rate limit, or tool error)."""
 
 
+class KeylessMCPSoftError(KeylessMCPError):
+    """A valid MCP response had no usable result for this query."""
+
+
 _RATE_LIMIT_MARKERS = ("rate limit", "rate-limit", "ratelimit", "too many requests", "429", "quota exceeded", "slow down")
+_SOFT_SEARCH_MARKERS = ("no usable text", "no usable search results")
 
 # vendor -> (display label, env key, signup URL) for the standard failure hint.
 _VENDOR_HINTS = {
@@ -130,11 +135,16 @@ def _parse_mcp_body(body: str) -> str:
         err = data.get("error")
         if err:
             raise KeylessMCPError(str(err.get("message") or err))
-        result = data.get("result") or {}
+        result = data.get("result")
+        if not isinstance(result, dict):
+            return None
         texts = [c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict)]
         if result.get("isError"):
             raise KeylessMCPError(" ".join(t for t in texts if t) or "MCP tool call failed")
-        return next((str(t) for t in texts if t), None)
+        text = next((str(t) for t in texts if t), None)
+        if text is None:
+            raise KeylessMCPSoftError("MCP response contained no usable text")
+        return text
 
     stripped = body.strip()
     candidates = [stripped] if stripped.startswith("{") else []
@@ -229,7 +239,15 @@ def _parse_exa_search_text(text: str, limit: int) -> List[Dict[str, Any]]:
 
 
 def exa_search_keyless(query: str, limit: int = 5) -> Dict[str, Any]:
-    return _search("exa", lambda: _parse_exa_search_text(mcp_call(EXA_MCP_URL, "web_search_exa", {"query": query, "numResults": max(1, int(limit))}), limit))
+    def _rows() -> List[Dict[str, Any]]:
+        rows = _parse_exa_search_text(
+            mcp_call(EXA_MCP_URL, "web_search_exa", {"query": query, "numResults": max(1, int(limit))}), limit,
+        )
+        if not rows:
+            raise KeylessMCPSoftError("MCP response contained no usable search results")
+        return rows
+
+    return _search("exa", _rows)
 
 
 def exa_extract_keyless(urls: List[str]) -> List[Dict[str, Any]]:
@@ -339,30 +357,33 @@ def _ring_order(name: str) -> List[str]:
 _ALL_PAID_MSG = "All keyless web providers are pinned to paid tiers."
 
 
-def _walk_ring(name: str, kind: str, call, throttled) -> tuple:
-    """Call each vendor from :func:`_ring_order` until a result is not ``throttled``.
+def _walk_ring(name: str, kind: str, call, retryable) -> tuple:
+    """Call each vendor from :func:`_ring_order` until a result is not ``retryable``.
     Returns ``(order, vendor, result, exhausted)``; ``order`` is empty (result None)
     when every vendor is pinned paid."""
     order = _ring_order(name)
     vendor, result = None, None
     for i, vendor in enumerate(order):
         result = call(vendor)
-        if not throttled(result):
+        if not retryable(result):
             return order, vendor, result, False
         if i + 1 < len(order):
-            logger.info("keyless %s %s throttled; failing over to %s", vendor, kind, order[i + 1])
+            logger.info("keyless %s %s unavailable; failing over to %s", vendor, kind, order[i + 1])
     return order, vendor, result, True
 
 
 def search_with_failover(name: str, query: str, limit: int = 5) -> Dict[str, Any]:
-    """Rate-limit-shaped errors advance to the next vendor, other errors stop the walk
-    (a malformed query fails everywhere). ``data.served_by`` is set when the serving
-    vendor differs from *name*."""
+    """Rate limits and valid empty MCP results advance to the next vendor; malformed
+    responses and other errors stop the walk. ``data.served_by`` is set when the
+    serving vendor differs from *name*."""
 
-    def _throttled(result: Dict[str, Any]) -> bool:
-        return not result.get("success") and _is_rate_limitish(result.get("error", ""))
+    def _retryable(result: Dict[str, Any]) -> bool:
+        error = result.get("error", "")
+        return not result.get("success") and (
+            _is_rate_limitish(error) or any(marker in error.lower() for marker in _SOFT_SEARCH_MARKERS)
+        )
 
-    order, vendor, result, exhausted = _walk_ring(name, "search", lambda v: _KEYLESS_SEARCHERS[v](query, limit), _throttled)
+    order, vendor, result, exhausted = _walk_ring(name, "search", lambda v: _KEYLESS_SEARCHERS[v](query, limit), _retryable)
     if not order:
         return search_fail(_ALL_PAID_MSG)
     if exhausted:

@@ -83,6 +83,9 @@ async def test_setup_dm_topics_creates_when_no_thread_id():
     )
     # Should be in cache
     assert adapter._dm_topics["222:NewTopic"] == 999
+    # The created thread_id must also remain in the shared runtime config so
+    # a replacement TelegramAdapter does not recreate the topic on reconnect.
+    assert adapter.config.extra["dm_topics"][0]["topics"][0]["thread_id"] == 999
     # Should persist
     adapter._persist_dm_topic_thread_id.assert_called_once_with(222, "NewTopic", 999)
 

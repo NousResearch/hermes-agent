@@ -389,6 +389,10 @@ def _unwrap_tool_search_call(
         underlying, underlying_args, err = _ts.resolve_underlying_call(function_args)
         if err or not underlying:
             return function_name, function_args, None
+        if underlying == _ts.CONNECTOR_BATCH_SENTINEL:
+            # Both executors retain the wrapper: scope/probe/hooks run per entry
+            # in the batch dispatcher, not against a synthetic registry name.
+            return function_name, function_args, None
         if underlying not in _tool_search_scoped_names(agent):
             return function_name, function_args, (
                 f"'{underlying}' is not available in this session. Use tool_search to find tools you can call."
@@ -782,7 +786,9 @@ def _resolve_sequential_tool_timeout() -> float | None:
 # 420 s deadline every real batch "timed out" while its children ran on as orphans, and the orchestrator
 # spent the following hours polling transcripts (measured: 332 timeouts, ~$4k of orchestrator turns in
 # one run).
-_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS = frozenset({"delegate_task"})
+# ``manage_connections`` waits on the connection operation's own deadline; the generic deadline
+# would return tool_timeout while its approval card is still open.
+_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS = frozenset({"delegate_task", "manage_connections"})
 
 
 def _abandoned_sequential_result(agent, ref: _ToolCallRef, message: str, result_cls, **outcome) -> _ManagedToolResult:
@@ -935,7 +941,8 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
         elif function_name == "terminal":
             command = function_args.get("command", "")
             if _is_destructive_command(command):
-                cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                from agent.runtime_cwd import scope_terminal_cwd
+                cwd = function_args.get("workdir") or scope_terminal_cwd() or os.getcwd()
                 agent._checkpoint_mgr.ensure_checkpoint(cwd, f"before terminal: {command[:60]}")
 
 

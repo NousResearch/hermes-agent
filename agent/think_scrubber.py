@@ -13,7 +13,15 @@ from __future__ import annotations
 import re
 from typing import Tuple
 
-__all__ = ["StreamingThinkScrubber"]
+__all__ = ["StreamingThinkScrubber", "THINK_TAG_NAMES", "THINK_OPEN_TAGS", "THINK_CLOSE_TAGS"]
+
+# The one list of model reasoning tag names. Every surface that hides reasoning (this scrubber,
+# the CLI stream filter, the gateway stream filter, the final-response regex stripper) binds to
+# these; a tag added here is covered everywhere. Consumers match case-insensitively, so the
+# literal tags are lowercase.
+THINK_TAG_NAMES: Tuple[str, ...] = ("think", "thinking", "reasoning", "thought", "REASONING_SCRATCHPAD")
+THINK_OPEN_TAGS: Tuple[str, ...] = tuple(f"<{name.lower()}>" for name in THINK_TAG_NAMES)
+THINK_CLOSE_TAGS: Tuple[str, ...] = tuple(f"</{name.lower()}>" for name in THINK_TAG_NAMES)
 
 
 class StreamingThinkScrubber:
@@ -24,11 +32,9 @@ class StreamingThinkScrubber:
     was emitted yet — decides whether an open tag at buffer position 0 sits at a block boundary).
     """
 
-    _OPEN_TAG_NAMES: Tuple[str, ...] = ("think", "thinking", "reasoning", "thought", "REASONING_SCRATCHPAD")
-
-    # Lowercased literal tags so the hot path does string ops, not regex per feed().
-    _OPEN_TAGS: Tuple[str, ...] = tuple(f"<{name.lower()}>" for name in _OPEN_TAG_NAMES)
-    _CLOSE_TAGS: Tuple[str, ...] = tuple(f"</{name.lower()}>" for name in _OPEN_TAG_NAMES)
+    # Literal tags so the hot path does string ops, not regex per feed().
+    _OPEN_TAGS: Tuple[str, ...] = THINK_OPEN_TAGS
+    _CLOSE_TAGS: Tuple[str, ...] = THINK_CLOSE_TAGS
     _ALL_TAGS: Tuple[str, ...] = _OPEN_TAGS + _CLOSE_TAGS
     _MAX_TAG_LEN: int = max(len(tag) for tag in _ALL_TAGS)
     # Orphan close tag plus trailing whitespace (matches _strip_think_blocks case 3).

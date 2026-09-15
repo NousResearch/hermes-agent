@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional
 
 from tools.async_delegation import _new_delegation_id, record_unit_child
-from tools.delegate_tool_child_run import _detach_child, _fabricated_entry, _signal_child_stop
+from tools.delegate_tool_child_run import _attach_child, _detach_child, _fabricated_entry, _signal_child_stop
 from tools.delegate_tool_progress import (
     SUBAGENT_FAILURE_STATUSES, _clean_error_text, _print_completion_line, _quiet, format_batch_tag,
 )
@@ -193,7 +193,7 @@ _SYNC_FALLBACK_NOTES = {
     "no_async": (
         "background=true is not available in this session — it cannot "
         "receive a detached subagent result after the turn ends (a "
-        "one-shot runner such as `hermes -z`, a cron job, a Kanban "
+        "finite chat using -Q, --oneshot, or non-TTY stdio, `hermes -z`, a cron job, a Kanban "
         "worker, or a stateless HTTP endpoint). The subagent(s) ran SYNCHRONOUSLY and the result is included above."
     ),
     "at_capacity": (
@@ -215,6 +215,14 @@ def _resolve_async_wake_sid(origin_wake_sid: str, origin_session_history_deliver
 
     API completion only persists a row; this does not authorize a model wake. The
     continuation must read that row, not an authoritative caller-owned snapshot."""
+    from gateway.session_context import get_session_env
+
+    # Finite chat owns no later turn to consume a detached result. Reuse its
+    # approval/lifecycle marker without disabling terminal notify completions:
+    # those have their own bounded exit linger and durable result receipts.
+    if get_session_env("HERMES_SINGLE_QUERY_SESSION") == "1":
+        return None
+
     try:
         # Finite sessions cannot route a detached subagent result back to the agent after their turn/process
         # ends. This includes stateless HTTP requests (#10760) and one-shot Kanban workers (#63169). Fall
@@ -366,6 +374,12 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         progress_fn=lambda: _batch_progress_token(child_agents), **routing,
     )
 
+def _restore_parent_cancellation(unit: _Batch) -> None:
+    """Rejected children stay owned by the parent: re-attach them (``_attach_child`` replays a stop that
+    arrived while async admission had them detached)."""
+    for _, _, child in unit.children:
+        _attach_child(unit.parent_agent, child)
+
 def _dispatch_background(batch: _Batch) -> str:
     """Dispatch the call as independent async units (see ``_units_of``) and return the tool result JSON. Every unit
     of one call shares ONE pool slot (``slot_key``), so grouping never changes capacity accounting. Falls back to
@@ -379,10 +393,6 @@ def _dispatch_background(batch: _Batch) -> str:
 
     parent_agent = batch.parent_agent
     session_key, origin_ui_session_id = _resolve_async_session_key(parent_agent, batch.origin_ui_session_id)
-    # The children's lifecycle is owned by the async registry now: drop them from the parent's
-    # interrupt-propagation list (_build_child_agent attached them, which is correct for sync runs).
-    for (_, _, c) in batch.children:
-        _detach_child(parent_agent, c)
     routing = dict(
         session_key=session_key, origin_ui_session_id=origin_ui_session_id, origin_session_id=wake_sid,
         parent_session_id=getattr(parent_agent, "session_id", None), max_async_children=_get_max_async_children(),
@@ -397,11 +407,16 @@ def _dispatch_background(batch: _Batch) -> str:
         # cache/delegation/live/<id>/; several units suffix it (-1, -2, ...) and the call keeps the bare id.
         unit_id = batch.live_deleg_id if len(units) == 1 else (f"{batch.live_deleg_id}-{k + 1}" if batch.live_deleg_id else None)
         unit.unit_id = unit_id = unit_id or _new_delegation_id()  # fixed before the runner can start
+        # The worker can start before admission returns. Detach only this unit:
+        # unsubmitted units must still receive parent stops while a fallback runs.
+        for _, _, child in unit.children:
+            _detach_child(parent_agent, child)
         dispatch = _dispatch_unit(unit, unit_id, slot_key, routing)
         if dispatch.get("status") == "dispatched":
             slot_key = slot_key or dispatch["delegation_id"]
             dispatched.append((unit, dispatch["delegation_id"]))
             continue
+        _restore_parent_cancellation(unit)
         if not dispatched:
             logger.info(
                 "delegate_task: async pool at capacity (%s); running the whole batch synchronously instead.",
@@ -411,7 +426,7 @@ def _dispatch_background(batch: _Batch) -> str:
         # Later units of an admitted call share its slot and cannot be capacity-rejected; a scheduler failure runs
         # the unit inline so no task is silently dropped.
         logger.warning("delegate_task: unit %d/%d not accepted (%s); running it inline.", k + 1, len(units), dispatch.get("error"))
-        inline_results.extend(_execute_and_aggregate(unit, honor_parent_interrupt=False)["results"])
+        inline_results.extend(_execute_and_aggregate(unit)["results"])
     payload = _dispatched_payload(batch, dispatched)
     if inline_results:
         payload["inline_results"] = inline_results

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_state_common import (
-    AUTO_VACUUM_MIN_FREELIST_RATIO, _placeholders, _sql_session_last_active, escape_like as _escape_like
+    AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _placeholders, _sql_session_last_active, escape_like as _escape_like
 )
 
 # caplog tests pin the "hermes_state" logger name.
@@ -95,8 +95,9 @@ class SessionMaintenanceMixin:
                       SELECT 1 FROM messages WHERE messages.session_id = sessions.id
                   )
             """, (cutoff,)).fetchall()]
+            for chunk in _id_chunks(ids):
+                conn.execute(f"DELETE FROM sessions WHERE id IN ({_placeholders(chunk)})", chunk)
             if ids:
-                conn.execute(f"DELETE FROM sessions WHERE id IN ({_placeholders(ids)})", ids)
                 self._delete_unreferenced_system_prompts(conn)
             return ids
         removed_ids = self._execute_write(_do) or []
@@ -282,12 +283,13 @@ class SessionMaintenanceMixin:
                                 if self._write_guards_reject(conn, sid, allow_closed_compression_parent=True)}
             if not session_ids:
                 return 0
-            conn.execute(f"UPDATE sessions SET parent_session_id = NULL "
-                         f"WHERE parent_session_id IN ({_placeholders(session_ids)})", list(session_ids))
-            for sid in session_ids:
-                conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
-                conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
-                removed_ids.append(sid)
+            # Batched: a cron-heavy store prunes tens of thousands of ids in one call.
+            for chunk in _id_chunks(session_ids):
+                ph = _placeholders(chunk)
+                conn.execute(f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk)
+                conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
+                conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
+                removed_ids.extend(chunk)
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
         count = self._execute_write(_do)

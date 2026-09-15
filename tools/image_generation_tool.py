@@ -212,7 +212,7 @@ def _build_payload(model_id, prompt, aspect_ratio, seed, overrides, image_urls=N
     spec + overrides, filtered to the model whitelist.
 
     Edit endpoints mostly auto-infer size, so the size key is sent only when ``edit_supports``
-    lists it. ``prompt`` (and ``image_urls`` on edits) survive a whitelist gap: every FAL
+    lists it. ``prompt`` (and the source-image key on edits) survive a whitelist gap: every FAL
     endpoint requires them, so a catalog mistake can't send a broken request.
     """
     meta = FAL_MODELS[model_id]
@@ -225,9 +225,10 @@ def _build_payload(model_id, prompt, aspect_ratio, seed, overrides, image_urls=N
     payload: Dict[str, Any] = dict(meta.get("defaults", {}))
     payload["prompt"] = (prompt or "").strip()
     required = {"prompt"}
-    if edit:
-        payload["image_urls"] = list(image_urls)
-        required.add("image_urls")
+    if edit:  # a few edit endpoints (Kling Image v3) take a singular `image_url` string instead of the list
+        image_param = meta.get("edit_image_param") or "image_urls"
+        payload[image_param] = list(image_urls)[0] if image_param != "image_urls" else list(image_urls)
+        required.add(image_param)
     size_key = _SIZE_KEY_BY_STYLE.get(meta["size_style"])
     if size_key is None and not edit:
         raise ValueError(f"Unknown size_style: {meta['size_style']!r}")
@@ -319,7 +320,8 @@ def _agent_cache_base_for_env(env: Any) -> str | None:
             return f"{str(remote_home).rstrip('/')}/.hermes"
         if env.__class__.__name__ in _CONTAINER_HOME_ENVS:
             return "/root/.hermes"
-    backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
+    from tools.terminal_scope import terminal_env
+    backend = (terminal_env("TERMINAL_ENV") or "local").strip().lower()
     return _CACHE_BASE_BY_BACKEND.get(backend)
 
 
@@ -539,11 +541,8 @@ def check_image_generation_requirements() -> bool:
     if configured is None:
         return False
     # Probe only the selected plugin: a cloud key alone must not opt a user into a paid backend.
-    try:
-        provider = _get_plugin_provider(configured)
-        return bool(provider and provider.is_available())
-    except Exception:
-        return False
+    provider = _get_plugin_provider(configured)
+    return bool(provider and provider.is_available())
 
 
 # --- Registry ---
@@ -713,7 +712,8 @@ def _confine_source_images(image_url, reference_image_urls, task_id, *, permitte
     credential guard) so generation obeys the same confinement as vision. URLs/data: pass
     through; local backend is a no-op. Returns ``(image_url, reference_image_urls, error_json_or_None)``.
     """
-    if (os.getenv("TERMINAL_ENV") or "local").strip().lower() in ("", "local"):
+    from tools.terminal_scope import terminal_env
+    if (terminal_env("TERMINAL_ENV") or "local").strip().lower() in ("", "local"):
         return image_url, reference_image_urls, None
     from model_tools import _run_async
     from tools.image_source import ImageResolutionError, resolve_local_source_to_data_url

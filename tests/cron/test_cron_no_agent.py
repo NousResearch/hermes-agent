@@ -368,3 +368,105 @@ def test_agent_job_provider_classification_unchanged(error, expected):
 
     job = {"name": "daily-digest", "no_agent": False}
     assert expected in _summarize_cron_failure_for_delivery(job, error)
+
+
+def test_a_routed_profile_script_never_receives_a_launch_only_name(hermes_env, monkeypatch):
+    """A no_agent script fired for a SIBLING profile runs with that profile's scope overlaid and
+    NONE of the launch profile's residue (#107695 review): a name the launch ``.env`` defines, and a
+    name a launch external source SUPPLIED — applied, or skipped because a process value already won
+    (``skipped_existing``, so it never entered the provenance map) — reach the child unset. The
+    routed profile's own values come through, and the parent ``os.environ`` is never mutated."""
+    import os
+
+    from agent import secret_scope
+    from agent.secret_sources import registry as reg_module
+    from agent.secret_sources.base import FetchResult
+    from agent.secret_sources.registry import ApplyReport, SourceReport
+    from cron.scheduler_script import _run_job_script
+    from hermes_cli import env_loader
+    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    launch = get_process_hermes_home()
+    (launch / ".env").write_text("LAUNCH_ONLY_VALUE=launch-only\nCUSTOM_CRON_VALUE=launch\n", encoding="utf-8")
+    (launch / "config.yaml").write_text("secrets:\n  test-source:\n    enabled: true\n", encoding="utf-8")
+    for name, value in (("LAUNCH_ONLY_VALUE", "launch-only"), ("CUSTOM_CRON_VALUE", "launch"),
+                        ("LAUNCH_VAULT_ONLY", "launch-vault-value"), ("LAUNCH_SKIPPED_SECRET", "launch-value")):
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(env_loader, "_SOURCE_SUPPLIED_NAMES", set())
+    monkeypatch.setattr(env_loader, "_SECRET_SOURCES", {"LAUNCH_VAULT_ONLY": "vault", "ROUTED_VAULT_ONLY": "vault"})
+    monkeypatch.setattr(env_loader, "_APPLIED_HOMES", set())
+    monkeypatch.setattr(env_loader, "_SECRET_SOURCE_VALUES_BY_HOME", {})
+    monkeypatch.setattr(reg_module, "apply_all", lambda _cfg, home_path, **_kw: ApplyReport(
+        sources=[SourceReport(name="test-source", label="Test Source", result=FetchResult(),
+                              applied=[], skipped_existing=["LAUNCH_SKIPPED_SECRET"])],
+        provenance={}))
+    env_loader._apply_external_secret_sources(launch)  # the real registry path; the source loses to the env
+    environ_before = dict(os.environ)
+
+    routed = launch / "profiles" / "ops"
+    (routed / "scripts").mkdir(parents=True, exist_ok=True)
+    # Under the routed home override the runner resolves scripts against THAT profile's scripts dir.
+    script = routed / "scripts" / "probe_launch_only.sh"
+    script.write_text(
+        '#!/bin/bash\necho "${CUSTOM_CRON_VALUE}|${ROUTED_VAULT_ONLY}|${LAUNCH_ONLY_VALUE:-<unset>}'
+        '|${LAUNCH_VAULT_ONLY:-<unset>}|${LAUNCH_SKIPPED_SECRET:-<unset>}"\n'
+    )
+
+    home_token = set_hermes_home_override(str(routed))
+    context_token = secret_scope.set_multiplex_context(True)
+    scope_token = secret_scope.set_secret_scope(
+        {"CUSTOM_CRON_VALUE": "routed", "ROUTED_VAULT_ONLY": "routed-vault-value"})
+    try:
+        ok, output = _run_job_script("probe_launch_only.sh")
+    finally:
+        secret_scope.reset_secret_scope(scope_token)
+        secret_scope.reset_multiplex_context(context_token)
+        reset_hermes_home_override(home_token)
+
+    assert ok, output
+    assert output.strip() == "routed|routed-vault-value|<unset>|<unset>|<unset>"
+    assert dict(os.environ) == environ_before
+
+
+def test_a_routed_profile_script_keeps_administrator_managed_values_over_its_own(hermes_env, monkeypatch):
+    """Managed-scope precedence (#107695 review on f5f88d5058): the administrator's managed ``.env`` is
+    applied LAST with override in the launch process, so it beats the user's own ``.env``. Managed keys
+    are not launch residue, and they are re-applied over the routed scope so the child sees the same
+    precedence the launch process does."""
+    import os
+
+    from agent import secret_scope
+    from cron.scheduler_script import _run_job_script
+    from hermes_cli import env_loader, managed_scope
+    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    launch = get_process_hermes_home()
+    managed = launch / "managed"
+    managed.mkdir()
+    (managed / ".env").write_text("ORG_POLICY_FLAG=managed-value\n", encoding="utf-8")
+    monkeypatch.setattr(env_loader, "_LOADED_DOTENV_KEYS", set(env_loader._LOADED_DOTENV_KEYS))
+    monkeypatch.setattr(env_loader, "_MANAGED_DOTENV_KEYS", set())
+    monkeypatch.setattr(managed_scope, "get_managed_dir", lambda: managed)
+    monkeypatch.setenv("ORG_POLICY_FLAG", "placeholder")
+    env_loader._apply_managed_env()  # the boot-time managed load
+    assert os.environ["ORG_POLICY_FLAG"] == "managed-value"
+
+    routed = launch / "profiles" / "ops"
+    (routed / "scripts").mkdir(parents=True, exist_ok=True)
+    script = routed / "scripts" / "probe_policy.sh"
+    script.write_text('#!/bin/bash\necho "${ORG_POLICY_FLAG:-<unset>}"\n')
+
+    home_token = set_hermes_home_override(str(routed))
+    context_token = secret_scope.set_multiplex_context(True)
+    # The routed user's own .env carries a competing value for the managed key.
+    scope_token = secret_scope.set_secret_scope({"ORG_POLICY_FLAG": "user-value"})
+    try:
+        ok, output = _run_job_script("probe_policy.sh")
+    finally:
+        secret_scope.reset_secret_scope(scope_token)
+        secret_scope.reset_multiplex_context(context_token)
+        reset_hermes_home_override(home_token)
+
+    assert ok, output
+    assert output.strip() == "managed-value"
+    assert os.environ["ORG_POLICY_FLAG"] == "managed-value"  # parent untouched

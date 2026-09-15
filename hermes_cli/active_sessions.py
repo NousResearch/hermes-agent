@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from hermes_constants import get_default_hermes_root, get_hermes_home
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -287,17 +288,7 @@ def _valid_process_start(v: Any) -> bool:
 
 
 def _write_entries(path: Path, entries: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    try:
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"entries": entries}, fh, sort_keys=True)
-        os.replace(tmp, path)
-    finally:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
+    atomic_json_write(path, {"entries": entries}, indent=None, sort_keys=True)
 
 
 def _process_start_time(pid: int) -> Optional[float]:

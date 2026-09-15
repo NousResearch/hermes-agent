@@ -118,6 +118,17 @@ def _sticky_notice(text: str, level: str, key: str) -> AgentNotice:
     return AgentNotice(text=text, level=level, kind=CREDITS_NOTICE_KIND, key=key, id=key)
 
 
+def _is_nous_welcome_route(base_url: str) -> bool:
+    """True when *base_url* is the Nous welcome host, which serves only the free tier. Local data only;
+    False wherever the free tier is not built in. The host is the evidence, not the model name: the paid
+    inference host can serve ``nous/welcome`` to a named account, and that account's depletion is real."""
+    try:
+        from hermes_cli.anon_auth import route_is_welcome_host
+    except ImportError:
+        return False
+    return route_is_welcome_host(base_url)
+
+
 def is_free_tier_model(model: str, base_url: str = "") -> bool:
     """True when *model* is a Nous free-tier model, using ONLY local data: (1) ``:free`` suffix — canonical
     Nous free SKU marker; (2) ``stealth/`` prefix — stealth-preview SKUs are free without the suffix
@@ -130,6 +141,11 @@ def is_free_tier_model(model: str, base_url: str = "") -> bool:
         return True
     if not base_url:
         return False
+    # (4) the Nous free tier: the welcome host serves only the free tier. A free-tier identity carries $0
+    # by design, so the portal seed reports paid_access=False for it; that is not a depleted account, and
+    # "run /topup" means nothing to it. Local data only, same as the rules above.
+    if _is_nous_welcome_route(base_url):
+        return True
     try:
         from hermes_cli.models import _is_model_free
         from hermes_cli.models_pricing import peek_cached_pricing

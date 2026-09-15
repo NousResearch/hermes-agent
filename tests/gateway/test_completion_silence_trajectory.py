@@ -16,6 +16,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
+from gateway.response_filters import display_kind_for_event
 from gateway.run_turn_runner import TurnRunner
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from gateway.turn_context import TurnContext
@@ -167,6 +168,7 @@ async def test_late_completion_recovery_and_delivery(monkeypatch, tmp_path, coun
     monkeypatch.setattr(runner, "_run_agent", run_queued_agent)
     ctx = TurnContext(
         source=source, session_key=key, session_id="late-completion-test", history=history, context_prompt="",
+        persist_user_display_kind=display_kind_for_event(event),
     )
     prior = {"final_response": "NO_REPLY", "messages": history}
     result = await runner._run_agent_queued_followup(

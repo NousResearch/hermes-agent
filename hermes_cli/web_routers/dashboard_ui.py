@@ -204,7 +204,7 @@ async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallB
     if not identifier and not catalog_name:
         raise HTTPException(status_code=400, detail="Provide an identifier or a catalog_name.")
     result = dashboard_install_plugin(
-        identifier, force=body.force, enable=body.enable, catalog_name=catalog_name or None)
+        identifier, force=body.force, enable=body.enable, catalog_name=catalog_name or None, ref=body.ref)
     result = _plugin_action(result, "Install failed.", rescan=True)
     # Strip internal paths from the response
     result.pop("after_install_path", None)

@@ -1,6 +1,7 @@
 import type { BillingBlock } from '@hermes/shared'
 
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
+import { reportFirstBuildTurnComplete } from '@/components/onboarding-chat/first-build'
 import { translateNow } from '@/i18n'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
@@ -351,10 +352,19 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
     completeAssistantMessage(sessionId, finalText, payload?.response_previewed, failure, occurredAt)
 
+    // Onboarding's first build: between turns is the only moment Setup may
+    // put a check-in into that session (no-op everywhere else).
+    reportFirstBuildTurnComplete(sessionId, finalText)
+
     // Structured billing wall forwarded by the gateway (out of credits /
     // payment required) — cache it + raise a billing-specific toast.
     if (payload?.billing) {
       surfaceBillingBlock(sessionId, payload.billing)
+    }
+
+    // History-commit note (e.g. a mid-turn desync) the gateway chose to surface.
+    if (typeof payload?.warning === 'string' && payload.warning.trim()) {
+      notify({ kind: 'warning', message: payload.warning })
     }
 
     if (isActiveEvent) {

@@ -67,19 +67,12 @@ def _new_runtime_ids(params: dict) -> tuple[str, str]:
     return uuid.uuid4().hex[:8], _resolve_session_source(_str_param(params, "source") or None)
 
 
-@contextlib.contextmanager
 def _profile_build_scope(profile_home):
-    """Bind HERMES_HOME + secret scope for an agent build (home alone leaves get_secret() on the LAUNCH .env)."""
-    if not profile_home:
-        yield
-        return
-    home_token = set_hermes_home_override(str(profile_home))
-    secret_token = set_secret_scope(build_profile_secret_scope(Path(str(profile_home))))
-    try:
-        yield
-    finally:
-        reset_hermes_home_override(home_token)
-        reset_secret_scope(secret_token)
+    """Bind HERMES_HOME + secret + terminal scope for an agent build: the same composition a turn
+    binds (``_session_profile_runtime_scope``). Home alone leaves ``get_secret()`` on the LAUNCH
+    ``.env``; home + secrets alone leaves ``_make_agent``'s terminal probing on the launch process's
+    ambient ``TERMINAL_*`` (a ``terminal.backend: docker`` secondary built a ``local`` agent)."""
+    return _session_profile_runtime_scope({"profile_home": str(profile_home) if profile_home else None})
 
 
 def _make_agent_in_context(sid: str, key: str, **kwargs):
@@ -270,9 +263,38 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
                             source=source, cwd=record["cwd"],
                             profile_name=profile_name_for_home(profile_home) or _current_profile_name(), compensate=True)
             record["pending_title"] = None
+            # The first submit's _persist_branch_seed is the fallback for a failed seed, not a second copy.
+            record["_branch_seed_persisted"] = True
     except Exception:
         logger.warning("seeded-branch persistence failed for %s; falling back to lazy row creation", key,
                        exc_info=True)
+
+
+def _seed_row(record: dict) -> None:
+    """Persist a parentless seeded session NOW, for the reason ``_seed_branch_row`` gives: seeded content is
+    intent, not an abandoned draft, and the renderer's post-create hydration reads the DB. The client's title
+    lands with the row so a restart before the first prompt keeps it. Best-effort — the first-prompt path is
+    the fallback, and it re-copies the WHOLE seed, so a partial copy is rolled back here (the compensation
+    ``_persist_branch`` applies to branch children) rather than left to be duplicated."""
+    key = record.get("session_key")
+    try:
+        if _ensure_session_db_row(record) is False:
+            return
+        _persist_branch_seed(record)
+    except Exception:
+        logger.warning("seeded-session persistence failed for %s; falling back to lazy row creation", key, exc_info=True)
+    if not record.get("_branch_seed_persisted"):
+        with contextlib.suppress(Exception), _session_db(record) as db:
+            if db is not None:
+                db.delete_session(key)
+        return
+    try:
+        if title := record.get("pending_title"):
+            with _session_db(record) as db:
+                if db is not None and db.set_session_title(key, title):
+                    record["pending_title"] = None
+    except Exception:
+        logger.debug("seeded-session title write failed for %s; pending_title stays queued", key, exc_info=True)
 
 
 def _create_overrides(params: dict) -> tuple:
@@ -317,6 +339,7 @@ def _(rid, params: dict) -> dict:
             "cols": int(params.get("cols", 80)), "created_at": now, "edit_snapshots": {},
             "explicit_cwd": explicit_cwd,
             "history": history, "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,
+            "seeded": bool(history),  # gates _persist_branch_seed: only create-time history is unpersisted
             "cwd": _completion_cwd(params), "inflight_turn": None, "last_active": now,
             "model_override": session_model_override,
             "create_reasoning_override": create_reasoning_override,
@@ -327,9 +350,10 @@ def _(rid, params: dict) -> dict:
             "profile_home": str(profile_home) if profile_home is not None else None,
             "running": False, "session_key": key, "show_reasoning": _load_show_reasoning(), "source": source,
             "slash_worker": None, "tool_progress_mode": _load_tool_progress_mode(), "tool_started_at": {},
-            "transport": current_transport() or _stdio_transport}
+            "transport": current_transport() or _stdio_transport,
+            "auth_user_id": _transport_auth_user_id(current_transport())}
         _register_session_cwd(_sessions[sid])
-    # No DB row here (drafts left "Untitled" litter): created on the first prompt — except seeded branch children.
+    # No DB row here (drafts left "Untitled" litter): created on the first prompt — except seeded sessions.
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop launch (and every "New agent" /
     # draft) opens a session here just to paint the composer, so eagerly creating a row left an "Untitled"
     # empty session behind for every launch the user never typed into. The row is now created lazily on the
@@ -342,22 +366,45 @@ def _(rid, params: dict) -> dict:
     # optimistic row vanishes on restart. Persisting up front also means a restart keeps the branch (both
     # reports lost it) and the title lands in the parent's lineage instead of falling back to a
     # message-preview name. Title mirrors the TUI /branch naming.
+    # The same holds for a seeded session WITHOUT a parent (a client opening a chat with its first turns
+    # already written): the transcript exists only in memory, so a restart before the first prompt lost it
+    # and the post-create resume 404'd. Persist it up front too; only empty drafts stay lazy.
     if parent_session_id and history:
         _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
+    elif history:
+        _seed_row(_sessions[sid])
     # Return immediately so Ink can paint; the AIAgent builds right after the flush.
     _schedule_agent_build(sid)
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
     cwd = _sessions[sid]["cwd"]
     override = session_model_override or {}
+    messages = _history_to_messages(history)  # hidden seed rows are not on the wire; count what is (as resume does)
     return _ok(rid, {
-        "session_id": sid, "stored_session_id": key, "message_count": len(history),
-        "messages": _history_to_messages(history),
+        "session_id": sid, "stored_session_id": key, "message_count": len(messages), "messages": messages,
         # Reflect the override now so the client doesn't clobber its sticky pick.
         "info": {"model": override.get("model") if override else _resolve_model(),
                  **({"provider": override["provider"]} if override.get("provider") else {}),
                  "tools": {}, "skills": {}, "cwd": cwd, "branch": git_probe.branch(cwd),
                  "project": _project_info_for_cwd(cwd), "lazy": True, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                  "profile_name": _response_profile_name(profile)}})
+
+
+def _unarchive_recoverable(db, session_id: str) -> bool:
+    """``unarchive_recoverable_session`` that works on a read-only listing handle (foreign profile):
+    the rare write escalates to a short-lived registry writer instead of writing on the reader."""
+    if not getattr(db, "read_only", False):
+        return db.unarchive_recoverable_session(session_id)
+    from hermes_state_registry import acquire
+    try:
+        wdb = acquire(db.db_path)
+    except Exception:
+        logger.warning("Bot Chat unarchive skipped: writer unavailable for %s", db.db_path, exc_info=True)
+        return False
+    try:
+        return wdb.unarchive_recoverable_session(session_id)
+    finally:
+        with contextlib.suppress(Exception):
+            wdb.close()
 
 
 def _session_list_by_title(rid, db, title_lookup: str) -> dict:
@@ -369,7 +416,7 @@ def _session_list_by_title(rid, db, title_lookup: str) -> dict:
         from tools.bot_mode_probe import BOT_CHAT_TITLE
         # A Bot Chat archived by the ws-orphan reaper / agent_close is an accident (the desktop would mint
         # replacements forever): resurrect recoverable reasons only. Re-fetch by ID — title is not UNIQUE.
-        if title_lookup == BOT_CHAT_TITLE and db.unarchive_recoverable_session(row["id"]):
+        if title_lookup == BOT_CHAT_TITLE and _unarchive_recoverable(db, row["id"]):
             # The canonical Bot Chat is identity-scoped: an archive stamped by the ws-orphan reaper or older
             # agent cleanup (ws_orphan_reap / agent_close) is an accident, not user intent, and hiding the
             # row here makes the desktop mint transient replacements forever (#92687). Resurrect it — same
@@ -482,7 +529,7 @@ class _Resume:
     def restore(self):
         """``(sanitized model history, display history, raw history)`` for a cold/eager resume."""
         raw, display = self.read_history()
-        return sanitize_replay_history(raw), display, raw
+        return canonicalize_replay_history(raw), display, raw
 
     def info(self, cwd: str, overrides: dict) -> dict:
         return _lazy_resume_info(cwd, model=(overrides.get("model_override") or {}).get("model") or "",
@@ -532,10 +579,10 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
                 _rebind_live_transport(live_sid, live, transport)
         else:
             _cancel_ws_orphan_reap(live_sid)
-    history = live.get("history") or []
+    messages = ctx.messages(live.get("history") or [])  # count the wire, as every other resume path does
     return _ok(ctx.rid, _attach_todo_state({
         "session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""),
-        "message_count": len(history), "messages": ctx.messages(history),
+        "message_count": len(messages), "messages": messages,
         "info": {"model": _resolve_model(), "lazy": True, "profile_name": profile_name_for_home(live.get("profile_home")) or _response_profile_name(ctx.profile)}}, live))
 
 
@@ -746,7 +793,7 @@ def _resume_eager(ctx: _Resume) -> dict:
             agent = _make_agent_in_context(
                 sid, ctx.target, session_db=ctx.db, platform_override=source,
                 context_cwd_is_launch_artifact=(source in _LAUNCH_CWD_NOT_A_WORKSPACE and not ctx.profile_resume_cwd),
-                **stored_runtime_overrides)
+                auth_user_id=_transport_auth_user_id(current_transport()), **stored_runtime_overrides)
         except Exception as e:
             return _err(ctx.rid, 5000, f"resume failed: {e}")
     with _session_resume_lock:
@@ -855,7 +902,7 @@ def _(rid, params: dict) -> dict:
         live_sid, live = next(
             ((sid, sess) for sid, sess in list(_sessions.items()) if sess.get("session_key") == target), ("", None))
     branch, root = git_probe.branch(resolved), git_probe.common_repo_root(resolved)
-    with _profile_db(params) as db:
+    with _profile_db(params, writer=True) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5007)
         # A draft has no row yet; the live re-home still applies (row inherits cwd on write).
@@ -916,7 +963,7 @@ def _(rid, params: dict) -> dict:
     if any(s.get("session_key") == target for _sid, s in snapshot):
         return _err(rid, 4023, "cannot delete an active session")
     profile_home = _profile_home((params.get("profile") or "").strip() or None)
-    with _profile_db(params) as db:
+    with _profile_db(params, writer=True) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5036)
         try:
@@ -984,7 +1031,7 @@ def _(rid, params: dict) -> dict:
     LIVE runtime id first (unpersisted drafts via ``pending_hidden``), then a stored id/key in the profile db."""
     hidden = is_truthy_value(params.get("hidden", True))
     session, err = _sess_nowait(params, rid)
-    with (_profile_db(params) if session is None else _session_db(session)) as db:
+    with (_profile_db(params, writer=True) if session is None else _session_db(session)) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5007)
         try:
@@ -1506,8 +1553,21 @@ def _billing_view(name: str, module: str, builder: str, serializer: str, fallbac
             return _ok(rid, dict(fallback))
 
 
-_billing_view("billing.state", "agent.billing_view", "build_billing_state", "_serialize_billing_state",
-              {"ok": True, "logged_in": False, "error": "could not load billing state"})
+@method("billing.state")
+def _(rid, params: dict) -> dict:
+    """Read-only billing view (no scope required); fail-open. The Nous free tier has no account to
+    bill, so its state is answered locally (``free_tier`` set, ``logged_in`` false) without a portal
+    round-trip that could only fail."""
+    try:
+        from agent.billing_view import BillingState, build_billing_state
+        from hermes_cli.anon_auth import guest_carries_inference
+        if guest_carries_inference():
+            return _ok(rid, _serialize_billing_state(BillingState(logged_in=False), free_tier=True))
+        return _ok(rid, _serialize_billing_state(build_billing_state()))
+    except Exception:
+        return _ok(rid, {"ok": True, "logged_in": False, "free_tier": False, "error": "could not load billing state"})
+
+
 _billing_view("usage.bars", "agent.billing_usage", "build_usage_model", "_serialize_usage_model",  # two-bar $ view
               {"ok": True, "available": False})
 _billing_view("subscription.state", "agent.subscription_view", "build_subscription_state",
@@ -1615,34 +1675,27 @@ def _try_get_session(db, key: str) -> dict:
     return {}
 
 
-def _status_dt(value, fallback=None):
-    if value:
-        with contextlib.suppress(Exception):
-            return datetime.fromtimestamp(float(value))
-    return fallback or datetime.now()
-
-
 @_session_method("session.status")
 def _(rid, params: dict, session: dict) -> dict:
-    from hermes_constants import display_hermes_home
+    from hermes_cli.status_report import build_status_fields, status_lines
     key = session.get("session_key") or params.get("session_id") or ""
-    agent = session.get("agent")
-    meta = _status_row(session, params, key)
-    created = _status_dt(meta.get("started_at"))
-    updated = next((_status_dt(meta[f], created) for f in ("updated_at", "last_updated_at", "last_activity_at")
-                    if meta.get(f)), created)
     mirror = _metadata_mirror(session)
-    provider = getattr(agent, "provider", None) or mirror.get("provider") or "unknown"
-    model = getattr(agent, "model", None) or mirror.get("model") or "(unknown)"
+    # Under turn isolation the compute host owns the live route: a stale in-process agent object
+    # must not outrank the host's mirrored model/provider. Before the first host frame fills the
+    # mirror, the in-process agent is still the only route we know (same order as _session_info).
+    live_agent = session.get("agent")
+    agent = None if session.get("_compute_host_active") else live_agent
+    fields = build_status_fields(
+        key, agent, _status_row(session, params, key),
+        model=mirror.get("model") or getattr(live_agent, "model", None),
+        provider=mirror.get("provider") or getattr(live_agent, "provider", None),
+        tokens=_session_usage_snapshot(session).get("total"), agent_running=bool(session.get("running")),
+    )
     project = _project_info_for_cwd(_display_session_cwd(session))
-    title = (meta.get("title") or "").strip()
     lines = [
-        "Hermes TUI Status", "", f"Session ID: {key}", f"Path: {display_hermes_home()}",
-        *([f"Project: {project['name']}"] if project else []), *([f"Title: {title}"] if title else []),
-        f"Model: {model} ({provider})", f"Created: {created.strftime('%Y-%m-%d %H:%M')}",
-        f"Last Activity: {updated.strftime('%Y-%m-%d %H:%M')}",
-        f"Tokens: {int(_session_usage_snapshot(session).get('total') or 0):,}",
-        f"Agent Running: {'Yes' if session.get('running') else 'No'}"]
+        "Hermes TUI Status", "", *status_lines(fields, "session_id", "path"),
+        *([f"Project: {project['name']}"] if project else []),
+        *status_lines(fields, "title", "model", "created", "last_activity", "tokens", "agent_running")]
     return _ok(rid, {"output": "\n".join(lines)})
 
 
@@ -1861,11 +1914,13 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
     """Build + register the branched agent in the parent's profile; the DEDICATED db handle is ours until
     ``_transfer_db_to_agent`` (released here on failure)."""
     parent_home = session.get("profile_home")
+    parent_user_id = _session_auth_user_id(session)
     branch_db, branch_owns_db = _profile_session_db(parent_home) if parent_home else (None, False)
     try:
         with _profile_build_scope(parent_home):
             agent = _make_agent_in_context(new_sid, new_key, session_db=branch_db, platform_override=source,
-                                           context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session))
+                                           context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session),
+                                           auth_user_id=parent_user_id)
             _init_session(new_sid, new_key, agent, list(history), cols=session.get("cols", 80),
                           cwd=_session_cwd(session), session_db=branch_db, source=source, profile_home=parent_home,
                           explicit_cwd=bool(session.get("explicit_cwd")))
@@ -1873,6 +1928,7 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
             branch_owns_db = False
         if new_sid in _sessions:
             _sessions[new_sid]["active_session_lease"] = None  # claimed lazily on the first turn
+            _sessions[new_sid]["auth_user_id"] = parent_user_id
         return agent
     finally:
         if branch_owns_db and branch_db is not None:
@@ -2139,8 +2195,10 @@ def _(rid, params: dict) -> dict:
     from tui_gateway import event_replay as er
     frames = er.events_since(sid, last_seen)
     # ``epoch``: in-process seq — clients reset watermarks when this differs from gateway.ready's.
+    # ``open_requests``: server→client requests still unanswered — the ring cannot carry "a question still
+    # waiting", so the reconnecting client re-delivers these to its request handlers.
     return _ok(rid, {"events": frames, "latest_seq": er.latest_seq(sid), "truncated": er.is_truncated(sid, last_seen),
-                     "count": len(frames), "epoch": er.replay_epoch()})
+                     "count": len(frames), "epoch": er.replay_epoch(), "open_requests": _open_requests(sid)})
 
 
 @method("session.events.stats")

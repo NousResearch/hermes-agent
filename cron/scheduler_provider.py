@@ -6,6 +6,7 @@ execution + delivery stay in cron.scheduler.run_job / _deliver_result; never rei
 from __future__ import annotations
 
 import contextlib
+from contextvars import ContextVar
 import inspect
 import logging
 import threading
@@ -50,6 +51,20 @@ def _note_tick_failure(exc: BaseException, consecutive_failures: int) -> int:
     return 0
 
 
+def _guarded_store_write(action, description, *args, **kwargs):
+    """Run a ticker status-marker write so a failing store never ends the ticker thread.
+
+    The gateway runs the provider on an unsupervised daemon thread: one escaping exception
+    there stops cron silently while the gateway keeps serving (#111010). Heartbeat/error
+    markers are diagnostics for ``hermes cron status`` — losing one write to a broken store
+    must degrade to a logged warning, not thread death.
+    """
+    try:
+        action(*args, **kwargs)
+    except BaseException as e:  # noqa: BLE001 - mirror the tick body's BaseException policy
+        logger.warning("Cron %s write failed: %s", description, e, exc_info=True)
+
+
 def _profile_entry(entry) -> tuple:
     """Normalize a ``profile_homes`` entry (``(name, home)`` tuple or bare home) to ``(name,
     home)``."""
@@ -66,15 +81,49 @@ def _existing_profile_homes(profile_homes: list) -> list:
     profile's home untouched, which is the correct invariant: a home that does not exist cannot hold jobs to
     fire.
     """
+    if callable(profile_homes):
+        # Live enumerator (multiplex gateway): a profile created after startup is ticked without a
+        # restart; a raising enumerator keeps this cycle at zero homes rather than killing the ticker.
+        try:
+            profile_homes = list(profile_homes())
+        except Exception:
+            logger.warning("cron profile enumeration failed; skipping this cycle", exc_info=True)
+            return []
     return [entry for entry in profile_homes if Path(_profile_entry(entry)[1]).is_dir()]
+
+
+# Set by _profile_cron_scope: this task fires a profile OTHER than the process's own. A marker only.
+# Multiplex semantics are switched on where the profile's secret scope is installed
+# (cron.scheduler._install_fire_secret_scope) and off with it — never at the tick — so no read can
+# be fail-closed without a scope to read: run_one_job's restart-safe handoff runs before that
+# scope and keeps today's semantics (its own scope is #107413 / #106050's seam).
+_ROUTED_PROFILE_FIRE: ContextVar[bool] = ContextVar("_ROUTED_PROFILE_FIRE", default=False)
+
+
+def routed_profile_fire() -> bool:
+    """True inside a tick for a profile other than the process's own (marker, see above)."""
+    return _ROUTED_PROFILE_FIRE.get()
 
 
 @contextlib.contextmanager
 def _profile_cron_scope(home):
-    """Scope the calling thread to one profile's home + cron store for the block."""
-    from cron.jobs import use_cron_store
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    """Scope the calling thread to one profile's home + cron store for the block.
 
+    A profile OTHER than the process's own is MARKED as a routed fire (``routed_profile_fire``).
+    The desktop backend ticks every local profile from one process "like a multiplex gateway"
+    without setting the process-global multiplex flag, so every isolation keyed on
+    ``is_multiplex_active()`` was inert for those fires: a sibling profile's ``.env`` landed in
+    the shared ``os.environ`` with ``override=True`` and a scope miss read the launch profile's
+    credentials (#107692). ``cron.scheduler._install_fire_secret_scope`` turns the marker into
+    multiplex semantics for exactly the span the profile's secret scope covers. The process's own
+    profile keeps single-profile semantics. The override and the marker both reach the pool
+    worker via ``copy_context()``. Under a real multiplexer the process flag is already on."""
+    from cron.jobs import use_cron_store
+    from hermes_constants import (
+        get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override)
+
+    routed = Path(home).resolve() != get_process_hermes_home().resolve()
+    routed_token = _ROUTED_PROFILE_FIRE.set(routed)
     # Record per-profile heartbeat after each tick cycle. Distinguish a COMPLETED cycle (``_tick_error``
     # unset) — where each profile's beat reflects its own outcome, so a yielding profile does not darken
     # healthy siblings — from an aborted one (exception), where no profile completed and all beats are
@@ -85,6 +134,7 @@ def _profile_cron_scope(home):
             yield
     finally:
         reset_hermes_home_override(home_token)
+        _ROUTED_PROFILE_FIRE.reset(routed_token)
 
 
 class CronScheduler(ABC):
@@ -393,7 +443,7 @@ class InProcessCronScheduler(CronScheduler):
         # jobs actually fire instead of languishing in a store no ticker owns (#69377). Without this, only
         # the process-global HERMES_HOME (the default profile) is ticked. Heartbeats and recovery are also
         # scoped per profile so `hermes cron status` reflects liveness for every profile independently.
-        if profile_homes:
+        if profile_homes is not None and (callable(profile_homes) or profile_homes):
             self._start_multiplex(
                 stop_event, profile_homes=profile_homes, adapters=adapters, loop=loop,
                 interval=interval, can_dispatch=can_dispatch, profile_adapters=profile_adapters,
@@ -401,13 +451,23 @@ class InProcessCronScheduler(CronScheduler):
             )
             return
 
-        recovered = self.recover_interrupted()
-        if recovered:
-            logger.warning(
-                "Marked %d interrupted cron execution(s) unknown after restart", recovered
+        # Startup recovery and the initial heartbeat run before the guarded loop; a broken
+        # store here must not take the whole ticker thread down (#111010) — the loop's own
+        # per-tick handling logs, persists the reason and keeps the thread alive.
+        try:
+            recovered = self.recover_interrupted()
+            if recovered:
+                logger.warning(
+                    "Marked %d interrupted cron execution(s) unknown after restart", recovered
+                )
+            # Heartbeat before the first sleep so `hermes cron status` sees a live ticker
+            # immediately.
+            record_ticker_heartbeat()
+        except BaseException as e:
+            logger.error("Cron startup recovery error: %s", e, exc_info=True)
+            _guarded_store_write(
+                record_ticker_error, "startup error", f"{type(e).__name__}: {e}"
             )
-        # Heartbeat before the first sleep so `hermes cron status` sees a live ticker immediately.
-        record_ticker_heartbeat()
         # EMFILE backoff: don't hammer the store while fds are exhausted; a clean tick resets it.
         consecutive_failures = 0
         while not stop_event.is_set():
@@ -435,16 +495,18 @@ class InProcessCronScheduler(CronScheduler):
                 else:
                     logger.error("Cron tick error: %s", e, exc_info=True)
                 # Persist the reason so `hermes cron status` (separate process) shows WHY.
-                record_ticker_error(f"{type(e).__name__}: {e}")
+                _guarded_store_write(
+                    record_ticker_error, "tick error", f"{type(e).__name__}: {e}"
+                )
                 consecutive_failures = _note_tick_failure(e, consecutive_failures)
             # Liveness every iteration; success marker only on a clean tick.
             # EMFILE: reclaim fds + back off exponentially so the exhausted process stops hammering the
             # store while it has no chance of making progress (#87644).
             # Record liveness every iteration; bump the success marker only on a clean tick, so status can
             # tell "alive but failing every tick" from "actually firing jobs" (#32612, #32895).
-            record_ticker_heartbeat(success=ok)
+            _guarded_store_write(record_ticker_heartbeat, "heartbeat", success=ok)
             if ok:
-                clear_ticker_error()
+                _guarded_store_write(clear_ticker_error, "error clear")
                 consecutive_failures = 0
             stop_event.wait(_backoff_wait_seconds(interval, consecutive_failures))
 
@@ -462,10 +524,12 @@ class InProcessCronScheduler(CronScheduler):
         )
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
 
+        initial_homes = _existing_profile_homes(profile_homes)
         logger.info(
-            "Multiplex cron scheduler started for %d profile(s): %s",
-            len(profile_homes),
-            [p[0] if isinstance(p, tuple) else p for p in profile_homes],
+            "Multiplex cron scheduler started for %d profile(s): %s%s",
+            len(initial_homes),
+            [p[0] if isinstance(p, tuple) else p for p in initial_homes],
+            " (re-enumerated every cycle)" if callable(profile_homes) else "",
         )
 
         def tick_adapters_for(profile_name):
@@ -482,7 +546,7 @@ class InProcessCronScheduler(CronScheduler):
         # Recovery + heartbeat per profile; one broken store must not abort startup for the others.
         # A profile may have been deleted since this snapshot was taken; never recreate a deleted home's
         # cron workspace via the heartbeat below (#47368).
-        for entry in _existing_profile_homes(profile_homes):
+        for entry in initial_homes:
             _, home = _profile_entry(entry)
             try:
                 with _profile_cron_scope(home):
@@ -506,11 +570,20 @@ class InProcessCronScheduler(CronScheduler):
             # Worst failure this cycle (fd exhaustion wins); backoff applied once per cycle.
             # See #87644.
             _cycle_exc: BaseException | None = None
-            cycle_homes = [_profile_entry(e) for e in _existing_profile_homes(profile_homes)]
-            if profile_gate is not None:
-                cycle_homes = [
-                    (name, home) for name, home in cycle_homes if profile_gate(name, home)
-                ]
+            # Enumeration and gating run on the ticker thread; a raising gate callable must
+            # fail THIS cycle (logged, no heartbeats, NO ticks), not end the thread (#111010).
+            # Publish the list only once the gate has filtered it: a partial assignment would
+            # tick the ungated set — the exact stand-down the Desktop gate exists for (#100489).
+            cycle_homes: list = []
+            try:
+                enumerated = [_profile_entry(e) for e in _existing_profile_homes(profile_homes)]
+                if profile_gate is not None:
+                    enumerated = [(name, home) for name, home in enumerated if profile_gate(name, home)]
+                cycle_homes = enumerated
+            except BaseException as e:
+                logger.error("Cron profile enumeration error: %s", e, exc_info=True)
+                _tick_error = f"{type(e).__name__}: {e}"
+                consecutive_failures = _note_tick_failure(e, consecutive_failures)
             try:
                 if can_dispatch is not None and not can_dispatch():
                     logger.debug("Cron dispatch paused while gateway drains existing work")
@@ -546,13 +619,21 @@ class InProcessCronScheduler(CronScheduler):
             for _, home in cycle_homes:
                 with _profile_cron_scope(home):
                     _home_ok = _tick_error is None and str(home) not in _profile_errors
-                    record_ticker_heartbeat(success=_home_ok)
+                    _guarded_store_write(
+                        record_ticker_heartbeat, "heartbeat", success=_home_ok
+                    )
                     if _home_ok:
-                        clear_ticker_error()
+                        _guarded_store_write(clear_ticker_error, "error clear")
                     elif str(home) in _profile_errors:
-                        record_ticker_error(_profile_errors[str(home)])
+                        _guarded_store_write(
+                            record_ticker_error,
+                            "tick error",
+                            _profile_errors[str(home)],
+                        )
                     elif _tick_error:
-                        record_ticker_error(_tick_error)
+                        _guarded_store_write(
+                            record_ticker_error, "tick error", _tick_error
+                        )
             if ok:
                 consecutive_failures = 0
             stop_event.wait(_backoff_wait_seconds(interval, consecutive_failures))

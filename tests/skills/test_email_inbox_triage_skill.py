@@ -90,7 +90,7 @@ def test_mutation_boundary_is_default_safe():
 
 
 def test_voice_calibration_is_evidence_based():
-    """Drafting must calibrate against the user's own sent replies (Energy-inspired),
+    """Drafting must calibrate against the user's own sent replies,
     with an explicit fallback when the Sent folder is unavailable."""
     _, body = _frontmatter_and_body()
     assert "Calibrate the user's voice" in body

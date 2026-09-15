@@ -2711,18 +2711,26 @@ def redact_key(key: str) -> str:
 
 # Key names (case-insensitive, exact match) whose VALUE is a credential and must be masked
 # before printing any config dict. Exact-match so ``token_count`` / ``secret_santa`` stay visible.
+# Bare ``auth`` is deliberately absent: ``mcp_servers.<s>.auth: oauth`` is a documented mode enum.
 _SECRET_CONFIG_KEYS = frozenset({
     "api_key", "apikey", "key", "token", "access_token", "refresh_token", "id_token",
-    "secret", "client_secret", "password", "passwd", "auth", "authorization",
+    "secret", "client_secret", "password", "passwd", "authorization",
     "private_key", "bearer", "jwt"})
-# Env-map shapes (``mcp_servers.<s>.env.FOO_API_KEY``, ``GEMINI_API_KEY``) — the same suffixes
-# ``_is_env_config_key`` routes to .env. Suffix-only so ``token_count`` stays visible.
-_SECRET_CONFIG_KEY_SUFFIXES = ("_api_key", "_token", "_secret", "_password")
+# Env-map shapes (``mcp_servers.<s>.env.FOO_API_KEY``, ``FAL_KEY``, ``AWS_SECRET_ACCESS_KEY``) and
+# the suffixes ``_is_env_config_key`` routes to .env. Suffix-only so ``token_count`` stays visible.
+_SECRET_CONFIG_KEY_SUFFIXES = ("_api_key", "_token", "_secret", "_password", "_key", "_access_key")
+# .env-routed keys are credentials by default; these suffixes name the non-secret exceptions
+# (``TERMINAL_SSH_HOST``, ``TOOL_GATEWAY_URL``, ``BROWSERBASE_PROJECT_ID``).
+_NON_SECRET_KEY_SUFFIXES = ("_url", "_host", "_user", "_id", "_domain", "_scheme")
+_ENV_PLACEHOLDER_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
 
 
 def _is_secret_config_key(key: str) -> bool:
-    """Whether the LAST segment of a config key names a credential value."""
-    leaf = key.rsplit(".", 1)[-1].lower()
+    """Whether the LAST segment of a config key names a credential value. Header names
+    (``mcp_servers.<s>.headers.X-API-Key``) are folded to snake_case before matching."""
+    leaf = key.rsplit(".", 1)[-1].lower().replace("-", "_")
+    if _is_env_config_key(key):
+        return not leaf.endswith(_NON_SECRET_KEY_SUFFIXES)
     return leaf in _SECRET_CONFIG_KEYS or leaf.endswith(_SECRET_CONFIG_KEY_SUFFIXES)
 
 
@@ -2737,6 +2745,7 @@ def redact_config_value(value: Any, _depth: int = 0) -> Any:
         return {
             k: mask_secret(v)
             if isinstance(k, str) and _is_secret_config_key(k) and isinstance(v, str) and v
+            and not _ENV_PLACEHOLDER_RE.match(v)
             else redact_config_value(v, _depth + 1)
             for k, v in value.items()}
     if isinstance(value, list):
@@ -3522,7 +3531,11 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
 
     from agent.redact import _redact_enabled, mask_secret
     if not raw and _redact_enabled():
-        value = mask_secret(value) if isinstance(value, str) and _is_secret_config_key(key) else redact_config_value(value)
+        if isinstance(value, str):
+            if _is_secret_config_key(key) and not _ENV_PLACEHOLDER_RE.match(value):
+                value = mask_secret(value)
+        else:
+            value = redact_config_value(value)
 
     print(_format_config_get_value(value, as_json=as_json))
 

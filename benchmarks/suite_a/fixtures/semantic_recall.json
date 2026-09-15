@@ -1,0 +1,952 @@
+[
+  {
+    "id": "sr_e01",
+    "fact": "The project uses PostgreSQL 15 with the pgvector extension",
+    "query": "What Postgres database version does the project run?",
+    "gold_answer": "PostgreSQL 15 with pgvector extension",
+    "difficulty": "easy",
+    "distractors": [
+      "Database vacuum runs automatically every Sunday at 2 AM UTC",
+      "Conference room displays show real-time availability from Google Calendar",
+      "The open-source committee reviews contribution proposals monthly",
+      "Desk booking uses the Robin app with preferred seating zones",
+      "The product roadmap is reviewed quarterly with stakeholder input"
+    ]
+  },
+  {
+    "id": "sr_e02",
+    "fact": "The backend API is deployed on port 8080",
+    "query": "What port is the backend API running on?",
+    "gold_answer": "Port 8080",
+    "difficulty": "easy",
+    "distractors": [
+      "Redis is exposed on port 6379 for internal services only",
+      "The office kitchen was renovated last quarter with new espresso machines",
+      "The company blog publishes engineering deep-dives every other week",
+      "Desk booking uses the Robin app with preferred seating zones",
+      "The wellness program offers $500 annual stipend for gym memberships"
+    ]
+  },
+  {
+    "id": "sr_e03",
+    "fact": "Alice Chen is the tech lead for the payments team",
+    "query": "Who leads the payments team?",
+    "gold_answer": "Alice Chen",
+    "difficulty": "easy",
+    "distractors": [
+      "Subscription billing runs on the 1st of each month in UTC timezone",
+      "The office kitchen was renovated last quarter with new espresso machines",
+      "The patent incentive program awards $2000 for each filed patent",
+      "New employee onboarding includes a 2-week bootcamp program",
+      "Team building events include quarterly hackathons and game nights"
+    ]
+  },
+  {
+    "id": "sr_e04",
+    "fact": "The CI pipeline uses GitHub Actions with ubuntu-latest runners",
+    "query": "What CI system and runner OS do we use?",
+    "gold_answer": "GitHub Actions with ubuntu-latest",
+    "difficulty": "easy",
+    "distractors": [
+      "Code linting runs ESLint and Prettier in the pre-commit hook",
+      "The engineering book club meets bi-weekly to discuss technical literature",
+      "Conference room displays show real-time availability from Google Calendar",
+      "Lunch catering is available Tuesday through Thursday from the cafeteria",
+      "Expense reports require manager approval for amounts over $500"
+    ]
+  },
+  {
+    "id": "sr_e05",
+    "fact": "The Python version for this project is 3.11.4",
+    "query": "Which Python version are we using?",
+    "gold_answer": "Python 3.11.4",
+    "difficulty": "easy",
+    "distractors": [
+      "Python virtual environments are managed with pyenv for version isolation",
+      "The patent incentive program awards $2000 for each filed patent",
+      "The annual engineering summit is held in September with all teams",
+      "The company holiday party is scheduled for December 15th this year",
+      "The engineering book club meets bi-weekly to discuss technical literature"
+    ]
+  },
+  {
+    "id": "sr_e06",
+    "fact": "Redis is used for session caching with a 30-minute TTL",
+    "query": "What's the session cache and its timeout?",
+    "gold_answer": "Redis with 30-minute TTL",
+    "difficulty": "easy",
+    "distractors": [
+      "Redis Cluster is deployed with 3 masters and 3 replicas",
+      "The engineering book club meets bi-weekly to discuss technical literature",
+      "The product roadmap is reviewed quarterly with stakeholder input",
+      "The open-source committee reviews contribution proposals monthly",
+      "The annual engineering summit is held in September with all teams"
+    ]
+  },
+  {
+    "id": "sr_e07",
+    "fact": "The frontend is built with Next.js 14 and TypeScript",
+    "query": "What framework and language is the frontend in?",
+    "gold_answer": "Next.js 14 with TypeScript",
+    "difficulty": "easy",
+    "distractors": [
+      "The frontend bundle size is monitored with Bundlephobia checks in CI",
+      "The patent incentive program awards $2000 for each filed patent",
+      "The office kitchen was renovated last quarter with new espresso machines",
+      "The company holiday party is scheduled for December 15th this year",
+      "The parking garage has EV charging stations on level 2"
+    ]
+  },
+  {
+    "id": "sr_e08",
+    "fact": "Docker images are stored in the GitHub Container Registry (ghcr.io)",
+    "query": "Where are our Docker images hosted?",
+    "gold_answer": "GitHub Container Registry (ghcr.io)",
+    "difficulty": "easy",
+    "distractors": [
+      "Docker health checks run every 10 seconds with 3 retries before restart",
+      "New employee onboarding includes a 2-week bootcamp program",
+      "The intern program runs from June through August each year",
+      "The design sprint process follows the Google Ventures 5-day framework",
+      "The company blog publishes engineering deep-dives every other week"
+    ]
+  },
+  {
+    "id": "sr_e09",
+    "fact": "The staging environment is at staging.example.com",
+    "query": "What's the URL for staging?",
+    "gold_answer": "staging.example.com",
+    "difficulty": "easy",
+    "distractors": [
+      "Load testing targets the staging environment before production releases",
+      "Employee referral bonus is $5000 for engineering positions",
+      "The company holiday party is scheduled for December 15th this year",
+      "The company uses Slack with dedicated channels per team and project",
+      "Lunch catering is available Tuesday through Thursday from the cafeteria"
+    ]
+  },
+  {
+    "id": "sr_e10",
+    "fact": "Bob Martinez handles infrastructure and DevOps",
+    "query": "Who's responsible for DevOps?",
+    "gold_answer": "Bob Martinez",
+    "difficulty": "easy",
+    "distractors": [
+      "David Park leads the frontend engineering team",
+      "Office temperature is maintained between 68-72F by the building management",
+      "New employee onboarding includes a 2-week bootcamp program",
+      "Remote work policy allows up to 3 days per week from home",
+      "Interview panels consist of 4 engineers and 1 hiring manager"
+    ]
+  },
+  {
+    "id": "sr_e11",
+    "fact": "The API rate limit is 100 requests per minute per user",
+    "query": "What's the rate limit for API calls?",
+    "gold_answer": "100 requests per minute per user",
+    "difficulty": "easy",
+    "distractors": [
+      "API versioning follows URI-based strategy with /v1/ and /v2/ prefixes",
+      "The engineering book club meets bi-weekly to discuss technical literature",
+      "Remote work policy allows up to 3 days per week from home",
+      "The annual engineering summit is held in September with all teams",
+      "Travel reimbursement requires receipt submission within 30 days"
+    ]
+  },
+  {
+    "id": "sr_e12",
+    "fact": "We use Stripe for payment processing",
+    "query": "What payment provider do we use?",
+    "gold_answer": "Stripe",
+    "difficulty": "easy",
+    "distractors": [
+      "Payment webhooks are verified using HMAC-SHA256 signature validation",
+      "The wellness program offers $500 annual stipend for gym memberships",
+      "Conference room displays show real-time availability from Google Calendar",
+      "The design sprint process follows the Google Ventures 5-day framework",
+      "The company library has technical books available for checkout"
+    ]
+  },
+  {
+    "id": "sr_e13",
+    "fact": "The main branch is protected and requires 2 approvals for merge",
+    "query": "How many approvals are needed to merge to main?",
+    "gold_answer": "2 approvals",
+    "difficulty": "easy",
+    "distractors": [
+      "Commit messages follow Conventional Commits specification",
+      "Lunch catering is available Tuesday through Thursday from the cafeteria",
+      "The annual engineering summit is held in September with all teams",
+      "The company blog publishes engineering deep-dives every other week",
+      "Expense reports require manager approval for amounts over $500"
+    ]
+  },
+  {
+    "id": "sr_e14",
+    "fact": "Sentry is used for error tracking in production",
+    "query": "What error monitoring tool do we use?",
+    "gold_answer": "Sentry",
+    "difficulty": "easy",
+    "distractors": [
+      "Application metrics are collected with Prometheus and exposed on /metrics",
+      "Company all-hands meetings happen the first Monday of every month",
+      "The office kitchen was renovated last quarter with new espresso machines",
+      "Desk booking uses the Robin app with preferred seating zones",
+      "The company uses Slack with dedicated channels per team and project"
+    ]
+  },
+  {
+    "id": "sr_e15",
+    "fact": "The database backup runs daily at 3 AM UTC",
+    "query": "When does the DB backup happen?",
+    "gold_answer": "Daily at 3 AM UTC",
+    "difficulty": "easy",
+    "distractors": [
+      "S3 lifecycle policies archive backups to Glacier after 90 days",
+      "Travel reimbursement requires receipt submission within 30 days",
+      "The product roadmap is reviewed quarterly with stakeholder input",
+      "The annual engineering summit is held in September with all teams",
+      "The office kitchen was renovated last quarter with new espresso machines"
+    ]
+  },
+  {
+    "id": "sr_m01",
+    "fact": "The microservices communicate via gRPC with protobuf serialization",
+    "query": "How do the services talk to each other and what serialization format?",
+    "gold_answer": "gRPC with protobuf",
+    "difficulty": "medium",
+    "distractors": [
+      "The gRPC interceptor chain handles auth, logging, and metrics collection",
+      "gRPC health checking is used by Kubernetes for readiness probes",
+      "Service mesh uses Istio for mTLS between all gRPC endpoints",
+      "Office supplies are ordered through the procurement portal weekly",
+      "Team building events include quarterly hackathons and game nights",
+      "Conference room displays show real-time availability from Google Calendar",
+      "Office temperature is maintained between 68-72F by the building management",
+      "Expense reports require manager approval for amounts over $500",
+      "The 401k match is 4% of salary with immediate vesting",
+      "The engineering book club meets bi-weekly to discuss technical literature"
+    ]
+  },
+  {
+    "id": "sr_m02",
+    "fact": "Kubernetes cluster runs on AWS EKS in us-east-1 region",
+    "query": "Describe our container orchestration setup and cloud region",
+    "gold_answer": "Kubernetes on AWS EKS in us-east-1",
+    "difficulty": "medium",
+    "distractors": [
+      "Ingress routing uses nginx-ingress with rate limiting annotations",
+      "The cluster uses Karpenter for node autoscaling with spot instances",
+      "Helm charts manage Kubernetes deployments with values per environment",
+      "Desk booking uses the Robin app with preferred seating zones",
+      "The office kitchen was renovated last quarter with new espresso machines",
+      "The company blog publishes engineering deep-dives every other week",
+      "Office temperature is maintained between 68-72F by the building management",
+      "The company holiday party is scheduled for December 15th this year",
+      "The product roadmap is reviewed quarterly with stakeholder input",
+      "The 401k match is 4% of salary with immediate vesting"
+    ]
+  },
+  {
+    "id": "sr_m03",
+    "fact": "The search feature uses Elasticsearch 8.9 with custom analyzers for multilingual support",
+    "query": "What powers our search functionality and how does it handle multiple languages?",
+    "gold_answer": "Elasticsearch 8.9 with custom multilingual analyzers",
+    "difficulty": "medium",
+    "distractors": [
+      "Synonym mappings are maintained by the content team in a YAML config file",
+      "The search ranking combines BM25 text score with popularity boost",
+      "The autocomplete feature uses Elasticsearch prefix queries with edge n-grams",
+      "The design sprint process follows the Google Ventures 5-day framework",
+      "New employee onboarding includes a 2-week bootcamp program",
+      "Office supplies are ordered through the procurement portal weekly",
+      "The company blog publishes engineering deep-dives every other week",
+      "The product roadmap is reviewed quarterly with stakeholder input",
+      "The company holiday party is scheduled for December 15th this year",
+      "Company all-hands meetings happen the first Monday of every month"
+    ]
+  },
+  {
+    "id": "sr_m04",
+    "fact": "Authentication uses JWT tokens with RS256 signing and 15-minute expiry",
+    "query": "Explain the auth token configuration including algorithm and lifetime",
+    "gold_answer": "JWT with RS256 signing, 15-minute expiry",
+    "difficulty": "medium",
+    "distractors": [
+      "Multi-factor authentication supports TOTP and WebAuthn hardware keys",
+      "Service-to-service auth uses mutual TLS with auto-rotated certificates",
+      "OAuth2 authorization code flow is used for third-party integrations",
+      "Travel reimbursement requires receipt submission within 30 days",
+      "The company blog publishes engineering deep-dives every other week",
+      "The 401k match is 4% of salary with immediate vesting",
+      "Office supplies are ordered through the procurement portal weekly",
+      "The company holiday party is scheduled for December 15th this year",
+      "Office temperature is maintained between 68-72F by the building management",
+      "Team building events include quarterly hackathons and game nights"
+    ]
+  },
+  {
+    "id": "sr_m05",
+    "fact": "The data pipeline ingests events from Kafka topics and writes to BigQuery",
+    "query": "Where does the analytics data flow from source to destination?",
+    "gold_answer": "Kafka topics to BigQuery",
+    "difficulty": "medium",
+    "distractors": [
+      "The Kafka cluster runs 5 brokers with replication factor 3",
+      "The staging deployment pipeline uses ArgoCD with GitOps workflow",
+      "Kafka consumer groups use cooperative rebalancing for zero-downtime deploys",
+      "Lunch catering is available Tuesday through Thursday from the cafeteria",
+      "Office temperature is maintained between 68-72F by the building management",
+      "Company all-hands meetings happen the first Monday of every month",
+      "Ergonomic equipment requests are processed through the facilities portal",
+      "The patent incentive program awards $2000 for each filed patent",
+      "The company holiday party is scheduled for December 15th this year",
+      "Team building events include quarterly hackathons and game nights"
+    ]
+  },
+  {
+    "id": "sr_m06",
+    "fact": "Carol Wu wrote the recommendation engine using collaborative filtering with implicit feedback",
+    "query": "Who built the recommendations system and what algorithm does it use?",
+    "gold_answer": "Carol Wu, collaborative filtering with implicit feedback",
+    "difficulty": "medium",
+    "distractors": [
+      "Training data is versioned with DVC for reproducible experiments",
+      "User embeddings are updated weekly from interaction history",
+      "Feature engineering uses Apache Spark for batch processing",
+      "The company holiday party is scheduled for December 15th this year",
+      "The company library has technical books available for checkout",
+      "Team building events include quarterly hackathons and game nights",
+      "Company all-hands meetings happen the first Monday of every month",
+      "Interview panels consist of 4 engineers and 1 hiring manager",
+      "The open-source committee reviews contribution proposals monthly",
+      "The office kitchen was renovated last quarter with new espresso machines"
+    ]
+  },
+  {
+    "id": "sr_m07",
+    "fact": "The mobile app supports iOS 15+ and Android API level 26+",
+    "query": "What are the minimum OS version requirements for our mobile platforms?",
+    "gold_answer": "iOS 15+ and Android API 26+",
+    "difficulty": "medium",
+    "distractors": [
+      "The API health endpoint returns dependency status for all downstream services",
+      "The mobile API uses GraphQL with Apollo Client for efficient data fetching",
+      "API response compression uses Brotli for JSON payloads over 1KB",
+      "Office temperature is maintained between 68-72F by the building management",
+      "The engineering book club meets bi-weekly to discuss technical literature",
+      "Company all-hands meetings happen the first Monday of every month",
+      "The company blog publishes engineering deep-dives every other week",
+      "Remote work policy allows up to 3 days per week from home",
+      "The wellness program offers $500 annual stipend for gym memberships",
+      "Ergonomic equipment requests are processed through the facilities portal"
+    ]
+  },
+  {
+    "id": "sr_m08",
+    "fact": "Feature flags are managed through LaunchDarkly with a 5-minute sync interval",
+    "query": "How do we control feature rollouts and how often does the config refresh?",
+    "gold_answer": "LaunchDarkly with 5-minute sync",
+    "difficulty": "medium",
+    "distractors": [
+      "Percentage rollouts start at 5% and increase by 20% every 2 days",
+      "The feature flag naming convention uses kebab-case with team prefix",
+      "Kill switches can disable features instantly without deployment",
+      "Remote work policy allows up to 3 days per week from home",
+      "Team building events include quarterly hackathons and game nights",
+      "Travel reimbursement requires receipt submission within 30 days",
+      "Office supplies are ordered through the procurement portal weekly",
+      "Company all-hands meetings happen the first Monday of every month",
+      "Office temperature is maintained between 68-72F by the building management",
+      "The company library has technical books available for checkout"
+    ]
+  },
+  {
+    "id": "sr_m09",
+    "fact": "The CDN is CloudFront with a 24-hour cache TTL for static assets",
+    "query": "What content delivery network serves our static files and for how long are they cached?",
+    "gold_answer": "CloudFront with 24-hour cache TTL",
+    "difficulty": "medium",
+    "distractors": [
+      "Redis Streams are used for the activity feed with consumer groups",
+      "Cache invalidation uses Redis keyspace notifications for consistency",
+      "The Redis connection pool maintains 20 connections per application instance",
+      "Employee referral bonus is $5000 for engineering positions",
+      "The office kitchen was renovated last quarter with new espresso machines",
+      "Ergonomic equipment requests are processed through the facilities portal",
+      "Desk booking uses the Robin app with preferred seating zones",
+      "Expense reports require manager approval for amounts over $500",
+      "Travel reimbursement requires receipt submission within 30 days",
+      "The company uses Slack with dedicated channels per team and project"
+    ]
+  },
+  {
+    "id": "sr_m10",
+    "fact": "Database migrations are managed with Alembic and auto-generated from SQLAlchemy models",
+    "query": "How do we handle schema changes and what tools are involved?",
+    "gold_answer": "Alembic migrations auto-generated from SQLAlchemy models",
+    "difficulty": "medium",
+    "distractors": [
+      "PostgreSQL connection pooling uses PgBouncer with 25 max connections",
+      "The read replica runs PostgreSQL 14 with pg_stat_statements for query analysis",
+      "PostgreSQL WAL archiving is configured for point-in-time recovery",
+      "The wellness program offers $500 annual stipend for gym memberships",
+      "Team building events include quarterly hackathons and game nights",
+      "Interview panels consist of 4 engineers and 1 hiring manager",
+      "The design sprint process follows the Google Ventures 5-day framework",
+      "The company library has technical books available for checkout",
+      "Expense reports require manager approval for amounts over $500",
+      "The product roadmap is reviewed quarterly with stakeholder input"
+    ]
+  },
+  {
+    "id": "sr_m11",
+    "fact": "The notification service sends emails via SendGrid and push notifications via Firebase Cloud Messaging",
+    "query": "What third-party services handle our email and push notification delivery?",
+    "gold_answer": "SendGrid for email, Firebase Cloud Messaging for push",
+    "difficulty": "medium",
+    "distractors": [
+      "Email deliverability is monitored with SendGrid reputation dashboard",
+      "In-app notifications are stored in a dedicated notification_events table",
+      "Notification rate limiting prevents more than 5 emails per hour per user",
+      "Desk booking uses the Robin app with preferred seating zones",
+      "The engineering book club meets bi-weekly to discuss technical literature",
+      "Office temperature is maintained between 68-72F by the building management",
+      "The 401k match is 4% of salary with immediate vesting",
+      "Office supplies are ordered through the procurement portal weekly",
+      "Remote work policy allows up to 3 days per week from home",
+      "Travel reimbursement requires receipt submission within 30 days"
+    ]
+  },
+  {
+    "id": "sr_m12",
+    "fact": "Load testing is done with k6 scripts targeting 500 concurrent users",
+    "query": "What tool do we use for performance testing and what's the target concurrency?",
+    "gold_answer": "k6 with 500 concurrent users",
+    "difficulty": "medium",
+    "distractors": [
+      "Gatling is used for advanced load testing scenarios with Scala DSL",
+      "Performance regression alerts trigger if P99 latency increases by 20%",
+      "The staging environment is scaled to 50% of production for load tests",
+      "The company uses Slack with dedicated channels per team and project",
+      "The company holiday party is scheduled for December 15th this year",
+      "The design sprint process follows the Google Ventures 5-day framework",
+      "The company library has technical books available for checkout",
+      "The mentorship program pairs junior and senior engineers across teams",
+      "Employee referral bonus is $5000 for engineering positions",
+      "Interview panels consist of 4 engineers and 1 hiring manager"
+    ]
+  },
+  {
+    "id": "sr_m13",
+    "fact": "The logging stack is Fluent Bit → Loki → Grafana",
+    "query": "Describe the log collection, storage, and visualization pipeline",
+    "gold_answer": "Fluent Bit collects, Loki stores, Grafana visualizes",
+    "difficulty": "medium",
+    "distractors": [
+      "The logging library uses structlog for context-rich log entries",
+      "Audit logs are stored separately with 7-year retention for compliance",
+      "Structured logging uses JSON format with correlation IDs for tracing",
+      "Office temperature is maintained between 68-72F by the building management",
+      "The company library has technical books available for checkout",
+      "The parking garage has EV charging stations on level 2",
+      "The intern program runs from June through August each year",
+      "The design sprint process follows the Google Ventures 5-day framework",
+      "The open-source committee reviews contribution proposals monthly",
+      "Team building events include quarterly hackathons and game nights"
+    ]
+  },
+  {
+    "id": "sr_m14",
+    "fact": "API documentation is auto-generated from OpenAPI 3.0 specs using Redoc",
+    "query": "How are the API docs produced and what specification standard do they follow?",
+    "gold_answer": "Auto-generated from OpenAPI 3.0 via Redoc",
+    "difficulty": "medium",
+    "distractors": [
+      "The REST API returns paginated results with cursor-based pagination",
+      "The API playground allows authenticated testing from the browser",
+      "Example requests and responses are validated against the schema in CI",
+      "The company blog publishes engineering deep-dives every other week",
+      "Remote work policy allows up to 3 days per week from home",
+      "Team building events include quarterly hackathons and game nights",
+      "The 401k match is 4% of salary with immediate vesting",
+      "Company all-hands meetings happen the first Monday of every month",
+      "The mentorship program pairs junior and senior engineers across teams",
+      "New employee onboarding includes a 2-week bootcamp program"
+    ]
+  },
+  {
+    "id": "sr_m15",
+    "fact": "The user table has a composite index on (tenant_id, email) for multi-tenant queries",
+    "query": "What database index optimization exists for looking up users across tenants?",
+    "gold_answer": "Composite index on tenant_id and email",
+    "difficulty": "medium",
+    "distractors": [
+      "GIN indexes handle array and JSONB column queries efficiently",
+      "In-app notifications are stored in a dedicated notification_events table",
+      "Unused indexes are identified and dropped during quarterly maintenance",
+      "Office temperature is maintained between 68-72F by the building management",
+      "Interview panels consist of 4 engineers and 1 hiring manager",
+      "Travel reimbursement requires receipt submission within 30 days",
+      "Remote work policy allows up to 3 days per week from home",
+      "The company uses Slack with dedicated channels per team and project",
+      "Expense reports require manager approval for amounts over $500",
+      "Employee referral bonus is $5000 for engineering positions"
+    ]
+  },
+  {
+    "id": "sr_m16",
+    "fact": "Secrets are stored in AWS Secrets Manager and rotated every 90 days",
+    "query": "Where do we keep credentials and how often are they changed?",
+    "gold_answer": "AWS Secrets Manager, rotated every 90 days",
+    "difficulty": "medium",
+    "distractors": [
+      "AWS Secrets Manager stores credentials with automatic cross-region replication",
+      "Secret scanning runs in CI to prevent accidental credential commits",
+      "Environment variables are injected via Kubernetes ConfigMaps and Secrets",
+      "The design sprint process follows the Google Ventures 5-day framework",
+      "Expense reports require manager approval for amounts over $500",
+      "Travel reimbursement requires receipt submission within 30 days",
+      "Lunch catering is available Tuesday through Thursday from the cafeteria",
+      "The company holiday party is scheduled for December 15th this year",
+      "Office supplies are ordered through the procurement portal weekly",
+      "Employee referral bonus is $5000 for engineering positions"
+    ]
+  },
+  {
+    "id": "sr_m17",
+    "fact": "The WebSocket connections are handled by a dedicated Go service with 10K connection capacity",
+    "query": "What technology handles real-time connections and what's the scale limit?",
+    "gold_answer": "Go service, 10K connections",
+    "difficulty": "medium",
+    "distractors": [
+      "Connection rate limiting allows 10 new WebSocket connections per second per IP",
+      "Heartbeat messages are sent every 30 seconds to detect stale connections",
+      "The collaboration cursor positions are broadcast via WebSocket channels",
+      "Office supplies are ordered through the procurement portal weekly",
+      "The design sprint process follows the Google Ventures 5-day framework",
+      "The patent incentive program awards $2000 for each filed patent",
+      "Office temperature is maintained between 68-72F by the building management",
+      "The company blog publishes engineering deep-dives every other week",
+      "The intern program runs from June through August each year",
+      "Interview panels consist of 4 engineers and 1 hiring manager"
+    ]
+  },
+  {
+    "id": "sr_m18",
+    "fact": "Code coverage threshold is 80% enforced in CI with pytest-cov",
+    "query": "What's the minimum test coverage requirement and how is it checked?",
+    "gold_answer": "80% coverage enforced by pytest-cov in CI",
+    "difficulty": "medium",
+    "distractors": [
+      "The test suite runs in parallel across 4 CI workers for speed",
+      "The CI pipeline sends Slack notifications on build failure",
+      "Code linting runs ESLint and Prettier in the pre-commit hook",
+      "The product roadmap is reviewed quarterly with stakeholder input",
+      "Office supplies are ordered through the procurement portal weekly",
+      "The office kitchen was renovated last quarter with new espresso machines",
+      "Travel reimbursement requires receipt submission within 30 days",
+      "Office temperature is maintained between 68-72F by the building management",
+      "New employee onboarding includes a 2-week bootcamp program",
+      "The design sprint process follows the Google Ventures 5-day framework"
+    ]
+  },
+  {
+    "id": "sr_m19",
+    "fact": "The ML models are served via TensorFlow Serving behind an nginx reverse proxy",
+    "query": "How are machine learning predictions served in production?",
+    "gold_answer": "TensorFlow Serving behind nginx",
+    "difficulty": "medium",
+    "distractors": [
+      "Feature stores use Feast for consistent feature serving in training and inference",
+      "Model monitoring tracks prediction drift using Evidently AI dashboards",
+      "Training data is versioned with DVC for reproducible experiments",
+      "The annual engineering summit is held in September with all teams",
+      "The parking garage has EV charging stations on level 2",
+      "Desk booking uses the Robin app with preferred seating zones",
+      "The company uses Slack with dedicated channels per team and project",
+      "Ergonomic equipment requests are processed through the facilities portal",
+      "The 401k match is 4% of salary with immediate vesting",
+      "The design sprint process follows the Google Ventures 5-day framework"
+    ]
+  },
+  {
+    "id": "sr_m20",
+    "fact": "Sprint retrospectives happen every other Friday at 2 PM Pacific",
+    "query": "When does the team reflect on their development process?",
+    "gold_answer": "Every other Friday at 2 PM Pacific",
+    "difficulty": "medium",
+    "distractors": [
+      "The engineering blog publishes post-mortems for major incidents",
+      "Tech debt is tracked with a dedicated label and 20% sprint allocation",
+      "Architecture Decision Records are stored in the docs/adr/ directory",
+      "The 401k match is 4% of salary with immediate vesting",
+      "Company all-hands meetings happen the first Monday of every month",
+      "The engineering book club meets bi-weekly to discuss technical literature",
+      "The patent incentive program awards $2000 for each filed patent",
+      "The parking garage has EV charging stations on level 2",
+      "Conference room displays show real-time availability from Google Calendar",
+      "Interview panels consist of 4 engineers and 1 hiring manager"
+    ]
+  },
+  {
+    "id": "sr_h01",
+    "fact": "The primary data store uses PostgreSQL 15 with pgvector for embedding similarity search",
+    "query": "What handles vector similarity lookups in our persistence layer?",
+    "gold_answer": "PostgreSQL 15 with pgvector",
+    "difficulty": "hard",
+    "distractors": [
+      "Database vacuum runs automatically every Sunday at 2 AM UTC",
+      "The search index rebuilds nightly from the primary PostgreSQL database",
+      "The test database uses SQLite for faster CI pipeline execution",
+      "Database migrations are handled by Alembic with auto-generated scripts",
+      "Synonym mappings are maintained by the content team in a YAML config file",
+      "The search ranking combines BM25 text score with popularity boost",
+      "The autocomplete feature uses Elasticsearch prefix queries with edge n-grams",
+      "Elasticsearch sharding uses 5 primary shards with 1 replica per index",
+      "Desk booking uses the Robin app with preferred seating zones",
+      "New employee onboarding includes a 2-week bootcamp program",
+      "The annual engineering summit is held in September with all teams",
+      "Expense reports require manager approval for amounts over $500",
+      "Ergonomic equipment requests are processed through the facilities portal",
+      "Remote work policy allows up to 3 days per week from home",
+      "The mentorship program pairs junior and senior engineers across teams"
+    ]
+  },
+  {
+    "id": "sr_h02",
+    "fact": "Our container orchestration runs on AWS EKS with spot instances for non-critical workloads",
+    "query": "How do we reduce compute costs for background processing?",
+    "gold_answer": "Spot instances on EKS for non-critical workloads",
+    "difficulty": "hard",
+    "distractors": [
+      "The base image uses Alpine Linux 3.18 for minimal attack surface",
+      "Network policies restrict pod-to-pod communication to declared dependencies",
+      "Docker layer caching is enabled in CI to speed up image builds",
+      "Docker images are scanned with Trivy for vulnerabilities before push",
+      "Multi-stage Docker builds reduce production image size to under 100MB",
+      "Horizontal Pod Autoscaler scales based on CPU and custom metrics",
+      "The Docker registry uses content-addressable storage with garbage collection",
+      "Docker health checks run every 10 seconds with 3 retries before restart",
+      "Office supplies are ordered through the procurement portal weekly",
+      "The company blog publishes engineering deep-dives every other week",
+      "The engineering book club meets bi-weekly to discuss technical literature",
+      "The product roadmap is reviewed quarterly with stakeholder input",
+      "The company holiday party is scheduled for December 15th this year",
+      "The wellness program offers $500 annual stipend for gym memberships",
+      "Employee referral bonus is $5000 for engineering positions"
+    ]
+  },
+  {
+    "id": "sr_h03",
+    "fact": "The event-driven architecture uses Kafka with exactly-once semantics enabled",
+    "query": "What guarantees do we have about message processing in our async pipeline?",
+    "gold_answer": "Exactly-once semantics via Kafka",
+    "difficulty": "hard",
+    "distractors": [
+      "Kafka Connect syncs database changes to Elasticsearch via Debezium",
+      "The Kafka producer uses idempotent mode with acks=all for durability",
+      "Schema Registry enforces Avro schema compatibility for all Kafka topics",
+      "Message retention is set to 7 days for event topics and 30 days for audit",
+      "Dead letter queues capture failed messages for manual retry",
+      "The Kafka cluster runs 5 brokers with replication factor 3",
+      "Kafka consumer groups use cooperative rebalancing for zero-downtime deploys",
+      "Kafka Streams handles real-time aggregation for the analytics dashboard",
+      "Lunch catering is available Tuesday through Thursday from the cafeteria",
+      "The company library has technical books available for checkout",
+      "The 401k match is 4% of salary with immediate vesting",
+      "Conference room displays show real-time availability from Google Calendar",
+      "The office kitchen was renovated last quarter with new espresso machines",
+      "New employee onboarding includes a 2-week bootcamp program",
+      "The wellness program offers $500 annual stipend for gym memberships"
+    ]
+  },
+  {
+    "id": "sr_h04",
+    "fact": "Blue-green deployments are configured with 5-minute health check intervals before traffic switch",
+    "query": "How long does the system verify stability before completing a release?",
+    "gold_answer": "5-minute health check intervals in blue-green deployment",
+    "difficulty": "hard",
+    "distractors": [
+      "The deployment pipeline requires passing smoke tests before traffic shift",
+      "Synthetic monitoring validates canary health with automated test suites",
+      "Deploy approval gates require sign-off from the on-call engineer",
+      "Error budget tracking determines when to halt or accelerate deployments",
+      "Deploy freezes are enforced during Black Friday and end-of-quarter periods",
+      "Canary deployments route 5% of traffic to new versions for 15 minutes",
+      "Blue-green deployments maintain two production environments for instant rollback",
+      "The release train runs weekly with hotfix capability between releases",
+      "The open-source committee reviews contribution proposals monthly",
+      "Lunch catering is available Tuesday through Thursday from the cafeteria",
+      "The company blog publishes engineering deep-dives every other week",
+      "The 401k match is 4% of salary with immediate vesting",
+      "The company holiday party is scheduled for December 15th this year",
+      "The mentorship program pairs junior and senior engineers across teams",
+      "The office kitchen was renovated last quarter with new espresso machines"
+    ]
+  },
+  {
+    "id": "sr_h05",
+    "fact": "The circuit breaker pattern is implemented with a 50% error threshold and 30-second recovery window",
+    "query": "What protects downstream services from cascading failures and how quickly does it recover?",
+    "gold_answer": "Circuit breaker with 50% threshold, 30-second recovery",
+    "difficulty": "hard",
+    "distractors": [
+      "Bulkhead isolation limits concurrent requests per downstream service",
+      "Retry policies use exponential backoff with jitter for failed requests",
+      "Circuit breaker metrics are tracked per endpoint with Prometheus counters",
+      "The half-open state allows 3 probe requests before fully closing the circuit",
+      "Timeout budgets cascade through the service call chain",
+      "Health endpoints return degraded status when circuit breakers are open",
+      "Service degradation tiers define which features are shed under load",
+      "Fallback responses return cached data when upstream services are unavailable",
+      "Conference room displays show real-time availability from Google Calendar",
+      "New employee onboarding includes a 2-week bootcamp program",
+      "Team building events include quarterly hackathons and game nights",
+      "The mentorship program pairs junior and senior engineers across teams",
+      "The wellness program offers $500 annual stipend for gym memberships",
+      "Ergonomic equipment requests are processed through the facilities portal",
+      "Office temperature is maintained between 68-72F by the building management"
+    ]
+  },
+  {
+    "id": "sr_h06",
+    "fact": "PII is encrypted at rest using AES-256-GCM with keys managed by AWS KMS",
+    "query": "How is sensitive user data protected in storage?",
+    "gold_answer": "AES-256-GCM encryption with AWS KMS key management",
+    "difficulty": "hard",
+    "distractors": [
+      "Database connections use SSL with certificate pinning",
+      "Client-side encryption protects sensitive fields before API submission",
+      "Key rotation follows a 90-day cycle managed by AWS KMS",
+      "TLS 1.3 is enforced for all external-facing endpoints",
+      "Data classification determines which fields require column-level encryption",
+      "The encryption library uses libsodium for all cryptographic operations",
+      "Encryption at rest uses dm-crypt for EBS volumes in the cluster",
+      "Hardware Security Modules store the root keys for the encryption hierarchy",
+      "Travel reimbursement requires receipt submission within 30 days",
+      "The intern program runs from June through August each year",
+      "Desk booking uses the Robin app with preferred seating zones",
+      "Interview panels consist of 4 engineers and 1 hiring manager",
+      "The parking garage has EV charging stations on level 2",
+      "Office temperature is maintained between 68-72F by the building management",
+      "The annual engineering summit is held in September with all teams"
+    ]
+  },
+  {
+    "id": "sr_h07",
+    "fact": "The recommendation engine retrains nightly using the previous 30 days of interaction data",
+    "query": "How fresh is the personalization model and what data window does it consider?",
+    "gold_answer": "Retrained nightly on 30 days of data",
+    "difficulty": "hard",
+    "distractors": [
+      "The A/B testing framework uses Thompson sampling for traffic allocation",
+      "Feature engineering uses Apache Spark for batch processing",
+      "The recommendation fallback returns popularity-based results on model failure",
+      "The model training pipeline runs on p3.2xlarge GPU instances",
+      "Model experiments are tracked in MLflow with artifact storage in S3",
+      "Training data is versioned with DVC for reproducible experiments",
+      "Model serving latency SLA is 50ms at P99 for real-time predictions",
+      "User embeddings are updated weekly from interaction history",
+      "Desk booking uses the Robin app with preferred seating zones",
+      "The company uses Slack with dedicated channels per team and project",
+      "The wellness program offers $500 annual stipend for gym memberships",
+      "The product roadmap is reviewed quarterly with stakeholder input",
+      "Office supplies are ordered through the procurement portal weekly",
+      "The company blog publishes engineering deep-dives every other week",
+      "New employee onboarding includes a 2-week bootcamp program"
+    ]
+  },
+  {
+    "id": "sr_h08",
+    "fact": "Database connection pooling uses PgBouncer with 50 connections per service instance",
+    "query": "How do we manage the finite number of database connections across services?",
+    "gold_answer": "PgBouncer connection pooling, 50 per instance",
+    "difficulty": "hard",
+    "distractors": [
+      "WebSocket connections are load-balanced using sticky sessions",
+      "The collaboration cursor positions are broadcast via WebSocket channels",
+      "WebSocket compression is enabled with permessage-deflate extension",
+      "The WebSocket gateway handles 50K concurrent connections across 4 pods",
+      "Heartbeat messages are sent every 30 seconds to detect stale connections",
+      "Binary message framing is used for efficient real-time data transfer",
+      "Connection rate limiting allows 10 new WebSocket connections per second per IP",
+      "The chat feature uses WebSocket with automatic reconnection and backoff",
+      "The wellness program offers $500 annual stipend for gym memberships",
+      "The office kitchen was renovated last quarter with new espresso machines",
+      "Team building events include quarterly hackathons and game nights",
+      "The company holiday party is scheduled for December 15th this year",
+      "Lunch catering is available Tuesday through Thursday from the cafeteria",
+      "Office supplies are ordered through the procurement portal weekly",
+      "The 401k match is 4% of salary with immediate vesting"
+    ]
+  },
+  {
+    "id": "sr_h09",
+    "fact": "The SLA for the core API is 99.95% uptime with a maximum P99 latency of 200ms",
+    "query": "What reliability and performance commitments does the platform make?",
+    "gold_answer": "99.95% uptime, P99 latency under 200ms",
+    "difficulty": "hard",
+    "distractors": [
+      "The release train runs weekly with hotfix capability between releases",
+      "CORS policies allow requests from *.example.com and localhost origins",
+      "API documentation is auto-generated from OpenAPI 3.0 specifications",
+      "Feature flags control the canary cohort for gradual rollouts",
+      "API response compression uses Brotli for JSON payloads over 1KB",
+      "The REST API returns paginated results with cursor-based pagination",
+      "Synthetic monitoring validates canary health with automated test suites",
+      "API versioning follows URI-based strategy with /v1/ and /v2/ prefixes",
+      "Expense reports require manager approval for amounts over $500",
+      "The engineering book club meets bi-weekly to discuss technical literature",
+      "The open-source committee reviews contribution proposals monthly",
+      "New employee onboarding includes a 2-week bootcamp program",
+      "Office temperature is maintained between 68-72F by the building management",
+      "The company library has technical books available for checkout",
+      "Remote work policy allows up to 3 days per week from home"
+    ]
+  },
+  {
+    "id": "sr_h10",
+    "fact": "GraphQL subscriptions use Server-Sent Events as transport instead of WebSockets for better proxy compatibility",
+    "query": "Why did the team choose a non-standard transport for real-time GraphQL?",
+    "gold_answer": "SSE instead of WebSockets for better proxy compatibility",
+    "difficulty": "hard",
+    "distractors": [
+      "The chat feature uses WebSocket with automatic reconnection and backoff",
+      "WebSocket compression is enabled with permessage-deflate extension",
+      "Kafka consumer groups use cooperative rebalancing for zero-downtime deploys",
+      "The collaboration cursor positions are broadcast via WebSocket channels",
+      "PostgreSQL accepts connections on port 5432 with SSL required",
+      "Heartbeat messages are sent every 30 seconds to detect stale connections",
+      "Dead letter queues capture failed messages for manual retry",
+      "Message retention is set to 7 days for event topics and 30 days for audit",
+      "The office kitchen was renovated last quarter with new espresso machines",
+      "The design sprint process follows the Google Ventures 5-day framework",
+      "The engineering book club meets bi-weekly to discuss technical literature",
+      "Lunch catering is available Tuesday through Thursday from the cafeteria",
+      "Travel reimbursement requires receipt submission within 30 days",
+      "The wellness program offers $500 annual stipend for gym memberships",
+      "The 401k match is 4% of salary with immediate vesting"
+    ]
+  },
+  {
+    "id": "sr_h11",
+    "fact": "The data retention policy deletes user event logs after 365 days to comply with GDPR",
+    "query": "How long do we keep behavioral analytics before privacy requirements force removal?",
+    "gold_answer": "365 days, deleted for GDPR compliance",
+    "difficulty": "hard",
+    "distractors": [
+      "Audit logs are stored separately with 7-year retention for compliance",
+      "The Kafka producer uses idempotent mode with acks=all for durability",
+      "Dead letter queues capture failed messages for manual retry",
+      "Audit trail retention is 7 years for financial transaction records",
+      "Kafka Connect syncs database changes to Elasticsearch via Debezium",
+      "Kafka Streams handles real-time aggregation for the analytics dashboard",
+      "Message retention is set to 7 days for event topics and 30 days for audit",
+      "Structured logging uses JSON format with correlation IDs for tracing",
+      "The office kitchen was renovated last quarter with new espresso machines",
+      "Office temperature is maintained between 68-72F by the building management",
+      "The product roadmap is reviewed quarterly with stakeholder input",
+      "Ergonomic equipment requests are processed through the facilities portal",
+      "The annual engineering summit is held in September with all teams",
+      "The wellness program offers $500 annual stipend for gym memberships",
+      "Office supplies are ordered through the procurement portal weekly"
+    ]
+  },
+  {
+    "id": "sr_h12",
+    "fact": "Terraform state is stored in an S3 bucket with DynamoDB locking to prevent concurrent modifications",
+    "query": "How is infrastructure-as-code state managed to avoid race conditions?",
+    "gold_answer": "S3 + DynamoDB locking for Terraform state",
+    "difficulty": "hard",
+    "distractors": [
+      "The Terraform workspace per environment isolates state files",
+      "Dead letter queues capture failed messages for manual retry",
+      "Message retention is set to 7 days for event topics and 30 days for audit",
+      "Load tests simulate realistic user journeys with think time delays",
+      "Schema Registry enforces Avro schema compatibility for all Kafka topics",
+      "Cost estimation runs with Infracost before infrastructure changes merge",
+      "Terraform modules are published to a private registry for reuse",
+      "Kafka Streams handles real-time aggregation for the analytics dashboard",
+      "Expense reports require manager approval for amounts over $500",
+      "Interview panels consist of 4 engineers and 1 hiring manager",
+      "The patent incentive program awards $2000 for each filed patent",
+      "New employee onboarding includes a 2-week bootcamp program",
+      "The parking garage has EV charging stations on level 2",
+      "The 401k match is 4% of salary with immediate vesting",
+      "The office kitchen was renovated last quarter with new espresso machines"
+    ]
+  },
+  {
+    "id": "sr_h13",
+    "fact": "The canary deployment strategy routes 5% of traffic to new versions for 15 minutes before full rollout",
+    "query": "What percentage of users unknowingly test new releases and for how long?",
+    "gold_answer": "5% for 15 minutes (canary deployment)",
+    "difficulty": "hard",
+    "distractors": [
+      "Feature flag audit logs track who changed what and when",
+      "The feature flag naming convention uses kebab-case with team prefix",
+      "Canary deployments route 5% of traffic to new versions for 15 minutes",
+      "The feature flag SDK caches configuration locally with 30-second TTL",
+      "Stale feature flags are auto-detected after 90 days without changes",
+      "Percentage rollouts start at 5% and increase by 20% every 2 days",
+      "The deployment pipeline requires passing smoke tests before traffic shift",
+      "The deployment frequency target is 10+ deploys per day per team",
+      "Expense reports require manager approval for amounts over $500",
+      "The patent incentive program awards $2000 for each filed patent",
+      "The design sprint process follows the Google Ventures 5-day framework",
+      "Desk booking uses the Robin app with preferred seating zones",
+      "Travel reimbursement requires receipt submission within 30 days",
+      "The open-source committee reviews contribution proposals monthly",
+      "The intern program runs from June through August each year"
+    ]
+  },
+  {
+    "id": "sr_h14",
+    "fact": "Cross-service tracing is implemented with OpenTelemetry exporting to Jaeger",
+    "query": "How can developers follow a request as it travels through multiple services?",
+    "gold_answer": "OpenTelemetry distributed tracing exported to Jaeger",
+    "difficulty": "hard",
+    "distractors": [
+      "The tracing SDK auto-instruments HTTP clients, database drivers, and gRPC",
+      "W3C TraceContext headers ensure compatibility across polyglot services",
+      "Custom span attributes capture business context like order ID and user tier",
+      "Span annotations capture database query plans for slow request analysis",
+      "Baggage propagation carries tenant ID through the entire request chain",
+      "The trace viewer integrates with log search for correlated debugging",
+      "Trace sampling uses adaptive rate based on error occurrence",
+      "Trace data retention is 14 days in Jaeger with S3 archival for older traces",
+      "The mentorship program pairs junior and senior engineers across teams",
+      "The product roadmap is reviewed quarterly with stakeholder input",
+      "The 401k match is 4% of salary with immediate vesting",
+      "The open-source committee reviews contribution proposals monthly",
+      "Expense reports require manager approval for amounts over $500",
+      "The company library has technical books available for checkout",
+      "The annual engineering summit is held in September with all teams"
+    ]
+  },
+  {
+    "id": "sr_h15",
+    "fact": "The async task queue uses Celery with RabbitMQ as broker and Redis as result backend",
+    "query": "What handles background job processing and where do the results go?",
+    "gold_answer": "Celery with RabbitMQ broker and Redis result backend",
+    "difficulty": "hard",
+    "distractors": [
+      "The rate limiter uses Redis sorted sets with sliding window algorithm",
+      "Periodic tasks are scheduled with Celery Beat using crontab expressions",
+      "Session data in Redis is encrypted at rest using application-level AES",
+      "Task execution timeout is set to 5 minutes to prevent resource exhaustion",
+      "Background jobs use priority queues with critical, default, and low tiers",
+      "Celery workers run with prefork pool and 4 concurrent processes per node",
+      "Failed tasks retry 3 times with exponential backoff before dead-lettering",
+      "Redis Streams are used for the activity feed with consumer groups",
+      "Expense reports require manager approval for amounts over $500",
+      "Conference room displays show real-time availability from Google Calendar",
+      "The product roadmap is reviewed quarterly with stakeholder input",
+      "Interview panels consist of 4 engineers and 1 hiring manager",
+      "The company library has technical books available for checkout",
+      "The wellness program offers $500 annual stipend for gym memberships",
+      "Travel reimbursement requires receipt submission within 30 days"
+    ]
+  }
+]

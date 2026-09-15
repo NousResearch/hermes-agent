@@ -1,0 +1,540 @@
+[
+  {
+    "id": "xr_e01",
+    "facts": [
+      "Alice works on the payments team",
+      "The payments team owns the Stripe integration"
+    ],
+    "query": "Who maintains the Stripe integration?",
+    "gold_answer": "Alice (via the payments team)",
+    "num_facts_needed": 2,
+    "difficulty": "easy"
+  },
+  {
+    "id": "xr_e02",
+    "facts": [
+      "The API runs on port 8080",
+      "Port 8080 is load-balanced by nginx"
+    ],
+    "query": "What load balances the API?",
+    "gold_answer": "nginx",
+    "num_facts_needed": 2,
+    "difficulty": "easy"
+  },
+  {
+    "id": "xr_e03",
+    "facts": [
+      "Bob manages the Kubernetes cluster",
+      "The Kubernetes cluster runs on AWS EKS"
+    ],
+    "query": "Who manages our EKS deployment?",
+    "gold_answer": "Bob",
+    "num_facts_needed": 2,
+    "difficulty": "easy"
+  },
+  {
+    "id": "xr_e04",
+    "facts": [
+      "The frontend uses Next.js",
+      "Next.js is deployed on Vercel"
+    ],
+    "query": "Where is the frontend hosted?",
+    "gold_answer": "Vercel",
+    "num_facts_needed": 2,
+    "difficulty": "easy"
+  },
+  {
+    "id": "xr_e05",
+    "facts": [
+      "Carol wrote the auth service",
+      "The auth service uses JWT tokens"
+    ],
+    "query": "Who implemented JWT authentication?",
+    "gold_answer": "Carol",
+    "num_facts_needed": 2,
+    "difficulty": "easy"
+  },
+  {
+    "id": "xr_e06",
+    "facts": [
+      "The ML pipeline runs nightly",
+      "Nightly jobs use spot instances"
+    ],
+    "query": "What compute does the ML pipeline use?",
+    "gold_answer": "Spot instances",
+    "num_facts_needed": 2,
+    "difficulty": "easy"
+  },
+  {
+    "id": "xr_e07",
+    "facts": [
+      "Tests run in CI",
+      "CI uses GitHub Actions"
+    ],
+    "query": "Where do tests execute?",
+    "gold_answer": "GitHub Actions",
+    "num_facts_needed": 2,
+    "difficulty": "easy"
+  },
+  {
+    "id": "xr_e08",
+    "facts": [
+      "The search service uses Elasticsearch",
+      "Elasticsearch runs on 3 dedicated nodes"
+    ],
+    "query": "How many nodes power search?",
+    "gold_answer": "3 nodes",
+    "num_facts_needed": 2,
+    "difficulty": "easy"
+  },
+  {
+    "id": "xr_e09",
+    "facts": [
+      "Dave is the security lead",
+      "The security lead approves all production access requests"
+    ],
+    "query": "Who approves production access?",
+    "gold_answer": "Dave",
+    "num_facts_needed": 2,
+    "difficulty": "easy"
+  },
+  {
+    "id": "xr_e10",
+    "facts": [
+      "Error tracking uses Sentry",
+      "Sentry alerts go to the #incidents Slack channel"
+    ],
+    "query": "Where do error alerts appear?",
+    "gold_answer": "#incidents Slack channel",
+    "num_facts_needed": 2,
+    "difficulty": "easy"
+  },
+  {
+    "id": "xr_e11",
+    "facts": [
+      "The database is PostgreSQL",
+      "PostgreSQL backups go to S3"
+    ],
+    "query": "Where are database backups stored?",
+    "gold_answer": "S3",
+    "num_facts_needed": 2,
+    "difficulty": "easy"
+  },
+  {
+    "id": "xr_e12",
+    "facts": [
+      "The mobile app is built with React Native",
+      "React Native builds are handled by Fastlane"
+    ],
+    "query": "What tool builds the mobile app?",
+    "gold_answer": "Fastlane",
+    "num_facts_needed": 2,
+    "difficulty": "easy"
+  },
+  {
+    "id": "xr_e13",
+    "facts": [
+      "Feature flags use LaunchDarkly",
+      "LaunchDarkly config is cached for 5 minutes"
+    ],
+    "query": "How long until a feature flag change takes effect?",
+    "gold_answer": "Up to 5 minutes (cache TTL)",
+    "num_facts_needed": 2,
+    "difficulty": "easy"
+  },
+  {
+    "id": "xr_e14",
+    "facts": [
+      "The logging stack uses Loki",
+      "Loki data is retained for 30 days"
+    ],
+    "query": "How far back can we search logs?",
+    "gold_answer": "30 days",
+    "num_facts_needed": 2,
+    "difficulty": "easy"
+  },
+  {
+    "id": "xr_e15",
+    "facts": [
+      "DNS is on Route 53",
+      "Route 53 has health checks every 10 seconds"
+    ],
+    "query": "How often are DNS health checks run?",
+    "gold_answer": "Every 10 seconds",
+    "num_facts_needed": 2,
+    "difficulty": "easy"
+  },
+  {
+    "id": "xr_m01",
+    "facts": [
+      "The recommendation engine was built by the ML team",
+      "The ML team uses Python 3.12",
+      "Python 3.12 requires the latest NumPy 2.0"
+    ],
+    "query": "What NumPy version does the recommendation engine need?",
+    "gold_answer": "NumPy 2.0",
+    "num_facts_needed": 3,
+    "difficulty": "medium"
+  },
+  {
+    "id": "xr_m02",
+    "facts": [
+      "Payments are processed by the billing service",
+      "The billing service stores data in the transactions database",
+      "The transactions database has row-level encryption"
+    ],
+    "query": "How is payment data encrypted at rest?",
+    "gold_answer": "Row-level encryption in the transactions database",
+    "num_facts_needed": 3,
+    "difficulty": "medium"
+  },
+  {
+    "id": "xr_m03",
+    "facts": [
+      "User uploads go to the media service",
+      "The media service runs in the eu-west-1 region",
+      "EU regions are subject to GDPR data residency requirements"
+    ],
+    "query": "What compliance requirements apply to user uploads?",
+    "gold_answer": "GDPR data residency (stored in eu-west-1)",
+    "num_facts_needed": 3,
+    "difficulty": "medium"
+  },
+  {
+    "id": "xr_m04",
+    "facts": [
+      "The notification service sends push notifications",
+      "Push notifications use Firebase Cloud Messaging",
+      "FCM has a rate limit of 1000 messages per second"
+    ],
+    "query": "What's the throughput limit for push notifications?",
+    "gold_answer": "1000 messages per second (FCM limit)",
+    "num_facts_needed": 3,
+    "difficulty": "medium"
+  },
+  {
+    "id": "xr_m05",
+    "facts": [
+      "Alice leads the platform team",
+      "The platform team owns the API gateway",
+      "The API gateway handles rate limiting"
+    ],
+    "query": "Whose team is responsible for rate limiting?",
+    "gold_answer": "Alice's platform team",
+    "num_facts_needed": 3,
+    "difficulty": "medium"
+  },
+  {
+    "id": "xr_m06",
+    "facts": [
+      "Staging mirrors production",
+      "Production uses m5.xlarge instances",
+      "m5.xlarge has 4 vCPUs and 16 GB RAM"
+    ],
+    "query": "How much RAM does each staging instance have?",
+    "gold_answer": "16 GB",
+    "num_facts_needed": 3,
+    "difficulty": "medium"
+  },
+  {
+    "id": "xr_m07",
+    "facts": [
+      "The data pipeline writes to BigQuery",
+      "BigQuery tables are partitioned by ingestion date",
+      "Partitioned tables auto-expire after 90 days"
+    ],
+    "query": "How long is pipeline data retained in the analytics warehouse?",
+    "gold_answer": "90 days (auto-expiry on partitioned tables)",
+    "num_facts_needed": 3,
+    "difficulty": "medium"
+  },
+  {
+    "id": "xr_m08",
+    "facts": [
+      "Carol manages the CI/CD pipeline",
+      "The CI pipeline runs on GitHub Actions",
+      "GitHub Actions runners are self-hosted on ARM64 machines"
+    ],
+    "query": "What architecture are Carol's CI runners?",
+    "gold_answer": "ARM64",
+    "num_facts_needed": 3,
+    "difficulty": "medium"
+  },
+  {
+    "id": "xr_m09",
+    "facts": [
+      "The checkout flow calls the pricing service",
+      "The pricing service reads from a Redis cache",
+      "The Redis cache TTL for prices is 60 seconds"
+    ],
+    "query": "How stale can checkout prices be?",
+    "gold_answer": "Up to 60 seconds (Redis cache TTL)",
+    "num_facts_needed": 3,
+    "difficulty": "medium"
+  },
+  {
+    "id": "xr_m10",
+    "facts": [
+      "Microservices communicate via gRPC",
+      "gRPC uses HTTP/2 transport",
+      "The load balancer doesn't support HTTP/2 natively"
+    ],
+    "query": "What transport compatibility issue exists with the load balancer?",
+    "gold_answer": "Load balancer doesn't support HTTP/2 (needed by gRPC)",
+    "num_facts_needed": 3,
+    "difficulty": "medium"
+  },
+  {
+    "id": "xr_m11",
+    "facts": [
+      "The auth service issues JWT tokens",
+      "JWT tokens expire after 15 minutes",
+      "Refresh tokens are stored in HttpOnly cookies"
+    ],
+    "query": "Where are refresh tokens kept and how long do access tokens last?",
+    "gold_answer": "Refresh tokens in HttpOnly cookies, access tokens expire in 15 minutes",
+    "num_facts_needed": 2,
+    "difficulty": "medium"
+  },
+  {
+    "id": "xr_m12",
+    "facts": [
+      "Bob is on call this week",
+      "On-call engineers get paged via PagerDuty",
+      "PagerDuty escalation timeout is 10 minutes"
+    ],
+    "query": "If Bob doesn't respond to an alert, how long before it escalates?",
+    "gold_answer": "10 minutes",
+    "num_facts_needed": 3,
+    "difficulty": "medium"
+  },
+  {
+    "id": "xr_m13",
+    "facts": [
+      "Static assets are served by CloudFront",
+      "CloudFront origins point to an S3 bucket",
+      "The S3 bucket has versioning enabled"
+    ],
+    "query": "Can we roll back a bad static asset deployment?",
+    "gold_answer": "Yes, S3 versioning is enabled on the CloudFront origin bucket",
+    "num_facts_needed": 3,
+    "difficulty": "medium"
+  },
+  {
+    "id": "xr_m14",
+    "facts": [
+      "The search service indexes product data",
+      "Product data is sourced from the catalog service",
+      "The catalog service publishes change events to Kafka"
+    ],
+    "query": "How does search know when products change?",
+    "gold_answer": "Via Kafka events from the catalog service",
+    "num_facts_needed": 3,
+    "difficulty": "medium"
+  },
+  {
+    "id": "xr_m15",
+    "facts": [
+      "Database migrations use Alembic",
+      "Alembic is configured with async PostgreSQL driver",
+      "The async driver is asyncpg"
+    ],
+    "query": "What PostgreSQL driver handles schema migrations?",
+    "gold_answer": "asyncpg (via Alembic)",
+    "num_facts_needed": 3,
+    "difficulty": "medium"
+  },
+  {
+    "id": "xr_h01",
+    "facts": [
+      "The primary database is in us-east-1",
+      "Read replicas are in us-west-2 and eu-west-1",
+      "EU users are routed to the nearest region",
+      "GDPR requires EU data to stay in EU"
+    ],
+    "query": "Can EU user data be read from the us-west-2 replica?",
+    "gold_answer": "No \u2014 EU users route to eu-west-1 for GDPR compliance",
+    "num_facts_needed": 4,
+    "difficulty": "hard"
+  },
+  {
+    "id": "xr_h02",
+    "facts": [
+      "Service A depends on Service B",
+      "Service B depends on Service C",
+      "Service C has a 200ms P99 latency",
+      "Each service adds 50ms overhead"
+    ],
+    "query": "What's the expected P99 latency for a request hitting Service A?",
+    "gold_answer": "300ms (200ms from C + 50ms each for B and A)",
+    "num_facts_needed": 4,
+    "difficulty": "hard"
+  },
+  {
+    "id": "xr_h03",
+    "facts": [
+      "The ML model requires GPU for inference",
+      "GPU instances cost $3/hour",
+      "The model serves 1000 requests per second",
+      "Each request takes 10ms of GPU time"
+    ],
+    "query": "What's the minimum GPU utilization for the ML model?",
+    "gold_answer": "10 seconds of GPU per second (1000 * 10ms), so 10 GPUs minimum",
+    "num_facts_needed": 4,
+    "difficulty": "hard"
+  },
+  {
+    "id": "xr_h04",
+    "facts": [
+      "Kafka topic retention is 7 days",
+      "The consumer lag alert triggers at 1 hour",
+      "The dead letter queue holds failed messages for 30 days",
+      "Message processing timeout is 30 seconds"
+    ],
+    "query": "If a consumer is down for 2 days, can messages still be recovered?",
+    "gold_answer": "Yes \u2014 Kafka retains for 7 days, well within the 2-day window",
+    "num_facts_needed": 2,
+    "difficulty": "hard"
+  },
+  {
+    "id": "xr_h05",
+    "facts": [
+      "Deployments use blue-green strategy",
+      "Blue-green switch happens after health checks pass",
+      "Health checks run every 30 seconds for 5 minutes",
+      "Rollback is automatic if error rate exceeds 1%"
+    ],
+    "query": "How many health check cycles must pass before traffic switches?",
+    "gold_answer": "10 cycles (5 minutes / 30 seconds each)",
+    "num_facts_needed": 3,
+    "difficulty": "hard"
+  },
+  {
+    "id": "xr_h06",
+    "facts": [
+      "The ETL pipeline runs at 2 AM UTC",
+      "ETL depends on the data warehouse being idle",
+      "The data warehouse runs analytics queries from 6 AM to 10 PM UTC",
+      "ETL takes 3 hours to complete"
+    ],
+    "query": "Is there a conflict between ETL and analytics workloads?",
+    "gold_answer": "Yes \u2014 ETL runs 2-5 AM but analytics start at 6 AM, tight but no overlap",
+    "num_facts_needed": 4,
+    "difficulty": "hard"
+  },
+  {
+    "id": "xr_h07",
+    "facts": [
+      "The connection pool has 50 connections per instance",
+      "There are 10 service instances",
+      "PostgreSQL max_connections is set to 200",
+      "PgBouncer multiplexes connections"
+    ],
+    "query": "Would all instances saturate the database without PgBouncer?",
+    "gold_answer": "Yes \u2014 50 * 10 = 500 exceeds the 200 max_connections limit; PgBouncer is required",
+    "num_facts_needed": 4,
+    "difficulty": "hard"
+  },
+  {
+    "id": "xr_h08",
+    "facts": [
+      "Secrets rotate every 90 days",
+      "The last rotation was 85 days ago",
+      "Rotation requires a deploy to pick up new credentials",
+      "Deploys are frozen during the holiday code freeze"
+    ],
+    "query": "Is there a risk of credential expiry during the code freeze?",
+    "gold_answer": "Yes \u2014 secrets expire in 5 days but deploys are frozen",
+    "num_facts_needed": 4,
+    "difficulty": "hard"
+  },
+  {
+    "id": "xr_h09",
+    "facts": [
+      "API rate limit is 100 req/min per user",
+      "The batch import endpoint counts as 1 request but processes 1000 items",
+      "Enterprise users have a 10x rate limit multiplier"
+    ],
+    "query": "How many items can an enterprise user batch-import per minute?",
+    "gold_answer": "1,000,000 items (1000 rate limit * 1000 items per request)",
+    "num_facts_needed": 3,
+    "difficulty": "hard"
+  },
+  {
+    "id": "xr_h10",
+    "facts": [
+      "CDN cache TTL is 24 hours",
+      "Cache invalidation takes 5 minutes",
+      "The marketing team updates the landing page daily at 9 AM",
+      "Users in Asia see the page first each day due to timezone"
+    ],
+    "query": "When do Asian users see updated landing page content?",
+    "gold_answer": "By 9:05 AM (9 AM update + 5 min cache invalidation)",
+    "num_facts_needed": 3,
+    "difficulty": "hard"
+  },
+  {
+    "id": "xr_h11",
+    "facts": [
+      "The circuit breaker opens at 50% error rate",
+      "Service B has been returning 503 for 40% of requests",
+      "Service A calls Service B for user profiles",
+      "There's a cached fallback for user profiles that's 1 hour stale"
+    ],
+    "query": "Is the circuit breaker to Service B currently open?",
+    "gold_answer": "No \u2014 40% is below the 50% threshold, but it's close",
+    "num_facts_needed": 3,
+    "difficulty": "hard"
+  },
+  {
+    "id": "xr_h12",
+    "facts": [
+      "The S3 bucket uses server-side encryption with AWS KMS",
+      "KMS key rotation happens annually",
+      "The compliance team requires encryption key rotation every 90 days",
+      "AWS KMS automatic rotation creates new key material yearly"
+    ],
+    "query": "Does our S3 encryption meet the compliance rotation requirement?",
+    "gold_answer": "No \u2014 KMS rotates annually but compliance requires 90-day rotation",
+    "num_facts_needed": 4,
+    "difficulty": "hard"
+  },
+  {
+    "id": "xr_h13",
+    "facts": [
+      "Elasticsearch cluster has 3 data nodes",
+      "Each node has 64 GB RAM",
+      "ES recommends 50% of RAM for heap",
+      "The index size is 500 GB across all shards"
+    ],
+    "query": "How much heap memory is available across the ES cluster?",
+    "gold_answer": "96 GB (3 nodes * 64 GB * 50%)",
+    "num_facts_needed": 3,
+    "difficulty": "hard"
+  },
+  {
+    "id": "xr_h14",
+    "facts": [
+      "The async worker pool has 20 workers",
+      "Each worker processes one job at a time",
+      "Average job duration is 30 seconds",
+      "Peak queue depth reaches 600 jobs at noon"
+    ],
+    "query": "How long would the peak queue take to clear with no new jobs?",
+    "gold_answer": "15 minutes (600 jobs / 20 workers * 30 seconds)",
+    "num_facts_needed": 4,
+    "difficulty": "hard"
+  },
+  {
+    "id": "xr_h15",
+    "facts": [
+      "GraphQL queries have a depth limit of 5",
+      "The user -> orders -> items -> product -> reviews chain is depth 4",
+      "Reviews have a nested author field"
+    ],
+    "query": "Can a query fetch review authors through the full order chain?",
+    "gold_answer": "No \u2014 that would be depth 5 (user->orders->items->product->reviews->author = 6), exceeding the limit",
+    "num_facts_needed": 3,
+    "difficulty": "hard"
+  }
+]

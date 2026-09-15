@@ -139,3 +139,22 @@ class TestSharedCleanerWiring:
         spoken = adapter.prepare_tts_text("<think>plan</think>Hello there")
         assert "plan" not in spoken
         assert "Hello there" in spoken
+
+
+class TestParagraphPreservation:
+    def test_keep_paragraph_breaks_flag_inserts_marker(self):
+        raw = "First paragraph.\n\nSecond paragraph."
+        spoken = prepare_spoken_text(raw, max_chars=None, keep_paragraph_breaks=True)
+        # The zero-width-space paragraph marker should be present
+        assert "\u200B¶\u200B" in spoken
+        assert "First paragraph" in spoken
+        assert "Second paragraph" in spoken
+
+    def test_keep_paragraph_breaks_false_flattens_as_before(self):
+        raw = "First paragraph.\n\nSecond paragraph."
+        spoken = prepare_spoken_text(raw, max_chars=None, keep_paragraph_breaks=False)
+        # Legacy: no marker, newlines collapsed
+        assert "\u200B¶\u200B" not in spoken
+        assert "\n" not in spoken
+        assert "First paragraph" in spoken
+        assert "Second paragraph" in spoken

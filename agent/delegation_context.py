@@ -19,6 +19,17 @@ _NON_DISPATCHER_OWNED_CONTEXT: ContextVar[bool] = ContextVar("hermes_non_dispatc
 
 DELEGATED_CHILD_ENV_MARKER = "HERMES_DELEGATED_CHILD_CONTEXT"
 
+# Env markers SCOPED to a lifetime shorter than a terminal snapshot
+# (delegation child, cron session bridge). Whatever injects these into
+# subprocess envs must keep this tuple authoritative: the terminal-snapshot
+# unset command (tools/environments/base_session_env.py) is BUILT from it, so a future
+# marker added here is excluded from snapshots automatically instead of
+# reproducing the #90782 persistence leak per-incident.
+SCOPED_SUBPROCESS_ENV_MARKERS: tuple[str, ...] = (
+    DELEGATED_CHILD_ENV_MARKER,
+    "HERMES_CRON_SESSION",
+)
+
 KANBAN_ENV_KEYS: tuple[str, ...] = (
     "HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID", "HERMES_KANBAN_CLAIM_LOCK",
     "HERMES_KANBAN_GOAL_MODE", "HERMES_KANBAN_GOAL_MAX_TURNS",

@@ -41,6 +41,21 @@ def test_regex_matches_bridged_session_vars():
         assert rx.search(line), f"{name} should be excluded from the snapshot"
 
 
+def test_regex_matches_scoped_subprocess_markers():
+    """The scoped subprocess markers must be in the regex's exclusion set too.
+
+    The regex is the Python-side contract mirroring the shell unset command,
+    and both are built from SCOPED_SUBPROCESS_ENV_MARKERS; this pins the
+    derivation so a future refactor cannot silently hand-maintain one side
+    again (the exact drift this closes)."""
+    rx = re.compile(_SNAPSHOT_EXCLUDED_ENV_REGEX)
+    from agent.delegation_context import SCOPED_SUBPROCESS_ENV_MARKERS
+
+    for name in SCOPED_SUBPROCESS_ENV_MARKERS:
+        line = f'declare -x {name}="whatever"'
+        assert rx.search(line), f"{name} should be excluded from the snapshot"
+
+
 def test_export_snippet_shape():
     snippet = _export_dump_excluding_session_vars('"$__hermes_snap_tmp"')
     assert "export -p" in snippet
@@ -105,5 +120,49 @@ def test_shared_snapshot_no_cross_session_leak(tmp_path):
         if os.path.exists(snap):
             with open(snap) as f:
                 assert "HERMES_SESSION_ID" not in f.read()
+    finally:
+        env.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# #90782: scope-limited markers must not persist into the snapshot either.
+# ---------------------------------------------------------------------------
+
+def test_export_snippet_unsets_delegation_and_cron_session_markers():
+    """The delegate_task child marker and the cron session bridge are
+    injected into the SUBPROCESS env while their scope is live; a snapshot
+    captured in that window must not persist them past the scope — otherwise
+    every later ``source`` re-asserts them (e.g. locking kanban mutations
+    out of the parent session)."""
+    snippet = _export_dump_excluding_session_vars('"$__hermes_snap_tmp"')
+    assert "HERMES_DELEGATED_CHILD_CONTEXT" in snippet
+    assert "HERMES_CRON_SESSION" in snippet
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bash snapshot path")
+def test_snapshot_does_not_persist_delegated_child_marker(tmp_path):
+    """End-to-end: a command run with the delegated-child marker in its env
+    must not leave that marker in the snapshot file."""
+    from tools.environments.local import LocalEnvironment
+
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
+    env.init_session()
+    try:
+        os.environ["HERMES_DELEGATED_CHILD_CONTEXT"] = "1"
+        try:
+            res = env.execute("echo marker-captured")
+        finally:
+            del os.environ["HERMES_DELEGATED_CHILD_CONTEXT"]
+        assert "marker-captured" in res.get("output", "")
+
+        snap = env._snapshot_path
+        if os.path.exists(snap):
+            with open(snap) as f:
+                content = f.read()
+            assert "HERMES_DELEGATED_CHILD_CONTEXT" not in content, (
+                "the delegated-child marker leaked into the terminal "
+                "snapshot — later commands would inherit it and kanban "
+                "mutations would stay locked out of the parent (#90782)"
+            )
     finally:
         env.cleanup()

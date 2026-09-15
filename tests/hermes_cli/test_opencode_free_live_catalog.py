@@ -214,6 +214,20 @@ class TestOpencodeFreeFollowUps:
         assert "ox-alpha-free" not in live
         assert "mimo-v2.5-free" in live  # control: a servable free model survives the filter
 
+    def test_keyed_zen_live_first_picker_drops_delisted_model(self, monkeypatch):
+        """The keyed opencode-zen picker is live-first over GET /zen/v1/models, which still lists
+        deepseek-v4-flash-free; it must take the same exclusion as the keyless catalog (#111749)."""
+        import hermes_cli.models as mod
+        from providers import get_provider_profile
+
+        prof = get_provider_profile("opencode-zen")
+        monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "sk-zen-fake")
+        with patch.object(type(prof), "fetch_models", lambda self, **kw: list(_LIVE_RAW_IDS)):
+            zen = mod._profile_live_catalog("opencode-zen")
+        assert zen is not None
+        assert "deepseek-v4-flash-free" not in zen
+        assert "mimo-v2.5-free" in zen  # control: a servable live model still leads
+
     def test_heal_union_includes_live_only_model(self):
         """A newly-live free model absent from the static floor must still heal
         opencode-go/zen selections to the keyless Zen relay (sibling-site widen:

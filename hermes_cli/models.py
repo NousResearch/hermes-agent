@@ -1456,6 +1456,10 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
         return None
     api_key, base_url = _api_key_credentials(normalized)
     live = profile.fetch_models(api_key=api_key, base_url=base_url or profile.base_url or None) if api_key else None
+    if live and normalized in _LIVE_FIRST_PICKER_PROVIDERS:
+        # The relay still LISTS delisted ids it no longer serves; the keyed Zen/Go picker is
+        # live-first, so it takes the same exclusion as the keyless catalog (#111749).
+        live = [m for m in live if str(m).lower() not in _OPENCODE_FREE_EXCLUDED_MODELS]
     if not live:
         return list(profile.fallback_models) if profile.fallback_models else None
     curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())

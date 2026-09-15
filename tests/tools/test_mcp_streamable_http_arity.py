@@ -212,3 +212,123 @@ def test_an_explicit_protocol_header_still_wins():
 
     headers = {k.lower(): v for k, v in (seen.get("headers") or {}).items()}
     assert headers.get("mcp-protocol-version") == "2025-06-18"
+
+
+def _accept_header(headers: dict | None) -> str | None:
+    for key, value in (headers or {}).items():
+        if key.lower() == "accept":
+            return value
+    return None
+
+
+def test_streamable_http_seeds_accept_for_sessionful_servers():
+    """Sessionful Streamable HTTP servers require both media types on initialize.
+
+    Observed 406 against Obsidian Local REST API when the owned httpx client
+    sent initialize without ``Accept: application/json, text/event-stream``.
+    """
+    from unittest.mock import patch as _patch
+
+    from tools.mcp_tool import MCPServerTask
+
+    server = MCPServerTask("remote")
+    seen: dict = {}
+
+    class _CapturingAsyncClient(_DummyAsyncClient):
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+            super().__init__(**kwargs)
+
+    async def _discover_tools(self):
+        self._shutdown_event.set()
+
+    async def _drive():
+        with _patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
+             _patch("tools.mcp_tool._MCP_NEW_HTTP", True), \
+             _patch_sdk_async_client(_CapturingAsyncClient), \
+             _patch("tools.mcp_tool.streamable_http_client",
+                    return_value=_transport_yielding(MagicMock(), MagicMock())), \
+             _patch("tools.mcp_tool.ClientSession", _DummySession), \
+             _patch.object(MCPServerTask, "_discover_tools", _discover_tools):
+            await server._run_http({"url": "https://example.com/mcp"})
+
+    asyncio.run(_drive())
+
+    accept = _accept_header(seen.get("headers"))
+    assert accept is not None, "Streamable HTTP initialize must send Accept"
+    lowered = accept.lower()
+    assert "application/json" in lowered, f"Accept missing application/json: {accept!r}"
+    assert "text/event-stream" in lowered, f"Accept missing text/event-stream: {accept!r}"
+
+
+def test_an_explicit_accept_header_still_wins():
+    """User-supplied Accept is fail-open: do not overwrite a narrower value."""
+    from unittest.mock import patch as _patch
+
+    from tools.mcp_tool import MCPServerTask
+
+    server = MCPServerTask("remote")
+    seen: dict = {}
+
+    class _CapturingAsyncClient(_DummyAsyncClient):
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+            super().__init__(**kwargs)
+
+    async def _discover_tools(self):
+        self._shutdown_event.set()
+
+    async def _drive():
+        with _patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
+             _patch("tools.mcp_tool._MCP_NEW_HTTP", True), \
+             _patch_sdk_async_client(_CapturingAsyncClient), \
+             _patch("tools.mcp_tool.streamable_http_client",
+                    return_value=_transport_yielding(MagicMock(), MagicMock())), \
+             _patch("tools.mcp_tool.ClientSession", _DummySession), \
+             _patch.object(MCPServerTask, "_discover_tools", _discover_tools):
+            await server._run_http({
+                "url": "https://example.com/mcp",
+                "headers": {"Accept": "application/json"},
+            })
+
+    asyncio.run(_drive())
+
+    assert _accept_header(seen.get("headers")) == "application/json"
+
+
+def test_sse_transport_does_not_seed_streamable_accept():
+    """SSE keeps its current header behavior; the Streamable pair is HTTP-only."""
+    from unittest.mock import patch as _patch
+
+    from tools.mcp_tool import MCPServerTask
+
+    server = MCPServerTask("remote")
+    seen: dict = {}
+
+    class _FakeSse:
+        async def __aenter__(self):
+            return (MagicMock(), MagicMock())
+
+        async def __aexit__(self, *a):
+            return False
+
+    def _sse_client(**kwargs):
+        seen.update(kwargs)
+        return _FakeSse()
+
+    async def _discover_tools(self):
+        self._shutdown_event.set()
+
+    async def _drive():
+        with _patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
+             _patch("tools.mcp_tool.sse_client", _sse_client), \
+             _patch("tools.mcp_tool.ClientSession", _DummySession), \
+             _patch.object(MCPServerTask, "_discover_tools", _discover_tools):
+            await server._run_http({
+                "url": "https://example.com/mcp/sse",
+                "transport": "sse",
+            })
+
+    asyncio.run(_drive())
+
+    assert _accept_header(seen.get("headers")) is None

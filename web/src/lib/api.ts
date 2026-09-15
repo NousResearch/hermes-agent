@@ -1601,6 +1601,13 @@ export interface MessagingPlatform {
   enabled: boolean;
   configured: boolean;
   gateway_running: boolean;
+  /** Profile that owns the live credential/adapter when this profile is explicitly routed. */
+  managed_by_profile?: string | null;
+  /** "all" for a platform fallback route, "scoped" for selected chats/guilds/threads. */
+  shared_route_scope?: "all" | "scoped" | null;
+  /** Profile-local facts retained when the effective state comes from a shared gateway. */
+  local_enabled?: boolean;
+  local_configured?: boolean;
   /**
    * "connected" | "disabled" | "not_configured" | "pending_restart" |
    * "gateway_stopped" | "startup_failed" | "disconnected" | "fatal" | string

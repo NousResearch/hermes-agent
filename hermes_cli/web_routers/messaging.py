@@ -27,7 +27,7 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path, redact_key
 from hermes_constants import get_process_hermes_home
 from hermes_cli.web_deps import LateState, late
-from hermes_cli.web_server_gateway import _restart_gateway_after
+from hermes_cli.web_server_gateway import _collect_profile_gateway_topology_cached, _restart_gateway_after
 from hermes_cli.web_server_messaging import (
     _TelegramOnboardingPairing, _WhatsAppOnboardingSession, _messaging_platform_catalog, _telegram_onboarding_error_message, _telegram_onboarding_lock, _telegram_onboarding_pairings, _whatsapp_onboarding_payload, _whatsapp_onboarding_sessions,
 )
@@ -273,7 +273,70 @@ def _messaging_platform_payload(
     return payload
 
 
-def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, Any]]:
+def _shared_gateway_route(target_profile: str, platform_id: str) -> dict[str, Any] | None:
+    """Resolve an explicit live multiplex route for a profile/platform pair."""
+    topology = _collect_profile_gateway_topology_cached()
+    platforms_by_owner = topology.get("profile_platforms") or {}
+    for gateway in topology.get("gateways") or []:
+        owner = str(gateway.get("profile") or "")
+        if not owner or owner == target_profile:
+            continue
+        if target_profile not in (gateway.get("served_profiles") or []):
+            continue
+        matching = [
+            route for route in (gateway.get("profile_routes") or [])
+            if route.get("platform") == platform_id and route.get("profile") == target_profile
+        ]
+        if not matching:
+            continue
+        owner_platform = (platforms_by_owner.get(owner) or {}).get(platform_id)
+        return {
+            "owner": owner,
+            "scope": "all" if any(route.get("scope") == "all" for route in matching) else "scoped",
+            "runtime": owner_platform if isinstance(owner_platform, dict) else None,
+        }
+    return None
+
+
+def _apply_shared_gateway_route(payload: dict[str, Any], target_profile: str) -> dict[str, Any]:
+    """Overlay effective transport state while preserving profile-local setup facts."""
+    route = _shared_gateway_route(target_profile, payload["id"])
+    if not route:
+        return payload
+
+    payload["local_enabled"] = payload["enabled"]
+    payload["local_configured"] = payload["configured"]
+    payload["managed_by_profile"] = route["owner"]
+    payload["shared_route_scope"] = route["scope"]
+
+    # A complete local setup remains authoritative for intentionally independent adapters.
+    if payload["enabled"] and payload["configured"]:
+        return payload
+
+    runtime = route["runtime"]
+    payload["gateway_running"] = True
+    if runtime:
+        payload["enabled"] = True
+        payload["configured"] = True
+        payload["state"] = runtime.get("state") or "pending_restart"
+        payload["error_code"] = runtime.get("error_code")
+        payload["error_message"] = runtime.get("error_message")
+        payload["updated_at"] = runtime.get("updated_at")
+    else:
+        payload["enabled"] = False
+        payload["configured"] = False
+        payload["state"] = "not_configured"
+        payload["error_code"] = "shared_gateway_platform_missing"
+        payload["error_message"] = (
+            f"{payload['name']} is routed through profile '{route['owner']}', "
+            "but that gateway is not running the platform adapter."
+        )
+    return payload
+
+
+def _platform_payloads(
+    scoped_dir: Optional[Path], entries, *, target_profile: Optional[str] = None,
+) -> list[dict[str, Any]]:
     """Payloads for ``entries``; call inside ``_profile_scope`` (load_env honors the
     HERMES_HOME contextvar; the gateway status readers do not, hence the explicit path)."""
     env_on_disk = load_env()
@@ -286,8 +349,25 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
         served = multiplexer_liveness_for_profile(own_home)
         if served is not None:
             runtime = {**served[1], "platforms": profile_platforms_from_multiplexer(served[1], own_home.name)}
-    return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None, profile_home=scoped_dir)
-            for entry in entries]
+    payloads = [
+        _messaging_platform_payload(
+            entry, env_on_disk, runtime, scoped=scoped_dir is not None, profile_home=scoped_dir,
+        )
+        for entry in entries
+    ]
+    if target_profile:
+        payloads = [_apply_shared_gateway_route(payload, target_profile) for payload in payloads]
+    return payloads
+
+
+def _effective_profile_name(requested_profile: Optional[str]) -> str:
+    """Canonical profile name after ``_profile_scope`` has selected its home."""
+    requested = (requested_profile or "").strip()
+    if requested and requested.lower() != "current":
+        return requested
+    from hermes_cli.profiles import get_active_profile_name
+
+    return get_active_profile_name()
 
 
 @contextlib.contextmanager
@@ -789,10 +869,13 @@ async def get_messaging_platforms(profile: Optional[str] = None):
         # the gateway status readers do NOT (they resolve process-level paths), so the profile directory is
         # passed explicitly for those (#71211).
         with _profile_scope(profile) as scoped_dir:
+            target_profile = _effective_profile_name(profile)
             return {
                 "env_path": str(get_env_path()),
                 "gateway_start_command": " ".join(["hermes", *_gateway_subcommand(profile, "start")]),
-                "platforms": _platform_payloads(scoped_dir, _messaging_platform_catalog()),
+                "platforms": _platform_payloads(
+                    scoped_dir, _messaging_platform_catalog(), target_profile=target_profile,
+                ),
             }
 
     return await asyncio.to_thread(_run)
@@ -843,6 +926,16 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
     entry = _require_platform(platform_id)
 
     target_profile = body.profile or profile
+    shared_route = _shared_gateway_route(_effective_profile_name(target_profile), platform_id)
+    if shared_route and (body.enabled is True or body.env):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{entry['name']} is managed by shared gateway profile "
+                f"'{shared_route['owner']}'. Configure credentials there instead. "
+                "Disabling or clearing stale local setup here is still allowed."
+            ),
+        )
     if body.enabled:
         conflict = _multiplex_port_binding_conflict(platform_id, target_profile)
         if conflict:
@@ -909,7 +1002,9 @@ async def test_messaging_platform(platform_id: str, profile: Optional[str] = Non
 
     def _run():
         with _profile_scope(profile) as scoped_dir:
-            return _platform_payloads(scoped_dir, [entry])[0]
+            return _platform_payloads(
+                scoped_dir, [entry], target_profile=_effective_profile_name(profile),
+            )[0]
 
     payload = await asyncio.to_thread(_run)
 

@@ -196,6 +196,17 @@ class TestExtractCacheBustingConfig:
             assert f"{section}.{key}" in out
             assert out[f"{section}.{key}"] is None
 
+
+    def test_tool_arg_truncation_limits_bust_the_cached_agent(self):
+        """Compression keys a rebuilt compressor re-reads must change the signature."""
+        from gateway.run import GatewayRunner
+
+        base = GatewayRunner._extract_cache_busting_config({})
+        for key, value in (("tool_arg_head_chars", 0), ("tool_arg_min_chars", 4000)):
+            changed = GatewayRunner._extract_cache_busting_config({"compression": {key: value}})
+            assert changed != base, f"compression.{key} must bust the cached agent"
+            assert changed[f"compression.{key}"] == value
+
     def test_non_dict_section_treated_as_missing(self):
         from gateway.run import GatewayRunner
 

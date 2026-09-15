@@ -560,6 +560,14 @@ DEFAULT_CONFIG = {
         # Prune's summarize pass only touches tool results larger than this (chars); clamped >= 200
         # so a generated summary can't be re-summarized.
         "proactive_prune_min_result_chars": 8000,
+        # Pass 3 (tool-call argument shrinking) keeps this many chars per string leaf. The default
+        # 200 matches historical behaviour. Set <= 0 to DISABLE the shrink entirely, so large
+        # write_file / execute_code / heredoc payloads survive compaction instead of being silently
+        # reduced to a stub; raise it for a gentler cut without disabling. Note the passes keep
+        # separate floors: `proactive_prune_min_result_chars` above governs pass (2) only.
+        "tool_arg_head_chars": 200,
+        # Pass 3 only inspects tool-call argument blobs longer than this (chars).
+        "tool_arg_min_chars": 500,
         # A prune only commits when it reclaims at least this many tokens, then waits for a
         # trigger-sized runway to regrow before rearming. 0 = no minimum-savings gate.
         "proactive_prune_min_reclaim_tokens": 4096,

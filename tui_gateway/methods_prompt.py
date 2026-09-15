@@ -303,8 +303,8 @@ def _resolve_truncation_ordinal(rid, sid, session, params, history):
                  or history[h_idx].get("message_id") == msg_id_str), None)
             not_found = "target message_id %s not found in history for session %s"
         if found_match is None:
-            logger.warning(
-                "prompt.submit: " + not_found + "; refusing truncation without fallback",
+            logger.debug(
+                "prompt.submit: " + not_found + "; no active-history truncation target",
                 target_repr, sid)
             return _stale()
         ordinal = found_match[0]
@@ -353,12 +353,47 @@ def _row_ids_of(messages) -> set:
     return {row_id for message in messages if isinstance((row_id := _message_row_id(message)), int)}
 
 
+def _restore_compacted_checkpoint(rid, sid, session, params, requested_rebind_ids, stale_error):
+    """Archived checkpoint admission is DB-owned; the live-history resolver must never guess an ordinal."""
+    from hermes_state_errors import CheckpointRestoreRejected
+    target, ordinal, err = _parse_truncation_params(rid, sid, session, params, session.get("history", []))
+    if err is not None or target is None:
+        return err or stale_error, {}
+    prefix_count = len(_history_user_indices(session.get("display_history_prefix") or []))
+    try:
+        with _session_db(session) as db:
+            restore = getattr(db, "restore_compacted_prefix", None)
+            if not callable(restore):
+                return stale_error, {}
+            result = restore(session.get("session_key") or sid, target,
+                             user_ordinal=None if ordinal is None else ordinal - prefix_count,
+                             confirm_empty=is_truthy_value(params.get("confirm_empty_truncate")))
+    except CheckpointRestoreRejected as exc:
+        return _err(rid, {"ordinal": 4030, "empty": 4028}[exc.reason], str(exc)), {}
+    except Exception as exc:
+        logger.error("prompt.submit: compacted checkpoint restore failed for %s", sid, exc_info=True)
+        return _err(rid, 5008, f"failed to persist history truncation: {exc}"), {}
+    if result is None:
+        return stale_error, {}
+    history, row_ids = result
+    session["history"] = history
+    session["history_version"] = int(session.get("history_version", 0)) + 1
+    if requested_rebind_ids is None:
+        fields = {"survivor_user_row_ids": [_message_row_id(history[i]) for i in _history_user_indices(history)]}
+    else:
+        fields = {"survivor_row_id_map": {key: value for key, value in row_ids.items()
+                                          if int(key) in requested_rebind_ids}}
+    return None, fields
+
+
 def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids):
     """Rewind/regenerate cut under ``history_lock``: ``(err, survivor_fields)``; the fields
     are the client rowId-rebind payload."""
     history = _history_without_ephemeral_scaffolding(session.get("history", []))
     ordinal, cut_index, err = _resolve_truncation_ordinal(rid, sid, session, params, history)
     if err is not None:
+        if err.get("error", {}).get("code") == 4018:
+            return _restore_compacted_checkpoint(rid, sid, session, params, requested_rebind_ids, err)
         return err, {}
     from agent.context_compressor import history_before_user_originated_turn
     truncated, _live_view = history_before_user_originated_turn(history, cut_index)

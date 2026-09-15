@@ -1941,7 +1941,7 @@ body.guest-pointer-lock :is(webview, iframe) {
   mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 1.5rem), rgb(0 0 0 / 64%) 100%);
 }
 
-[data-slot='aui_assistant-message-content'] .aui-md :not(pre) > code {
+.aui-md :not(pre) > code {
   background: var(--ui-inline-code-background);
   color: var(--ui-inline-code-foreground);
 }

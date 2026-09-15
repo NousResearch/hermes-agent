@@ -3368,6 +3368,24 @@ def _recoverable_pool_provider(
     return None
 
 
+def _is_upstream_capacity_error(exc: Exception) -> bool:
+    """True when a 429 is the aggregator's UPSTREAM capacity signal, not this key's rate limit.
+
+    Nous Portal multiplexes upstream providers behind one key; when an upstream model is
+    temporarily out of capacity the 429 body says so explicitly ("temporarily at capacity
+    upstream ... not your API key's rate limit"). The credential is healthy — marking it
+    exhausted starves the only pool identity and rotates to nothing (or a sibling that will
+    hit the same upstream wall). Mirrors ``agent.nous_rate_guard.is_genuine_nous_rate_limit``
+    for the aux path, which only has the error text (no bucket headers parsed here).
+    See NousResearch/hermes-agent#108349.
+    """
+    if getattr(exc, "status_code", None) != 429 and type(exc).__name__ != "RateLimitError":
+        return False
+    err_lower = str(exc).lower()
+    return ("not your api key" in err_lower and "rate limit" in err_lower) \
+        or "capacity upstream" in err_lower or "upstream capacity" in err_lower
+
+
 def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str = "") -> bool:
     """Try same-provider credential-pool recovery for auxiliary calls.
 
@@ -3405,6 +3423,15 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     if _is_payment_error(exc):
         return _rotate(402)
     if _is_rate_limit_error(exc):
+        if _is_upstream_capacity_error(exc):
+            # The 429 is the upstream's capacity, not this credential's quota (the body says
+            # "not your API key's rate limit"). The key is healthy: rotating marks the only
+            # pool identity exhausted and starves every lane that shares it (#108349).
+            # Fall through to provider-level fallback instead (the caller treats rate limits
+            # as capacity errors and walks the chains), and let retry-backoff ride out the flap.
+            logger.info("Auxiliary client: 429 on %s is upstream capacity, not credential quota — "
+                        "skipping pool rotation (credential stays healthy)", normalized)
+            return False
         return _rotate(429)
     return False
 
@@ -3910,6 +3937,26 @@ def _failed_backend_skip(
     return _skip
 
 
+def _vision_fallback_incapable(provider: str, model: Optional[str], task: Optional[str], label: str) -> bool:
+    """True when a fallback candidate provably cannot accept image input on a vision task.
+
+    Vision calls that fall back (e.g. a transient Nous upstream-capacity 429) must never be
+    handed to a text-only model: the request is rejected with a hard 400/1210 instead of the
+    caller getting a retryable signal (NousResearch/hermes-agent#108349). Mirrors the
+    capability check the vision auto-route path already does (``_vision_main_provider_client``),
+    which the runtime fallback chains were skipping. Unknown capability passes (attempt the
+    call) so custom/unrecognised endpoints keep working; only a PROVEN text-only model is
+    screened out. Non-vision tasks are never affected.
+    """
+    if task != "vision":
+        return False
+    if _main_model_supports_vision(provider, model):
+        return False
+    logger.info("Auxiliary vision: skipping fallback %s (%s/%s reports no vision capability) — "
+                "will not route an image to a text-only model", label, provider, model or "default")
+    return True
+
+
 def _try_main_agent_model_fallback(
     failed_provider: str, task: str = None, reason: str = "error",
     failed_model: Optional[str] = None, failed_base_url: str = "", failure_scope: Any = None,
@@ -3942,6 +3989,8 @@ def _try_main_agent_model_fallback(
     if client is None:
         return None, None, ""
     label = f"main-agent({main_provider})"
+    if _vision_fallback_incapable(main_provider, resolved_model or main_model, task, label):
+        return None, None, ""
     logger.info("Auxiliary %s: %s on %s — falling back to main agent model %s (%s)",
                 task or "call", reason, failed_provider, label, resolved_model or main_model)
     return client, resolved_model or main_model, label
@@ -4042,6 +4091,9 @@ def _try_configured_fallback_chain(
             if too_small:
                 tried.append(too_small)
                 continue
+            if _vision_fallback_incapable(fb_provider, resolved_model or fb_model, task, label):
+                tried.append(f"{label} (no vision capability)")
+                continue
             logger.info("Auxiliary %s: %s on %s — configured fallback to %s (%s)",
                         task, reason, failed_provider, label, resolved_model or fb_model or "default")
             return fb_client, resolved_model or fb_model, label
@@ -4133,6 +4185,9 @@ def _try_main_fallback_chain(
             )
             if too_small:
                 tried.append(too_small)
+                continue
+            if _vision_fallback_incapable(fb_provider, resolved_model or fb_model, task, label):
+                tried.append(f"{label} (no vision capability)")
                 continue
             logger.info("Auxiliary %s: %s on %s — main fallback chain to %s (%s)",
                         task or "call", reason, failed_provider or "auto", label, resolved_model or fb_model)

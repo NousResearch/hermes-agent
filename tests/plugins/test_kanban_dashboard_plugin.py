@@ -516,6 +516,39 @@ def test_dispatch_dry_run(client):
     assert isinstance(body, dict)
 
 
+def test_dispatch_nudge_forwards_capacity_pools(client, monkeypatch):
+    """Dashboard Nudge must load kanban.capacity_pools; max= is a spawn
+    ceiling, not a way around named-context admission (#81381 shape)."""
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    captured = {}
+
+    def fake_dispatch_once(conn, **kwargs):
+        captured.update(kwargs)
+        return kb.DispatchResult()
+
+    monkeypatch.setattr(kbd, "dispatch_once", fake_dispatch_once)
+    monkeypatch.setattr(
+        kbd, "dispatch_caps_from_config",
+        lambda: {
+            "default_assignee": None,
+            "max_in_progress": 8,
+            "max_in_progress_per_profile": None,
+            "max_spawn": None,
+            "capacity_pools": kbd.normalize_capacity_pools({
+                "spark": {"max_in_progress": 1, "members": ["coder"]},
+            }),
+        },
+    )
+    r = client.post("/api/plugins/kanban/dispatch?dry_run=true&max=8")
+    assert r.status_code == 200
+    assert captured.get("max_in_progress") == 8
+    assert captured.get("max_spawn") == 8
+    pools = captured.get("capacity_pools") or {}
+    assert "spark" in pools
+    assert pools["spark"].max_in_progress == 1
+
+
 # ---------------------------------------------------------------------------
 # Triage column (new v1 status)
 # ---------------------------------------------------------------------------

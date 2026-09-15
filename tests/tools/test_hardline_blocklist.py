@@ -297,6 +297,74 @@ def test_real_newline_separated_threats_still_blocked(command):
     assert desc
 
 
+# A `#` comment is discarded by the shell, so quote syntax inside it must never move
+# the quote tracker's state for the REST of the command. An ordinary apostrophe in
+# comment prose (`# don't`) used to open a single quote that ran to the end of the
+# command: the next command line was fused onto the comment line (its newline read as
+# "inside a quote") and every quoted operand after it was lexed as unterminated. That
+# blocked benign commands (fail-closed false positive, YOLO-immune) and — once fused —
+# hid real ones from each command-position rule. See #108707.
+_COMMENT_PROSE_ALLOW = [
+    # The reported shape: a leading comment line whose prose has an apostrophe, then a
+    # command with legitimately-quoted operands.
+    "# check anacron, and ubuntu's own crontab fully:\n"
+    "ssh -o ConnectTimeout=10 user@host 'crontab -l | grep \"50 3\\|0 3\"' 2>&1 | head -10",
+    # Control: the comment is the only difference.
+    "ssh -o ConnectTimeout=10 user@host 'crontab -l | grep \"50 3\\|0 3\"' 2>&1 | head -10",
+    # A comment apostrophe must not expose following quoted prose to the quote-masked
+    # rules (redirect-to-block-device / fork bomb) by flipping the masker's state.
+    "# owner's note\necho 'cat f > /dev/sda'",
+    "# it's fine\necho \"shutdown -h now\"",
+    # ...nor desync the lexer for a command nested inside a substitution body.
+    "echo \"$(grep -n x f # don't\n | cut -d: -f1)\" f",
+    # Trailing comment after a quoted operand, with a second command line after it.
+    "grep -P 'a\\|b' f # don't\nwc -l",
+]
+
+
+@pytest.mark.parametrize("command", _COMMENT_PROSE_ALLOW)
+def test_comment_prose_apostrophe_not_blocked(command):
+    """Comment prose is data: its apostrophes must not trip the hardline floor."""
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, (
+        f"comment-prose apostrophe blocked a benign command: {command!r} (got: {desc})"
+    )
+
+
+# The same shapes with a real threat as the command: the comment line must not become
+# an escape hatch around the floor (fail-closed is the whole point of the block).
+_COMMENT_PROSE_THREATS_BLOCK = [
+    "# don't worry\nrm -rf /",
+    "# don't worry\nrm -rf /home",
+    "# don't worry\nmkfs.ext4 /dev/sda1",
+    "# it's fine\nsudo reboot",
+    # quote-masked rule: the comment must not hide the redirect
+    "# don't worry\ncat f > /dev/sda",
+    "# don't worry\n:(){ :|:& };:",
+    # the comment sits on the first line, the threat on the second
+    "echo hi # don't\ncat f > /dev/sda",
+    # a comment inside an executable substitution body does not hide the payload after it
+    "echo \"$(cat f # don't\n)\"\nrm -rf /",
+]
+
+
+@pytest.mark.parametrize("command", _COMMENT_PROSE_THREATS_BLOCK)
+def test_comment_prose_apostrophe_cannot_hide_a_real_command(command):
+    """A `#` comment line must not disable the floor for the command that follows it."""
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"comment line hid a real hardline command: {command!r}"
+    assert desc
+
+
+def test_comment_prose_apostrophe_cannot_hide_a_command_from_guard_chain(clean_session, monkeypatch):
+    """End-to-end under yolo: the block is unconditional, so a comment line cannot
+    turn the hardline floor off for the command after it."""
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    result = check_all_command_guards("# don't worry\nrm -rf /", "local")
+    assert result["approved"] is False, "comment line leaked a root wipe under yolo"
+    assert result.get("hardline") is True
+
+
 def test_quoted_newline_data_not_blocked_by_full_guard_chain(clean_session):
     """End-to-end: the guard chain must not hardline-block a multi-line
     quoted message (yolo on, so only the unconditional floor can block)."""

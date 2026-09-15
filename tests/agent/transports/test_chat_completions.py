@@ -287,6 +287,104 @@ class TestChatCompletionsBuildKwargs:
         kw = transport.build_kwargs(model="gpt-4o", messages=msgs, tools=tools)
         assert kw["tools"] == tools
 
+    def test_zai_profile_tools_enable_tool_stream(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("zai")
+        msgs = [{"role": "user", "content": "Hi"}]
+        tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
+        kw = transport.build_kwargs(
+            model="glm-5.3", messages=msgs, tools=tools, provider_profile=profile,
+        )
+        assert kw["extra_body"]["tool_stream"] is True
+
+    def test_zai_profile_without_tools_omits_tool_stream(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("zai")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(model="glm-5.3", messages=msgs, provider_profile=profile)
+        assert "tool_stream" not in kw.get("extra_body", {})
+
+    # Both first-party host families: hermes_cli/auth_zai_kimi.py lists Global and China
+    # endpoints, so a fallback that only knew api.z.ai would miss every China-plan user.
+    ZAI_BASE_URLS = [
+        "https://api.z.ai/api/coding/paas/v4",
+        "https://api.z.ai/api/paas/v4",
+        "https://open.bigmodel.cn/api/paas/v4",
+        "https://open.bigmodel.cn/api/coding/paas/v4",
+    ]
+
+    @pytest.mark.parametrize("base_url", ZAI_BASE_URLS)
+    def test_unregistered_provider_with_zai_base_url_enables_tool_stream(self, transport, base_url):
+        """No profile at all -> legacy path; only the base_url identifies Z.AI."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
+        kw = transport.build_kwargs(model="glm-5.3", messages=msgs, tools=tools, base_url=base_url)
+        assert kw["extra_body"]["tool_stream"] is True
+
+    @pytest.mark.parametrize("base_url", ZAI_BASE_URLS)
+    def test_custom_route_with_zai_base_url_enables_tool_stream(self, transport, base_url):
+        """``custom:`` routes resolve to the generic ``custom`` profile, so they take the
+        PROFILE path with a non-zai profile -- the base_url fallback there is what catches them."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom:my-glm")
+        assert profile is not None and profile.name != "zai"
+        msgs = [{"role": "user", "content": "Hi"}]
+        tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
+        kw = transport.build_kwargs(
+            model="glm-5.3", messages=msgs, tools=tools, provider_profile=profile, base_url=base_url,
+        )
+        assert kw["extra_body"]["tool_stream"] is True
+
+    def test_zai_base_url_without_tools_omits_tool_stream_on_legacy_path(self, transport):
+        """A plain completion has nothing to stream; the flag would be noise on the wire."""
+        kw = transport.build_kwargs(
+            model="glm-5.3", messages=[{"role": "user", "content": "Hi"}],
+            base_url="https://api.z.ai/api/paas/v4",
+        )
+        assert "tool_stream" not in kw.get("extra_body", {})
+
+    def test_zai_base_url_without_tools_omits_tool_stream_on_profile_path(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom:my-glm")
+        kw = transport.build_kwargs(
+            model="glm-5.3", messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile, base_url="https://api.z.ai/api/paas/v4",
+        )
+        assert "tool_stream" not in kw.get("extra_body", {})
+
+    @pytest.mark.parametrize("base_url", [
+        "https://gateway.example.com/api.z.ai-mirror/v1",   # vendor host in the PATH
+        "https://gateway.example.com/bigmodel.cn/v4",
+        "https://api.z.ai.evil.com/v1",                     # lookalike domain
+        "https://api.ludz.ai/v1",                           # "z.ai" as a substring of the host
+        "https://proxy.local/v1?upstream=https://api.z.ai/v1",
+    ])
+    def test_zai_lookalike_base_urls_do_not_enable_tool_stream(self, transport, base_url):
+        """Host-anchored, never a substring: a proxy that merely carries the vendor host in
+        its path or a lookalike domain must not be sent Z.AI's wire quirks. Strict
+        OpenAI-compatible endpoints reject unknown extra_body fields with HTTP 400."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
+        kw = transport.build_kwargs(model="glm-5.3", messages=msgs, tools=tools, base_url=base_url)
+        assert "tool_stream" not in kw.get("extra_body", {})
+
+    def test_non_zai_provider_omits_tool_stream(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
+        kw = transport.build_kwargs(model="gpt-4o", messages=msgs, tools=tools)
+        assert "tool_stream" not in kw.get("extra_body", {})
+
+    def test_request_override_wins_over_zai_tool_stream_default(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("zai")
+        msgs = [{"role": "user", "content": "Hi"}]
+        tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
+        kw = transport.build_kwargs(
+            model="glm-5.3", messages=msgs, tools=tools, provider_profile=profile,
+            request_overrides={"extra_body": {"tool_stream": False}},
+        )
+        assert kw["extra_body"]["tool_stream"] is False
+
     def test_openrouter_provider_prefs(self, transport):
         from providers import get_provider_profile
         profile = get_provider_profile("openrouter")

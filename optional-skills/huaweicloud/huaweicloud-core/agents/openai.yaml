@@ -1,0 +1,4 @@
+interface:
+  display_name: 'Huawei Cloud Core'
+  short_description: 'Route Huawei Cloud tasks to Skills, CLI, API, SDK, MCP, or Terraform.'
+  default_prompt: 'Use $huaweicloud-core to choose the right Huawei Cloud capability path.'

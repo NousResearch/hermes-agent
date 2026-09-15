@@ -2,13 +2,16 @@ import { describe, expect, it } from 'vitest'
 
 import { TRANSLATIONS } from '@/i18n/catalog'
 import { en } from '@/i18n/en'
+import type { ComposerSendMode } from '@/store/composer-send'
 
 import {
+  composerKeybindRows,
   defaultBindings,
   KEYBIND_ACTIONS,
   KEYBIND_READONLY,
   keybindAction,
-  keybindActionAllowedInEditableTarget
+  keybindActionAllowedInEditableTarget,
+  readonlyShortcuts
 } from './actions'
 import { canonicalizeCombo } from './combo'
 
@@ -133,5 +136,59 @@ describe('view.tabSlot.N layers over profile.switch.N on ⌘1…⌘9 (#92569)', 
 
     expect(firstTabSlot).toBeGreaterThanOrEqual(0)
     expect(firstProfileSwitch).toBeGreaterThan(firstTabSlot)
+  })
+})
+
+describe('composer send-mode keybind rows', () => {
+  const keysFor = (mode: ComposerSendMode, id: string) =>
+    composerKeybindRows(mode).find(row => row.id === id)?.keys
+
+  it('prints the historical Enter binding in the default mode', () => {
+    expect(keysFor('enter', 'composer.send')).toEqual(['enter'])
+    expect(keysFor('enter', 'composer.newline')).toEqual(['shift+enter'])
+  })
+
+  it('prints the double tap once sending moves off Enter', () => {
+    expect(keysFor('double-enter', 'composer.send')).toEqual(['enter', 'enter'])
+    expect(keysFor('double-enter', 'composer.newline')).toEqual(['enter', 'shift+enter'])
+  })
+
+  it('prints the chord in mod-enter mode', () => {
+    expect(keysFor('mod-enter', 'composer.send')).toEqual(['mod+enter'])
+    expect(keysFor('mod-enter', 'composer.newline')).toEqual(['enter', 'shift+enter'])
+  })
+
+  it('keeps the queue chord printed in every mode', () => {
+    for (const mode of ['enter', 'double-enter', 'mod-enter'] as const) {
+      expect(keysFor(mode, 'composer.queue')).toEqual(['mod+enter'])
+    }
+  })
+
+  it('resolves every id the panel labels, so no row renders as a raw id', () => {
+    for (const mode of ['enter', 'double-enter', 'pause', 'mod-enter'] as const) {
+      for (const row of readonlyShortcuts(mode)) {
+        const labelKey = row.labelKey ?? row.id
+
+        expect(en.keybinds.actions[labelKey], `${mode}: ${labelKey}`).toBeDefined()
+      }
+    }
+  })
+
+  it('labels the send row per mode, since Enter means something different in each', () => {
+    const labelFor = (mode: ComposerSendMode) => {
+      const row = composerKeybindRows(mode).find(entry => entry.id === 'composer.send')
+
+      return row?.labelKey
+    }
+
+    expect(labelFor('enter')).toBeUndefined()
+    expect(labelFor('double-enter')).toBe('composer.send.double')
+    expect(labelFor('pause')).toBe('composer.send.pause')
+    expect(labelFor('mod-enter')).toBe('composer.send.mod')
+  })
+
+  it('prints a single Enter for the pause mode it only sometimes means', () => {
+    expect(keysFor('pause', 'composer.send')).toEqual(['enter'])
+    expect(keysFor('pause', 'composer.newline')).toEqual(['enter', 'shift+enter'])
   })
 })

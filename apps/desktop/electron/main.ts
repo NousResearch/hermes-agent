@@ -136,6 +136,7 @@ import { createCloudSessionRecovery } from './cloud-session-recovery'
 import { installCommandScreenshot } from './command-screenshot'
 import { composerImageTimestamp } from './composer-image-name'
 import { writeComposerPaste } from './composer-paste'
+import { registerComposerSendIpc } from './composer-send-ipc'
 import { applyConnectionChange, teardownSshState } from './connection-apply'
 import {
   connectionInstallIds,
@@ -16192,6 +16193,11 @@ ipcMain.handle('hermes:data-url-read-max:set', (_event, maxMb) => {
     maxBytes: dataUrlReadMaxBytesFromMb(next)
   }
 })
+
+// Composer send behaviour (Settings → Keyboards). Persisted next to the other
+// desktop prefs as `composer-send.json` so the double-tap window can be typed
+// by hand with more precision than the settings slider offers.
+registerComposerSendIpc()
 
 ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
   // Backend-reported paths are WSL/POSIX (`/home/...`, `/mnt/c/...`); on a

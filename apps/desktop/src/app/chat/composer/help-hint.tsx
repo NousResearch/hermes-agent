@@ -1,27 +1,41 @@
+import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
 import { KbdCombo } from '@/components/ui/kbd'
 import { useI18n } from '@/i18n'
+import { composerSendKeys } from '@/lib/keybinds/actions'
+import { $composerSendMode } from '@/store/composer-send'
 
 import { COMPLETION_DRAWER_CLASS } from './completion-drawer'
 
 const COMMON_COMMAND_KEYS = ['/help', '/clear', '/resume', '/details', '/copy', '/quit']
 
-/** Stable ids → i18n `hotkeyDescs` keys. Combos resolve mod labels per OS. */
+/** Stable ids → i18n `hotkeyDescs` keys. Combos resolve mod labels per OS.
+ *  The send row is appended per send mode (it has no single fixed combo). */
 const COMPOSER_HOTKEY_ROWS = [
   { id: 'composer.mention', combos: ['@'] },
   { id: 'composer.slash', combos: ['/'] },
   { id: 'composer.help', combos: ['?'] },
-  { id: 'composer.sendNewline', combos: ['enter', 'shift+enter'] },
   { id: 'composer.sendQueued', combos: ['mod+shift+k'] },
   { id: 'keybinds.openPanel', combos: ['mod+/'] },
   { id: 'composer.cancel', combos: ['escape'] },
   { id: 'composer.history', combos: ['up', 'down'] }
 ] as const
 
+/** The send/newline row: label and keys both follow the send mode. */
+const SEND_ROW_BY_MODE = {
+  enter: { id: 'composer.sendNewline' },
+  'double-enter': { id: 'composer.sendNewlineDouble' },
+  pause: { id: 'composer.sendNewlinePause' },
+  'mod-enter': { id: 'composer.sendNewlineMod' }
+} as const
+
 export function HelpHint() {
   const { t } = useI18n()
   const c = t.composer
+  const sendMode = useStore($composerSendMode)
+
+  const sendRow = { id: SEND_ROW_BY_MODE[sendMode].id, combos: composerSendKeys(sendMode) }
 
   return (
     <div className={COMPLETION_DRAWER_CLASS} data-slot="composer-completion-drawer" data-state="open" role="dialog">
@@ -32,6 +46,7 @@ export function HelpHint() {
       </Section>
 
       <Section title={c.hotkeys}>
+        <HotkeyRow combos={[...sendRow.combos]} description={c.hotkeyDescs[sendRow.id] ?? ''} key={sendRow.id} />
         {COMPOSER_HOTKEY_ROWS.map(row => (
           <HotkeyRow combos={[...row.combos]} description={c.hotkeyDescs[row.id] ?? ''} key={row.id} />
         ))}

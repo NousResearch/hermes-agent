@@ -3,6 +3,12 @@ import { groupSpeakerLabel } from './group-chat'
 import { groupMemberKey } from './group-membership'
 import type { GroupMember, GroupMessage, GroupMessageAuthor } from './types'
 
+const RESERVED_CONTROL_MARKER_RE = /OUT-OF-BAND USER MESSAGE|CONTEXT COMPACTION/gi
+
+function neutralizeMemberControlMarkers(text: string) {
+  return text.replace(RESERVED_CONTROL_MARKER_RE, 'RESERVED CONTROL MARKER NEUTRALIZED')
+}
+
 /** Viewer identity for a room-log line. A bare string is the local, unsourced
  *  profile name (legacy call sites and single-connection jobs). */
 export type GroupChatLineViewer =
@@ -33,7 +39,7 @@ export function formatGroupChatLine(entry: GroupMessage, viewer: GroupChatLineVi
   // two machines stay tellable apart in every member's transcript.
   const source = entry.from.source ? ` [${entry.from.source}]` : ''
 
-  return `${groupSpeakerLabel(entry.from.name)}${suffix}${source}: ${entry.text}${attached}`
+  return `${groupSpeakerLabel(entry.from.name)}${suffix}${source}: ${neutralizeMemberControlMarkers(entry.text)}${attached}`
 }
 
 function viewerNameOf(viewer: GroupChatLineViewer): string {

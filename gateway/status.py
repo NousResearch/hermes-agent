@@ -1558,6 +1558,34 @@ def planned_stop_marker_targets_self() -> bool:
     return parsed is not None and _pid_marker_names_self(parsed[1], parsed[2])
 
 
+def planned_stop_stopper_alive() -> bool:
+    """True when no live planned-stop marker exists or its requesting process is still running.
+
+    ``hermes gateway restart``/``stop`` (the stopper) writes the marker and then waits out the
+    gateway's after-turn drain before starting the replacement. A stopper that dies mid-drain
+    (terminal timeout, SSH drop) leaves the marker orphaned: the gateway would shed new runs for
+    the full drain cap and then exit cleanly with nothing left to revive it. Conservative by
+    design -- any doubt (missing marker, malformed record, probe error, stopper is ourselves)
+    reports alive so a legitimate stop is never cancelled. PID reuse is bounded by the marker TTL.
+    """
+    try:
+        parsed = _read_live_pid_marker(_get_planned_stop_marker_path(), _PLANNED_STOP_MARKER_TTL_S)
+    except Exception:  # noqa: BLE001 - a probe failure must never cancel a live restart
+        return True
+    if parsed is None:
+        return True
+    stopper_pid = parsed[0].get("stopper_pid")
+    if not isinstance(stopper_pid, int) or stopper_pid <= 0 or stopper_pid == os.getpid():
+        return True
+    try:
+        os.kill(stopper_pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # e.g. EPERM: the process exists but belongs to another user
+    return True
+
+
 def get_running_pid(
     pid_path: Optional[Path] = None, *, cleanup_stale: bool = True
 ) -> Optional[int]:

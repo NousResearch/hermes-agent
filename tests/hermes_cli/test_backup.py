@@ -1422,6 +1422,31 @@ class TestQuickSnapshot:
         assert len(rows) == 1
         assert rows[0] == ("s1", "hello world")
 
+    def test_restore_preserves_pinned_session_state(self, hermes_home):
+        """Pinned sessions must survive the pre-update snapshot/restore cycle."""
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+
+        db_path = hermes_home / "state.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+        conn.execute("UPDATE sessions SET pinned = 1 WHERE id = 's1'")
+        conn.commit()
+        conn.close()
+
+        snapshot_id = create_quick_snapshot(label="pre-update", hermes_home=hermes_home)
+
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("UPDATE sessions SET pinned = 0 WHERE id = 's1'")
+        conn.commit()
+        conn.close()
+
+        assert restore_quick_snapshot(snapshot_id, hermes_home=hermes_home) is True
+
+        conn = sqlite3.connect(str(db_path))
+        pinned = conn.execute("SELECT pinned FROM sessions WHERE id = 's1'").fetchone()
+        conn.close()
+        assert pinned == (1,)
+
     def test_failed_state_db_copy_is_loud(self, hermes_home, monkeypatch, capsys):
         """#68474: unreadable state.db must not look like a silent success."""
         from hermes_cli import backup as backup_mod

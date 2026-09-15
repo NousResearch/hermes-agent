@@ -65,6 +65,45 @@ function fieldIsVisible(field: MemoryProviderField, values: Record<string, Memor
   });
 }
 
+function getInitialMemoryValues(fields: MemoryProviderField[]) {
+  return fields.map(fieldInitialValue);
+}
+
+function getMemoryValuesByKey(
+  fields: MemoryProviderField[],
+  fieldValues: MemoryFormValue[],
+) {
+  const valuesByKey: Record<string, MemoryFormValue> = Object.fromEntries(
+    fields.map((field, index) => [
+      field.key,
+      fieldValues[index] ?? fieldInitialValue(field),
+    ]),
+  );
+
+  for (const [index, field] of fields.entries()) {
+    if (fieldIsVisible(field, valuesByKey)) {
+      valuesByKey[field.key] = fieldValues[index] ?? fieldInitialValue(field);
+    }
+  }
+  return valuesByKey;
+}
+
+function getVisibleMemoryValues(
+  fields: MemoryProviderField[] | undefined,
+  fieldValues: MemoryFormValue[],
+) {
+  if (!fields) return {};
+  const valuesByKey = getMemoryValuesByKey(fields, fieldValues);
+  const visibleValues: Record<string, MemoryFormValue> = {};
+
+  for (const [index, field] of fields.entries()) {
+    if (fieldIsVisible(field, valuesByKey)) {
+      visibleValues[field.key] = fieldValues[index] ?? fieldInitialValue(field);
+    }
+  }
+  return visibleValues;
+}
+
 function setupHasDetails(setup?: MemoryProviderSetupInfo) {
   if (!setup) return false;
   return Boolean(
@@ -296,7 +335,7 @@ export default function PluginsPage() {
   const [rescanBusy, setRescanBusy] = useState(false);
   const [memorySel, setMemorySel] = useState(MEMORY_PROVIDER_BUILTIN);
   const [memoryConfig, setMemoryConfig] = useState<MemoryProviderConfig | null>(null);
-  const [memoryValues, setMemoryValues] = useState<Record<string, MemoryFormValue>>({});
+  const [memoryValues, setMemoryValues] = useState<MemoryFormValue[]>([]);
   const [memoryConfigBusy, setMemoryConfigBusy] = useState(false);
   const [secretVisible, setSecretVisible] = useState<Record<string, boolean>>({});
   const [contextSel, setContextSel] = useState("compressor");
@@ -347,7 +386,7 @@ export default function PluginsPage() {
 
       if (!provider) {
         setMemoryConfig(null);
-        setMemoryValues({});
+        setMemoryValues([]);
         setMemoryConfigBusy(false);
         return;
       }
@@ -358,16 +397,12 @@ export default function PluginsPage() {
         .then((config) => {
           if (cancelled) return;
           setMemoryConfig(config);
-          setMemoryValues(
-            Object.fromEntries(
-              config.fields.map((field) => [field.key, fieldInitialValue(field)]),
-            ),
-          );
+          setMemoryValues(getInitialMemoryValues(config.fields));
         })
         .catch((e) => {
           if (!cancelled) {
             setMemoryConfig(null);
-            setMemoryValues({});
+            setMemoryValues([]);
             showToast(e instanceof Error ? e.message : "Failed to load provider config", "error");
           }
         })
@@ -467,12 +502,7 @@ export default function PluginsPage() {
       if (!provider) {
         await api.setMemoryProvider("");
       } else {
-        const visibleValues = Object.fromEntries(
-          Object.entries(memoryValues).filter(([key]) => {
-            const field = memoryConfig?.fields.find((candidate) => candidate.key === key);
-            return field ? fieldIsVisible(field, memoryValues) : true;
-          }),
-        );
+        const visibleValues = getVisibleMemoryValues(memoryConfig?.fields, memoryValues);
         await api.updateMemoryProviderConfig(provider, visibleValues);
       }
       showToast(t.pluginsPage.savedProviders, "success");
@@ -485,12 +515,7 @@ export default function PluginsPage() {
   };
 
   const currentVisibleMemoryValues = () =>
-    Object.fromEntries(
-      Object.entries(memoryValues).filter(([key]) => {
-        const field = memoryConfig?.fields.find((candidate) => candidate.key === key);
-        return field ? fieldIsVisible(field, memoryValues) : true;
-      }),
-    );
+    getVisibleMemoryValues(memoryConfig?.fields, memoryValues);
 
   const onSetupMemoryProvider = async () => {
     const provider = memorySel === MEMORY_PROVIDER_BUILTIN ? "" : memorySel;
@@ -571,8 +596,20 @@ export default function PluginsPage() {
   const activeMemoryInfo = providers?.memory_provider
     ? providers.memory_options.find((provider) => provider.name === providers.memory_provider)
     : null;
+  const memoryValuesByKey = memoryConfig
+    ? getMemoryValuesByKey(memoryConfig.fields, memoryValues)
+    : {};
   const visibleMemoryFields =
-    memoryConfig?.fields.filter((field) => fieldIsVisible(field, memoryValues)) ?? [];
+    memoryConfig?.fields
+      .map((field, index) => ({ field, index }))
+      .filter(({ field }) => fieldIsVisible(field, memoryValuesByKey)) ?? [];
+  const setMemoryFieldValue = (index: number, value: MemoryFormValue) => {
+    setMemoryValues((current) => {
+      const next = [...current];
+      next[index] = value;
+      return next;
+    });
+  };
 
   return (
     <div className="flex flex-col gap-4">
@@ -673,11 +710,11 @@ export default function PluginsPage() {
 
                   {selectedMemoryName && !memoryConfigBusy && visibleMemoryFields.length > 0 && (
                     <div className="grid gap-4 border border-border p-4">
-                      {visibleMemoryFields.map((field) => {
-                        const value = memoryValues[field.key];
-                        const secretIsVisible = !!secretVisible[field.key];
+                      {visibleMemoryFields.map(({ field, index: fieldIndex }) => {
+                        const value = memoryValues[fieldIndex];
+                        const secretIsVisible = !!secretVisible[fieldIndex];
                         return (
-                          <div key={field.key} className="grid gap-2 min-w-0">
+                          <div key={`${field.key}-${fieldIndex}`} className="grid gap-2 min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
                               <Label htmlFor={`memory-${field.key}`}>{field.label}</Label>
                               {field.required && <Badge tone="outline">required</Badge>}
@@ -701,9 +738,7 @@ export default function PluginsPage() {
                                 id={`memory-${field.key}`}
                                 className="w-full"
                                 value={String(value ?? "")}
-                                onValueChange={(next) =>
-                                  setMemoryValues((current) => ({ ...current, [field.key]: next }))
-                                }
+                                onValueChange={(next) => setMemoryFieldValue(fieldIndex, next)}
                               >
                                 {field.options.map((option) => (
                                   <SelectOption key={option.value} value={option.value}>
@@ -714,9 +749,7 @@ export default function PluginsPage() {
                             ) : field.kind === "boolean" ? (
                               <Switch
                                 checked={Boolean(value)}
-                                onCheckedChange={(next) =>
-                                  setMemoryValues((current) => ({ ...current, [field.key]: next }))
-                                }
+                                onCheckedChange={(next) => setMemoryFieldValue(fieldIndex, next)}
                               />
                             ) : (
                               <div className="flex items-center gap-2">
@@ -741,10 +774,7 @@ export default function PluginsPage() {
                                       : field.placeholder
                                   }
                                   onChange={(event) =>
-                                    setMemoryValues((current) => ({
-                                      ...current,
-                                      [field.key]: event.target.value,
-                                    }))
+                                    setMemoryFieldValue(fieldIndex, event.target.value)
                                   }
                                 />
                                 {field.kind === "secret" && (
@@ -755,7 +785,7 @@ export default function PluginsPage() {
                                     onClick={() =>
                                       setSecretVisible((current) => ({
                                         ...current,
-                                        [field.key]: !current[field.key],
+                                        [fieldIndex]: !current[fieldIndex],
                                       }))
                                     }
                                   >

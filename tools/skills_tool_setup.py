@@ -126,8 +126,26 @@ def _is_gateway_surface() -> bool:
 
 
 def _is_env_var_persisted(var_name: str, env_snapshot: Dict[str, str]) -> bool:
-    """Set (non-empty) in the .env snapshot, else in the process environment."""
-    return bool(env_snapshot[var_name] if var_name in env_snapshot else os.getenv(var_name))
+    """Set (non-empty) in the .env snapshot, else resolvable for the active profile: through
+    the installed secret scope (which folds in the home's external secret sources), falling
+    back to the process env only outside multiplexing. Under multiplexing with no scope the
+    ambient env belongs to the launch profile, so the variable counts as missing — readiness
+    fails closed rather than borrowing a sibling profile's value."""
+    if var_name in env_snapshot:
+        return bool(env_snapshot[var_name])
+    from agent.secret_scope import (
+        UnscopedSecretError,
+        current_secret_scope,
+        get_secret,
+        is_multiplex_active,
+    )
+
+    if current_secret_scope() is None and not is_multiplex_active():
+        return bool(os.getenv(var_name))
+    try:
+        return bool(get_secret(var_name))
+    except UnscopedSecretError:
+        return False
 
 
 def _build_setup_note(

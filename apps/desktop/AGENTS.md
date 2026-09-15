@@ -204,12 +204,6 @@ From `apps/desktop`, use a fresh temporary directory for each rehearsal and run
 `HERMES_PORTAL_BASE_URL=http://127.0.0.1:8765 HERMES_ANON_API_SECRET=test-secret HERMES_SHARED_AUTH_DIR=<tmp>/.hermes/shared`
 before `npm run dev`. Stop Electron and its dev server after the run.
 
-To rehearse the free tier's failure handling (the account service refusing or
-unreachable at boot, the welcome host rate-limiting or refusing mid-chat), point
-the desktop at a local stand-in for both services with `HERMES_PORTAL_BASE_URL`,
-`NOUS_INFERENCE_BASE_URL` and `HERMES_EXTRA_WELCOME_HOSTS`. See
-`website/docs/developer-guide/free-tier-fault-rehearsal.md`.
-
 ## The taste test before you hand off
 
 - Does every piece of state live with its authority, at the narrowest scope?

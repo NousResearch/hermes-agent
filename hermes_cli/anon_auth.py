@@ -188,10 +188,9 @@ def guest_carries_inference() -> bool:
 
 WELCOME_HOSTS = frozenset({"welcome-api.nousresearch.com"})
 # Dev-only: extra hostnames that count as the welcome host, comma-separated (for example
-# ``127.0.0.1`` while ``NOUS_INFERENCE_BASE_URL`` points at a local stand-in; see
-# website/docs/developer-guide/free-tier-fault-rehearsal.md). Read from the environment, which the
-# user controls, so it sits at the same trust level as the URL override itself; it never widens
-# the NETWORK-side allowlist in ``auth_nous``.
+# ``127.0.0.1`` while ``NOUS_INFERENCE_BASE_URL`` points at a local stand-in). Read from the
+# environment, which the user controls, so it sits at the same trust level as the URL override
+# itself; it never widens the NETWORK-side allowlist in ``auth_nous``.
 EXTRA_WELCOME_HOSTS_ENV = "HERMES_EXTRA_WELCOME_HOSTS"
 
 

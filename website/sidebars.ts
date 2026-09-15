@@ -777,7 +777,6 @@ const sidebars: SidebarsConfig = {
       items: [
         'developer-guide/contributing',
         'developer-guide/worktree-ui-dev',
-        'developer-guide/free-tier-fault-rehearsal',
         {
           type: 'category',
           label: 'Architecture',

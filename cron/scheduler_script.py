@@ -351,6 +351,19 @@ def _run_job_script(
                 "errors": "replace"}
         env = build_subprocess_env()
         env.update(env_overlay)
+        # Parent gateway/terminal metadata must never leak into a manual script
+        # invocation: a script would then read a stale schedule from whatever
+        # dispatch happened to run before it and label an on-demand run as a
+        # catch-up. Strip unconditionally, then re-add only what the scheduler
+        # explicitly scoped for THIS dispatch.
+        for key in _CRON_SCRIPT_ENV_KEYS:
+            env.pop(key, None)
+        cron_env = _CRON_SCRIPT_ENV_CONTEXT.get()
+        if cron_env:
+            for key in _CRON_SCRIPT_ENV_KEYS:
+                value = cron_env.get(key)
+                if value is not None:
+                    env[key] = str(value)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir
         # parent (back-compat). NEVER mutate the Python process cwd — that would leak into concurrent
@@ -421,6 +434,74 @@ def _start_heartbeat_thread(loop_fn, name: str, fail_log) -> Optional[threading.
     return thread
 
 
+_CRON_SCRIPT_ENV_KEYS = (
+    "HERMES_CRON_JOB_ID",
+    "HERMES_CRON_SCHEDULED_AT",
+    "HERMES_CRON_STARTED_AT",
+    "HERMES_CRON_LATENESS_SECONDS",
+    "HERMES_CRON_DISPATCH_KIND",
+)
+
+_CRON_SCRIPT_ENV_CONTEXT: contextvars.ContextVar[Optional[dict[str, str]]] = (
+    contextvars.ContextVar("cron_script_env", default=None)
+)
+
+
+def _cron_script_env(job: dict) -> dict[str, str]:
+    """Per-dispatch metadata for a scheduled run, or ``{}`` for a manual one.
+
+    Reads upstream's own dispatch classification (``job["last_dispatch"]``,
+    written by ``cron.jobs`` right before the run: ``scheduled_at``,
+    ``lateness_seconds``, ``kind`` in on_time/late/catch_up). We do NOT
+    recompute lateness here — one classifier, one verdict, so the env a script
+    sees can never disagree with the record the scheduler persisted.
+
+    Only a recurring scheduler dispatch has ``last_dispatch``. A manual/direct
+    run gets ``{}``, so ``_run_job_script`` strips every key and the script
+    behaves exactly as a person running it by hand.
+    """
+    dispatch = job.get("last_dispatch")
+    if not isinstance(dispatch, dict):
+        return {}
+    scheduled_at = dispatch.get("scheduled_at")
+    dispatched_at = dispatch.get("dispatched_at")
+    # Both timestamps come from the same upstream stamp. If either is missing
+    # the record is not a usable dispatch provenance, and inventing a
+    # wall-clock "now" here would be exactly the guessing this contract exists
+    # to remove — a manual run must stay indistinguishable from no metadata.
+    if not scheduled_at or not dispatched_at:
+        return {}
+    env = {
+        "HERMES_CRON_JOB_ID": str(job.get("id") or ""),
+        "HERMES_CRON_SCHEDULED_AT": str(scheduled_at),
+        "HERMES_CRON_STARTED_AT": str(dispatched_at),
+    }
+    lateness = dispatch.get("lateness_seconds")
+    if lateness is not None:
+        env["HERMES_CRON_LATENESS_SECONDS"] = str(lateness)
+    kind = dispatch.get("kind")
+    if kind:
+        env["HERMES_CRON_DISPATCH_KIND"] = str(kind)
+    return env
+
+
+def _run_job_script_for_dispatch(
+    job: dict, script_path: str, workdir: Optional[str] = None,
+    cancel_event: Optional[_CancelEventLike] = None,
+) -> tuple[bool, str]:
+    """Scope scheduler metadata around the legacy runner seam.
+
+    An empty env (a manual/direct dispatch) is scoped as ``None`` so
+    ``_run_job_script`` takes its "strip inherited metadata" branch and the
+    subprocess sees no HERMES_CRON_* at all.
+    """
+    token = _CRON_SCRIPT_ENV_CONTEXT.set(_cron_script_env(job) or None)
+    try:
+        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+    finally:
+        _CRON_SCRIPT_ENV_CONTEXT.reset(token)
+
+
 def _run_job_script_with_claim_heartbeat(
     job: dict, script_path: str, workdir: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None,
@@ -433,7 +514,7 @@ def _run_job_script_with_claim_heartbeat(
     claim = job.get("run_claim")
     owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
     if not (isinstance(schedule, dict) and schedule.get("kind") == "once" and owner):
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script_for_dispatch(job, script_path, workdir=workdir, cancel_event=cancel_event)
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -451,10 +532,10 @@ def _run_job_script_with_claim_heartbeat(
             "Job '%s': could not start script run_claim heartbeat", job_id, exc_info=True),
     )
     if heartbeat_thread is None:
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script_for_dispatch(job, script_path, workdir=workdir, cancel_event=cancel_event)
 
     try:
-        return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event)
+        return _run_job_script_for_dispatch(job, script_path, workdir=workdir, cancel_event=cancel_event)
     finally:
         stop.set()
         # Bounded join: the heartbeat may be blocked on another process's jobs-file lock.

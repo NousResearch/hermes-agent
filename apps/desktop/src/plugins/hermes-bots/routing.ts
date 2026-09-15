@@ -200,7 +200,8 @@ export function botBackendProfileScope(route: null | ProfileRoute | undefined, f
 export async function requestForBot<T = unknown>(
   bot: Partial<RosterRow> | null | undefined,
   method: string,
-  params: Record<string, unknown> = {}
+  params: Record<string, unknown> = {},
+  options?: { priority?: 'background' | 'foreground'; timeoutMs?: number }
 ): Promise<T> {
   const route = botConnectionRoute(bot)
 
@@ -210,7 +211,11 @@ export async function requestForBot<T = unknown>(
     }
 
     try {
-      return await host.requestProfile(route, method, scopedBotParams(route, method, params))
+      const routedParams = scopedBotParams(route, method, params)
+
+      return await (options
+        ? host.requestProfile(route, method, routedParams, options)
+        : host.requestProfile(route, method, routedParams))
     } catch (error) {
       // React 19 formats query errors with `(error.name || '').trim()`. IPC /
       // JSON-RPC rejections are often plain objects whose `name` is a number,

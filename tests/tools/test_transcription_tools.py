@@ -351,6 +351,44 @@ class TestTranscribeLocalCommand:
 # _transcribe_local — additional tests
 # ============================================================================
 
+class TestLocalModelLoading:
+    def test_cached_model_load_never_uses_online_resolution(self):
+        cached_model = object()
+
+        with patch("faster_whisper.WhisperModel", return_value=cached_model) as model_cls:
+            from tools.transcription_local import _create_whisper_model
+
+            assert _create_whisper_model("base", device="cpu", compute_type="int8") is cached_model
+
+        model_cls.assert_called_once_with(
+            "base", local_files_only=True, device="cpu", compute_type="int8"
+        )
+
+    @pytest.mark.parametrize("download_error", [None, RuntimeError("ConnectTimeout")])
+    def test_cache_miss_falls_back_with_actionable_download_failure(self, download_error):
+        from huggingface_hub.errors import LocalEntryNotFoundError
+        from tools.transcription_local import _create_whisper_model
+
+        downloaded_model = object()
+        online_result = download_error or downloaded_model
+        side_effect = [LocalEntryNotFoundError("not cached"), online_result]
+        with patch("faster_whisper.WhisperModel", side_effect=side_effect) as model_cls:
+            if download_error:
+                with pytest.raises(RuntimeError) as exc_info:
+                    _create_whisper_model("base", device="auto", compute_type="auto")
+                assert "HF_ENDPOINT" in str(exc_info.value)
+                assert "HF_HUB_DISABLE_XET=1" in str(exc_info.value)
+            else:
+                assert _create_whisper_model(
+                    "base", device="auto", compute_type="auto"
+                ) is downloaded_model
+
+        assert model_cls.call_args_list == [
+            call("base", local_files_only=True, device="auto", compute_type="auto"),
+            call("base", local_files_only=False, device="auto", compute_type="auto"),
+        ]
+
+
 @pytest.mark.skipif(
     not __import__("importlib").util.find_spec("faster_whisper"),
     reason="faster_whisper not installed",
@@ -416,7 +454,9 @@ class TestTranscribeLocalExtended:
             result = _transcribe_local(str(audio), "base")
 
         assert result["success"] is True
-        mock_whisper_cls.assert_called_once_with("base", device="cpu", compute_type="float32")
+        mock_whisper_cls.assert_called_once_with(
+            "base", local_files_only=True, device="cpu", compute_type="float32"
+        )
 
 
     def test_cuda_out_of_memory_does_not_trigger_cpu_fallback(self, tmp_path):

@@ -1,6 +1,3 @@
-import { migrateSessionOwnerHintsProfile } from './session'
-import { migrateSessionTilesProfile } from './session-states'
-
 const PENDING_RENAME_KEY = 'hermes.desktop.pendingProfileRename.v1'
 const TRANSCRIPT_PREFIX = 'hermes.transcript-tail.v2:'
 const TRANSCRIPT_INDEX_KEY = 'hermes.transcript-tail.v2-index'
@@ -91,8 +88,7 @@ function migrateProfileState(oldName: string, newName: string): void {
 
   migrateRememberedNavigation(store, oldName, newName)
   migrateTranscriptTails(store, oldName, newName)
-  migrateSessionOwnerHintsProfile(oldName, newName)
-  migrateSessionTilesProfile(oldName, newName)
+  window.dispatchEvent(new CustomEvent('hermes:profile-renamed', { detail: { newName, oldName } }))
 }
 
 /** Record intent before the rename request: a primary-profile rename reloads

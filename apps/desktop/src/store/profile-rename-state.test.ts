@@ -33,7 +33,13 @@ it('re-homes every persisted session route after a profile rename', async () => 
   window.localStorage.setItem('hermes.transcript-tail.v2-index', JSON.stringify([oldTail]))
   window.localStorage.setItem(`hermes.transcript-tail.v2:${oldTail}`, JSON.stringify({ messages: [{ id: 'u1' }] }))
 
-  const migration = await import('./profile-rename-state')
+  // Hydrate the live registries before the rename event, matching an active
+  // renderer whose stores already own these persisted records.
+  const [session, migration] = await Promise.all([
+    import('./session'),
+    import('./profile-rename-state'),
+    import('./session-states')
+  ]).then(([sessionStore, profileRename]) => [sessionStore, profileRename] as const)
 
   migration.stageProfileRenameState(oldName, newName)
   expect(migration.recoverPendingProfileRenameState(newName)).toBe(true)
@@ -52,8 +58,7 @@ it('re-homes every persisted session route after a profile rename', async () => 
     storedSessionId: 'session-1'
   })
 
-  const { getSessionOwnerHint } = await import('./session')
-  expect(getSessionOwnerHint('session-1', { connectionId: 'local', profile: newName })).toMatchObject({
+  expect(session.getSessionOwnerHint('session-1', { connectionId: 'local', profile: newName })).toMatchObject({
     profile: newName,
     targetProfile: newName
   })

@@ -1050,6 +1050,16 @@ export function migrateSessionOwnerHintsProfile(oldName: string, newName: string
   persistSessionOwnerHints()
 }
 
+if (typeof window !== 'undefined') {
+  window.addEventListener('hermes:profile-renamed', event => {
+    const detail = (event as CustomEvent<{ newName?: unknown; oldName?: unknown }>).detail
+
+    if (typeof detail?.oldName === 'string' && typeof detail.newName === 'string') {
+      migrateSessionOwnerHintsProfile(detail.oldName, detail.newName)
+    }
+  })
+}
+
 /** Drop every hint naming `connectionId` — the registry no longer has it, so
  *  nothing can dial that route again (fail-closed would otherwise pin those
  *  sessions to a dead source forever). */

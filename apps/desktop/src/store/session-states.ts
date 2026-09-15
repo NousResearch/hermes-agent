@@ -1003,6 +1003,16 @@ export function migrateSessionTilesProfile(oldName: string, newName: string): vo
   }
 }
 
+if (typeof window !== 'undefined') {
+  window.addEventListener('hermes:profile-renamed', event => {
+    const detail = (event as CustomEvent<{ newName?: unknown; oldName?: unknown }>).detail
+
+    if (typeof detail?.oldName === 'string' && typeof detail.newName === 'string') {
+      migrateSessionTilesProfile(detail.oldName, detail.newName)
+    }
+  })
+}
+
 // Profile switch: surface the new profile's tiles with runtime ids cleared so
 // they re-resume against the now-current gateway. (Fires immediately on
 // subscribe; harmless — the init value already matches.) A secondary window

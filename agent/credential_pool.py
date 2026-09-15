@@ -41,7 +41,6 @@ from hermes_cli.auth import (
     _resolve_zai_base_url,
     _same_path,
     _save_auth_store,
-    _save_provider_state,
     _store_provider_state,
     read_credential_pool,
     write_credential_pool,
@@ -1667,9 +1666,10 @@ class CredentialPool(CredentialPoolAdminMixin):
         """Drop the dead Codex/xAI token pair from auth.json unless a peer already rotated it."""
         display = _TOKENS_SINGLETON_PROVIDERS[self.provider][1]
         try:
-            with _auth_store_lock():
-                auth_store = _load_auth_store()
-                state = _load_provider_state(auth_store, self.provider) or {}
+            with auth_mod._provider_state_transaction(self.provider) as (
+                auth_store, state, source_path,
+            ):
+                state = state or {}
                 tokens = (state.get("tokens") or {}) if isinstance(state, dict) else None
                 if isinstance(tokens, dict):
                     store_refresh = str(tokens.get("refresh_token") or "").strip()
@@ -1685,16 +1685,18 @@ class CredentialPool(CredentialPoolAdminMixin):
                             "relogin_required": True,
                             "at": datetime.now(timezone.utc).isoformat(),
                         }
-                        _save_provider_state(auth_store, self.provider, state)
-                        _save_auth_store(auth_store)
+                        auth_mod._save_provider_state_to_source(
+                            auth_store, self.provider, state, source_path,
+                        )
         except Exception as clear_exc:
             logger.debug("Failed to clear terminal %s OAuth state: %s", display, clear_exc)
 
     def _clear_terminal_nous_state(self, entry: PooledCredential, exc: Exception) -> None:
         try:
-            with _auth_store_lock():
-                auth_store = _load_auth_store()
-                state = _load_provider_state(auth_store, "nous") or {
+            with auth_mod._provider_state_transaction("nous") as (
+                auth_store, state, source_path,
+            ):
+                state = state or {
                     "client_id": entry.client_id,
                     "portal_base_url": entry.portal_base_url,
                     "inference_base_url": entry.inference_base_url,
@@ -1705,9 +1707,18 @@ class CredentialPool(CredentialPoolAdminMixin):
                 store_refresh = str(state.get("refresh_token") or "").strip()
                 if not store_refresh or store_refresh == str(entry.refresh_token or "").strip():
                     auth_mod._quarantine_nous_oauth_state(state, exc, reason="credential_pool_refresh_failure")
-                    auth_mod._quarantine_nous_pool_entries(auth_store, exc, reason="credential_pool_refresh_failure")
-                    _save_provider_state(auth_store, "nous", state)
-                    _save_auth_store(auth_store)
+                    pool_changed = auth_mod._quarantine_nous_pool_entries(
+                        auth_store, exc, reason="credential_pool_refresh_failure",
+                    )
+                    auth_mod._save_provider_state_to_source(
+                        auth_store, "nous", state, source_path,
+                    )
+                    if (
+                        pool_changed
+                        and source_path is not None
+                        and not _same_path(source_path, auth_mod._auth_file_path())
+                    ):
+                        _save_auth_store(auth_store)
         except Exception as clear_exc:
             logger.debug("Failed to clear terminal Nous OAuth state: %s", clear_exc)
 

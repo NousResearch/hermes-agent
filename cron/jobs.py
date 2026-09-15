@@ -2689,6 +2689,10 @@ def claim_job_for_fire(
         # stamping it would make completed_occurrence() skip that slot when it arrives.
         manual_fire = force or manual or job.get("manual_run_at") == job.get("next_run_at")
         instant = None if manual_fire else scheduled_instant(job.get("next_run_at"))
+        # A tick cannot own an occurrence that has not happened yet. Any such claim is an
+        # off-tick fire whose completion must not consume the next scheduled slot.
+        if instant is not None and datetime.fromisoformat(instant) > now:
+            instant = None
         if instant and completed_occurrence(job, instant):
             if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
                 nxt = compute_next_run(job["schedule"], now.isoformat())

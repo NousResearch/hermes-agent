@@ -33,7 +33,7 @@ from tools.file_tools_write_guards import (
     _is_internal_file_tool_content, _stale_overwrite_blocker, _stale_write_refusal)
 from tools.file_tools_read_tracking import (
     _bump_consecutive, _cap_read_tracker_data, _check_file_staleness, _check_not_found_cache,
-    _mark_full_write_baseline, _mark_verification_stale, _patch_failure_lock,
+    _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _patch_failure_lock,
     _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
     _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp)
 
@@ -458,7 +458,18 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     if len(result_dict["content"]) > max_chars:
         _apply_char_budget(result_dict, result_dict["content"], offset, total_lines, max_chars)
     if result_dict["content"]:
-        result_dict["content"] = redact_sensitive_text(result_dict["content"], file_read=True)
+        rendered = result_dict["content"]
+        result_dict["content"] = redact_sensitive_text(rendered, file_read=True)
+        redacted = result_dict["content"] != rendered
+    else:
+        redacted = False
+    if offset == 1 and not result_dict["truncated"] and not redacted:
+        # The whole document was shown, so a text-authorable format (.ipynb)
+        # may later be overwritten by write_file; the binary-container guard
+        # keeps refusing .docx/.xlsx/.pdf regardless of this baseline.
+        _mark_full_write_baseline(str(_resolved), task_id)
+        _update_read_timestamp(str(_resolved), task_id)
+        file_state.record_read(task_id, str(_resolved))
     return json.dumps(result_dict, ensure_ascii=False)
 
 
@@ -493,17 +504,21 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
 
 def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_str: str,
                             offset: int, limit: int, dedup_key: tuple, *, partial: bool,
-                            redacted: bool = False) -> int:
+                            redacted: bool = False, end_line: int | None = None,
+                            total_lines=None) -> int:
     """Bookkeeping after a real (non-stub) read; returns the consecutive-read count.
 
     Per-task tracker under the lock (stub counter, history, consecutive count,
-    mtime for dedup + staleness, and — for a full UNREDACTED read — the write_file
-    baseline: a redacted read returned a non-round-trippable ``«redacted:…»``
-    sentinel, so it must not bless an overwrite that would persist the sentinel
-    into a credential file). Then OUTSIDE our lock (no nested locking): the
-    cross-agent registry, and the background-review read-mark (a FULL read of a
-    skill file counts like skill_view so a follow-up skill_manage(patch) is accepted).
+    mtime for dedup + staleness, page coverage, and the write_file baseline once
+    the task has seen every line UNREDACTED — in one page or by paging
+    contiguously through a file too big for one; a redacted page returned a
+    non-round-trippable ``«redacted:…»`` sentinel, so it must not bless an
+    overwrite that would persist the sentinel into a credential file). Then
+    OUTSIDE our lock (no nested locking): the cross-agent registry, and the
+    background-review read-mark (a FULL read of a skill file counts like
+    skill_view so a follow-up skill_manage(patch) is accepted).
     """
+    complete = not partial
     with _read_tracker_lock:
         task_data["dedup_hits"].pop(dedup_key, None)
         task_data["dedup_generation_reads"].add(dedup_key)
@@ -513,18 +528,21 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
             _mtime_now = os.path.getmtime(resolved_str)
             task_data["dedup"][dedup_key] = _mtime_now
             task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+            if partial and end_line is not None:
+                complete, redacted = _note_read_coverage(
+                    task_data, resolved_str, _mtime_now, offset, end_line, total_lines, redacted)
         except OSError:
             pass
-        if not partial and not redacted:
+        if complete and not redacted:
             task_data.setdefault("full_write_baselines", set()).add(resolved_str)
         _cap_read_tracker_data(task_data)
 
     try:
-        file_state.record_read(task_id, resolved_str, partial=partial)
+        file_state.record_read(task_id, resolved_str, partial=not complete)
     except Exception:
         logger.debug("file_state.record_read failed", exc_info=True)
 
-    if not partial:
+    if complete:
         try:
             # Background-review read-before-write guard integration (#61521): when the self-improvement
             # review fork reads a skill file with read_file (now whitelisted dispatch-side), register the
@@ -640,9 +658,16 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 "Consider reading only the section you need with offset and limit "
                 "to keep context usage efficient."))
 
+        total_lines = result_dict.get("total_lines")
+        if result_dict.get("truncated_by") == "bytes":
+            end_line = int(result_dict.get("next_offset", offset)) - 1
+        else:
+            end_line = offset + limit - 1
+            if isinstance(total_lines, int) and total_lines > 0:
+                end_line = min(end_line, total_lines)
         count = _record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
                                         dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")),
-                                        redacted=redacted)
+                                        redacted=redacted, end_line=end_line, total_lines=total_lines)
         if count >= 4:
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "

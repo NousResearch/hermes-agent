@@ -17,7 +17,7 @@ from pathlib import Path
 from tools import file_state
 from tools.binary_extensions import has_opaque_document_extension, is_pdf_path
 from tools.file_tools_paths import _expand_tilde, _resolve_path_for_task
-from tools.file_tools_read_tracking import _check_file_staleness, _has_full_write_baseline
+from tools.file_tools_read_tracking import _has_full_write_baseline, _read_mtime_drifted
 
 # Prefixes matched after realpath. macOS: /private/var mirrors /var — block the
 # sensitive subtrees only; a blanket "/private/var/" refuses every temp-file
@@ -451,15 +451,19 @@ def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) 
     Refuses BEFORE any disk mutation (the pre-#65604 warning arrived after the
     clobber): a sibling/external/partial-read staleness finding, or an existing
     file with no full-content baseline for this task (never read in full, read
-    redacted, only patched, or evicted by compaction). Net-new files, files this
-    task fully read or wrote, unresolvable paths and the file-state kill switch
-    all let the write proceed.
+    redacted, only patched). Net-new files, files this task fully read (in one
+    page or by paging contiguously to the last line) or wrote, unresolvable
+    paths and the file-state kill switch all let the write proceed.
     """
     if file_state.guard_disabled():
         return None
-    stale = (file_state.check_stale(task_id, resolved) if resolved else None) or _check_file_staleness(filepath, task_id)
+    stale = file_state.check_stale(task_id, resolved) if resolved else None
     if stale:
         return stale
+    if _read_mtime_drifted(filepath, task_id):
+        return (
+            f"{filepath} was modified since you last read it (external edit or "
+            "concurrent agent). Re-read the file before writing.")
     if not resolved or _has_full_write_baseline(resolved, task_id):
         return None
     try:
@@ -469,9 +473,11 @@ def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) 
     if not exists:
         return None
     return (
-        f"{resolved} exists but this task has not read it in full (or only saw a "
-        "redacted/partial view). Read the file before using write_file so a stale "
-        "conversation copy cannot overwrite the current disk content.")
+        f"{resolved} exists but this task has not seen its full current content "
+        "(never read, only patched, or only a redacted/partial view). Read the "
+        "file — every page of it, if it needs offset/limit — or use patch for a "
+        "targeted edit; a stale conversation copy must not overwrite the current "
+        "disk content.")
 
 
 def _stale_write_refusal(filepath: str, reason: str, resolved: str | None = None) -> dict:
@@ -480,10 +486,10 @@ def _stale_write_refusal(filepath: str, reason: str, resolved: str | None = None
     result = {
         "error": (
             f"Refusing to overwrite {filepath}: {reason} "
-            "The file was NOT modified. Use read_file to reload the current "
-            "contents, merge the requested change, then call write_file again. "
-            "For small edits, prefer patch so existing unrelated changes are "
-            "preserved."),
+            "The file was NOT modified. Reload the current contents with read_file "
+            "(every page, for a file that needs offset/limit), merge the requested "
+            "change, then call write_file again. For small edits, prefer patch so "
+            "existing unrelated changes are preserved."),
         "stale_write_blocked": True,
         "path": filepath,
     }

@@ -19,7 +19,7 @@ from unittest.mock import patch, MagicMock
 
 from tools import file_state
 from tools.file_tools import read_file_tool, write_file_tool, patch_tool
-from tools.file_tools_read_tracking import _check_file_staleness, _read_tracker
+from tools.file_tools_read_tracking import _check_file_staleness, _read_tracker, reset_file_dedup
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +133,7 @@ class TestStalenessCheck(unittest.TestCase):
         write is a baseline for its next write."""
         refused = json.loads(write_file_tool(self._tmpfile, "x\n", task_id="t2"))
         self.assertTrue(refused.get("stale_write_blocked"), refused)
-        self.assertIn("has not read it in full", refused["error"])
+        self.assertIn("has not seen its full current content", refused["error"])
 
         patched = json.loads(patch_tool(mode="replace", path=self._tmpfile,
                                         old_string="original", new_string="patched", task_id="t2"))
@@ -162,6 +162,33 @@ class TestStalenessCheck(unittest.TestCase):
         with open(new_path) as f:
             self.assertEqual(f.read(), "two\n")
         os.unlink(new_path)
+
+    def test_paged_read_of_large_file_is_a_full_baseline_that_survives_compaction(self):
+        """A file too big for one read_file page (>2000 lines) can only be seen by
+        paging; contiguous pages reaching the last line at one mtime count as a full
+        read, so write_file is not permanently refused. A compaction reset keeps that
+        baseline while the file is unchanged, and an edit between pages voids it."""
+        with open(self._tmpfile, "w") as f:
+            f.write("".join(f"line {i}\n" for i in range(1, 2501)))
+        first = json.loads(read_file_tool(self._tmpfile, task_id="t3"))
+        self.assertTrue(first.get("truncated"), first)
+        self.assertTrue(json.loads(write_file_tool(self._tmpfile, "x\n", task_id="t3")).get("stale_write_blocked"))
+
+        self.assertNotIn("error", json.loads(read_file_tool(self._tmpfile, offset=2001, task_id="t3")))
+        reset_file_dedup("t3")
+        written = json.loads(write_file_tool(self._tmpfile, "merged\n", task_id="t3"))
+        self.assertNotIn("error", written, written)
+        with open(self._tmpfile) as f:
+            self.assertEqual(f.read(), "merged\n")
+
+        with open(self._tmpfile, "w") as f:
+            f.write("".join(f"line {i}\n" for i in range(1, 2501)))
+        json.loads(read_file_tool(self._tmpfile, task_id="t3"))
+        _modify_externally(self._tmpfile, "".join(f"other {i}\n" for i in range(1, 2501)))
+        json.loads(read_file_tool(self._tmpfile, offset=2001, task_id="t3"))
+        refused = json.loads(write_file_tool(self._tmpfile, "x\n", task_id="t3"))
+        self.assertTrue(refused.get("stale_write_blocked"), refused)
+        self.assertNotIn("Warning:", refused["error"])
 
 
     @patch("tools.file_tools._get_file_ops")

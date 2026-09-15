@@ -166,8 +166,8 @@ class FileStateRegistry:
             if partial:
                 return (
                     f"{resolved} was last read with offset/limit pagination "
-                    "(partial view). Re-read the whole file before "
-                    "overwriting it.")
+                    "(partial view). Read the remaining pages, or use patch, "
+                    "before overwriting it.")
             return None
 
         return (

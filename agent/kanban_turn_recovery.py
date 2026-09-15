@@ -98,7 +98,10 @@ def turn_is_unfinished(result: Any) -> bool:
         return True
     if result.get("failed") or result.get("partial"):
         return True
-    return result.get("completed") is False
+    # ``== 0`` catches the canonical ``False`` flag AND an int ``0`` marker (a
+    # producer writing 0 must not slip through as "finished"); absent/None means
+    # "completed" — normal results omit the field entirely.
+    return result.get("completed") == 0
 
 
 def should_recover_turn(result: Any, *, attempt: int) -> bool:

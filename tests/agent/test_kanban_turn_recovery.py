@@ -451,6 +451,17 @@ def test_partial_turn_policy(clear_kanban_env):
     assert should_recover_turn(partial, attempt=0) is False
 
 
+def test_unfinished_predicate_marker_shapes(clear_kanban_env):
+    """F2 hardening (round-3): a non-bool 0 marker must not read as "finished";
+    absent/None means completed (normal results omit the field)."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_probe")
+    assert turn_is_unfinished({"completed": False}) is True
+    assert turn_is_unfinished({"completed": 0}) is True
+    assert turn_is_unfinished({"completed": None}) is False
+    assert turn_is_unfinished({"completed": True}) is False
+    assert turn_is_unfinished({"final_response": "done", "failed": False}) is False
+
+
 def test_partial_turn_recovers_in_place_then_exits(monkeypatch):
     """D5: a partial turn retries in place; still partial after the budget -> exit 1."""
     import agent.kanban_turn_recovery as rec

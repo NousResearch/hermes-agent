@@ -41,10 +41,19 @@ Convert text to speech with eleven providers:
 
 ### Configuration
 
+With `tts.provider: openrouter`, two things are specific to that backend: **voices are
+model-specific** (the voice must belong to the chosen model — `aura-2-*` for `deepgram/aura-2`,
+`af_heart` for `hexgrad/kokoro-82m`, `flux-*-en` for `deepgram/flux-tts:free`), and **two catalog
+entries misbehave through this path** — `hexgrad/kokoro-82m` emits the FIRST SENTENCE ONLY, and
+`google/gemini-3.1-flash-tts-preview` requires `response_format="pcm"`, which this backend does not
+request. The shipped default (`deepgram/aura-2` + `aura-2-thalia-en`) is verified to speak
+multi-sentence text in full. List the live catalog with
+`curl "https://openrouter.ai/api/v1/models?output_modalities=speech"`.
+
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "deepinfra" | "neutts" | "kittentts" | "piper" — or "nous" for the managed Tool Gateway (written when you pick Nous Subscription in `hermes tools`)
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "openrouter" | "minimax" | "mistral" | "gemini" | "xai" | "deepinfra" | "neutts" | "kittentts" | "piper" — or "nous" for the managed Tool Gateway (written when you pick Nous Subscription in `hermes tools`)
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -84,6 +93,10 @@ tts:
     sample_rate: 24000          # 22050 / 24000 (default) / 44100 / 48000
     bit_rate: 128000            # MP3 bitrate; only applies when codec=mp3
     # base_url: "https://api.x.ai/v1"   # Override via XAI_BASE_URL env var
+  openrouter:
+    model: "deepgram/aura-2"    # vendor-prefixed slug; voices are model-specific
+    voice: "aura-2-thalia-en"
+    # base_url: "https://openrouter.ai/api/v1"   # optional endpoint override
   neutts:
     ref_audio: ''
     ref_text: ''
@@ -474,7 +487,7 @@ Local transcription works out of the box when `faster-whisper` is installed. If 
 ```yaml
 # In ~/.hermes/config.yaml
 stt:
-  provider: "local"           # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra"
+  provider: "local"           # "local" | "groq" | "openai" | "openrouter" | "mistral" | "xai" | "elevenlabs" | "deepinfra"
   language: "en"              # Global language hint applied to every provider unless a per-provider language overrides it; set "" to restore auto-detect
   local:
     model: "base"             # tiny, base, small, medium, large-v3
@@ -636,7 +649,7 @@ The shell command runs under the same user as Hermes with full filesystem access
 
 ### Python plugin providers (STT)
 
-For STT engines that aren't built-in AND can't be expressed as a shell command (need a Python SDK, OAuth-refreshing auth, streaming chunks, etc.), register a Python plugin via `ctx.register_transcription_provider()`. The plugin **coexists with** the 8 built-in providers (`local`, `local_command`, `groq`, `openai`, `mistral`, `xai`, `elevenlabs`, `deepinfra`) and the `stt.providers.<name>: type: command` registry — built-ins keep their native implementations and always win on name collision; command providers win over plugins of the same name (config is more local than plugin install).
+For STT engines that aren't built-in AND can't be expressed as a shell command (need a Python SDK, OAuth-refreshing auth, streaming chunks, etc.), register a Python plugin via `ctx.register_transcription_provider()`. The plugin **coexists with** the 9 built-in providers (`local`, `local_command`, `groq`, `openai`, `openrouter`, `mistral`, `xai`, `elevenlabs`, `deepinfra`) and the `stt.providers.<name>: type: command` registry — built-ins keep their native implementations and always win on name collision; command providers win over plugins of the same name (config is more local than plugin install).
 
 #### When to pick which (STT)
 

@@ -351,6 +351,8 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
     'edge',
     'elevenlabs',
     'openai',
+    // OpenRouter speaks the OpenAI /audio/speech shape over its own catalog (see tts.openrouter.*).
+    'openrouter',
     'xai',
     'minimax',
     'mistral',
@@ -358,6 +360,38 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
     'neutts',
     'kittentts',
     'piper'
+  ],
+  // OpenRouter TTS suggestions (free-input field). No runtime list mirrors these; the docs
+  // (features/tts.md) carry the same caveats and the live `output_modalities=speech` catalog wins.
+  'tts.openrouter.model': [
+    // Verified to speak multi-sentence input in full:
+    'deepgram/aura-2',
+    'deepgram/flux-tts:free',
+    'minimax/speech-2.8-turbo',
+    'minimax/speech-2.8-hd',
+    // Catalog entries with known caveats: kokoro-82m emits the FIRST SENTENCE ONLY, and
+    // google/gemini-3.1-flash-tts-preview rejects the mp3 response format this path requests.
+    'hexgrad/kokoro-82m',
+    'fish-audio/s2.1-pro-free:free',
+    'x-ai/grok-voice-tts-1.0',
+    'mistralai/voxtral-mini-tts-2603',
+    'microsoft/mai-voice-2-flash',
+    'microsoft/mai-voice-2',
+    'qwen/qwen-audio-3.0-tts-flash',
+    'canopylabs/orpheus-3b-0.1-ft',
+    'sesame/csm-1b'
+  ],
+  // Voices are model-specific — these are Aura-2's (the default model). Kokoro wants
+  // af_heart/af_bella, Flux wants flux-alexis-en; the field is free-input for the rest.
+  'tts.openrouter.voice': [
+    'aura-2-thalia-en',
+    'aura-2-andromeda-en',
+    'aura-2-asteria-en',
+    'aura-2-hermes-en',
+    'aura-2-luna-en',
+    'aura-2-orion-en',
+    'aura-2-aurora-en',
+    'aura-2-jupiter-en'
   ],
   'stt.openai.model': ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'gpt-transcribe'],
   'stt.mistral.model': ['voxtral-mini-latest', 'voxtral-mini-2602'],
@@ -391,7 +425,9 @@ export const FREE_INPUT_KEYS = new Set([
   'tts.kittentts.voice',
   'tts.piper.voice',
   'tts.deepinfra.model',
-  'tts.deepinfra.voice'
+  'tts.deepinfra.voice',
+  'tts.openrouter.model',
+  'tts.openrouter.voice'
 ])
 
 export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
@@ -773,6 +809,8 @@ export const SECTIONS: DesktopConfigSection[] = [
       'tts.piper.voice',
       'tts.deepinfra.model',
       'tts.deepinfra.voice',
+      'tts.openrouter.model',
+      'tts.openrouter.voice',
       'stt.local.model',
       'stt.local.language',
       'stt.openai.model',

@@ -187,12 +187,18 @@ describe('settings helpers', () => {
   describe('enumOptionsFor — backend selector dropdowns', () => {
     const config: HermesConfigRecord = {}
 
-    it('renders a dropdown for the TTS provider including xAI (Grok)', () => {
+    it('renders a dropdown for the TTS provider including xAI (Grok) and OpenRouter', () => {
       const opts = enumOptionsFor('tts.provider', 'edge', config)
       expect(opts).toBeDefined()
       expect(opts).toContain('xai')
       expect(opts).toContain('edge')
       expect(opts).toContain('elevenlabs')
+      expect(opts).toContain('openrouter')
+    })
+
+    it('suggests OpenRouter speech models and voices', () => {
+      expect(enumOptionsFor('tts.openrouter.model', 'deepgram/aura-2', config)).toContain('deepgram/aura-2')
+      expect(enumOptionsFor('tts.openrouter.voice', 'aura-2-thalia-en', config)).toContain('aura-2-thalia-en')
     })
 
     it('renders a dropdown for the STT provider including xAI (Grok)', () => {

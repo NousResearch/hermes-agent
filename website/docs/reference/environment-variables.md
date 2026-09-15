@@ -121,6 +121,9 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `CLAUDE_CODE_OAUTH_TOKEN` | Explicit Claude Code token override if you export one manually |
 | `HERMES_MODEL` | Override model name at process level (used by cron scheduler; prefer `config.yaml` for normal use) |
 | `VOICE_TOOLS_OPENAI_KEY` | Preferred OpenAI key for OpenAI speech-to-text and text-to-speech providers |
+| `TTS_OPENROUTER_BASE_URL` | Override the OpenRouter speech endpoint (`tts.provider: openrouter`, default `https://openrouter.ai/api/v1`) |
+| `TTS_OPENROUTER_MODEL` | Default OpenRouter speech model slug (default `deepgram/aura-2`) |
+| `TTS_OPENROUTER_VOICE` | Default OpenRouter voice (default `aura-2-thalia-en`; voices are model-specific) |
 | `HERMES_LOCAL_STT_COMMAND` | Optional local speech-to-text command template. Supports `{input_path}`, `{output_dir}`, `{language}`, and `{model}` placeholders |
 | `HERMES_LOCAL_STT_LANGUAGE` | Default language hint for STT. Used by the `local` (faster-whisper) provider, `HERMES_LOCAL_STT_COMMAND`, the local `whisper` CLI fallback (default: `en`), Groq, and xAI when no per-provider `language` is set in `config.yaml` |
 | `HERMES_HOME` | Override Hermes config directory (default: `~/.hermes`). Also scopes the gateway PID file and systemd service name, so multiple installations can run concurrently |

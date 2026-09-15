@@ -522,9 +522,10 @@ terminal:
 #   approval:
 #     transport: builtin        # Or an explicitly enabled plugin transport name
 #     transport_fallback: deny  # Set builtin to opt into fallback on transport failure
-#   # Refuse agent writes to instruction files that steer the agent itself
-#   # (AGENTS.md, CLAUDE.md, SOUL.md, ...). Set false to allow them; add
-#   # fnmatch patterns on the basename to protect more files.
+#   # Agent writes to instruction files that steer the agent itself
+#   # (AGENTS.md, CLAUDE.md, SOUL.md, ...) always ask for human approval,
+#   # even under --yolo, and are refused when nobody can answer. Set false to
+#   # disable the gate; add fnmatch patterns on the basename to protect more files.
 #   protected_instruction_files: true
 #   protected_instruction_extra_patterns: []
 

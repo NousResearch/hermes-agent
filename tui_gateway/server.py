@@ -273,7 +273,7 @@ class _SlashWorker:
             if text := line.rstrip("\n"):
                 self.stderr_tail = (self.stderr_tail + [text])[-80:]
 
-    def run(self, command: str) -> str:
+    def run(self, command: str) -> dict:
         if self.proc.poll() is not None:
             raise RuntimeError("slash worker exited")
         with self._lock:
@@ -292,7 +292,10 @@ class _SlashWorker:
                     continue
                 if not msg.get("ok"):
                     raise RuntimeError(msg.get("error", "slash worker failed"))
-                return str(msg.get("output", "")).rstrip()
+                seed = msg.get("pending_agent_seed")
+                if not (isinstance(seed, str) and seed):
+                    seed = None
+                return {"output": str(msg.get("output", "")).rstrip(), "pending_agent_seed": seed}
             raise RuntimeError(
                 f"slash worker closed pipe{': ' + chr(10).join(self.stderr_tail[-8:]) if self.stderr_tail else ''}")
 

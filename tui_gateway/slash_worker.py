@@ -1,6 +1,7 @@
 """Persistent slash-command worker — one HermesCLI per TUI session.
 
-Protocol: reads JSON lines from stdin {id, command}, writes {id, ok, output|error} to stdout.
+Protocol: reads JSON lines from stdin {id, command}, writes
+{id, ok, output|error, pending_agent_seed?} to stdout.
 """
 
 # Stop a ``utils/`` (or ``proxy/``, ``ui/``) package in the launch directory from shadowing Hermes's own
@@ -64,10 +65,19 @@ def _start_parent_death_watchdog(original_ppid) -> None:
     threading.Thread(target=_loop, daemon=True).start()
 
 
-def _run(cli: HermesCLI, command: str) -> str:
+def _take_pending_agent_seed(cli) -> str | None:
+    """Consume a one-shot compose/blueprint seed so the parent can prompt.submit it."""
+    seed = getattr(cli, "_pending_agent_seed", None)
+    if isinstance(seed, str) and seed:
+        cli._pending_agent_seed = None
+        return seed
+    return None
+
+
+def _run(cli: HermesCLI, command: str) -> tuple[str, str | None]:
     cmd = (command or "").strip()
     if not cmd:
-        return ""
+        return "", None
     buf = io.StringIO()
     # Rich Console captures its file handle at construction, so redirect_stdout won't affect it; swap
     # the console's file so self.console.print() is captured. cli._cprint is likewise redirected.
@@ -84,7 +94,7 @@ def _run(cli: HermesCLI, command: str) -> str:
     # Desktop chat bubbles render plain text, not ANSI. A command that emits Rich color (e.g. /journey
     # under the gateway's inherited COLORTERM) would leak raw escapes; strip at this single choke point.
     from tools.ansi_strip import strip_ansi
-    return strip_ansi(buf.getvalue().rstrip())
+    return strip_ansi(buf.getvalue().rstrip()), _take_pending_agent_seed(cli)
 
 
 def _sw_log(reason: str) -> None:
@@ -126,7 +136,11 @@ def main():
         try:
             req = json.loads(line)
             rid = req.get("id")
-            _reply(id=rid, ok=True, output=_run(cli, req.get("command", "")))
+            output, seed = _run(cli, req.get("command", ""))
+            reply = {"id": rid, "ok": True, "output": output}
+            if seed:
+                reply["pending_agent_seed"] = seed
+            _reply(**reply)
         except Exception as e:
             _reply(id=rid, ok=False, error=str(e))
         finally:

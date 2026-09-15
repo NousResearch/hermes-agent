@@ -539,3 +539,56 @@ async def test_send_multiple_images_skips_oversized_local_file(tmp_path, monkeyp
     assert send.await_count == 1
     kwargs = send.await_args.kwargs
     assert not kwargs.get("files") and "big.png" in kwargs["content"]
+
+
+def _mock_url_download(monkeypatch, data: bytes, *, status: int = 200):
+    """Patch the URL-image download + safety-check helpers ``adapter_media.py``
+    lazily imports from ``plugins.platforms.discord.adapter``."""
+    import plugins.platforms.discord.adapter as _adapter_mod
+
+    monkeypatch.setattr(_adapter_mod, "is_safe_url", lambda _url: True)
+
+    async def _fake_download(_session, _url, **_kwargs):
+        return status, data, {"content-type": "image/png"}
+
+    monkeypatch.setattr(_adapter_mod, "_read_url_image_with_redirect_guard", _fake_download)
+
+
+@pytest.mark.asyncio
+async def test_send_multiple_images_skips_oversized_downloaded_url(monkeypatch):
+    """Sibling of test_send_multiple_images_skips_oversized_local_file: the ``else`` (remote
+    URL) branch downloads the body into memory before building a ``discord.File`` and must
+    preflight it against the channel's upload cap too, not just the ``file://`` branch."""
+    from plugins.platforms.discord.adapter_media import _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+
+    _mock_url_download(monkeypatch, b"x" * (_DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES + 1))
+    send = AsyncMock(return_value=SimpleNamespace(id=7))
+    adapter = _preflight_adapter(SimpleNamespace(id=9, guild=None, send=send))
+
+    result = await adapter.send_multiple_images("9", [("https://example.com/big.png", "")])
+
+    assert result.success is False
+    assert send.await_count == 1
+    kwargs = send.await_args.kwargs
+    assert not kwargs.get("files") and "exceeds" in kwargs["content"]
+
+
+@pytest.mark.asyncio
+async def test_send_image_url_oversized_download_falls_back(monkeypatch):
+    """_send_url_media (backs send_image/send_animation) downloads the full body before
+    building a discord.File; an oversized download must fall back to the base-adapter URL
+    send instead of attempting a doomed upload (sibling of the local-file preflight, #50846)."""
+    from plugins.platforms.discord.adapter_media import _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+
+    _mock_url_download(monkeypatch, b"x" * (_DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES + 1))
+    send = AsyncMock(return_value=SimpleNamespace(id=7))
+    adapter = _preflight_adapter(SimpleNamespace(id=9, guild=None, send=send))
+
+    base_fallback = AsyncMock(return_value=SimpleNamespace(success=True, message_id="base-fallback"))
+    monkeypatch.setattr("gateway.platforms.base.BasePlatformAdapter.send_image", base_fallback)
+
+    result = await adapter.send_image("9", "https://example.com/big.png")
+
+    assert result.message_id == "base-fallback"
+    assert base_fallback.await_count == 1
+    send.assert_not_awaited()  # never attempted the doomed upload

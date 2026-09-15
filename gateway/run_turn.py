@@ -1411,6 +1411,18 @@ class GatewayTurnMixin:
             _model = str(agent_result.get("model") or "").strip() or "The model"
             response = "⚠️ " + EMPTY_RESPONSE_EXPLANATION.format(model=_model)
         agent_messages = agent_result.get("messages", [])
+        if _intentional_silence:
+            # Keep the assistant turn for model-history alternation, but make the control
+            # marker a presentation-only row so no transcript renderer exposes it.
+            agent_messages = [
+                {**message, "display_kind": "hidden"}
+                if (
+                    message.get("role") == "assistant"
+                    and self._is_intentional_silence(agent_result, message.get("content"))
+                )
+                else message
+                for message in agent_messages
+            ]
         logger.info(
             "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
             _platform_name, source.chat_id or "unknown",
@@ -1771,6 +1783,19 @@ class GatewayTurnMixin:
                             entry["message_id"] = str(event.message_id)
                             _user_msg_id_attached = True
                         await store.append_to_transcript(sid, entry, skip_db=agent_persisted)
+
+                # Agent runtimes write their own rows before returning. Stamp the final
+                # control response there too; otherwise it remains a normal visible
+                # assistant row despite the gateway-side projection above.
+                if agent_persisted:
+                    set_display_kind = getattr(self._session_db, "set_latest_matching_message_display_kind", None)
+                    if callable(set_display_kind):
+                        for message in new_messages:
+                            if message.get("role") == "assistant" and message.get("display_kind") == "hidden":
+                                await asyncio.to_thread(
+                                    set_display_kind, sid, role="assistant", content=message.get("content", ""),
+                                    display_kind="hidden",
+                                )
 
         # The agent persists token counts/model itself; keep only last_prompt_tokens for hygiene.
         await store.update_session(

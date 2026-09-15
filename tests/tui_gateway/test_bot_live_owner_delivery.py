@@ -59,6 +59,35 @@ def test_imported_crash_marker_never_autocontinues(tmp_path):
     assert schedule("live", {}, "chat") is None
 
 
+def test_live_owner_delivery_poll_requires_configured_platforms_and_fails_open(monkeypatch):
+    """Regression for #111719: no bot platforms means no mailbox polling."""
+    import contextlib
+    from gateway import config as gateway_config
+
+    poll_enabled = rebind(session_notifications._bot_live_delivery_poll_enabled, {
+        "_session_profile_runtime_scope": lambda session: contextlib.nullcontext(),
+    })
+
+    class GatewayConfig:
+        def __init__(self, platforms):
+            self.platforms = platforms
+
+        def get_connected_platforms(self):
+            return self.platforms
+
+    monkeypatch.setattr(gateway_config, "load_gateway_config", lambda: GatewayConfig([]))
+    assert poll_enabled({"profile_home": "/profiles/no-bots"}) is False
+
+    monkeypatch.setattr(gateway_config, "load_gateway_config", lambda: GatewayConfig(["discord"]))
+    assert poll_enabled({"profile_home": "/profiles/with-bot"}) is True
+
+    def unavailable_config():
+        raise RuntimeError("configuration unavailable")
+
+    monkeypatch.setattr(gateway_config, "load_gateway_config", unavailable_config)
+    assert poll_enabled({"profile_home": "/profiles/unavailable"}) is True
+
+
 def test_local_work_blocks_mailbox_claim_without_consuming_envelope(monkeypatch, tmp_path):
     import tools.bot_live_delivery as mailbox
     owner = {"lease_id": "lease", "live_session_id": "live", "session_id": "chat"}

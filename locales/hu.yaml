@@ -20,6 +20,15 @@ approval:
   blocklist_message: "Ez a parancs a feltétel nélküli tiltólistán van, és nem hagyható jóvá."
 
 gateway:
+  session_info:
+    model:                 "◆ Modell: `{model}`"
+    provider:              "◆ Szolgáltató: {provider}"
+    context:               "◆ Kontextus: {context} token ({source})"
+    endpoint:              "◆ Végpont: {endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "alapértelmezett — felülírható a model.context_length beállítással a configban"
+    ctx_source_detected:   "észlelt"
+    stopped_notice: "◐ Session reset after being stopped. Conversation history cleared.\nUse /resume to browse and restore a previous session.\n"
   approval_expired: "⚠️ A jóváhagyás lejárt (az ügynök már nem vár). Kérd meg az ügynököt, hogy próbálja újra."
   draining:         "⏳ {count} aktív ügynök befejezésére várunk az újraindítás előtt..."
   goal_cleared:     "✓ A cél törölve."

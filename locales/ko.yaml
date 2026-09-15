@@ -20,6 +20,15 @@ approval:
   blocklist_message: "이 명령은 무조건 차단 목록에 있으며 승인할 수 없습니다."
 
 gateway:
+  session_info:
+    model:                 "◆ 모델: `{model}`"
+    provider:              "◆ 제공자: {provider}"
+    context:               "◆ 컨텍스트: {context} 토큰 ({source})"
+    endpoint:              "◆ 엔드포인트: {endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "기본값 — config의 model.context_length로 재정의할 수 있습니다"
+    ctx_source_detected:   "감지됨"
+    stopped_notice: "◐ Session reset after being stopped. Conversation history cleared.\nUse /resume to browse and restore a previous session.\n"
   approval_expired: "⚠️ 승인이 만료되었습니다 (에이전트가 더 이상 대기하지 않습니다). 에이전트에게 다시 시도하도록 요청하세요."
   draining:         "⏳ 재시작 전에 활성 에이전트 {count}명을 정리하는 중..."
   goal_cleared:     "✓ 목표가 삭제되었습니다."

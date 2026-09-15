@@ -80,13 +80,21 @@ function mount(bot: null | RosterRow) {
   return render(<ModelPicker bot={bot} onChange={vi.fn()} value={{ model: '', provider: '' }} />, { wrapper })
 }
 
-/** Mount with the selection a saved bot profile would carry into the editor. */
-function mountWithSelection(bot: null | RosterRow, value: { model: string; provider: string }) {
+function mountWithValue(
+  bot: null | RosterRow,
+  onChange: (patch: unknown) => void,
+  value: { model: string; provider: string }
+) {
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   )
 
-  return render(<ModelPicker bot={bot} onChange={vi.fn()} value={value} />, { wrapper })
+  return render(<ModelPicker bot={bot} onChange={onChange} value={value} />, { wrapper })
+}
+
+/** Mount with the selection a saved bot profile would carry into the editor. */
+function mountWithSelection(bot: null | RosterRow, value: { model: string; provider: string }) {
+  return mountWithValue(bot, vi.fn(), value)
 }
 
 /** The fallback the picker paints when the catalog is unavailable. */
@@ -139,6 +147,23 @@ describe('the catalog read', () => {
 
     await waitFor(() => expect(second.container.querySelector('[data-testid="spinner"]')).toBeNull())
     expect(hostMock.requestProfile).toHaveBeenCalledTimes(1)
+  })
+
+  it('updates the model when typing a known provider slug', async () => {
+    const onChange = vi.fn()
+    hostMock.requestProfile.mockResolvedValue({
+      providers: [
+        { models: ['m1'], name: 'Provider One', slug: 'prov-one' },
+        { models: ['a1', 'a2'], name: 'Provider Two', slug: 'prov-two' }
+      ]
+    })
+
+    mountWithValue(remoteBot, onChange, { model: 'm1', provider: 'prov-one' })
+
+    await waitFor(() => expect(screen.getByLabelText('Provider')).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'PROV-TWO' } })
+
+    expect(onChange).toHaveBeenLastCalledWith({ provider: 'prov-two', model: 'a1' })
   })
 
   it('never dispatches for a row whose connection was removed', async () => {

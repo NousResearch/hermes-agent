@@ -127,13 +127,9 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel }: M
 
   // Hooks are ALWAYS declared up front, before any conditional return.
   // Declaring them after a return trips React error #310.
-  const NONE = '__default__'
-  const CUSTOM = '__custom__'
   const providers = (data?.providers || []).filter(p => p && p.slug)
 
-  const isKnown =
-    !value.provider || value.provider === NONE || providers.some(p => catalogProviderMatches(p, value.provider))
-
+  const isKnown = !value.provider || providers.some(p => catalogProviderMatches(p, value.provider))
   // The manual-entry latch is the USER's choice only. Seeding it from
   // `isKnown` froze whatever the catalog state was at first paint: on the
   // first open the async read had not resolved yet, so a configured provider
@@ -236,40 +232,47 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel }: M
     <div className="grid grid-cols-[1fr_1.4fr] gap-2.5">
       {labeled(
         t.settings.model.provider,
-        <Select
-          onValueChange={v => {
-            if (v === NONE) {
+        <>
+          <Input
+            aria-label="Provider"
+            list="hermes-bot-provider-options"
+            onChange={event => {
+              const provider = event.target.value
+              const providerKey = provider.trim()
+
+              const selected = providers.find(
+                p => p.slug.toLowerCase() === providerKey.toLowerCase() || catalogProviderMatches(p, providerKey)
+              )
+
+              const canonicalProvider = selected?.slug || provider
+
+              const providerModels = (selected?.models || []).map(m =>
+                typeof m === 'string' ? m : m.id || m.name || ''
+              )
+
+              const nextModel = selected
+                ? providerModels.includes(value.model)
+                  ? value.model
+                  : providerModels[0] || ''
+                : provider
+                  ? value.model
+                  : ''
+
               onChange({
-                provider: '',
-                model: ''
+                provider: canonicalProvider,
+                model: nextModel
               })
-            } else if (v === CUSTOM) {
-              setManualEntry(true)
-            } else {
-              const prov = providers.find(p => p.slug === v)
-              const provModels = (prov?.models || []).map(m => (typeof m === 'string' ? m : m.id || m.name || ''))
-              const first = provModels[0] || ''
-              onChange({
-                provider: v,
-                model: prov && provModels.includes(value.model) ? value.model : first
-              })
-            }
-          }}
-          value={activeProvider?.slug || value.provider || NONE}
-        >
-          <SelectTrigger className="h-8 rounded-md">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={NONE}>{b.editor.inheritLaunch}</SelectItem>
+            }}
+            placeholder="type or choose a provider"
+            value={value.provider}
+          />
+          <datalist id="hermes-bot-provider-options">
+            <option label={b.editor.inheritLaunch} value="" />
             {providers.map(p => (
-              <SelectItem key={p.slug} value={p.slug}>
-                {p.name ? `${p.name} (${p.slug})` : p.slug}
-              </SelectItem>
+              <option key={p.slug} label={p.name ? `${p.name} (${p.slug})` : p.slug} value={p.slug} />
             ))}
-            <SelectItem value={CUSTOM}>{b.editor.enterManually}</SelectItem>
-          </SelectContent>
-        </Select>
+          </datalist>
+        </>
       )}
       {labeled(
         t.settings.model.model,

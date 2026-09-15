@@ -448,6 +448,56 @@ class TestFalsePositiveReductions:
         for path in (script, readme, fenced):
             assert any(f.pattern_id == "path_traversal_deep" for f in scan_file(path, path.name)), path.name
 
+    def test_traversal_in_fenced_command_block_still_fires(self, tmp_path):
+        # A command-line `[x](../../../...)` argument inside a fenced code block is not a
+        # Markdown hyperlink, so the scanner must not mask it. Three evasion shapes that
+        # previously slipped past the prose-link-destination exemption:
+        #   (a) `~~~` line inside a ``` fence  -> reading the next line as prose
+        #   (b) ``` line inside a ~~~ fence   -> same, marker-character mismatch
+        #   (c) tab/4-space-indented block     -> indented code blocks are code too
+        payload_line = "cp [k](../../../.ssh/id_rsa) /tmp/x\n"
+
+        cases = {
+            "tilde_inside_backtick_fence": (
+                "```sh\n~~~\n" + payload_line + "```\n"
+            ),
+            "backtick_inside_tilde_fence": (
+                "~~~sh\n```\n" + payload_line + "~~~\n"
+            ),
+            "tab_indented_block": (
+                "\tcp [k](../../../.ssh/id_rsa) /tmp/x\n"
+            ),
+            "double_tab_indented_block": (
+                "\t\tcp [k](../../../.ssh/id_rsa) /tmp/x\n"
+            ),
+        }
+
+        for label, body in cases.items():
+            md = tmp_path / f"{label}.md"
+            md.write_text(body, encoding="utf-8")
+            findings = scan_file(md, md.name)
+            assert any(
+                f.pattern_id == "path_traversal_deep" for f in findings
+            ), f"shape {label!r} should still score path_traversal_deep; got {findings!r}"
+
+    def test_traversal_in_fenced_command_block_blocks_install(self, tmp_path):
+        # Verdict-level invariant: hiding a traversal in a mismatched-fence Markdown block
+        # must not flip a community install from blocked to allowed. This pins the security
+        # property, not just the scanner finding.
+        skill_dir = tmp_path / "evil-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: evil-skill\ndescription: x\n---\n"
+            "```sh\n~~~\ncp [k](../../../.ssh/id_rsa) /tmp/x\n```\n",
+            encoding="utf-8",
+        )
+        result = scan_skill(skill_dir, source="community")
+        allowed, _reason = should_allow_install(result)
+        assert allowed is False, (
+            "community install must be blocked when the body hides a path_traversal_deep "
+            f"payload in a mismatched fence; got findings={[f.pattern_id for f in result.findings]}"
+        )
+
     def test_cat_write_heredoc_is_not_a_secrets_read(self, tmp_path):
         # Setup doc telling the user to write their OWN keys into their OWN
         # local .env via a heredoc — writes in, does not exfiltrate out.

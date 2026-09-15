@@ -89,11 +89,12 @@ def _critical_module_import_failures(
             if venv_python.exists():
                 interpreter = str(venv_python)
         result = bounded_probe_run(
-            [interpreter, "-c", probe], timeout=120, cwd=str(root),
+            [interpreter, "-c", probe], timeout=120, cwd=str(root), raise_on_spawn_failure=True,
         )
     except (OSError, subprocess.SubprocessError):
-        # Keep this guard advisory: a broken probe runner cannot make an otherwise
-        # successful update fail.
+        # Keep this guard advisory: a probe we could not even spawn (unreadable venv
+        # interpreter, fork failure) says nothing about the checkout, so it must not
+        # fail an otherwise successful update. A spawned child that hangs does.
         return {}
     if result is None:
         return _probe_failure("TimeoutExpired", "timed out before reporting import health")

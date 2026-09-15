@@ -498,11 +498,14 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
 def bounded_probe_run(
     argv: Sequence[str], *, timeout: float, errors: str = "replace",
     env: "Mapping[str, str] | None" = None, cwd: "str | os.PathLike[str] | None" = None,
+    raise_on_spawn_failure: bool = False,
 ) -> "subprocess.CompletedProcess[str] | None":
     """Deadlock-safe ``subprocess.run(argv, capture_output=True, timeout=…)`` for fail-open probes.
 
     Returns a ``CompletedProcess`` when the child finished within *timeout* (any exit code), or
-    ``None`` on spawn failure or timeout.
+    ``None`` on spawn failure or timeout. With ``raise_on_spawn_failure=True`` the ``Popen``
+    exception propagates instead, so callers that treat a *timeout* as a verdict can still tell
+    "our own probe never started" apart from "the child hung".
 
     Why not ``subprocess.run``: on Windows, ``run()``'s post-timeout cleanup calls an *unbounded*
     ``communicate()`` after killing the direct child. Killing it can leave a descendant (``git.exe`` under a
@@ -518,6 +521,8 @@ def bounded_probe_run(
             text=True, encoding="utf-8", errors=errors,
             env=dict(env) if env is not None else None, cwd=cwd, **_popen_kwargs)
     except Exception:
+        if raise_on_spawn_failure:
+            raise
         return None
     try:
         stdout, stderr = proc.communicate(timeout=timeout)

@@ -16,6 +16,7 @@ and the syntax guard reported the update as successful.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -247,6 +248,17 @@ def test_import_guard_reports_bounded_probe_failure(monkeypatch, tmp_path):
     assert update_cmd._validate_critical_modules_import(tmp_path) == (
         False, "critical-module probe", "timed out before reporting import health",
     )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX exec-bit PermissionError")
+def test_import_guard_is_non_fatal_when_probe_cannot_run(tmp_path):
+    """A venv interpreter that exists but cannot be executed must not read as a hung probe:
+    spawn failure stays advisory (real ``bounded_probe_run``, real ``Popen``)."""
+    venv_python = tmp_path / "venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("#!/bin/sh\nexit 0\n")
+    venv_python.chmod(0o644)  # present, not executable -> Popen raises PermissionError
+    assert update_cmd._validate_critical_modules_import(tmp_path) == (True, None, None)
 
 
 # ---------------------------------------------------------------------------

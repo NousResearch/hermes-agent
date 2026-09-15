@@ -928,6 +928,10 @@ _TELEMETRY_RECENT_HISTORY = 20
 # A fire_claim younger than this is a live run (heartbeat cadence is 60 s). One value
 # for claiming, one-shot re-arm, and stale-error recovery so they cannot disagree.
 FIRE_CLAIM_TTL_SECONDS = 300
+# A hosted/webhook fire for the armed slot can arrive a few seconds before the stored
+# ``next_run_at`` (the fire scheduler's clock runs ahead of ours). Claims that early still own
+# the slot; only claims further ahead are off-tick manual/dashboard fires.
+FIRE_CLAIM_SKEW_SECONDS = 60
 _persisted_error_recoveries_recent: list = []
 
 
@@ -2736,7 +2740,11 @@ def claim_job_for_fire(
         # are then refused ("Job is already being fired by the scheduler") and
         # the scheduled tick dedupe-skips its real delivery (2026-09-08 live:
         # a manual run at 19:53 consumed the next day's 19:00 occurrence).
-        if instant is not None and datetime.fromisoformat(instant) > now:
+        # A claim within FIRE_CLAIM_SKEW_SECONDS of the slot is the fire for that slot
+        # (provider clock skew); dropping its identity would leave the slot unrecorded, so
+        # mark_job_run recomputes the same cron slot and the misfire backstop runs it twice.
+        if (instant is not None
+                and datetime.fromisoformat(instant) - now >= timedelta(seconds=FIRE_CLAIM_SKEW_SECONDS)):
             instant = None
         if instant and completed_occurrence(job, instant):
             if job.get("schedule", {}).get("kind") in {"cron", "interval"}:

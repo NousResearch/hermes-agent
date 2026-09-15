@@ -1,5 +1,5 @@
 """Exact scheduled identities, independent of mutable jobs.json dispatch stamps."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 
 logger = logging.getLogger(__name__)
@@ -21,11 +21,13 @@ def scheduled_instant(value):
 def completed_occurrence(job, instant):
     """Unknown/failed/pruned attempts cannot prove completion: keep them eligible."""
     from cron.executions import _transaction
+    from cron.jobs import FIRE_CLAIM_SKEW_SECONDS
 
     instant = scheduled_instant(instant)
     if instant is None:
         return False
-    instant_dt = datetime.fromisoformat(instant)
+    # A skewed early fire (see claim_job_for_fire) legitimately completes just before its slot.
+    earliest_real = datetime.fromisoformat(instant) - timedelta(seconds=FIRE_CLAIM_SKEW_SECONDS)
     try:
         with _transaction() as conn:
             rows = conn.execute(
@@ -37,7 +39,7 @@ def completed_occurrence(job, instant):
             completed_at = scheduled_instant(row["finished_at"] or row["claimed_at"])
             # Legacy or malformed timestamps remain proof; only positively identified poison
             # rows — completions recorded before their claimed occurrence — are ignored.
-            if completed_at is None or datetime.fromisoformat(completed_at) >= instant_dt:
+            if completed_at is None or datetime.fromisoformat(completed_at) >= earliest_real:
                 return True
         return False
     except Exception:

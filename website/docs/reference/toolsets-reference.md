@@ -58,6 +58,7 @@ Or in-session:
 | `connections` | `manage_connections` | Connect the user to apps: managed connector accounts through the Nous gateway, and local MCP servers from the catalog. On the desktop every action is a card that blocks until the user settles it; off the desktop managed actions return a connect link per app. |
 | `coding` | composite (`file` + `terminal` + `search` + `web` + `skills` + `browser` + `todo` + `memory` + `session_search` + `clarify` + `code_execution` + `delegation` + `vision`) | Coding-focused bundle for software work: file editing, terminal, search, web docs, skills, browser, delegate, and code execution. |
 | `cronjob` | `cronjob` | Schedule and manage recurring tasks. |
+| `custom` | (user-defined) | User-authored tools discovered from `~/.hermes/tools/*.yaml` — one file per tool (`name`, `description`, `parameters`, shell `command`). Registered by the bundled `yaml_tools` plugin. Parameters are exposed as shell-quoted `HERMES_TOOL_ARG_*` variables, and commands run through the normal guarded `terminal` pipeline. |
 | `debugging` | composite (`file` + `terminal` + `web`) | Debug bundle — file, process/terminal, web extract/search. |
 | `delegation` | `delegate_task` | Spawn isolated subagent instances for parallel work. |
 | `discord` | `discord` | Core Discord text/embed/DM actions (gateway-only). Active on the `hermes-discord` toolset. |

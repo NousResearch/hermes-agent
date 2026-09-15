@@ -312,6 +312,17 @@ declare global {
         get: () => Promise<{ defaultMaxMb: number; maxBytes: number; maxMb: number }>
         set: (maxMb: number) => Promise<{ defaultMaxMb: number; maxBytes: number; maxMb: number }>
       }
+      /** Settings → Keyboards: which keypress commits a draft, plus the
+       *  double-tap window. Main persists it as `composer-send.json` under
+       *  userData; `path` is that file, shown in the settings hint. */
+      composerSend?: {
+        get: () => Promise<{ doubleEnterMs: number; mode: string; path: string }>
+        set: (prefs: { doubleEnterMs?: number; mode?: string }) => Promise<{
+          doubleEnterMs: number
+          mode: string
+          path: string
+        }>
+      }
       readFileText: (filePath: string) => Promise<HermesReadFileTextResult | HermesReadFileErrorResult>
       /** Full-source read for runtime desktop plugins (readFileText truncates
        *  at the 512 KiB preview cap). Absent on older shells — callers fall

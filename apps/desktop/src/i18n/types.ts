@@ -698,6 +698,17 @@ export interface Translations {
     conflictWith: (label: string) => string
     categories: Record<string, string>
     actions: Record<string, string>
+    composerSend: {
+      title: string
+      description: string
+      modeEnter: string
+      modeDoubleEnter: string
+      modeModEnter: string
+      doubleTapTitle: string
+      doubleTapDescription: string
+      doubleTapUnit: string
+      doubleTapFileHint: (path: string) => string
+    }
   }
 
   // Find-in-page bar (⌘F). `close` reuses common.close.
@@ -3168,6 +3179,11 @@ export interface Translations {
     placeholderStarting: string
     placeholderReconnecting: string
     placeholderFollowUp: string
+    placeholderSendNewline: string
+    placeholderSendDoubleTap: string
+    placeholderSendChord: (chord: string) => string
+    placeholderSendEnterSends: string
+    placeholderSendPause: string
     newSessionPlaceholders: readonly string[]
     followUpPlaceholders: readonly string[]
     startVoice: string

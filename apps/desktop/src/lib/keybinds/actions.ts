@@ -8,6 +8,7 @@
 import { registry } from '@/contrib/registry'
 import type { Contribution } from '@/contrib/types'
 import { isMacPlatform } from '@/lib/platform'
+import type { ComposerSendMode } from '@/store/composer-send'
 
 export type KeybindCategory = 'composer' | 'profiles' | 'session' | 'navigation' | 'view'
 
@@ -310,13 +311,13 @@ export interface KeybindReadonly {
   id: string
   category: KeybindCategory
   keys: readonly string[]
+  /** i18n id for a row whose label depends on state (the composer send rows
+   *  follow the send mode). Falls back to `id`, so the tooltip hints — which
+   *  look rows up by the stable `id` — are unaffected. */
+  labelKey?: string
 }
 
 export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
-  { id: 'composer.send', category: 'composer', keys: ['enter'] },
-  { id: 'composer.newline', category: 'composer', keys: ['shift+enter'] },
-  { id: 'composer.steer', category: 'composer', keys: ['enter'] },
-  { id: 'composer.queue', category: 'composer', keys: ['mod+enter'] },
   { id: 'composer.sendQueued', category: 'composer', keys: ['mod+shift+k'] },
   { id: 'composer.mention', category: 'composer', keys: ['@'] },
   { id: 'composer.slash', category: 'composer', keys: ['/'] },
@@ -343,3 +344,52 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   // Global OS chord registered in main while HUD mode is up.
   { id: 'hud.snapToPointer', category: 'view', keys: ['mod+shift+g'] }
 ]
+
+// The four composer rows whose keys depend on the send mode (Settings →
+// Keyboards → Send with). They live outside KEYBIND_READONLY because there is
+// no single fixed combo to print: the whole point of the setting is which
+// keypress commits a draft.
+const COMPOSER_SEND_MODE_KEYS: Record<
+  ComposerSendMode,
+  { labelKey?: string; newline: readonly string[]; send: readonly string[] }
+> = {
+  enter: { newline: ['shift+enter'], send: ['enter'] },
+  'double-enter': {
+    labelKey: 'composer.send.double',
+    newline: ['enter', 'shift+enter'],
+    send: ['enter', 'enter']
+  },
+  pause: {
+    labelKey: 'composer.send.pause',
+    newline: ['enter', 'shift+enter'],
+    send: ['enter']
+  },
+  'mod-enter': {
+    labelKey: 'composer.send.mod',
+    newline: ['enter', 'shift+enter'],
+    send: ['mod+enter']
+  }
+}
+
+/** The keys that commit a draft, in `sendMode`. */
+export function composerSendKeys(sendMode: ComposerSendMode): readonly string[] {
+  return COMPOSER_SEND_MODE_KEYS[sendMode].send
+}
+
+export function composerKeybindRows(sendMode: ComposerSendMode): readonly KeybindReadonly[] {
+  const { labelKey, newline, send } = COMPOSER_SEND_MODE_KEYS[sendMode]
+
+  return [
+    { id: 'composer.send', category: 'composer', keys: send, labelKey },
+    { id: 'composer.newline', category: 'composer', keys: newline },
+    { id: 'composer.steer', category: 'composer', keys: send },
+    { id: 'composer.queue', category: 'composer', keys: ['mod+enter'] }
+  ]
+}
+
+/** Every fixed shortcut, with the composer rows resolved for `sendMode`. The
+ *  one entry point for both the shortcuts panel and the hint tooltips, so the
+ *  two can't drift apart. */
+export function readonlyShortcuts(sendMode: ComposerSendMode): readonly KeybindReadonly[] {
+  return [...composerKeybindRows(sendMode), ...KEYBIND_READONLY]
+}

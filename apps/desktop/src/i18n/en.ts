@@ -783,15 +783,29 @@ export const en: Translations = {
       'profile.toggleAll': 'Toggle all-profiles view',
       'profile.create': 'Create profile',
       'composer.send': 'Send message',
+      'composer.send.double': 'Send message — tap Enter twice',
+      'composer.send.pause': 'Send message — Enter, once you stop typing',
+      'composer.send.mod': 'Send message — Enter with a modifier',
       'composer.newline': 'Insert newline',
       'composer.steer': 'Steer the running turn',
-      'composer.queue': 'Queue message',
+      'composer.queue': 'Send now, or queue while a turn runs',
       'composer.sendQueued': 'Send next queued turn',
       'composer.mention': 'Reference files, folders, URLs',
       'composer.slash': 'Slash command palette',
       'composer.help': 'Quick help',
       'composer.history': 'Cycle popover / history',
       'composer.cancel': 'Close popover · cancel run'
+    },
+    composerSend: {
+      title: 'Send with',
+      description: 'Which keypress commits a message. Enter still starts a new line whenever sending moves off it.',
+      modeEnter: 'Enter',
+      modeDoubleEnter: 'Double tap',
+      modeModEnter: 'Enter + modifier',
+      doubleTapTitle: 'Double-tap window',
+      doubleTapDescription: 'How fast the two Enter presses have to land to count as a send.',
+      doubleTapUnit: 'ms',
+      doubleTapFileHint: path => `Saved in ${path} — edit that file for exact values.`
     }
   },
 
@@ -3750,6 +3764,14 @@ export const en: Translations = {
     placeholderStarting: 'Starting Hermes...',
     placeholderReconnecting: 'Reconnecting to Hermes…',
     placeholderFollowUp: 'Send follow-up',
+    // Appended to the resting placeholder only when the send mode is not the
+    // default, so it tells the user their custom gesture is active instead of
+    // restating what Enter already did.
+    placeholderSendNewline: 'Enter starts a new line',
+    placeholderSendDoubleTap: 'tap Enter twice to send',
+    placeholderSendChord: (chord: string) => `${chord} sends`,
+    placeholderSendEnterSends: 'Enter sends',
+    placeholderSendPause: 'sends once you stop typing',
     newSessionPlaceholders: [
       'What are we building?',
       'Give Hermes a task',
@@ -3888,6 +3910,8 @@ export const en: Translations = {
       'composer.slash': 'slash command palette',
       'composer.help': 'this quick help (delete to dismiss)',
       'composer.sendNewline': 'send · Shift+Enter for newline',
+      'composer.sendNewlineDouble': 'tap it twice to send',
+      'composer.sendNewlinePause': 'sends once you stop typing',
       'composer.sendQueued': 'send next queued turn',
       'keybinds.openPanel': 'all keyboard shortcuts',
       'composer.cancel': 'close popover · cancel run',

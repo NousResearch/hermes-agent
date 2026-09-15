@@ -23,6 +23,7 @@ import { chatMessageText } from '@/lib/chat-messages'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
+import { isPostCompositionCommitEnter } from '@/lib/ime'
 import { isMacPlatform } from '@/lib/platform'
 import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -31,6 +32,7 @@ import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
+import { $composerSendPrefs, enterBreaksLine } from '@/store/composer-send'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { sessionBlockingPrompt } from '@/store/prompts'
@@ -70,6 +72,7 @@ import { useComposerPlaceholder } from './hooks/use-composer-placeholder'
 import { useComposerPopout } from './hooks/use-composer-popout'
 import { useComposerQueue } from './hooks/use-composer-queue'
 import { useComposerScreenshot } from './hooks/use-composer-screenshot'
+import { useComposerSendGrace } from './hooks/use-composer-send-grace'
 import { useComposerSubmit } from './hooks/use-composer-submit'
 import { triggerKeyUpHandler, useComposerTrigger } from './hooks/use-composer-trigger'
 import { useComposerUndo } from './hooks/use-composer-undo'
@@ -92,6 +95,7 @@ import {
   deleteSelectionInEditor,
   insertComposerContentsAtCaret,
   normalizeComposerEditorDom,
+  renderComposerContents,
   RICH_INPUT_SLOT
 } from './rich-editor'
 import { useComposerScope, useComposerSurfaceId } from './scope'
@@ -273,6 +277,16 @@ export function ChatBar({
     },
     []
   )
+  // When the last composition ended, for the timing guard that catches an IME's
+  // candidate-confirm Enter arriving after `compositionend` with no flag and no
+  // keyCode 229 left on it (see lib/ime.ts).
+  const compositionEndedAtRef = useRef(0)
+  // Last keystroke in the editor, for the `pause` mode's "have you stopped?"
+  // test. Seeded on mount so an untouched composer counts as idle.
+  const typedAtRef = useRef(0)
+  // Timestamp of the last plain Enter. A second press inside
+  // DOUBLE_ENTER_SEND_MS commits the draft; a lone press just breaks the line.
+  const lastEnterAtRef = useRef(0)
 
   const { availableThemes, themeName } = useTheme()
   const at = useAtCompletions({ gateway: gateway ?? null, sessionId: sessionId ?? null, cwd: cwd ?? null })
@@ -463,6 +477,12 @@ export function ChatBar({
     stashAt
   })
 
+  // Holds an inferred send so Esc can take it back. The draft stays in the
+  // composer for the whole hold — the commit is the same submitDraft the
+  // keystroke would have called, just later.
+  const sendPrefs = useStore($composerSendPrefs)
+  const sendGrace = useComposerSendGrace({ graceMs: sendPrefs.sendGraceMs, onCommit: submitDraft })
+
   // Resting / reconnecting / starting placeholder text, re-rolled only on a real
   // conversation change.
   const placeholder = useComposerPlaceholder({ disabled, reconnecting, sessionId })
@@ -547,6 +567,11 @@ export function ChatBar({
     if (composingRef.current) {
       return
     }
+
+    // Live typing is the signal `pause` mode reads, and the signal that takes a
+    // held send back: you touched it, so the guess was wrong.
+    typedAtRef.current = Date.now()
+    sendGrace.cancel()
 
     scheduleFlushEditorToDraft(event.currentTarget)
   }
@@ -718,6 +743,26 @@ export function ChatBar({
     // "this Enter is an IME commit, not a user send".  If we let it through,
     // the message fires before the committed text is fully in the DOM.
     if (event.key === 'Enter' && event.keyCode === 229) {
+      return
+    }
+
+    // The flags above miss the third case: an IME/engine combination that
+    // delivers the candidate-confirm Enter after `compositionend` with
+    // isComposing false and no 229 — nothing in the event names it a commit, so
+    // both guards pass and the message sends with the candidate the user was
+    // still picking (#49422: "after pinyin/candidate selection, pressing Enter
+    // to confirm actually triggers send"). Only the timing says what it is: a
+    // commit Enter lands immediately after the composition ends, while a send
+    // comes after the user has read the text they just committed. Bare Enter
+    // only — ⌘/Ctrl+Enter is an explicit send and Shift+Enter never sends, so
+    // neither should be swallowed here.
+    if (
+      event.key === 'Enter' &&
+      !event.shiftKey &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      isPostCompositionCommitEnter(compositionEndedAtRef.current, Date.now())
+    ) {
       return
     }
 
@@ -979,12 +1024,19 @@ export function ChatBar({
       return
     }
 
-    // Cmd/Ctrl+Enter queues a follow-up while a turn runs. Plain Enter steers
-    // a text-only draft, so both live-turn actions stay reachable by keyboard.
+    // Cmd/Ctrl+Enter commits the draft unconditionally: it queues a follow-up
+    // while a turn runs, and sends outright when the session is idle. So the
+    // chord means "send" in both states, and the plain-Enter double-tap below
+    // is a convenience, not the only way out.
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
       event.preventDefault()
+      lastEnterAtRef.current = 0
 
-      if (busy && !disabled) {
+      if (disabled) {
+        return
+      }
+
+      if (busy) {
         // As with plain Enter, source the just-typed content from the DOM so a
         // fast keypress cannot queue a stale draft.
         const editorText = liveComposerDraft(editorRef.current, draftRef.current)
@@ -995,14 +1047,19 @@ export function ChatBar({
         }
 
         queueDraft()
+
+        return
       }
+
+      submitDraft()
 
       return
     }
 
+    // Plain Enter. What it does depends on the send mode (Settings → Keyboards
+    // → Send with): it commits the draft, breaks the line, or commits on the
+    // second tap. See store/composer-send.ts.
     if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault()
-
       // Decide from the DOM, not React state. `hasComposerPayload` is derived
       // from the AUI composer state, which lags the latest keystroke by a
       // render, so on fast typing / IME the just-typed text isn't in state yet.
@@ -1016,27 +1073,104 @@ export function ChatBar({
         return
       }
 
-      if (!busy && !hasLivePayload && queuedPrompts.length > 0) {
-        void drainNextQueued()
+      // Empty Enter: drain the queue when idle, deliver its head while busy. With
+      // nothing typed there is no line to break and no draft to commit, so these
+      // gestures keep their single press in every send mode.
+      if (!hasLivePayload) {
+        event.preventDefault()
+        lastEnterAtRef.current = 0
+
+        if (!busy && queuedPrompts.length > 0) {
+          void drainNextQueued()
+
+          return
+        }
+
+        // While busy, a second Enter delivers the queue's head now: steered into
+        // the live turn when a steer can carry it, else promoted and interrupted
+        // on settle. With nothing queued it stays a no-op, because interrupting
+        // is explicit (Stop/Esc), never a stray Enter after sending.
+        if (busy) {
+          const head = queuedPrompts.find(entry => entry.id !== queueEdit?.entryId)
+
+          if (head) {
+            void deliverQueuedNow(head.id)
+          }
+        }
 
         return
       }
 
-      // Empty Enter while busy. With prompts queued this is the double-send:
-      // the first Enter put the words in the queue, a second delivers them
-      // now — steered into the live turn when a steer can carry them, else
-      // promote + interrupt + drain on settle — mirroring the idle empty-Enter
-      // drain above. With nothing queued it stays a no-op — interrupting is
-      // explicit (Stop/Esc), never a stray Enter after sending. Gate on the live
-      // DOM payload (not the render-lagged composer state) so a message typed
-      // fast / via IME while busy still reaches submitDraft() and gets queued
-      // instead of being mistaken for an empty Enter.
-      if (busy && !hasLivePayload) {
-        const head = queuedPrompts.find(entry => entry.id !== queueEdit?.entryId)
+      const { doubleEnterMs, mode: sendMode, sendGrace: graceScope, typingIdleMs } = $composerSendPrefs.get()
 
-        if (head) {
-          void deliverQueuedNow(head.id)
+      if (!enterBreaksLine(sendMode)) {
+        event.preventDefault()
+
+        if (graceScope === 'all' && sendGrace.hold()) {
+          triggerHaptic('submit')
+
+          return
         }
+
+        submitDraft()
+
+        return
+      }
+
+      // `mod-enter`: a bare Enter only ever breaks the line. The ⌘/Ctrl+Enter
+      // branch above is the send path.
+      if (sendMode === 'mod-enter') {
+        return
+      }
+
+      // `pause`: an Enter after you have stopped typing is the send you meant,
+      // so it commits — held for the grace window when one is configured, which
+      // is the whole reason a guessed send is safe to ship. While you are still
+      // typing it falls through to the double-tap below, exactly like
+      // `double-enter`: mid-flow, one press is a line break.
+      if (sendMode === 'pause' && Date.now() - typedAtRef.current > typingIdleMs) {
+        event.preventDefault()
+
+        if (graceScope !== 'off' && sendGrace.hold()) {
+          triggerHaptic('submit')
+
+          return
+        }
+
+        submitDraft()
+
+        return
+      }
+
+      // `double-enter` (and `pause` mid-flow): the line break lands immediately
+      // rather than on a timer, so text typed right after Enter can never land
+      // on the wrong side of it — the send path deletes the break the first
+      // press added. Shift+Enter stays an unambiguous newline (it never sends).
+      const now = Date.now()
+      const doubleTap = now - lastEnterAtRef.current <= doubleEnterMs
+
+      lastEnterAtRef.current = now
+
+      if (!doubleTap) {
+        // Fall through UNPREVENTED so the editor inserts the line break, exactly
+        // as it does for Shift+Enter.
+        return
+      }
+
+      event.preventDefault()
+
+      // Drop the break the first press just inserted, otherwise every
+      // double-tap message would ship with a trailing newline.
+      if (editorRef.current) {
+        const live = composerPlainText(editorRef.current)
+
+        if (live.endsWith('\n')) {
+          renderComposerContents(editorRef.current, live.replace(/\n+$/, ''))
+        }
+      }
+
+      if (graceScope === 'all' && sendGrace.hold()) {
+        triggerHaptic('submit')
 
         return
       }
@@ -1047,6 +1181,16 @@ export function ChatBar({
     }
 
     if (event.key === 'Escape') {
+      // A held send owns Esc. It is the only thing on screen about to act on
+      // the user's behalf, and taking it back is the entire reason the hold
+      // exists — so it outranks the interrupt and popover meanings below.
+      if (sendGrace.holding) {
+        event.preventDefault()
+        sendGrace.cancel()
+
+        return
+      }
+
       // Editing a queued turn → Esc cancels the edit, restoring the prior draft.
       if (queueEdit) {
         event.preventDefault()
@@ -1211,6 +1355,7 @@ export function ChatBar({
         }}
         onCompositionEnd={event => {
           composingRef.current = false
+          compositionEndedAtRef.current = Date.now()
 
           // The input events fired *during* composition were skipped (they
           // carried uncommitted preedit text), and Chromium does NOT reliably

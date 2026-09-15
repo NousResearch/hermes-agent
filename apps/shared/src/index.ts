@@ -59,6 +59,30 @@ export {
   DATA_URL_READ_MAX_MAX_MB,
   DATA_URL_READ_MIN_MAX_MB
 } from './data-url-read-max'
+export {
+  clampDoubleEnterMs,
+  clampSendGraceMs,
+  clampTypingIdleMs,
+  COMPOSER_SEND_DEFAULT_MODE,
+  COMPOSER_SEND_MODES,
+  type ComposerSendMode,
+  type ComposerSendPrefs,
+  DOUBLE_ENTER_DEFAULT_MS,
+  DOUBLE_ENTER_MAX_MS,
+  DOUBLE_ENTER_MIN_MS,
+  isComposerSendMode,
+  isSendGraceScope,
+  normalizeComposerSendPrefs,
+  SEND_GRACE_DEFAULT_MS,
+  SEND_GRACE_DEFAULT_SCOPE,
+  SEND_GRACE_MAX_MS,
+  SEND_GRACE_MIN_MS,
+  SEND_GRACE_SCOPES,
+  type SendGraceScope,
+  TYPING_IDLE_DEFAULT_MS,
+  TYPING_IDLE_MAX_MS,
+  TYPING_IDLE_MIN_MS
+} from './composer-send'
 export { compactNumber } from './format'
 export { type FuzzyMatch, fuzzyRank, fuzzyScore, fuzzyScoreMulti, type RankedItem } from './fuzzy'
 export * from './gateway-events'

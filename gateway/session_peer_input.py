@@ -47,6 +47,20 @@ def _without_media(payload):
 
 
 def prepare_peer_input(authority, *, session_id, request_id, dispatch, payload):
+    """Normalize Files preparation failures for accepted-row-aware Run cleanup."""
+    try:
+        return _prepare_peer_input(authority, session_id=session_id, request_id=request_id,
+                                   dispatch=dispatch, payload=payload)
+    except RuntimeStoreError:
+        # RuntimeStoreError is a ValueError too; preserve replay/auth reasons.
+        raise
+    except (OSError, ValueError) as exc:
+        # Includes spool initialization/reverification and image/document I/O.
+        # The Run owner decides whether admission committed; never delete here.
+        raise RuntimeStoreError('storage_unavailable') from exc
+
+
+def _prepare_peer_input(authority, *, session_id, request_id, dispatch, payload):
     """Bind the COMPLETE final API payload before admission; handle stays private."""
     from gateway.hosted_room_input_preparation import PreparedHostedInput, prepare_verified_documents
     from gateway.platforms.api_server_room_attachments import _default_spool
@@ -65,10 +79,7 @@ def prepare_peer_input(authority, *, session_id, request_id, dispatch, payload):
                 raise RuntimeStoreError('admission_conflict')
             return PreparedHostedInput(saved_payload, None)
     spool = _default_spool()
-    try:
-        items = spool.materialize(dispatch)
-    except ValueError as exc:
-        raise RuntimeStoreError("storage_unavailable") from exc
+    items = spool.materialize(dispatch)
     manifest = canonical_attachment_manifest([
         {key: value for key, value in item.items() if key != 'path'} for item in items])
     if attachment_manifest_digest(manifest) != dispatch.attachment_manifest_digest:

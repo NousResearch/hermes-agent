@@ -276,7 +276,7 @@ def test_start_review_requires_agent():
 
 
 # ---------------------------------------------------------------------------
-# collect_parent_loaded_skills — reviewer inherits the parent's working skills
+# collect_parent_loaded_skills — parent history is advisory provenance
 # ---------------------------------------------------------------------------
 
 def test_collect_skills_from_preloaded_prompt_and_history():
@@ -335,12 +335,34 @@ def test_collect_skills_caps_at_limit():
     assert len(collect_parent_loaded_skills(parent, msgs)) == 8
 
 
-def test_briefing_includes_loaded_skills_instruction():
+def test_parent_skill_history_is_advisory_not_a_mandatory_load_list():
     snap = [{"role": "user", "text": "review my PR"}]
     _, context = build_review_task(snap, "", ["hermes-agent-dev", "xitter"])
+    # Provenance survives...
     assert "hermes-agent-dev, xitter" in context
-    assert "skill_view" in context
-    assert "binding" in context
+    assert "advisory provenance only" in context
+    assert "Do not load any skill solely because the parent loaded it" in context
+    # ...but nothing here turns the parent's history into a reviewer load list.
+    assert "Before reviewing, load each" not in context
+    assert "operating under these loaded skills" not in context
+    assert "must be judged against them" not in context
+
+
+def test_review_context_derives_from_assignment_and_explicit_dependencies():
+    prompt = "Review the deployment diff; release-checklist is an explicit dependency."
+    _, context = build_review_task(
+        [{"role": "user", "text": "PR #99 updates deployment"}], prompt, ["unrelated-parent-skill"]
+    )
+    assert (
+        "Determine required review context from the review assignment, referenced artifact, "
+        "selected criteria, receiver role, and explicit dependencies"
+    ) in context
+    assert "When authority, safety, acceptance, or an explicit dependency requires a skill" in context
+    # The assignment's artifact and explicit dependency stay visible; unrelated parent history stays provenance.
+    assert "PR #99 updates deployment" in context
+    assert "release-checklist is an explicit dependency" in context
+    assert "unrelated-parent-skill" in context
+    assert "Do not load any skill solely because the parent loaded it" in context
 
 
 def test_briefing_omits_skills_block_when_none():
@@ -386,7 +408,7 @@ def test_start_review_threads_loaded_skills_into_context(monkeypatch):
     result = start_review(parent, msgs, "")
     assert result["status"] == "dispatched"
     assert "hermes-agent-dev" in built["context"]
-    assert "skill_view" in built["context"]
+    assert "advisory provenance only" in built["context"]
 
 
 # ---------------------------------------------------------------------------

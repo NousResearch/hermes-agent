@@ -46,6 +46,8 @@ from hermes_cli.fallback_config import get_fallback_chain
 _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
+# Discord has the same inner ready deadline; leave a bounded cleanup window before the outer detach.
+_DISCORD_CONNECT_CLEANUP_GRACE_SECS = 5.0
 # Telegram connect proves a real getUpdates round trip; must cover polling-start deadlines + readiness.
 _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT = 180.0
 # The initial Telegram connect gates `running` for EVERY platform, so it must not spend the full 180s.

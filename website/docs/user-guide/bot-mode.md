@@ -86,6 +86,16 @@ Routines are plain [Hermes cron jobs](./features/cron.md) namespaced `[bot:<name
 
 ## Groups and group chats
 
+Messages sent during a member turn queue behind the active room drive, including
+replies in the same thread. They do not interrupt that member or mark unseen
+messages as read. Stop cancels queued continuations and holds the members until
+resumed. A quiet room watches timed-out members for another 21 minutes after the
+foreground wait ends; this observation window does not extend the turn itself.
+Unresolved member failures remain visible in the collapsed Activity summary after
+the room settles. Expand Activity for the turn sequence; re-address the member to
+try again. An ambiguous submit failure is not automatically resubmitted.
+
+
 Right-click a local Bot → **Manage groups** to add or remove it from any number of group chats. Pick existing groups independently or create one inline. Local membership is stored in the Bot's backend-synced profile metadata, so it follows that profile across desktops; older profiles with one legacy group continue to work. Connections Bots join through the New Group Chat picker and remain source-qualified in the room's shared state.
 
 **Rooms follow your gateways, not one Desktop.** Each room's recent transcript, members, picture, and name are mirrored into the shared profile metadata of **every** gateway your Desktop is connected to, with per-gateway versioning so two Desktops writing at once merge instead of overwriting each other. Open Hermes Desktop on another machine against the same gateway (local network, Tailscale, anywhere) and the room appears with its history; gateway-only clients see it too. Rooms carry a durable internal identity, so renaming one changes just its display name everywhere, disbanding one removes it permanently on every client — even ones that were offline at the time — and recreating a same-name group starts a genuinely fresh room. If a gateway dies or is removed, nothing is lost: every connected Desktop keeps the full room locally and re-seeds any gateway it reconnects to. (The full orchestration log stays in each Desktop's local storage; the shared mirror is a bounded recent-history projection.)
@@ -98,6 +108,7 @@ Use the **Move up** and **Move down** arrows beside a room to choose its positio
 
 - **One visible conversation.** Public messages and each member's reply stay readable in arrival order, with the speaker's name and timestamp. Starting another topic does not collapse earlier replies. **Reply in thread** continues that topic without reordering the room; **Activity** is a secondary status view, not a replacement for messages. Private Bot Chats remain separate.
 - Your message triggers up to **three serial rounds** of member turns. @-mentioned Bots respond (everyone responds when nobody is mentioned); each Bot replies briefly or passes, and the room settles when a full round stays silent.
+- Teammates can hand off to the primary Bot with `@hermes`, including in older saved rooms; Bots on other gateways keep their device-qualified tags (for example, `@default-vera`).
 - Bots pull each other in with `@name`, and escalate real judgment calls to you with `@user` — the group row shows a **needs you** badge when that happens. Pending questions and command approvals also light that badge; resolving the last prompt clears only prompt attention, not an independent mention. Prompts follow a renamed room, while disbanding retires them even if a member's in-flight poll arrives later.
 - Hard caps (10 messages per send, 3 rounds) keep rooms from spinning.
 - Each member keeps its own persistent `Group: <name>` session, so room context survives like any other conversation.
@@ -135,6 +146,13 @@ unreadable coordination registry is not mislabeled as another owner. Older local
 CLIs without the code marker still use the historical refusal wording.
 
 A failed delivery turn is retried at most once, and only when a retry can actually help. Transient failures (target runtime offline, delivery timeout, provider rate limit or server error) re-run the same Bot Chat session unchanged. A context-overflow failure also re-runs the same session — the retried turn compacts the over-threshold transcript via the standard context-compression pass before calling the model, so the retry fits where the original didn't. Auth, quota, and configuration failures never auto-retry: a second attempt cannot fix them and only burns quota, so the failure is surfaced immediately. A retried turn never starts a fresh session — your Bot Chat history and context stay intact.
+
+When a target has no live Desktop or TUI owner, local delivery opens that
+profile's canonical Bot Chat through a quiet CLI turn. The transport prefers
+the Hermes entrypoint beside the sending runtime's Python interpreter, so an
+unrelated or older `hermes` on a service's `PATH` cannot take precedence when
+that sibling entrypoint exists. `--in ~` selects the working directory; the
+explicit Bot Chat title is resolved in the target profile's session database.
 
 ### When a delivery fails: typed reasons
 

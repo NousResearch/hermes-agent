@@ -16,10 +16,13 @@ meaningful:
 2. **Exact SHA pins are mandatory.** Every entry pins a full 40-character
    commit SHA. Branches, tags, and short SHAs are rejected by the loader.
    Installs clone the repository and check out exactly that commit.
-3. **Pin maturity.** The pinned release should be **at least 2 weeks old**
-   at pin time, mirroring the supply-chain policy used for `optional-mcps/`
-   and pyproject dependencies. This gives the community time to notice a
-   compromised release before Hermes ships a pointer to it.
+3. **No self-updating code.** A listed plugin must not fetch and replace
+   its own files (in-app "check for updates", signed release downloaders,
+   remote `plugin.js` loaders). The exact SHA pin *is* the trust model; a
+   self-updater lets an installed copy move to a commit nobody reviewed.
+   Updates reach users only through a SHA-bump PR here plus
+   `hermes plugins update <name>`. Keep the updater in the standalone
+   distribution if you want one; strip it from the catalog build.
 4. **SHA bumps are new PRs.** Updating an entry's pin is a new PR whose diff
    (old SHA → new SHA) is re-reviewed like any other change — reviewers are
    expected to look at the upstream commit range being adopted.

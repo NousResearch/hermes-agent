@@ -695,6 +695,16 @@ def _open_requests(sid: str) -> list[dict]:
     return []
 
 
+def _pending_connection_request_payload(sid: str) -> dict | None:
+    """The open connection operation on *sid* as its ``connection.request`` payload, so a client
+    that missed the event (or restarted) restores the card with the server's deadline."""
+    from tools.connectors import live
+
+    session = _sessions.get(sid)
+    operation = live.current(str(session.get("session_key") or "")) if session else None
+    return operation.request_payload() if operation is not None else None
+
+
 def _pending_approval_request_payload(session_key: str) -> dict | None:
     """Read the oldest unresolved approval in a session, if there is one."""
     try:
@@ -1312,6 +1322,7 @@ def _ask(method: str, sid: str, params: dict, timeout: float | None = 300) -> st
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 
 
+
 def _clarify_timeout_seconds() -> float | None:
     """Clarify wait for the TUI/desktop bridge from the canonical config (gateway/CLI parity); 300s
     historical default if config can't be read; ``<= 0`` = unlimited → None (never auto-skip)."""
@@ -1905,8 +1916,8 @@ def _tool_progress_enabled(sid: str) -> bool:
 
 
 def _tool_lifecycle_required_for_ui(name: str) -> bool:
-    """Interactive UI, not optional chrome: Desktop renders clarify / setup_mcp cards from the tool-call part."""
-    return name in ("clarify", "setup_mcp")
+    """Interactive UI, not optional chrome: Desktop renders clarify / connection cards from the tool-call part."""
+    return name in ("clarify", "manage_connections", "setup_mcp")
 
 
 def _restart_slash_worker(sid: str, session: dict):
@@ -2786,7 +2797,8 @@ def _live_session_payload(
     }
     for key, value in (("inflight", inflight), ("queued", queued),
                        ("pending_approval", _pending_approval_request_payload(str(session.get("session_key") or ""))),
-                       ("open_requests", _open_requests(sid))):
+                       ("open_requests", _open_requests(sid)),
+                       ("pending_connection", _pending_connection_request_payload(sid))):
         if value:
             payload[key] = value
     return _attach_todo_state(payload, session)

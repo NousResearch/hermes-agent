@@ -1,11 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { $toursEnabled } from '@/store/tours'
 
 import { handleServerRequest } from './server-requests'
 import type { ServerRequestContext } from './server-requests'
 
-const deps = {} as ServerRequestContext['deps']
+const deps = {
+  activeSessionIdRef: { current: null },
+  sessionInterrupted: () => false,
+  updateSessionState: (_sessionId, update) => update(createClientSessionState('stored-session')),
+  upsertToolCall: () => undefined
+} as ServerRequestContext['deps']
 
 function deliver(method: string, params: Record<string, unknown>, activeSessionId: null | string) {
   const respond = vi.fn()
@@ -14,6 +20,26 @@ function deliver(method: string, params: Record<string, unknown>, activeSessionI
 
   return { fail, handled, respond }
 }
+
+describe('connection request routing', () => {
+  it('does not route connection operations through the server-request rail', () => {
+    const { handled, respond } = deliver(
+      'connection',
+      {
+        deadline_at: 1_800_000_000,
+        op_id: 'op-1',
+        session_id: 'session-a',
+        targets: [{ action: 'install', kind: 'mcp', name: 'linear' }],
+        timeout_seconds: 60,
+        tool_call_id: 'call-1'
+      },
+      'session-a'
+    )
+
+    expect(handled).toBe(false)
+    expect(respond).not.toHaveBeenCalled()
+  })
+})
 
 describe('preview action request routing', () => {
   it('leaves a scoped action request unanswered in a window showing another session', () => {

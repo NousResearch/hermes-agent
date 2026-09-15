@@ -150,8 +150,9 @@ in short, an entry must be:
 3. **Released** — the repo has real releases/tags, not just a default branch.
 4. **Passing validation** — the catalog validation GitHub Action is green on
    the PR (schema, SHA format, reachability).
-5. **Pinned to settled code** — the pinned SHA is at least **2 weeks old**, so
-   the catalog never points at code pushed moments before review.
+5. **Not self-updating** — the catalog build must not download and replace
+   its own files; the pinned SHA is the only update path (a SHA-bump PR plus
+   `hermes plugins update <name>`).
 
 Pin updates (bumping `sha` to a newer commit) follow the same PR + review
 process.

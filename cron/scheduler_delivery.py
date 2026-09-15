@@ -653,7 +653,7 @@ def _get_bot_chat_delivery_timeout() -> int:
         return 600
 
 
-def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]:
+def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Optional[dict] = None) -> Optional[str]:
     """Hand output to the live Bot Chat owner, or use the legacy unowned CLI lane.
 
     None means completed; a queued/claimed receipt returns an explicit unverified status
@@ -679,7 +679,11 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
     )
     try:
         source_home = get_hermes_home().resolve()
-        home = (get_profile_dir(profile) if profile else source_home).resolve()
+        from pathlib import Path
+        home = (Path(deferred["home"]) if deferred is not None else
+                get_profile_dir(profile) if profile else source_home).resolve()
+        if deferred is not None and not (home / "state.db").is_file():
+            return f"bot-chat delivery target no longer exists: {home}; do not resend"
         # run_one_job/claim_fire attach the durable execution id before delivery. The
         # transient fallback supports direct helper callers, never deduping recurring
         # runs by their (potentially identical) output or previous last_run timestamp.
@@ -690,9 +694,26 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
             [str(source_home), job_id, str(run_id), str(home)],
             ensure_ascii=False, separators=(",", ":"),
         ).encode("utf-8")).hexdigest()
+        if deferred is not None:
+            key = deferred["id"]
         # Read BEFORE discovery: the previous owner may have exited after accepting.
         # No receipt state, including ambiguous/failed, authorizes a CLI replay.
         receipt = read_delivery_result(home, key)
+        if receipt is None and not deferred:
+            from cron.bot_chat_delivery import defer, read_pending
+            from tools.bot_live_delivery import find_canonical_owner
+
+            pending = read_pending(key)
+            if pending is None and find_canonical_live_owner(home) is None and find_canonical_owner(home):
+                pending = defer(key, dict(job), content, profile, home)
+            if pending is not None:
+                if pending["content"] != content or pending["home"] != str(home):
+                    raise ValueError("delivery id already belongs to a different payload")
+                status = pending["status"]
+                target = f"bot-chat:{profile_label}"
+                job.setdefault("_bot_chat_delivery_receipts", {})[target] = {
+                    "status": status, "delivery_id": key}
+                return None if status == "settled" else f"{target} {status} (receipt {key}): completion unverified; do not resend"
         if receipt is None:
             owner = find_canonical_live_owner(home)
             if owner is not None:
@@ -735,13 +756,13 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
     from agent.delegation_context import delegated_child_subprocess_env
     from tools.environments.local import strip_launch_profile_env
     env = strip_launch_profile_env(delegated_child_subprocess_env(os.environ))
-    if profile:
-        argv += ["-p", profile]
-        # -p owns profile resolution; this scheduler's HERMES_HOME must not shadow it.
-        env.pop("HERMES_HOME", None)
-    else:
-        # Multiplex workers carry the profile in a ContextVar, not os.environ.
-        env["HERMES_HOME"] = str(source_home)
+    if not home.is_dir():
+        return _fail(f"bot-chat delivery target no longer exists: {home}; do not resend")
+    # Discovery (or deferred admission) owns the destination, not HOME or a
+    # subsequently changed active_profile. Do not resolve the name a second time.
+    env["HERMES_HOME"] = str(home)
+    if home.parent.name != "profiles":
+        argv += ["-p", "default"]
 
     query_file = None
     try:
@@ -761,7 +782,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
         if result.returncode != 0:
             tail = (result.stderr or result.stdout or "").strip()[-500:]
             return _fail(
-                f"bot-chat delivery to profile '{profile_label}' failed (exit {result.returncode})"
+                f"bot-chat delivery to profile '{profile_label}' failed (exit {result.returncode}) at {home}"
                 + (f": {tail}" if tail else ""))
         logger.info("Job '%s': delivered to Bot Chat of profile '%s'", job_id, profile_label)
         return None

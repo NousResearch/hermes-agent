@@ -84,7 +84,7 @@ export interface GatewayOptions {
   busyResumes?: Record<string, number>
   /** Per profile: carry `pending_approval` on its first `until` resumes. */
   approvalUntil?: Record<string, { payload: Record<string, unknown>; until: number }>
-  /** Per profile: carry `pending_clarify` on its first `until` resumes. */
+  /** Per profile: carry open server requests on its first `until` resumes. */
   /** `payload` is an open-request frame `{ id, method: 'clarify', params }`. */
   clarifyUntil?: Record<string, { payload: Record<string, unknown>; until: number }>
   /** Land a competing writer's `ui_meta` under `key` during the FIRST

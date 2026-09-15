@@ -1,6 +1,7 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
 import contextlib
+import contextvars
 import itertools
 import json
 import logging
@@ -14,6 +15,7 @@ from cron.scheduler import (
     _build_job_prompt,
     _deliver_result,
     _merge_mcp_into_per_job_toolsets,
+    _run_cron_cleanup_with_timeout,
     _resolve_cron_enabled_toolsets,
     _resolve_delivery_target,
     _summarize_cron_failure_for_delivery,
@@ -22,6 +24,21 @@ from cron.scheduler import (
 from cron.scheduler_delivery import _resolve_origin, _send_media_via_adapter
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
+
+
+def test_cron_cleanup_worker_inherits_caller_contextvars():
+    """Profile-scoped secrets must remain visible during threaded cleanup."""
+    profile_scope = contextvars.ContextVar("test_cron_cleanup_profile_scope")
+    profile_scope.set("profile-key")
+    observed = []
+
+    assert _run_cron_cleanup_with_timeout(
+        lambda: observed.append(profile_scope.get(None)),
+        job_id="context-scope",
+        label="test cleanup",
+        timeout_seconds=1,
+    )
+    assert observed == ["profile-key"]
 
 
 class TestSummarizeCronFailureForDelivery:

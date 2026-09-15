@@ -16,6 +16,27 @@ from agent.lazy_forward import forward as _forward
 logger = logging.getLogger("run_agent")
 
 
+_COMPLETION_SILENCE_GUIDANCE = (
+    "[System: For this internal process-completion turn, exactly NO_REPLY is a valid "
+    "final response when no user-facing reply is needed. Follow the completion notice "
+    "and conversation history to decide. Do not replace an intentional NO_REPLY with "
+    "an acknowledgement or treat it as an incomplete answer. Empty output still needs "
+    "recovery. This permission does not apply to a subsequent human message.]"
+)
+
+
+_COMPLETION_RECOVERY_NUDGE = (
+    "[System: The previous response was incomplete or empty.]\n" + _COMPLETION_SILENCE_GUIDANCE
+)
+
+
+def completion_recovery_nudge(agent, default: str) -> str:
+    """Keep recovery bounded while allowing a notification to finish explicitly silent."""
+    if getattr(agent, "_completion_silence_allowed", False):
+        return _COMPLETION_RECOVERY_NUDGE
+    return default
+
+
 class TurnFacadeMixin:
     """run_conversation()/chat() (see module docstring)."""
 
@@ -126,9 +147,18 @@ class TurnFacadeMixin:
             # Keep the ContextVar scope local (agent tokens may be observed from another thread).
             # A host that owns this thread (Hermes Console) may cancel the turn cross-thread.
             with bind_subagent_parent(self), scoped_runtime_main({}), track_in_interrupt_scope(self):
+                previous_silence = getattr(self, "_completion_silence_allowed", False)
                 try:
                     if lease is not None:
                         lease.start()
+                    self._completion_silence_allowed = (
+                        (persist_user_display_metadata or {}).get("completion_silence_allowed") is True
+                    )
+                    if self._completion_silence_allowed:
+                        if isinstance(user_message, str):
+                            user_message = user_message + "\n\n" + _COMPLETION_SILENCE_GUIDANCE
+                        elif isinstance(user_message, list):
+                            user_message = [*user_message, {"type": "text", "text": _COMPLETION_SILENCE_GUIDANCE}]
                     result = run_conversation(
                         self, user_message, system_message, conversation_history, effective_task_id,
                         stream_callback, persist_user_message,
@@ -139,6 +169,7 @@ class TurnFacadeMixin:
                         turn_author=turn_author,
                     )
                 finally:
+                    self._completion_silence_allowed = previous_silence
                     # Post-loop relay/task finalization must not receive a late refresh interrupt;
                     # the interrupt clear itself waits for the thread join in the outer finally.
                     if lease is not None:

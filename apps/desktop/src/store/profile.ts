@@ -15,7 +15,6 @@ import {
 } from '@/lib/storage'
 import { withTimeout } from '@/lib/with-timeout'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
-import { $fleetRoster } from '@/store/fleet-roster'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -57,15 +56,23 @@ export const $activeProfile = atom<string>('default')
 
 // Cached profile list for the picker. Refreshed lazily; the dropdown also
 // re-fetches on open so a profile created elsewhere shows up.
-export const $profiles = atom<ProfileInfo[]>([])
+const NO_PROFILES: ProfileInfo[] = []
+export const $profiles = atom<ProfileInfo[]>(NO_PROFILES)
 
 // Successful lists belong to their source, not whichever gateway is active
-// when a rail renders. Keep them on re-home; a failed incoming read must not
-// borrow the outgoing source's profiles (or discard its cached squares).
+// when a rail renders. A re-home repaints from this cache until the incoming
+// source serves its own list, so a failed incoming read can neither borrow the
+// outgoing source's profiles nor blank a source we already know.
 export const $profilesByConnection = atom<ReadonlyMap<string, ProfileInfo[]>>(new Map())
 
-function profileListSource(connection: HermesConnection | null): string {
-  return connection?.connectionId ?? JSON.stringify(['legacy', connection?.mode, connection?.baseUrl])
+// Registry descriptors carry their connection id; legacy primaries are keyed
+// by endpoint. Null is a reconnect blip (see setConnection), not a source.
+function profileListSource(connection: HermesConnection | null): null | string {
+  if (!connection) {
+    return null
+  }
+
+  return connection.connectionId ?? `${connection.mode ?? 'local'}:${connection.baseUrl}`
 }
 
 export function setActiveProfile(name: string): void {
@@ -114,7 +121,10 @@ export function refreshProfiles(): Promise<ProfileInfo[]> {
 
         if (epoch === profileListEpoch) {
           batch(() => {
-            $profilesByConnection.set(new Map($profilesByConnection.get()).set(source, profiles))
+            if (source !== null) {
+              $profilesByConnection.set(new Map($profilesByConnection.get()).set(source, profiles))
+            }
+
             $profiles.set(profiles)
           })
         }
@@ -157,43 +167,27 @@ export function refreshProfiles(): Promise<ProfileInfo[]> {
 }
 
 // Source changes can keep the same profile name (default → default), including
-// direct agent activations that never run the connection-switch wipe.
-let profileListOwner = profileListSource($connection.get())
+// direct agent activations that never run the connection-switch wipe. The
+// first published descriptor adopts whatever list is already loaded; a null
+// descriptor is a reconnect blip and keeps the current owner (setConnection).
+let profileListOwner: null | string = null
 
 $connection.subscribe(connection => {
   const source = profileListSource(connection)
 
-  if (source === profileListOwner) {
+  if (source === null || source === profileListOwner) {
     return
   }
 
+  const adopting = profileListOwner === null
   profileListOwner = source
+
+  if (adopting) {
+    return
+  }
+
   invalidateProfileListFetches()
-  $profiles.set($profilesByConnection.get().get(source) ?? [])
-})
-
-// Newly published successful enumerations supersede older per-source lists.
-// Do not consult the existing roster on re-home: it may predate the cached list.
-$fleetRoster.listen(roster => {
-  const cached = $profilesByConnection.get()
-  const next = new Map(cached)
-
-  for (const source of roster?.sources ?? []) {
-    // Main can mark cached names reachable even when enumeration failed.
-    if (source.reachable && !source.error) {
-      next.delete(source.connectionId)
-
-      // A pending older read must not repopulate the cache after invalidation.
-      if (source.connectionId === profileListOwner && refreshInFlight) {
-        invalidateProfileListFetches()
-      }
-    }
-  }
-
-  if (next.size !== cached.size) {
-    $profilesByConnection.set(next)
-  }
-  // Leave the active $profiles view alone; the inactive rail falls back to roster.
+  $profiles.set($profilesByConnection.get().get(source) ?? NO_PROFILES)
 })
 
 // ── Rail order ─────────────────────────────────────────────────────────────

@@ -4187,8 +4187,8 @@ describe('openNewSessionTile workspace target', () => {
 
   it('keeps an unlisted named local legacy-profile tile owned by its bare profile', async () => {
     const storedSessionId = 'stored-unlisted-omar'
-    $profiles.set([{ name: 'default' }, { name: 'omar' }] as never)
     setConnection({ mode: 'local' } as never)
+    $profiles.set([{ name: 'default' }, { name: 'omar' }] as never)
 
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.create') {
@@ -4234,10 +4234,10 @@ describe('openNewSessionTile workspace target', () => {
 
   it('records the draft profile owner when tab-strip create omits profile', async () => {
     const storedSessionId = 'stored-unlisted-draft-omar'
+    setConnection({ mode: 'local' } as never)
     $profiles.set([{ name: 'default' }, { name: 'omar' }] as never)
     $newChatProfile.set('omar')
     $activeGatewayProfile.set('default')
-    setConnection({ mode: 'local' } as never)
 
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.create') {

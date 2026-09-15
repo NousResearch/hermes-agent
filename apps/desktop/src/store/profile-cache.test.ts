@@ -2,9 +2,8 @@ import { atom } from 'nanostores'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection } from '@/api/client'
-import { buildRestGroups } from '@/app/chat/sidebar/fleet-rail'
-import type { DesktopAgentRoster, DesktopRegistryConnection, HermesConnection } from '@/global'
-import { $fleetRoster, _resetFleetRosterForTests, refreshFleetRoster } from '@/store/fleet-roster'
+import type { DesktopAgentRoster, HermesConnection } from '@/global'
+import { $fleetRoster, _resetFleetRosterForTests } from '@/store/fleet-roster'
 import type { ProfileInfo } from '@/types/hermes'
 
 vi.mock('@/store/gateway', () => ({ $gateway: atom(null) }))
@@ -73,98 +72,49 @@ it('keeps failed incoming profile reads isolated while retaining the outgoing co
   expect($profiles.get()).toBe(outgoing)
 })
 
-it('lets only a subsequent successful roster supersede cached rail names', async () => {
-  const connections: DesktopRegistryConnection[] = ['source-a', 'source-b'].map(id => ({
-    id,
-    kind: 'remote',
-    label: id,
-    tokenSet: false,
-    tokenPreview: null
-  }))
-
-  const roster = (names: string[], reachable = true): DesktopAgentRoster => ({
-    agents: names.map(name => ({
-      connectionId: 'source-a',
-      connectionKind: 'remote',
-      connectionLabel: 'source-a',
-      profile: name,
-      handle: `${name}-source-a`
-    })),
-    sources: connections.map(connection => ({
-      connectionId: connection.id,
-      kind: connection.kind,
-      label: connection.label,
-      reachable: connection.id === 'source-a' ? reachable : true
-    }))
-  })
-
-  const restNames = () =>
-    buildRestGroups({
-      activeConnectionId: $connection.get()?.connectionId ?? null,
-      connections,
-      roster: $fleetRoster.get(),
-      profilesByConnection: $profilesByConnection.get()
-    })
-      .find(group => group.connectionId === 'source-a')!
-      .named.map(agent => agent.profile)
-
-  const outgoing = [profile('default'), profile('old')]
-  const incoming = [profile('default'), profile('builder')]
-  const api = vi.fn().mockResolvedValue({ profiles: outgoing })
-  const getAgentRoster = vi.fn().mockResolvedValue(roster([]))
-  vi.stubGlobal('window', { hermesDesktop: { api, getAgentRoster } })
-  await refreshFleetRoster({ force: true })
-  activate('source-a')
-  await refreshProfiles()
-  activate('source-b')
-  api.mockResolvedValue({ profiles: incoming })
-  await refreshProfiles()
-  expect(restNames()).toEqual(['old']) // The older roster must not hide a newly discovered profile.
-
-  getAgentRoster.mockRejectedValueOnce(new Error('enumeration failed'))
-  vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-  await refreshFleetRoster({ force: true })
-  expect(restNames()).toEqual(['old'])
-  getAgentRoster.mockResolvedValue(roster([], false))
-  await refreshFleetRoster({ force: true })
-  expect(restNames()).toEqual(['old']) // A partial roster failure is not a deletion.
-  expect($profiles.get()).toBe(incoming)
-
-  for (const error of ['HTTP 401', 'connect-on-demand']) {
-    // The main-process registry restores cached names but retains the probe error.
-    const cachedFailure = roster(['stale'], true)
-    cachedFailure.sources[0].error = error
-    getAgentRoster.mockResolvedValue(cachedFailure)
-    await refreshFleetRoster({ force: true })
-    expect(restNames()).toEqual(['old']) // Cached names are reachable, not freshly enumerated.
-  }
-
-  for (const names of [['renamed'], ['created', 'renamed'], []]) {
-    getAgentRoster.mockResolvedValue(roster(names))
-    await refreshFleetRoster({ force: true })
-    expect(restNames()).toEqual(names)
-    expect($profiles.get()).toBe(incoming)
-  }
-
-  // A roster refresh while this source is active must not clear its foreground
-  // list, but an older HTTP response must not resurrect its invalidated cache.
-  activate('source-a')
-  api.mockResolvedValue({ profiles: outgoing })
-  await refreshProfiles()
+it('lets a fresh active-source list land even when the fleet roster arrives first', async () => {
+  const list = [profile('default'), profile('writer')]
   let resolve!: (value: { profiles: ProfileInfo[] }) => void
-  api.mockReturnValueOnce(
-    new Promise(done => {
-      resolve = done
-    })
-  )
-  const stale = refreshProfiles()
-  getAgentRoster.mockResolvedValue(roster(['latest']))
-  await refreshFleetRoster({ force: true })
-  expect($profiles.get()).toBe(outgoing)
-  resolve({ profiles: outgoing })
-  await stale
-  activate('source-b')
-  expect(restNames()).toEqual(['latest'])
+  const api = vi.fn(() => new Promise<{ profiles: ProfileInfo[] }>(done => (resolve = done)))
+  vi.stubGlobal('window', { hermesDesktop: { api } })
+  activate('source-a')
+
+  const flight = refreshProfiles()
+
+  // After a switch the registry change forces a roster refresh that races
+  // the active source's own list read; both are reads of the same backend.
+  const roster: DesktopAgentRoster = {
+    agents: [],
+    sources: [{ connectionId: 'source-a', kind: 'remote', label: 'source-a', reachable: true }]
+  }
+
+  $fleetRoster.set(roster)
+  resolve({ profiles: list })
+  await flight
+
+  expect($profiles.get()).toBe(list)
+  expect($profilesByConnection.get().get('source-a')).toBe(list)
+})
+
+it('treats a null descriptor as a reconnect blip, not a source change', async () => {
+  const list = [profile('default'), profile('writer')]
+  const api = vi.fn(async () => ({ profiles: list }))
+  vi.stubGlobal('window', { hermesDesktop: { api } })
+  activate('source-a')
+  await refreshProfiles()
+
+  let resolve!: (value: { profiles: ProfileInfo[] }) => void
+  api.mockReturnValueOnce(new Promise(done => (resolve = done)))
+  const flight = refreshProfiles()
+  $connection.set(null) // failed reconnect attempt publishes null
+  expect($profiles.get()).toBe(list)
+  const refreshed = [profile('default'), profile('writer'), profile('editor')]
+  resolve({ profiles: refreshed })
+  await flight
+
+  expect($profiles.get()).toBe(refreshed)
+  activate('source-a')
+  expect($profiles.get()).toBe(refreshed)
 })
 
 it('strands a retry during a same-profile source change without retargeting it to the incoming source', async () => {

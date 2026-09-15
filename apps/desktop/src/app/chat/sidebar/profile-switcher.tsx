@@ -95,8 +95,16 @@ import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
 import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../../routes'
 
-import { ConnectionGlyph } from './connection-glyph'
-import { buildRestGroups, countRestAgents, type FleetAgent, type FleetGroup, fleetRouteKey } from './fleet-rail'
+import { ConnectionGlyph, GatewayConditionDot } from './connection-glyph'
+import {
+  buildRestGroups,
+  countRestAgents,
+  type FleetAgent,
+  fleetGatewayCondition,
+  type FleetGatewayCondition,
+  type FleetGroup,
+  fleetRouteKey
+} from './fleet-rail'
 import { ProfileRemoteOverrideDialog } from './profile-remote-override-dialog'
 import { useFleetRoster } from './use-fleet-roster'
 import { useProfilePrewarm } from './use-profile-prewarm'
@@ -473,10 +481,10 @@ export function ProfileRail() {
                 entry.kind === 'active' ? (
                   <Fragment key="active">
                     <FleetDivider
+                      condition="ready"
                       connection={activeConnection}
                       first={index === 0}
                       label={activeConnection ? p.fleet.gateway(activeConnection.label) : null}
-                      reachable
                     />
                     <span
                       aria-label={activeConnection ? p.fleet.gateway(activeConnection.label) : undefined}
@@ -804,7 +812,7 @@ function ProfileDropdown({
             <DropdownMenuLabel className={cn(dropdownMenuSectionLabel, 'flex items-center gap-1.5')}>
               <ConnectionGlyph connection={group} />
               <span className="truncate">{group.label}</span>
-              {!group.reachable && <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-amber-500" />}
+              {!group.reachable && <GatewayConditionDot condition={fleetGatewayCondition(group)} />}
             </DropdownMenuLabel>
             {[group.defaultAgent, ...group.named].map(agent => (
               <DropdownMenuItem
@@ -904,18 +912,20 @@ function ProfilePill({
 
 // The gateway marker that heads every group on the fleet rail: its kind glyph
 // (device / network / terminal / cloud — the same glyph the statusbar readout
-// uses), an amber dot when the roster last found it unreachable, and a hairline
-// separating it from the previous group. The first group gets no hairline.
+// uses), a status dot, and a hairline separating it from the previous group.
+// The first group gets no hairline. The dot is amber only for a gateway that
+// actually failed to answer; one that was deliberately not dialed gets a muted
+// dot, because clicking it starts it — it is idle, not broken.
 function FleetDivider({
+  condition,
   connection,
   first,
-  label,
-  reachable
+  label
 }: {
+  condition: FleetGatewayCondition
   connection: null | Pick<FleetGroup, 'connectionId' | 'kind'> | Pick<DesktopRegistryConnection, 'id' | 'kind'>
   first: boolean
   label: null | string
-  reachable: boolean
 }) {
   if (!connection) {
     return null
@@ -927,23 +937,44 @@ function FleetDivider({
     <span
       aria-hidden="true"
       className={cn('flex h-5 shrink-0 items-center gap-0.5', first ? 'mr-0.5' : 'mx-0.5')}
+      data-condition={condition}
       data-connection-id={connectionId}
-      data-reachable={reachable}
+      data-reachable={condition === 'ready'}
       data-slot="profile-rail-divider"
     >
       {!first && <span className="h-3 w-px bg-(--ui-stroke-tertiary)" />}
       <ConnectionGlyph connection={connection} />
-      {!reachable && <span className="size-1.5 rounded-full bg-amber-500" data-slot="profile-rail-unreachable" />}
+      {condition !== 'ready' && <GatewayConditionDot condition={condition} />}
     </span>
   )
 
   return label ? <Tip label={label}>{marker}</Tip> : marker
 }
 
+// The divider's tooltip: the gateway's name plus, when it is not simply ready,
+// why its squares are dimmed.
+function fleetDividerLabel(
+  group: Pick<FleetGroup, 'label' | 'onDemand' | 'reachable'>,
+  fleet: {
+    gateway: (gateway: string) => string
+    gatewayOnDemand: (gateway: string) => string
+    gatewayUnreachable: (gateway: string) => string
+  }
+): string {
+  const condition = fleetGatewayCondition(group)
+
+  if (condition === 'ready') {
+    return fleet.gateway(group.label)
+  }
+
+  return condition === 'on-demand' ? fleet.gatewayOnDemand(group.label) : fleet.gatewayUnreachable(group.label)
+}
+
 // One at-rest gateway on the fleet rail: hairline + kind glyph (amber dot when
-// the roster last found it unreachable — never hidden, a sleeping box is still
-// yours), then its home square and named squares, dimmed. Clicking any of
-// them re-homes onto that exact (gateway, profile).
+// the roster last found it unreachable, muted dot when it was never dialed —
+// never hidden, a sleeping box is still yours), then its home square and named
+// squares, dimmed. Clicking any of them re-homes onto that exact
+// (gateway, profile).
 function FleetRestGroup({
   colors,
   first,
@@ -967,16 +998,22 @@ function FleetRestGroup({
 }) {
   const { t } = useI18n()
   const p = t.profiles
-  const dividerLabel = group.reachable ? p.fleet.gateway(group.label) : p.fleet.gatewayUnreachable(group.label)
+  const dividerLabel = fleetDividerLabel(group, p.fleet)
   const defaultKey = fleetRouteKey(group.connectionId, group.defaultAgent.profile)
 
   return (
     <>
-      <FleetDivider connection={group} first={first} label={dividerLabel} reachable={group.reachable} />
+      <FleetDivider
+        condition={fleetGatewayCondition(group)}
+        connection={group}
+        first={first}
+        label={dividerLabel}
+      />
       <span
         aria-label={p.fleet.gateway(group.label)}
         className="flex shrink-0 items-center gap-1"
         data-active="false"
+        data-condition={fleetGatewayCondition(group)}
         data-connection-id={group.connectionId}
         data-reachable={group.reachable}
         data-slot="profile-rail-gateway"

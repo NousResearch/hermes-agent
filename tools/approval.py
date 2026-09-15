@@ -35,7 +35,8 @@ from tools.approval_floors import (
     _user_deny_block_result,
 )
 from tools.approval_gateway_wait import _await_gateway_decision
-from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
+from tools.approval_prompt import (_canonical_choice, _GRANTING_CHOICES, _present_with_selected_transport,
+                                   _transport_choice, prompt_dangerous_approval)
 from tools.approval_smart import _smart_verdict
 
 logger = logging.getLogger(__name__)
@@ -773,6 +774,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                        outcome=outcome, **extra)
 
     def grant(choice: str) -> dict:
+        # Only the documented granting words reach here: every site below canonicalises its answer first
+        # (an unrecognised one is a denial, never consent — see approval_prompt._canonical_choice).
         # A smart-DENY owner override is always one operation, even if an older client returns "session" or "always".
         if not smart_denied:
             _persist_choice(session_key, choice, warnings)
@@ -790,7 +793,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         if denied is not None:
             return denied
         if choice is not None:
-            if choice == "deny":
+            choice = _canonical_choice(choice)
+            if choice not in _GRANTING_CHOICES:
                 _record_denial(session_key)
                 return deny(spec.transport_denied, "denied")
             return grant(choice)
@@ -827,7 +831,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 return deny(spec.gateway_refused, "timeout", reason="timed out without user response",
                             reason_addendum="", timeout_addendum=" Silence is not consent.",
                             deny_reason=deny_reason)
-            if choice is None or choice == "deny":
+            choice = _canonical_choice(choice)  # /approve, a button tap or an RPC client may say anything
+            if choice not in _GRANTING_CHOICES:
                 return deny(spec.gateway_refused, "denied", reason="denied by user",
                             reason_addendum=(f' Reason given by the user: "{deny_reason}".' if deny_reason else ""),
                             timeout_addendum="", deny_reason=deny_reason)
@@ -854,12 +859,13 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     hook_kwargs = dict(command=prompt_command, description=prompt_description, pattern_key=pattern_key,
                        pattern_keys=list(pattern_keys), session_key=session_key, surface="cli")
     approval_context._fire_approval_hook("pre_approval_request", **hook_kwargs)
-    choice = prompt_dangerous_approval(prompt_command, prompt_description, allow_permanent=allow_permanent,
-                                       smart_denied=smart_denied, approval_callback=approval_callback)
+    choice = _canonical_choice(prompt_dangerous_approval(
+        prompt_command, prompt_description, allow_permanent=allow_permanent,
+        smart_denied=smart_denied, approval_callback=approval_callback))
     approval_context._fire_approval_hook("post_approval_response", **hook_kwargs, choice=choice)
     if choice == "timeout":
         return deny(spec.cli_timeout, "timeout")
-    if choice == "deny":
+    if choice not in _GRANTING_CHOICES:
         # No _record_denial(): the breaker counts consecutive guardian LLM
         # DENY verdicts, not deliberate human denials.
         return deny(spec.cli_denied, "denied")

@@ -34,7 +34,8 @@ def prompt_dangerous_approval(command: str, description: str, timeout_seconds: i
 
     Returns 'once', 'session', 'always', 'deny', or 'timeout'. 'timeout' means no
     user response — still blocked (fail-closed), but callers report "no response"
-    rather than an explicit denial.
+    rather than an explicit denial. The vocabulary is enforced, not merely
+    documented: an answer outside it (including a callback's) becomes 'deny'.
 
     See #81887.
     """
@@ -78,6 +79,29 @@ def _read_choice(prompt: str, timeout_seconds: int) -> str | None:
     return None if thread.is_alive() else result["choice"]
 
 
+_GRANTING_CHOICES = frozenset({"once", "session", "always"})
+_CANONICAL_CHOICES = _GRANTING_CHOICES | frozenset({"deny", "timeout"})
+
+
+def _canonical_choice(answer) -> str:
+    """Map an answer onto the documented vocabulary, denying anything else.
+
+    The decision sites in ``tools/approval.py`` grant unless the answer is a known refusal, so a
+    value nothing recognises — ``None`` from a callback that lost its UI, ``""`` from a cancelled
+    prompt, ``"no"`` from a third-party or plugin callback written to the obvious rather than the
+    documented word — used to APPROVE the operation. Silence and confusion are not consent; only
+    the listed words are.
+    """
+    if isinstance(answer, str):
+        normalized = answer.strip().lower()
+        normalized = _CLI_CHOICE_ALIASES.get(normalized, normalized)
+        if normalized in _CANONICAL_CHOICES:
+            return normalized
+    logger.warning("Approval answer %r is not one of %s; treating it as a denial.",
+                   answer, sorted(_CANONICAL_CHOICES))
+    return "deny"
+
+
 def _ask_human(command: str, description: str, timeout_seconds: int, allow_permanent: bool,
                approval_callback, allow_session: bool, smart_denied: bool) -> str:
     # Redact before any user-visible rendering; the original `command` still executes after approval. Same redactor as
@@ -94,7 +118,7 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
             callback_kwargs = {"allow_permanent": allow_permanent,
                                **({"allow_session": False} if not allow_session else {}),
                                **({"smart_denied": True} if smart_denied else {})}
-            return approval_callback(display_command, display_description, **callback_kwargs)
+            return _canonical_choice(approval_callback(display_command, display_description, **callback_kwargs))
         except Exception as e:
             logger.error("Approval callback failed: %s", e, exc_info=True)
             return "deny"

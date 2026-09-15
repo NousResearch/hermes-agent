@@ -639,6 +639,8 @@ export interface Translations {
       introSplashTitle: string
       introSplashDesc: string
       reactionsTitle: string
+      skillSuggestionsTitle: string
+      skillSuggestionsDesc: string
       reactionsDesc: string
       tipsTitle: string
       tipsDesc: string
@@ -2472,6 +2474,7 @@ export interface Translations {
     commonCommands: string
     hotkeys: string
     helpFooter: string
+    ghostShiftTabHint: string
     commandDescs: Record<string, string>
     hotkeyDescs: Record<string, string>
     attachUrlTitle: string
@@ -2559,6 +2562,12 @@ export interface Translations {
       done: string
       doneTip: string
     }
+    skillStripPrefix: string
+    skillStripDismiss: string
+    onboardingTitle: string
+    onboardingLine1: string
+    onboardingLine2: string
+    onboardingAck: string
   }
 
   statusStack: {

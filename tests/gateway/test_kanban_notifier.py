@@ -3,7 +3,8 @@ import sqlite3
 from pathlib import Path
 
 
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform
+from gateway.profile_routing import parse_profile_routes
 from gateway.kanban_watchers_common import (
     _acquire_singleton_lock,
     _release_singleton_lock,
@@ -168,6 +169,55 @@ def test_active_named_profile_subscription_is_delivered(tmp_path, monkeypatch):
     message = adapter.sent[0]["text"]
     assert tid in message
     assert "blocked" in message
+
+
+def test_route_only_profile_subscription_uses_primary_telegram_transport(
+    tmp_path, monkeypatch,
+):
+    """A multiplex route may own a profile without owning another bot token."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    home = tmp_path / ".hermes"
+    profile_home = home / "profiles" / "chief-of-staff"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    db_path = home / "route-only-profile.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="route-only", assignee="worker")
+        kbn.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+            user_id="chat-1",
+            chat_type="dm",
+            notifier_profile="chief-of-staff",
+            delivery_mode="notify+wake",
+            delivery_metadata={"chat_type": "dm"},
+        )
+        kb.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._primary_profile_name = "default"
+    runner._kanban_notifier_profile = "default"
+    runner._profile_adapters = {"chief-of-staff": {}}
+    runner.config = GatewayConfig(
+        multiplex_profiles=True,
+        profile_routes=parse_profile_routes([
+            {"platform": "telegram", "chat_id": "chat-1", "profile": "chief-of-staff"},
+        ]),
+    )
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert tid in adapter.sent[0]["text"]
 
 
 def test_non_dispatch_gateway_claims_only_its_profile_subscriptions(

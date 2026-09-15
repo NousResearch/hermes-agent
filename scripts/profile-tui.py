@@ -516,7 +516,7 @@ def main() -> int:
         if not path.exists():
             print(f"\n⚠ no baseline at {path} — run with --save {args.compare} first")
         else:
-            before = json.loads(path.read_text())
+            before = json.loads(path.read_text(encoding="utf-8"))
             print(f"\n═══ A/B diff vs /tmp/perf-{args.compare}.json ═══")
             print(format_diff(before, metrics))
 
@@ -572,7 +572,7 @@ def loop_mode(args: argparse.Namespace) -> int:
                     ["npm", "run", "build"],
                     cwd=tui_dir,
                     capture_output=True,
-                    text=True,
+                    text=True, encoding='utf-8', errors='replace',
                 )
                 if result.returncode != 0:
                     print("✗ build failed:")

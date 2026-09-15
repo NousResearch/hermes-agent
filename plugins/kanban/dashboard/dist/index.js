@@ -86,8 +86,8 @@
     return body || raw;
   }
 
-  // Order matches BOARD_COLUMNS in plugin_api.py.
-  const COLUMN_ORDER = ["triage", "todo", "ready", "running", "blocked", "done"];
+  // Board column display order; any backend status not listed here renders after these.
+  const COLUMN_ORDER = ["triage", "todo", "ready", "running", "blocked", "review", "done"];
   // English fallback dictionaries — used when the i18n catalog is missing
   // a key, and as defaults for the get*() helpers below so callers running
   // outside any React component (where there's no `t`) still get sane text.
@@ -97,6 +97,7 @@
     ready: "Ready",
     running: "In Progress",
     blocked: "Blocked",
+    review: "Review",
     done: "Done",
     archived: "Archived",
   };
@@ -106,6 +107,7 @@
     ready: "Dependencies satisfied; assign a profile to dispatch",
     running: "Claimed by a worker — in-flight",
     blocked: "Worker asked for human input",
+    review: "Implementation complete — awaiting review",
     done: "Completed",
     archived: "Archived",
   };
@@ -113,6 +115,13 @@
     done: "Mark this task as done? The worker's claim is released and dependent children become ready.",
     archived: "Archive this task? It disappears from the default board view.",
     blocked: "Mark this task as blocked? The worker's claim is released.",
+  };
+  // Pluralized variants used by getDestructiveConfirm() when count > 1.
+  // Each entry may use {n} as a placeholder for the count.
+  const FALLBACK_DESTRUCTIVE_MANY = {
+    done: "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    archived: "Archive {n} tasks? They disappear from the default board view.",
+    blocked: "Mark {n} tasks as blocked? The workers' claims are released.",
   };
   const FALLBACK_DIAGNOSTIC_EVENT_LABELS = {
     completion_blocked_hallucination: "⚠ Completion blocked — phantom card ids",
@@ -140,9 +149,18 @@
   function getColumnHelp(t, status) {
     return tx(t, "columnHelp." + status, FALLBACK_COLUMN_HELP[status] || "");
   }
-  function getDestructiveConfirm(t, status) {
+  function getDestructiveConfirm(t, status, count) {
     const key = DESTRUCTIVE_KEYS[status];
     if (!key) return null;
+    // For bulk operations, use the *Many variant of the i18n key so the
+    // copy pluralizes correctly ("Mark 3 tasks as done?" instead of
+    // "Mark this task as done?"). Falls back to the singular English
+    // string if a translation for the *Many key isn't shipped.
+    if (count && count > 1) {
+      const manyKey = key + "Many";
+      const manyFallback = FALLBACK_DESTRUCTIVE_MANY[status] || FALLBACK_DESTRUCTIVE[status];
+      return tx(t, manyKey, manyFallback, { n: count });
+    }
     return tx(t, key, FALLBACK_DESTRUCTIVE[status]);
   }
   function getDiagnosticEventLabel(t, kind) {
@@ -157,6 +175,7 @@
     ready: "hermes-kanban-dot-ready",
     running: "hermes-kanban-dot-running",
     blocked: "hermes-kanban-dot-blocked",
+    review: "hermes-kanban-dot-review",
     done: "hermes-kanban-dot-done",
     archived: "hermes-kanban-dot-archived",
   };
@@ -171,25 +190,75 @@
     return p.phantom_cards || p.phantom_refs || [];
   }
 
-  // Takes an optional `t` so the prompt/alert text is localised. Callers
-  // outside React components can pass null and fall through to English.
-  function withCompletionSummary(patch, count, t) {
-    if (!patch || patch.status !== "done") return patch;
-    const label = count && count > 1 ? `${count} selected task(s)` : "this task";
-    const value = window.prompt(
-      tx(t, "completionSummary",
-        "Completion summary for {label}. This is stored as the task result.",
-        { label: label }),
-      "",
-    );
-    if (value === null) return null;
-    const summary = value.trim();
-    if (!summary) {
-      window.alert(tx(t, "completionSummaryRequired",
-        "Completion summary is required before marking a task done."));
-      return null;
-    }
-    return Object.assign({}, patch, { result: summary, summary });
+  // Helpers for the dialog state machine used by `useKanbanDialogs` below.
+  // The dialog API is Promise-based so call sites can preserve their
+  // synchronous-ish flow: ``await kanbanDialogs.request(...)`` and then
+  // continue with the optimistic UI + PATCH. See #50547.
+  function dialogLabelForCount(count, t) {
+    return count && count > 1 ? tx(t, "selectedTasks", "{n} selected tasks", { n: count }) : tx(t, "thisTask", "this task");
+  }
+
+  /**
+   * Hook owning the kanban plugin's modal dialog state. Returns
+   *   - `request(req)` — imperative API. Resolves to
+   *     `{ confirmed: false }` if the user cancels, or
+   *     `{ confirmed: true, summary?: string }` if they confirm.
+   *   - `dialogState` — current dialog descriptor for rendering, or null.
+   *   - `dialogProps` — onConfirm/onCancel handlers bound to the current
+   *     request.
+   *
+   * `req` shapes:
+   *   { kind: "confirm", title, description, confirmLabel, destructive }
+   *
+   * The "completion" kind (textarea prompt) is deferred: the host's
+   * ConfirmDialog hardcodes onClick → unmount, preventing validation-
+   * state retention. See KanbanDialogs doc comment.
+   */
+  function useKanbanDialogs(t) {
+    const [dialogState, setDialogState] = React.useState(null);
+    const resolverRef = React.useRef(null);
+
+    const request = React.useCallback(function (req) {
+      return new Promise(function (resolve) {
+        resolverRef.current = resolve;
+        setDialogState(req);
+      });
+    }, []);
+
+    const close = React.useCallback(function (confirmed, extras) {
+      const resolve = resolverRef.current;
+      resolverRef.current = null;
+      setDialogState(null);
+      if (resolve) {
+        resolve(Object.assign({ confirmed: confirmed }, extras || {}));
+      }
+    }, []);
+
+    const onConfirm = React.useCallback(function (maybeSummary) {
+      close(true, maybeSummary ? { summary: maybeSummary } : null);
+    }, [close]);
+    const onCancel = React.useCallback(function () { close(false, null); }, [close]);
+
+    // Wrap the ConfirmDialog props so call sites can hand them straight
+    // to <ConfirmDialog {...props} />. Title/description/confirmLabel are
+    // sourced from the current dialog state. For "completion" the dialog
+    // body (textarea + dual-validation) is rendered separately.
+    const dialogProps = React.useMemo(function () {
+      if (!dialogState) return null;
+      return {
+        open: true,
+        title: dialogState.title || "",
+        description: dialogState.description,
+        confirmLabel: dialogState.confirmLabel || (dialogState.kind === "completion"
+          ? tx(t, "confirm", "Confirm")
+          : tx(t, "ok", "OK")),
+        destructive: !!dialogState.destructive,
+        onConfirm: function () { onConfirm(); },
+        onCancel: onCancel,
+      };
+    }, [dialogState, t, onConfirm, onCancel]);
+
+    return { dialogState: dialogState, dialogProps: dialogProps, request: request };
   }
 
   const API = "/api/plugins/kanban";
@@ -501,14 +570,43 @@
   }
 
   // -------------------------------------------------------------------------
+  // Dialog renderer
+  // -------------------------------------------------------------------------
+
+  /**
+   * Single component that owns the kanban plugin's modal dialog UI. Renders
+   * whichever dialog `useKanbanDialogs` is currently requesting, or nothing
+   * if no dialog is open.
+   *
+   * Currently supports one dialog kind:
+   *   - "confirm"  → standard ConfirmDialog (title + description + buttons)
+   *
+   * The "completion" kind (Mark Done → textarea prompt) is not yet wired
+   * because the host's ConfirmDialog hardcodes `onClick → unmount`, which
+   * prevents keeping the dialog open across a validation failure. See
+   * issue #50547 followups. Completion summaries triggered from the
+   * side-drawer use a documented carve-out (`withCompletionSummary` in
+   * TaskDetail) until that lands.
+   */
+  function KanbanDialogs(props) {
+    const { dialogProps, dialogState } = props;
+    if (!dialogState || !dialogProps) return null;
+    const ConfirmDialog = SDK.components.ConfirmDialog;
+    if (!ConfirmDialog) return null;
+    return h(ConfirmDialog, dialogProps);
+  }
+
+  // -------------------------------------------------------------------------
   // Root page
   // -------------------------------------------------------------------------
 
   function KanbanPage() {
     const { t } = useI18n();
+    const kanbanDialogs = useKanbanDialogs(t);
     const [board, setBoard] = useState(() => readSelectedBoard() || null);
     const [boardList, setBoardList] = useState([]);      // [{slug, name, counts, ...}]
     const [showNewBoard, setShowNewBoard] = useState(false);
+    const [showBoardSettings, setShowBoardSettings] = useState(false);
 
     const [kanbanBoard, setKanbanBoard] = useState(null);  // the grid data
     // Alias so the rest of the function can keep using `board` semantically
@@ -715,17 +813,67 @@
     }, [boardData, tenantFilter, assigneeFilter, search]);
 
     // --- actions ------------------------------------------------------------
-    const moveTask = useCallback(function (taskId, newStatus) {
-      const confirmMsg = getDestructiveConfirm(t, newStatus);
-      if (confirmMsg && !window.confirm(confirmMsg)) return;
-      const patch = withCompletionSummary({ status: newStatus }, 1, t);
-      if (!patch) return;
+    // Performs the actual move (optimistic UI + PATCH) once any required
+    // confirmation and/or completion summary has been collected by the
+    // caller. Extracted so moveTask / moveSelected / applyBulk can all
+    // share the same dispatch path regardless of how confirmation was
+    // collected (synchronous window.confirm in the original code, async
+    // dialog via useKanbanDialogs now).
+    //   taskId  — required when count <= 1 (single-task PATCH endpoint)
+    //           — ignored when count >  1 (bulk endpoint uses selectedIds)
+    //   summary — completion summary string, or null/undefined to skip
+    const performMoveTask = useCallback(function (taskId, newStatus, count, summary) {
+      const patch = { status: newStatus };
+      const finalPatch = summary
+        ? Object.assign({}, patch, { result: summary, summary: summary })
+        : patch;
+      if (count > 1) {
+        // Bulk path: optimistic UI prepends all moved tasks to dest column.
+        setBoardData(function (b) {
+          if (!b) return b;
+          const moved = [];
+          const columns = b.columns.map(function (col) {
+            const kept = [];
+            for (const tk of col.tasks) {
+              if (selectedIds.has(tk.id)) moved.push(Object.assign({}, tk, { status: newStatus }));
+              else kept.push(tk);
+            }
+            return Object.assign({}, col, { tasks: kept });
+          });
+          const dest = columns.find(function (c) { return c.name === newStatus; });
+          if (dest) dest.tasks = moved.concat(dest.tasks);
+          return Object.assign({}, b, { columns });
+        });
+        const ids = Array.from(selectedIds);
+        SDK.fetchJSON(withBoard(`${API}/tasks/bulk`, board), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(Object.assign({ ids: ids }, finalPatch)),
+        }).then(function (res) {
+          const failed = (res.results || []).filter(function (r) { return !r.ok; });
+          if (failed.length > 0) {
+            setError(`Bulk move: ${failed.length} of ${res.results.length} failed`);
+            setFailedIds(new Set(failed.map(function (f) { return f.id; })));
+          } else {
+            setFailedIds(new Set());
+          }
+          setSelectedIds(new Set());
+          setLastSelectedId(null);
+          loadBoard();
+        }).catch(function (err) {
+          setError(`Move failed: ${err.message || err}`);
+          setFailedIds(new Set(selectedIds));
+          loadBoard();
+        });
+        return;
+      }
+      // Single-task path.
       setBoardData(function (b) {
         if (!b) return b;
         let moved = null;
         const columns = b.columns.map(function (col) {
-          const next = col.tasks.filter(function (t) {
-            if (t.id === taskId) { moved = Object.assign({}, t, { status: newStatus }); return false; }
+          const next = col.tasks.filter(function (tk) {
+            if (tk.id === taskId) { moved = Object.assign({}, tk, { status: newStatus }); return false; }
             return true;
           });
           return Object.assign({}, col, { tasks: next });
@@ -739,12 +887,74 @@
       SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(taskId)}`, board), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
+        body: JSON.stringify(finalPatch),
       }).catch(function (err) {
         setError(tx(t, "moveFailed", "Move failed: ") + parseApiErrorMessage(err));
         loadBoard();
       });
-    }, [loadBoard, board, t]);
+    }, [loadBoard, board, t, selectedIds]);
+
+    // Pre-dispatch dialog step for both moveTask and moveSelected. Drives
+    // the new in-app ConfirmDialog instead of window.confirm. The flow:
+    //   1. If newStatus is destructive (done/archived/blocked), open
+    //      a confirm dialog.
+    //   2. If newStatus is "done", additionally open a completion-summary
+    //      dialog (chained via Promise).
+    //   3. On confirm of all steps, call performMoveTask.
+    //   4. On cancel anywhere, do nothing.
+    const requestMoveConfirm = useCallback(function (newStatus, count) {
+      const confirmMsg = getDestructiveConfirm(t, newStatus, count);
+      if (!confirmMsg) return Promise.resolve({ confirmed: true });
+      return kanbanDialogs.request({
+        kind: "confirm",
+        title: tx(t, "confirmStatusTitle." + newStatus, "Confirm status change"),
+        description: confirmMsg,
+        confirmLabel: tx(t, "confirmStatusLabel." + newStatus, "Confirm"),
+        destructive: true,
+      });
+    }, [kanbanDialogs, t]);
+
+    const requestCompletionSummary = useCallback(function (count) {
+      const label = dialogLabelForCount(count, t);
+      // Uses window.prompt as a documented carve-out — the host's
+      // ConfirmDialog hardcodes onClick → unmount (confirmedRef + Radix
+      // AlertDialogAction), making it impossible to keep a dialog open
+      // across a validation failure. Once ConfirmDialog grows a
+      // disabled prop upstream, this switches to a Dialog-based
+      // completion body (see KanbanDialogs doc comment).
+      var summary = window.prompt(
+        tx(t, "completionSummary",
+          "Completion summary for {label}. This is stored as the task result.",
+          { label: label }),
+        "",
+      );
+      if (summary === null) return Promise.resolve({ confirmed: false });
+      summary = summary.trim();
+      if (!summary) {
+        window.alert(tx(t, "completionSummaryRequired",
+          "Completion summary is required before marking a task done."));
+        return Promise.resolve({ confirmed: false });
+      }
+      return Promise.resolve({ confirmed: true, summary: summary });
+    }, [t]);
+
+    // Single-task card move. Drives confirmation + completion summary
+    // dialogs via the hook, then dispatches via performMoveTask.
+    const moveTask = useCallback(function (taskId, newStatus) {
+      requestMoveConfirm(newStatus, 1)
+        .then(function (r1) {
+          if (!r1.confirmed) return null;
+          if (newStatus !== "done") {
+            performMoveTask(taskId, newStatus, 1, null);
+            return null;
+          }
+          return requestCompletionSummary(1).then(function (r2) {
+            if (!r2.confirmed) return null;
+            performMoveTask(taskId, newStatus, 1, r2.summary || null);
+          });
+        })
+        .catch(function () { /* dialog cancelled */ });
+    }, [requestMoveConfirm, requestCompletionSummary, performMoveTask]);
 
     const clearSelected = useCallback(function () {
       setSelectedIds(new Set());
@@ -752,49 +962,23 @@
       setFailedIds(new Set());
     }, []);
     const moveSelected = useCallback(function (newStatus) {
-      const confirmMsg = DESTRUCTIVE_TRANSITIONS[newStatus];
-      if (confirmMsg && !window.confirm(confirmMsg)) return;
       if (selectedIds.size === 0) return;
-      const patch = withCompletionSummary({ status: newStatus }, selectedIds.size);
-      if (!patch) return;
-      const ids = Array.from(selectedIds);
-      // Optimistic UI: remove selected from all columns and prepend to target.
-      setBoardData(function (b) {
-        if (!b) return b;
-        const moved = [];
-        const columns = b.columns.map(function (col) {
-          const kept = [];
-          for (const t of col.tasks) {
-            if (selectedIds.has(t.id)) moved.push(Object.assign({}, t, { status: newStatus }));
-            else kept.push(t);
+      const count = selectedIds.size;
+      const taskId = Array.from(selectedIds)[0]; // representative id for performMoveTask's single-task branch
+      requestMoveConfirm(newStatus, count)
+        .then(function (r1) {
+          if (!r1.confirmed) return null;
+          if (newStatus !== "done") {
+            performMoveTask(taskId, newStatus, count, null);
+            return null;
           }
-          return Object.assign({}, col, { tasks: kept });
-        });
-        const dest = columns.find(function (c) { return c.name === newStatus; });
-        if (dest) dest.tasks = moved.concat(dest.tasks);
-        return Object.assign({}, b, { columns });
-      });
-      SDK.fetchJSON(withBoard(`${API}/tasks/bulk`, board), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(Object.assign({ ids }, patch)),
-      }).then(function (res) {
-        const failed = (res.results || []).filter(function (r) { return !r.ok; });
-        if (failed.length > 0) {
-          setError(`Bulk move: ${failed.length} of ${res.results.length} failed`);
-          setFailedIds(new Set(failed.map(function (f) { return f.id; })));
-        } else {
-          setFailedIds(new Set());
-        }
-        setSelectedIds(new Set());
-        setLastSelectedId(null);
-        loadBoard();
-      }).catch(function (err) {
-        setError(`Move failed: ${err.message || err}`);
-        setFailedIds(new Set(selectedIds));
-        loadBoard();
-      });
-    }, [selectedIds, loadBoard, board]);
+          return requestCompletionSummary(count).then(function (r2) {
+            if (!r2.confirmed) return null;
+            performMoveTask(taskId, newStatus, count, r2.summary || null);
+          });
+        })
+        .catch(function () { /* dialog cancelled */ });
+    }, [selectedIds, requestMoveConfirm, requestCompletionSummary, performMoveTask]);
 
     const createTask = useCallback(function (body) {
       return SDK.fetchJSON(withBoard(`${API}/tasks`, board), {
@@ -891,53 +1075,67 @@
 
     const applyBulk = useCallback(function (patch, confirmMsg) {
       if (selectedIds.size === 0) return;
-      if (confirmMsg && !window.confirm(confirmMsg)) return;
-      const finalPatch = withCompletionSummary(patch, selectedIds.size, t);
-      if (!finalPatch) return;
-      const body = Object.assign({ ids: Array.from(selectedIds) }, finalPatch);
-      // Optimistic UI for status moves (same pattern as moveSelected).
-      if (finalPatch.status) {
-        setBoardData(function (b) {
-          if (!b) return b;
-          const moved = [];
-          const columns = b.columns.map(function (col) {
-            const kept = [];
-            for (const t of col.tasks) {
-              if (selectedIds.has(t.id)) moved.push(Object.assign({}, t, { status: finalPatch.status }));
-              else kept.push(t);
-            }
-            return Object.assign({}, col, { tasks: kept });
+      const count = selectedIds.size;
+      const run = function () {
+        const finalPatch = patch;
+        const body = Object.assign({ ids: Array.from(selectedIds) }, finalPatch);
+        // Optimistic UI for status moves (same pattern as moveSelected).
+        if (finalPatch.status) {
+          setBoardData(function (b) {
+            if (!b) return b;
+            const moved = [];
+            const columns = b.columns.map(function (col) {
+              const kept = [];
+              for (const t of col.tasks) {
+                if (selectedIds.has(t.id)) moved.push(Object.assign({}, t, { status: finalPatch.status }));
+                else kept.push(t);
+              }
+              return Object.assign({}, col, { tasks: kept });
+            });
+            const dest = columns.find(function (c) { return c.name === finalPatch.status; });
+            if (dest) dest.tasks = moved.concat(dest.tasks);
+            return Object.assign({}, b, { columns });
           });
-          const dest = columns.find(function (c) { return c.name === finalPatch.status; });
-          if (dest) dest.tasks = moved.concat(dest.tasks);
-          return Object.assign({}, b, { columns });
-        });
-      }
-      SDK.fetchJSON(withBoard(`${API}/tasks/bulk`, board), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      })
-        .then(function (res) {
-          const failed = (res.results || []).filter(function (r) { return !r.ok; });
-          if (failed.length > 0) {
-            setError(tx(t, "bulkFailed", "Bulk: ") +
-              `${failed.length} of ${res.results.length} failed: ` +
-              failed.slice(0, 3).map(function (f) { return `${f.id} (${f.error})`; }).join("; "));
-            setFailedIds(new Set(failed.map(function (f) { return f.id; })));
-          } else {
-            setFailedIds(new Set());
-          }
-          setSelectedIds(new Set());
-          setLastSelectedId(null);
-          loadBoard();
+        }
+        SDK.fetchJSON(withBoard(`${API}/tasks/bulk`, board), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
         })
-        .catch(function (e) {
-          setError(String(e.message || e));
-          setFailedIds(new Set(selectedIds));
-          loadBoard();
-        });
-    }, [selectedIds, loadBoard, board, t]);
+          .then(function (res) {
+            const failed = (res.results || []).filter(function (r) { return !r.ok; });
+            if (failed.length > 0) {
+              setError(tx(t, "bulkFailed", "Bulk: ") +
+                `${failed.length} of ${res.results.length} failed: ` +
+                failed.slice(0, 3).map(function (f) { return `${f.id} (${f.error})`; }).join("; "));
+              setFailedIds(new Set(failed.map(function (f) { return f.id; })));
+            } else {
+              setFailedIds(new Set());
+            }
+            setSelectedIds(new Set());
+            setLastSelectedId(null);
+            loadBoard();
+          })
+          .catch(function (e) {
+            setError(String(e.message || e));
+            setFailedIds(new Set(selectedIds));
+            loadBoard();
+          });
+      };
+      if (!confirmMsg) {
+        run();
+        return;
+      }
+      kanbanDialogs.request({
+        kind: "confirm",
+        title: tx(t, "bulkConfirmTitle", "Apply bulk change"),
+        description: confirmMsg,
+        confirmLabel: tx(t, "apply", "Apply"),
+        destructive: false,
+      }).then(function (r) {
+        if (r.confirmed) run();
+      }).catch(function () { /* cancelled */ });
+    }, [selectedIds, loadBoard, board, t, kanbanDialogs]);
 
     // --- board switching ----------------------------------------------------
     const switchBoard = useCallback(function (nextSlug) {
@@ -971,6 +1169,20 @@
       });
     }, [loadBoardList, switchBoard, board]);
 
+    // PATCH board metadata (name / description / default project directory).
+    // Refreshes the board list so InlineCreate's workspace defaults pick up
+    // the new default_workdir immediately.
+    const updateBoard = useCallback(function (slug, payload) {
+      return SDK.fetchJSON(`${API}/boards/${encodeURIComponent(slug)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }).then(function (res) {
+        loadBoardList();
+        return res;
+      });
+    }, [loadBoardList]);
+
     const deleteBoard = useCallback(function (slug) {
       if (!slug || slug === "default") return Promise.resolve();
       return SDK.fetchJSON(`${API}/boards/${encodeURIComponent(slug)}`, {
@@ -982,30 +1194,46 @@
     }, [board, loadBoardList, switchBoard]);
 
    const deleteTask = useCallback(function (taskId) {
-     if (!window.confirm(tx(t, "trash.confirm", FALLBACK_TRASH.confirm))) return Promise.resolve();
-     return SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(taskId)}`, {
-       method: "DELETE",
-     }).then(function () {
-       loadBoard();
-       setSelectedIds(function (prev) {
-         const next = new Set(prev);
-         next.delete(taskId);
-         return next;
-       });
-     }).catch(function (e) { setError(String(e.message || e)); });
-   }, [board, loadBoard, t]);
+     return kanbanDialogs.request({
+       kind: "confirm",
+       title: tx(t, "trash.confirmTitle", "Delete task?"),
+       description: tx(t, "trash.confirm", FALLBACK_TRASH.confirm),
+       confirmLabel: tx(t, "common.delete", "Delete"),
+       destructive: true,
+     }).then(function (r) {
+       if (!r.confirmed) return null;
+       return SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(taskId)}`, {
+         method: "DELETE",
+       }).then(function () {
+         loadBoard();
+         setSelectedIds(function (prev) {
+           const next = new Set(prev);
+           next.delete(taskId);
+           return next;
+         });
+       }).catch(function (e) { setError(String(e.message || e)); });
+     }).catch(function () { /* cancelled */ });
+   }, [board, loadBoard, t, kanbanDialogs]);
 
     const deleteSelected = useCallback(function (count) {
       if (selectedIds.size === 0) return Promise.resolve();
-      if (!window.confirm(tx(t, "trash.confirmMany", "Permanently delete {n} selected tasks? This cannot be undone.", { n: count }))) return Promise.resolve();
-      const ids = Array.from(selectedIds);
-      setSelectedIds(new Set());
-      return Promise.all(ids.map(function (id) {
-        return SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
-      })).then(function () {
-        loadBoard();
-      }).catch(function (e) { setError(String(e.message || e)); });
-    }, [selectedIds, board, loadBoard, t]);
+      kanbanDialogs.request({
+        kind: "confirm",
+        title: tx(t, "trash.confirmManyTitle", "Delete {n} tasks?", { n: count }),
+        description: tx(t, "trash.confirmMany", "Permanently delete {n} selected tasks? This cannot be undone.", { n: count }),
+        confirmLabel: tx(t, "common.delete", "Delete"),
+        destructive: true,
+      }).then(function (r) {
+        if (!r.confirmed) return null;
+        const ids = Array.from(selectedIds);
+        setSelectedIds(new Set());
+        return Promise.all(ids.map(function (id) {
+          return SDK.fetchJSON(`${API}/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+        })).then(function () {
+          loadBoard();
+        }).catch(function (e) { setError(String(e.message || e)); });
+      }).catch(function () { /* cancelled */ });
+    }, [selectedIds, board, loadBoard, t, kanbanDialogs]);
 
     // --- render -------------------------------------------------------------
     if (loading && !boardData) {
@@ -1034,12 +1262,22 @@
           boardList: boardList,
           onSwitch: switchBoard,
           onNewClick: function () { setShowNewBoard(true); },
+          onSettingsClick: function () { setShowBoardSettings(true); },
           onDeleteBoard: deleteBoard,
+          requestDialog: function (req) { return kanbanDialogs.request(req); },
         }),
         showNewBoard ? h(NewBoardDialog, {
           onCancel: function () { setShowNewBoard(false); },
           onCreate: function (payload) {
             return createNewBoard(payload).then(function () { setShowNewBoard(false); });
+          },
+        }) : null,
+        showBoardSettings ? h(BoardSettingsDialog, {
+          board: boardList.find(function (item) { return item.slug === board; })
+            || { slug: board },
+          onCancel: function () { setShowBoardSettings(false); },
+          onSave: function (payload) {
+            return updateBoard(board, payload).then(function () { setShowBoardSettings(false); });
           },
         }) : null,
         h(OrchestrationPanel, null),
@@ -1070,6 +1308,10 @@
          onDelete: deleteSelected,
        }) : null,
         error ? h("div", { className: "text-xs text-destructive px-2" }, error) : null,
+        h(KanbanDialogs, {
+          dialogProps: kanbanDialogs.dialogProps,
+          dialogState: kanbanDialogs.dialogState,
+        }),
         h(BoardColumns, {
           board: filteredBoard,
           boardMeta: boardList.find(function (item) { return item.slug === board; }) || null,
@@ -1085,6 +1327,7 @@
           onMove: moveTask,
           onMoveSelected: moveSelected,
           onDelete: deleteTask,
+          onDeleteSelected: deleteSelected,
           onOpen: setSelectedTaskId,
           onCreate: createTask,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
@@ -1099,6 +1342,11 @@
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
           assignees: (boardData && boardData.assignees) || [],
           eventTick: taskEventTick[selectedTaskId] || 0,
+          // Hook for the side-drawer's doPatch to use the same in-app
+          // dialog machinery as the column-card flow. TaskDetail also
+          // owns its own kanbanDialogs so the dialog portal mounts in
+          // its tree; we expose requestDialog as the imperative API.
+          requestDialog: function (req) { return kanbanDialogs.request(req); },
         }) : null,
       ),
     );
@@ -1292,7 +1540,18 @@
       if (busy) return;
       if (action.kind === "cli_hint") {
         const cmd = (action.payload && action.payload.command) || action.label;
-        const fallback = function () { window.prompt("Copy this command:", cmd); };
+        const fallback = function () {
+          // The clipboard API is unavailable in this context. The native
+          // window.prompt is acceptable here because:
+          //   (a) The success path doesn't open a dialog at all (just
+          //       sets `copiedKey` for 2 seconds), and
+          //   (b) the fallback only fires when the browser blocks
+          //       navigator.clipboard, which is rare.
+          // Documented carve-out — see issue #50547 followups for the
+          // dedicated copyFallback dialog body that will replace this
+          // once ConfirmDialog grows a `disabled` prop upstream.
+          window.prompt("Copy this command:", cmd);
+        };
         try {
           const p = navigator.clipboard && navigator.clipboard.writeText(cmd);
           if (p && p.then) {
@@ -1831,6 +2090,13 @@
           size: "sm",
           className: "h-7 text-xs",
         }, tx(t, "newBoard", "+ New board")),
+        h(Button, {
+          onClick: props.onSettingsClick,
+          size: "sm",
+          className: "h-7 text-xs",
+          title: tx(t, "boardSettingsTitle",
+            "Board settings — name, description, and the default project directory new tasks inherit"),
+        }, tx(t, "boardSettings", "Settings")),
         h(DocsLink, null),
       );
     }
@@ -1861,6 +2127,13 @@
         h("div", { className: "flex-1" }),
         h(DocsLink, null),
         h(Button, {
+          onClick: props.onSettingsClick,
+          size: "sm",
+          className: "h-8",
+          title: tx(t, "boardSettingsTitle",
+            "Board settings — name, description, and the default project directory new tasks inherit"),
+        }, tx(t, "boardSettings", "Settings")),
+        h(Button, {
           onClick: props.onNewClick,
           size: "sm",
           className: "h-8",
@@ -1872,7 +2145,20 @@
               const msg = tx(t, "archiveBoardConfirm",
                 "Archive board '{name}'? It will be moved to boards/_archived/ so you can recover it later. Tasks on this board will no longer appear anywhere in the UI.",
                 { name: currentName });
-              if (window.confirm(msg)) props.onDeleteBoard(props.board);
+              // Prefer the in-app dialog flow if the host wired one.
+              if (props.requestDialog) {
+                props.requestDialog({
+                  kind: "confirm",
+                  title: tx(t, "archiveBoardTitle", "Archive this board"),
+                  description: msg,
+                  confirmLabel: tx(t, "archive", "Archive"),
+                  destructive: true,
+                }).then(function (r) {
+                  if (r.confirmed) props.onDeleteBoard(props.board);
+                }).catch(function () { /* cancelled */ });
+              } else if (window.confirm(msg)) {
+                props.onDeleteBoard(props.board);
+              }
             },
             size: "sm",
             className: "h-8",
@@ -2023,6 +2309,102 @@
             size: "sm",
             disabled: submitting || !slug.trim(),
           }, submitting ? tx(t, "creating", "Creating…") : tx(t, "createBoard", "Create board")),
+        ),
+      ),
+    );
+  }
+
+  // Board settings dialog — edit display name, description, and the
+  // board-level default project directory (default_workdir). The workdir
+  // is the board-level setting every new task's workspace kind/path is
+  // seeded from; task-level values in the create dialog override it.
+  function BoardSettingsDialog(props) {
+    const { t } = useI18n();
+    const b = props.board || {};
+    const [name, setName] = useState(b.name || "");
+    const [description, setDescription] = useState(b.description || "");
+    const [projectDirectory, setProjectDirectory] = useState(b.default_workdir || "");
+    const [submitting, setSubmitting] = useState(false);
+    const [err, setErr] = useState(null);
+
+    function onSubmit(ev) {
+      if (ev) ev.preventDefault();
+      setSubmitting(true);
+      setErr(null);
+      // Send default_workdir unconditionally: "" clears it on the server,
+      // a path sets it (validated server-side: absolute + existing dir).
+      props.onSave({
+        name: name.trim() || undefined,
+        description: description.trim() || undefined,
+        default_workdir: projectDirectory.trim(),
+      }).catch(function (e) {
+        setErr(parseApiErrorMessage(e));
+        setSubmitting(false);
+      });
+    }
+
+    return h("div", {
+      className: "hermes-kanban-dialog-backdrop",
+      onClick: function (e) { if (e.target === e.currentTarget) props.onCancel(); },
+      onKeyDown: function (e) { if (e.key === "Escape") props.onCancel(); },
+    },
+      h("form", {
+        className: "hermes-kanban-dialog",
+        onSubmit: onSubmit,
+      },
+        h("div", { className: "hermes-kanban-dialog-title" },
+          tx(t, "boardSettingsTitleFor", "Board settings — {name}",
+            { name: b.name || b.slug || "default" })),
+        h("div", { className: "flex flex-col gap-3" },
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" }, tx(t, "displayName", "Display name")),
+            h(Input, {
+              value: name,
+              onChange: function (e) { setName(e.target.value); },
+              className: "h-8",
+            }),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" }, tx(t, "description", "Description")),
+            h(Input, {
+              value: description,
+              onChange: function (e) { setDescription(e.target.value); },
+              className: "h-8",
+            }),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" },
+              tx(t, "projectDirectory", "Project directory")),
+            h(Input, {
+              value: projectDirectory,
+              onChange: function (e) { setProjectDirectory(e.target.value); },
+              placeholder: tx(t, "projectDirectoryPlaceholder",
+                "Absolute path to the project folder"),
+              title: tx(t, "projectDirectoryHelp",
+                "Git projects use preserved worktrees. Other folders use the directory directly. Leave blank only for temporary work."),
+              className: "h-8",
+              autoCapitalize: "none",
+              autoCorrect: "off",
+              spellCheck: false,
+            }),
+            h("div", { className: "text-xs text-muted-foreground" },
+              tx(t, "projectDirectoryOverrideHint",
+                "New tasks inherit this as their workspace default; each task can still override it in the create dialog.")),
+          ),
+        ),
+        err ? h("div", { className: "text-xs text-destructive mt-2" }, err) : null,
+        h("div", { className: "hermes-kanban-dialog-actions" },
+          h(Button, {
+            type: "button",
+            onClick: props.onCancel,
+            size: "sm",
+            disabled: submitting,
+          }, tx(t, "cancel", "Cancel")),
+          h(Button, {
+            type: "submit",
+            size: "sm",
+            disabled: submitting,
+          }, submitting ? tx(t, "saving", "Saving…") : tx(t, "save", "Save")),
         ),
       ),
     );
@@ -2266,9 +2648,16 @@
       const taskId = e.dataTransfer.getData(MIME_TASK);
       if (!taskId) return;
       if (props.selectedIds && props.selectedIds.has(taskId) && props.selectedIds.size > 1) {
-        if (window.confirm(tx(t, "trash.confirmMany", "Permanently delete {n} selected tasks? This cannot be undone.", { n: props.selectedIds.size }))) {
-          const ids = Array.from(props.selectedIds);
-          Promise.all(ids.map(function (id) { return props.onDelete(id); })).catch(function () {});
+        // Delegate to the bulk-delete path on the parent so we use a
+        // single in-app confirmation modal. Falling back to the per-id
+        // onDelete path (which would prompt N times) is preserved for
+        // hosts that haven't wired onDeleteSelected.
+        if (props.onDeleteSelected) {
+          props.onDeleteSelected(props.selectedIds.size);
+        } else {
+          Promise.all(
+            Array.from(props.selectedIds).map(function (id) { return props.onDelete(id); })
+          ).catch(function () {});
         }
       } else {
         props.onDelete(taskId);
@@ -2428,6 +2817,7 @@
         draggingTaskId: props.draggingTaskId,
         selectedIds: props.selectedIds,
         onDelete: props.onDelete,
+        onDeleteSelected: props.onDeleteSelected,
       }),
     );
   }
@@ -2763,7 +3153,12 @@
   }
 
   // -------------------------------------------------------------------------
-  // Inline create (with parent selector)
+  // Create-task dialog (modal, with parent selector)
+  //
+  // Launched from a column's [+] button. Was an inline form squeezed into
+  // the ~280px column (8 fields, unlabeled, no room to breathe); now a
+  // centered modal reusing the hermes-kanban-dialog chrome so the form is
+  // resizable-window friendly and every field has a visible label.
   // -------------------------------------------------------------------------
 
   function InlineCreate(props) {
@@ -2832,122 +3227,165 @@
       : tx(t, "workspacePathOptional",
           "repository path (optional when the board has a workdir)");
 
-    return h("div", { className: "hermes-kanban-inline-create" },
-      h("textarea", {
-        value: title,
-        onChange: function (e) { setTitle(e.target.value); },
-        onKeyDown: function (e) {
-          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
-          if (e.key === "Escape") props.onCancel();
-        },
-        placeholder: props.columnName === "triage"
-          ? tx(t, "triagePlaceholder", "Rough idea — AI will spec it…")
-          : tx(t, "taskTitlePlaceholder", "New task title…"),
-        autoFocus: true,
-        className: "text-sm min-h-[2rem] max-h-32 resize-y w-full border border-input bg-transparent px-2 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-ring",
-        rows: 2,
-      }),
-      h("div", { className: "flex gap-2" },
-        h(Input, {
-          value: assignee,
-          onChange: function (e) { setAssignee(e.target.value); },
-          placeholder: props.columnName === "triage"
-            ? tx(t, "specifier", "specifier")
-            : tx(t, "assigneePlaceholder", "assignee"),
-          className: "h-7 text-xs flex-1",
-          title: props.columnName === "triage"
-            ? "Hermes profile that will spec this task (default: the dispatcher's configured specifier). Leave blank to let the dispatcher pick."
-            : "Hermes profile to assign. Leave blank and the dispatcher will pick from available profiles when the task is Ready.",
-          style: { textTransform: "none" },
-          autoCapitalize: "none",
-          autoCorrect: "off",
-          spellCheck: false,
-        }),
-        h(Input, {
-          type: "number",
-          value: priority,
-          onChange: function (e) { setPriority(e.target.value); },
-          placeholder: "pri",
-          className: "h-7 text-xs w-16",
-          title: "Priority. Higher-priority tasks are claimed first by the dispatcher. 0 = default.",
-        }),
-      ),
-      h(Input, {
-        value: skills,
-        onChange: function (e) { setSkills(e.target.value); },
-        placeholder: tx(t, "skillsPlaceholder",
-          "skills (optional, comma-separated): translation, github-code-review"),
-        title: "Force-load these skills into the worker (in addition to the built-in kanban-worker).",
-        className: "h-7 text-xs",
-      }),
-      h("div", { className: "flex gap-2 items-center" },
-        h("label", {
-          className: "flex items-center gap-1.5 text-xs cursor-pointer select-none",
-          title: "Goal mode: the worker keeps going in the same session until a judge agrees the card is done (or the turn budget runs out, which blocks it for review). Best for open-ended cards one shot rarely finishes.",
-        },
-          h("input", {
-            type: "checkbox",
-            checked: goalMode,
-            onChange: function (e) { setGoalMode(!!e.target.checked); },
-            className: "h-3.5 w-3.5 accent-current",
-          }),
-          tx(t, "goalMode", "goal mode"),
+    const fieldLabel = function (text, hint) {
+      return h(Label, { className: "text-xs" }, text,
+        hint ? h("span", { className: "text-muted-foreground" }, " ", hint) : null);
+    };
+
+    return h("div", {
+      className: "hermes-kanban-dialog-backdrop",
+      onClick: function (e) { if (e.target === e.currentTarget) props.onCancel(); },
+      onKeyDown: function (e) { if (e.key === "Escape") props.onCancel(); },
+    },
+      h("form", {
+        className: "hermes-kanban-dialog hermes-kanban-create-dialog",
+        onSubmit: function (e) { e.preventDefault(); submit(); },
+      },
+        h("div", { className: "hermes-kanban-dialog-title" },
+          tx(t, "newTaskTitle", "New task — {column}",
+            { column: getColumnLabel(t, props.columnName) || props.columnName })),
+        h("div", { className: "flex flex-col gap-3" },
+          h("div", { className: "flex flex-col gap-1" },
+            fieldLabel(tx(t, "taskTitleLabel", "Title")),
+            h("textarea", {
+              value: title,
+              onChange: function (e) { setTitle(e.target.value); },
+              onKeyDown: function (e) {
+                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
+              },
+              placeholder: props.columnName === "triage"
+                ? tx(t, "triagePlaceholder", "Rough idea — AI will spec it…")
+                : tx(t, "taskTitlePlaceholder", "New task title…"),
+              autoFocus: true,
+              className: "text-sm min-h-[3rem] max-h-48 resize-y w-full border border-input bg-transparent px-2 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-ring",
+              rows: 3,
+            }),
+          ),
+          h("div", { className: "flex gap-2" },
+            h("div", { className: "flex flex-col gap-1 flex-1" },
+              fieldLabel(props.columnName === "triage"
+                ? tx(t, "specifier", "specifier")
+                : tx(t, "assigneeLabel", "Assignee"),
+                tx(t, "assigneeLabelHint", "(blank = dispatcher picks)")),
+              h(Input, {
+                value: assignee,
+                onChange: function (e) { setAssignee(e.target.value); },
+                placeholder: props.columnName === "triage"
+                  ? tx(t, "specifier", "specifier")
+                  : tx(t, "assigneePlaceholder", "assignee"),
+                className: "h-8 text-sm",
+                title: props.columnName === "triage"
+                  ? "Hermes profile that will spec this task (default: the dispatcher's configured specifier). Leave blank to let the dispatcher pick."
+                  : "Hermes profile to assign. Leave blank and the dispatcher will pick from available profiles when the task is Ready.",
+                style: { textTransform: "none" },
+                autoCapitalize: "none",
+                autoCorrect: "off",
+                spellCheck: false,
+              }),
+            ),
+            h("div", { className: "flex flex-col gap-1 w-20" },
+              fieldLabel(tx(t, "priority", "Priority")),
+              h(Input, {
+                type: "number",
+                value: priority,
+                onChange: function (e) { setPriority(e.target.value); },
+                placeholder: "pri",
+                className: "h-8 text-sm",
+                title: "Priority. Higher-priority tasks are claimed first by the dispatcher. 0 = default.",
+              }),
+            ),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            fieldLabel(tx(t, "skillsLabel", "Skills"),
+              tx(t, "skillsLabelHint", "(optional, comma-separated)")),
+            h(Input, {
+              value: skills,
+              onChange: function (e) { setSkills(e.target.value); },
+              placeholder: tx(t, "skillsPlaceholder",
+                "skills (optional, comma-separated): translation, github-code-review"),
+              title: "Force-load these skills into the worker (in addition to the built-in kanban-worker).",
+              className: "h-8 text-sm",
+            }),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            fieldLabel(tx(t, "workspace", "Workspace")),
+            h("div", { className: "flex gap-2" },
+              h(Select, Object.assign({
+                value: workspaceKind,
+                title: "Choose whether task files are temporary or preserved after completion.",
+                className: "h-8 text-sm flex-1",
+              }, selectChangeHandler(setWorkspaceKind)),
+                h(SelectOption, { value: "scratch" },
+                  tx(t, "workspaceScratch", "Temporary — deleted on completion")),
+                h(SelectOption, { value: "worktree" },
+                  tx(t, "workspaceWorktree", "Git worktree — preserved")),
+                h(SelectOption, { value: "dir" },
+                  tx(t, "workspaceDir", "Directory — preserved")),
+              ),
+              showPathInput ? h(Input, {
+                value: workspacePath,
+                onChange: function (e) { setWorkspacePath(e.target.value); },
+                placeholder: pathPlaceholder,
+                className: "h-8 text-sm flex-1",
+              }) : null,
+            ),
+            workspaceKind === "scratch" ? h("div", {
+              className: "text-xs text-destructive",
+              role: "alert",
+            }, tx(t, "workspaceScratchWarning",
+              "This workspace and any files left in it are deleted when the task completes.")) : null,
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            fieldLabel(tx(t, "parentLabel", "Parent task"),
+              tx(t, "parentLabelHint", "(child stays blocked until the parent is done)")),
+            h(Select, Object.assign({
+              value: parent,
+              className: "h-8 text-sm",
+              title: "Optional parent task. A child stays blocked in its current column until the parent is marked done.",
+            }, selectChangeHandler(setParent)),
+              h(SelectOption, { value: "" }, tx(t, "noParent", "— no parent —")),
+              (props.allTasks || []).map(function (task) {
+                return h(SelectOption, { key: task.id, value: task.id },
+                  `${task.id} — ${(task.title || "").slice(0, 50)}`);
+              }),
+            ),
+          ),
+          h("div", { className: "flex gap-2 items-center" },
+            h("label", {
+              className: "flex items-center gap-1.5 text-xs cursor-pointer select-none",
+              title: "Goal mode: the worker keeps going in the same session until a judge agrees the card is done (or the turn budget runs out, which blocks it for review). Best for open-ended cards one shot rarely finishes.",
+            },
+              h("input", {
+                type: "checkbox",
+                checked: goalMode,
+                onChange: function (e) { setGoalMode(!!e.target.checked); },
+                className: "h-3.5 w-3.5 accent-current",
+              }),
+              tx(t, "goalMode", "goal mode"),
+            ),
+            goalMode ? h(Input, {
+              type: "number",
+              value: goalMaxTurns,
+              onChange: function (e) { setGoalMaxTurns(e.target.value); },
+              placeholder: tx(t, "goalMaxTurns", "max turns (default 20)"),
+              className: "h-8 text-sm w-44",
+              title: "Turn budget for the goal loop. Blank = backend default (20).",
+              min: 1,
+            }) : null,
+          ),
         ),
-        goalMode ? h(Input, {
-          type: "number",
-          value: goalMaxTurns,
-          onChange: function (e) { setGoalMaxTurns(e.target.value); },
-          placeholder: tx(t, "goalMaxTurns", "max turns (default 20)"),
-          className: "h-7 text-xs w-40",
-          title: "Turn budget for the goal loop. Blank = backend default (20).",
-          min: 1,
-        }) : null,
-      ),
-      h("div", { className: "flex gap-2" },
-        h(Select, Object.assign({
-          value: workspaceKind,
-          title: "Choose whether task files are temporary or preserved after completion.",
-          className: "h-7 text-xs flex-1",
-        }, selectChangeHandler(setWorkspaceKind)),
-          h(SelectOption, { value: "scratch" },
-            tx(t, "workspaceScratch", "Temporary — deleted on completion")),
-          h(SelectOption, { value: "worktree" },
-            tx(t, "workspaceWorktree", "Git worktree — preserved")),
-          h(SelectOption, { value: "dir" },
-            tx(t, "workspaceDir", "Directory — preserved")),
+        h("div", { className: "hermes-kanban-dialog-actions" },
+          h(Button, {
+            type: "button",
+            onClick: props.onCancel,
+            size: "sm",
+          }, tx(t, "cancel", "Cancel")),
+          h(Button, {
+            type: "submit",
+            size: "sm",
+            disabled: !title.trim(),
+          }, tx(t, "create", "Create")),
         ),
-        showPathInput ? h(Input, {
-          value: workspacePath,
-          onChange: function (e) { setWorkspacePath(e.target.value); },
-          placeholder: pathPlaceholder,
-          className: "h-7 text-xs flex-1",
-        }) : null,
-      ),
-      workspaceKind === "scratch" ? h("div", {
-        className: "text-xs text-destructive",
-        role: "alert",
-      }, tx(t, "workspaceScratchWarning",
-        "This workspace and any files left in it are deleted when the task completes.")) : null,
-      h(Select, Object.assign({
-        value: parent,
-        className: "h-7 text-xs",
-        title: "Optional parent task. A child stays blocked in its current column until the parent is marked done.",
-      }, selectChangeHandler(setParent)),
-        h(SelectOption, { value: "" }, tx(t, "noParent", "— no parent —")),
-        (props.allTasks || []).map(function (task) {
-          return h(SelectOption, { key: task.id, value: task.id },
-            `${task.id} — ${(task.title || "").slice(0, 50)}`);
-        }),
-      ),
-      h("div", { className: "flex gap-2" },
-        h(Button, {
-          onClick: submit,
-          size: "sm",
-        }, "Create"),
-        h(Button, {
-          onClick: props.onCancel,
-          size: "sm",
-        }, tx(t, "cancel", "Cancel")),
       ),
     );
   }
@@ -3062,20 +3500,69 @@
         .catch(function (e) { setUploadErr(String(e.message || e)); });
     };
 
+    // doPatch is invoked by the side-drawer's StatusActions (block / unblock
+    // / complete / archive), PriorityEditor, AssigneeEditor, etc. Two
+    // requirements differ from the column-card drag path:
+    //
+    // 1. Confirmation: this happens via the in-app dialog flow exposed
+    //    on `props` by the parent (KanbanPage passes a `requestDialog`
+    //    function down). Falls back to a native window.confirm if the
+    //    parent didn't wire one up.
+    //
+    // 2. Completion summary for status=done: until ConfirmDialog grows a
+    //    `disabled` prop upstream (see #50547 followups), we keep the
+    //    prompt + alert as a documented carve-out for this single call
+    //    site. The prompt body, validation copy, and requirement are
+    //    unchanged from the pre-migration implementation.
     const doPatch = function (patch, opts) {
+      if (opts && opts.confirm && props.requestDialog) {
+        return props.requestDialog({
+          kind: "confirm",
+          title: opts.confirmTitle || tx(t, "confirmTitle", "Confirm change"),
+          description: opts.confirm,
+          confirmLabel: opts.confirmLabel || tx(t, "common.confirm", "Confirm"),
+          destructive: !!opts.destructive,
+        }).then(function (r) {
+          if (!r.confirmed) return null;
+          return applyPatch(patch);
+        });
+      }
       if (opts && opts.confirm && !window.confirm(opts.confirm)) {
         return Promise.resolve();
       }
-      const finalPatch = withCompletionSummary(patch, 1);
-      if (!finalPatch) return Promise.resolve();
-      setPatchErr(null);
-      return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}`, boardSlug), {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(finalPatch),
-      }).then(function () { load(); props.onRefresh(); })
-        .catch(function (e) { setPatchErr(parseApiErrorMessage(e)); });
+      return applyPatch(patch);
+
+      function applyPatch(patch) {
+        const finalPatch = withCompletionSummary(patch);
+        if (!finalPatch) return Promise.resolve();
+        setPatchErr(null);
+        return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}`, boardSlug), {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(finalPatch),
+        }).then(function () { load(); props.onRefresh(); })
+          .catch(function (e) { setPatchErr(parseApiErrorMessage(e)); });
+      }
     };
+
+    // Local completion-summary prompt used only by doPatch above.
+    // Documented carve-out — see the doPatch comment.
+    function withCompletionSummary(patch) {
+      if (!patch || patch.status !== "done") return patch;
+      const value = window.prompt(
+        tx(t, "completionSummary",
+          "Completion summary for this task. This is stored as the task result."),
+        "",
+      );
+      if (value === null) return null;
+      const summary = value.trim();
+      if (!summary) {
+        window.alert(tx(t, "completionSummaryRequired",
+          "Completion summary is required before marking a task done."));
+        return null;
+      }
+      return Object.assign({}, patch, { result: summary, summary: summary });
+    }
 
     // Triage specifier — calls the auxiliary LLM to flesh out a rough
     // idea in the Triage column into a concrete spec (title + body with
@@ -3227,23 +3714,35 @@
             props.onClose();
             if (props.onOpenTask) props.onOpenTask(taskId);
           },
+                    requestDialog: props.requestDialog,
         }) : null,
-        data ? h("div", { className: "hermes-kanban-drawer-comment-row" },
-          h(Input, {
-            value: newComment,
-            onChange: function (e) { setNewComment(e.target.value); },
-            onKeyDown: function (e) {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault(); handleComment();
-              }
-            },
-            placeholder: tx(t, "addComment", "Add a comment… (Enter to submit)"),
-            className: "h-8 text-sm flex-1",
-          }),
-          h(Button, {
-            onClick: handleComment,
-            size: "sm",
-          }, tx(t, "comment", "Comment")),
+        data ? h("div", { className: "hermes-kanban-drawer-comment-foot" },
+          h("div", {
+            className: "hermes-kanban-comment-hint text-xs text-muted-foreground",
+            title: tx(t, "commentHintTitle",
+              "Comments are the channel for talking to a task's worker. They land on the thread immediately — no need to block the task first. A running worker picks the thread up on its next kanban_show() or respawn; blocking is only for when you want the worker to STOP and wait for your input."),
+          },
+            "ⓘ ",
+            tx(t, "commentHint",
+              "Comments reach the worker on its next run or kanban_show() — no need to block the task first."),
+          ),
+          h("div", { className: "hermes-kanban-drawer-comment-row" },
+            h(Input, {
+              value: newComment,
+              onChange: function (e) { setNewComment(e.target.value); },
+              onKeyDown: function (e) {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault(); handleComment();
+                }
+              },
+              placeholder: tx(t, "addComment", "Add a comment… (Enter to submit)"),
+              className: "h-8 text-sm flex-1",
+            }),
+            h(Button, {
+              onClick: handleComment,
+              size: "sm",
+            }, tx(t, "comment", "Comment")),
+          ),
         ) : null,
       ),
     );
@@ -3345,7 +3844,18 @@
                 className: "hermes-kanban-drawer-close",
                 title: tx(i18n, "removeAttachment", "Remove attachment"),
                 onClick: function () {
-                  if (window.confirm(tx(i18n, "confirmRemoveAttachment",
+                  if (props.requestDialog) {
+                    props.requestDialog({
+                      kind: "confirm",
+                      title: tx(i18n, "removeAttachment", "Remove attachment"),
+                      description: tx(i18n, "confirmRemoveAttachment",
+                        "Remove this attachment?"),
+                      confirmLabel: tx(i18n, "common.delete", "Delete"),
+                      destructive: true,
+                    }).then(function (r) {
+                      if (r.confirmed && props.onDelete) props.onDelete(a.id);
+                    }).catch(function () { /* cancelled */ });
+                  } else if (window.confirm(tx(i18n, "confirmRemoveAttachment",
                       "Remove this attachment?"))) {
                     if (props.onDelete) props.onDelete(a.id);
                   }
@@ -3386,6 +3896,7 @@
         h(MetaRow, { label: tx(i18n, "status", "Status"), value: t.status }),
         h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
         h(PriorityEditor, { task: t, onPatch: props.onPatch }),
+        h(ModelEditor, { task: t, onPatch: props.onPatch }),
         t.tenant ? h(MetaRow, { label: tx(i18n, "tenant", "Tenant"), value: t.tenant }) : null,
         h(MetaRow, {
           label: tx(i18n, "workspace", "Workspace"),
@@ -3498,6 +4009,7 @@
         uploadBusy: props.uploadBusy,
         uploadErr: props.uploadErr,
         i18n: i18n,
+        requestDialog: props.requestDialog,
       }),
       h("div", { className: "hermes-kanban-section" },
         h("div", { className: "hermes-kanban-section-head" },
@@ -3789,6 +4301,173 @@
         },
         className: "h-7 text-xs w-20",
       }),
+    );
+  }
+
+  // Module-level cache for the model-options catalog so opening several
+  // task drawers doesn't refetch. { providers: [{slug,label,models}] }
+  let _modelCatalogCache = null;
+  let _modelCatalogPromise = null;
+  function fetchModelCatalog() {
+    if (_modelCatalogCache) return Promise.resolve(_modelCatalogCache);
+    if (_modelCatalogPromise) return _modelCatalogPromise;
+    _modelCatalogPromise = SDK.fetchJSON(`${API}/model-options`)
+      .then(function (data) {
+        _modelCatalogCache = data && Array.isArray(data.providers) ? data : { providers: [] };
+        return _modelCatalogCache;
+      })
+      .catch(function () {
+        _modelCatalogPromise = null; // allow retry on next open
+        return { providers: [] };
+      });
+    return _modelCatalogPromise;
+  }
+
+  // Per-task model override dropdown. Value encoding: "" = profile
+  // default; "<slug>\u0000<model>" = provider+model pair (the separator
+  // can't appear in either half). A catalog fetch failure degrades to a
+  // free-text input so the override is still settable.
+  function ModelEditor(props) {
+    const { t } = useI18n();
+    const task = props.task;
+    const [editing, setEditing] = useState(false);
+    const [catalog, setCatalog] = useState(_modelCatalogCache);
+    const [busy, setBusy] = useState(false);
+    const [freeText, setFreeText] = useState("");
+
+    useEffect(function () {
+      if (!editing || catalog) return;
+      let alive = true;
+      fetchModelCatalog().then(function (data) {
+        if (alive) setCatalog(data);
+      });
+      return function () { alive = false; };
+    }, [editing, catalog]);
+
+    const current = task.model_override
+      ? (task.provider_override
+          ? `${task.provider_override}: ${task.model_override}`
+          : task.model_override)
+      : tx(t, "modelProfileDefault", "profile default");
+
+    if (!editing) {
+      return h("div", { className: "hermes-kanban-meta-row" },
+        h("span", { className: "hermes-kanban-meta-label" }, tx(t, "model", "Model")),
+        h("span", {
+          className: cn(
+            "hermes-kanban-meta-value hermes-kanban-editable",
+            !task.model_override ? "text-muted-foreground" : "",
+          ),
+          onClick: function () { setEditing(true); },
+          title: tx(t, "clickToEditModel",
+            "Click to override the model for this task's next run"),
+        }, current),
+      );
+    }
+
+    const apply = function (patch) {
+      setBusy(true);
+      props.onPatch(patch).then(function () {
+        setEditing(false);
+      }).catch(function () {
+        // onPatch surfaces its own toast; just re-enable the control.
+      }).then(function () { setBusy(false); });
+    };
+
+    const onPick = function (value) {
+      if (value === "") {
+        apply({ clear_model_override: true });
+        return;
+      }
+      const sep = value.indexOf("\u0000");
+      if (sep === -1) {
+        apply({ model_override: value });
+        return;
+      }
+      apply({
+        provider_override: value.slice(0, sep),
+        model_override: value.slice(sep + 1),
+      });
+    };
+
+    const providers = (catalog && catalog.providers) || [];
+    const loading = editing && !catalog;
+    const currentValue = task.model_override
+      ? (task.provider_override
+          ? `${task.provider_override}\u0000${task.model_override}`
+          : task.model_override)
+      : "";
+
+    // Free-text fallback when the catalog is empty (inventory unavailable
+    // or zero authenticated providers).
+    if (!loading && providers.length === 0) {
+      const saveFree = function () {
+        const v = freeText.trim();
+        if (!v) { apply({ clear_model_override: true }); return; }
+        apply({ model_override: v });
+      };
+      return h("div", { className: "hermes-kanban-meta-row" },
+        h("span", { className: "hermes-kanban-meta-label" }, tx(t, "model", "Model")),
+        h(Input, {
+          value: freeText, autoFocus: true, disabled: busy,
+          placeholder: tx(t, "modelFreeTextPlaceholder", "model name (empty = profile default)"),
+          onChange: function (e) { setFreeText(e.target.value); },
+          onKeyDown: function (e) {
+            if (e.key === "Enter") { e.preventDefault(); saveFree(); }
+            if (e.key === "Escape") setEditing(false);
+          },
+          className: "h-7 text-xs flex-1",
+          style: { textTransform: "none" },
+          autoCapitalize: "none", autoCorrect: "off", spellCheck: false,
+        }),
+      );
+    }
+
+    // Ensure the current override is selectable even when it's not in the
+    // catalog (e.g. set from the CLI with a model the catalog doesn't list).
+    let currentInCatalog = currentValue === "";
+    for (let i = 0; i < providers.length && !currentInCatalog; i++) {
+      const p = providers[i];
+      for (let j = 0; j < p.models.length; j++) {
+        const enc = `${p.slug}\u0000${p.models[j]}`;
+        if (enc === currentValue || p.models[j] === currentValue) {
+          currentInCatalog = true;
+          break;
+        }
+      }
+    }
+
+    return h("div", { className: "hermes-kanban-meta-row" },
+      h("span", { className: "hermes-kanban-meta-label" }, tx(t, "model", "Model")),
+      loading
+        ? h("span", { className: "hermes-kanban-meta-value text-muted-foreground" },
+            tx(t, "modelLoading", "loading models…"))
+        : h("select", {
+            className: "hermes-kanban-recovery-select",
+            value: currentValue,
+            disabled: busy,
+            autoFocus: true,
+            onChange: function (e) { onPick(e.target.value); },
+            onKeyDown: function (e) {
+              if (e.key === "Escape") setEditing(false);
+            },
+          },
+            h("option", { value: "" },
+              tx(t, "modelProfileDefaultOption", "(profile default)")),
+            !currentInCatalog
+              ? h("option", { value: currentValue }, current)
+              : null,
+            providers.map(function (p) {
+              return h("optgroup", { key: p.slug, label: p.label || p.slug },
+                p.models.map(function (m) {
+                  return h("option", {
+                    key: `${p.slug}\u0000${m}`,
+                    value: `${p.slug}\u0000${m}`,
+                  }, m);
+                }),
+              );
+            }),
+          ),
     );
   }
 

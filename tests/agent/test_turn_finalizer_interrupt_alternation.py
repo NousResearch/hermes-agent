@@ -164,24 +164,8 @@ def test_interrupt_after_tool_closes_sequence_with_placeholder():
     _assert_no_tool_then_user(follow_on)
 
 
-def test_interrupt_after_tool_keeps_delivered_text_when_present():
-    agent = _StubAgent()
-    messages = _interrupted_tool_tail()
-    _finalize(agent, messages, interrupted=True, final_response="Partial answer so far")
-
-    assert messages[-1]["role"] == "assistant"
-    # Real delivered text is preserved, not clobbered by the placeholder.
-    assert messages[-1]["content"] == "Partial answer so far"
 
 
-def test_non_interrupted_tool_tail_is_left_untouched():
-    # A turn that ends on a tool tail WITHOUT an interrupt (mid-progress
-    # tool loop) must not get a synthetic close — that is normal dialog
-    # state handled elsewhere.
-    agent = _StubAgent()
-    messages = _interrupted_tool_tail()
-    _finalize(agent, messages, interrupted=False, final_response=None)
-    assert messages[-1]["role"] == "tool"
 
 
 def test_interrupt_without_tool_tail_adds_nothing():

@@ -6,7 +6,7 @@ description: "How to build an image-generation backend plugin for Hermes Agent"
 
 # Building an Image Generation Provider Plugin
 
-Image-gen provider plugins register a backend that services every `image_generate` tool call — DALL·E, gpt-image, Grok, Flux, Imagen, Stable Diffusion, fal, Replicate, a local ComfyUI rig, anything. Built-in providers (OpenAI, OpenAI-Codex, xAI) all ship as plugins. You can add a new one, or override a bundled one, by dropping a directory into `plugins/image_gen/<name>/`.
+Image-gen provider plugins register a backend that services every `image_generate` tool call — DALL·E, gpt-image, Grok, Flux, Imagen, Stable Diffusion, fal, Replicate, a local ComfyUI rig, anything. Built-in providers (OpenAI, OpenAI-Codex, xAI, FAL, Krea, DeepInfra, OpenRouter, Meta Model API) all ship as plugins. You can add a new one, or override a bundled one, by dropping a directory into `plugins/image_gen/<name>/`.
 
 :::tip
 Image-gen is one of several **backend plugins** Hermes supports. The others (with more specialized ABCs) are [Memory Provider Plugins](/developer-guide/memory-provider-plugin), [Context Engine Plugins](/developer-guide/context-engine-plugin), and [Model Provider Plugins](/developer-guide/model-provider-plugin). General tool/hook/CLI plugins live in [Build a Hermes Plugin](/developer-guide/plugins).
@@ -297,7 +297,7 @@ Or interactively: `hermes tools` → "Image Generation" → select `my-backend` 
 
 - **`plugins/image_gen/openai/__init__.py`** — gpt-image-2 at low/medium/high tiers as three virtual model IDs sharing one API model with different `quality` params. Good example of tiered models under a single backend + config.yaml precedence chain.
 - **`plugins/image_gen/xai/__init__.py`** — Grok Imagine via xAI. Different shape (URL output, simpler catalog).
-- **`plugins/image_gen/openai-codex/__init__.py`** — Codex-style Responses API variant reusing the OpenAI SDK with a different routing base URL.
+- **`plugins/image_gen/openai-codex/__init__.py`** — same catalog as `openai`, but authenticated with the ChatGPT/Codex OAuth token and posted with plain `httpx` to the Codex backend's native `images/generations` / `images/edits` endpoints. Good example of a provider that fetches remote source images client-side and inlines them as data URLs, and that reports backend-returned metadata separately from the request.
 
 ## Distribute via pip
 

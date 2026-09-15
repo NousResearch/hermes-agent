@@ -60,7 +60,12 @@ describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
   })
 
   it('offers only once and deny for Smart DENY owner override', () => {
-    const opts = approvalOptions({ allowPermanent: true, command: 'rm -rf /', description: 'blocked', smartDenied: true })
+    const opts = approvalOptions({
+      allowPermanent: true,
+      command: 'rm -rf /',
+      description: 'blocked',
+      smartDenied: true
+    })
 
     expect(opts).toEqual(['once', 'deny'])
     expect(approvalAction('2', {}, 0, opts)).toEqual({ kind: 'choose', choice: 'deny' })

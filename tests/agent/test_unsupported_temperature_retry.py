@@ -30,7 +30,7 @@ import pytest
 from agent.auxiliary_client import (
     call_llm,
     async_call_llm,
-    _is_unsupported_temperature_error,
+    _is_unsupported_parameter_error,
 )
 
 
@@ -52,7 +52,7 @@ class TestIsUnsupportedTemperatureError:
         "unrecognized request argument supplied: temperature",
     ])
     def test_matches_real_provider_messages(self, message):
-        assert _is_unsupported_temperature_error(RuntimeError(message)) is True
+        assert _is_unsupported_parameter_error(RuntimeError(message), "temperature") is True
 
     @pytest.mark.parametrize("message", [
         # Unrelated 400s must NOT trigger a silent-retry
@@ -64,7 +64,7 @@ class TestIsUnsupportedTemperatureError:
         "temperature must be between 0 and 2",
     ])
     def test_does_not_match_unrelated_errors(self, message):
-        assert _is_unsupported_temperature_error(RuntimeError(message)) is False
+        assert _is_unsupported_parameter_error(RuntimeError(message), "temperature") is False
 
 
 def _dummy_response():
@@ -97,7 +97,7 @@ class TestCallLlmUnsupportedTemperatureRetry:
             patch("agent.auxiliary_client._get_cached_client",
                   return_value=(client, "gpt-5.5")),
             patch("agent.auxiliary_client._validate_llm_response",
-                  side_effect=lambda resp, _task: resp),
+                  side_effect=lambda resp, _task, **_kw: resp),
         ):
             result = call_llm(
                 task="compression",
@@ -135,7 +135,7 @@ class TestCallLlmUnsupportedTemperatureRetry:
             patch("agent.auxiliary_client._get_cached_client",
                   return_value=(client, "gpt-5.5")),
             patch("agent.auxiliary_client._validate_llm_response",
-                  side_effect=lambda resp, _task: resp),
+                  side_effect=lambda resp, _task, **_kw: resp),
             patch("agent.auxiliary_client._try_payment_fallback",
                   return_value=None),
         ):
@@ -165,7 +165,7 @@ class TestCallLlmUnsupportedTemperatureRetry:
             patch("agent.auxiliary_client._get_cached_client",
                   return_value=(client, "gpt-5.5")),
             patch("agent.auxiliary_client._validate_llm_response",
-                  side_effect=lambda resp, _task: resp),
+                  side_effect=lambda resp, _task, **_kw: resp),
             patch("agent.auxiliary_client._try_payment_fallback",
                   return_value=None),
         ):
@@ -197,7 +197,7 @@ class TestAsyncCallLlmUnsupportedTemperatureRetry:
             patch("agent.auxiliary_client._get_cached_client",
                   return_value=(client, "gpt-5.5")),
             patch("agent.auxiliary_client._validate_llm_response",
-                  side_effect=lambda resp, _task: resp),
+                  side_effect=lambda resp, _task, **_kw: resp),
         ):
             result = await async_call_llm(
                 task="session_search",
@@ -232,7 +232,7 @@ class TestAsyncCallLlmUnsupportedTemperatureRetry:
             patch("agent.auxiliary_client._get_cached_client",
                   return_value=(client, "gpt-5.5")),
             patch("agent.auxiliary_client._validate_llm_response",
-                  side_effect=lambda resp, _task: resp),
+                  side_effect=lambda resp, _task, **_kw: resp),
             patch("agent.auxiliary_client._try_payment_fallback",
                   return_value=None),
         ):

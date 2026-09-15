@@ -7,13 +7,15 @@ Covers the normalized-envelope pattern that replaces raw-SDK handler args:
   performs the authoritative post-auth check before invoking plugins
 * ``TelegramAdapter._normalize_platform_event`` maps an inbound PTB update to a
   stable ``{platform, event_type, payload}`` envelope (no raw SDK objects),
-  including custom-emoji reactions
+  including custom-emoji reactions, message edits, and inbound messages
 * ``_on_platform_update`` fires ``gateway_platform_event`` with that envelope,
   gated on the same authorization decision as inbound gateway traffic
   (unauthorized reactions never fire), and swallows errors so the observer
   can't break the adapter
 * ``_register_handlers`` is the single PTB handler registration site, so a
   rebuild re-registers the observer alongside the core handlers
+* Telegram inbound ``message`` is observer-only (no core slash handling, no
+  consume/skip-turn directives); reaction then edit then message precedence
 """
 
 from __future__ import annotations
@@ -278,6 +280,7 @@ class TestNormalizePlatformEvent:
         update = MagicMock()
         update.message_reaction = None  # e.g. a chat_member update
         update.edited_message = None
+        update.message = None
 
         assert a._normalize_platform_event(update) is None
 
@@ -411,6 +414,163 @@ class TestNormalizeMessageEdited:
 
 
 # ---------------------------------------------------------------------------
+# TelegramAdapter inbound message normalization (#108050)
+# ---------------------------------------------------------------------------
+
+def _message_update(
+    *,
+    chat_id: object = 123,
+    message_id: object = 456,
+    text: object = "+3",
+    caption: object = None,
+    user_id: object = 777,
+    chat_type: str = "private",
+):
+    """A PTB Update stand-in carrying a real inbound ``update.message``.
+
+    Pins ``message_reaction`` / ``edited_message`` to None so MagicMock
+    auto-attrs cannot steal precedence from the inbound-message contract.
+    """
+    update = MagicMock()
+    update.message_reaction = None
+    update.edited_message = None
+    m = MagicMock()
+    m.chat.id = chat_id
+    m.chat.type = chat_type
+    m.chat.is_forum = False
+    m.message_id = message_id
+    m.text = text
+    m.caption = caption
+    m.message_thread_id = None
+    m.is_topic_message = False
+    m.from_user.id = user_id
+    m.from_user.username = "sender"
+    m.from_user.full_name = "Sender"
+    m.reply_to_message = None
+    m.reply_to_message_id = None
+    update.message = m
+    return update
+
+
+class TestNormalizeInboundMessage:
+    def test_plain_inbound_text_normalized(self):
+        """A plain inbound text ``+3`` becomes event_type=message with string ids."""
+        a = _adapter()
+        update = _message_update(text="+3")
+
+        assert a._normalize_platform_event(update) == {
+            "platform": "telegram",
+            "event_type": "message",
+            "payload": {
+                "chat_id": "123",
+                "message_id": "456",
+                "thread_id": None,
+                "text": "+3",
+                "sender_id": "777",
+                "reply_to_message_id": None,
+            },
+        }
+
+    def test_reply_includes_reply_to_message_id(self):
+        a = _adapter()
+        reply_to = MagicMock()
+        reply_to.message_id = 99
+        update = _message_update(text="+3")
+        update.message.reply_to_message = reply_to
+
+        event = a._normalize_platform_event(update)
+        assert event["event_type"] == "message"
+        assert event["payload"]["reply_to_message_id"] == "99"
+
+    def test_command_text_included_as_observer(self):
+        """Slash-command text is observed as-is; core does not special-case it."""
+        a = _adapter()
+        update = _message_update(text="/szukaj topic")
+
+        event = a._normalize_platform_event(update)
+        assert event["event_type"] == "message"
+        assert event["payload"]["text"] == "/szukaj topic"
+
+    def test_caption_falls_back_when_no_text(self):
+        a = _adapter()
+        update = _message_update(text=None, caption="photo caption")
+
+        event = a._normalize_platform_event(update)
+        assert event["payload"]["text"] == "photo caption"
+
+    def test_malformed_identities_return_none(self):
+        a = _adapter()
+        update = _message_update(chat_id=object())
+        assert a._normalize_platform_event(update) is None
+        update = _message_update(message_id=None)
+        assert a._normalize_platform_event(update) is None
+
+    def test_text_is_bounded_and_json_safe(self):
+        a = _adapter()
+        update = _message_update(text="x" * 20000)
+
+        event = a._normalize_platform_event(update)
+        assert len(event["payload"]["text"]) == 8192
+        json.dumps(event)
+
+    def test_forum_topic_thread_id_included(self):
+        a = _adapter()
+        update = _message_update(chat_type="supergroup")
+        update.message.message_thread_id = 42
+        update.message.is_topic_message = True
+        update.message.chat.is_forum = True
+
+        event = a._normalize_platform_event(update)
+        assert event["payload"]["thread_id"] == "42"
+
+    def test_message_event_fires_through_boundary_with_sender_source(self):
+        a = _adapter()
+        seen: list = []
+
+        async def observe(event, source):
+            seen.append((event, source))
+
+        a.set_platform_event_handler(observe)
+        asyncio.run(a._on_platform_update(_message_update(), context=MagicMock()))
+
+        assert len(seen) == 1
+        event, source = seen[0]
+        assert event["event_type"] == "message"
+        assert source.user_id == "777"
+        assert source.chat_id == "123"
+
+    def test_message_event_missing_sender_fails_closed(self):
+        """No from_user (and no sender_chat) means no identity to authorize —
+        the boundary must drop the event rather than fire it."""
+        a = _adapter()
+        seen: list = []
+
+        async def observe(event, source):
+            seen.append((event, source))
+
+        a.set_platform_event_handler(observe)
+        update = _message_update()
+        update.message.from_user = None
+        update.message.sender_chat = None
+
+        asyncio.run(a._on_platform_update(update, context=MagicMock()))
+        assert seen == []
+
+    def test_reaction_takes_precedence_over_message(self):
+        """If both a reaction and an inbound message are present, never emit message."""
+        a = _adapter()
+        update = _message_update(text="+3")
+        update.message_reaction = MagicMock()
+        update.message_reaction.chat.id = 123
+        update.message_reaction.message_id = 456
+        update.message_reaction.new_reaction = [_reaction(emoji="\U0001F44D")]
+
+        event = a._normalize_platform_event(update)
+        assert event["event_type"] == "reaction"
+        assert event["payload"]["emojis"] == ["\U0001F44D"]
+
+
+# ---------------------------------------------------------------------------
 # TelegramAdapter._on_platform_update — fire-site
 # ---------------------------------------------------------------------------
 
@@ -457,6 +617,8 @@ class TestOnPlatformUpdate:
 
         update = MagicMock()
         update.message_reaction = None
+        update.edited_message = None
+        update.message = None
         asyncio.run(a._on_platform_update(update, context=MagicMock()))
 
         assert seen == []
@@ -508,6 +670,7 @@ class TestOnPlatformUpdateAuthBoundary:
         update = MagicMock()
         update.message_reaction = None  # a future, not-yet-wired event type
         update.edited_message = None
+        update.message = None
         # Simulate that future normalization produced an event for it.
         a._normalize_platform_event = lambda u: {  # type: ignore[assignment]
             "platform": "telegram", "event_type": "future", "payload": {},

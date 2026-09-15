@@ -298,8 +298,8 @@ def request_elicitation_consent(message: str, description: str, *,
             return "decline"
         if decision.get("notify_failed"):
             return "decline"
-        if not decision.get("resolved"):
-            return "cancel"
+        if not decision.get("resolved") or decision.get("cancelled"):
+            return "cancel"  # nobody answered (timeout / prompt withdrawn) — not a user refusal
         return _consent(decision.get("choice"), "decline")
 
     # allow_permanent=False: elicitation is a per-call confirmation — no pattern to remember.

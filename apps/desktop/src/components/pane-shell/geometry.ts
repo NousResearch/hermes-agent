@@ -189,8 +189,8 @@ const sashDragging = () => sashDragDepth > 0
  *   --workspace-right : px from the main zone's right to the viewport's right
  *
  * Measured once per relevant change (zone resize via ResizeObserver, layout
- * mutations via $layoutTree, window resize) and consumed in plain CSS — the
- * measured-var idiom (--composer-measured-height), not per-component JS
+ * mutations via $layoutTree, window resize, ancestor scrolling) and consumed
+ * in plain CSS — the measured-var idiom (--composer-measured-height), not per-component JS
  * geometry. Call once from the tree root; returns the disposer.
  */
 export function publishWorkspaceGeometry(): () => void {
@@ -245,17 +245,26 @@ export function publishWorkspaceGeometry(): () => void {
 
   // Tree mutations move zones without resizing them (⌘\ flip) — re-measure a
   // frame later, after the DOM committed. RO covers width changes (sash drags,
-  // side collapses); window resize covers the rest.
+  // side collapses); scrolling an ancestor moves the zone without a resize.
   const unsubTree = $layoutTree.listen(() => requestAnimationFrame(measure))
+
+  const onScroll = (event: Event) => {
+    if (event.target instanceof HTMLElement && el && event.target.contains(el)) {
+      measure()
+    }
+  }
+
   // Drag released → publish the final geometry the deferral above skipped.
   onSashDragEnd = () => requestAnimationFrame(measure)
   window.addEventListener('resize', measure)
+  window.addEventListener('scroll', onScroll, { capture: true, passive: true })
   measure()
 
   return () => {
     unsubTree()
     onSashDragEnd = null
     window.removeEventListener('resize', measure)
+    window.removeEventListener('scroll', onScroll, true)
     ro.disconnect()
     root.style.removeProperty('--workspace-left')
     root.style.removeProperty('--workspace-right')
@@ -291,16 +300,23 @@ export function useWindowControlsOverlap(ref: RefObject<HTMLElement | null>, ena
 
     update()
 
-    // Size changes fire the observer; cross-window moves fire `resize`. A pane
-    // shifted only by a sibling's resize re-measures on its own grid reflow
-    // (its track width changes), so this covers the shell's real cases.
+    // Scrolling a split moves its panes without resizing them. Ignore scrolls
+    // inside the pane: they do not change its intersection with native chrome.
+    const onScroll = (event: Event) => {
+      if (event.target instanceof HTMLElement && event.target.contains(el)) {
+        update()
+      }
+    }
+
     const ro = new ResizeObserver(update)
     ro.observe(el)
     window.addEventListener('resize', update)
+    window.addEventListener('scroll', onScroll, { capture: true, passive: true })
 
     return () => {
       ro.disconnect()
       window.removeEventListener('resize', update)
+      window.removeEventListener('scroll', onScroll, true)
     }
   }, [controls, enabled, ref])
 

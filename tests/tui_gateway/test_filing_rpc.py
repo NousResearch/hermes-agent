@@ -181,5 +181,14 @@ def test_suggest_ladder_rule_then_cwd_then_exclusion(
         assert by_session["s-ruled"]["project_name"] == "Ruled"
         assert by_session["s-cwd"]["reason"] == "cwd_match"
         assert "s-veto" not in by_session  # exclusion vetoes every suggestion
+
+        # A contract rule that agrees with the cwd-derived filing is already
+        # satisfied: filing that session is a no-op, not a suggestion.
+        data = lib.load_contract(filing_bridge.contract_path())
+        data, _ = lib.add_rule(str(cwd_dir), "Cwded", source="agree", data=data)
+        lib.save_contract(data, filing_bridge.contract_path())
+        result = _ok("filing.suggest")
+        by_session = {s["session_id"]: s for s in result["suggestions"]}
+        assert "s-cwd" not in by_session
     finally:
         db.close()

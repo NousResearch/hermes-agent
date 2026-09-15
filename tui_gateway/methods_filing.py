@@ -93,15 +93,17 @@ def _(rid, params: dict) -> dict:
             cwd = row["cwd"]
             if pfc.is_excluded(cwd, data=contract):
                 continue
+            current = pdb.project_for_path(conn, cwd)
             rule = pfc.rule_for_path(cwd, data=contract)
             if rule:
                 proj = _project_by_name(pdb, conn, rule["project"])
-                if proj is not None:
+                # A rule that agrees with the cwd-derived filing is not a
+                # suggestion — the session is already filed deterministically.
+                if proj is not None and (current is None or proj.id != current.id):
                     suggestions.append(_suggestion(row, proj, "contract_rule", 1.0))
-                    continue
-            proj = pdb.project_for_path(conn, cwd)
-            if proj is not None:
-                suggestions.append(_suggestion(row, proj, "cwd_match", 0.95))
+                continue
+            if current is not None:
+                suggestions.append(_suggestion(row, current, "cwd_match", 0.95))
     return _ok(rid, {"suggestions": suggestions})
 
 

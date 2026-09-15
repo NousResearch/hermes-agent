@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import inspect
 import logging
 import os
 import re
@@ -335,6 +336,41 @@ async def _registry_standalone_send(platform_name, pconfig, chat_id, message, th
     """One-shot text send through a plugin's ``standalone_sender_fn``."""
     sender, err = _plugin_standalone_sender(platform_name)
     return err or await sender(pconfig, chat_id, message, thread_id=thread_id)
+
+
+async def _send_whatsapp_with_mentions(pconfig, chat_id, message, chunks, media_files, *, thread_id,
+                                       max_len, force_document, mentions):
+    """Send WhatsApp text/media while attaching native mention JIDs to the first payload only."""
+    sender, err = _plugin_standalone_sender("whatsapp", label="WhatsApp")
+    if sender is None:
+        return err
+    try:
+        parameters = inspect.signature(sender).parameters.values()
+    except (TypeError, ValueError):
+        parameters = ()
+    if not any(
+        parameter.name == "mentions" or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    ):
+        return {"error": "Registered WhatsApp sender does not support native mentions; update the plugin."}
+    caption, _ = _media_caption_split(message, media_files, max_caption_len=(max_len or _DEFAULT_CAPTION_LIMIT))
+    if caption is not None:
+        return await sender(
+            pconfig, chat_id, "", thread_id=thread_id, media_files=media_files,
+            caption=caption, force_document=force_document, mentions=mentions)
+    result = None
+    for index, chunk in enumerate(chunks):
+        kwargs = {
+            "thread_id": thread_id,
+            "media_files": media_files if index == len(chunks) - 1 else None,
+            "force_document": force_document,
+        }
+        if index == 0:
+            kwargs["mentions"] = mentions
+        result = await sender(pconfig, chat_id, chunk, **kwargs)
+        if isinstance(result, dict) and result.get("error"):
+            break
+    return result
 
 
 async def _resolve_slack_user_target(token, chat_id):

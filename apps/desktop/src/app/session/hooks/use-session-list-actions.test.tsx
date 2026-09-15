@@ -12,6 +12,7 @@ import {
 } from '@/store/gateway-switch'
 import {
   $cronSessions,
+  $kanbanSessions,
   $messagingPlatformTotals,
   $messagingSessions,
   $messagingTruncated,
@@ -20,6 +21,7 @@ import {
   $sessions,
   $sessionsLoading,
   setCronSessions,
+  setKanbanSessions,
   setMessagingPlatformTotals,
   setMessagingSessions,
   setMessagingTruncated,
@@ -63,11 +65,13 @@ const row = (id: string, over: Partial<SessionInfo> = {}): SessionInfo =>
 const sidebar = (
   recents: { sessions: SessionInfo[]; profiles_truncated?: Record<string, boolean> },
   cron: SessionInfo[] = [],
-  messaging: SessionInfo[] = []
+  messaging: SessionInfo[] = [],
+  kanban: SessionInfo[] = []
 ): SidebarSessionsResponse => ({
   recents: { sessions: recents.sessions, profiles_truncated: recents.profiles_truncated },
   cron: { sessions: cron },
-  messaging: { sessions: messaging }
+  messaging: { sessions: messaging },
+  kanban: { sessions: kanban }
 })
 
 const listSidebarSessions = vi.fn()
@@ -114,6 +118,7 @@ beforeEach(() => {
   setSessions([])
   setCronSessions([])
   setMessagingSessions([])
+  setKanbanSessions([])
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
   setSessionProfilesTruncated({})
@@ -126,6 +131,7 @@ afterEach(() => {
   setSessions([])
   setCronSessions([])
   setMessagingSessions([])
+  setKanbanSessions([])
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
   setSessionProfilesTruncated({})
@@ -442,12 +448,13 @@ describe('refreshSessions identity + loading hygiene', () => {
 })
 
 describe('refreshSessions batches slices into one request', () => {
-  it('makes a single sidebar call and distributes recents / cron / messaging', async () => {
+  it('makes a single sidebar call and distributes recents / cron / messaging / kanban', async () => {
     const recents = [row('a'), row('b')]
     const cron = [row('c1', { source: 'cron', title: 'nightly' })]
     const messaging = [row('m1', { source: 'telegram', title: 'tg chat' })]
+    const kanban = [row('k1', { source: 'kanban', title: 'worker run' })]
 
-    listSidebarSessions.mockResolvedValue(sidebar({ sessions: recents }, cron, messaging))
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: recents }, cron, messaging, kanban))
 
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
 
@@ -455,7 +462,7 @@ describe('refreshSessions batches slices into one request', () => {
       await result.current.refreshSessions()
     })
 
-    // One batched call, not three separate listAllProfileSessions reads.
+    // One batched call, not four separate listAllProfileSessions reads.
     expect(listSidebarSessions).toHaveBeenCalledTimes(1)
     expect(listAllProfileSessions).not.toHaveBeenCalled()
 
@@ -463,6 +470,7 @@ describe('refreshSessions batches slices into one request', () => {
     expect($sessions.get().map(s => s.id)).toEqual(['a', 'b'])
     expect($cronSessions.get().map(s => s.id)).toEqual(['c1'])
     expect($messagingSessions.get().map(s => s.id)).toEqual(['m1'])
+    expect($kanbanSessions.get().map(s => s.id)).toEqual(['k1'])
   })
 
   it('forwards the active profile scope + section limits to the batched call', async () => {
@@ -476,10 +484,30 @@ describe('refreshSessions batches slices into one request', () => {
     expect(listSidebarSessions).toHaveBeenCalledWith(
       expect.objectContaining({
         recentsProfile: 'work',
-        recentsExclude: expect.arrayContaining(['cron']),
-        messagingExclude: expect.arrayContaining(['cron'])
+        recentsExclude: expect.arrayContaining(['cron', 'kanban']),
+        messagingExclude: expect.arrayContaining(['cron']),
+        kanbanLimit: 50
       })
     )
+  })
+
+  it('treats a response without the kanban key as an empty slice (older backend)', async () => {
+    listSidebarSessions.mockResolvedValue({
+      recents: { sessions: [row('a')] },
+      cron: { sessions: [] },
+      messaging: { sessions: [] }
+    } as SidebarSessionsResponse)
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    // No throw, and the kanban section's store ends up empty rather than
+    // keeping whatever a previous refresh left there.
+    expect($kanbanSessions.get()).toEqual([])
+    expect($sessions.get().map(s => s.id)).toEqual(['a'])
   })
 
   it('does not start a refresh callback captured before a profile switch', async () => {

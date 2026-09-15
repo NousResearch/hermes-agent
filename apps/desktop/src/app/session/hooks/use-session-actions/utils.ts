@@ -13,6 +13,7 @@ import { $projectTree } from '@/store/projects'
 import {
   $cronSessions,
   $currentCwd,
+  $kanbanSessions,
   $messagingSessions,
   $sessions,
   commitWorkspaceCwdForSelectedSession,
@@ -31,6 +32,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setKanbanSessions,
   setMessagingSessions,
   setSessionOwnerHint,
   setSessions,
@@ -1376,7 +1378,7 @@ export function sessionShouldHaveTranscript(session: SessionInfo | undefined): b
   return (session?.message_count ?? 0) > 0
 }
 
-export type ListedSessionSlice = 'cron' | 'messaging' | 'sessions'
+export type ListedSessionSlice = 'cron' | 'kanban' | 'messaging' | 'sessions'
 
 export function findListedSession(
   storedSessionId: string
@@ -1386,6 +1388,12 @@ export function findListedSession(
 
   if (fromMessaging) {
     return { session: fromMessaging, slice: 'messaging' }
+  }
+
+  const fromKanban = $kanbanSessions.get().find(match)
+
+  if (fromKanban) {
+    return { session: fromKanban, slice: 'kanban' }
   }
 
   const fromCron = $cronSessions.get().find(match)
@@ -1409,6 +1417,7 @@ export function dropListedSession(storedSessionId: string): void {
   setSessions(prev => prev.filter(keep))
   setMessagingSessions(prev => prev.filter(keep))
   setCronSessions(prev => prev.filter(keep))
+  setKanbanSessions(prev => prev.filter(keep))
   setUnlistedSessionOwnerRows(prev => prev.filter(keep))
 }
 
@@ -1419,7 +1428,9 @@ export function restoreListedSession(session: SessionInfo, slice?: ListedSession
       ? 'messaging'
       : normalizeSessionSource(session.source) === 'cron'
         ? 'cron'
-        : 'sessions')
+        : normalizeSessionSource(session.source) === 'kanban'
+          ? 'kanban'
+          : 'sessions')
 
   const prepend = (prev: SessionInfo[]) => [
     session,
@@ -1434,6 +1445,12 @@ export function restoreListedSession(session: SessionInfo, slice?: ListedSession
 
   if (target === 'cron') {
     setCronSessions(prepend)
+
+    return
+  }
+
+  if (target === 'kanban') {
+    setKanbanSessions(prepend)
 
     return
   }
@@ -1478,6 +1495,7 @@ export function cachedSessionRow(storedSessionId: string): SessionInfo | undefin
     ...$sessions.get(),
     ...$cronSessions.get(),
     ...$messagingSessions.get(),
+    ...$kanbanSessions.get(),
     ...projectTreeSessions()
   ].filter(session => sessionMatchesStoredId(session, storedSessionId))
 

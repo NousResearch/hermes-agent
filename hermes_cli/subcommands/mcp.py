@@ -75,5 +75,15 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         "install", help="Install a catalog MCP by name (e.g. `hermes mcp install n8n`)")
     mcp_install_p.add_argument("identifier", help="Catalog entry name (or `official/<name>`)")
 
+    mcp_log_p = mcp_sub.add_parser(
+        "log", aliases=["logs"], help="View wire-frame JSON-RPC diagnostics for an MCP server")
+    mcp_log_p.add_argument("name", help="MCP server name")
+    mcp_log_p.add_argument(
+        "-f", "--follow", action="store_true", help="Follow live wire-frame log output")
+    mcp_log_p.add_argument(
+        "-n", "--lines", type=int, default=50, help="Number of lines to show (default: 50)")
+    mcp_log_p.add_argument(
+        "--raw", action="store_true", help="Print raw JSON-RPC frame payloads")
+
     add_accept_hooks_flag(mcp_parser)
     mcp_parser.set_defaults(func=cmd_mcp)

@@ -1,0 +1,7 @@
+name: web-ollama
+version: 1.0.0
+description: "Ollama Web Search — search + page fetch via ollama.com's web_search/web_fetch REST APIs. Requires OLLAMA_API_KEY (free account at https://ollama.com/settings/keys); key is shared with Ollama Cloud inference, so select it explicitly via web.search_backend / web.extract_backend."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - ollama

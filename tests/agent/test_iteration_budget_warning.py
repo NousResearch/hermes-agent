@@ -4,7 +4,7 @@ from copy import deepcopy
 import pytest
 
 
-def _agent(tmp_path, monkeypatch, ratio):
+def _agent(tmp_path, monkeypatch, ratio, max_iterations=4):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(
         f"agent:\n  budget_warning_ratio: {ratio}\n", encoding="utf-8"
@@ -20,7 +20,7 @@ def _agent(tmp_path, monkeypatch, ratio):
     _clear_tool_defs_cache()
     return AIAgent(session_db=SessionDB(db_path=tmp_path / "proof.db"),
                    model="test-model", provider="openai-compat", api_key="test",
-                   base_url="http://127.0.0.1:1/v1", max_iterations=4,
+                   base_url="http://127.0.0.1:1/v1", max_iterations=max_iterations,
                    quiet_mode=True, skip_context_files=True, skip_memory=True)
 
 

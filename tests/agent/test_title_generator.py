@@ -374,6 +374,27 @@ class TestMaybeAutoTitle:
         assert db.get_session_title_source("sess-1") == "llm"
         mock_auto.assert_not_called()
 
+    def test_kanban_worker_with_an_overlong_card_title_is_still_named(self, tmp_path, monkeypatch):
+        """Cards have no length cap; the store rejects past MAX_TITLE_LENGTH, so the card title is trimmed, not dropped."""
+        from hermes_cli import kanban_db, kanban_db_connect
+
+        card = "Investigate why the swap modal intermittently fails to render its confirmation step on mobile Safari after a retry"
+        assert len(card) > SessionDB.MAX_TITLE_LENGTH
+        with kanban_db_connect.connect_closing(board="default") as conn:
+            task_id = kanban_db.create_task(conn, title=card, board="default")
+            conn.commit()
+        monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+        db = SessionDB(tmp_path / "state.db")
+        for sid in ("sess-1", "sess-2"):  # a retried card must still get the ``#N`` suffix within the cap
+            db.create_session(session_id=sid, source="kanban")
+            with patch("agent.title_generator.auto_title_session"):
+                maybe_auto_title(db, sid, f"work kanban task {task_id}", [])
+
+        first, second = db.get_session_title("sess-1"), db.get_session_title("sess-2")
+        assert first and first.startswith(card[:40]) and first.endswith("…")
+        assert second == f"{first} #2"
+        assert len(second) <= SessionDB.MAX_TITLE_LENGTH
+
     def test_kanban_worker_with_unreadable_card_falls_back_to_the_task_id(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_KANBAN_TASK", "t_missing")
         db = SessionDB(tmp_path / "state.db")

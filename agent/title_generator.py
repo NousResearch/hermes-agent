@@ -473,9 +473,15 @@ def _kanban_task_title() -> Optional[str]:
         return None
     try:
         from hermes_cli import kanban_db, kanban_db_connect
+        from hermes_state import SessionDB
         with kanban_db_connect.connect_closing() as conn:
             task = kanban_db.get_task(conn, task_id)
-        title = (task.title or "").strip() if task is not None else ""
+        title = " ".join((task.title or "").split()) if task is not None else ""
+        # Cards have no length cap; the title store rejects past MAX_TITLE_LENGTH (and the ``#N``
+        # retry suffix needs room), which would leave the worker nameless.
+        cap = SessionDB.MAX_TITLE_LENGTH - 4
+        if len(title) > cap:
+            title = title[: cap - 1].rstrip() + "…"
     except Exception:
         logger.debug("Kanban task %s unreadable; naming the session after its id", task_id, exc_info=True)
         title = ""

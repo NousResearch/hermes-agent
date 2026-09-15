@@ -14,13 +14,11 @@ import concurrent.futures
 import contextlib
 import copy
 import dataclasses
-import hashlib
 import inspect
 import json
 import logging
 import math
 import os
-import re
 import tempfile
 import time
 import uuid
@@ -29,6 +27,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
+from agent import conversation_sanitation as sanitation
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_engine import automatic_compaction_status_message, sanitize_memory_context
 from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
@@ -80,271 +79,6 @@ def _strip_marker_for_comparison(msgs: Any) -> Any:
     if not isinstance(msgs, list):
         return msgs
     return [{k: v for k, v in m.items() if k != _DB_PERSISTED_MARKER} if isinstance(m, dict) else m for m in msgs]
-
-
-def _sanitation_rough_tokens(messages: list) -> int:
-    """Like-for-like sanitation size, excluding host-only persistence stamps."""
-    return estimate_messages_tokens_rough(_strip_marker_for_comparison(messages))
-
-
-def _sanitation_snapshot_watermark(messages: Any) -> Optional[int]:
-    """Highest durable row represented by the transcript supplied to sanitation."""
-    row_ids = [
-        message.get("_row_id")
-        for message in messages
-        if isinstance(message, dict)
-        and isinstance(message.get("_row_id"), int)
-        and not isinstance(message.get("_row_id"), bool)
-        and message["_row_id"] > 0
-    ]
-    return max(row_ids) if row_ids else None
-
-
-_SANITATION_PLACEHOLDER_RE = re.compile(
-    r"\[LCM sensitive redaction: name=([A-Za-z_][A-Za-z0-9_.-]{0,63}); "
-    r"chars=([0-9]{1,9}); bytes=([0-9]{1,9})"
-    r"(?:; sha256=([0-9a-f]{16}))?\]"
-)
-_LCM_EXTERNALIZED_TOOL_OUTPUT_RE = re.compile(
-    r"\[Externalized tool output: "
-    r"tool_call_id=([A-Za-z0-9_.:/?-]{1,120}); "
-    r"chars=([0-9]{1,9}); bytes=([0-9]{1,9}); "
-    r"ref=[A-Za-z0-9_.-]{1,255}\.json\]"
-)
-_LCM_EXTERNALIZED_PAYLOAD_RE = re.compile(
-    r"\[Externalized payload: kind=raw_payload; "
-    r"role=(system|user|assistant|tool); "
-    r"chars=([0-9]{1,9}); bytes=([0-9]{1,9}); "
-    r"ref=[A-Za-z0-9_.-]{1,255}\.json\]"
-)
-
-
-@dataclasses.dataclass(frozen=True)
-class _SanitationChanges:
-    changed_fields: int = 0
-    placeholders: int = 0
-    declared_growth_chars: int = 0
-
-    def plus(self, other: "_SanitationChanges") -> "_SanitationChanges":
-        return _SanitationChanges(
-            self.changed_fields + other.changed_fields,
-            self.placeholders + other.placeholders,
-            self.declared_growth_chars + other.declared_growth_chars,
-        )
-
-
-def _validate_sanitized_string(
-    original: str,
-    candidate: str,
-    *,
-    externalized_role: str | None = None,
-    externalized_tool_call_id: str | None = None,
-    allow_json_normalization: bool = False,
-) -> Optional[_SanitationChanges]:
-    if candidate == original:
-        return _SanitationChanges()
-    externalized_tool = (
-        _LCM_EXTERNALIZED_TOOL_OUTPUT_RE.fullmatch(candidate)
-        if externalized_role == "tool"
-        else None
-    )
-    externalized_payload = (
-        _LCM_EXTERNALIZED_PAYLOAD_RE.fullmatch(candidate)
-        if externalized_role is not None
-        else None
-    )
-    externalized_counts = None
-    if externalized_tool is not None:
-        if externalized_tool.group(1) != externalized_tool_call_id:
-            return None
-        externalized_counts = externalized_tool.groups()[1:]
-    elif (
-        externalized_payload is not None
-        and externalized_payload.group(1) == externalized_role
-    ):
-        externalized_counts = externalized_payload.groups()[1:]
-    if externalized_counts is not None:
-        chars, byte_count = (int(value) for value in externalized_counts)
-        if chars != len(original) or byte_count != len(original.encode()):
-            return None
-        return _SanitationChanges(
-            changed_fields=1,
-            placeholders=1,
-            declared_growth_chars=len(candidate) - len(original),
-        )
-    placeholders = list(_SANITATION_PLACEHOLDER_RE.finditer(candidate))
-    if not placeholders:
-        return None
-    if allow_json_normalization:
-        try:
-            original_json = json.loads(original)
-            candidate_json = json.loads(candidate)
-        except (TypeError, ValueError):
-            pass
-        else:
-            json_changes = _validate_sanitized_value(
-                original_json,
-                candidate_json,
-            )
-            if json_changes is not None and json_changes.placeholders:
-                return dataclasses.replace(
-                    json_changes,
-                    declared_growth_chars=len(candidate) - len(original),
-                )
-    pattern_parts: list[str] = []
-    cursor = 0
-    for index, match in enumerate(placeholders):
-        chars = int(match.group(2))
-        if chars < 1 or chars > len(original):
-            return None
-        pattern_parts.append(re.escape(candidate[cursor:match.start()]))
-        pattern_parts.append(fr"(?P<s{index}>[\s\S]{{{chars}}})")
-        cursor = match.end()
-    pattern_parts.append(re.escape(candidate[cursor:]))
-    original_match = re.fullmatch("".join(pattern_parts), original)
-    if original_match is None:
-        return None
-    for index, placeholder in enumerate(placeholders):
-        secret = original_match.group(f"s{index}")
-        if len(secret.encode()) != int(placeholder.group(3)):
-            return None
-        digest = placeholder.group(4)
-        if digest and hashlib.sha256(secret.encode()).hexdigest()[:16] != digest:
-            return None
-    return _SanitationChanges(
-        changed_fields=1,
-        placeholders=len(placeholders),
-        declared_growth_chars=len(candidate) - len(original),
-    )
-
-
-def _validate_sanitized_value(
-    original: Any,
-    candidate: Any,
-    *,
-    externalized_role: str | None = None,
-    externalized_tool_call_id: str | None = None,
-    allow_json_normalization: bool = False,
-) -> Optional[_SanitationChanges]:
-    if (
-        not isinstance(original, str)
-        and isinstance(candidate, str)
-        and externalized_role is not None
-    ):
-        externalized_changes = _validate_sanitized_string(
-            str(original),
-            candidate,
-            externalized_role=externalized_role,
-            externalized_tool_call_id=externalized_tool_call_id,
-        )
-        if externalized_changes is not None:
-            return externalized_changes
-    if isinstance(original, str) and isinstance(candidate, str):
-        return _validate_sanitized_string(
-            original,
-            candidate,
-            externalized_role=externalized_role,
-            externalized_tool_call_id=externalized_tool_call_id,
-            allow_json_normalization=allow_json_normalization,
-        )
-    if isinstance(original, list) and isinstance(candidate, list):
-        if len(original) != len(candidate):
-            return None
-        changes = _SanitationChanges()
-        for original_item, candidate_item in zip(original, candidate):
-            item_changes = _validate_sanitized_value(
-                original_item,
-                candidate_item,
-                externalized_role=externalized_role,
-                externalized_tool_call_id=externalized_tool_call_id,
-                allow_json_normalization=allow_json_normalization,
-            )
-            if item_changes is None:
-                return None
-            changes = changes.plus(item_changes)
-        return changes
-    if isinstance(original, dict) and isinstance(candidate, dict):
-        if len(original) != len(candidate):
-            return None
-        changes = _SanitationChanges()
-        unmatched_original = [key for key in original if key not in candidate]
-        unmatched_candidate = [key for key in candidate if key not in original]
-        for key in original.keys() & candidate.keys():
-            value_changes = _validate_sanitized_value(
-                original[key],
-                candidate[key],
-                externalized_role=(
-                    str(original.get("role"))
-                    if (
-                        key == "content"
-                        and original.get("role") == candidate.get("role")
-                        and original.get("role")
-                        in {"system", "user", "assistant", "tool"}
-                    )
-                    else externalized_role
-                ),
-                externalized_tool_call_id=(
-                    str(original.get("tool_call_id"))
-                    if (
-                        key == "content"
-                        and original.get("role") == candidate.get("role") == "tool"
-                        and isinstance(original.get("tool_call_id"), str)
-                    )
-                    else externalized_tool_call_id
-                ),
-                allow_json_normalization=(
-                    key == "arguments"
-                    and "name" in original
-                    and "name" in candidate
-                ),
-            )
-            if value_changes is None:
-                return None
-            changes = changes.plus(value_changes)
-        if len(unmatched_original) != len(unmatched_candidate):
-            return None
-
-        available = list(unmatched_candidate)
-        for original_key in unmatched_original:
-            if not isinstance(original_key, str):
-                return None
-            matches: list[
-                tuple[int, _SanitationChanges, _SanitationChanges]
-            ] = []
-            for candidate_index, candidate_key in enumerate(available):
-                if not isinstance(candidate_key, str):
-                    continue
-                key_changes = _validate_sanitized_string(original_key, candidate_key)
-                if key_changes is None:
-                    continue
-                value_changes = _validate_sanitized_value(
-                    original[original_key],
-                    candidate[candidate_key],
-                    externalized_role=externalized_role,
-                    externalized_tool_call_id=externalized_tool_call_id,
-                    allow_json_normalization=allow_json_normalization,
-                )
-                if value_changes is None:
-                    continue
-                matches.append(
-                    (candidate_index, key_changes, value_changes)
-                )
-            if len(matches) != 1:
-                return None
-            candidate_index, key_changes, value_changes = matches[0]
-            changes = changes.plus(key_changes).plus(value_changes)
-            available.pop(candidate_index)
-        return changes
-    return _SanitationChanges() if original == candidate else None
-
-
-def _validate_sanitation_candidate(
-    messages: list, candidate: list
-) -> Optional[_SanitationChanges]:
-    return _validate_sanitized_value(
-        _strip_marker_for_comparison(messages),
-        _strip_marker_for_comparison(candidate),
-    )
 
 
 def _emit_compaction_done(agent: Any) -> None:
@@ -2933,96 +2667,6 @@ def _resolve_compress_call(
     return compress_fn, compress_kwargs
 
 
-@dataclasses.dataclass(frozen=True)
-class _PreparedCompressionOperation:
-    operation: str
-    claim: Any
-    session_id: str | None
-    attempt_generation: int
-
-
-def _supports_operation_claim(compress_fn: Callable[..., Any]) -> bool:
-    try:
-        parameters = inspect.signature(compress_fn).parameters
-    except (TypeError, ValueError):
-        return False
-    return (
-        "operation_claim" in parameters
-        or any(
-            parameter.kind is inspect.Parameter.VAR_KEYWORD
-            for parameter in parameters.values()
-        )
-    )
-
-
-def _prepare_automatic_compression_operation(
-    agent: Any,
-    messages: list,
-    *,
-    attempt_generation: int,
-    force: bool,
-    bypass_cooldown: bool,
-) -> Optional[_PreparedCompressionOperation]:
-    """Claim pure sanitation for exactly one supported engine invocation."""
-    if force or bypass_cooldown:
-        return None
-    compressor = agent.context_compressor
-    prepare = getattr(
-        compressor, "prepare_compression_operation", None
-    )
-    if not callable(prepare) or not _supports_operation_claim(compressor.compress):
-        return None
-    kwargs = {
-        "session_id": agent.session_id,
-        "attempt_generation": attempt_generation,
-    }
-    try:
-        parameters = inspect.signature(prepare).parameters
-        if not any(
-            parameter.kind is inspect.Parameter.VAR_KEYWORD
-            for parameter in parameters.values()
-        ):
-            kwargs = {name: value for name, value in kwargs.items() if name in parameters}
-        prepared = prepare(messages, **kwargs)
-    except Exception as exc:
-        logger.debug(
-            "prepare_compression_operation raised %s; treating the invocation "
-            "as generic compression",
-            type(exc).__name__,
-        )
-        return None
-    if (
-        not isinstance(prepared, tuple)
-        or len(prepared) != 2
-        or prepared[0] != "sanitize"
-        or prepared[1] is None
-    ):
-        return None
-    return _PreparedCompressionOperation(
-        operation="sanitize",
-        claim=prepared[1],
-        session_id=agent.session_id,
-        attempt_generation=attempt_generation,
-    )
-
-
-def _accept_prepared_sanitation_result(
-    agent: Any,
-    prepared: _PreparedCompressionOperation,
-    result: Any,
-) -> Optional[list]:
-    """Unwrap only a result carrying the exact one-shot invocation claim."""
-    if (
-        not isinstance(result, tuple)
-        or len(result) != 2
-        or not isinstance(result[0], list)
-        or result[1] is not prepared.claim
-        or agent.session_id != prepared.session_id
-    ):
-        return None
-    return result[0]
-
-
 def _warn_memory_context_unsupported(agent: Any, memory_context: str) -> None:
     if not memory_context.strip():
         return
@@ -3221,12 +2865,12 @@ def _salvage_or_refuse_grown_transcript(
     # (#83339), but in-place compaction commits inside this method via archive_and_compact — before the
     # gateway can inspect the result — so the guard must live here to protect both paths. On growth, treat
     # the attempt as a no-op: the original transcript stays untouched and durable.
-    estimate = _sanitation_rough_tokens if pure_sanitation else estimate_messages_tokens_rough
+    estimate = sanitation.sanitation_rough_tokens if pure_sanitation else estimate_messages_tokens_rough
     _rough_in = estimate(messages)
     _rough_out = estimate(compressed)
     _growth = _rough_out - _rough_in
     if pure_sanitation:
-        changes = _validate_sanitation_candidate(messages, compressed)
+        changes = sanitation.validate_sanitation_candidate(messages, compressed)
         if changes is not None and changes.placeholders:
             return compressed, None
         logger.warning(
@@ -3542,24 +3186,6 @@ def _finish_compaction_boundary(
     return _compressed_est
 
 
-def _finish_sanitation_commit(
-    agent: Any,
-    compressed: list,
-    *,
-    system_prompt: str,
-    compacted_in_place: bool,
-) -> int:
-    """Publish only the state required after an in-place sanitation rewrite."""
-    agent._last_compression_attempt_in_place = compacted_in_place
-    agent._last_compaction_in_place = compacted_in_place
-    set_usage_anchor(agent, None)
-    return estimate_request_tokens_rough(
-        compressed,
-        system_prompt=system_prompt or "",
-        tools=agent.tools or None,
-    )
-
-
 def _candidate_rejected(
     agent: Any, compressed: Any, messages: list, messages_before_compression: list, *,
     attempt_generation: Any, attempt_started_at: float,
@@ -3669,17 +3295,12 @@ def _commit_compaction(
         if pure_sanitation and messages_before_compression is not None
         else messages
     )
-    sanitation_in = (
-        _sanitation_rough_tokens(sanitation_original) if pure_sanitation else 0
-    )
-    sanitation_out = _sanitation_rough_tokens(compressed) if pure_sanitation else 0
-    sanitation_changes = (
-        _validate_sanitation_candidate(sanitation_original, compressed)
-        if pure_sanitation
-        else None
-    )
-    sanitation_watermark = (
-        _sanitation_snapshot_watermark(messages_before_compression)
+    sanitation_plan = (
+        sanitation.prepare_sanitation_commit(
+            sanitation_original,
+            compressed,
+            watermark_messages=messages_before_compression,
+        )
         if pure_sanitation
         else None
     )
@@ -3688,14 +3309,21 @@ def _commit_compaction(
         and agent._session_db
         and (
             not lease.watermark_capture_succeeded
-            or sanitation_watermark is None
+            or sanitation_plan is None
+            or sanitation_plan.watermark is None
         )
     ):
         logger.warning(
             "Sanitation commit refused: operation=sanitize reason=missing_watermark "
             "measurement=rough_message_tokens input_tokens=%d output_tokens=%d growth_delta=%d "
             "growth_bound=structural salvage=false terminal_result=refused_missing_watermark session=%s",
-            sanitation_in, sanitation_out, sanitation_out - sanitation_in,
+            sanitation_plan.input_tokens if sanitation_plan else 0,
+            sanitation_plan.output_tokens if sanitation_plan else 0,
+            (
+                sanitation_plan.output_tokens - sanitation_plan.input_tokens
+                if sanitation_plan
+                else 0
+            ),
             agent.session_id or "none",
         )
         with contextlib.suppress(Exception):
@@ -3758,7 +3386,7 @@ def _commit_compaction(
                     agent._session_db.sanitize_and_compact(
                         agent.session_id,
                         compressed,
-                        watermark=sanitation_watermark,
+                        watermark=sanitation_plan.watermark,
                         lock_holder=lease.holder,
                     )
                 else:
@@ -3866,17 +3494,10 @@ def _commit_compaction(
                     )
     if pure_sanitation:
         terminal = "committed" if session_commit_succeeded or not agent._session_db else "commit_failed"
-        logger.log(
-            logging.INFO if terminal == "committed" else logging.WARNING,
-            "Sanitation commit finished: operation=sanitize reason=external_engine_status "
-            "measurement=rough_message_tokens input_tokens=%d output_tokens=%d growth_delta=%d "
-            "growth_bound=structural changed_fields=%d declared_placeholders=%d "
-            "declared_growth_chars=%d salvage=false terminal_result=%s session=%s",
-            sanitation_in, sanitation_out, sanitation_out - sanitation_in,
-            sanitation_changes.changed_fields if sanitation_changes else 0,
-            sanitation_changes.placeholders if sanitation_changes else 0,
-            sanitation_changes.declared_growth_chars if sanitation_changes else 0,
-            terminal, agent.session_id or "none",
+        sanitation.log_sanitation_commit(
+            sanitation_plan,
+            terminal=terminal,
+            session_id=agent.session_id or "none",
         )
     return _CommitOutcome(
         compressed=compressed, commit_started_at=commit_started_at, old_session_id=old_session_id,
@@ -3929,7 +3550,7 @@ def _run_summary_phase(
                 # Adopted list is fully durable: re-anchor persist idx at the end so the post-
                 # compression flush skips it; run_agent marker sync realigns _session_messages.
                 agent._persist_user_message_idx = len(messages)
-        prepared_operation = _prepare_automatic_compression_operation(
+        prepared_operation = sanitation.prepare_automatic_compression_operation(
             agent,
             messages,
             attempt_generation=attempt.generation,
@@ -3960,7 +3581,7 @@ def _run_summary_phase(
             attempt_generation=attempt.generation, hard_cancel_event=hard_cancel_event,
         )
         if prepared_operation is not None:
-            claimed_result = _accept_prepared_sanitation_result(
+            claimed_result = sanitation.accept_prepared_sanitation_result(
                 agent, prepared_operation, compressed
             )
             if claimed_result is None:
@@ -4268,7 +3889,7 @@ def compress_context(
         compressed = commit.compressed
         split_status = commit.split_status
         if pure_sanitation:
-            _compressed_est = _finish_sanitation_commit(
+            _compressed_est = sanitation.finish_sanitation_commit(
                 agent,
                 compressed,
                 system_prompt=new_system_prompt,

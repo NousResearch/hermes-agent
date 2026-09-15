@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -11,6 +12,11 @@ from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
+
+from agent.conversation_sanitation import (
+    sanitation_rough_tokens,
+    validate_sanitation_candidate,
+)
 
 _SANITATION_GROWTH_BOUND = 1024
 _DEFAULT_OPERATION = object()
@@ -631,9 +637,9 @@ def test_automatic_sanitation_commits_exact_candidate_without_boundary_side_effe
     import agent.conversation_compression as compression
 
     harness = _make_harness(tmp_path, rounds=7)
-    growth = compression._sanitation_rough_tokens(
+    growth = sanitation_rough_tokens(
         harness.candidate
-    ) - compression._sanitation_rough_tokens(harness.messages)
+    ) - sanitation_rough_tokens(harness.messages)
     assert 0 < growth <= _SANITATION_GROWTH_BOUND
 
     calls = {"todo": 0, "user": 0, "salvage": 0}
@@ -806,9 +812,9 @@ def test_structural_growth_scales_with_declared_redactions(tmp_path, caplog):
     import agent.conversation_compression as compression
 
     harness = _make_harness(tmp_path, rounds=20)
-    aggregate_growth = compression._sanitation_rough_tokens(
+    aggregate_growth = sanitation_rough_tokens(
         harness.candidate
-    ) - compression._sanitation_rough_tokens(harness.messages)
+    ) - sanitation_rough_tokens(harness.messages)
     assert aggregate_growth > _SANITATION_GROWTH_BOUND
     caplog.set_level(logging.INFO, logger="agent.conversation_compression")
 
@@ -827,9 +833,167 @@ def test_structural_growth_scales_with_declared_redactions(tmp_path, caplog):
     assert "terminal_result=committed" in caplog.text
 
 
-def test_externalization_marker_must_match_original_identity_and_size():
-    from agent.conversation_compression import _validate_sanitation_candidate
+def test_sanitation_drops_api_sidecar_when_content_is_rewritten(tmp_path):
+    import agent.conversation_compression as compression
 
+    harness = _make_harness(tmp_path, rounds=1)
+    sidecar = "wire-only context containing the original credential"
+    harness.messages[0]["api_content"] = sidecar
+    harness.candidate[0]["api_content"] = sidecar
+    harness.agent._session_db.set_message_api_content(
+        harness.agent.session_id,
+        harness.messages[0]["_row_id"],
+        harness.messages[0]["content"],
+        sidecar,
+    )
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert "api_content" not in returned[0]
+    assert "api_content" not in harness.db.get_messages_as_conversation(
+        harness.agent.session_id
+    )[0]
+
+
+def test_sanitation_rejects_equality_compatible_cross_type_mutation():
+    original = [
+        {
+            "role": "assistant",
+            "content": "api_key=abcdefghijkl",
+            "tool_calls": [
+                {
+                    "id": "call-real",
+                    "type": "function",
+                    "function": {
+                        "name": "lookup",
+                        "arguments": '{"admin":1,"api_key":"abcdefghijkl"}',
+                    },
+                }
+            ],
+        }
+    ]
+    candidate = copy.deepcopy(original)
+    candidate[0]["content"] = (
+        "api_key=" + _placeholder("api_key", "abcdefghijkl")
+    )
+    candidate[0]["tool_calls"][0]["function"]["arguments"] = (
+        '{"admin":true,"api_key":"'
+        + _placeholder("api_key", "abcdefghijkl")
+        + '"}'
+    )
+
+    assert validate_sanitation_candidate(original, candidate) is None
+
+
+@pytest.mark.parametrize(
+    ("path", "replacement"),
+    [
+        (("role",), _placeholder("api_key", "assistant")),
+        (("tool_call_id",), _placeholder("api_key", "call-real")),
+        (
+            ("tool_calls", 0, "function", "name"),
+            _placeholder("api_key", "lookup"),
+        ),
+        (("content", 0, "type"), _placeholder("api_key", "text")),
+    ],
+)
+def test_sanitation_rejects_structural_field_redactions(path, replacement):
+    original = [
+        {
+            "role": "assistant",
+            "tool_call_id": "call-real",
+            "content": [{"type": "text", "text": "api_key=abcdefghijkl"}],
+            "tool_calls": [
+                {
+                    "id": "call-real",
+                    "type": "function",
+                    "function": {
+                        "name": "lookup",
+                        "arguments": '{"api_key":"abcdefghijkl"}',
+                    },
+                }
+            ],
+        }
+    ]
+    candidate = copy.deepcopy(original)
+    target: Any = candidate[0]
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = replacement
+    candidate[0]["content"][0]["text"] = (
+        "api_key=" + _placeholder("api_key", "abcdefghijkl")
+    )
+
+    assert validate_sanitation_candidate(original, candidate) is None
+
+
+def test_externalization_marker_byte_count_normalizes_lone_surrogates():
+    original = [
+        {
+            "role": "tool",
+            "tool_call_id": "call-real",
+            "content": "a\ud800b",
+        }
+    ]
+    normalized = "a\ufffdb"
+    digest = hashlib.sha256(normalized.encode()).hexdigest()[:12]
+    candidate = copy.deepcopy(original)
+    candidate[0]["content"] = (
+        "[Externalized tool output: tool_call_id=call-real; "
+        f"chars={len(normalized)}; bytes={len(normalized.encode())}; "
+        f"ref=20260915_call-real_{digest}_abc123.json]"
+    )
+
+    assert validate_sanitation_candidate(original, candidate) is not None
+
+
+def test_structured_payload_accepts_redaction_before_externalization():
+    original = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Bearer abcdefghijkl"},
+                {"type": "metadata", "value": {"api_key": "abcdefghijkl"}},
+            ],
+        }
+    ]
+    externalized_redacted_payload = json.dumps(
+        [
+            {
+                "type": "text",
+                "text": "Bearer " + _placeholder("bearer_token", "abcdefghijkl"),
+            },
+            {
+                "type": "metadata",
+                "value": {"api_key": _placeholder("api_key", "abcdefghijkl")},
+            },
+        ],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    digest = hashlib.sha256(externalized_redacted_payload.encode()).hexdigest()[:12]
+    candidate = copy.deepcopy(original)
+    candidate[0]["content"] = (
+        "[Externalized payload: kind=raw_payload; role=assistant; "
+        f"chars={len(externalized_redacted_payload)}; "
+        f"bytes={len(externalized_redacted_payload.encode())}; "
+        f"ref=20260915_raw_payload_assistant_{digest}_abc123.json]"
+    )
+
+    assert validate_sanitation_candidate(original, candidate) is not None
+
+    candidate[0]["content"] = candidate[0]["content"].replace(
+        "role=assistant", "role=user"
+    )
+    assert validate_sanitation_candidate(original, candidate) is None
+
+
+def test_externalization_marker_must_match_original_identity_and_size():
     original = [
         {
             "role": "tool",
@@ -840,11 +1004,14 @@ def test_externalization_marker_must_match_original_identity_and_size():
     valid = (
         "[Externalized tool output: tool_call_id=call-real; "
         f"chars={len(original[0]['content'])}; "
-        f"bytes={len(original[0]['content'].encode())}; ref=payload.json]"
+        f"bytes={len(original[0]['content'].encode())}; "
+        f"ref=20260915_call-real_"
+        f"{hashlib.sha256(original[0]['content'].encode()).hexdigest()[:12]}"
+        "_abc123.json]"
     )
     candidate = copy.deepcopy(original)
     candidate[0]["content"] = valid
-    assert _validate_sanitation_candidate(original, candidate) is not None
+    assert validate_sanitation_candidate(original, candidate) is not None
 
     for malformed in (
         valid.replace("call-real", "call-other"),
@@ -852,9 +1019,13 @@ def test_externalization_marker_must_match_original_identity_and_size():
         valid.replace(
             f"bytes={len(original[0]['content'].encode())}", "bytes=1"
         ),
+        valid.replace(
+            hashlib.sha256(original[0]["content"].encode()).hexdigest()[:12],
+            "000000000000",
+        ),
     ):
         candidate[0]["content"] = malformed
-        assert _validate_sanitation_candidate(original, candidate) is None
+        assert validate_sanitation_candidate(original, candidate) is None
 
 
 @pytest.mark.parametrize(

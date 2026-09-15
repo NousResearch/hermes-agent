@@ -342,7 +342,7 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
 
 @router.get("/api/skills")
 async def get_skills(profile: Optional[str] = None):
-    from tools.skills_tool import _find_all_skills
+    from tools.skills_tool import _find_all_skills, _sort_skills, skill_matches_platform
     from hermes_cli.skills_config import get_disabled_skills
     from tools.skill_usage import (
         _read_bundled_manifest_names, _read_hub_installed_names, activity_count, load_usage)
@@ -352,6 +352,18 @@ async def get_skills(profile: Optional[str] = None):
             config = load_config()
             disabled = get_disabled_skills(config)
             skills = _find_all_skills(skip_disabled=True)
+            try:
+                from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+                discover_plugins()
+                for plugin_skill in get_plugin_manager().list_plugin_skill_metadata():
+                    frontmatter = plugin_skill.pop("frontmatter", {})
+                    if not skill_matches_platform(frontmatter) or plugin_skill["name"] in disabled:
+                        continue
+                    plugin_skill["provenance"] = "plugin"
+                    skills.append(plugin_skill)
+            except Exception:
+                _log.debug("Plugin skill listing failed", exc_info=True)
             usage = load_usage()
             # Set-based provenance (same classification as skill_usage.provenance,
             # without a per-skill manifest read): hub > bundled > agent, where
@@ -362,11 +374,12 @@ async def get_skills(profile: Optional[str] = None):
         for s in skills:
             s["enabled"] = s["name"] not in disabled
             s["usage"] = activity_count(usage.get(s["name"], {}))
-            s["provenance"] = (
-                "hub" if s["name"] in hub_names
-                else "bundled" if s["name"] in bundled_names
-                else "agent")
-        return skills
+            if s.get("provenance") != "plugin":
+                s["provenance"] = (
+                    "hub" if s["name"] in hub_names
+                    else "bundled" if s["name"] in bundled_names
+                    else "agent")
+        return _sort_skills(skills)
 
     return await asyncio.to_thread(_run)
 
@@ -395,10 +408,17 @@ async def get_skill_content(name: str, profile: Optional[str] = None):
     from tools.skill_manager_tool import _find_skill
 
     def _read():
-        found = _find_skill(name)
-        if not found:
-            raise HTTPException(status_code=404, detail=f"Skill '{name}' not found.")
-        skill_md = found["path"] / "SKILL.md"
+        skill_md = None
+        if ":" in name:
+            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+            discover_plugins()
+            skill_md = get_plugin_manager().find_plugin_skill(name)
+        if skill_md is None:
+            found = _find_skill(name)
+            if not found:
+                raise HTTPException(status_code=404, detail=f"Skill '{name}' not found.")
+            skill_md = found["path"] / "SKILL.md"
         if not skill_md.exists():
             raise HTTPException(status_code=404, detail=f"Skill '{name}' has no SKILL.md.")
         try:

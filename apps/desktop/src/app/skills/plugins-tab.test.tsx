@@ -43,8 +43,24 @@ describe('PluginsTab', () => {
     expect(screen.getByRole('switch', { name: 'Agent: demo-plugin' }).getAttribute('aria-checked')).toBe('true')
   })
 
-  it('hides bundled plugins (managed from their own surfaces)', () => {
+  it('shows curated lifecycle bundles while hiding every other bundled plugin', () => {
     $agentPlugins.set([
+      {
+        description: '',
+        key: 'disk-cleanup',
+        name: 'disk-cleanup',
+        source: 'bundled',
+        status: 'enabled',
+        version: ''
+      },
+      {
+        description: '',
+        key: 'security-guidance',
+        name: 'security-guidance',
+        source: 'bundled',
+        status: 'enabled',
+        version: ''
+      },
       {
         description: '',
         key: 'image_gen/fal',
@@ -52,13 +68,33 @@ describe('PluginsTab', () => {
         source: 'bundled',
         status: 'enabled',
         version: ''
+      },
+      {
+        description: '',
+        key: 'future-bundle',
+        name: 'future-bundle',
+        source: 'bundled',
+        status: 'enabled',
+        version: ''
+      },
+      {
+        description: '',
+        key: 'model-providers/legacy',
+        name: 'legacy-provider',
+        source: 'user',
+        status: 'enabled',
+        version: ''
       }
     ])
 
     render(<PluginsTab profile={null} />)
 
+    expect(screen.getByText('disk-cleanup')).toBeTruthy()
+    expect(screen.getByText('security-guidance')).toBeTruthy()
     expect(screen.queryByText('fal')).toBeNull()
-    expect(screen.getByText(/No plugins yet/)).toBeTruthy()
+    expect(screen.queryByText('future-bundle')).toBeNull()
+    expect(screen.queryByText('legacy-provider')).toBeNull()
+    expect(screen.getByText('Changes take effect after the backend restarts.')).toBeTruthy()
   })
 
   it('renders a unified package as ONE row with a Desktop switch and an Agent switch', () => {
@@ -180,7 +216,7 @@ describe('PluginsTab', () => {
     $agentPlugins.set([
       {
         description: '',
-        key: 'image_gen/legacy',
+        key: 'legacy',
         name: 'Legacy plugin',
         source: 'user',
         status: 'disabled',
@@ -199,7 +235,7 @@ describe('PluginsTab', () => {
     await waitFor(() =>
       expect(requestGateway).toHaveBeenCalledWith(
         'plugins.manage',
-        expect.objectContaining({ action: 'toggle', key: 'image_gen/legacy', enable: true })
+        expect.objectContaining({ action: 'toggle', key: 'legacy', enable: true })
       )
     )
   })

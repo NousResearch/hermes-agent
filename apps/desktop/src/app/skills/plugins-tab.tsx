@@ -581,6 +581,9 @@ export const PluginsTab = memo(function PluginsTab({
                 scopeLabel={label}
               />
             ))}
+            <p className="px-3 py-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+              {p.restartHint}
+            </p>
           </div>
         )}
       </div>

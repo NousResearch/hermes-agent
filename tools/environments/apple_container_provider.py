@@ -153,13 +153,15 @@ class AppleContainerProvider(TerminalEnvironmentProvider):
             task_id=task_id,
             volumes=cc.get("apple_container_volumes", []),
             extra_args=cc.get("apple_container_extra_args", []),
+            host_cwd=kwargs.get("host_cwd"),
+            auto_mount_cwd=bool(cc.get("apple_container_mount_cwd_to_workspace", False)),
         )
 
 
 def read_apple_container_config() -> Dict[str, Any]:
     """Read the active profile through the same scope-aware bridge as terminal."""
     import json
-    from tools.terminal_tool_config import _parse_env_var, _tenv
+    from tools.terminal_tool_config import _parse_env_var, _tenv, _tenv_bool
     result = {"apple_container_image": _tenv("TERMINAL_APPLE_CONTAINER_IMAGE", DEFAULT_IMAGE)}
     for key in ("apple_container_volumes", "apple_container_extra_args"):
         value = _parse_env_var("TERMINAL_" + key.upper(), "[]", json.loads, "valid JSON")
@@ -168,6 +170,7 @@ def read_apple_container_config() -> Dict[str, Any]:
         if any(any(c in arg for c in "\x00\r\n") for arg in value):
             raise ValueError(f"{key} contains control characters")
         result[key] = value
+    result["apple_container_mount_cwd_to_workspace"] = _tenv_bool("TERMINAL_APPLE_CONTAINER_MOUNT_CWD_TO_WORKSPACE", "false")
     return result
 
 
@@ -179,6 +182,8 @@ def apple_container_has_host_access(config: Dict[str, Any]) -> bool:
     require approval or block unattended deny-mode execution. Managed workspace
     persistence and automatic read-only skill/cache mounts retain existing policy.
     """
+    if config.get("apple_container_mount_cwd_to_workspace") and config.get("host_cwd"):
+        return True
     if config.get("apple_container_volumes"):
         return True
     args = config.get("apple_container_extra_args") or []

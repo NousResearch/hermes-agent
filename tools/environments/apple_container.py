@@ -353,9 +353,29 @@ class AppleContainerEnvironment(BaseEnvironment):
         task_id: str = "default",
         volumes: list = None,
         extra_args: list = None,
+        host_cwd: Optional[str] = None,
+        auto_mount_cwd: bool = False,
     ):
         parsed_volumes = [_parse_user_mount(volume) for volume in (volumes or [])]
         self._extra_args = _validate_extra_args(extra_args or [])
+        self._host_workspace = None
+        explicit = next((mount for mount in parsed_volumes if mount[1] == "/workspace"), None)
+        if auto_mount_cwd and host_cwd:
+            source = Path(host_cwd).resolve()
+            if not source.is_dir():
+                raise ValueError("Apple workspace must be an existing directory")
+            from tools.terminal_workspace import kanban_workspace
+            if explicit and kanban_workspace() and Path(explicit[0]).resolve() != source:
+                raise ValueError("Explicit /workspace mount conflicts with assigned kanban workspace")
+            if not explicit:
+                if (source / ".git").is_file():
+                    raise ValueError("Linked Git worktrees need external metadata; use a standalone checkout for Apple workspace mounting")
+                parsed_volumes.append((str(source), "/workspace", False))
+                self._host_workspace = str(source)
+            elif Path(explicit[0]).resolve() == source:
+                self._host_workspace = str(source)
+            if self._host_workspace:
+                cwd = "/workspace"
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
@@ -406,6 +426,7 @@ class AppleContainerEnvironment(BaseEnvironment):
         if _supports_init_process(self._exe):
             run_cmd.append("--init")
 
+        workspace_mounted = any(target == "/workspace" for _, target, _ in volumes)
         # Persistent workspace via bind mount, or ephemeral tmpfs
         if self._persistent:
             sandbox = get_sandbox_dir() / "apple_container" / sanitize_task_id_for_path(self._task_id)
@@ -413,11 +434,13 @@ class AppleContainerEnvironment(BaseEnvironment):
             os.makedirs(self._workspace_dir, exist_ok=True)
             root_dir = str(sandbox / "root")
             os.makedirs(root_dir, exist_ok=True)
-            run_cmd.extend(_bind_mount_args(self._workspace_dir, "/workspace", readonly=False))
+            if not workspace_mounted:
+                run_cmd.extend(_bind_mount_args(self._workspace_dir, "/workspace", readonly=False))
             run_cmd.extend(_bind_mount_args(root_dir, "/root", readonly=False))
         else:
+            if not workspace_mounted:
+                run_cmd.extend(["--tmpfs", "/workspace"])
             run_cmd.extend([
-                "--tmpfs", "/workspace",
                 "--tmpfs", "/root",
                 "--tmpfs", "/home",
             ])
@@ -624,6 +647,8 @@ class AppleContainerEnvironment(BaseEnvironment):
         cmd = [self._exe, "exec"]
         if stdin_data is not None:
             cmd.append("--interactive")
+        if self._host_workspace:
+            cmd.extend(["--env", "HERMES_KANBAN_WORKSPACE=/workspace"])
         cmd.append(self._container_name)
 
         if login:

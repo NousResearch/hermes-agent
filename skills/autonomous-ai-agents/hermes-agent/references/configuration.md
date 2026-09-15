@@ -101,7 +101,10 @@ backend or network changes.
 
 Terminal, file tools and `execute_code` share the task's Linux filesystem.
 Persistent `/workspace` and `/root` are task storage; the host cwd is not mounted
-automatically. Desktop uploads attachments. Automatic skills/cache mounts and
+by default. Set `apple_container_mount_cwd_to_workspace: true` to opt in.
+Kanban uses the assigned task directory, not the profile cwd, and mounts it at
+`/workspace`. Host-access approvals still apply. Automatic mounting does not
+support linked worktrees with external Git metadata; use a standalone checkout. Desktop uploads attachments. Automatic skills/cache mounts and
 staged credential mounts are read-only. User mounts (including read-only mounts),
 mount-looking extra arguments and SSH forwarding enable normal approval guards;
 ambiguous arguments can block unattended execution. Explicit `approvals.deny`

@@ -373,6 +373,7 @@ terminal:
   #   real    - force your real OS-user HOME
   #   profile - force HERMES_HOME/home for strict per-profile CLI config isolation
   home_mode: "auto"
+  apple_container_mount_cwd_to_workspace: false  # Opt in: mount the active task cwd at /workspace in Apple Container.
   docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into Docker /workspace.
   lifetime_seconds: 300
   # sudo_password: "hunter2"  # Optional: pipe a sudo password via sudo -S. SECURITY WARNING: plaintext.

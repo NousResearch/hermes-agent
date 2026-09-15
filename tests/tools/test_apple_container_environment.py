@@ -437,3 +437,55 @@ def test_failed_version_probe_does_not_enable_init(recorder, monkeypatch, failur
         return subprocess.CompletedProcess(args[0], 1, 'container CLI version 1.4.1', '')
     monkeypatch.setattr(apple.subprocess, 'run', probe)
     assert apple._supports_init_process('/usr/bin/container') is False
+
+@pytest.mark.parametrize('persistent', [False, True])
+def test_opted_in_workspace_has_one_mount_and_no_shadow_tmpfs(recorder, tmp_path, persistent):
+    workspace = tmp_path / 'project'
+    workspace.mkdir()
+    env = apple.AppleContainerEnvironment(host_cwd=str(workspace), auto_mount_cwd=True,
+                                          persistent_filesystem=persistent)
+    try:
+        argv = _run_args(recorder)
+        _assert_mount(argv, workspace, '/workspace', readonly=False)
+        assert sum('target=/workspace' in arg for arg in argv) == 1
+        assert not any(argv[i:i+2] == ['--tmpfs', '/workspace'] for i in range(len(argv)))
+    finally:
+        env.cleanup()
+    assert workspace.is_dir()
+
+
+def test_workspace_mount_is_opt_in(recorder, tmp_path):
+    env = apple.AppleContainerEnvironment(host_cwd=str(tmp_path))
+    try:
+        assert not any('source='+str(tmp_path)+',target=/workspace' in arg for arg in _run_args(recorder))
+    finally:
+        env.cleanup()
+
+
+def test_explicit_workspace_mount_wins(recorder, tmp_path):
+    chosen = tmp_path / 'chosen'
+    chosen.mkdir()
+    env = apple.AppleContainerEnvironment(host_cwd=str(tmp_path), auto_mount_cwd=True,
+                                          volumes=[str(chosen)+':/workspace:ro'])
+    try:
+        argv = _run_args(recorder)
+        _assert_mount(argv, chosen, '/workspace', readonly=True)
+        assert sum('target=/workspace' in arg for arg in argv) == 1
+    finally:
+        env.cleanup()
+
+
+def test_kanban_conflicting_workspace_mount_is_rejected(recorder, monkeypatch, tmp_path):
+    chosen = tmp_path / 'other'
+    chosen.mkdir()
+    monkeypatch.setenv('HERMES_KANBAN_TASK', 'task')
+    monkeypatch.setenv('HERMES_KANBAN_WORKSPACE', str(tmp_path))
+    with pytest.raises(ValueError, match='conflicts'):
+        apple.AppleContainerEnvironment(host_cwd=str(tmp_path), auto_mount_cwd=True,
+                                        volumes=[str(chosen)+':/workspace'])
+
+
+def test_linked_worktree_is_not_silently_mounted_without_metadata(recorder, tmp_path):
+    (tmp_path / '.git').write_text('gitdir: /outside/.git/worktrees/task')
+    with pytest.raises(ValueError, match='worktrees'):
+        apple.AppleContainerEnvironment(host_cwd=str(tmp_path), auto_mount_cwd=True)

@@ -415,6 +415,9 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
        default-profile gateway sessions share ONE container; other backends key
        ``session:<key>`` so switching profiles can't reuse another profile's
        SSHEnvironment on the wrong host.
+    Kanban Apple workers with workspace mounting use a profile/task/workspace key
+    before session handling, so delegates share the assigned workspace.
+
     4. No session key (CLI): ``shared:<key>`` when opted in (else a CLI run of a
        keyed profile would split from its gateway sessions), else ``"default"``,
        which subagent ids collapse onto to share the parent's container.
@@ -422,6 +425,14 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     if task_id and _has_isolation_overrides(task_id):
         return task_id
     scope = _session_scope()
+    if scope.env_type == "apple_container" and _tenv_bool("TERMINAL_APPLE_CONTAINER_MOUNT_CWD_TO_WORKSPACE", "false"):
+        from tools.terminal_workspace import kanban_workspace
+        workspace = kanban_workspace()
+        if workspace:
+            import hashlib
+            from hermes_constants import hermes_home_key
+            identity = "\0".join((hermes_home_key(), os.environ["HERMES_KANBAN_TASK"], workspace))
+            return "kanban-" + hashlib.sha256(identity.encode()).hexdigest()[:24]
     if task_id and scope.session_isolated:
         return _resolve_container_alias(task_id)
     # Per-session isolation: when a session key is present (the WebUI streaming layer sets it per-session,
@@ -510,8 +521,13 @@ def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Op
     Overrides tagged ``cwd_source: "process"`` are refused for the same reason;
     ``cwd_source: "session"`` or untagged (ACP/RL) overrides mount.
     """
-    if config.get("env_type") != "docker" or not config.get("docker_mount_cwd_to_workspace"):
+    backend = config.get("env_type")
+    if backend not in {"docker", "apple_container"} or not config.get(f"{backend}_mount_cwd_to_workspace"):
         return None
+    from tools.terminal_workspace import kanban_workspace
+    workspace = kanban_workspace()
+    if workspace:
+        return workspace
     # Top-level CLI parent ("default") is a single-session process — legacy behavior.
     if not _docker_session_isolation_enabled() or _resolve_container_task_id(task_id) == "default":
         return config.get("host_cwd")
@@ -586,18 +602,19 @@ _DEFAULT_CWD_BY_BACKEND = {"ssh": "~", "vercel_sandbox": _VERCEL_SANDBOX_DEFAULT
 def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
     """``(cwd, host_cwd)`` from TERMINAL_CWD for *env_type*.
 
-    Container backends are sanity-checked: with Docker cwd passthrough the host
+    Container backends are sanity-checked: with Docker or Apple cwd passthrough the host
     path is remapped to /workspace and tracked as host_cwd; otherwise host paths
     are discarded in favor of the backend default.
     """
     default_cwd = _safe_getcwd() if env_type == "local" else _DEFAULT_CWD_BY_BACKEND.get(env_type, "/root")
-    cwd = _tenv("TERMINAL_CWD", default_cwd)
+    from tools.terminal_workspace import kanban_workspace
+    cwd = kanban_workspace() or _tenv("TERMINAL_CWD", default_cwd)
     from hermes_cli.config import _is_ssh_remote_tilde_cwd
     if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
         cwd = os.path.expanduser(cwd)
     host_cwd = None
-    if env_type == "docker" and mount_docker_cwd:
-        candidate = os.path.abspath(os.path.expanduser(_tenv("TERMINAL_CWD") or _safe_getcwd()))
+    if env_type in {"docker", "apple_container"} and mount_docker_cwd:
+        candidate = os.path.abspath(os.path.expanduser(kanban_workspace() or _tenv("TERMINAL_CWD") or _safe_getcwd()))
         if (
             _is_host_cwd(candidate)
             or (os.path.isabs(candidate) and os.path.isdir(candidate) and not candidate.startswith(("/workspace", "/root")))
@@ -643,7 +660,8 @@ def _get_env_config() -> Dict[str, Any]:
         from tools.environments.apple_container_provider import read_apple_container_config
         apple_config = read_apple_container_config()
 
-    cwd, host_cwd = _resolve_config_cwd(env_type, mount_docker_cwd)
+    mount_cwd = apple_config.get("apple_container_mount_cwd_to_workspace", False) if env_type == "apple_container" else mount_docker_cwd
+    cwd, host_cwd = _resolve_config_cwd(env_type, mount_cwd)
 
     return {
         **apple_config,

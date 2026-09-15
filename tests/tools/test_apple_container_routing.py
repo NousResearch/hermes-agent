@@ -55,6 +55,8 @@ def test_factory_passes_all_apple_container_settings(monkeypatch):
         task_id="task-1",
         volumes=["/host/data:/workspace/data:ro"],
         extra_args=[],
+        host_cwd=None,
+        auto_mount_cwd=False,
     )
 
 

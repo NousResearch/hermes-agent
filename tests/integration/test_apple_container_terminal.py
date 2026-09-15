@@ -213,3 +213,58 @@ def test_native_apple_container_cross_tool_lifecycle(monkeypatch, tmp_path):
     assert container_names
     for name in container_names:
         assert not _list_json_contains_identity(listing.stdout, name)
+
+@pytest.mark.parametrize('first_tool', ['terminal', 'file', 'code'])
+def test_native_kanban_workspace_mount(monkeypatch, tmp_path, first_tool):
+    import tools.terminal_tool as terminal
+    import tools.file_tools as files
+    import tools.credential_files as credentials
+    from tools.code_execution_tool import execute_code
+    from tools.terminal_tool_lifecycle import get_active_env
+    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
+    workspace = tmp_path / 'selected-project'
+    workspace.mkdir()
+    home = tmp_path / 'profile'
+    home.mkdir()
+    (home/'config.yaml').write_text(
+        'terminal:\n  backend: apple_container\n  cwd: /Users/unrelated\n'
+        '  apple_container_mount_cwd_to_workspace: true\n'
+        '  apple_container_image: python:3.11-slim-bookworm\n'
+        '  container_memory: 1024\n  container_cpu: 1\n'
+        'approvals:\n  cron_mode: approve\n')
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.setenv('HERMES_KANBAN_TASK', 'fixture')
+    monkeypatch.setenv('HERMES_KANBAN_WORKSPACE', str(workspace))
+    monkeypatch.setenv('HERMES_CRON_SESSION', '1')
+    monkeypatch.setattr(credentials, '_config_files', {})
+    token = install_profile_terminal_scope(home)
+    task_id = f'workspace-{first_tool}-{os.getpid()}'
+    effective_id = terminal._resolve_container_task_id(task_id)
+    try:
+        if first_tool == 'file':
+            result = json.loads(files.write_file_tool('first.txt', 'from-file', task_id=task_id))
+            assert not result.get('error'), result
+        elif first_tool == 'code':
+            result = json.loads(execute_code("open('/workspace/first.txt','w').write('from-code')", task_id=task_id))
+            assert result['status'] == 'success', result
+        else:
+            _terminal_result(terminal.terminal_tool('echo from-terminal > first.txt', task_id=task_id))
+        assert (workspace/'first.txt').is_file()
+        result = json.loads(files.read_file_tool(str(workspace/'first.txt'), task_id=task_id))
+        assert 'from-' in result.get('content', ''), result
+        shell = _terminal_result(terminal.terminal_tool('printf "%s" "$HERMES_KANBAN_WORKSPACE"', task_id=task_id))
+        assert shell['output'].strip() == '/workspace'
+        code = json.loads(execute_code("print(open('/workspace/first.txt').read())", task_id=task_id))
+        assert code['status'] == 'success' and 'from-' in code['output'], code
+    finally:
+        env = get_active_env(task_id)
+        if env:
+            env.cleanup()
+        terminal._active_environments.pop(task_id, None)
+        terminal._last_activity.pop(task_id, None)
+        terminal._active_environments.pop(effective_id, None)
+        terminal._last_activity.pop(effective_id, None)
+        files.clear_file_ops_cache(effective_id)
+        terminal.clear_task_env_overrides(task_id)
+        reset_terminal_scope(token)
+    assert (workspace/'first.txt').is_file()

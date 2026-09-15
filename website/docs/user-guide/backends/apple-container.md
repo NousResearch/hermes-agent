@@ -16,6 +16,7 @@ terminal:
   apple_container_image: python:3.11-slim-bookworm
   apple_container_volumes: []
   apple_container_extra_args: []
+  apple_container_mount_cwd_to_workspace: false
   container_cpu: 2
   container_memory: 2048
   container_persistent: true
@@ -30,15 +31,16 @@ a new session after changing this setting.
 
 Desktop uploads attachment contents for this backend instead of passing host-only
 file paths. Host project files require an explicit mount or upload; selecting a
-host project directory does not automatically expose it inside the VM.
+host project directory does not expose it inside the VM unless workspace
+mounting is enabled as described below.
 
 The image must include Bash and Python 3 for `execute_code`. File operations and
 terminal commands share the same task environment. The prompt probe receives the
 same image, resource settings, volumes, and extra arguments, then removes its
-one-shot container. No host working directory is automatically mounted.
+one-shot container. No host working directory is mounted by default.
 
-With persistence enabled, `/workspace` and `/root` use task storage under Hermes's
-sandbox directory. Without persistence, they use temporary filesystems. The root
+Without a configured workspace mount, persistence stores `/workspace` and
+`/root` under Hermes's sandbox directory. Without persistence, they use temporary filesystems. The root
 filesystem is read-only, with writable scratch mounts. Automatic skills and cache
 mounts are read-only; configured credential files are copied into temporary
 read-only directory mounts.
@@ -67,3 +69,27 @@ init process forwards shutdown signals and reaps child processes. Older or
 unrecognized CLI versions retain the previous startup flags. Normal cleanup
 stops and deletes the task container; this does not recover VMs left behind
 when the owning Hermes process is abruptly killed.
+
+## Mount the selected task workspace
+
+Set `terminal.apple_container_mount_cwd_to_workspace: true` to mount the active
+host working directory read/write at `/workspace`, mirroring Docker's explicit
+cwd-mount opt-in. For kanban workers, the dispatcher-selected workspace takes
+precedence over the profile cwd. The profile still selects backend, image and
+resources. Start a new session after changing mount policy.
+
+An explicit `apple_container_volumes` entry targeting `/workspace` takes
+precedence. A kanban task rejects an explicit mount pointing to a different
+source instead of silently working in the wrong directory. Missing task
+directories fail rather than falling back to the profile directory. Linked Git
+worktrees with an external `.git` file are not supported by automatic mounting;
+use a standalone checkout. Hermes does not expose the parent repository to
+make those metadata pointers work.
+
+Terminal, file tools and `execute_code` share the mounted directory. Container
+commands see `HERMES_KANBAN_WORKSPACE=/workspace`; the board retains the host path
+for artifact collection. Host files survive container cleanup. Different profiles and kanban
+task/workspace assignments receive different containers; delegates of a task
+share its container. The mount enables normal host-access approval guards,
+including unattended deny behavior. Selecting a directory does not disable
+approvals, and explicit `approvals.deny` rules still apply.

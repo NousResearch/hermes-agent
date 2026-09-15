@@ -316,6 +316,7 @@ DEFAULT_CONFIG = {
         "apple_container_image": "python:3.11-slim-bookworm",
         "apple_container_volumes": [],
         "apple_container_extra_args": [],
+        "apple_container_mount_cwd_to_workspace": False,
         "vercel_runtime": "node24",  # vercel_sandbox backend only: node24 | node22 | python3.13
         # Container limits (docker, singularity, modal, daytona, vercel_sandbox; not local/ssh).
         "container_cpu": 1,

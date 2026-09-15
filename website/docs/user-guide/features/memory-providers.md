@@ -439,7 +439,7 @@ Long-term memory with knowledge graph, entity resolution, and multi-strategy ret
 | **Data storage** | Hindsight Cloud or local embedded PostgreSQL |
 | **Cost** | Hindsight pricing (cloud) or free (local) |
 
-**Tools:** `hindsight_retain` (store with entity extraction), `hindsight_recall` (multi-strategy search), `hindsight_reflect` (cross-memory synthesis)
+**Tools:** `hindsight_retain` (store with entity extraction; optional per-call `tags`, `observation_scopes`, `entities`, `metadata`, `strategy`, `occurred_at`, `document_id` + `update_mode`), `hindsight_recall` (multi-strategy search), `hindsight_reflect` (cross-memory synthesis)
 
 **Setup:**
 ```bash
@@ -449,7 +449,7 @@ hermes config set memory.provider hindsight
 echo "HINDSIGHT_API_KEY=your-key" >> ~/.hermes/.env
 ```
 
-The setup wizard installs dependencies automatically and only installs what's needed for the selected mode (`hindsight-client` for cloud, `hindsight-all` for local). Requires `hindsight-client >= 0.4.22` (auto-upgraded on session start if outdated).
+The setup wizard installs dependencies automatically and only installs what's needed for the selected mode (`hindsight-client` for cloud, `hindsight-all` for local). Requires `hindsight-client >= 0.10.0` (auto-upgraded on session start if outdated). Async retains carry a deterministic `operation_id`, so a retried or replayed retain is not processed twice (Hindsight server 0.8.6+).
 
 **Local mode UI:** `hindsight-embed -p hermes ui start`
 
@@ -459,6 +459,9 @@ The setup wizard installs dependencies automatically and only installs what's ne
 |-----|---------|-------------|
 | `mode` | `cloud` | `cloud` or `local` |
 | `bank_id` | `hermes` | Memory bank identifier |
+| `bank_mission` | — | Reflect mission for the bank; applied to the bank on session start |
+| `bank_retain_mission` | — | Retain mission (steers what gets extracted); applied to the bank on session start |
+| `bank_observations_mission` | — | Observations mission (what gets synthesised into observations; replaces built-in rules); applied to the bank on session start |
 | `recall_budget` | `mid` | Recall thoroughness: `low` / `mid` / `high` |
 | `memory_mode` | `hybrid` | `hybrid` (context + tools), `context` (auto-inject only), `tools` (tools only) |
 | `auto_retain` | `true` | Automatically retain conversation turns |
@@ -466,6 +469,7 @@ The setup wizard installs dependencies automatically and only installs what's ne
 | `retain_async` | `true` | Process retain asynchronously on the server |
 | `retain_context` | `conversation between Hermes Agent and the User` | Context label for retained memories |
 | `retain_tags` | — | Default tags applied to retained memories; merged with per-call tool tags |
+| `observation_scopes` | — | Observation scoping during consolidation: `combined` (default), `per_tag`, `all_combinations`, or a JSON list of tag-lists |
 | `retain_source` | — | Optional `metadata.source` attached to retained memories |
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |

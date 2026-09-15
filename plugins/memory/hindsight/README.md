@@ -61,8 +61,9 @@ Config file: `~/.hermes/hindsight/config.json`
 |-----|---------|-------------|
 | `bank_id` | `hermes` | Memory bank name (static fallback used when `bank_id_template` is unset or resolves empty) |
 | `bank_id_template` | — | Optional template to derive the bank name dynamically. Placeholders: `{profile}`, `{workspace}`, `{platform}`, `{user}`, `{session}`. Example: `hermes-{profile}` isolates memory per active Hermes profile. Empty placeholders collapse cleanly (e.g. `hermes-{user}` with no user becomes `hermes`). |
-| `bank_mission` | — | Reflect mission (identity/framing for reflect reasoning). Applied via Banks API. |
-| `bank_retain_mission` | — | Retain mission (steers what gets extracted). Applied via Banks API. |
+| `bank_mission` | — | Reflect mission (identity/framing for reflect reasoning). Applied to the bank via the bank config API on the first operation of each session. |
+| `bank_retain_mission` | — | Retain mission (steers what gets extracted). Applied the same way. |
+| `bank_observations_mission` | — | Observations mission (what gets synthesised into observations; replaces built-in rules). Applied the same way. |
 
 ### Recall
 
@@ -97,6 +98,7 @@ Config file: `~/.hermes/hindsight/config.json`
 | `retain_every_n_turns` | `1` | Retain every N turns (1 = every turn) |
 | `retain_context` | `conversation between Hermes Agent and the User` | Context label for retained memories |
 | `retain_tags` | — | Default tags applied to retained memories; merged with per-call tool tags |
+| `observation_scopes` | — | How observations are scoped during consolidation: `combined` (server default), `per_tag`, `all_combinations`, or a JSON list of tag-lists. Env: `HINDSIGHT_RETAIN_OBSERVATION_SCOPES` |
 | `retain_source` | — | Opt-in `metadata.source` attached to retained memories (identifies the storing client, e.g. `hermes`). Empty by default — no attribution tag ships unless you set it. |
 | `retain_indicator` | `true` | Show a `👁️ Hindsight — saving to memory…` status line when a turn is saved. Turn off for customer-facing agents. |
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
@@ -136,7 +138,7 @@ Available in `hybrid` and `tools` memory modes:
 
 | Tool | Description |
 |------|-------------|
-| `hindsight_retain` | Store information with auto entity extraction; supports optional per-call `tags` |
+| `hindsight_retain` | Store information with auto entity extraction. Optional per-call `tags`, `observation_scopes` (overrides the configured default), `entities` (`[{text, type}]`), `metadata` (merged over the default), `strategy`, `occurred_at`, and `document_id` + `update_mode` (`replace`/`append`) to upsert into a document |
 | `hindsight_recall` | Multi-strategy search (semantic + entity graph) |
 | `hindsight_reflect` | Cross-memory synthesis (LLM-powered) |
 
@@ -154,4 +156,6 @@ Available in `hybrid` and `tools` memory modes:
 
 ## Client Version
 
-Requires `hindsight-client >= 0.6.1`. The plugin auto-upgrades on session start if an older version is detected.
+Requires `hindsight-client >= 0.10.0`. The plugin auto-upgrades on session start if an older version is detected.
+
+Async retains carry a deterministic `operation_id` (derived from bank, document, update mode and content), so a retried or replayed retain is collapsed server-side instead of extracted twice. Servers older than 0.8.6 ignore the field.

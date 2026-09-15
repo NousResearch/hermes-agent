@@ -38,7 +38,12 @@ test('loadOrCreateInstallationId persists and reuses one installation ID', () =>
       loadOrCreateInstallationId(filePath, () => ID_B),
       ID_A
     )
-    assert.equal(fs.statSync(filePath).mode & 0o777, 0o600)
+    // POSIX mode bits only: Windows has none, so `chmod` maps to the
+    // read-only bit and 0600 reads back as 0666. The persistence contract
+    // above is the platform-independent half and always runs.
+    if (process.platform !== 'win32') {
+      assert.equal(fs.statSync(filePath).mode & 0o777, 0o600)
+    }
   }))
 
 test('loadOrCreateInstallationId tightens an existing identity file', () =>

@@ -19,8 +19,9 @@ logger = logging.getLogger(__name__)
 
 # Family catalog. Capability flags gate which keys reach the payload — keys a family doesn't advertise are never sent (the
 # managed gateway forwards everything verbatim). Enums default to None (endpoint decides), flags to False. ``durations`` is always a
-# ``(min, max)`` range (clamp); a family whose endpoint only accepts discrete values adds ``duration_enum`` (snap to nearest; None →
-# first entry). Extras: audio_native (always on; description line only),
+# ``(min, max)`` range (clamp); a family whose endpoint only accepts discrete values adds ``duration_enum`` (snap to nearest; None
+# stays None so the endpoint default applies); ``duration_cap_by_resolution`` lowers the ceiling per resolution enum (applied after
+# the snap/clamp). Extras: audio_native (always on; description line only),
 # duration_int (JSON int, default queue-API string), duration_suffix ("4s"), image_param_key (i2v key when not `image_url`),
 # image_drop_keys (i2v endpoint rejects), audio_param_key (toggle key when not `generate_audio`), resolution_aliases (tool value → endpoint enum), static_payload (always required).
 def _family(display: str, speed: str, tier: str, strengths: str, text: Optional[str], image: str, **caps: Any) -> Dict[str, Any]:
@@ -42,7 +43,7 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
     "ltx-2.5": _family("LTX 2.5", "~30-90s", "cheap", "Lightricks open-source audio-video model. Native audio, up to 20s / 4K (i2v), camera-motion presets.",
                        "lightricks/ltx-2.5/text-to-video/fast", "lightricks/ltx-2.5/image-to-video/fast", duration_int=True, aspect_ratios=("16:9", "9:16"),
                        resolutions=("720p", "1080p", "1440p", "2160p"), resolution_aliases={"2k": "1440p", "4k": "2160p"},
-                       durations=(6, 20), duration_enum=tuple(range(6, 21, 2)), audio=True),
+                       durations=(6, 20), duration_enum=tuple(range(6, 21, 2)), duration_cap_by_resolution={"1440p": 10, "2160p": 10}, audio=True),
     "pixverse-v6": _family("Pixverse v6", "~30-90s", "cheap", "Affordable. Negative prompts. 1-15s durations.", "fal-ai/pixverse/v6/text-to-video",
                            "fal-ai/pixverse/v6/image-to-video", resolutions=("360p", "540p", "720p", "1080p"), durations=(1, 15), audio=True, negative=True, seed=True),
     "seedance-2.0-mini": _family("Seedance 2.0 Mini", "~30-90s", "cheap", "ByteDance. Faster/cheaper Seedance tier, audio + lip-sync, 4-15s.",
@@ -121,14 +122,20 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
 DEFAULT_MODEL = "pixverse-v6"  # cheap, both modalities, sane defaults
 
 
-def _clamp_duration(family: Dict[str, Any], duration: Optional[int]) -> Optional[int]:
-    """Snap to the nearest ``duration_enum`` entry (None → first) when the family declares one, else clamp into the
-    ``durations`` ``(min, max)`` range (None stays None: endpoint default)."""
+def _clamp_duration(family: Dict[str, Any], duration: Optional[int], resolution: Optional[str] = None) -> Optional[int]:
+    """Snap to the nearest ``duration_enum`` entry when the family declares one, else clamp into the ``durations``
+    ``(min, max)`` range; None stays None (endpoint default). A ``duration_cap_by_resolution`` ceiling for the resolved
+    *resolution* is applied last (fal rejects LTX 2.5 >10s at 1440p/2160p)."""
+    if duration is None:
+        return None
     enum = family.get("duration_enum")
     if enum:
-        return enum[0] if duration is None else min(enum, key=lambda d: abs(d - duration))
-    lo, hi = family["durations"]
-    return None if duration is None else max(lo, min(hi, duration))
+        clamped = min(enum, key=lambda d: abs(d - duration))
+    else:
+        lo, hi = family["durations"]
+        clamped = max(lo, min(hi, duration))
+    cap = (family.get("duration_cap_by_resolution") or {}).get(resolution)
+    return clamped if cap is None else min(clamped, cap)
 
 
 def _modalities(meta: Dict[str, Any]) -> List[str]:
@@ -174,7 +181,7 @@ def _build_payload(family: Dict[str, Any], *, prompt: str, image_url: Optional[s
                    resolution: str, negative_prompt: Optional[str], audio: Optional[bool], seed: Optional[int]) -> Dict[str, Any]:
     """Build a family-specific payload, dropping keys the family doesn't declare (unsupported enums → endpoint default)."""
     resolved = (family.get("resolution_aliases") or {}).get((resolution or "").lower(), resolution)
-    clamped = _clamp_duration(family, duration) if family["durations"] else None
+    clamped = _clamp_duration(family, duration, resolved) if family["durations"] else None
     payload: Dict[str, Any] = {key: value for ok, key, value in (
         (prompt, "prompt", prompt),
         (image_url, family.get("image_param_key") or "image_url", image_url),

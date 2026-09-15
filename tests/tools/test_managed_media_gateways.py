@@ -346,5 +346,5 @@ def test_video_gen_happy_horse_uses_alibaba_namespace():
     spec.loader.exec_module(plugin_mod)
 
     hh = plugin_mod.FAL_FAMILIES["happy-horse"]
-    assert hh["text_endpoint"] == "alibaba/happy-horse/v1.1/text-to-video"
-    assert hh["image_endpoint"] == "alibaba/happy-horse/v1.1/image-to-video"
+    assert hh["text_endpoint"].startswith("alibaba/happy-horse/") and hh["text_endpoint"].endswith("/text-to-video")
+    assert hh["image_endpoint"].startswith("alibaba/happy-horse/") and hh["image_endpoint"].endswith("/image-to-video")

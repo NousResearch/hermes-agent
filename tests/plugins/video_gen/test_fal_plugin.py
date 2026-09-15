@@ -667,6 +667,14 @@ class TestPayloadBuilder:
                            resolution="720p", negative_prompt=None, audio=None, seed=7)
         assert p == {"prompt": "animate", "image_url": "https://example.com/f.png", "aspect_ratio": "9:16", "resolution": "720p", "duration": 18}
 
+        # fal caps 1440p/2160p at 10s regardless of frame rate: 18 at 720p stays 18, at 4k it is capped to 10; and an
+        # unspecified duration is omitted so the endpoint's own default ("auto") applies instead of the enum minimum.
+        kw = dict(prompt="x", image_url=None, aspect_ratio="16:9", negative_prompt=None, audio=None, seed=None)
+        assert _build_payload(meta, duration=18, resolution="4k", **kw)["duration"] == 10
+        assert _build_payload(meta, duration=18, resolution="2k", **kw)["duration"] == 10
+        assert _build_payload(meta, duration=18, resolution="1080p", **kw)["duration"] == 18
+        assert "duration" not in _build_payload(meta, duration=None, resolution="4k", **kw)
+
     def test_kling_o3_payload(self):
         """Kling O3: string duration, i2v drops aspect_ratio, no seed."""
         from plugins.video_gen.fal import FAL_FAMILIES, _build_payload

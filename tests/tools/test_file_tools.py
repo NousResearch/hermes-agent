@@ -472,6 +472,34 @@ class TestSensitivePathCheck:
         assert "error" in result
         assert "Hermes config" in result["error"]
 
+    def test_profile_config_exact_path_shape_blocked(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        root_config = hermes_home / "config.yaml"
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", str(root_config))
+        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
+
+        from tools.file_tools_write_guards import _check_sensitive_path
+
+        profile_config = hermes_home / "profiles" / "orchestrator" / "config.yaml"
+        assert _check_sensitive_path(str(profile_config)) is not None
+        assert _check_sensitive_path(str(profile_config.parent / ".." / "orchestrator" / "config.yaml")) is not None
+
+        for path in (
+            hermes_home / "profiles" / "orchestrator" / "notes.yaml",
+            hermes_home / "profiles" / "orchestrator" / "nested" / "config.yaml",
+            hermes_home / "profiles" / "config.yaml",
+            hermes_home / "profiles" / "." / "config.yaml",
+            hermes_home / "profiles" / "orchestrator" / "config.yaml.bak",
+            tmp_path / "unrelated" / "profiles" / "orchestrator" / "config.yaml",
+        ):
+            assert _check_sensitive_path(str(path)) is None, path
+
+        monkeypatch.setattr(
+            "tools.file_tools_write_guards._resolve_path_for_task",
+            MagicMock(side_effect=ValueError("unresolved path")),
+        )
+        assert _check_sensitive_path(str(profile_config)) is None
+
 
     def test_system_path_still_blocked(self, monkeypatch):
         monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", "/some/other/path")

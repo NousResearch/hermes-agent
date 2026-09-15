@@ -181,6 +181,24 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
         "audio": _coerce_bool(args.get("audio")),
         "seed": _coerce_int(args.get("seed")),
         "upscale": _coerce_bool(args.get("upscale"))}
+    # Forward any OTHER parameter a backend declared through _CAPABILITY_PARAMS.
+    # The dynamic schema advertises every entry in that table whose capability flag
+    # the active provider sets, so without this the model can be shown a parameter
+    # that is silently dropped here and never reaches provider.generate(). The
+    # explicit entries above keep their bespoke coercion; this only covers additions.
+    for _flag, _key, _param in _CAPABILITY_PARAMS:
+        if _key in optional:
+            continue
+        _raw = args.get(_key)
+        _ptype = _param.get("type")
+        if _ptype == "boolean":
+            optional[_key] = _coerce_bool(_raw)
+        elif _ptype == "integer":
+            optional[_key] = _coerce_int(_raw)
+        elif isinstance(_raw, str):
+            optional[_key] = _raw.strip() or None
+        else:
+            optional[_key] = _raw
     model_override = (args.get("model") or "").strip() or None
 
     # Soft validation — providers do their own; our surface never accepts image-only.

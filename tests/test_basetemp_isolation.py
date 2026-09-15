@@ -49,3 +49,19 @@ def test_basetemp_outside_the_native_home_is_left_alone(tmp_path, monkeypatch):
 
     assert config._tmp_path_factory._given_basetemp == given
     assert config.option.basetemp == str(given)
+
+
+def test_fallback_root_escapes_a_repo_checked_out_inside_the_native_home(tmp_path, monkeypatch):
+    # Default install: repo at ~/.hermes/hermes-agent and TEMP under the home (Windows).
+    native = tmp_path / "native-home"
+    (native / "hermes-agent").mkdir(parents=True)
+    monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: native)
+    monkeypatch.setattr(suite_conftest, "PROJECT_ROOT", native / "hermes-agent")
+    monkeypatch.setattr(suite_conftest.tempfile, "gettempdir", lambda: str(native / "tmp"))
+    monkeypatch.delenv("PYTEST_DEBUG_TEMPROOT", raising=False)
+    config = _config_with_basetemp(None)
+
+    suite_conftest._relocate_basetemp_outside_operator_home(config)
+
+    relocated = config._tmp_path_factory._given_basetemp
+    assert relocated is not None and not relocated.resolve().is_relative_to(native.resolve())

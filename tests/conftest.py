@@ -1183,12 +1183,15 @@ def _relocate_basetemp_outside_operator_home(config) -> None:
     if not candidate.resolve().is_relative_to(native):
         return
     # The system temp dir may itself be inside the home (Windows TEMP under the
-    # Hermes home); the repo's ignored cache dir is always outside it.
-    fallback = PROJECT_ROOT / ".pytest_cache"
-    safe_root = None if not Path(tempfile.gettempdir()).resolve().is_relative_to(native) else fallback
-    if safe_root is not None:
-        safe_root.mkdir(exist_ok=True)
+    # Hermes home). The repo is no escape either: the default install checks it
+    # out *inside* the home (~/.hermes/hermes-agent). A sibling of the native
+    # home is outside it by construction.
+    safe_root = None if not Path(tempfile.gettempdir()).resolve().is_relative_to(native) else native.parent
     safe = Path(tempfile.mkdtemp(prefix="hermes-pytest-basetemp-", dir=safe_root))
+    assert not safe.resolve().is_relative_to(native), (
+        f"pytest basetemp {safe} still resolves inside the operator's Hermes home {native}; "
+        "refusing to run the suite against the live install (pass --basetemp outside it)"
+    )
     factory._given_basetemp = safe
     config.option.basetemp = str(safe)
 

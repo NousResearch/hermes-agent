@@ -79,3 +79,15 @@ def test_full_payload_shape_and_edge_integrity(tmp_path):
     assert graph["stats"]["nodes"] == len(skill_nodes)
     assert graph["stats"]["memory_nodes"] == len(graph["memory"])
     assert all("timestamp" in n for n in graph["nodes"])
+
+
+def test_learning_signal_predicate_includes_user_taught_skills():
+    """created_by='learn' (foreground /learn, zero uses) is graph-worthy; an unmarked
+    unused skill is not; 'installed' alone is not a learning signal."""
+    from agent.learning_graph import SkillNode, _has_learning_signal
+
+    assert _has_learning_signal(SkillNode(name="a", category="x", created_by="learn"))
+    assert _has_learning_signal(SkillNode(name="b", category="x", created_by="agent"))
+    assert _has_learning_signal(SkillNode(name="c", category="x", use_count=3))
+    assert not _has_learning_signal(SkillNode(name="d", category="x"))
+    assert not _has_learning_signal(SkillNode(name="e", category="x", created_by="installed"))

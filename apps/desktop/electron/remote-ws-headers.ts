@@ -96,7 +96,13 @@ export function applyRemoteRequestHeaders(
 }
 
 export function createRegistryGatewayWsUrlHandler(dependencies: RegistryGatewayWsUrlDependencies) {
-  return async (payload: unknown): Promise<string> => {
+  // `consumerTag` identifies the actual socket consumer behind the route --
+  // which window asked, and what it opens (chat vs speech). A route is not a
+  // socket: two windows, or one window's chat and speech flows, mint against
+  // the same (connectionId, profile) and hold independent pending upgrades.
+  // Without it, the second mint retires the first's unused authorization and
+  // that upgrade goes out without its proxy cookie.
+  return async (payload: unknown, consumerTag?: string): Promise<string> => {
     const { connectionId, profile } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
     // Pin the source id BEFORE selecting the backend, and select with the
     // pinned id. Resolving it afterwards read the registry's primary a second
@@ -113,7 +119,7 @@ export function createRegistryGatewayWsUrlHandler(dependencies: RegistryGatewayW
     // its stale ticket url live.
     const resolvedId = pinnedId || String(connection.connectionId ?? '').trim() || 'primary'
 
-    const consumer = `registry:${resolvedId}:${String(profile ?? '').trim() || 'default'}`
+    const consumer = `registry:${resolvedId}:${String(profile ?? '').trim() || 'default'}:${consumerTag || 'default'}`
     let wsUrl = connection.wsUrl
 
     if (connection.authMode === 'oauth') {

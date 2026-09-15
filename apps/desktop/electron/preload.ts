@@ -33,7 +33,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   touchBackend: profile => ipcRenderer.invoke('hermes:backend:touch', profile),
   getPoolLimits: () => ipcRenderer.invoke('hermes:pool-limits:get'),
   setPoolLimits: limits => ipcRenderer.invoke('hermes:pool-limits:set', limits),
-  getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
+  // `purpose` distinguishes independent sockets this window opens on one
+  // route (chat vs speech) so each keeps its own forwarded-cookie
+  // authorization; omitted by callers that open the window's main socket.
+  getGatewayWsUrl: (profile, purpose) => ipcRenderer.invoke('hermes:gateway:ws-url', profile, purpose),
   // Registry-scoped fresh WS URL: { connectionId, profile } → result shape of
   // getGatewayWsUrl, minted against that connection's backend.
   getGatewayWsUrlFor: payload => ipcRenderer.invoke('hermes:gateway:ws-url-for', payload),

@@ -293,8 +293,18 @@ describe('requestGatewayForAgent', () => {
     expect(fromB).toEqual({ method: 'session.list', params: { limit: 2 } })
     expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'source-a', profile: 'research' })
     expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'source-b', profile: 'research' })
-    expect(getGatewayWsUrlFor).toHaveBeenCalledWith({ connectionId: 'source-a', profile: 'research' })
-    expect(getGatewayWsUrlFor).toHaveBeenCalledWith({ connectionId: 'source-b', profile: 'research' })
+    // A secondary socket mints under its own purpose so its forwarded-cookie
+    // authorization is not retired by this window's other sockets.
+    expect(getGatewayWsUrlFor).toHaveBeenCalledWith({
+      connectionId: 'source-a',
+      profile: 'research',
+      purpose: 'secondary'
+    })
+    expect(getGatewayWsUrlFor).toHaveBeenCalledWith({
+      connectionId: 'source-b',
+      profile: 'research',
+      purpose: 'secondary'
+    })
     expect(getConnection).not.toHaveBeenCalled()
     expect(secondaryGateways).toHaveLength(2)
     expect(secondaryGateways[0].close).toHaveBeenCalledOnce()

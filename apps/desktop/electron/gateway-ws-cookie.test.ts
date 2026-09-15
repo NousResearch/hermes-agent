@@ -21,7 +21,10 @@ function createStore(
 ) {
   let clock = 1_000
   const onError = vi.fn()
-  const readCookies = vi.fn(async (baseUrl: string) => jars[baseUrl] ?? null)
+  // Keyed by the url the store asks for, falling back to the gateway's own
+  // entry, so a test can describe a path-scoped jar without re-implementing
+  // cookie matching.
+  const readCookies = vi.fn(async (cookieUrl: string, baseUrl: string) => jars[cookieUrl] ?? jars[baseUrl] ?? null)
 
   const store = createGatewayWsCookieStore({
     readCookies,
@@ -63,6 +66,59 @@ describe('gateway WebSocket cookie forwarding', () => {
     await store.register(WS_URL, GATEWAY)
 
     expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
+  })
+
+  // Chromium selects cookies for the url it is handed. A proxy cookie scoped to
+  // `Path=/api/` does not apply to the gateway root, so reading the base url
+  // returned a snapshot missing exactly the credential being forwarded.
+  it('selects cookies for the upgrade url, not the gateway base', async () => {
+    const { readCookies, store } = createStore({
+      [GATEWAY]: [{ name: 'hermes_session_at', value: 'at-value' }],
+      'https://gateway.example/api/ws': proxyJar
+    })
+
+    await store.register(WS_URL, GATEWAY)
+
+    expect(readCookies).toHaveBeenCalledWith('https://gateway.example/api/ws', GATEWAY)
+    expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
+  })
+
+  it('selects cookies for a reverse-proxy prefix path', async () => {
+    const prefix = 'https://prefix.example/hermes'
+    const prefixWs = 'wss://prefix.example/hermes/api/ws?ticket=fresh'
+    const { readCookies, store } = createStore({
+      'https://prefix.example/hermes/api/ws': [{ name: 'prefix_proxy', value: 'prefix-value' }]
+    })
+
+    await store.register(prefixWs, prefix)
+
+    expect(readCookies).toHaveBeenCalledWith('https://prefix.example/hermes/api/ws', prefix)
+    expect(cookieOn(store, prefixWs)).toBe('prefix_proxy=prefix-value')
+  })
+
+  it('asks for no path the upgrade does not target', async () => {
+    const { readCookies, store } = createStore({ 'https://gateway.example/api/ws': proxyJar })
+
+    await store.register(WS_URL, GATEWAY)
+
+    // An unrelated path's cookies are never requested, so they can never be
+    // forwarded: selection is the cookie store's job, on this exact url.
+    expect(readCookies).toHaveBeenCalledTimes(1)
+    expect(readCookies).not.toHaveBeenCalledWith(expect.stringContaining('/other/'), expect.anything())
+  })
+
+  it('maps ws:// to http:// and falls back to the base url when unparseable', async () => {
+    const insecure = createStore({ 'http://gateway.example/api/ws': [{ name: 'proxy_session', value: 'plain' }] })
+
+    await insecure.store.register('ws://gateway.example/api/ws?ticket=fresh', 'http://gateway.example')
+
+    expect(insecure.readCookies).toHaveBeenCalledWith('http://gateway.example/api/ws', 'http://gateway.example')
+
+    const broken = createStore()
+
+    await broken.store.register('not a url', GATEWAY)
+
+    expect(broken.readCookies).toHaveBeenCalledWith(GATEWAY, GATEWAY)
   })
 
   it('leaves the request untouched when nothing is authorized', async () => {

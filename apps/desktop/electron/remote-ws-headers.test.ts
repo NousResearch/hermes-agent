@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import { createGatewayWsCookieStore } from './gateway-ws-cookie'
 import {
   applyRemoteRequestHeaders,
   createRegistryGatewayWsUrlHandler,
@@ -182,12 +183,76 @@ describe('registry gateway WebSocket headers', () => {
 
     // Selected with the pinned id, and identified by the same one.
     expect(selected).toEqual(['conn-a'])
-    expect(consumers).toEqual(['registry:conn-a:work'])
+    expect(consumers).toEqual(['registry:conn-a:work:default'])
 
     // The later explicit mint for that same source retires its own url.
     await handler({ connectionId: 'conn-a', profile: 'work' })
 
-    expect(consumers).toEqual(['registry:conn-a:work', 'registry:conn-a:work'])
+    expect(consumers).toEqual(['registry:conn-a:work:default', 'registry:conn-a:work:default'])
+  })
+
+  // A route is not a socket. Two windows on one route, and one window's chat
+  // and speech flows, hold independent pending upgrades; only a consumer's own
+  // re-mint may retire its own url. Composed against the real cookie store.
+  describe('independent socket consumers on one route', () => {
+    const BASE = 'https://gateway.example'
+    const jar = [{ name: 'proxy_session', value: 'proxy-value' }]
+    const HEADER = 'proxy_session=proxy-value'
+
+    function composed() {
+      const store = createGatewayWsCookieStore({
+        readCookies: async () => jar,
+        resolvePartition: () => 'persist:hermes-remote-oauth'
+      })
+      let minted = 0
+      const handler = createRegistryGatewayWsUrlHandler({
+        ensureBackend: async (_connectionId, profile) => ({
+          authMode: 'oauth',
+          baseUrl: BASE,
+          wsUrl: `${BASE.replace(/^https:/, 'wss:')}/api/ws?ticket=cached`,
+          profile: profile as string,
+          sharedRemote: true
+        }),
+        mintTicket: async () => String(++minted),
+        buildTicketUrl: (baseUrl, ticket) => `${baseUrl.replace(/^https:/, 'wss:')}/api/ws?ticket=${ticket}`,
+        rememberHeaders: (wsUrl, _headers, connection, consumer) => store.register(wsUrl, connection!.baseUrl, consumer)
+      })
+
+      return {
+        cookieOn: (url: string) => store.apply({ url, resourceType: 'webSocket' }, {}).requestHeaders?.Cookie,
+        handler
+      }
+    }
+
+    const route = { connectionId: 'remote', profile: 'work' }
+
+    it('keeps two windows on the same route independent', async () => {
+      const { cookieOn, handler } = composed()
+
+      const windowA = await handler(route, 'w1:default')
+      const windowB = await handler(route, 'w2:default')
+
+      expect([cookieOn(windowA), cookieOn(windowB)]).toEqual([HEADER, HEADER])
+    })
+
+    it("does not let one window's speech mint retire its pending chat upgrade", async () => {
+      const { cookieOn, handler } = composed()
+
+      const chat = await handler(route, 'w1:default')
+      const speech = await handler({ ...route, purpose: 'speech' }, 'w1:speech')
+
+      expect([cookieOn(chat), cookieOn(speech)]).toEqual([HEADER, HEADER])
+    })
+
+    it("still retires the same consumer's own previous url on reconnect", async () => {
+      const { cookieOn, handler } = composed()
+
+      const stale = await handler(route, 'w1:default')
+      const fresh = await handler(route, 'w1:default')
+
+      expect(stale).not.toBe(fresh)
+      expect([cookieOn(stale), cookieOn(fresh)]).toEqual([undefined, HEADER])
+    })
   })
 
   // A shared remote backs one socket per (connectionId, profile) at a single
@@ -221,10 +286,10 @@ describe('registry gateway WebSocket headers', () => {
     await handler({ connectionId: 'cloud-one', profile: 'research' })
 
     expect(consumers).toEqual([
-      'registry:cloud-one:research',
-      'registry:cloud-one:ops',
-      'registry:cloud-two:research',
-      'registry:cloud-one:research'
+      'registry:cloud-one:research:default',
+      'registry:cloud-one:ops:default',
+      'registry:cloud-two:research:default',
+      'registry:cloud-one:research:default'
     ])
     expect(new Set(consumers).size).toBe(3)
   })
@@ -260,7 +325,7 @@ describe('registry gateway WebSocket headers', () => {
     await handler({ connectionId: '  ', profile: 'default' })
     await handler({ connectionId: 'primary-one', profile: undefined })
 
-    expect(new Set(consumers)).toEqual(new Set(['registry:primary-one:default']))
+    expect(new Set(consumers)).toEqual(new Set(['registry:primary-one:default:default']))
   })
 
   // The registry path is the reconnect path, so it is where a forwarded proxy

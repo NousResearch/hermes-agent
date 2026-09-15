@@ -8330,7 +8330,7 @@ async function mintGatewayWsTicket(baseUrl, headers = {}) {
 // calls this immediately before every gateway.connect() so each WS upgrade
 // carries a freshly-minted ticket. For local/token connections this just
 // reuses the static token (no minting needed).
-async function freshGatewayWsUrl(profile) {
+async function freshGatewayWsUrl(profile, consumerTag?: string) {
   // Mint for the requested profile's backend, NOT always the primary. The
   // renderer re-mints right before every gateway.connect(); when swapping to a
   // pooled profile we must return THAT backend's ws URL, otherwise the connect
@@ -8341,7 +8341,7 @@ async function freshGatewayWsUrl(profile) {
   // One consumer per profile: a shared remote keeps a live socket for each.
   // Keyed exactly as ensureBackend() keys the profile, so a re-mint of the
   // same socket always retires its own stale ticket url.
-  const consumer = `ws-url:${String(profile ?? '').trim() || primaryProfileKey()}`
+  const consumer = `ws-url:${String(profile ?? '').trim() || primaryProfileKey()}:${consumerTag || 'default'}`
 
   if (connection.authMode === 'oauth') {
     const ticket = await mintGatewayWsTicket(connection.baseUrl, connection.headers)
@@ -9241,7 +9241,7 @@ function rememberRemoteWsHeaders(wsUrl, headers = {}) {
 // is attached to the exact freshly-minted upgrade url and nowhere else. See
 // gateway-ws-cookie.ts for the reasoning and the lifetime rules.
 const gatewayWsCookieStore = createGatewayWsCookieStore({
-  readCookies: async baseUrl => {
+  readCookies: async (cookieUrl, baseUrl) => {
     const sess = getOauthSessionForUrl(baseUrl)
 
     if (!sess) {
@@ -9254,11 +9254,30 @@ const gatewayWsCookieStore = createGatewayWsCookieStore({
     // unauthenticated on every cold start.
     await warmOauthCookieStore(baseUrl)
 
-    return await sess.cookies.get({ url: baseUrl })
+    // Selected for the UPGRADE's url, not the gateway root: Chromium's cookie
+    // manager applies Domain/Path/Secure matching to whatever url it is given,
+    // so a proxy cookie scoped to `Path=/api/` (or to a reverse-proxy prefix)
+    // is absent from a base-url read -- the exact credential this forwards.
+    return await sess.cookies.get({ url: cookieUrl })
   },
   resolvePartition: resolveOauthPartitionForUrl,
   onError: message => rememberLog(`[oauth] gateway ws cookie lookup failed: ${message}`)
 })
+
+// Which socket consumer is asking: the calling window (senders are distinct
+// per window, including session/peer windows) plus what it opens, since one
+// window's chat and speech flows mint against the same route for independent
+// sockets. Stable across that consumer's reconnects, so its own re-mint still
+// retires its own url. The purpose is renderer-supplied, so it is trimmed and
+// length-capped before becoming part of a map key.
+function gatewayWsConsumerTag(event, purpose) {
+  const sender = event?.sender?.id
+  const kind = String(purpose ?? '')
+    .trim()
+    .slice(0, 32)
+
+  return `w${typeof sender === 'number' ? sender : 0}:${kind || 'default'}`
+}
 
 // Single seam for "the renderer is about to open this gateway socket": bind the
 // static remote headers AND, for a cookie-authed gateway, the proxy session to
@@ -15142,8 +15161,8 @@ ipcMain.handle('hermes:pool-limits:set', async (_event, raw) => {
 
   return { ok: true, limits: next }
 })
-ipcMain.handle('hermes:gateway:ws-url', async (_event, profile) => {
-  return gatewayWsUrlIpcResult(() => freshGatewayWsUrl(profile))
+ipcMain.handle('hermes:gateway:ws-url', async (event, profile, purpose) => {
+  return gatewayWsUrlIpcResult(() => freshGatewayWsUrl(profile, gatewayWsConsumerTag(event, purpose)))
 })
 ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
   if (typeof sessionId !== 'string' || !sessionId.trim()) {
@@ -15950,8 +15969,10 @@ const registryGatewayWsUrlHandler = createRegistryGatewayWsUrlHandler({
   }
 })
 
-ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {
-  return gatewayWsUrlIpcResult(() => registryGatewayWsUrlHandler(payload))
+ipcMain.handle('hermes:gateway:ws-url-for', async (event, payload) => {
+  return gatewayWsUrlIpcResult(() =>
+    registryGatewayWsUrlHandler(payload, gatewayWsConsumerTag(event, (payload as any)?.purpose))
+  )
 })
 
 // Transactional update for a Desktop-managed SSH install. Unlike the generic

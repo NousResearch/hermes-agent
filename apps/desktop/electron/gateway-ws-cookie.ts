@@ -20,6 +20,10 @@
 //
 //   - keyed by the EXACT ws url, so ordinary HTTP(S) traffic to the gateway,
 //     sibling paths, and unrelated sockets get nothing;
+//   - selected for the upgrade's own path, not the gateway root: a proxy
+//     cookie scoped to `Path=/api/`, or to a reverse-proxy prefix, does not
+//     apply to the bare base url, so reading the base returned a snapshot
+//     missing exactly the credential this exists to forward;
 //   - one live url per CONSUMER (the gateway plus the caller that re-mints for
 //     that socket: the primary ws-url path per profile, a registry
 //     (connectionId, profile) pair, a descriptor build) — its next mint drops
@@ -54,9 +58,15 @@ export interface GatewayCookie {
 }
 
 export interface GatewayWsCookieStoreDependencies {
-  // Cookies currently in `baseUrl`'s OAuth jar, or null when there is no jar
-  // for it. Callers are responsible for warming a lazily-hydrating jar first.
-  readCookies: (baseUrl: string) => Promise<GatewayCookie[] | null>
+  // Cookies applicable to `cookieUrl` in `baseUrl`'s OAuth jar, or null when
+  // there is no jar for it. `baseUrl` identifies the jar; `cookieUrl` is the
+  // http(s) equivalent of the upgrade being authorized, and selection must be
+  // made for THAT url -- a proxy cookie scoped to `Path=/api/` or to a reverse
+  // proxy prefix does not apply to the bare base url, so reading the base
+  // silently returned a snapshot without it. Domain/Path/Secure filtering is
+  // the cookie store's job; never widen this to every cookie on the host.
+  // Callers are responsible for warming a lazily-hydrating jar first.
+  readCookies: (cookieUrl: string, baseUrl: string) => Promise<GatewayCookie[] | null>
   // Which cookie jar backs a url. Entries sharing one are dropped together.
   resolvePartition: (baseUrl: string) => string
   now?: () => number
@@ -84,6 +94,24 @@ const MAX_ENTRIES = 32
 // Owners are (gateway, consumer) pairs drawn from the user's own connections,
 // so this only stops the generation ledger growing for a process lifetime.
 const MAX_OWNERS = 256
+
+// The upgrade's http(s) equivalent, which is what cookie selection matches on:
+// same host and path, `ws:`/`wss:` mapped to `http:`/`https:`. Query and hash
+// carry the single-use ticket and mean nothing to cookie matching, so they are
+// dropped. An unparseable url falls back to the caller's base url.
+function cookieUrlForUpgrade(wsUrl: string, baseUrl: string) {
+  try {
+    const url = new URL(wsUrl)
+
+    url.protocol = url.protocol === 'ws:' ? 'http:' : url.protocol === 'wss:' ? 'https:' : url.protocol
+    url.search = ''
+    url.hash = ''
+
+    return url.toString()
+  } catch {
+    return baseUrl
+  }
+}
 
 interface GatewayWsCookieEntry {
   expiresAt: number
@@ -181,7 +209,7 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
     let cookies: GatewayCookie[] | null
 
     try {
-      cookies = await dependencies.readCookies(baseUrl)
+      cookies = await dependencies.readCookies(cookieUrlForUpgrade(wsUrl, baseUrl), baseUrl)
     } catch (error) {
       // Non-fatal: a gateway with no proxy in front connects without this.
       if (stillCurrent()) {

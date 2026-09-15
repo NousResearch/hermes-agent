@@ -629,15 +629,28 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
 
     entry.connection = conn
 
+    // A secondary socket is independent of this window's primary one, so it
+    // mints under its own purpose: otherwise the two mints look like one
+    // consumer reconnecting, and the later retires the earlier's pending
+    // forwarded-cookie authorization (see gateway-ws-cookie.ts).
     const wsDeps =
       entry.connectionId && desktop.getGatewayWsUrlFor
         ? {
             getGatewayWsUrl: () =>
-              desktop.getGatewayWsUrlFor!({ connectionId: entry.connectionId, profile: entry.profile })
+              desktop.getGatewayWsUrlFor!({
+                connectionId: entry.connectionId,
+                profile: entry.profile,
+                purpose: 'secondary'
+              })
           }
         : entry.connectionId
           ? {}
-          : desktop
+          : // The bridge is optional on older builds, and passing `desktop`
+            // through unchanged is what lets resolveGatewayWsUrl report that
+            // rather than crash, so only wrap a mint that actually exists.
+            desktop.getGatewayWsUrl
+            ? { getGatewayWsUrl: (profile?: null | string) => desktop.getGatewayWsUrl(profile, 'secondary') }
+            : desktop
 
     const wsUrl = await withTimeout(
       resolveGatewayWsUrl(wsDeps, conn),

@@ -272,7 +272,13 @@ describe('useGatewayRequest', () => {
     expect(desktop.getConnectionFor).toHaveBeenCalledTimes(2)
     expect(desktop.getConnectionFor).toHaveBeenCalledWith({ connectionId: 'ssh-source', profile: 'research' })
     expect(desktop.getGatewayWsUrlFor).toHaveBeenCalledTimes(2)
-    expect(desktop.getGatewayWsUrlFor).toHaveBeenCalledWith({ connectionId: 'ssh-source', profile: 'research' })
+    // The secondary socket carries its own purpose so this window's other
+    // sockets cannot retire its forwarded-cookie authorization.
+    expect(desktop.getGatewayWsUrlFor).toHaveBeenCalledWith({
+      connectionId: 'ssh-source',
+      profile: 'research',
+      purpose: 'secondary'
+    })
     expect(desktop.getConnection).not.toHaveBeenCalled()
     expect(desktop.getGatewayWsUrl).not.toHaveBeenCalled()
     expect(gateway.connect).toHaveBeenLastCalledWith(expect.stringContaining('ticket=fresh-2'))

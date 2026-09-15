@@ -36,6 +36,9 @@ declare global {
       getGatewayWsUrlFor?: (payload: {
         connectionId?: null | string
         profile?: null | string
+        // Distinguishes independent sockets on one route (chat vs speech), so
+        // each keeps its own forwarded-cookie authorization.
+        purpose?: null | string
       }) => Promise<GatewayWsUrlResult>
       // Union agent roster across every registered connection.
       getAgentRoster?: () => Promise<DesktopAgentRoster>
@@ -61,7 +64,7 @@ declare global {
         ok: boolean
         limits: PoolLimits
       }>
-      getGatewayWsUrl: (profile?: null | string) => Promise<GatewayWsUrlResult>
+      getGatewayWsUrl: (profile?: null | string, purpose?: null | string) => Promise<GatewayWsUrlResult>
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false
       // with an error code when the sessionId is empty/invalid. `watch` opens

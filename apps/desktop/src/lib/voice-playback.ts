@@ -144,12 +144,19 @@ export async function resolveSpeakStreamUrl(): Promise<null | string> {
             `Timed out connecting to profile "${profile}"`
           )
 
+    // Speech opens its OWN socket on the same route as chat, so it mints under
+    // its own purpose: otherwise the two mints look like one consumer
+    // reconnecting, and this one retires chat's pending upgrade authorization.
     const wsDeps =
       connectionId && desktop.getGatewayWsUrlFor
-        ? { getGatewayWsUrl: () => desktop.getGatewayWsUrlFor!({ connectionId, profile }) }
+        ? { getGatewayWsUrl: () => desktop.getGatewayWsUrlFor!({ connectionId, profile, purpose: 'speech' }) }
         : connectionId
           ? {}
-          : desktop
+          : // Older builds may not expose the bridge; passing `desktop` through
+            // lets resolveGatewayWsUrl report that instead of crashing.
+            desktop.getGatewayWsUrl
+            ? { getGatewayWsUrl: (p?: null | string) => desktop.getGatewayWsUrl(p, 'speech') }
+            : desktop
 
     const wsUrl = await withTimeout(
       resolveGatewayWsUrl(wsDeps, conn),

@@ -830,13 +830,23 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
 
     verdict, reason = "done", ""
     try:
-        verdict, reason, _, _, _ = judge_goal(goal=f"{task.title}\n\n{task.body or ''}".strip(),
-                                              last_response=evidence.strip())
+        verdict, reason, _, _, transport_failed = judge_goal(
+            goal=f"{task.title}\n\n{task.body or ''}".strip(),
+            last_response=evidence.strip())
     except Exception as judge_exc:
         import logging as _logging
 
         _logging.getLogger(__name__).warning("goal judge check failed, allowing lifecycle handoff: %s",
                                              judge_exc, exc_info=True)
+        return ("done", None)
+    if transport_failed:
+        # Synthetic fail-open verdict — the judge LLM was unreachable, so this is NOT
+        # evidence the work is incomplete. Allow the handoff (mirrors tools/kanban_tools.py).
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "goal judge transport failure (%s), allowing lifecycle handoff fail-open", reason)
+        return ("done", None)
     return (verdict, None if verdict == "done" else reason)
 
 

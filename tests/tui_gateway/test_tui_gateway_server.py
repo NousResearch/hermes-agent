@@ -7560,16 +7560,43 @@ class _RecordingAgent:
         return {"final_response": "", "messages": []}
 
 
+def test_notif_submit_emits_message_start_once_when_turn_is_admitted(
+    monkeypatch, tmp_path
+):
+    """An admitted notification turn announces exactly once before it runs."""
+    _configure_immediate_prompt_run(monkeypatch, tmp_path)
+    emitted = []
+    turns = []
+    sid = "admitted-notification"
+    session = _session(
+        session_key="admitted-notification-key",
+        agent=_RecordingAgent(turns),
+        running=True,
+    )
+    monkeypatch.setattr(
+        server, "_emit", lambda event, *_args, **_kwargs: emitted.append(event)
+    )
+    server._sessions[sid] = session
+
+    try:
+        server._notif_submit("rid", sid, session, "notification", "notification")
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert turns == ["notification"]
+    assert emitted.count("message.start") == 1
+
+
 def test_run_prompt_submit_rejects_worker_when_close_wins_publication(
     monkeypatch, tmp_path
 ):
-    """A close claimed during message.start must prevent the worker from running."""
+    """A close claimed while constructing the worker must prevent publication and start."""
     _configure_immediate_prompt_run(monkeypatch, tmp_path, immediate_threads=False)
-    emit_entered = threading.Event()
-    release_emit = threading.Event()
     dispatch_results = []
     turns = []
     popped = []
+    started = []
+    emitted = []
     sid = "close-wins-publication"
     session = _session(
         session_key="close-wins-publication-key",
@@ -7577,28 +7604,37 @@ def test_run_prompt_submit_rejects_worker_when_close_wins_publication(
         running=True,
     )
 
-    def _blocking_emit(event, *_args, **_kwargs):
-        if event == "message.start":
-            emit_entered.set()
-            assert release_emit.wait(timeout=2.0)
+    monkeypatch.setattr(
+        server, "_emit", lambda event, *_args, **_kwargs: emitted.append(event)
+    )
 
-    monkeypatch.setattr(server, "_emit", _blocking_emit)
+    class _CloseWinningThread:
+        def __init__(self, target=None, daemon=None, **_kwargs):
+            assert target is not None
+            assert daemon is True
+            popped.append(server._pop_session_by_id(sid))
+            self._target = target
+
+        def start(self):
+            started.append(True)
+
+        def is_alive(self):
+            return False
+
     server._sessions[sid] = session
-    dispatch_thread = threading.Thread(
+    # Keep the dispatcher itself on the real class; only the prompt worker factory
+    # is replaced so the close claim happens at the publication boundary.
+    dispatch_thread = server._RealThread(
         target=lambda: dispatch_results.append(
             server._run_prompt_submit("rid", sid, session, "turn")
         )
     )
+    monkeypatch.setattr(server.threading, "Thread", _CloseWinningThread)
 
     try:
         dispatch_thread.start()
-        assert emit_entered.wait(timeout=1.0)
-        popped.append(server._pop_session_by_id(sid))
-        assert popped == [session]
-        release_emit.set()
         dispatch_thread.join(timeout=2.0)
     finally:
-        release_emit.set()
         dispatch_thread.join(timeout=2.0)
         run_thread = session.get("_run_thread")
         if run_thread is not None and run_thread.is_alive():
@@ -7606,6 +7642,9 @@ def test_run_prompt_submit_rejects_worker_when_close_wins_publication(
         server._sessions.pop(sid, None)
 
     assert dispatch_results == [False]
+    assert popped == [session]
+    assert started == []
+    assert "message.start" not in emitted
     assert session["running"] is False
     assert turns == []
 

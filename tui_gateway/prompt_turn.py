@@ -358,7 +358,6 @@ def _dispatch_followup_turn(rid, sid: str, session: dict, prompt: Any, what: str
     """Chain one follow-up turn (caller set ``running``); on failure run ``on_error``, log,
     release ``running``."""
     try:
-        _emit("message.start", sid)
         _run_prompt_submit(rid, sid, session, prompt)
         if on_done is not None:
             on_done()
@@ -808,7 +807,6 @@ def _run_prompt_submit(
         "kind=%s chars=%s images=%d",
         sid, session.get("session_key") or "", getattr(agent, "session_id", "") or "",
         display_kind or "user", len(text) if isinstance(text, str) else "-", len(images))
-    _emit("message.start", sid)
 
     def run():
         # RPC-dispatcher ContextVars do not follow onto this thread: rebind the transport
@@ -891,6 +889,7 @@ def _run_prompt_submit(
             if registered is session:
                 _reopen_routed_session_row(routing_db, sid, session)
             session["_run_thread"] = run_thread
+            _emit("message.start", sid)
             run_thread.start()
     if not can_start:
         with session["history_lock"]:

@@ -356,17 +356,17 @@ def test_older_agent_still_gets_the_post_turn_stamp(emits, turn_env, marker_home
 
 
 @pytest.fixture()
-def schedule_env(monkeypatch, marker_home):
+def schedule_env(monkeypatch, marker_home, emits):
     monkeypatch.setattr(server.threading, "Thread", _InlineThread)
     monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
     monkeypatch.setattr(server, "_wait_agent", lambda session, rid, timeout=30.0: None)
     monkeypatch.setattr(server, "_load_cfg", lambda: {})
     submitted: list = []
-    monkeypatch.setattr(
-        server,
-        "_run_prompt_submit",
-        lambda rid, sid, session, text, **kw: submitted.append((text, kw)),
-    )
+    def _submit(rid, sid, session, text, **kwargs):
+        submitted.append((text, kwargs))
+        server._emit("message.start", sid)
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _submit)
     return submitted
 
 
@@ -384,7 +384,9 @@ def test_fresh_marker_schedules_continuation(emits, schedule_env, marker_home):
     assert text.startswith("[System note: Your previous turn was interrupted")
     assert "fix the flaky test" in text
     assert kwargs["display_kind"] == "auto_continue"
-    assert ("message.start", "sid", None) in [(e, s, p) for e, s, p in emits]
+    assert [(e, s, p) for e, s, p in emits].count(
+        ("message.start", "sid", None)
+    ) == 1
 
 
 def test_hosted_room_marker_is_left_to_the_driver(schedule_env, marker_home):
@@ -510,4 +512,3 @@ def test_failed_agent_build_leaves_marker_for_retry(
 
 
 # ── End to end: continuation runs a real turn and clears the marker ────
-

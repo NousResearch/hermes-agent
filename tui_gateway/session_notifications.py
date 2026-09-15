@@ -155,9 +155,8 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
 
 
 def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> None:
-    """message.start + _run_prompt_submit for a claimed (running=True) turn; releases on failure."""
+    """Submit a claimed (running=True) turn; release it on failure."""
     try:
-        _emit("message.start", sid)
         _run_prompt_submit(rid, sid, session, text, **kwargs)
     except Exception as exc:
         _notif_log_failure(what, exc)
@@ -185,7 +184,6 @@ def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) 
             if not _notif_claim_turn(session):
                 mgr.abandon_tick()
                 return
-            _emit("message.start", sid)
             _run_prompt_submit(rid, sid, session, payload["message"])
             return
     except Exception:
@@ -251,7 +249,6 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
         if wakeup.lstrip().startswith("/"):
             _notif_slash_loop_tick(rid, sid, session, mgr, wakeup)
         else:
-            _emit("message.start", sid)
             _run_prompt_submit(rid, sid, session, wakeup)
     except Exception as exc:
         _notif_log_failure("loop wakeup dispatch failed", exc)

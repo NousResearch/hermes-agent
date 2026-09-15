@@ -201,9 +201,9 @@ export function saveHermesConfigRecord(config: HermesConfigRecord, profile?: Pro
   })
 }
 
-export function getEnvVars(profile?: null | string): Promise<Record<string, EnvVarInfo>> {
-  return hermesApi<Record<string, EnvVarInfo>>({
-    ...profileScoped(profile),
+export function getEnvVars(profile?: ProfileScope): Promise<Record<string, EnvVarInfo>> {
+  return window.hermesDesktop.api<Record<string, EnvVarInfo>>({
+    ...capabilityScoped(profile),
     path: '/api/env'
   })
 }
@@ -314,10 +314,10 @@ export function listOAuthProviders(profile?: ProfileScope): Promise<OAuthProvide
 
 export function disconnectOAuthProvider(
   providerId: string,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<{ ok: boolean; provider: string }> {
-  return hermesApi<{ ok: boolean; provider: string }>({
-    ...profileScoped(profile),
+  return window.hermesDesktop.api<{ ok: boolean; provider: string }>({
+    ...capabilityScoped(profile),
     path: `/api/providers/oauth/${encodeURIComponent(providerId)}`,
     method: 'DELETE'
   })

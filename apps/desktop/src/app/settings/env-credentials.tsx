@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { deleteEnvVar, getEnvVars, revealEnvVar, setEnvVar } from '@/hermes'
+import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { type IconComponent } from '@/lib/icons'
 import { queryClient } from '@/lib/query-client'
@@ -42,12 +43,9 @@ export function SettingsCategoryHeading({ count, icon: Icon, title }: CategoryHe
 
 // Owns the env-var fetch + the edit/reveal/save/delete lifecycle so multiple
 // credential pages (Providers, Keys) share one source of truth and one set of
-// mutation handlers instead of duplicating the plumbing. An optional `profile`
-// targets another profile's env store (the shared settings "Applies to"
-// scope); undefined keeps the app-wide active profile. Request-shaped on
-// purpose: the API helpers treat an explicit `null` as "target the
-// primary/default backend", which is never what a settings page means.
-export function useEnvCredentials(profile?: string): UseEnvCredentials {
+// mutation handlers instead of duplicating the plumbing. The immutable scope
+// owns both gateway and profile; null fails closed while ownership is unknown.
+export function useEnvCredentials(scope: null | ProfileScope): UseEnvCredentials {
   const { t } = useI18n()
   const credentials = t.settings.credentials
   const toolsets = t.settings.toolsets
@@ -55,6 +53,8 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [revealed, setRevealed] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState<string | null>(null)
+  const scopeRef = useRef(scope)
+  scopeRef.current = scope
 
   // Best-effort cleanup of a retired localStorage flag (global "Show
   // advanced" toggle) — everything in these views is configuration-level.
@@ -78,9 +78,12 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
     setEdits({})
     setRevealed({})
 
+    if (!scope) {
+      return
+    }
     void (async () => {
       try {
-        const next = await getEnvVars(profile)
+        const next = await getEnvVars(scope)
 
         if (!cancelled) {
           setVars(next)
@@ -92,7 +95,7 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
 
     return () => void (cancelled = true)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reload per target profile; copy is stable
-  }, [profile])
+  }, [scope])
 
   function patchVar(key: string, patch: Partial<Pick<EnvVarInfo, 'is_set' | 'redacted_value'>>) {
     setVars(c => (c ? { ...c, [key]: { ...c[key], ...patch } } : c))
@@ -105,15 +108,21 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
 
   async function handleSave(key: string) {
     const value = edits[key]
+    const target = scope
 
-    if (!value) {
+    if (!value || !target) {
       return
     }
 
     setSaving(key)
 
     try {
-      await setEnvVar(key, value, profile)
+      await setEnvVar(key, value, target)
+
+      if (scopeRef.current !== target) {
+        return
+      }
+
       patchVar(key, { is_set: true, redacted_value: redactedValue(value) })
       clearLocalState(key)
       void queryClient.invalidateQueries({ queryKey: ['model-options'] })
@@ -121,7 +130,9 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
     } catch (err) {
       notifyError(err, toolsets.failedSave(key))
     } finally {
-      setSaving(null)
+      if (scopeRef.current === target) {
+        setSaving(null)
+      }
     }
   }
 
@@ -130,15 +141,21 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
   // the form can surface inline errors instead of only toasting.
   async function saveValue(key: string, value: string): Promise<{ message?: string; ok: boolean }> {
     const trimmed = value.trim()
+    const target = scope
 
-    if (!trimmed) {
+    if (!trimmed || !target) {
       return { message: credentials.enterValueFirst, ok: false }
     }
 
     setSaving(key)
 
     try {
-      await setEnvVar(key, trimmed, profile)
+      await setEnvVar(key, trimmed, target)
+
+      if (scopeRef.current !== target) {
+        return { message: credentials.couldNotSave, ok: false }
+      }
+
       patchVar(key, { is_set: true, redacted_value: redactedValue(trimmed) })
       clearLocalState(key)
       void queryClient.invalidateQueries({ queryKey: ['model-options'] })
@@ -150,11 +167,19 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
 
       return { message: err instanceof Error ? err.message : credentials.couldNotSave, ok: false }
     } finally {
-      setSaving(null)
+      if (scopeRef.current === target) {
+        setSaving(null)
+      }
     }
   }
 
   async function handleClear(key: string) {
+    const target = scope
+
+    if (!target) {
+      return
+    }
+
     if (!(await confirm({ destructive: true, title: toolsets.removeConfirm(key) }))) {
       return
     }
@@ -162,7 +187,12 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
     setSaving(key)
 
     try {
-      await deleteEnvVar(key, profile)
+      await deleteEnvVar(key, target)
+
+      if (scopeRef.current !== target) {
+        return
+      }
+
       patchVar(key, { is_set: false, redacted_value: null })
       clearLocalState(key)
       void queryClient.invalidateQueries({ queryKey: ['model-options'] })
@@ -170,11 +200,19 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
     } catch (err) {
       notifyError(err, toolsets.failedRemove(key))
     } finally {
-      setSaving(null)
+      if (scopeRef.current === target) {
+        setSaving(null)
+      }
     }
   }
 
   async function handleReveal(key: string) {
+    const target = scope
+
+    if (!target) {
+      return
+    }
+
     if (revealed[key]) {
       setRevealed(c => withoutKey(c, key))
 
@@ -182,7 +220,12 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
     }
 
     try {
-      const result = await revealEnvVar(key, profile)
+      const result = await revealEnvVar(key, target)
+
+      if (scopeRef.current !== target) {
+        return
+      }
+
       setRevealed(c => ({ ...c, [key]: result.value }))
     } catch (err) {
       notifyError(err, toolsets.failedReveal(key))

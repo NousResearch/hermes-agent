@@ -14,6 +14,7 @@ import { $localRuntimeJobs, runningModelDownloads, watchLocalRuntimeJobs } from 
 import type { LocalModelLoadProgress } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
+import type { ProfileScope } from '../hermes'
 import { cn } from '../lib/utils'
 import { startManualOnboarding } from '../store/onboarding'
 
@@ -33,6 +34,7 @@ interface ModelPickerDialogProps {
   currentProvider: string
   onSelect: (selection: { provider: string; model: string }) => void
   ownerConnectionId?: string
+  providerSetupScope?: ProfileScope
   profile?: string
   request?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   /**
@@ -53,6 +55,7 @@ export function ModelPickerDialog({
   currentProvider,
   onSelect,
   ownerConnectionId,
+  providerSetupScope,
   profile = 'default',
   request,
   contentClassName
@@ -172,7 +175,7 @@ export function ModelPickerDialog({
   // model-confirm) instead of duplicating provider UI here. Closes the picker
   // so the onboarding overlay isn't rendered underneath it.
   const addProvider = () => {
-    startManualOnboarding()
+    startManualOnboarding(undefined, providerSetupScope)
     onOpenChange(false)
   }
 

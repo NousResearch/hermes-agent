@@ -428,6 +428,7 @@ class TestManagedPythonStore:
             "UV_NO_MANAGED_PYTHON": "1",
             "UV_PYTHON": "/poison/python",
             "UV_PYTHON_DOWNLOADS": "never",
+            "UV_PYTHON_PREFERENCE": "system",
             "UV_SYSTEM_PYTHON": "1",
             "VIRTUAL_ENV": "/poison/venv",
             "PYTHONHOME": "/poison/home",
@@ -444,6 +445,7 @@ class TestManagedPythonStore:
         assert env["UV_PYTHON_INSTALL_DIR"] == str(
             checkout / ".hermes-runtime" / "python"
         )
+        assert "UV_PYTHON_PREFERENCE" not in env
         for key in (
             "CONDA_DEFAULT_ENV",
             "CONDA_PREFIX",
@@ -458,6 +460,44 @@ class TestManagedPythonStore:
         ):
             assert key not in env
         assert base_env["PYTHONHOME"] == "/poison/home"
+        assert base_env["UV_PYTHON_PREFERENCE"] == "system"
+
+    @pytest.mark.parametrize("preference", ("system", "only-system", "managed"))
+    def test_strips_uv_python_preference_without_mutating_input(
+        self, tmp_path, preference
+    ):
+        """Shell-exported UV_PYTHON_PREFERENCE must not leak into managed uv.
+
+        UV_MANAGED_PYTHON=1 conflicts with --python-preference / UV_PYTHON_PREFERENCE
+        (issue #106854). Strip the leaked key from the child env only.
+        """
+        from hermes_cli.managed_uv import managed_python_env
+
+        checkout = tmp_path / "checkout"
+        base_env = {
+            "KEEP_ME": "yes",
+            "UV_PYTHON_PREFERENCE": preference,
+        }
+
+        env = managed_python_env(checkout, base_env=base_env)
+
+        assert env["UV_MANAGED_PYTHON"] == "1"
+        assert "UV_PYTHON_PREFERENCE" not in env
+        assert base_env["UV_PYTHON_PREFERENCE"] == preference
+        assert env["KEEP_ME"] == "yes"
+
+    def test_absent_uv_python_preference_stays_absent(self, tmp_path):
+        from hermes_cli.managed_uv import managed_python_env
+
+        checkout = tmp_path / "checkout"
+        base_env = {"KEEP_ME": "yes"}
+
+        env = managed_python_env(checkout, base_env=base_env)
+
+        assert env["UV_MANAGED_PYTHON"] == "1"
+        assert "UV_PYTHON_PREFERENCE" not in env
+        assert env["KEEP_ME"] == "yes"
+        assert "UV_PYTHON_PREFERENCE" not in base_env
 
 
 @pytest.mark.skipif(sys.platform == "win32",

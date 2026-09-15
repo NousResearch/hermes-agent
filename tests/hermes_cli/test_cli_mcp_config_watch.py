@@ -219,16 +219,22 @@ def test_tui_init_run_state_seeds_config_sig_when_config_exists(monkeypatch):
 
 
 def test_pinned_mtime_same_size_replacement_triggers_reload(tmp_path):
-    """#111105: cp -p / rsync -t style replacement (same mtime, same size) must still reload."""
+    """#111105: cp -p / rsync -t style replacement (same mtime, same size) must still reload.
+
+    The replacement is an ATOMIC rename: that is what moves ``st_ino`` deterministically.
+    Rewriting in place and pinning mtime back (``copy2`` + ``utime``) leaves the 4-tuple
+    identical whenever the whole sequence lands inside one clock tick — ``st_ctime_ns`` moves
+    only on a tick boundary — so the fast path returns and this asserted nothing; measured
+    3 failures in 16 runs on an otherwise idle box with no code change.
+    """
     import os
-    import shutil
 
     obj, cfg_file = _make_cli(tmp_path, mcp_servers={"bb": {"command": "b"}})
     cfg_file.write_text("mcp_servers:\n  bb: {command: b}\n")
     obj._config_sig = file_signature(cfg_file.stat())
     other = tmp_path / "other.yaml"
     other.write_text("mcp_servers:\n  aa: {command: a}\n")
-    shutil.copy2(other, cfg_file)
+    os.replace(other, cfg_file)
     os.utime(cfg_file, ns=(obj._config_sig[0], obj._config_sig[0]))
 
     with patch("hermes_cli.config.get_config_path", return_value=cfg_file):

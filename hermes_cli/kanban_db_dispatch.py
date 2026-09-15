@@ -2061,12 +2061,16 @@ def _hermes_path_argv(path: str) -> list[str]:
 def _resolve_hermes_argv() -> list[str]:
     """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
     (path-like -> absolute; bare names keep PATH semantics, never a
-    same-directory file), then ``which("hermes")`` (Windows: safe PATH search,
-    batch shims fall back to the module form), then ``sys.executable -m
-    hermes_cli.main`` for shim-less environments (cron, systemd ``User=``,
-    launchd). Mirrors ``gateway.run._resolve_hermes_bin``; local because
-    ``hermes_cli`` sits below ``gateway`` in the dependency order.
+    same-directory file), then the running interpreter's ``sys.executable -m
+    hermes_cli.main`` (exactly this install; also covers shim-less cron,
+    systemd ``User=``, launchd), then ``which("hermes")`` (Windows: safe PATH
+    search, batch shims fall back to the module form) only when ``hermes_cli``
+    is not importable. The module argv must win over PATH: a PATH-first lookup
+    lets an attacker-planted ``hermes`` shadow the running install (#111569).
+    Mirrors ``gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
+    sits below ``gateway`` in the dependency order.
     """
+    import importlib.util
     import shutil
 
     env_bin = os.environ.get("HERMES_BIN", "").strip()
@@ -2077,6 +2081,12 @@ def _resolve_hermes_argv() -> list[str]:
         if resolved_env_bin:
             return _hermes_path_argv(resolved_env_bin)
         return _module_hermes_argv()
+
+    try:
+        if importlib.util.find_spec("hermes_cli") is not None:
+            return _module_hermes_argv()
+    except Exception:
+        pass
 
     hermes_bin = _safe_which_no_cwd("hermes") if _kb._IS_WINDOWS else shutil.which("hermes")
     if hermes_bin:

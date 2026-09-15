@@ -103,11 +103,14 @@ If you previously set `GEMINI_BASE_URL` to the `/openai` URL, remove it or chang
 GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 ```
 
-Host-root base URLs are normalized automatically: if the URL doesn't end with
-an API version segment (`v1beta`, `v1alpha`, `v1`, ...), Hermes appends
-`/v1beta` for you. Setting `GEMINI_BASE_URL=https://generativelanguage.googleapis.com`
-or pointing at a proxy root like `http://localhost:4000/gemini` works the same
-as spelling out the `/v1beta` suffix.
+Host-root base URLs on the Google host are normalized automatically: if the URL
+doesn't end with an API version segment (`v1beta`, `v1alpha`, `v1`, ...), Hermes
+appends `/v1beta` for you, so `GEMINI_BASE_URL=https://generativelanguage.googleapis.com`
+works the same as spelling out the `/v1beta` suffix. The same normalization
+applies to the Gemini TTS base URL (`tts.gemini.base_url`). Chat requests only
+take the native Gemini path when the base URL points at
+`generativelanguage.googleapis.com`; a proxy on another host is treated as an
+OpenAI-compatible endpoint, so configure it with its `/openai`-style URL.
 
 ## Available Models
 

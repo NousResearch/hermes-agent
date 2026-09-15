@@ -105,7 +105,9 @@ def normalize_gemini_base_url(base_url: Optional[str]) -> str:
     proxy root like ``http://localhost:4000/gemini``) that way; our request builders expect
     ``{base}/models/{model}:generateContent`` — without ``/v1beta`` that is a guaranteed 404. Trailing
     slashes and an ``/openai`` suffix are stripped; an existing version segment (``v1``, ``v1beta``,
-    ``v1alpha``, ...) is kept; empty input returns ``DEFAULT_GEMINI_BASE_URL``."""
+    ``v1alpha``, ...) is kept; empty input returns ``DEFAULT_GEMINI_BASE_URL``. Only the LAST path
+    segment is inspected, so ``.../v1beta/extra`` still gets ``/v1beta`` appended; this does not
+    decide routing (see ``is_native_gemini_base_url``)."""
     trimmed = str(base_url or "").strip().rstrip("/")
     trimmed = re.sub(r"/openai\Z", "", trimmed, flags=re.IGNORECASE).rstrip("/")
     if not trimmed:

@@ -20,6 +20,15 @@ approval:
   blocklist_message: "此指令位於無條件封鎖清單中，無法被批准。"
 
 gateway:
+  session_info:
+    model:                 "◆ 模型：`{model}`"
+    provider:              "◆ 提供方：{provider}"
+    context:               "◆ 上下文：{context} tokens（{source}）"
+    endpoint:              "◆ 端點：{endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "預設值 — 可在 config 中設定 model.context_length 以覆寫"
+    ctx_source_detected:   "自動偵測"
+    stopped_notice: "◐ 停止後的工作階段已重設。對話歷史已清空。\n使用 /resume 可瀏覽並恢復之前的工作階段。\n"
   approval_expired: "⚠️ 批准已逾期（代理不再等待）。請讓代理重試。"
   draining:         "⏳ 正在等待 {count} 個活躍代理結束後重新啟動..."
   goal_cleared:     "✓ 目標已清除。"

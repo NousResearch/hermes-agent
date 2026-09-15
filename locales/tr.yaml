@@ -20,6 +20,15 @@ approval:
   blocklist_message: "Bu komut koşulsuz engelleme listesinde ve onaylanamaz."
 
 gateway:
+  session_info:
+    model:                 "◆ Model: `{model}`"
+    provider:              "◆ Sağlayıcı: {provider}"
+    context:               "◆ Bağlam: {context} token ({source})"
+    endpoint:              "◆ Uç nokta: {endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "varsayılan — geçersiz kılmak için config içinde model.context_length ayarlayın"
+    ctx_source_detected:   "algılandı"
+    stopped_notice: "◐ Session reset after being stopped. Conversation history cleared.\nUse /resume to browse and restore a previous session.\n"
   approval_expired: "⚠️ Onay süresi doldu (ajan artık beklemiyor). Ajanın tekrar denemesini isteyin."
   draining:         "⏳ Yeniden başlatmadan önce {count} aktif ajan bekleniyor..."
   goal_cleared:     "✓ Hedef temizlendi."

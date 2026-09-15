@@ -175,7 +175,7 @@ function isTypableElement(el: Element | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (el as HTMLElement).isContentEditable
 }
 
-function filePathForTarget(target: PreviewTarget) {
+export function filePathForTarget(target: PreviewTarget) {
   if (target.path) {
     return target.path
   }
@@ -183,7 +183,17 @@ function filePathForTarget(target: PreviewTarget) {
   try {
     const url = new URL(target.url)
 
-    return url.protocol === 'file:' ? decodeURIComponent(url.pathname) : target.url
+    if (url.protocol !== 'file:') {
+      return target.url
+    }
+
+    // `url.pathname` keeps the leading slash a file URL always carries, which on
+    // Windows yields `/C:/Users/...` — a path no fs call can open, so the preview
+    // reports "file does not exist" for a file that is right there. Drop the slash
+    // only when it precedes a drive letter; POSIX paths need theirs.
+    const pathname = decodeURIComponent(url.pathname)
+
+    return /^\/[a-zA-Z]:/.test(pathname) ? pathname.slice(1) : pathname
   } catch {
     return target.url
   }

@@ -498,6 +498,67 @@ def test_list_async_delegations_exposes_live_activity(monkeypatch):
         gate.set()
 
 
+def test_stalled_batch_finalizes_status_when_completion_publication_fails(monkeypatch):
+    from tools.delegation_status import DetachedStatusPhase
+
+    outcomes = []
+    delegation_id = "deleg_stalled_status"
+    with ad._records_lock:
+        ad._records[delegation_id] = {
+            "delegation_id": delegation_id,
+            "status": "stalling",
+            "is_batch": True,
+            "goals": ["one", "two"],
+            "dispatched_at": time.time() - 5,
+            "completed_at": None,
+            "interrupt_fn": None,
+            "progress_fn": None,
+            "status_finalize_fn": outcomes.append,
+        }
+
+    def fail_publication(*args, **kwargs):
+        raise RuntimeError("queue failed")
+
+    monkeypatch.setattr(ad, "_push_batch_completion_event", fail_publication)
+
+    with pytest.raises(RuntimeError, match="queue failed"):
+        ad._finalize_stalled(delegation_id)
+
+    assert outcomes == [
+        (DetachedStatusPhase.FAILED, DetachedStatusPhase.FAILED)
+    ]
+
+
+def test_malformed_batch_result_cannot_strand_finalization(monkeypatch):
+    from tools.delegation_status import DetachedStatusPhase
+
+    outcomes = []
+    delegation_id = "deleg_malformed_status"
+    with ad._records_lock:
+        ad._records[delegation_id] = {
+            "delegation_id": delegation_id,
+            "status": "running",
+            "is_batch": True,
+            "goals": ["one"],
+            "dispatched_at": time.time(),
+            "completed_at": None,
+            "interrupt_fn": None,
+            "progress_fn": None,
+            "status_finalize_fn": outcomes.append,
+        }
+
+    monkeypatch.setattr(ad, "_push_batch_completion_event", lambda *a, **k: None)
+    ad._finalize_batch(
+        delegation_id,
+        {"results": [None]},
+        "completed",
+    )
+
+    assert outcomes == [(DetachedStatusPhase.FAILED,)]
+    with ad._records_lock:
+        assert ad._records[delegation_id]["status"] == "completed"
+
+
 def test_in_tool_stall_uses_higher_threshold(monkeypatch):
     """A frozen child inside a tool gets the in-tool ceiling, not the idle one."""
     _fast_stale_monitor(monkeypatch, idle=0.1, in_tool=10.0, grace=0.1)
@@ -648,6 +709,169 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     assert "the real task" in text
 
 
+def test_background_status_admits_before_worker_and_finalizes_from_results(monkeypatch):
+    from unittest.mock import MagicMock
+
+    import tools.delegate_tool as dt
+    from tools.delegation_status import (
+        DetachedStatusPhase,
+        bind_detached_status_owner,
+        get_detached_status_owner,
+    )
+
+    child_gate = threading.Event()
+    worker_started = threading.Event()
+    worker_owner_values = []
+
+    class Sink:
+        def __init__(self):
+            self.outcomes = []
+
+        def observe(self, event):
+            pass
+
+        def finalize(self, outcomes):
+            self.outcomes.append(outcomes)
+
+    sink = Sink()
+
+    class Owner:
+        def __init__(self):
+            self.admissions = []
+
+        def admit_batch(self, task_count):
+            assert worker_started.is_set() is False
+            self.admissions.append(task_count)
+            return sink
+
+    owner = Owner()
+    parent = MagicMock()
+    parent._delegate_depth = 0
+    parent.session_id = "sess"
+    parent._interrupt_requested = False
+    parent._active_children = []
+    parent._active_children_lock = None
+    fake_child = MagicMock()
+    fake_child._delegate_role = "leaf"
+    fake_child._subagent_id = "s1"
+    fake_child.tool_progress_callback = None
+
+    def gated_child(task_index, goal, child=None, parent_agent=None, **kwargs):
+        worker_owner_values.append(get_detached_status_owner())
+        worker_started.set()
+        child_gate.wait(timeout=10)
+        return {
+            "task_index": task_index,
+            "status": "completed",
+            "summary": f"done: {goal}",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+            "model": "m",
+            "exit_reason": "completed",
+        }
+
+    creds = {
+        "model": "m", "provider": None, "base_url": None, "api_key": None,
+        "api_mode": None, "command": None, "args": None,
+    }
+    monkeypatch.setattr(dt, "_build_child_agent", lambda **kwargs: fake_child)
+    monkeypatch.setattr(dt, "_run_single_child", gated_child)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+
+    try:
+        with bind_detached_status_owner(owner):
+            result = json.loads(
+                dt.delegate_task(
+                    goal="status task",
+                    background=True,
+                    parent_agent=parent,
+                )
+            )
+        assert result["status"] == "dispatched"
+        assert owner.admissions == [1]
+        assert worker_started.wait(timeout=2)
+        assert worker_owner_values == [None]
+    finally:
+        child_gate.set()
+
+    event = _drain_for(result["delegation_id"])
+    assert event is not None
+    assert sink.outcomes == [(DetachedStatusPhase.DONE,)]
+
+
+def test_accepted_background_dispatch_installs_structural_event_tee(monkeypatch):
+    from unittest.mock import MagicMock
+
+    import tools.delegate_tool as dt
+    from tools.delegation_status import (
+        DetachedStatusPhase,
+        bind_detached_status_owner,
+    )
+
+    class Sink:
+        def __init__(self):
+            self.events = []
+
+        def observe(self, event):
+            self.events.append(event)
+
+        def finalize(self, outcomes):
+            pass
+
+    sink = Sink()
+
+    class Owner:
+        def admit_batch(self, task_count):
+            assert task_count == 1
+            return sink
+
+    parent = MagicMock()
+    parent._delegate_depth = 0
+    parent.session_id = "sess"
+    parent._interrupt_requested = False
+    parent._active_children = []
+    parent._active_children_lock = None
+    child = MagicMock()
+    child._delegate_role = "leaf"
+    child._subagent_id = "s1"
+    child.tool_progress_callback = None
+
+    def emitting_child(
+        task_index, goal, child=None, parent_agent=None, **kwargs
+    ):
+        assert child is not None
+        callback = child.tool_progress_callback
+        callback("subagent.start", preview="private goal")
+        callback("_thinking", "private reasoning")
+        callback("subagent.complete", status="completed", summary="private result")
+        return {
+            "task_index": task_index,
+            "status": "completed",
+            "summary": "private result",
+        }
+
+    creds = {
+        "model": "m", "provider": None, "base_url": None, "api_key": None,
+        "api_mode": None, "command": None, "args": None,
+    }
+    monkeypatch.setattr(dt, "_build_child_agent", lambda **kwargs: child)
+    monkeypatch.setattr(dt, "_run_single_child", emitting_child)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+
+    with bind_detached_status_owner(Owner()):
+        result = json.loads(
+            dt.delegate_task(
+                goal="status task", background=True, parent_agent=parent
+            )
+        )
+    assert _drain_for(result["delegation_id"]) is not None
+    assert [(event.task_index, event.depth, event.phase) for event in sink.events] == [
+        (0, 1, DetachedStatusPhase.WAITING),
+        (0, 1, DetachedStatusPhase.THINKING),
+        (0, 1, DetachedStatusPhase.DONE),
+    ]
+
+
 def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
     """TUI async delegation must route to the live/compressed agent id.
 
@@ -740,6 +964,91 @@ def test_concurrent_dispatch_respects_capacity():
     statuses = sorted(r["status"] for r in results)
     assert statuses == ["dispatched", "rejected"]
     gate.set()
+
+
+def test_batch_persistence_failure_rolls_back_before_worker_submission(monkeypatch):
+    worker_started = threading.Event()
+
+    def runner():
+        worker_started.set()
+        return {"results": []}
+
+    def fail_persistence(record):
+        raise RuntimeError("disk failed")
+
+    monkeypatch.setattr(ad, "_persist_dispatch", fail_persistence)
+
+    with pytest.raises(RuntimeError, match="disk failed"):
+        ad.dispatch_async_delegation_batch(
+            goals=["persist me"],
+            context=None,
+            toolsets=None,
+            role="leaf",
+            model="m",
+            session_key="",
+            runner=runner,
+            max_async_children=1,
+        )
+
+    assert ad.active_count() == 0
+    assert worker_started.is_set() is False
+
+
+def test_partial_persistence_failure_removes_durable_record(monkeypatch):
+    delegation_id = "deleg_partial_persistence"
+
+    def fail_pruning():
+        raise RuntimeError("prune failed")
+
+    monkeypatch.setattr(ad, "_prune_durable_records", fail_pruning)
+
+    with pytest.raises(RuntimeError, match="prune failed"):
+        ad.dispatch_async_delegation_batch(
+            goals=["persist me"],
+            context=None,
+            toolsets=None,
+            role="leaf",
+            model="m",
+            session_key="",
+            runner=lambda: {"results": []},
+            max_async_children=1,
+            delegation_id=delegation_id,
+        )
+
+    with ad._DB_LOCK, ad._transaction() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM async_delegations WHERE delegation_id=?",
+            (delegation_id,),
+        ).fetchone()
+    assert row is None
+
+
+def test_single_persistence_failure_rolls_back_before_worker_submission(monkeypatch):
+    worker_started = threading.Event()
+
+    def runner():
+        worker_started.set()
+        return {"status": "completed", "summary": "done"}
+
+    def fail_persistence(record):
+        raise RuntimeError("disk failed")
+
+    monkeypatch.setattr(ad, "_persist_dispatch", fail_persistence)
+
+    with pytest.raises(RuntimeError, match="disk failed"):
+        ad.dispatch_async_delegation(
+            goal="persist me",
+            context=None,
+            toolsets=None,
+            role="leaf",
+            model="m",
+            session_key="",
+            runner=runner,
+            max_async_children=1,
+        )
+
+    assert ad.active_count() == 0
+    assert worker_started.is_set() is False
 
 
 # ---------------------------------------------------------------------------

@@ -521,6 +521,75 @@ class TestStreamingAccumulator:
 # ── Test: Streaming Callbacks ────────────────────────────────────────────
 
 
+    @pytest.mark.parametrize(
+        "chunks, expect_content, expect_finish, expect_refusal",
+        [
+            pytest.param(
+                [(None, "I can't"), (None, " help with that."), (None, None)],
+                "I can't help with that.", "content_filter", "I can't help with that.",
+                id="refusal-only",
+            ),
+            pytest.param(
+                [("Partial answer.", None), (None, "But I won't do the rest."), (None, None)],
+                "Partial answer.", "stop", "But I won't do the rest.",
+                id="refusal-alongside-content",
+            ),
+        ],
+    )
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_streamed_refusal_accumulated(
+        self, mock_close, mock_create, chunks, expect_content, expect_finish, expect_refusal
+    ):
+        """delta.refusal streams assemble onto message.refusal.
+
+        A refusal-only stream must not raise EmptyStreamError; the transport's
+        normalize_response promotes a sole-payload refusal to content +
+        content_filter, while a refusal next to real content stays a normal
+        usable turn with the note in provider_data.
+        """
+        from run_agent import AIAgent
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        def _chunk(content, refusal, finish_reason=None):
+            delta = SimpleNamespace(
+                content=content,
+                tool_calls=None,
+                reasoning_content=None,
+                reasoning=None,
+                refusal=refusal,
+            )
+            choice = SimpleNamespace(index=0, delta=delta, finish_reason=finish_reason)
+            return SimpleNamespace(choices=[choice], model="test-model", usage=None)
+
+        *body, last = chunks
+        stream = [_chunk(*c) for c in body] + [_chunk(*last, finish_reason="stop")]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(stream)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+        assert response.choices[0].message.refusal == expect_refusal
+
+        normalized = ChatCompletionsTransport().normalize_response(response)
+        assert normalized.content == expect_content
+        assert normalized.finish_reason == expect_finish
+        if expect_finish == "stop":
+            assert normalized.provider_data["refusal"] == expect_refusal
+
+
 class TestStreamingCallbacks:
     """Verify that delta callbacks fire correctly."""
 
@@ -1099,17 +1168,7 @@ class TestAnthropicStreamCallbacks:
         agent._interrupt_requested = False
         monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
 
-        class _BadStream:
-            response = None
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-            def __iter__(self):
-                raise ValueError("expected ident at line 1 column 149")
+        bad_stream = _AnthropicEventStream([], ValueError("expected ident at line 1 column 149"))
 
         final_message = SimpleNamespace(content=[], stop_reason="end_turn")
         good_stream = MagicMock()
@@ -1120,7 +1179,7 @@ class TestAnthropicStreamCallbacks:
 
         agent._anthropic_client = MagicMock()
         agent._anthropic_client.messages.stream.side_effect = [
-            _BadStream(),
+            bad_stream,
             good_stream,
         ]
         agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
@@ -1135,6 +1194,100 @@ class TestAnthropicStreamCallbacks:
         assert mock_replace.call_count == 0
         assert mock_rebuild.call_count == 0
         assert agent._anthropic_client.close.call_count >= 1
+
+    def test_anthropic_malformed_tool_json_retries_with_buffered_tool_input(self):
+        """#107830: a parser ValueError mid tool-args (after visible text) is retried on the SAME
+        stream wire with ``eager_input_streaming: false`` on every tool (server-validated args),
+        never a second ``create()`` request; the happy path keeps fine-grained streaming."""
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.anthropic.com",
+            model="claude-sonnet-4-5",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+
+        # Text already reached the user, so only the mid-tool-call retry path may re-open the
+        # stream; a tool_use that never registers as in flight is stubbed instead.
+        malformed = _AnthropicEventStream(
+            [
+                SimpleNamespace(type="content_block_delta", delta=SimpleNamespace(type="text_delta", text="Checking the tool.")),
+                SimpleNamespace(type="content_block_start", content_block=SimpleNamespace(type="tool_use", name="cronjob_manage")),
+            ],
+            ValueError("expected value at line 1 column 11"),
+        )
+
+        repaired_message = SimpleNamespace(
+            content=[SimpleNamespace(type="tool_use", name="cronjob_manage", input={"names": "cronjob_manage"})],
+            stop_reason="tool_use",
+        )
+        good_stream = MagicMock()
+        good_stream.__enter__ = MagicMock(return_value=good_stream)
+        good_stream.__exit__ = MagicMock(return_value=False)
+        good_stream.__iter__ = MagicMock(return_value=iter([]))
+        good_stream.get_final_message.return_value = repaired_message
+
+        seen_tools = []
+
+        def _stream(**kwargs):
+            seen_tools.append([dict(t) for t in kwargs["tools"]])
+            return malformed if len(seen_tools) == 1 else good_stream
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.side_effect = _stream
+        agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
+        tools = [{"name": "cronjob_manage", "input_schema": {"type": "object"}}]
+
+        response = agent._interruptible_streaming_api_call({"model": agent.model, "tools": tools})
+
+        assert response is repaired_message
+        assert agent._anthropic_client.messages.create.call_count == 0
+        assert len(seen_tools) == 2
+        assert "eager_input_streaming" not in seen_tools[0][0]
+        assert seen_tools[1][0]["eager_input_streaming"] is False
+
+    def test_anthropic_partial_tool_names_do_not_survive_into_next_attempt(self):
+        """A tool name from an attempt that died before any text is attempt-local: when the
+        retry streams plain text and then drops, the partial stub must not blame ``old_tool``
+        (that would also make the third attempt look mid-tool-call and thus retryable)."""
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.anthropic.com",
+            model="claude-sonnet-4-5",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+
+        attempts = [
+            _AnthropicEventStream([SimpleNamespace(type="content_block_start",
+                                     content_block=SimpleNamespace(type="tool_use", name="old_tool"))],
+                    ValueError("expected value at line 1 column 11")),
+            _AnthropicEventStream([SimpleNamespace(type="content_block_delta",
+                                     delta=SimpleNamespace(type="text_delta", text="Plain answer."))],
+                    ConnectionError("connection dropped")),
+        ]
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.side_effect = lambda **kwargs: attempts.pop(0)
+        agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
+        emitted = []
+        agent._fire_stream_delta = lambda text: emitted.append(text)
+
+        response = agent._interruptible_streaming_api_call(
+            {"model": agent.model, "tools": [{"name": "old_tool", "input_schema": {"type": "object"}}]})
+
+        assert agent._anthropic_client.messages.stream.call_count == 2
+        assert "old_tool" not in (response.choices[0].message.content or "")
+        assert not any("old_tool" in t for t in emitted)
 
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_generic_anthropic_valueerror_still_propagates_without_stream_retry(
@@ -1778,6 +1931,25 @@ class TestBedrockIamStreamingFallback:
         assert response.choices[0].message.content == "hi"
         assert getattr(agent, "_disable_streaming", False) is True
 
+
+
+class _AnthropicEventStream:
+    """``messages.stream()`` context manager that yields *events* then raises *error* mid-stream."""
+
+    response = None
+
+    def __init__(self, events, error):
+        self._events, self._error = events, error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def __iter__(self):
+        yield from self._events
+        raise self._error
 
 
 class _BlockingEventStream:

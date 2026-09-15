@@ -314,7 +314,7 @@ class TestWelcomeRouteCopy:
             "https://inference-api.nousresearch.com/v1", monkeypatch
         )
 
-        expected = "Nous Portal rate limit active — resets in 10m."
+        expected = "Your Nous account has hit its rate limit; it resets in 10m."
         assert verdict.action == "return"
         assert statuses == [f"⏳ {expected}"]
         assert verdict.result["final_response"].startswith(f"⏳ {expected}\n\n")

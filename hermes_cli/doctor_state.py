@@ -11,6 +11,7 @@ from hermes_cli.doctor_report import (
 )
 from hermes_cli.sizefmt import format_bytes as _human_bytes
 from hermes_state_common import FTS_STORAGE_VERSION
+from hermes_state_holders import read_only_db_uri
 
 
 def _honcho_is_configured_for_doctor() -> bool:
@@ -150,11 +151,43 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
 
 def _session_count(state_db_path: Path):
     import sqlite3
-    conn = sqlite3.connect(str(state_db_path))
+    # mode=ro: doctor is a reader; a writable open of a gateway-held WAL DB is the second-writer class (#103339).
+    conn = sqlite3.connect(read_only_db_uri(state_db_path), uri=True)
     try:
         return conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
     finally:
         conn.close()
+
+
+# Above this the snapshot copy a held store needs costs more than the probe is worth; --fix still probes.
+_WRITE_PROBE_SNAPSHOT_MAX_BYTES = 1 << 30
+
+
+def _write_health_reason(state_db_path: Path, *, should_fix: bool):
+    """FTS/write-health probe (a rolled-back BEGIN IMMEDIATE). Against a store a live writer holds,
+    that probe is the second-writer class (#103339), so probe a read-only snapshot instead; a quiet
+    store is probed in place. Returns the failure reason, or None when healthy or skipped."""
+    from hermes_state_repair import _db_opens_cleanly, _live_writer_holds_db
+    if not _live_writer_holds_db(state_db_path):
+        return _db_opens_cleanly(state_db_path)
+    if not should_fix and state_db_path.stat().st_size > _WRITE_PROBE_SNAPSHOT_MAX_BYTES:
+        check_info("state.db write-health probe skipped: store is held by a live writer and larger than 1 GB "
+                   "(run 'hermes doctor --fix' to probe it)")
+        return None
+    import sqlite3
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        snapshot = Path(tmp) / "state.db"
+        src = sqlite3.connect(read_only_db_uri(state_db_path), uri=True, timeout=1.0)
+        try:
+            dest = sqlite3.connect(str(snapshot))
+            try:
+                src.backup(dest)
+            finally:
+                dest.close()
+        finally:
+            src.close()
+        return _db_opens_cleanly(snapshot)
 
 
 # Corruption class -> (ok label, not-fixed label, failed issue, fix hint). ``{count}`` = recovered sessions.
@@ -203,31 +236,43 @@ def _repair_state_db(f: Finding, should_fix: bool, state_db_path: Path, kind: st
     f.fixed += 1
 
 
+def _report_structural_damage(f: Finding, should_fix: bool, state_db_path: Path, _DHH: str, reason) -> bool:
+    """True (and reported/repaired) when the canonical b-tree, not just the FTS index, is damaged."""
+    from hermes_state_repair import state_db_has_structural_damage
+    if not state_db_has_structural_damage(state_db_path):
+        return False
+    check_warn(f"{_DHH}/state.db has structural corruption (canonical tables/indexes damaged, "
+               "not the FTS index)", f"({reason})")
+    _repair_state_db(f, should_fix, state_db_path, "structural")
+    return True
+
+
+def _classify_unreadable_state_db(f: Finding, should_fix: bool, state_db_path: Path, _DHH: str, exc: Exception) -> None:
+    """Structural damage first; only then schema repair. Avoids SessionDB auto-repair side effects."""
+    from hermes_state import is_malformed_db_error
+    if _report_structural_damage(f, should_fix, state_db_path, _DHH, exc):
+        return
+    if not is_malformed_db_error(exc):
+        return check_warn(f"{_DHH}/state.db exists but has issues: {exc}")
+    # sqlite_master itself is malformed (e.g. duplicate messages_fts): every statement fails before it runs,
+    # so this is NOT a plain FTS rebuild — repair sqlite_master in place (backup first).
+    check_warn(f"{_DHH}/state.db schema is malformed (sessions hidden until repaired)", f"({exc})")
+    _repair_state_db(f, should_fix, state_db_path, "schema")
+
+
 def _state_db_health(f: Finding, should_fix: bool, state_db_path: Path, _DHH: str) -> None:
     """Session count + FTS write-health probe; malformed-schema path when even COUNT(*) fails."""
     try:
         check_ok(f"{_DHH}/state.db exists ({_session_count(state_db_path)} sessions)")
-        # COUNT(*) succeeds even when the FTS index is corrupt and every write fails through the triggers;
-        # _db_opens_cleanly drives a rolled-back write to surface that.
-        from hermes_state_repair import _db_opens_cleanly, state_db_has_structural_damage
-        # `_db_opens_cleanly` now drives a rolled-back write so this otherwise-silent corruption class is
-        # surfaced (and repaired in place with --fix). See #50502.
-        _write_reason = _db_opens_cleanly(state_db_path)
-        if _write_reason is not None:
-            if state_db_has_structural_damage(state_db_path):
-                check_warn(f"{_DHH}/state.db has structural corruption (canonical tables/indexes damaged, "
-                           "not the FTS index)", f"({_write_reason})")
-                return _repair_state_db(f, should_fix, state_db_path, "structural")
-            check_warn(f"{_DHH}/state.db fails a write-health probe (FTS index may be corrupt)", f"({_write_reason})")
-            _repair_state_db(f, should_fix, state_db_path, "fts")
+        # COUNT(*) succeeds even when the FTS index is corrupt and every write fails through the triggers.
+        _write_reason = _write_health_reason(state_db_path, should_fix=should_fix)
     except Exception as e:
-        from hermes_state import is_malformed_db_error
-        if not is_malformed_db_error(e):
-            return check_warn(f"{_DHH}/state.db exists but has issues: {e}")
-        # sqlite_master itself is malformed (e.g. duplicate messages_fts): every statement fails before it runs,
-        # so this is NOT a plain FTS rebuild — repair sqlite_master in place (backup first).
-        check_warn(f"{_DHH}/state.db schema is malformed (sessions hidden until repaired)", f"({e})")
-        _repair_state_db(f, should_fix, state_db_path, "schema")
+        return _classify_unreadable_state_db(f, should_fix, state_db_path, _DHH, e)
+    if _write_reason is not None:
+        if _report_structural_damage(f, should_fix, state_db_path, _DHH, _write_reason):
+            return
+        check_warn(f"{_DHH}/state.db fails a write-health probe (FTS index may be corrupt)", f"({_write_reason})")
+        _repair_state_db(f, should_fix, state_db_path, "fts")
 
 
 def _state_db_stats(issues: list, state_db_path: Path) -> None:
@@ -256,24 +301,27 @@ def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:
             check_warn(f"WAL file is large ({size // (1024*1024)} MB)", "(may indicate missed checkpoints)")
             if not should_fix:
                 return f.issues.append("Large WAL file — run 'hermes doctor --fix' to checkpoint")
-            # Checkpoint-lock premise (#40177): a bare connect runs WAL recovery and the checkpoint joins the
-            # live WAL — under a running gateway that second-writer handling corrupts state.db. Skip instead.
+            # Checkpoint-lock premise (#40177, #103339): a bare connect runs WAL recovery and the checkpoint
+            # joins the live WAL — under a running gateway that second-writer handling corrupts state.db.
+            # Holder scan first (any other process holding the DB, or an unknown, fails closed), then run the
+            # checkpoint on the exclusive repair guard so an opener arriving in between is refused, not joined.
             from hermes_state_holders import live_writer_holds_db
-            from hermes_state_repair import _connect_repair_durable
+            from hermes_state_repair import _connect_repair_durable, _exclusive_repair_db_guard
+            _SKIP = ("Large WAL file — cannot prove state.db is quiet (stop the profile's gateway first, then "
+                     "re-run 'hermes doctor --fix' to checkpoint)")
             if live_writer_holds_db(state_db_path, connect_repair_durable=_connect_repair_durable):
-                # Honest disjunction (gate C1): a True here means "held OR
-                # unprovable" — the DatabaseError lane fires when SQLite
-                # cannot open the file at all, with nobody holding it. Never
-                # assert a live writer as fact.
+                # Honest disjunction (gate C1): a True here means "held OR unprovable" — never assert a live
+                # writer as fact.
                 check_warn("WAL checkpoint skipped: cannot prove state.db is quiet",
-                           "(a live writer holds it, or it is unreadable — stop the profile's gateway "
+                           "(another process holds it, or it is unreadable — stop the profile's gateway "
                            "and re-run 'hermes doctor --fix')")
-                return f.issues.append("Large WAL file — cannot prove state.db is quiet (stop the profile's "
-                                       "gateway first, then re-run 'hermes doctor --fix' to checkpoint)")
-            import contextlib
-            import sqlite3
-            with contextlib.closing(sqlite3.connect(str(state_db_path))) as conn:
-                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                return f.issues.append(_SKIP)
+            with _exclusive_repair_db_guard(state_db_path) as (guard, guard_error):
+                if guard is None:
+                    check_warn("WAL checkpoint skipped: could not take exclusive ownership of state.db",
+                               f"({guard_error}; stop the profile's gateway and re-run 'hermes doctor --fix')")
+                    return f.issues.append(_SKIP)
+                guard.execute("PRAGMA wal_checkpoint(PASSIVE)")
             check_ok(f"WAL checkpoint performed ({size // 1024}K → {wal_size() // 1024}K)")
             f.fixed += 1
         elif size > 10 * 1024 * 1024:  # 10 MB

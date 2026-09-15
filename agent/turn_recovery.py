@@ -27,7 +27,12 @@ from agent.message_sanitization import (
     close_interrupted_tool_sequence,
 )
 from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_thinking_timeout
+from agent.turn_failure_copy import (
+    CONTENT_POLICY_NEXT_STEPS, content_policy_copy, exhausted_copy, nonretryable_copy, provider_label_for,
+    site_copy, stamp_failure,
+)
 from agent.turn_retry_state import TurnRetryState
+from hermes_constants import display_hermes_home
 from utils import base_url_host_matches
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -663,9 +668,21 @@ def _welcome_tier_guidance(classified: Any, *, model: Any, in_chat: bool) -> str
 
 # Terminal status label per non-retryable reason (default names the HTTP status).
 _NONRETRYABLE_LABELS = {
-    FailoverReason.content_policy_blocked: "Provider safety filter blocked this request",
-    FailoverReason.ssl_cert_verification: "TLS certificate verification failed",
+    FailoverReason.content_policy_blocked: "The provider's safety filter refused this request",
+    FailoverReason.ssl_cert_verification: "The provider's security certificate could not be verified",
 }
+
+
+def _missing_vendor_prefix_suggestion(api_error: Exception, provider: Any, model: Any) -> Optional[str]:
+    """Prefixed catalogue id when a bare 404 most likely means ``vendor/model`` lost its prefix."""
+    if getattr(api_error, "status_code", None) != 404:
+        return None
+    try:
+        from hermes_cli.model_normalize import suggest_prefixed_model_id
+
+        return suggest_prefixed_model_id(str(provider or ""), str(model or ""))
+    except Exception:
+        return None
 
 
 def nonretryable_client_error_result(
@@ -677,9 +694,7 @@ def nonretryable_client_error_result(
     the retry trace, print auth / billing / content-policy / TLS guidance, persist (skipped
     for likely context-overflow 400s so the failure does not grow the session), build result."""
     # Result/guidance helpers stay in the loop module (tests import + patch them there).
-    from agent.conversation_loop import (
-        _CONTENT_POLICY_RECOVERY_HINT, _billing_failure_result, _content_policy_blocked_result,
-    )
+    from agent.conversation_loop import _billing_failure_result, _content_policy_blocked_result
 
     if api_kwargs is not None:
         agent._dump_api_request_debug(api_kwargs, reason="non_retryable_client_error", error=api_error)
@@ -688,15 +703,18 @@ def nonretryable_client_error_result(
     # Summarize once: Cloudflare/proxy HTML pages and raw provider bodies must be
     # collapsed here or they leak verbatim via the ``error`` field.
     _nonretryable_summary = agent._summarize_api_error(api_error)
-    _label = _NONRETRYABLE_LABELS.get(classified.reason, f"Non-retryable error (HTTP {status_code})")
+    _plabel = provider_label_for(provider)
+    _label = _NONRETRYABLE_LABELS.get(classified.reason, f"{_plabel} rejected the request and retrying won't help")
     agent._emit_status(f"❌ {_label}: {_nonretryable_summary}")
-    _vlines(
-        agent,
-        f"❌ Non-retryable client error (HTTP {status_code}). Aborting.",
-        f"   🔌 Provider: {provider}  Model: {model}",
-        f"   🌐 Endpoint: {base_url}",
-    )
+    # The endpoint/status trace is developer detail: verbose only (the log has it always).
+    if getattr(agent, "verbose_logging", False):
+        _vlines(
+            agent,
+            f"   🔌 Provider: {provider}  Model: {model}  (HTTP {status_code})",
+            f"   🌐 Endpoint: {base_url}",
+        )
     _welcome_hint = _welcome_tier_guidance(classified, model=model, in_chat=False)
+    _prefix_suggestion = _missing_vendor_prefix_suggestion(api_error, provider, model)
     if _welcome_hint:
         # A free-tier gate or a wrong-host refusal: the way forward is a sign-in or another
         # provider, never the key/credits advice below.
@@ -705,28 +723,30 @@ def nonretryable_client_error_result(
         _print_nonretryable_auth_guidance(
             agent, classified, status_code=status_code, provider=provider, base_url=base_url, model=model
         )
-    else:
-        _vlines(agent, "   💡 This type of error won't be fixed by retrying.")
+    elif classified.reason == FailoverReason.model_not_found:
+        _vlines(agent, f"   💡 Model '{model}' isn't available on {_plabel}. Pick another with /model.")
+        if _prefix_suggestion:
+            _vlines(agent, f"      Did you mean '{_prefix_suggestion}'? It looks like the vendor prefix is missing.")
+    elif classified.reason not in _NONRETRYABLE_LABELS:
+        _vlines(agent, f"   💡 Fix: pick another model (/model), or check `{display_hermes_home()}/logs/agent.log`.")
     # Content-policy blocks: the provider refused this prompt, so recovery is a rephrase
     # or another model, not key/retry advice.
     if classified.reason == FailoverReason.content_policy_blocked:
         _vlines(
             agent,
-            "   💡 The provider's safety filter rejected this specific prompt.",
-            "      • Try rephrasing the request, narrowing the context, or splitting into smaller steps.",
-            "      • Configure a fallback provider so future blocks route automatically:",
-            "        hermes fallback add   (interactive picker — same as `hermes model`)",
+            f"   💡 {CONTENT_POLICY_NEXT_STEPS}",
+            "      To route future blocks to another provider automatically: hermes fallback add",
         )
     # TLS certificate failures are environment problems — name the knobs for each cause.
     if classified.reason == FailoverReason.ssl_cert_verification:
         _vlines(
             agent,
-            "   💡 The TLS certificate chain could not be verified. This fails the same",
+            "   💡 Hermes couldn't verify the provider's security certificate. This fails the same",
             "      way on every retry — fix the environment, then try again:",
             "      • Corporate TLS-inspecting proxy? Point Python at its CA bundle:",
             "        export SSL_CERT_FILE=/path/to/corp-ca.pem  (also REQUESTS_CA_BUNDLE)",
-            "      • Missing/stale system CA store? Install/refresh it:",
-            "        pip install --upgrade certifi   (macOS: run 'Install Certificates.command')",
+            "      • Missing/stale system CA store? Refresh it (in Hermes's venv: `uv pip install",
+            "        --upgrade certifi`; macOS: run 'Install Certificates.command').",
             "      • Self-signed local endpoint (llama.cpp, LM Studio, vLLM)? Use http://",
             "        for localhost, or add the server's cert to your trust store.",
         )
@@ -740,14 +760,10 @@ def nonretryable_client_error_result(
     else:
         agent._persist_session(messages, conversation_history)
     if classified.reason == FailoverReason.content_policy_blocked:
-        _policy_response = (
-            "⚠️  The model provider's safety filter blocked this request "
-            "(not a Hermes/gateway failure).\n\n"
-            f"Provider message: {_nonretryable_summary}\n\n"
-            f"{_CONTENT_POLICY_RECOVERY_HINT}"
-        )
         return _content_policy_blocked_result(
-            messages, api_call_count, final_response=_policy_response, error_detail=_nonretryable_summary,
+            messages, api_call_count,
+            final_response="⚠️ " + content_policy_copy(label=_plabel, summary=_nonretryable_summary),
+            error_detail=_nonretryable_summary,
         )
     # Billing walls get the same structured recovery descriptor as the max-retries path
     # so every surface renders one consistent signal.
@@ -756,9 +772,14 @@ def nonretryable_client_error_result(
             classified=classified, summary=_nonretryable_summary, messages=messages,
             api_call_count=api_call_count, provider=provider, base_url=base_url, model=model,
         )
-    _final_response = _nonretryable_summary
     if _welcome_hint:
-        _final_response += f"\n\n{_welcome_tier_guidance(classified, model=model, in_chat=True)}"
+        _final_response = f"{_nonretryable_summary}\n\n{_welcome_tier_guidance(classified, model=model, in_chat=True)}"
+    else:
+        # Every surface reads final_response; the CLI hint lines above never reach chat.
+        _final_response = nonretryable_copy(
+            classified, provider=provider, model=model, summary=_nonretryable_summary,
+            prefix_suggestion=_prefix_suggestion,
+        )
     result = _failed_turn_result(_final_response, messages, api_call_count, _nonretryable_summary)
     # Same verdict fields as the max-retries path: without them the UI descriptor
     # (agent/error_surface.py) reads a rejected OAuth token as a retryable
@@ -839,18 +860,7 @@ def max_retries_exhausted_result(
     # Distinct from _is_stream_drop; detection lives in agent.thinking_timeout_guidance.
     _is_thinking_timeout = is_thinking_timeout(classified, model, error_msg)
     if _is_thinking_timeout:
-        _vlines(
-            agent,
-            "   💡 The model's thinking phase exceeded the upstream proxy's idle "
-            "timeout before the first content token arrived. This is a known issue with "
-            "reasoning models behind cloud gateways (NVIDIA NIM, OpenAI, Anthropic, DeepSeek).",
-            "      Workarounds in priority order:",
-            f"      1. Set `providers.{provider}.models.{model}.stale_timeout_seconds: 900` "
-            "in `~/.hermes/config.yaml` to extend the per-call timeout. (Hermes's built-in floor is 600s for "
-            "known reasoning models — if you still see this after raising, the upstream cap is even shorter.)",
-            "      2. Lower `reasoning_budget` or set `reasoning_effort: medium` on this model if the provider supports it.",
-            "      3. Use a smaller / faster reasoning model if the task doesn't require deep thinking.",
-        )
+        _vlines(agent, f"   💡 {build_thinking_timeout_guidance(provider=provider, model=model).strip()}")
 
     logger.error(
         "%sAPI call failed after %s retries. %s | provider=%s model=%s msgs=%s tokens=~%s",
@@ -872,21 +882,23 @@ def max_retries_exhausted_result(
             provider, base_url, model, _billing_guidance, unverified=_billing_unverified
         )
     else:
-        _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
+        # Every surface reads final_response (the 💡 lines above are CLI-only), so the chat
+        # text carries the plain what-happened + next step itself.
+        _final_response = exhausted_copy(
+            classified.reason.value, label=provider_label_for(provider), attempts=max_retries,
+            summary=_final_summary,
+        )
         if _welcome_hint:
             _final_response += f"\n\n{_welcome_tier_guidance(classified, model=model, in_chat=True)}"
     if _is_thinking_timeout:
         # Thinking-timeout guidance overrides stream-drop guidance, which would wrongly
         # suggest splitting large file writes.
-        _final_response += build_thinking_timeout_guidance(provider=provider, model=model)
+        _final_response += "\n\n" + build_thinking_timeout_guidance(provider=provider, model=model)
     elif _is_stream_drop:
         _final_response += (
-            "\n\nThe provider's stream connection keeps "
-            "dropping — this often happens when generating "
-            "very large tool call responses (e.g. write_file "
-            "with long content). Try asking me to use "
-            "execute_code with Python's open() for large "
-            "files, or to write in smaller sections."
+            "\n\nThe connection kept dropping while the model was writing — this often "
+            "happens when it writes a very large file in one go. Ask me to write the file in "
+            "smaller sections (or via execute_code with Python's open())."
         )
     result = _failed_turn_result(_final_response, messages, api_call_count, _final_summary)
     result.update({
@@ -921,20 +933,21 @@ def log_api_error_attempt(
     _provider = getattr(agent, "provider", "unknown")
     _base = getattr(agent, "base_url", "unknown")
     _model = getattr(agent, "model", "unknown")
-    _status_code_str = f" [HTTP {status_code}]" if status_code else ""
-    _blines(
-        agent,
-        f"⚠️  API call failed (attempt {retry_count}/{max_retries}): {error_type}{_status_code_str}",
-        f"   🔌 Provider: {_provider}  Model: {_model}",
-        f"   🌐 Endpoint: {_base}",
-        f"   📝 Error: {_error_summary}",
-    )
-    if status_code and status_code < 500:
-        _err_body = getattr(api_error, "body", None)
-        _err_body_str = str(_err_body)[:300] if _err_body else None
-        if _err_body_str:
-            _blines(agent, f"   📋 Details: {_err_body_str}")
-    _blines(agent, f"   ⏱️  Elapsed: {elapsed_time:.2f}s  Context: {len(api_messages)} msgs, ~{approx_tokens:,} tokens")
+    _blines(agent, f"⚠️  Attempt {retry_count}/{max_retries} failed: {_error_summary}")
+    # Exception class, endpoint, raw body and token counts are developer detail: verbose only.
+    if getattr(agent, "verbose_logging", False):
+        _status_code_str = f" [HTTP {status_code}]" if status_code else ""
+        _blines(
+            agent,
+            f"   🔌 {error_type}{_status_code_str}  Provider: {_provider}  Model: {_model}",
+            f"   🌐 Endpoint: {_base}",
+        )
+        if status_code and status_code < 500:
+            _err_body = getattr(api_error, "body", None)
+            _err_body_str = str(_err_body)[:300] if _err_body else None
+            if _err_body_str:
+                _blines(agent, f"   📋 Details: {_err_body_str}")
+        _blines(agent, f"   ⏱️  Elapsed: {elapsed_time:.2f}s  Context: {len(api_messages)} msgs, ~{approx_tokens:,} tokens")
 
     if agent._is_openrouter_url() and "support tool use" in error_msg:
         _blines(agent, f"   💡 No OpenRouter providers for {_model} support tool calling with your current settings.")
@@ -949,19 +962,13 @@ def log_api_error_attempt(
 
     # Bare 404 on a ``vendor/model`` catalogue usually means the id lost its prefix; the
     # provider never names the model, so we do.
-    if getattr(api_error, "status_code", None) == 404:
-        try:
-            from hermes_cli.model_normalize import suggest_prefixed_model_id
-
-            _suggestion = suggest_prefixed_model_id(_provider, _model)
-        except Exception:
-            _suggestion = None
-        if _suggestion:
-            _blines(
-                agent,
-                f"   💡 Model '{_model}' is not a valid id for provider {_provider} — it is missing its vendor prefix.",
-                f"      Did you mean '{_suggestion}'?  Re-pick it with `hermes model`.",
-            )
+    _suggestion = _missing_vendor_prefix_suggestion(api_error, _provider, _model)
+    if _suggestion:
+        _blines(
+            agent,
+            f"   💡 Model '{_model}' is not a valid id for provider {_provider} — it is missing its vendor prefix.",
+            f"      Did you mean '{_suggestion}'?  Re-pick it with /model.",
+        )
     return error_type, error_msg, _provider, _base, _model
 
 
@@ -1363,25 +1370,21 @@ def route_classified_error(
         agent._flush_status_buffer()
         _vlines(
             agent,
-            "❌ Context overflow, but auto-compaction is disabled (compression.enabled: false).",
-            "   💡 Run /compress to compact manually, /new to start fresh, "
-            "switch to a larger-context model, or reduce attachments.",
+            "❌ The conversation is too long for the model and automatic shrinking is off (compression.enabled: false).",
+            "   💡 Run /compress to shrink it now, /new to start fresh, "
+            "pick a model with a bigger context window, or remove attachments.",
         )
         logger.error(
             f"{agent.log_prefix}Context overflow ({classified.reason.value}) with "
             f"auto-compaction disabled — not compressing."
         )
         agent._persist_session(messages, conversation_history)
-        _final_response = (
-            "Context overflow and auto-compaction is disabled "
-            "(compression.enabled: false). Run /compress to compact manually, "
-            "/new to start fresh, or switch to a larger-context model."
-        )
-        return _verdict("return", {
+        _final_response = site_copy("compression_disabled", model=agent.model)
+        return _verdict("return", stamp_failure({
             "final_response": _final_response, "messages": messages, "completed": False,
             "api_calls": api_call_count, "error": _final_response, "partial": True, "failed": True,
             "compaction_disabled": True,
-        })
+        }, "context_overflow", False))
 
     # Anthropic 429 "Extra usage is required for long context requests" is a
     # subscription-tier limit, not transient: cap at 200k and compress.

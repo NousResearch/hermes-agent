@@ -2,7 +2,7 @@ import { writeFileSync } from 'node:fs'
 
 import type { ScrollBoxHandle } from '@hermes/ink'
 import { evictInkCaches } from '@hermes/ink'
-import type { SessionInflightTurn, SessionResumeResponse, Usage } from '@hermes/shared/gateway-events'
+import type { InflightTurn, SessionResumeResult, Usage } from '@hermes/shared/gateway-events'
 import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
@@ -25,6 +25,7 @@ import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
+import { describeCredentialWarning } from './userMessages.js'
 
 export { refreshSessionView, scheduleResumeScrollToBottom } from './sessionResumeView.js'
 
@@ -54,13 +55,13 @@ export const writeActiveSessionFile = (sessionId: null | string, file = process.
   }
 }
 
-export const liveSessionInflightMessages = (inflight?: null | SessionInflightTurn): Msg[] => {
+export const liveSessionInflightMessages = (inflight?: null | InflightTurn): Msg[] => {
   const user = String(inflight?.user ?? '').trim()
 
   return user ? [{ role: 'user', text: user }] : []
 }
 
-export const hydrateLiveSessionInflight = (inflight?: null | SessionInflightTurn) => {
+export const hydrateLiveSessionInflight = (inflight?: null | InflightTurn) => {
   const assistant = String(inflight?.assistant ?? '')
 
   if (!assistant && !inflight?.streaming) {
@@ -226,7 +227,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       }
 
       if (info?.credential_warning) {
-        sys(`warning: ${info.credential_warning}`)
+        sys(`warning: ${describeCredentialWarning(info.credential_warning)}`)
       }
 
       if (info?.config_warning) {
@@ -340,9 +341,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         const previousSid = getUiState().sid
 
-        gw.request<SessionResumeResponse<SessionInfo>>('session.resume', { cols: colsRef.current, session_id: id })
+        gw.request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
           .then(raw => {
-            const r = asRpcResult<SessionResumeResponse<SessionInfo>>(raw)
+            const r = asRpcResult<SessionResumeResult>(raw)
 
             if (!r) {
               sys('error: invalid response: session.resume')
@@ -364,7 +365,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               busy: running,
               info,
               sid: r.session_id,
-              status: statusFromLiveSession(r.status, running),
+              status: statusFromLiveSession(r.status ?? undefined, running),
               usage: usageFrom(info)
             })
             hydrateLiveSessionInflight(r.inflight)

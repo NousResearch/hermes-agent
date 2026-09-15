@@ -47,6 +47,9 @@ import { cn, themedBody } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import {
+  gatewayStateNeedsLogs,
+  gatewayStateDescription,
+  gatewayActionFailedMessage,
   servedProfileRefusal,
   sharedGatewayProfiles,
   sharedGatewayRestartDescription,
@@ -69,6 +72,7 @@ import type {
   ActionPreflightResponse,
   GatewayMigratePlan,
 } from "@/lib/api";
+import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -361,7 +365,7 @@ export default function SystemPage() {
         setServedNotice(refusal);
         return false;
       }
-      showToast(`Gateway ${verb} failed: ${e}`, "error");
+      showToast(gatewayActionFailedMessage(verb, errorMessage(e), e), "error");
       return false;
     }
   };
@@ -397,7 +401,7 @@ export default function SystemPage() {
       showToast("Migrating to a single multiplexed gateway", "success");
       setTimeout(loadAll, 5000);
     } catch (e) {
-      showToast(`Gateway migration failed: ${e}`, "error");
+      showToast(`Gateway migration failed: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -409,7 +413,7 @@ export default function SystemPage() {
       showToast(curator.paused ? "Curator resumed" : "Curator paused", "success");
       loadAll();
     } catch (e) {
-      showToast(`Curator toggle failed: ${e}`, "error");
+      showToast(`Curator toggle failed: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -427,7 +431,7 @@ export default function SystemPage() {
           showToast(`Reset: ${res.deleted.join(", ") || "nothing"}`, "success");
           loadAll();
         } catch (e) {
-          showToast(`Reset failed: ${e}`, "error");
+          showToast(`Reset failed: ${errorMessage(e)}`, "error");
           throw e;
         }
       },
@@ -453,7 +457,7 @@ export default function SystemPage() {
       setCredLabel("");
       loadAll();
     } catch (e) {
-      showToast(`Failed to add credential: ${e}`, "error");
+      showToast(`Failed to add credential: ${errorMessage(e)}`, "error");
     } finally {
       setAddingCred(false);
     }
@@ -468,7 +472,7 @@ export default function SystemPage() {
           showToast("Credential removed", "success");
           loadAll();
         } catch (e) {
-          showToast(`Failed to remove: ${e}`, "error");
+          showToast(`Failed to remove: ${errorMessage(e)}`, "error");
           throw e;
         }
       },
@@ -483,7 +487,7 @@ export default function SystemPage() {
       setActiveAction(res.name);
       showToast(`${label} started`, "success");
     } catch (e) {
-      showToast(`${label} failed: ${e}`, "error");
+      showToast(`${label} failed: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -495,7 +499,7 @@ export default function SystemPage() {
       setDownloadableBackupArchive(null);
       showToast("Backup started", "success");
     } catch (e) {
-      showToast(`Backup failed: ${e}`, "error");
+      showToast(`Backup failed: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -522,7 +526,9 @@ export default function SystemPage() {
     setDownloadingBackup(true);
     try {
       const res = await api.downloadBackup(archive);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        throw apiErrorFromResponse(res.status, await res.text().catch(() => ""), res.url);
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -533,7 +539,7 @@ export default function SystemPage() {
       link.remove();
       URL.revokeObjectURL(url);
     } catch (e) {
-      showToast(`Download failed: ${e}`, "error");
+      showToast(`Download failed: ${errorMessage(e)}`, "error");
     } finally {
       setDownloadingBackup(false);
     }
@@ -555,7 +561,7 @@ export default function SystemPage() {
       showToast("Import started", "success");
       if (target.kind === "upload") clearImportFile();
     } catch (e) {
-      showToast(`Import failed: ${e}`, "error");
+      showToast(`Import failed: ${errorMessage(e)}`, "error");
     } finally {
       setImportingBackup(false);
     }
@@ -601,7 +607,7 @@ export default function SystemPage() {
         "success",
       );
     } catch (e) {
-      showToast(`Debug share failed: ${e}`, "error");
+      showToast(`Debug share failed: ${errorMessage(e)}`, "error");
     } finally {
       setSharing(false);
     }
@@ -631,7 +637,7 @@ export default function SystemPage() {
           }
         }
       } catch (e) {
-        showToast(`Update check failed: ${e}`, "error");
+        showToast(`Update check failed: ${errorMessage(e)}`, "error");
       } finally {
         setCheckingUpdate(false);
       }
@@ -663,7 +669,7 @@ export default function SystemPage() {
       setActiveAction(resp.name ?? "hermes-update");
       showToast("Update started", "success");
     } catch (e) {
-      showToast(`Update failed: ${e}`, "error");
+      showToast(`Update failed: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -674,7 +680,7 @@ export default function SystemPage() {
         setActiveAction(res.name);
         showToast("Checkpoint prune started", "success");
       } catch (e) {
-        showToast(`Prune failed: ${e}`, "error");
+        showToast(`Prune failed: ${errorMessage(e)}`, "error");
         throw e;
       }
     }, [showToast]),
@@ -702,7 +708,7 @@ export default function SystemPage() {
       setHookModalOpen(false);
       loadAll();
     } catch (e) {
-      showToast(`Failed to create hook: ${e}`, "error");
+      showToast(`Failed to create hook: ${errorMessage(e)}`, "error");
     } finally {
       setCreatingHook(false);
     }
@@ -719,7 +725,7 @@ export default function SystemPage() {
           showToast("Hook removed", "success");
           loadAll();
         } catch (e) {
-          showToast(`Failed to remove hook: ${e}`, "error");
+          showToast(`Failed to remove hook: ${errorMessage(e)}`, "error");
           throw e;
         }
       },
@@ -1171,9 +1177,13 @@ export default function SystemPage() {
                 {gatewayRunning ? "running" : "stopped"}
               </Badge>
               <span className="text-sm text-muted-foreground">
-                {status?.gateway_state ?? "—"}
-                {status?.gateway_pid ? ` · pid ${status.gateway_pid}` : ""}
+                {gatewayStateDescription(status?.gateway_state, gatewayRunning)}
               </span>
+              {gatewayStateNeedsLogs(status?.gateway_state) && (
+                <Link to="/logs?file=gateway" className="text-sm underline">
+                  Open logs
+                </Link>
+              )}
             </div>
             <div className="flex items-center gap-2">
               <Button

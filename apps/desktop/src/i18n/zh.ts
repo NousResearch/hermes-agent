@@ -16,19 +16,18 @@ export const zh = defineLocale({
     failed: '连接失败',
     needsAuth: '授权已过期',
     opening: '正在打开登录…',
-    waiting: '请在浏览器中完成连接…',
+    waiting: '正在等待浏览器…',
+    notConnected: '未连接',
     timeout: '仍在等待授权。',
-    keepWaiting: '继续等待',
     refresh: '刷新状态',
     statusError: '无法检查连接，请刷新重试。',
     connectError: '无法开始授权，请重试。',
+    connectErrorFor: app => `无法为 ${app} 开始授权。`,
     unavailable: '此会话暂时无法使用连接器。',
     ownerMissing: '请重新打开此对话以管理连接。',
     search: '查找应用',
     empty: '没有匹配的应用',
     disclaimer: '连接为可选操作。请仅授权你希望 Hermes 使用的应用。',
-    connectTitle: app => `连接 ${app}？`,
-    describe: app => `Hermes 会在浏览器中登录 ${app}，读取任何内容前都会先询问。`,
     execution: '连接器工具'
   },
 
@@ -220,7 +219,6 @@ export const zh = defineLocale({
       methodNotAllowed: '桌面后端拒绝了该请求 (405 Method Not Allowed)。请尝试重启 Hermes Desktop。',
       microphonePermission: '麦克风权限已被拒绝。',
       openaiRejectedApiKey: 'OpenAI 拒绝了该 API key。',
-      openaiRejectedApiKeyWithStatus: status => `OpenAI 拒绝了该 API key (${status} invalid_api_key)。`,
       openaiTtsNeedsKey: 'OpenAI TTS 需要 VOICE_TOOLS_OPENAI_KEY 或 OPENAI_API_KEY。',
       codeSkewRestartRequired: '更新后此后端仍在运行旧代码。请重启以加载新代码。'
     },
@@ -599,7 +597,7 @@ export const zh = defineLocale({
         desktopSuccess: name => `桌面插件 ${name} 已安装`,
         agentFailed: '智能体插件安装失败',
         desktopFailed: '桌面插件安装失败',
-        missingEnv: vars => `缺少环境变量：${vars}。请在设置 → 密钥中添加。`
+        missingEnv: (_name, vars) => `缺少环境变量：${vars}。请在设置 → 密钥中添加。`
       }
     },
     notifications: {
@@ -702,6 +700,12 @@ export const zh = defineLocale({
       terminalFontPlaceholder: 'MesloLGS NF 或 CSS 字体栈',
       terminalFontPreview: '字形预览',
       terminalFontReset: '使用默认字体',
+      chatFontTitle: '聊天字体',
+      chatFontDesc: '为聊天及应用界面选择已安装的字体，适合 OpenDyslexic 等易读字体；留空则使用主题字体。',
+      chatFontPlaceholder: 'OpenDyslexic 或 CSS 字体栈',
+      chatFontPreview: '预览',
+      chatFontSample: '敏捷的棕色狐狸跳过懒狗。0123456789',
+      chatFontReset: '使用主题字体',
       translucencyTitle: '窗口透明',
       translucencyDesc: '让整个窗口（包括文字）透出桌面。',
       translucencyGlassDesc: '磨砂玻璃：桌面以柔和模糊透出，文字保持清晰。',
@@ -961,6 +965,7 @@ export const zh = defineLocale({
       compression: {
         enabled: '自动压缩',
         threshold: '压缩阈值',
+        codexGpt55Autoraise: 'Codex 压缩自动提高',
         targetRatio: '压缩目标',
         protectLastN: '保护最近消息'
       },
@@ -1025,7 +1030,8 @@ export const zh = defineLocale({
         engine: '在接近上下文上限时管理长对话的策略。'
       },
       compression: {
-        enabled: '当对话变大时对较早的上下文进行摘要。'
+        enabled: '当对话变大时对较早的上下文进行摘要。',
+        codexGpt55Autoraise: '为受支持的 ChatGPT Codex OAuth 模型将压缩阈值提高到 85%。'
       },
       browser: {
         useRealProfile:
@@ -1541,6 +1547,9 @@ export const zh = defineLocale({
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '标题生成', hint: '会话标题' },
         review: { label: '评审', hint: '/review 评审子智能体' },
+        triage_specifier: { label: '分类指定', hint: '看板任务规格补全' },
+        kanban_decomposer: { label: '看板分解', hint: '任务拆解' },
+        profile_describer: { label: '配置描述', hint: '自动生成配置描述' },
         curator: { label: '维护器', hint: '技能使用审查' }
       }
     },
@@ -1596,8 +1605,7 @@ export const zh = defineLocale({
       updateAction: '更新引擎',
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',
-      upToDateDetail: (tag, backend) => `正在运行 llama.cpp ${tag}（${backend}）——Hermes 提供的最新构建。`,
-      updateToast: next => `本地引擎有新构建（${next}）。可在 设置 → 本地模型 中更新。`,
+      upToDateDetail: (tag, backend) => `正在运行 llama.cpp ${tag}（${backend}）——已配置的构建。`,
       activeDetail: '新对话使用此模型——发送首条消息时加载',
       activeNotLoaded: '首条消息时加载',
       loadedPill: '已加载',
@@ -4083,22 +4091,18 @@ export const zh = defineLocale({
       lateAnswerHint: '此问题已不再等待回答。选择一个选项会将其起草为后续消息。'
     },
     mcpSetup: {
-      installTitle: server => `添加 ${server} MCP 服务器？`,
-      enableTitle: server => `启用 ${server} MCP 服务器？`,
-      authorizeTitle: server => `授权 ${server} MCP 服务器？`,
+      installTitle: '添加 MCP 服务器',
+      enableTitle: '启用 MCP 服务器',
+      authorizeTitle: '授权 MCP 服务器',
       installAction: '安装',
       enableAction: '启用',
       authorizeAction: '授权',
-      decline: '暂不',
-      declined: '已拒绝',
       installed: server => `已安装 ${server}`,
       enabled: server => `已启用 ${server}`,
       authorized: server => `已授权 ${server}`,
       failed: server => `${server} 设置失败`,
-      unanswered: '未响应',
       toolCount: count => `${count} 个工具`,
       notInCatalog: server => `“${server}”不在 MCP 目录中`,
-      catalogSource: '来自 Nous 认证目录',
       envRequired: '请先填写所需凭据',
       sendFailed: '无法发送 MCP 设置响应',
       reloadFailed: '服务器已保存，但重新加载 MCP 工具失败 — 将在下个会话加载',
@@ -4115,6 +4119,19 @@ export const zh = defineLocale({
       copyQuery: '复制查询',
       copyFile: '复制文件',
       copyPath: '复制路径',
+      failedCalls: (count: number) => `${count} 次工具调用失败`,
+      skillActivity: {
+        loading: '正在加载技能',
+        loaded: '已加载技能',
+        loadFailed: '技能加载失败',
+        readingResource: '正在读取技能资源',
+        readResource: '已读取技能资源',
+        resourceFailed: '技能资源读取失败',
+        listing: '正在列出技能',
+        listed: '已列出技能',
+        listFailed: '技能列表获取失败',
+        unavailable: '技能结果不可用'
+      },
       outputAlt: '工具输出',
       rawResponse: '原始响应',
       copyActivity: '复制活动',
@@ -4126,6 +4143,7 @@ export const zh = defineLocale({
       statusError: '错误',
       statusRecovered: '已恢复',
       statusDone: '完成',
+      resultUnavailable: '结果不可用',
       memoryWriteNoted: '已记下记忆写入',
       actions: {
         read: '已读取',
@@ -4185,7 +4203,8 @@ export const zh = defineLocale({
     sudoSendFailed: '无法发送 sudo 密码',
     secretSendFailed: '无法发送密钥',
     sudoTitle: '管理员密码',
-    sudoDesc: 'Hermes 需要你的 sudo 密码来运行特权命令。它只会发送给你的本地 agent。',
+    sudoDesc: '输入 sudo 密码前，请先检查命令。密码会发送给执行命令的 agent，并在本次会话中缓存。',
+    sudoCommandUnavailable: '此 agent 未提供命令。如果无法在对话中确认，请取消。',
     sudoPlaceholder: 'sudo 密码',
     secretTitle: '需要密钥',
     secretDesc: 'Hermes 需要一个凭据才能继续。',
@@ -4332,6 +4351,11 @@ export const zh = defineLocale({
       'composer-mentions': {
         title: '附件与命令',
         text: '输入 @ 把文件带入对话，输入 / 运行命令。'
+      },
+      'local-runtime-update': {
+        title: '本地引擎有可用更新',
+        text: '更新运行本地模型的引擎。正在进行的本地请求可能会中断。',
+        action: '立即更新'
       },
       'local-setup': {
         title: '这台电脑可以本地运行模型',

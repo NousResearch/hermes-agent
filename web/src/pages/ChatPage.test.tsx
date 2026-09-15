@@ -4,7 +4,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { PTY_TICKET_TIMEOUT_MS } from "@/lib/pty-reconnect";
+import {
+  PTY_RECONNECT_MAX_ATTEMPTS,
+  PTY_RECONNECT_MAX_MS,
+  PTY_TICKET_TIMEOUT_MS,
+} from "@/lib/pty-reconnect";
 
 class FakeFitAddon {
   fit() {}
@@ -273,6 +277,96 @@ describe("ChatPage", () => {
     });
 
     expect(maybeReloadForLoopbackWsAuthFailure).toHaveBeenCalledWith(4401);
+  });
+
+  it("explains an expired login in plain words with a Reload button when auto-reload is spent", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    await act(async () => {
+      FakeWebSocket.instances[0].onclose?.({ code: 4401, reason: "auth: bad-token", wasClean: true });
+    });
+
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toMatch(/login expired/i);
+    expect(alert?.textContent).not.toMatch(/auth failed|bad-token|4401/i);
+    const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent?.trim());
+    expect(labels).toContain("Reload page");
+  });
+
+  it("renders Start new session after the server could not start the chat (1011)", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    await act(async () => {
+      FakeWebSocket.instances[0].onclose?.({ code: 1011, reason: "", wasClean: true });
+    });
+
+    expect(container.textContent).toMatch(/Chat could not start/);
+    const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent?.trim());
+    expect(labels).toContain("Start new session");
+  });
+
+  it("offers Open logs when the agent process ended, since a crash looks like /exit", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    await act(async () => {
+      FakeWebSocket.instances[0].onclose?.({ code: 4410, reason: "", wasClean: true });
+    });
+
+    expect(container.textContent).toMatch(/may have crashed/i);
+    const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent?.trim());
+    expect(labels).toContain("Start new session");
+    expect(labels).toContain("Open logs");
+  });
+
+  it("stops retrying after the ladder is spent and offers Check server status", async () => {
+    vi.useFakeTimers();
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+      // Drop the socket abnormally; walk every scheduled retry to failure.
+      for (let attempt = 0; attempt <= PTY_RECONNECT_MAX_ATTEMPTS; attempt += 1) {
+        const sockets = FakeWebSocket.instances.length;
+        await act(async () => {
+          FakeWebSocket.instances[sockets - 1].onclose?.({ code: 1006, reason: "", wasClean: false });
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(PTY_RECONNECT_MAX_MS + 100);
+        });
+      }
+
+      expect(container.textContent).not.toMatch(/code 1006/);
+      expect(container.textContent).toMatch(/Lost connection to the Hermes dashboard server/);
+      expect(container.textContent).toContain("hermes dashboard");
+      const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent?.trim());
+      expect(labels).toContain("Reconnect now");
+      expect(labels).toContain("Check server status");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("attaches visualViewport keyboard-inset listeners only while the chat tab is active", async () => {

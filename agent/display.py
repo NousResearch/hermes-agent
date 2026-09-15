@@ -888,6 +888,8 @@ class KawaiiSpinner:
 # ── Cute tool message (completion line that replaces the spinner) ─────────
 
 _ERROR_SUFFIX_MAX_LEN = 48
+# A degraded backend (Docker down, SSH host unreachable) needs the whole reason plus the fix hint.
+_DEGRADED_SUFFIX_MAX_LEN = 200
 
 
 def _trim_error(msg: str) -> str:
@@ -900,17 +902,32 @@ def _trim_error(msg: str) -> str:
     return _tail_trunc(msg, _ERROR_SUFFIX_MAX_LEN)
 
 
+def _degraded_suffix(data: dict) -> str:
+    """`` [<reason> — <retry_hint>]`` for a ``status: degraded`` terminal result (hint omitted when empty)."""
+    reason = str(data.get("reason") or data.get("error") or "terminal backend unavailable").strip()
+    hint = str(data.get("retry_hint") or "").strip()
+    text = f"{reason} — {hint}" if hint else reason
+    return f" [{_tail_trunc(text, _DEGRADED_SUFFIX_MAX_LEN)}]"
+
+
 def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
     """Return ``(is_failure, suffix)`` for a tool result, e.g. ``(True, " [exit 1]")``."""
     if result is None or file_mutation_result_landed(tool_name, result):
         return False, ""
     data = safe_json_loads(result)
 
+    # A denied/timed-out approval carries one human sentence; show it instead of the model-facing
+    # "BLOCKED: ... Do NOT retry" text (which stays in the JSON for the model).
+    if isinstance(data, dict) and data.get("user_summary"):
+        return True, f" [{_tail_trunc(str(data['user_summary']), _DEGRADED_SUFFIX_MAX_LEN)}]"
+
     # Terminal: non-zero exit code is the canonical failure signal.
     if tool_name == "terminal":
         exit_code = data.get("exit_code") if isinstance(data, dict) else None
         if exit_code is None or exit_code == 0:
             return False, ""
+        if data.get("status") == "degraded":
+            return True, _degraded_suffix(data)
         err_msg = data.get("error")
         return True, f" [{_trim_error(str(err_msg))}]" if err_msg else f" [exit {exit_code}]"
 

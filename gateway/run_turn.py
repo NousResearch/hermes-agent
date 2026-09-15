@@ -24,7 +24,8 @@ from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
 from gateway.response_filters import (
-    display_kind_for_event, is_invisible_only_response, is_machinery_display_kind,
+    display_kind_for_event, is_intentional_silence_agent_result,
+    is_invisible_only_response, is_machinery_display_kind,
 )
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
@@ -281,11 +282,6 @@ class GatewayTurnMixin:
         if adapter and hasattr(adapter, "_post_delivery_callbacks"):
             return adapter._post_delivery_callbacks.pop(key, None)
         return None
-
-    @staticmethod
-    def _is_intentional_silence(agent_result, response, *, allow_invisible: bool = False) -> bool:
-        from gateway.response_filters import is_intentional_silence_agent_result
-        return is_intentional_silence_agent_result(agent_result, response, allow_invisible=allow_invisible)
 
     async def _hmwa_resolve_session(self, event, source):
         """Resolve ``source`` to its session entry (topic recovery, internal-route guards, Telegram
@@ -1392,7 +1388,7 @@ class GatewayTurnMixin:
         _allow_human_silence = agent_result.get("queued_terminal_allow_human_silence")
         if _allow_human_silence is None:
             _allow_human_silence = self._allows_human_silence_markers(source)
-        _intentional_silence = self._is_intentional_silence(
+        _intentional_silence = is_intentional_silence_agent_result(
             agent_result, response, allow_invisible=_allow_human_silence,
         )
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
@@ -3527,7 +3523,7 @@ class GatewayTurnMixin:
         )
         _allow_human_silence = self._allows_human_silence_markers(turn_ctx.source)
         # Use the same successful-turn predicate as normal final delivery.
-        _intentional_silence = self._is_intentional_silence(
+        _intentional_silence = is_intentional_silence_agent_result(
             _delivery_result, first_response, allow_invisible=_allow_human_silence,
         )
         if is_invisible_only_response(first_response) and not _intentional_silence:

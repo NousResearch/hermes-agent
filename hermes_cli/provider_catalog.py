@@ -115,3 +115,84 @@ def provider_catalog() -> list[ProviderDescriptor]:
 def provider_catalog_by_slug() -> dict[str, ProviderDescriptor]:
     """Convenience: the catalog keyed by slug."""
     return {d.slug: d for d in provider_catalog()}
+
+
+def excluded_provider_slugs(config: dict | None = None) -> frozenset[str]:
+    """Every provider name hidden by ``model_catalog.excluded_providers``.
+
+    An entry hides a provider when it names the provider's slug **or any of its
+    ``_PROVIDER_ALIASES`` aliases**, case-insensitively. The ``hermes model`` picker
+    (``hermes_cli.main_provider_setup._build_provider_picker_rows``) and the desktop
+    Providers tabs both resolve through this one function, so ``aws`` hides ``bedrock``
+    on every surface by construction. The returned set is closed over those aliases,
+    which is what lets a caller test a name that is not a canonical slug (the Accounts
+    tab's hand-written ``claude-code`` card, for one). A bare models.dev id that is
+    neither a slug nor an alias is matched only by the gateway/TUI picker rows.
+
+    ``config`` is read from the current ``HERMES_HOME`` when not supplied; pass a
+    loaded config when the caller is already inside a profile scope. Any failure
+    reading it yields an empty set — a config problem must never blank a surface.
+    """
+    if config is None:
+        load_config_readonly = _safe_import("hermes_cli.config", "load_config_readonly", None)
+        if load_config_readonly is None:
+            return frozenset()
+        try:
+            config = load_config_readonly()
+        except Exception:
+            return frozenset()
+    try:
+        raw = (config.get("model_catalog") or {}).get("excluded_providers") or []
+        entries = {str(p).strip().lower() for p in raw if str(p or "").strip()}
+    except Exception:
+        return frozenset()
+    if not entries:
+        return frozenset()
+    try:
+        from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_ALIASES
+    except Exception:
+        return frozenset(entries)  # slug-only matching is better than no matching
+    names_for: dict[str, set[str]] = {p.slug: {p.slug.lower()} for p in CANONICAL_PROVIDERS}
+    for alias, canon in _PROVIDER_ALIASES.items():
+        names_for.setdefault(canon, {canon.lower()}).add(alias.lower())
+    hidden = set(entries)
+    for names in names_for.values():
+        if names & entries:
+            hidden |= names
+    return frozenset(hidden)
+
+
+def provider_is_excluded(slug: str, excluded: frozenset[str] | None = None) -> bool:
+    """Whether ``slug`` is hidden by ``model_catalog.excluded_providers``.
+
+    Pass ``excluded`` (from :func:`excluded_provider_slugs`) when testing many slugs
+    against the same config; otherwise it is read per call.
+    """
+    if excluded is None:
+        excluded = excluded_provider_slugs()
+    return bool(excluded) and str(slug).strip().lower() in excluded
+
+
+def visible_provider_catalog(
+    catalog: list[ProviderDescriptor] | None = None,
+    excluded: frozenset[str] | None = None,
+) -> list[ProviderDescriptor]:
+    """:func:`provider_catalog` minus the providers this install hides.
+
+    ``provider_catalog()`` stays the universe — the parity contract is asserted against
+    it and plugin discovery extends it; visibility is a separate, per-install question.
+    Hiding is not disabling: an excluded provider named in ``model.provider`` still
+    resolves and a credential already stored for it keeps working.
+
+    Pass ``catalog`` (a ``provider_catalog()`` result already in hand) and ``excluded``
+    (from :func:`excluded_provider_slugs`) when the caller has both — the catalog build
+    runs plugin discovery, so a request that already holds the list should filter it
+    rather than build it again. Either one is read here when omitted.
+    """
+    if excluded is None:
+        excluded = excluded_provider_slugs()
+    if catalog is None:
+        catalog = provider_catalog()
+    if not excluded:
+        return catalog
+    return [d for d in catalog if not provider_is_excluded(d.slug, excluded)]

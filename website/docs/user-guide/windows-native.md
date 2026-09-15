@@ -251,6 +251,7 @@ These only affect native Windows installs:
 | Variable | Effect |
 |---|---|
 | `HERMES_GIT_BASH_PATH` | Override bash.exe discovery. Point at any bash — full Git-for-Windows, WSL bash via symlink, MSYS2, Cygwin. The installer sets this automatically. |
+| `HERMES_GIT_EXE_PATH` | Override git.exe discovery (used by desktop review / git worktree features). Same precedence and search locations as the bash override. |
 | `HERMES_DISABLE_WINDOWS_UTF8` | Set to `1` to disable the UTF-8 stdio shim and fall back to the locale code page. Useful for bisecting an encoding bug. |
 | `EDITOR` / `VISUAL` | Your editor for `/edit` and `Ctrl-X Ctrl-E`. Hermes defaults to `notepad` if both are unset. |
 

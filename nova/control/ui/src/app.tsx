@@ -8,6 +8,7 @@ import { Atmosphere, CommandBar, NAV, Sidebar, TopBar } from "@/components/shell
 import { TooltipProvider } from "@/components/tooltip";
 import { AgentDetail, AgentsScreen } from "@/screens/agents";
 import { CreateAgent } from "@/screens/agent-create";
+import { SettingsScreen } from "@/screens/settings";
 import {
   ActivityScreen, ApprovalsScreen, ChannelsScreen, KnowledgeScreen,
   ObjectivesScreen, PoliciesScreen, UsageScreen, WorkScreen,
@@ -26,6 +27,7 @@ const OVERVIEW_AGENTS = 6;
 
 const SCREEN_META: Record<string, { title: string; subtitle: string }> = {
   overview: { title: "Overview", subtitle: "The state of the whole workforce, at a glance." },
+  settings: { title: "Settings", subtitle: "Who this deployment serves, and what the workforce is called." },
   agents: { title: "Agents", subtitle: "Every AI worker, what it is doing, and what it may reach." },
   objectives: { title: "Objectives", subtitle: "Repeatable business processes and how far each has got." },
   work: { title: "Work", subtitle: "Everything on the board, newest first." },
@@ -50,7 +52,9 @@ export default function App() {
   // follow without waiting out the poll interval. Declared before the reads that use it:
   // `const` is not hoisted, and referencing it earlier throws at render.
   const [agentNonce, setAgentNonce] = React.useState(0);
-  const identity = usePanel<Identity>("/identity", 60000);
+  // Re-reads branding after a settings save, so the shell reflects it at once.
+  const [identityNonce, setIdentityNonce] = React.useState(0);
+  const identity = usePanel<Identity>("/identity", 60000, identityNonce);
   const health = usePanel<Health>("/health");
   const agents = usePanel<{ agents: Agent[] }>("/agents", 15000, agentNonce);
   const tasks = usePanel<{ tasks: Task[]; counts?: Record<string, number> }>("/tasks?limit=200");
@@ -86,6 +90,39 @@ export default function App() {
   React.useEffect(() => {
     if (brand?.product_name) document.title = `${brand.product_name} — Control Center`;
   }, [brand?.product_name]);
+
+  // The tenant's declared colours, applied to the tokens the whole interface is built from,
+  // so branding reaches every surface rather than only the header. Set as inline custom
+  // properties on :root: they override the stylesheet's defaults in both themes without a
+  // rebuild, and removing them restores NOVA's own palette exactly.
+  //
+  // A declared colour is written through as-is. NOVA does not validate colour notation —
+  // the same string is consumed by a terminal, a web page and an email, which accept
+  // different notations — so an unparseable value is ignored by the browser and the default
+  // shows through, which is the right failure for a cosmetic field.
+  React.useEffect(() => {
+    const root = document.documentElement;
+    const theme = brand?.theme ?? {};
+    const applied: [string, string | undefined][] = [
+      ["--accent", theme.accent],
+      ["--accent-ink", theme.on_accent],
+    ];
+    for (const [token, value] of applied) {
+      if (value) root.style.setProperty(token, value);
+      else root.style.removeProperty(token);
+    }
+    return () => {
+      for (const [token] of applied) root.style.removeProperty(token);
+    };
+  }, [brand?.theme?.accent, brand?.theme?.on_accent]);
+
+  // The tab icon, served from this origin so `img-src 'self'` needs no change.
+  React.useEffect(() => {
+    if (!brand?.favicon) return;
+    const link = document.querySelector<HTMLLinkElement>("link[rel='icon']")
+      ?? document.head.appendChild(Object.assign(document.createElement("link"), { rel: "icon" }));
+    link.href = `/platform/v1/branding/favicon?v=${encodeURIComponent(brand.favicon)}`;
+  }, [brand?.favicon]);
 
   // ⌘K / Ctrl-K opens the palette anywhere.
   React.useEffect(() => {
@@ -138,7 +175,8 @@ export default function App() {
       <div className="flex min-h-screen">
         <aside className="border-glass-border sticky top-0 hidden h-screen w-[212px] shrink-0 border-r backdrop-blur-xl lg:block">
           <Sidebar route={route} go={go} items={nav}
-                   tenant={brand?.tenant_id} product={brand?.product_name} />
+                   tenant={brand?.tenant_id} product={brand?.product_name}
+                   logo={brand?.logo ? "/platform/v1/branding/logo" : undefined} />
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
@@ -295,6 +333,10 @@ export default function App() {
                 <AgentsScreen agents={agents} tasks={taskRows} channels={channelRows}
                               onOpen={(id) => go(`agents/${id}`)} />
               </div>
+            ) : route === "settings" ? (
+              // Bumping the identity nonce re-reads the branding the shell is drawn from,
+              // so a saved colour or logo appears without a reload.
+              <SettingsScreen onChanged={() => setIdentityNonce((n) => n + 1)} />
             ) : route === "objectives" ? <ObjectivesScreen objectives={objectives} />
             : route === "work" ? <WorkScreen tasks={tasks} />
             : route === "approvals" ? (

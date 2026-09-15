@@ -57,6 +57,12 @@ ROUTE_ROLES: Mapping[str, str] = {
     # automation carries is NOT returned, so a viewer sees what runs and when, never the
     # instruction text.
     "/automations": "viewer",
+    # Who the deployment serves and what the product is called. Readable by a viewer: it is
+    # the branding already on every screen they are looking at.
+    "/settings": "viewer",
+    # The logo, served as an image. Readable by anyone who can see the dashboard it is on.
+    "/branding/logo": "viewer",
+    "/branding/favicon": "viewer",
     # Governance surfaces. What an agent may do, what it was refused, and what it spent are
     # the questions an attacker asks first and an auditor asks legitimately — same data,
     # different principal.
@@ -90,6 +96,12 @@ WRITE_ROUTES: Mapping[str, str] = {
     # The only route in NOVA that writes a secret. Admin, like every other agent write —
     # and the value never comes back out, so there is no matching read to gate.
     "/agents/credentials": "admin",
+    # The tenant's own identity. Admin: these are what every branded surface shows, and the
+    # audit log's subject is the tenant itself rather than an agent.
+    "/settings/organization": "admin",
+    "/settings/identity": "admin",
+    "/settings/logo": "admin",
+    "/settings/agent-name": "admin",
     # Putting a declared objective's steps on the board.
     "/objectives/submit": "admin",
     # Making the runtime deliver declared conversations to granted agents.

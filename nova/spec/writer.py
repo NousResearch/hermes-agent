@@ -89,18 +89,27 @@ def safe_relative(root: Path, relative: str) -> Path:
     return candidate
 
 
-def _atomic_write(path: Path, text: str) -> None:
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Replace a file's contents atomically.
+
+    Bytes rather than text, because a bundle is not only YAML and Markdown: a tenant's logo
+    lives in it too, and decoding a PNG as UTF-8 to copy it is how the first upload failed.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".nova-")
     try:
-        with os.fdopen(handle, "w", encoding="utf-8") as fh:
-            fh.write(text)
+        with os.fdopen(handle, "wb") as fh:
+            fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    _atomic_write_bytes(path, text.encode("utf-8"))
 
 
 def dump_yaml(document: Any) -> str:
@@ -135,7 +144,7 @@ def _sync(staged: Path, root: Path) -> list[str]:
         if rel in live_rel and live_rel[rel].read_bytes() == new:
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(target, new.decode("utf-8"))
+        _atomic_write_bytes(target, new)
         changed.append(rel)
 
     for rel, existing in sorted(live_rel.items()):
@@ -167,6 +176,10 @@ class BundleEdit:
 
     def write_text(self, relative: str, text: str) -> None:
         _atomic_write(safe_relative(self.root, relative), text)
+
+    def write_bytes(self, relative: str, data: bytes) -> None:
+        """Store a binary file — a logo, today. Same path checks as every other write."""
+        _atomic_write_bytes(safe_relative(self.root, relative), data)
 
     def remove(self, relative: str) -> bool:
         path = safe_relative(self.root, relative)

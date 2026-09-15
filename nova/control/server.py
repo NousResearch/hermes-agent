@@ -309,6 +309,13 @@ class _Handler(BaseHTTPRequestHandler):
             except NovaError as exc:
                 self._send_json(500, {"error": {"status": 500, "message": str(exc)}})
                 return
+            if response.raw is not None:
+                self._send(
+                    response.status,
+                    response.raw,
+                    response.content_type or "application/octet-stream",
+                )
+                return
             self._send_json(response.status, response.body)
             return
 

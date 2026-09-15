@@ -7,8 +7,7 @@
 import * as React from "react";
 import {
   Activity, Blocks, BookOpen, CalendarClock, Boxes, CircleCheck, Command, Gauge,
-  LayoutDashboard, ListChecks, Moon, ScrollText, ShieldCheck, Sun, Target, X,
-} from "lucide-react";
+  LayoutDashboard, ListChecks, Moon, ScrollText, ShieldCheck, Sun, Target, X, Settings2 } from "lucide-react";
 import { GlassPanel, StatusDot } from "@/components/glass";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/tooltip";
 import { cn } from "@/lib/utils";
@@ -37,6 +36,7 @@ export const NAV: NavItem[] = [
   { id: "automations", label: "Automations", icon: CalendarClock },
   { id: "policies", label: "Policies", icon: ShieldCheck, admin: true },
   { id: "usage", label: "Usage", icon: Gauge, admin: true },
+  { id: "settings", label: "Settings", icon: Settings2 },
 ];
 
 /** Two slow light fields behind everything. Fixed, blurred, and never over content —
@@ -58,21 +58,32 @@ export function Atmosphere() {
 }
 
 export function Sidebar({
-  route, go, items, tenant, product,
+  route, go, items, tenant, product, logo,
 }: {
   route: string; go: (id: string) => void; items: NavItem[];
   tenant?: string; product?: string;
+  /** Same-origin URL for the tenant's stored logo, or undefined for the monogram. */
+  logo?: string;
 }) {
   return (
     <nav aria-label="Sections" className="flex h-full flex-col gap-1 p-3">
       <div className="mb-4 flex items-center gap-2.5 px-2 pt-1">
-        <div
-          className="grid size-8 shrink-0 place-items-center rounded-lg text-[13px] font-bold"
-          style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
-          aria-hidden
-        >
-          {(product ?? "N").slice(0, 1).toUpperCase()}
-        </div>
+        {logo ? (
+          // Contained, not cropped: a customer's wordmark is not square and cropping one to
+          // fit a monogram slot is a worse look than no logo at all.
+          <img
+            src={logo} alt={product ? `${product} logo` : "Logo"}
+            className="size-8 shrink-0 rounded-lg object-contain"
+          />
+        ) : (
+          <div
+            className="grid size-8 shrink-0 place-items-center rounded-lg text-[13px] font-bold"
+            style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
+            aria-hidden
+          >
+            {(product ?? "N").slice(0, 1).toUpperCase()}
+          </div>
+        )}
         <div className="min-w-0">
           <div className="text-ink truncate text-[13px] leading-tight font-semibold">
             {product ?? "Control Center"}

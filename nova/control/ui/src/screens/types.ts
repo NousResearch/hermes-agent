@@ -5,6 +5,11 @@
 export type Identity = {
   product_name: string; company_name: string; tenant_id: string;
   welcome?: string; support?: { email?: string; url?: string };
+  /** Declared colours. Applied to the interface's own tokens at boot — see app.tsx. */
+  theme?: { accent?: string; surface?: string; on_accent?: string };
+  /** Bundle-relative paths. Truthy means the control plane can serve the image at
+   *  /platform/v1/branding/<kind>; the path itself is not fetched by the browser. */
+  logo?: string; favicon?: string;
 };
 export type Health = {
   platform: { version: string; tenant_id: string };

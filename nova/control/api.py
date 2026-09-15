@@ -38,11 +38,20 @@ API_PREFIX = "/platform/v1"
 
 @dataclass(frozen=True)
 class Response:
-    """One API response: an HTTP status and a JSON-serialisable body."""
+    """One API response: an HTTP status and a JSON-serialisable body.
+
+    ``raw`` is the exception, and there is exactly one caller: a tenant's logo. Base64ing
+    an image through JSON would inflate it by a third and put it inside a payload the
+    dashboard polls, and a data: URI large enough to matter is a data: URI on every poll.
+    When ``raw`` is set the transport sends those bytes with ``content_type`` and ignores
+    ``body``.
+    """
 
     status: int
     body: Any
     headers: Mapping[str, str] = field(default_factory=dict)
+    raw: Optional[bytes] = None
+    content_type: str = ""
 
     @property
     def ok(self) -> bool:
@@ -71,6 +80,10 @@ def _write_route(tail: str) -> Optional[str]:
         return "/automations/create"
     if parts == ["agents"]:
         return "/agents/create"
+    # /settings/<what>. Enumerated, so a new settings write has to be declared here before
+    # it can be called.
+    if len(parts) == 2 and parts[0] == "settings" and parts[1] in SETTINGS_ACTIONS:
+        return f"/settings/{parts[1]}"
     # /agents/<id>/<action>. Kept item-level and enumerated rather than matched by prefix,
     # so a new action has to be added here before it can be called.
     if len(parts) == 3 and parts[0] == "agents" and parts[2] in AGENT_ACTIONS:
@@ -87,6 +100,9 @@ def _write_route(tail: str) -> Optional[str]:
 #: Ceiling on a persona. Matches the automation objective cap: both are text the model
 #: sees on every turn, and an unbounded one is a per-turn cost nobody reviewed.
 MAX_INSTRUCTIONS_CHARS = 20000
+
+#: What an administrator may change about the tenant itself.
+SETTINGS_ACTIONS = ("organization", "identity", "logo", "agent-name")
 
 AGENT_ACTIONS = ("update", "soul", "duplicate", "archive", "restore", "delete", "credentials")
 
@@ -164,6 +180,8 @@ class ControlAPI:
             return self._apply_channels(principal, payload)
         if route == "/agents/create":
             return self._create_agent(principal, payload)
+        if route.startswith("/settings/"):
+            return self._settings_write(route.rsplit("/", 1)[1], principal, payload)
         if route.startswith("/agents/"):
             return self._agent_action(tail, route.rsplit("/", 1)[1], principal, payload)
         return self._submit_objective(tail, principal, payload)
@@ -300,7 +318,76 @@ class ControlAPI:
             return self.agent_credentials(tail[len("/agents/") : -len("/credentials")])
         if tail.startswith("/agents/") and tail.endswith("/activity"):
             return self.agent_activity(tail[len("/agents/") : -len("/activity")], query)
+        if tail == "/settings":
+            return self.settings()
+        if tail in ("/branding/logo", "/branding/favicon"):
+            return self.branding_image(tail.rsplit("/", 1)[1])
         return _error(404, f"no such route: {path}")
+
+    def settings(self) -> Response:
+        """Who this deployment serves, and what the workforce is called.
+
+        The two declarations behind every branded surface, returned in the shape the write
+        routes accept so a form reads and writes the same keys. ``tenant_id`` is included
+        and marked immutable rather than omitted: an operator looking for where to change
+        it deserves an answer, not an absence.
+        """
+        from nova.branding import IDENTITY_FIELDS, IMMUTABLE, ORGANIZATION_FIELDS
+
+        organization = self.bundle.organization
+        identity = self.bundle.identity
+        return Response(
+            200,
+            {
+                "organization": {
+                    "tenant_id": organization.tenant_id,
+                    "legal_name": organization.legal_name,
+                    "region": organization.region,
+                    "timezone": organization.timezone,
+                    "contact_email": organization.contact_email,
+                },
+                "identity": {
+                    "product_name": identity.product_name,
+                    "company_name": identity.company_name,
+                    "theme": identity.theme.to_dict(),
+                    "support": identity.support.to_dict(),
+                    "messages": {"welcome": identity.welcome, "goodbye": identity.goodbye},
+                    "agents": dict(identity.agent_display_names),
+                },
+                # Whether an image is stored, not the image: the bytes come from
+                # /branding/<kind>, which the page loads as an ordinary same-origin image.
+                "logo": {
+                    "logo": bool(identity.logo),
+                    "favicon": bool(identity.favicon),
+                },
+                "settable": {
+                    "organization": list(ORGANIZATION_FIELDS),
+                    "identity": list(IDENTITY_FIELDS),
+                },
+                "immutable": list(IMMUTABLE),
+            },
+        )
+
+    def branding_image(self, kind: str) -> Response:
+        """The tenant's stored logo, served from this origin.
+
+        Not a redirect and not a data: URI. The Control Centre runs under
+        ``img-src 'self' data:``, so an external URL would be blocked by the browser and
+        show as a broken image with no explanation; and a data: URI large enough to be a
+        real logo would ride along on every poll of the payload that carried it.
+        """
+        from nova.branding import logo_bytes
+
+        found = logo_bytes(self.bundle, kind)
+        if found is None:
+            return _error(404, f"this tenant has no {kind}")
+        raw, content_type = found
+        return Response(
+            200, None, raw=raw, content_type=content_type,
+            # Revalidated rather than cached: a logo changes rarely, but when it changes the
+            # operator who just uploaded it is the one looking at the screen.
+            headers={"Cache-Control": "no-cache"},
+        )
 
     def _known_agent(self, agent_id: str):
         return next((a for a in self.bundle.agents if a.id == agent_id), None)
@@ -864,6 +951,70 @@ class ControlAPI:
                 "correlation_id": correlation_id,
             },
         )
+
+    def _settings_write(self, what: str, principal, payload: Mapping[str, Any]) -> Response:
+        """Change the tenant's own identity.
+
+        Reuses :meth:`_agent_write` because the shape is identical — intent, edit the
+        bundle, apply, committed — and the only difference is the subject. A second
+        implementation would eventually disagree with the first about what "applied" means.
+        """
+        from nova import branding
+
+        root = self.bundle.root
+
+        if what == "organization":
+            fields = payload.get("fields")
+            if not isinstance(fields, Mapping) or not fields:
+                return _error(400, "send the changes as an object under 'fields'")
+            return self._agent_write(
+                principal, kind="settings.organization_changed",
+                subject=self.bundle.tenant_id, detail={"fields": sorted(fields)},
+                operation=lambda: branding.update_organization(root, fields),
+            )
+
+        if what == "identity":
+            fields = payload.get("fields")
+            if not isinstance(fields, Mapping) or not fields:
+                return _error(400, "send the changes as an object under 'fields'")
+            return self._agent_write(
+                principal, kind="settings.identity_changed",
+                subject=self.bundle.tenant_id, detail={"fields": sorted(fields)},
+                operation=lambda: branding.update_identity(root, fields),
+            )
+
+        if what == "agent-name":
+            agent_id = str(payload.get("agent_id") or "").strip()
+            display_name = str(payload.get("display_name") or "")
+            return self._agent_write(
+                principal, kind="settings.agent_name_changed", subject=agent_id,
+                detail={"display_name": display_name},
+                operation=lambda: branding.set_agent_display_name(root, agent_id, display_name),
+            )
+
+        if what == "logo":
+            kind = str(payload.get("kind") or "logo").strip()
+            data = payload.get("data")
+            if data in (None, ""):
+                return self._agent_write(
+                    principal, kind="settings.logo_cleared",
+                    subject=self.bundle.tenant_id, detail={"kind": kind},
+                    operation=lambda: branding.clear_logo(root, kind),
+                )
+            if not isinstance(data, str):
+                return _error(400, "the image must be base64 text")
+            content_type = str(payload.get("content_type") or "").strip()
+            return self._agent_write(
+                principal, kind="settings.logo_changed",
+                subject=self.bundle.tenant_id,
+                # The bytes are not recorded — only that an image of this type was stored.
+                detail={"kind": kind, "content_type": content_type, "bytes": len(data)},
+                operation=lambda: branding.set_logo(
+                    root, data=data, content_type=content_type, kind=kind
+                ),
+            )
+
+        return _error(404, f"no such settings route: {what!r}")
 
     def _create_agent(self, principal, payload: Mapping[str, Any]) -> Response:
         from nova import agents as agent_ops

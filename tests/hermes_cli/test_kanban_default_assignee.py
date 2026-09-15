@@ -20,14 +20,26 @@ def isolated_kanban_home(monkeypatch):
     test_home = tempfile.mkdtemp(prefix="kanban_default_assignee_test_")
     monkeypatch.setenv("HERMES_HOME", test_home)
     # Force-reimport so the fresh HERMES_HOME is picked up.
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
+    saved = {
+        mod: sys.modules[mod]
+        for mod in list(sys.modules.keys())
+        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants"
+    }
+    for mod in saved:
+        del sys.modules[mod]
     from hermes_cli import kanban_db
-    yield kanban_db, test_home
-    # Cleanup is best-effort; tempfile dir survives but pytest isolation
-    # gives each test its own monkeypatched HERMES_HOME so no cross-test
-    # contamination.
+    try:
+        yield kanban_db, test_home
+    finally:
+        # Restore the modules dropped above: leaving them deleted (with fresh,
+        # non-identical copies in their place) corrupts every later test file in
+        # a shared interpreter (duplicate hermes_cli/hermes_state module objects).
+        for mod in list(sys.modules.keys()):
+            if mod not in saved and (
+                mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants"
+            ):
+                del sys.modules[mod]
+        sys.modules.update(saved)
 
 
 def _fake_spawn(*args, **kwargs):

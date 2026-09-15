@@ -161,6 +161,66 @@ class TestStreamInterruptBeforeRetry:
         assert result is not None
         assert attempts[0] == 3
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_retry_rebuilds_payload_after_model_switch(self, mock_close, mock_create):
+        """A retry after an in-flight /model switch must not send the old slug.
+
+        The request-local stream loop survives a transient failure while the
+        gateway mutates the agent to a different provider.  Its next request
+        must be built from that new route, rather than pairing the old model
+        payload with the new provider client.
+        """
+        import httpx
+
+        sent_models = []
+
+        def switch_then_fail(**kwargs):
+            sent_models.append(kwargs["model"])
+            agent.model = "kimi-k2.6"
+            agent.provider = "kimi-coding"
+            agent.base_url = "https://api.moonshot.ai/v1"
+            raise httpx.ConnectError("stale stream closed")
+
+        def succeed(**kwargs):
+            sent_models.append(kwargs["model"])
+            chunks = [
+                SimpleNamespace(
+                    choices=[SimpleNamespace(
+                        index=0,
+                        delta=SimpleNamespace(content="recovered", tool_calls=None,
+                                              reasoning_content=None, reasoning=None),
+                        finish_reason=None,
+                    )],
+                    model=kwargs["model"], usage=None,
+                ),
+                SimpleNamespace(
+                    choices=[SimpleNamespace(
+                        index=0,
+                        delta=SimpleNamespace(content=None, tool_calls=None,
+                                              reasoning_content=None, reasoning=None),
+                        finish_reason="stop",
+                    )],
+                    model=kwargs["model"], usage=None,
+                ),
+            ]
+            stream = MagicMock()
+            stream.__iter__ = MagicMock(return_value=iter(chunks))
+            stream.response = MagicMock(headers={})
+            return stream
+
+        mock_client = MagicMock()
+        attempts = iter((switch_then_fail, succeed))
+        mock_client.chat.completions.create.side_effect = lambda **kwargs: next(attempts)(**kwargs)
+        mock_create.return_value = mock_client
+
+        agent = _make_agent(model="deepseek/deepseek-v4-flash", provider="openrouter")
+        agent._interruptible_streaming_api_call(
+            {"model": "deepseek/deepseek-v4-flash", "messages": [{"role": "user", "content": "hi"}]}
+        )
+
+        assert sent_models == ["deepseek/deepseek-v4-flash", "kimi-k2.6"]
+
     @pytest.mark.filterwarnings(
         "ignore::pytest.PytestUnhandledThreadExceptionWarning"
     )

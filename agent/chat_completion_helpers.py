@@ -2494,6 +2494,7 @@ class _StreamingCall(StreamingWaitMonitor):
     def __init__(self, agent, api_kwargs: dict, on_first_delta):
         self.agent = agent
         self.api_kwargs = api_kwargs
+        self._request_route = self._route_identity()
         self.on_first_delta = on_first_delta
         self.worker = None  # request thread; None in inline mode
         self.result = {"response": None, "error": None, "partial_tool_names": []}
@@ -2514,6 +2515,37 @@ class _StreamingCall(StreamingWaitMonitor):
         self.managed_stream_holder = {"stream": None}
         # Per-attempt: single-writer token, request-local client, raw HTTP response (chat wire).
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
+
+    def _route_identity(self) -> tuple[str, str, str, str]:
+        """Return the live route axes that make a prepared payload valid."""
+        return (
+            str(getattr(self.agent, "model", "") or ""),
+            str(getattr(self.agent, "provider", "") or ""),
+            str(getattr(self.agent, "base_url", "") or ""),
+            str(getattr(self.agent, "api_mode", "") or ""),
+        )
+
+    def _refresh_request_after_route_switch(self) -> None:
+        """Rebuild a retry payload when ``/model`` changed the live route.
+
+        A streaming worker can outlive a manual model switch.  Its next retry
+        creates a client from the live agent, so retaining its original payload
+        would pair an old model slug with that new provider/base URL.
+        """
+        route = self._route_identity()
+        if route == self._request_route:
+            return
+        messages = self.api_kwargs.get("messages")
+        if not isinstance(messages, list):
+            # Chat-completions retries always carry messages.  Keep unusual
+            # direct callers fail-open rather than discarding their payload.
+            logger.warning("Streaming retry route changed but request has no messages; keeping existing payload")
+            self._request_route = route
+            return
+        tools = self.api_kwargs.get("tools")
+        self.api_kwargs = self.agent._build_api_kwargs(messages, tools_for_api=tools)
+        self._request_route = route
+        logger.info("Rebuilt streaming retry payload after route switch: %s via %s", route[0], route[1])
 
     # ── shared small helpers ────────────────────────────────────────────
 
@@ -3188,6 +3220,7 @@ class _StreamingCall(StreamingWaitMonitor):
         try:
             while _stream_attempt < _max_stream_retries + self._compat_retries:
                 _stream_attempt += 1
+                self._refresh_request_after_route_switch()
                 stream_attempt_id = self._start_stream_attempt()
                 # Otherwise /stop closes the connection and the retry opens a
                 # FRESH one, blocking up to a full read timeout per attempt.

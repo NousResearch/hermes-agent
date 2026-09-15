@@ -938,6 +938,84 @@ class TestRenameProfile:
         acquire.assert_not_called()
         assert "Restart the gateway" in capsys.readouterr().err
 
+    def test_migrate_identity_command_repairs_a_failed_live_migration(self, profile_env, capsys):
+        """The failed-live-migration end state must be recoverable: `hermes profile
+        migrate-identity <old> <new>` rekeys the durable rows once no gateway holds the store, and
+        is idempotent (a second run has nothing left to rekey but still succeeds)."""
+        from hermes_cli.profile_cmd import cmd_profile
+        from hermes_state import SessionDB
+        from argparse import Namespace
+        tmp_path = profile_env
+        create_profile("oldname", no_alias=True)
+        old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
+        pdb = SessionDB(old_dir / "state.db")
+        pdb.create_session(
+            "sess1", "feishu", session_key="agent:oldname:feishu:dm:chatA",
+            profile_name="oldname", chat_id="chatA", chat_type="dm")
+        pdb.close()
+        root_db = SessionDB(tmp_path / ".hermes" / "state.db")
+        root_db.save_gateway_routing_entry(
+            "agent:oldname:feishu:dm:chatA",
+            json.dumps({"session_key": "agent:oldname:feishu:dm:chatA", "session_id": "sess1",
+                        "origin": {"platform": "feishu", "chat_id": "chatA", "profile": "oldname"}}),
+            scope=str(tmp_path / ".hermes" / "sessions"))
+        root_db.close()
+
+        # Rename under a live multiplexer whose control verb answers nothing: the CLI warns and
+        # leaves the (in-memory-owned) store alone, so the rows still name the old profile.
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+             patch("hermes_cli.profiles._live_default_multiplexer", return_value=True), \
+             patch("hermes_cli.profiles._notify_multiplexer"), \
+             patch("gateway.control_socket.migrate_gateway_profile_identity", return_value=None):
+            rename_profile("oldname", "newname")
+        assert "hermes profile migrate-identity oldname newname" in capsys.readouterr().err
+
+        # Gateway restarted/stopped → the retry command repairs both stores.
+        with patch("hermes_cli.profiles._live_default_multiplexer", return_value=False):
+            cmd_profile(Namespace(profile_action="migrate-identity",
+                                  old_name="oldname", new_name="newname"))
+            assert "✓ Session/routing identity migrated" in capsys.readouterr().out
+            # Idempotent: nothing left to rekey, still a success.
+            cmd_profile(Namespace(profile_action="migrate-identity",
+                                  old_name="oldname", new_name="newname"))
+
+        moved_db = SessionDB(tmp_path / ".hermes" / "profiles" / "newname" / "state.db")
+        row = moved_db._read_one(
+            "SELECT session_key, profile_name FROM sessions WHERE id = ?", ("sess1",))
+        assert row is not None
+        assert row["session_key"] == "agent:newname:feishu:dm:chatA"
+        assert row["profile_name"] == "newname"
+        moved_db.close()
+        root_db2 = SessionDB(tmp_path / ".hermes" / "state.db")
+        routing = root_db2.load_gateway_routing_entries(
+            scope=str(tmp_path / ".hermes" / "sessions"))
+        assert "agent:oldname:feishu:dm:chatA" not in routing
+        assert "agent:newname:feishu:dm:chatA" in routing
+        root_db2.close()
+
+    def test_migrate_identity_reports_the_raw_answer_and_exits_nonzero(self, profile_env, capsys):
+        """A live gateway that answers with something unusable must fail loudly — exit non-zero,
+        name the retry command, and quote the raw answer (a non-dict payload used to print a
+        reason-less warning). The live gateway keeps ownership: no direct DB rewrite."""
+        from hermes_cli.profile_cmd import cmd_profile
+        from argparse import Namespace
+        create_profile("oldname", no_alias=True)
+        create_profile("newname", no_alias=True)  # the rename already happened; only <new> must exist
+
+        with patch("hermes_cli.profiles._live_default_multiplexer", return_value=True), \
+             patch("gateway.control_socket.migrate_gateway_profile_identity",
+                   return_value="<html>not a control answer</html>"), \
+             patch("hermes_state_registry.acquire") as acquire:
+            with pytest.raises(SystemExit) as excinfo:
+                cmd_profile(Namespace(profile_action="migrate-identity",
+                                      old_name="oldname", new_name="newname"))
+
+        assert excinfo.value.code != 0
+        err = capsys.readouterr().err
+        assert "not a control answer" in err
+        assert "hermes profile migrate-identity oldname newname" in err
+        acquire.assert_not_called()
+
 
 # ===================================================================
 # TestExportImport

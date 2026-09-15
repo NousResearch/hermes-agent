@@ -88,7 +88,15 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
     session["pending_model_switch"] = {
         "raw": value, "confirm_expensive_model": confirmed,
         "display_model": pending_model, "display_provider": pending_provider}
-    return _cfgset_model_ok(rid, key, pending_model, deferred=True)
+    return _cfgset_model_ok(
+        rid,
+        key,
+        pending_model,
+        warning=_carried_reasoning_notice(
+            session.get("agent"), getattr(parsed, "reasoning_effort", "") or ""
+        ),
+        deferred=True,
+    )
 
 
 def _cfgset_guarded(fn):

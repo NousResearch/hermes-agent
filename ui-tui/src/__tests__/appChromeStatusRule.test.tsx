@@ -105,6 +105,17 @@ const baseProps = {
 }
 
 describe('StatusRule session title', () => {
+  it('always shows the current reasoning effort in the model segment', () => {
+    const rendered = textContent(
+      StatusRule({
+        ...baseProps,
+        modelReasoningEffort: 'medium'
+      })
+    )
+
+    expect(rendered).toContain('opus 4.8 medium')
+  })
+
   it('marks only estimated context occupancy at every visible width', () => {
     for (const cols of [80, 120, 200]) {
       for (const estimated of [true, false]) {

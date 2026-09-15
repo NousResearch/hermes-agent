@@ -394,6 +394,78 @@ class TestBuildSkillsSystemPrompt:
         second = build_skills_system_prompt()
         assert "cached-skill" not in second
 
+    def test_rebuilds_prompt_when_new_skill_installed_while_gateway_runs(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        existing = tmp_path / "skills" / "tools" / "existing-skill"
+        existing.mkdir(parents=True)
+        (existing / "SKILL.md").write_text(
+            "---\nname: existing-skill\ndescription: Existing skill\n---\n"
+        )
+
+        first = build_skills_system_prompt()
+        assert "existing-skill" in first
+        assert "new-skill" not in first
+
+        installed = tmp_path / "skills" / "tools" / "new-skill"
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_text(
+            "---\nname: new-skill\ndescription: Newly installed skill\n---\n"
+        )
+
+        second = build_skills_system_prompt()
+        assert "new-skill" in second
+
+    def test_same_second_same_size_edit_invalidates_cache(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "tools" / "cached-skill"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        before = "---\nname: cached-skill\ndescription: Alpha skill\n---\n"
+        after = "---\nname: cached-skill\ndescription: Bravo skill\n---\n"
+        assert len(before) == len(after)
+        skill_md.write_text(before)
+        st = skill_md.stat()
+        base_second_ns = (st.st_mtime_ns // 1_000_000_000) * 1_000_000_000
+        skill_md_mtime_ns = base_second_ns + 100
+        edited_mtime_ns = base_second_ns + 200
+        os.utime(skill_md, ns=(skill_md_mtime_ns, skill_md_mtime_ns))
+
+        first = build_skills_system_prompt()
+        assert "Alpha skill" in first
+
+        skill_md.write_text(after)
+        os.utime(skill_md, ns=(edited_mtime_ns, edited_mtime_ns))
+        edited = skill_md.stat()
+        assert edited.st_size == st.st_size
+        assert edited.st_mtime_ns // 1_000_000_000 == skill_md_mtime_ns // 1_000_000_000
+
+        second = build_skills_system_prompt()
+        assert "Bravo skill" in second
+        assert "Alpha skill" not in second
+
+    def test_rebuilds_prompt_when_skill_added_to_external_dir(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "skills").mkdir()
+        external_dir = tmp_path / "external-skills"
+        external_dir.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external_dir}\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        first = build_skills_system_prompt()
+        assert "external-skill" not in first
+
+        external_skill = external_dir / "external-skill"
+        external_skill.mkdir()
+        (external_skill / "SKILL.md").write_text(
+            "---\nname: external-skill\ndescription: External skill\n---\n"
+        )
+
+        second = build_skills_system_prompt()
+        assert "external-skill" in second
+
 
 # =========================================================================
 # Context files prompt builder

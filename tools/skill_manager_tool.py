@@ -189,6 +189,57 @@ def _validate_frontmatter(content: str, *, new_skill: bool = False) -> Optional[
     return None
 
 
+def _configured_required_author() -> str:
+    """Configured author required for NEW locally created skills ('' = disabled).
+
+    Opt-in via ``skills.required_author``: upstream/default installations keep
+    accepting third-party author names. Read through the merged loader so the
+    default covers configs missing the key, at call time (profile-aware).
+    """
+    try:
+        from hermes_cli.config import load_config
+        value = cfg_get(load_config(), "skills", "required_author", default="")
+    except Exception:
+        return ""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _ensure_new_skill_author(content: str) -> Tuple[str, Optional[str]]:
+    """Inject or verify the configured author on new-skill content.
+
+    Returns ``(content, error)``. A missing ``author`` is inserted into the
+    frontmatter without reserializing the rest of the YAML block; a conflicting
+    explicit author fails closed rather than being silently overwritten (no
+    false attribution). Content whose frontmatter cannot be a mapping passes
+    through untouched — the ordinary frontmatter validator owns that error.
+    """
+    required = _configured_required_author()
+    if not required or not content:
+        return content, None
+
+    # Tolerate a Windows UTF-8 BOM exactly like _validate_frontmatter does — a
+    # BOM-prefixed skill must not silently escape the policy.
+    bom = content.startswith("\ufeff")
+    probe = content[1:] if bom else content
+    frontmatter, _ = _parse_frontmatter(probe)
+    if not frontmatter:
+        return content, None
+    if "author" in frontmatter:
+        actual = str(frontmatter.get("author") or "").strip()
+        if actual == required:
+            return content, None
+        return content, (
+            f"New skills must use author '{required}' because "
+            "skills.required_author is configured; "
+            f"received author {actual!r}.")
+    end_match = _FRONTMATTER_END_RE.search(probe[3:])
+    if not end_match:
+        return content, None  # The ordinary frontmatter validator owns this error.
+    insert_at = (1 if bom else 0) + 3 + end_match.start()
+    author_line = f"\nauthor: {json.dumps(required, ensure_ascii=False)}"
+    return content[:insert_at] + author_line + content[insert_at:], None
+
+
 def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[str]:
     if len(content) > MAX_SKILL_CONTENT_CHARS:
         return (
@@ -425,6 +476,9 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if err := (_validate_name(name) or _validate_category(category)
                or _validate_frontmatter(content, new_skill=True) or _validate_content_size(content)):
         return _err(err)
+    content, author_error = _ensure_new_skill_author(content)
+    if author_error:
+        return _err(author_error)
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
     skill_dir = _resolve_skill_dir(name, category)
@@ -771,6 +825,12 @@ def skill_manage(
             operations, default_name=name or None, task_id=task_id, session_id=session_id)
     if (preflight := _background_review_preflight(action, name)) is not None:
         return json.dumps(preflight, ensure_ascii=False)
+    # Normalize BEFORE the approval gate so the staged payload and its review diff
+    # show the exact author metadata approval will write.
+    if action == "create" and content:
+        content, author_error = _ensure_new_skill_author(content)
+        if author_error:
+            return tool_error(author_error, success=False)
     # Approval gate: skills are too large to review inline, so they always stage regardless
     # of origin; bypassed when replaying an approved staged write.
     args = dict(content=content, category=category, file_path=file_path, file_content=file_content,

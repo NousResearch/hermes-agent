@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { memo } from 'react'
+import { memo, useRef } from 'react'
 
 import type { AppLayoutProgressProps } from '../app/interfaces.js'
 import { toggleTodoCollapsed, useTurnSelector } from '../app/turnStore.js'
@@ -28,7 +28,8 @@ export const StreamingAssistant = memo(function StreamingAssistant({
   detailsModeCommandOverride,
   prevMsg,
   progress,
-  sections
+  sections,
+  timestamps = false
 }: StreamingAssistantProps) {
   const ui = useStore($uiState)
   const streamSegments = useTurnSelector(state => state.streamSegments)
@@ -36,6 +37,19 @@ export const StreamingAssistant = memo(function StreamingAssistant({
   const streaming = useTurnSelector(state => state.streaming)
   const activeTools = useTurnSelector(state => state.tools)
   const showStreamingArea = Boolean(streaming)
+
+  // The streaming block isn't in the transcript yet, so it carries no
+  // persisted `createdAt` — capture the wall clock when the streaming burst
+  // starts so the [HH:MM] label renders (and stays put) instead of popping in
+  // when the message settles. Reset when the burst ends so the next one
+  // re-stamps.
+  const streamStartedAt = useRef<number | undefined>(undefined)
+
+  if (showStreamingArea) {
+    streamStartedAt.current ??= Date.now() / 1000
+  } else {
+    streamStartedAt.current = undefined
+  }
 
   if (!progress.showProgressArea && !showStreamingArea && !activeTools.length) {
     return null
@@ -56,7 +70,12 @@ export const StreamingAssistant = memo(function StreamingAssistant({
     blocks.push({
       isStreaming: true,
       key: 'streaming',
-      msg: { role: 'assistant', text: streaming, ...(streamPendingTools.length && { tools: streamPendingTools }) }
+      msg: {
+        createdAt: streamStartedAt.current,
+        role: 'assistant',
+        text: streaming,
+        ...(streamPendingTools.length && { tools: streamPendingTools })
+      }
     })
   } else if (streamPendingTools.length) {
     blocks.push({ key: 'pending-tools', msg: { kind: 'trail', role: 'system', text: '', tools: streamPendingTools } })
@@ -82,6 +101,7 @@ export const StreamingAssistant = memo(function StreamingAssistant({
             reasoningActive={block.msg.isLiveReasoning === true}
             sections={sections}
             t={ui.theme}
+            timestamps={timestamps}
             {...(block.tools ? { tools: block.tools } : {})}
           />
         )
@@ -117,4 +137,6 @@ interface StreamingAssistantProps {
   prevMsg?: Msg
   progress: AppLayoutProgressProps
   sections?: SectionVisibility
+  /** `display.timestamps` — dim [HH:MM] on the streaming assistant row, matching settled rows. */
+  timestamps?: boolean
 }

@@ -20,6 +20,7 @@ import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedM
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
+import { $alwaysUseProfileDropdown, setAlwaysUseProfileDropdown } from '@/store/profile-picker-prefs'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
@@ -404,6 +405,7 @@ export function AppearanceSettings() {
   const toolViewMode = useStore($toolViewMode)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const sessionListDensity = useStore($sessionListDensity)
+  const alwaysUseProfileDropdown = useStore($alwaysUseProfileDropdown)
   const tabStripDefault = useStore($tabStripDefault)
   const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
   const zoomPercent = useStore($zoomPercent)
@@ -661,6 +663,15 @@ export function AppearanceSettings() {
             description={a.sessionDensityDesc}
             title={a.sessionDensityTitle}
           />
+
+          <div id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.profilePicker)}>
+            <ToggleRow
+              checked={alwaysUseProfileDropdown}
+              description={a.alwaysUseDropdownDesc}
+              label={a.alwaysUseDropdownTitle}
+              onChange={setAlwaysUseProfileDropdown}
+            />
+          </div>
 
           <ListRow
             action={

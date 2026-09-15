@@ -210,7 +210,7 @@ class TestMcpPrefixThreshold:
 
     def test_config_override_via_hermes_home(self, tmp_path, monkeypatch):
         (tmp_path / "config.yaml").write_text(
-            "tool_budget:\n  mcp_result_size_chars: 30000\n"
+            "tool_output:\n  mcp_result_size_chars: 30000\n"
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cfg = budget_for_context_window(None)
@@ -218,19 +218,81 @@ class TestMcpPrefixThreshold:
         # Generic tools are untouched by the MCP knob.
         assert cfg.default_result_size == DEFAULT_RESULT_SIZE_CHARS
 
+
+class TestConfiguredToolOverrides:
+    """Operators can spill a chatty named tool before the generic 100K cap."""
+
+    def test_named_override_is_loaded_from_config(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "tool_output:\n"
+            "  tool_overrides:\n"
+            "    web_search: 20000\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        cfg = budget_for_context_window(None)
+
+        assert cfg.resolve_threshold("web_search") == 20_000
+        assert cfg.resolve_threshold("terminal") == DEFAULT_RESULT_SIZE_CHARS
+
+    def test_invalid_named_overrides_are_ignored(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "tool_output:\n"
+            "  tool_overrides:\n"
+            "    zero: 0\n"
+            "    negative: -1\n"
+            "    boolean: true\n"
+            "    text: nope\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        cfg = budget_for_context_window(None)
+
+        assert cfg.tool_overrides == {}
+
+    def test_named_override_cannot_exceed_scaled_model_budget(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / "config.yaml").write_text(
+            "tool_output:\n"
+            "  tool_overrides:\n"
+            "    web_search: 90000\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        cfg = budget_for_context_window(65_536)
+
+        assert cfg.resolve_threshold("web_search") == cfg.default_result_size
+
     def test_config_override_survives_window_scaling(self, tmp_path, monkeypatch):
         (tmp_path / "config.yaml").write_text(
-            "tool_budget:\n  mcp_result_size_chars: 30000\n"
+            "tool_output:\n  mcp_result_size_chars: 30000\n"
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cfg = budget_for_context_window(200_000)
         assert cfg.mcp_result_size == 30_000
 
     def test_malformed_config_falls_back_to_default(self, tmp_path, monkeypatch):
-        (tmp_path / "config.yaml").write_text("tool_budget: not-a-mapping\n")
+        (tmp_path / "config.yaml").write_text("tool_output: not-a-mapping\n")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cfg = budget_for_context_window(None)
         assert cfg.resolve_threshold("mcp_x_y") == 50_000
+
+    def test_legacy_tool_budget_key_still_read_per_key(self, tmp_path, monkeypatch):
+        """tool_output ships in DEFAULT_CONFIG so the merged block always exists;
+        an explicit legacy tool_budget value must still win over merged defaults."""
+        (tmp_path / "config.yaml").write_text(
+            "tool_budget:\n"
+            "  mcp_result_size_chars: 40000\n"
+            "  tool_overrides:\n"
+            "    web_search: 15000\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        cfg = budget_for_context_window(None)
+
+        assert cfg.resolve_threshold("mcp_x_y") == 40_000
+        assert cfg.resolve_threshold("web_search") == 15_000
 
     def test_scaled_small_window_caps_mcp_threshold(self, tmp_path, monkeypatch):
         """A tiny model's scaled default_result_size caps even the MCP value."""

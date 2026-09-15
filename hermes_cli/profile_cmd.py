@@ -59,7 +59,8 @@ def _render_distribution_plan(plan) -> None:
         else:
             print(
                 "  ⚠ Profile exists but is NOT a distribution.  Installing here will\n"
-                "    overwrite its SOUL.md, skills/, cron/, and mcp.json.\n"
+                "    overwrite its SOUL.md and mcp.json and replace any skill or cron job\n"
+                "    of the same name the distribution ships.\n"
                 "    Your memories, sessions, auth.json, and .env will be preserved,\n"
                 "    but any hand-edits to distribution-owned files will be lost."
             )

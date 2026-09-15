@@ -2566,6 +2566,7 @@ export interface Translations {
     goalActive: string
     goalBlocked: string
     goalDone: string
+    goalInterrupted: string
     goalPaused: string
     goalWaiting: string
     subagents: (count: number) => string

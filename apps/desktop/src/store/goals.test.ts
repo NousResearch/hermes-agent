@@ -55,6 +55,15 @@ describe('goal store', () => {
     expect($goalsBySession.get().s1).toBeUndefined()
   })
 
+  it('keeps a goal active when the backend auto-continues it after a restart', () => {
+    applyGoalStatusText('s1', '▶ Goal continuing after restart: ship the feature')
+
+    expect($goalsBySession.get().s1).toMatchObject({
+      status: 'active',
+      title: 'ship the feature'
+    })
+  })
+
   it('clears on no-goal output', () => {
     applyGoalStatusText('s1', '⊙ Goal set (20-turn budget): ship another feature')
     applyGoalStatusText('s1', 'No active goal. Set one with /goal <text>.')

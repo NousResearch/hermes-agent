@@ -23,7 +23,7 @@ from hermes_cli.plugins import VALID_HOOKS, get_plugin_manager
 
 
 @pytest.fixture
-def kanban_home(tmp_path, monkeypatch):
+def kanban_home(tmp_path, monkeypatch, plugin_hook_gate):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -47,7 +47,7 @@ def captured_ticks(monkeypatch):
         mgr._hooks = saved
 
 def test_active_tick_fires_hook_with_outcome_ok(
-    kanban_home, all_assignees_spawnable, captured_ticks,
+    kanban_home, all_assignees_spawnable, captured_ticks, plugin_hook_gate,
 ):
     """A tick that spawns a worker fires the hook with outcome='ok'."""
     conn = kbc.connect()
@@ -62,6 +62,7 @@ def test_active_tick_fires_hook_with_outcome_ok(
     )
     result = ok_events[-1]["result"]
     assert any(row[0] == tid for row in result.spawned)
+    assert "on_kanban_dispatch_tick" in plugin_hook_gate
 
 def test_tick_hook_fires_after_dispatch_lock_released(kanban_home):
     """The #56066 sweeper finding, as a contract: subscribers run OUTSIDE

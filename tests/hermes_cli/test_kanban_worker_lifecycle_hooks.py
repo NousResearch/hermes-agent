@@ -31,7 +31,7 @@ WORKER_HOOKS = (
 
 
 @pytest.fixture
-def kanban_home(tmp_path, monkeypatch):
+def kanban_home(tmp_path, monkeypatch, plugin_hook_gate):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -58,7 +58,7 @@ def captured_hooks(monkeypatch):
         mgr._hooks = saved
 
 def test_dispatch_spawn_fires_worker_spawned(
-    kanban_home, all_assignees_spawnable, captured_hooks,
+    kanban_home, all_assignees_spawnable, captured_hooks, plugin_hook_gate,
 ):
     """A dispatched spawn fires the hook AFTER the PID is durably persisted."""
     pid_at_fire_time: list = []
@@ -97,6 +97,7 @@ def test_dispatch_spawn_fires_worker_spawned(
     assert "profile_name" in kw
     assert "board" in kw
     assert pid_at_fire_time == [4242]
+    assert "on_kanban_worker_spawned" in plugin_hook_gate
 
 def test_crash_reclaim_fires_worker_exited(kanban_home, captured_hooks, monkeypatch):
     """A dead-PID reclaim fires the exit observer with the exit facts."""

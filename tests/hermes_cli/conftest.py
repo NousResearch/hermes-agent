@@ -6,6 +6,24 @@ import pytest
 
 
 @pytest.fixture
+def plugin_hook_gate(monkeypatch):
+    """Force lifecycle-hook checks through the plugin-subscriber gate."""
+    from hermes_cli import observability, plugins
+
+    checked: list[str] = []
+    real_has_hook = plugins.has_hook
+
+    monkeypatch.setattr(observability, "handles_hook", lambda _hook_name: False)
+
+    def _record_has_hook(hook_name: str) -> bool:
+        checked.append(hook_name)
+        return real_has_hook(hook_name)
+
+    monkeypatch.setattr(plugins, "has_hook", _record_has_hook)
+    return checked
+
+
+@pytest.fixture
 def all_assignees_spawnable(monkeypatch):
     """Pretend every assignee maps to a real Hermes profile.
 

@@ -92,7 +92,7 @@ cronjob(
 
 ## 在指定项目目录中运行任务
 
-Cron 任务默认与任何代码仓库脱离运行——不加载 `AGENTS.md`、`CLAUDE.md` 或 `.cursorrules`，终端/文件/代码执行工具从 gateway 启动时的工作目录运行。传入 `--workdir`（CLI）或 `workdir=`（工具调用）可更改此行为：
+Cron 任务默认与任何代码仓库脱离运行——不加载 `AGENTS.override.md`、`AGENTS.md`、`CLAUDE.md` 或 `.cursorrules`，终端/文件/代码执行工具从 gateway 启动时的工作目录运行。传入 `--workdir`（CLI）或 `workdir=`（工具调用）可更改此行为：
 
 ```bash
 # 独立 CLI（schedule 和 prompt 为位置参数）
@@ -113,7 +113,7 @@ cronjob(
 
 设置 `workdir` 后：
 
-- 该目录中的 `AGENTS.md`、`CLAUDE.md` 和 `.cursorrules` 会被注入系统 prompt（发现顺序与交互式 CLI 相同）
+- 该目录中的 `AGENTS.override.md`、`AGENTS.md`、`CLAUDE.md` 和 `.cursorrules` 会被注入系统 prompt（发现顺序与交互式 CLI 相同）
 - `terminal`、`read_file`、`write_file`、`patch`、`search_files` 和 `execute_code` 均以该目录为工作目录
 - 路径必须是已存在的绝对目录——相对路径和不存在的目录在创建/更新时会被拒绝
 - 编辑时传入 `--workdir ""`（或工具中的 `workdir=""`）可清除该设置并恢复原有行为

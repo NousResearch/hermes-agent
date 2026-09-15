@@ -1,7 +1,7 @@
 ---
 sidebar_position: 8
 title: "上下文文件"
-description: "项目上下文文件 — .hermes.md、AGENTS.override.md、AGENTS.md、全局 SOUL.md 以及 .cursorrules — 自动注入每次对话"
+description: "项目上下文文件 — .hermes.md、AGENTS.override.md、AGENTS.md、CLAUDE.md、全局 SOUL.md 以及 .cursorrules — 自动注入每次对话"
 ---
 
 # 上下文文件
@@ -13,15 +13,15 @@ Hermes Agent 会自动发现并加载上下文文件，以塑造其行为方式�
 | 文件 | 用途 | 发现方式 |
 |------|---------|-----------| 
 | **.hermes.md** / **HERMES.md** | 项目指令（最高优先级） | 向上遍历至 git 根目录 |
-| **AGENTS.override.md** | 本地/个人项目指令覆盖 | 与同目录 `AGENTS.md` 同时存在时优先；启动时按 git 根目录 → CWD 目录链 |
-| **AGENTS.md** | 项目指令、规范、架构说明 | 启动时按 git 根目录 → CWD 目录链；子目录渐进式 |
+| **AGENTS.override.md** | 本地/个人项目指令覆盖 | 从 Git 仓库的根目录开始，一直检查到当前工作目录；同一目录下优先于 `AGENTS.md` |
+| **AGENTS.md** | 项目指令、规范、架构说明 | 从 Git 仓库的根目录开始，一直检查到当前工作目录；沿途找到的 `AGENTS.md` 会依次加载并合并；子目录渐进式加载 |
 | **CLAUDE.md** | Claude Code 上下文文件（同样支持检测） | 启动时的 CWD 及子目录（渐进式） |
 | **SOUL.md** | 当前 Hermes 实例的全局个性与语气定制 | 仅 `HERMES_HOME/SOUL.md` |
 | **.cursorrules** | Cursor IDE 编码规范 | 仅 CWD |
 | **.cursor/rules/*.mdc** | Cursor IDE 规则模块 | 仅 CWD |
 
 :::info 优先级系统
-每次会话仅加载**一种**项目上下文类型（先匹配先生效；同目录 override 优先）：`.hermes.md` → `AGENTS.override.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`。**SOUL.md** 始终作为 agent 身份独立加载（插槽 #1）。
+每次会话只会选择一种项目上下文来源：先查找 `.hermes.md`；如果没有，再加载 AGENTS 系列文件，其中同一目录下的 `AGENTS.override.md` 优先于 `AGENTS.md`；之后才会尝试 `CLAUDE.md` 和 `.cursorrules`。`SOUL.md` 不参与这套优先级判断，而是作为 agent 身份单独加载。
 :::
 
 ## AGENTS.md
@@ -107,10 +107,10 @@ Hermes 兼容 Cursor IDE 的 `.cursorrules` 文件和 `.cursor/rules/*.mdc` 规�
 
 上下文文件由 `agent/prompt_builder.py` 中的 `build_context_files_prompt()` 加载：
 
-1. **扫描工作目录** — 依次检查 `.hermes.md` → `AGENTS.override.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`（先匹配先生效；同目录 override 优先）
+1. **按优先级查找项目上下文** — 依次检查 `.hermes.md` → AGENTS 系列文件 → `CLAUDE.md` → `.cursorrules`；同一目录中 `AGENTS.override.md` 优先于 `AGENTS.md`
 2. **读取内容** — 以 UTF-8 文本读取每个文件
 3. **安全扫描** — 检查内容是否存在 prompt 注入模式
-4. **截断** — 超过上限的文件进行首尾截断（70% 头部，20% 尾部，中间插入标记）。上限在 config.yaml 中显式设置 `context_file_max_chars` 时以该值为准；否则随模型上下文窗口动态缩放（下限 20,000 字符，上限 500,000）
+4. **截断** — 超过当前字符上限的文件进行首尾截断（70% 头部，20% 尾部，中间插入标记）。上限在 config.yaml 中显式设置 `context_file_max_chars` 时以该值为准；否则随模型上下文窗口动态缩放（下限 20,000 字符，上限 500,000）
 5. **组装** — 所有部分合并在 `# Project Context` 标题下
 6. **注入** — 组装后的内容添加到系统 prompt
 
@@ -177,7 +177,7 @@ The following project context files have been loaded and should be followed:
 | 尾部截断比例 | 20% |
 | 截断标记 | 10%（显示字符数并建议使用文件工具） |
 
-当文件超过 20,000 个字符时，截断提示如下：
+当文件超过当前字符上限时，截断提示如下：
 
 ```
 [...truncated AGENTS.md: kept 14000+4000 of 25000 chars. Use file tools to read the full file.]

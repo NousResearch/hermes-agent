@@ -97,7 +97,7 @@ Always consider error handling and edge cases.
 
 ### 发现机制
 
-Hermes 在会话启动时按目录链加载 `AGENTS.md`：从 git 根目录逐层向下直到当前工作目录，越深优先级越高。子目录中的 `AGENTS.md` 文件在工具调用期间通过 `subdirectory_hints.py` 延迟发现，并注入工具结果——不会在启动时预先加载到系统 prompt 中。
+Hermes 在会话启动时按目录链加载 `AGENTS.md`：从 Git 仓库的根目录逐层向下直到当前工作目录，越深优先级越高。子目录中的 `AGENTS.md` 文件在工具调用期间通过 `subdirectory_hints.py` 延迟发现，并注入工具结果——不会在启动时预先加载到系统 prompt 中。
 
 :::tip
 保持上下文文件简洁聚焦。每个字符都会消耗 token 配额，因为它们会注入到每一条消息中。

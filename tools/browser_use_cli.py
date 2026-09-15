@@ -772,12 +772,17 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
     timeout = _clamp_timeout(timeout_s)
     operation_lock = None
-    if lifecycle_state is not None:
+    while lifecycle_state is not None:
         operation_lock = lifecycle_state["operation_lock"]
         operation_lock.acquire()
         with _browser_use_sessions_lock:
-            lifecycle_state["inflight"] += 1
-            lifecycle_state["last_activity"] = time.monotonic()
+            registered = _browser_use_sessions.setdefault(lifecycle_state["key"], lifecycle_state)
+            if registered is lifecycle_state:
+                lifecycle_state["inflight"] += 1
+                lifecycle_state["last_activity"] = time.monotonic()
+                break
+        operation_lock.release()
+        lifecycle_state = registered
 
     started = time.time()
     def dispatch() -> Dict[str, Any]:

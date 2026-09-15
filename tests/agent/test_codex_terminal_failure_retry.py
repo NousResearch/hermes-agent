@@ -30,6 +30,10 @@ def _agent():
     )
     agent.api_mode = "codex_responses"
     agent._interrupt_requested = False
+    # Pin the retry count so these assertions do not depend on the configured default. The count
+    # is intended to become configurable (one attempted retry here), and a default change must not
+    # silently turn a one-retry assertion into a two-retry one.
+    agent._max_stream_retries = 1
     return agent
 
 

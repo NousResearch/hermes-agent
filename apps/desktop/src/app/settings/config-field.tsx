@@ -196,6 +196,19 @@ export function ConfigField({
     )
   }
 
+  if (schema.type === 'secret') {
+    return row(
+      <Input
+        autoComplete="new-password"
+        className={CONTROL_TEXT}
+        onChange={e => onChange(e.target.value)}
+        placeholder={c.notSet}
+        type="password"
+        value={String(value ?? '')}
+      />
+    )
+  }
+
   if (typeof value === 'object' && value !== null) {
     return row(
       <Textarea

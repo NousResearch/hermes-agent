@@ -1,19 +1,32 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { getTerminalBackends, selectTerminalBackend } from '@/hermes'
+import {
+  getTerminalBackends,
+  type ProfileScope,
+  profileScopeKey,
+  selectTerminalBackend
+} from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Check, Loader2, RefreshCw } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { TerminalBackendInfo, TerminalBackendsResponse } from '@/types/hermes'
 
+import { hermesConfigCacheWriter } from '../hooks/use-config-record'
+
+import { setNested } from './helpers'
 import { Pill } from './primitives'
+
+function pickerText(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback
+}
 
 interface TerminalBackendPanelProps {
   /** Re-read the parent toolset list after a backend change so any derived
    *  pills stay in sync. */
   onConfiguredChange?: () => void
+  profile?: ProfileScope
 }
 
 function StatusPill({ backend }: { backend: TerminalBackendInfo }) {
@@ -45,38 +58,79 @@ function StatusPill({ backend }: { backend: TerminalBackendInfo }) {
  * dropdown. Selecting a needs-setup backend is allowed — the row shows what's
  * missing rather than blocking, matching the CLI configurator.
  */
-export function TerminalBackendPanel({ onConfiguredChange }: TerminalBackendPanelProps) {
+export function TerminalBackendPanel({ onConfiguredChange, profile }: TerminalBackendPanelProps) {
   const { t } = useI18n()
   const copy = t.settings.toolsets.terminalBackend
   const [data, setData] = useState<TerminalBackendsResponse | null>(null)
+  const [dataScope, setDataScope] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-  const [selecting, setSelecting] = useState<string | null>(null)
+
+  const [pendingSelection, setPendingSelection] = useState<{
+    backend: string
+    generation: number
+    lifecycle: { active: boolean; scopeKey: string }
+  } | null>(null)
+
+  const scopeKey = profileScopeKey(profile)
+
+  const lifecycle = useMemo(() => ({ active: true, scopeKey }), [scopeKey])
+  const selecting = pendingSelection?.lifecycle === lifecycle ? pendingSelection.backend : null
+
+  const refreshGeneration = useRef(0)
+  const selectionGeneration = useRef(0)
+  const scopedData = dataScope === scopeKey ? data : null
 
   const refresh = useCallback(async () => {
+    const generation = ++refreshGeneration.current
+    const requestedScope = scopeKey
     setLoading(true)
 
     try {
-      setData(await getTerminalBackends())
+      const next = await getTerminalBackends(profile)
+
+      if (generation !== refreshGeneration.current || !lifecycle.active) {
+        return
+      }
+
+      setData(next)
+      setDataScope(requestedScope)
     } catch (err) {
+      if (generation !== refreshGeneration.current || !lifecycle.active) {
+        return
+      }
+
       notifyError(err, copy.failedLoad)
     } finally {
-      setLoading(false)
+      if (generation === refreshGeneration.current && lifecycle.active) {
+        setLoading(false)
+      }
     }
-  }, [copy.failedLoad])
+  }, [copy.failedLoad, lifecycle, profile, scopeKey])
 
   useEffect(() => {
+    lifecycle.active = true
     void refresh()
-  }, [refresh])
+
+    return () => {
+      lifecycle.active = false
+    }
+  }, [lifecycle, refresh])
 
   async function handleSelect(backend: TerminalBackendInfo) {
     if (backend.active || selecting) {
       return
     }
 
-    setSelecting(backend.name)
+    const generation = ++selectionGeneration.current
+    setPendingSelection({ backend: backend.name, generation, lifecycle })
 
     try {
-      await selectTerminalBackend(backend.name)
+      await selectTerminalBackend(backend.name, profile)
+
+      if (generation !== selectionGeneration.current || !lifecycle.active) {
+        return
+      }
+
       // Mirror the backend write locally so the active highlight tracks the
       // new selection without a refetch (probes are unchanged by a select).
       setData(current =>
@@ -88,16 +142,31 @@ export function TerminalBackendPanel({ onConfiguredChange }: TerminalBackendPane
             }
           : current
       )
-      notify({ kind: 'success', title: copy.selectedTitle, message: copy.selectedMessage(backend.label) })
+      hermesConfigCacheWriter(profile)(current =>
+        current ? setNested(current, 'terminal.backend', backend.name) : current
+      )
+      notify({
+        kind: 'success',
+        title: copy.selectedTitle,
+        message: copy.selectedMessage(pickerText(backend.label, backend.name))
+      })
       onConfiguredChange?.()
     } catch (err) {
-      notifyError(err, copy.failedSelect(backend.label))
+      if (generation !== selectionGeneration.current || !lifecycle.active) {
+        return
+      }
+
+      notifyError(err, copy.failedSelect(pickerText(backend.label, backend.name)))
     } finally {
-      setSelecting(null)
+      if (generation === selectionGeneration.current && lifecycle.active) {
+        setPendingSelection(current =>
+          current?.generation === generation && current.lifecycle === lifecycle ? null : current
+        )
+      }
     }
   }
 
-  if (loading && !data) {
+  if (loading && !scopedData) {
     return (
       <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
         <Loader2 className="size-3.5 animate-spin" />
@@ -106,7 +175,7 @@ export function TerminalBackendPanel({ onConfiguredChange }: TerminalBackendPane
     )
   }
 
-  if (!data) {
+  if (!scopedData) {
     return null
   }
 
@@ -119,7 +188,7 @@ export function TerminalBackendPanel({ onConfiguredChange }: TerminalBackendPane
         </Button>
       </div>
       <div className="grid gap-1">
-        {data.backends.map(backend => (
+        {scopedData.backends.map(backend => (
           <button
             aria-pressed={backend.active}
             className={cn(
@@ -134,7 +203,7 @@ export function TerminalBackendPanel({ onConfiguredChange }: TerminalBackendPane
             type="button"
           >
             <span className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-medium">{backend.label}</span>
+              <span className="text-xs font-medium">{pickerText(backend.label, backend.name)}</span>
               <StatusPill backend={backend} />
               {backend.active && (
                 <Pill tone="primary">
@@ -144,11 +213,11 @@ export function TerminalBackendPanel({ onConfiguredChange }: TerminalBackendPane
               )}
               {selecting === backend.name && <Loader2 className="size-3 animate-spin" />}
             </span>
-            <span className="text-[0.68rem] text-muted-foreground">{backend.description}</span>
+            <span className="text-[0.68rem] text-muted-foreground">{pickerText(backend.description)}</span>
             {backend.status !== 'ready' && backend.detail && (
               <span className="flex items-start gap-1 text-[0.68rem] text-amber-600 dark:text-amber-300">
                 <AlertTriangle className="mt-0.5 size-3 shrink-0" />
-                {backend.detail}
+                {pickerText(backend.detail)}
                 {backend.active && ` ${copy.needsSetupHint}`}
               </span>
             )}

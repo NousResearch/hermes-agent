@@ -8,6 +8,8 @@ import inspect
 import logging
 import shutil
 import subprocess
+from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any, Dict, Optional
 
 from tools.environments.docker import DockerEnvironment as _DockerEnvironment
@@ -60,6 +62,35 @@ def _ssh_config_from_config(config: Dict[str, Any]) -> dict:
 def _container_config_from_config(config: Dict[str, Any]) -> dict:
     """``container_config`` for :func:`_create_environment` (shared with the lazy ``ensure_task_env``)."""
     return {k: config.get(k, d) for k, d in _CONTAINER_KEYS}
+
+
+def _resolve_plugin_backend_config(provider) -> Dict[str, Any]:
+    """Resolve one provider's profile-scoped ``terminal.backends`` config."""
+    from hermes_cli.config import read_user_config_raw
+
+    raw_config = read_user_config_raw()
+    if not isinstance(raw_config, Mapping):
+        raw_config = {}
+    terminal_config = raw_config.get("terminal", {})
+    if not isinstance(terminal_config, Mapping):
+        terminal_config = {}
+    backends = terminal_config.get("backends", {})
+    if not isinstance(backends, Mapping):
+        backends = {}
+
+    provider_name = provider.name.strip().lower()
+    configured = backends.get(provider_name, {})
+    if not isinstance(configured, Mapping):
+        configured = {}
+    return provider.validated_config(deepcopy(dict(configured)))
+
+
+class PluginTerminalEnvironmentError(RuntimeError):
+    """Sanitized plugin configuration/factory failure boundary."""
+
+    def __init__(self, provider_name: str):
+        self.provider_name = provider_name
+        super().__init__(f"Plugin terminal backend {provider_name!r} could not be initialized")
 
 
 def _resources(cc: Dict[str, Any]) -> dict:
@@ -183,15 +214,21 @@ def _build_ssh_env(*, cwd, timeout, ssh_config, probe_only=False, **_):
 def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
     provider = _get_plugin_env_provider(env_type)
     if provider is not None:
-        env_obj = provider.create_environment(cwd=cwd, timeout=timeout, task_id=task_id, image=image,
-                                              container_config=cc)
-        # Stamp the backend name so path-resolution and progress surfaces can identify plugin
-        # backends without class-name sniffing. Test doubles may reject attributes.
         try:
-            env_obj._hermes_backend_name = provider.name.strip().lower()
-        except AttributeError:
-            pass
-        return env_obj
+            backend_config = _resolve_plugin_backend_config(provider)
+            env_obj = provider.create_environment(
+                cwd=cwd, timeout=timeout, task_id=task_id, image=image,
+                container_config=cc, backend_config=backend_config,
+            )
+            # Stamp the backend name so path-resolution and progress surfaces can identify plugin
+            # backends without class-name sniffing. Test doubles may reject attributes.
+            try:
+                env_obj._hermes_backend_name = provider.name.strip().lower()
+            except AttributeError:
+                pass
+            return env_obj
+        except Exception:
+            raise PluginTerminalEnvironmentError(provider.name) from None
     try:
         from agent.terminal_env_registry import plugin_backend_names
         plugin_names = plugin_backend_names()
@@ -314,7 +351,12 @@ def _check_plugin_requirements(config: Dict[str, Any]) -> bool:
     env_type = config["env_type"]
     provider = _get_plugin_env_provider(env_type)
     if provider is not None:
-        return bool(provider.check_requirements(config))
+        try:
+            provider_config = dict(config)
+            provider_config["backend_config"] = _resolve_plugin_backend_config(provider)
+            return bool(provider.check_requirements(provider_config))
+        except Exception:
+            raise PluginTerminalEnvironmentError(provider.name) from None
     logger.error("Unknown TERMINAL_ENV '%s'. Use one of: %s, or a plugin-registered backend.",
                  env_type, _BUILTIN_BACKENDS)
     return False

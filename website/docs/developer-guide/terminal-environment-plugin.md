@@ -18,7 +18,8 @@ A registered backend automatically participates in every core surface:
 |---|---|
 | Command dispatch (`terminal`, `execute_code`, file tools) | `create_environment()` |
 | `hermes setup` backend picker | `display_name`, `description`, `setup_instructions()`, `post_setup()` |
-| Dashboard terminal-backend picker (probe status) | `probe()` |
+| Dashboard terminal-backend picker (probe status) | `probe()` / `probe_with_config()` |
+| Dashboard/Desktop provider config fields | `get_config_schema()` |
 | `hermes status` / `hermes doctor` | `doctor_checks()` |
 | System-prompt environment hints | `is_remote`, `env_description` |
 | Dangerous-command approval skipping | `skip_container_guards` |
@@ -98,6 +99,59 @@ Enable it, select it, run:
 hermes plugins enable acmebox
 hermes config set terminal.backend acmebox
 ```
+
+## Provider-owned configuration
+
+A provider can expose backend-specific fields without adding them to Hermes core.
+The schema is projected into the Dashboard and Desktop config forms under
+`terminal.backends.<provider>`; only the selected backend's fields are shown.
+
+```python
+class AcmeBoxProvider(TerminalEnvironmentProvider):
+    # ... identity, classification, and availability methods ...
+
+    def get_config_schema(self):
+        return {
+            "workspace": {
+                "type": "string",
+                "description": "AcmeBox workspace name",
+            },
+            "token": {
+                "type": "secret",
+                "description": "AcmeBox API token",
+            },
+        }
+
+    def resolve_config(self, config):
+        # The provider owns defaults and environment/secret fallback precedence.
+        return {
+            "workspace": config.get("workspace", "default"),
+            "token": os.getenv("ACMEBOX_TOKEN", config.get("token", "")),
+        }
+
+    def create_environment(self, *, backend_config=None, **kwargs):
+        client = AcmeBoxClient(
+            workspace=backend_config["workspace"],
+            token=backend_config["token"],
+        )
+        return AcmeBoxSdkEnvironment(client=client, **kwargs)
+```
+
+```yaml title="~/.hermes/config.yaml"
+terminal:
+  backend: acmebox
+  backends:
+    acmebox:
+      workspace: development
+```
+
+Supported schema types are `string`, `text`, `secret`, `number`, `boolean`,
+`list`, and `select`. Secret fields render as password inputs and must not
+include value-bearing metadata such as `default`, `value`, `example`, or
+`options`. Schema keys are backend-local dotted paths; unsafe prototype
+segments are rejected. Core gives `resolve_config()` a defensive snapshot and
+passes a second defensive snapshot to `create_environment()` as
+`backend_config`.
 
 ## Rules
 

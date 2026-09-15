@@ -1197,6 +1197,26 @@ def _apply_display_config(agent, _agent_cfg, platform):
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
 
 
+def _memory_provider_agent_context() -> str:
+    """Classify the executing agent for external-memory providers.
+
+    A delegated child wins over ``HERMES_KANBAN_TASK`` because children can
+    temporarily inherit a dispatcher's environment before their launcher
+    scrubs it. Dispatcher-owned workers are otherwise identified by their
+    task marker; ordinary CLI and gateway agents remain primary.
+    """
+    from agent.delegation_context import (
+        is_delegated_child_process_context,
+        is_dispatcher_owned_worker_context,
+    )
+
+    if is_delegated_child_process_context():
+        return "subagent"
+    if os.environ.get("HERMES_KANBAN_TASK") and is_dispatcher_owned_worker_context():
+        return "kanban"
+    return "primary"
+
+
 def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     """Scoping kwargs for ``MemoryManager.initialize_all`` (status_callback is CLI-only:
     gateway status travels a different path and the indicator no-ops without it)."""
@@ -1204,7 +1224,7 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
         "session_id": agent.session_id,
         "platform": platform or "cli",
         "hermes_home": str(get_hermes_home()),
-        "agent_context": "primary",
+        "agent_context": _memory_provider_agent_context(),
     }
     if kwargs["platform"] == "cli":
         kwargs["warning_callback"] = agent._emit_warning
@@ -1278,16 +1298,28 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
                 from plugins.memory import load_memory_provider as _load_mem
                 agent._memory_manager = _MemoryManager()
                 _mp = _load_mem(_mem_provider_name)
-                if _mp and _mp.is_available():
+                _provider_init_kwargs = _memory_provider_init_kwargs(agent, platform)
+                _admitted = True
+                if _mp is not None:
+                    _pre_admit = getattr(_mp, "pre_admit", None)
+                    _admitted = _pre_admit is None or _pre_admit(
+                        platform=_provider_init_kwargs["platform"],
+                        agent_context=_provider_init_kwargs["agent_context"],
+                    )
+                if _admitted and _mp and _mp.is_available():
                     agent._memory_manager.add_provider(_mp)
-                elif _mp is not None and _mem_provider_name not in _warned_unavailable_providers:
+                elif (
+                    _admitted
+                    and _mp is not None
+                    and _mem_provider_name not in _warned_unavailable_providers
+                ):
                     # unavailable_reason() reads config/probes importlib — skip it once warned.
                     _unavailable_reason = ""
                     with suppress(Exception):
                         _unavailable_reason = _mp.unavailable_reason()
                     _warn_memory_provider_unavailable(_mem_provider_name, _unavailable_reason)
                 if agent._memory_manager.providers:
-                    agent._memory_manager.initialize_all(**_memory_provider_init_kwargs(agent, platform))
+                    agent._memory_manager.initialize_all(**_provider_init_kwargs)
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
                 else:
                     _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)

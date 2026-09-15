@@ -385,7 +385,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._api_key = get_secret("SUPERMEMORY_API_KEY", "") or ""
         self._container_tag = _resolve_container_tag(config["container_tag"], kwargs.get("agent_identity", "default"))
         self._apply_config(config)
-        self._write_enabled = kwargs.get("agent_context", "") not in {"cron", "flush", "subagent"}
+        self._write_enabled = kwargs.get("agent_context", "") not in {"cron", "flush", "subagent", "kanban"}
         self._client = _quietly(lambda: _build_client(self._api_key, config, self._container_tag),
                                 "Supermemory initialization failed", level=logging.WARNING) if self._api_key else None
         self._active = self._client is not None

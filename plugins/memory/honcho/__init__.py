@@ -178,11 +178,17 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         self._init_peer_failure: Optional[str] = None
         self._init_peer_platform: str = "cli"
         self._init_peer_notice_emitted = False
-        self._cron_skipped = False  # cron and flush contexts disable the plugin entirely
+        self._cron_skipped = False  # non-primary worker contexts disable the plugin entirely
 
     @property
     def name(self) -> str:
         return "honcho"
+
+    def pre_admit(self, platform: str, agent_context: str) -> bool:
+        """Reject non-primary workers before any Honcho configuration is loaded."""
+        return platform != "cron" and agent_context not in {
+            "cron", "flush", "subagent", "kanban",
+        }
 
     def is_available(self) -> bool:
         """Check if Honcho is configured. No network calls."""
@@ -222,8 +228,8 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         self._recall_generation = object()
         try:
             agent_context, platform = kwargs.get("agent_context", ""), kwargs.get("platform", "cli")
-            if agent_context in {"cron", "flush"} or platform == "cron":
-                logger.debug("Honcho skipped: cron/flush context (agent_context=%s, platform=%s)",
+            if agent_context in {"cron", "flush", "subagent", "kanban"} or platform == "cron":
+                logger.debug("Honcho skipped: non-primary context (agent_context=%s, platform=%s)",
                              agent_context, platform)
                 self._cron_skipped = True
                 return
@@ -1002,7 +1008,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         from plugins.memory.honcho.session import HonchoAuthError
 
         if self._cron_skipped:
-            return tool_error("Honcho is not active (cron context).")
+            return tool_error("Honcho is not active in this execution context.")
         if not self._session_initialized:
             if self._init_thread and self._init_thread.is_alive():
                 return tool_error("Honcho session is still initializing; try again shortly.")

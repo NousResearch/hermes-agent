@@ -4670,7 +4670,7 @@ class TestPtyWebSocket:
             notice = conn.receive_text()
             with pytest.raises(WebSocketDisconnect) as exc:
                 conn.receive_text()
-        assert "Chat unavailable" in notice
+        assert "Chat could not start" in notice
         assert exc.value.code == 1011
         if expect_detail is not None:
             assert expect_detail in notice

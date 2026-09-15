@@ -173,7 +173,6 @@ export function useOnboardingHandoff({
                     focus: answers.committed,
                     layout: answers.layout,
                     name: answers.name,
-                    profile: BUILD_PROFILE,
                     theme: null
                   }
                 }

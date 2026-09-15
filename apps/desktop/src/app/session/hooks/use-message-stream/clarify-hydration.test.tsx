@@ -29,7 +29,6 @@ const single = (fields: Partial<Pick<ClarifySingle, 'choices' | 'multi_select' |
   choices: null,
   kind: 'single',
   multi_select: false,
-  profile: null,
   question: '',
   session_id: SID,
   ...fields
@@ -38,7 +37,6 @@ const single = (fields: Partial<Pick<ClarifySingle, 'choices' | 'multi_select' |
 const question = (qid: string, text: string): ClarifyQuestion => ({
   choices: null,
   multi_select: false,
-  profile: null,
   qid,
   question: text
 })
@@ -46,7 +44,6 @@ const question = (qid: string, text: string): ClarifyQuestion => ({
 const batch = (questions: ClarifyQuestion[]): ClarifyBatch => ({
   answers: null,
   kind: 'batch',
-  profile: null,
   questions,
   session_id: SID
 })

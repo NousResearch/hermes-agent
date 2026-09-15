@@ -43,7 +43,7 @@ it('answers the vault.save_login server request with identifier + password as on
     fail: vi.fn(),
     id: 'req-s',
     method: 'vault.save_login',
-    params: { origin: 'https://github.com', profile: null, session_id: 'session-a', site: 'github.com' },
+    params: { origin: 'https://github.com', session_id: 'session-a', site: 'github.com' },
     respond,
     sessionId: 'session-a'
   })
@@ -86,7 +86,7 @@ it("Don't save answers an empty login and clears the card", async () => {
     fail: vi.fn(),
     id: 'req-d',
     method: 'vault.save_login',
-    params: { origin: 'https://github.com', profile: null, session_id: 'session-a', site: 'github.com' },
+    params: { origin: 'https://github.com', session_id: 'session-a', site: 'github.com' },
     respond,
     sessionId: 'session-a'
   })

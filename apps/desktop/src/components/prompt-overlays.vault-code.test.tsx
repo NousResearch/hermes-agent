@@ -42,7 +42,7 @@ it('answers the vault.code server request with the trimmed code, never the ambie
     fail: vi.fn(),
     id: 'req-c',
     method: 'vault.code',
-    params: { hint: null, profile: null, session_id: 'session-a', site: 'github.com' },
+    params: { hint: null, session_id: 'session-a', site: 'github.com' },
     respond,
     sessionId: 'session-a'
   })
@@ -73,7 +73,7 @@ it('Skip answers an empty code and clears the card', async () => {
     fail: vi.fn(),
     id: 'req-d',
     method: 'vault.code',
-    params: { hint: null, profile: null, session_id: 'session-a', site: 'github.com' },
+    params: { hint: null, session_id: 'session-a', site: 'github.com' },
     respond,
     sessionId: 'session-a'
   })

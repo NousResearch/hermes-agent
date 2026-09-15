@@ -44,7 +44,7 @@ it('answers the vault.unlock server request with the master password, never the 
     fail: vi.fn(),
     id: 'req-a',
     method: 'vault.unlock_prompt',
-    params: { backend: 'bitwarden', display_name: 'Bitwarden', profile: null, session_id: 'session-a' },
+    params: { backend: 'bitwarden', display_name: 'Bitwarden', session_id: 'session-a' },
     respond,
     sessionId: 'session-a'
   })

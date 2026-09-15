@@ -672,7 +672,6 @@ export async function moveSessionToProject(
 const recordReposPolicy = (policy: RepoDiscoveryPolicy): RepoDiscoveryPolicyParams => ({
   enabled: policy.enabled,
   exclude_paths: policy.exclude_paths,
-  profile: null,
   repo_scan_enabled: policy.enabled,
   repo_scan_exclude_paths: policy.exclude_paths,
   repo_scan_roots: policy.roots,
@@ -820,7 +819,7 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
         projectParams(
           {
             discovery_policy: recordReposPolicy(policy),
-            repos: repos.map(repo => ({ label: repo.label, profile: null, root: repo.root }))
+            repos: repos.map(repo => ({ label: repo.label, root: repo.root }))
           },
           context.profile
         )

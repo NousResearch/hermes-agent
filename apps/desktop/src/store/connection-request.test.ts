@@ -39,7 +39,7 @@ const WIRE: ConnectionRequestPayload = {
 }
 
 /** The wire answer for Continue: every field named, no targets. */
-const CONTINUE = { profile: null, settled_by: 'continue', targets: [] }
+const CONTINUE = { settled_by: 'continue', targets: [] }
 
 type Gateway = NonNullable<ReturnType<typeof $gateway.get>>
 
@@ -193,9 +193,8 @@ describe('connection-request store', () => {
     expect(rpc.mock.calls[0][0]).toBe('connection.respond')
     expect(rpc.mock.calls[0][1]).toMatchObject({ op_id: 'op-1', session_id: 'a' })
     expect(rpc.mock.calls[0][1].result).toEqual({
-      profile: null,
       settled_by: null,
-      targets: [{ detail: null, name: 'notion', profile: null, state: null, status: 'skipped', tools: null }]
+      targets: [{ detail: null, name: 'notion', state: null, status: 'skipped', tools: null }]
     })
     expect($connectionRequests.get().a).toBeDefined()
 

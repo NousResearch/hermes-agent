@@ -47,7 +47,7 @@ function liveServerRequest(id: string, sessionId = 'session-1', fail = vi.fn()) 
     fail,
     id,
     method: 'clarify',
-    params: { choices: null, kind: 'single', multi_select: false, profile: null, question: '', session_id: sessionId },
+    params: { choices: null, kind: 'single', multi_select: false, question: '', session_id: sessionId },
     respond,
     sessionId
   })

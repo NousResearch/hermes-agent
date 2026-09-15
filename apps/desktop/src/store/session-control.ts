@@ -392,7 +392,7 @@ export async function runSessionControlAction(
   try {
     const response = await requestForOwnedSession(sessionId, ambientRequestFor(gateway), 'session.control', {
       action,
-      args: { index: null, profile: null, text: null, ...args },
+      args: { index: null, text: null, ...args },
       session_id: sessionId
     })
 

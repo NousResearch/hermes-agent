@@ -102,7 +102,7 @@ describe('PromptOverlays', () => {
       fail: vi.fn(),
       id: 'sudo-1',
       method: 'sudo',
-      params: { profile: null, session_id: 's1' },
+      params: { session_id: 's1' },
       respond,
       sessionId: 's1'
     })
@@ -150,7 +150,7 @@ describe('PromptOverlays', () => {
       fail: vi.fn(),
       id: 'secret-1',
       method: 'secret',
-      params: { env_var: 'TEST_SECRET', metadata: null, profile: null, prompt: 'Paste a secret', session_id: 's1' },
+      params: { env_var: 'TEST_SECRET', metadata: null, prompt: 'Paste a secret', session_id: 's1' },
       respond,
       sessionId: 's1'
     })

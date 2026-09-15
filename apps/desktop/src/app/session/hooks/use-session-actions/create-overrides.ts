@@ -20,7 +20,7 @@ export type SessionSeedMessage = SeedMessage
 
 /** One `session.create` seed row. The contract spells every field, so the unset ones are explicit nulls. */
 export function seedMessage(role: string, content: string, displayKind: 'hidden' | null = null): SeedMessage {
-  return { _row_id: null, content, display_kind: displayKind, profile: null, role, text: null }
+  return { _row_id: null, content, display_kind: displayKind, role, text: null }
 }
 
 export type SessionCreateOverrideParams = Pick<SessionCreateParams, 'messages' | 'reasoning_effort' | 'title'>

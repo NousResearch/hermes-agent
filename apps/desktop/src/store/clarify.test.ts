@@ -109,7 +109,7 @@ describe('skipClarifyRequest', () => {
       fail: vi.fn(),
       id: 'req-a',
       method: 'clarify',
-      params: { choices: null, kind: 'single', multi_select: false, profile: null, question: 'q', session_id: 'session-a' },
+      params: { choices: null, kind: 'single', multi_select: false, question: 'q', session_id: 'session-a' },
       respond,
       sessionId: 'session-a'
     })

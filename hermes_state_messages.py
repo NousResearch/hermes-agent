@@ -565,15 +565,24 @@ class SessionMessagesMixin:
             [session_id, *tail_ids] if retarget else tail_ids)
 
     def sanitize_and_compact(self, session_id: str, sanitized_messages: List[Dict[str, Any]],
-        *, watermark: int, lock_holder: str) -> int:
+        *, watermark: int, lock_holder: str,
+        represented_row_ids: Optional[Tuple[int, ...]] = None) -> int:
         """Destructively publish a sanitized transcript under a lease and watermark.
 
         Unlike ordinary compaction, sanitation must remove superseded rows and their
-        FTS entries. Rows appended after *watermark* are cloned byte-exactly after the
+        FTS entries. Active rows absent from *represented_row_ids* (or, for legacy
+        callers, rows appended after *watermark*) are cloned byte-exactly after the
         sanitized snapshot, then their earlier display generation is deleted in the
         same transaction.
         """
+        from agent.session_persistence import _is_ephemeral_scaffolding
         from hermes_state import SessionCompressionInProgressError
+
+        durable_messages = [
+            message
+            for message in sanitized_messages
+            if not _is_ephemeral_scaffolding(message)
+        ]
 
         def _do(conn):
             lock_row = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
@@ -590,12 +599,32 @@ class SessionMessagesMixin:
                 "SELECT 1 FROM sessions WHERE id = ?", (session_id,)
             ).fetchone() is None:
                 raise ValueError(f"Session not found: {session_id}")
-            tail_ids, tail_tool_calls = self._tail_rows_after_watermark(
-                conn,
-                "SELECT id, tool_calls FROM messages "
-                "WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
-                (session_id, int(watermark)),
-            )
+            if represented_row_ids is not None:
+                represented = tuple(
+                    row_id
+                    for row_id in represented_row_ids
+                    if isinstance(row_id, int)
+                    and not isinstance(row_id, bool)
+                    and row_id > 0
+                )
+                exclusion = (
+                    f"AND id NOT IN ({_placeholders(represented)})"
+                    if represented
+                    else ""
+                )
+                tail_ids, tail_tool_calls = self._tail_rows_after_watermark(
+                    conn,
+                    "SELECT id, tool_calls FROM messages "
+                    f"WHERE session_id = ? AND active = 1 {exclusion} ORDER BY id",
+                    (session_id, *represented),
+                )
+            else:
+                tail_ids, tail_tool_calls = self._tail_rows_after_watermark(
+                    conn,
+                    "SELECT id, tool_calls FROM messages "
+                    "WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
+                    (session_id, int(watermark)),
+                )
             if tail_ids:
                 conn.execute(
                     f"DELETE FROM messages WHERE session_id = ? "
@@ -607,7 +636,7 @@ class SessionMessagesMixin:
                     "DELETE FROM messages WHERE session_id = ?", (session_id,)
                 )
             inserted, tool_calls_total = self._insert_message_rows(
-                conn, session_id, sanitized_messages
+                conn, session_id, durable_messages
             )
             if tail_ids:
                 self._clone_message_rows(conn, tail_ids)

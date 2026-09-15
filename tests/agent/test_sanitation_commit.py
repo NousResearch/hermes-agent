@@ -158,6 +158,7 @@ class _ExternalEngine:
         self.current_operation = current_operation
         self.updates_status = updates_status
         self.calls = 0
+        self.compress_inputs: list[list[dict]] = []
         self.call_options: list[dict[str, bool]] = []
         self.prepare_calls: list[dict[str, Any]] = []
         self.operation_claims: list[Any] = []
@@ -212,6 +213,7 @@ class _ExternalEngine:
         operation_claim=None,
     ):
         self.calls += 1
+        self.compress_inputs.append(copy.deepcopy(_messages))
         self.operation_claims.append(operation_claim)
         self.call_options.append(
             {"force": force, "bypass_cooldown": bypass_cooldown}
@@ -442,6 +444,36 @@ def test_sanitation_claim_is_passed_and_current_result_proves_exact_claim(tmp_pa
     assert harness.memory.pre_compress_calls == 0
 
 
+def test_prepare_hook_mutation_is_validated_against_pre_hook_snapshot(tmp_path):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1, initial_status=None)
+    engine = harness.agent.context_compressor
+    real_prepare = engine.prepare_compression_operation
+
+    def _mutating_prepare(messages, **kwargs):
+        prepared = real_prepare(messages, **kwargs)
+        messages[0]["role"] = "assistant"
+        messages[0]["tool_call_id"] = "mutated-by-prepare"
+        return prepared
+
+    engine.prepare_compression_operation = _mutating_prepare
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert _without_persistence_markers(returned) == _without_persistence_markers(
+        harness.candidate
+    )
+    assert _without_persistence_markers(
+        harness.db.get_messages_as_conversation(harness.agent.session_id)
+    ) == _without_persistence_markers(harness.candidate)
+
+
 def test_replayed_result_claim_cannot_classify_later_invocation_as_sanitation(
     tmp_path,
 ):
@@ -542,7 +574,14 @@ def test_prepare_claim_exception_invalidates_sanitation_and_falls_back_generic(
 
     harness = _make_harness(tmp_path, rounds=1, initial_status=None)
     engine = harness.agent.context_compressor
-    engine.prepare_exception = RuntimeError("claim failed")
+    expected_input = copy.deepcopy(harness.messages)
+
+    def _mutate_then_raise(messages, **_kwargs):
+        messages[0]["role"] = "assistant"
+        messages[0]["tool_call_id"] = "mutated-by-prepare"
+        raise RuntimeError("claim failed")
+
+    engine.prepare_compression_operation = _mutate_then_raise
     engine.candidate = [{"role": "user", "content": "generic compression"}]
 
     compression.compress_context(
@@ -553,6 +592,7 @@ def test_prepare_claim_exception_invalidates_sanitation_and_falls_back_generic(
     )
 
     assert engine.operation_claims == [None]
+    assert engine.compress_inputs == [expected_input]
     assert harness.memory.pre_compress_calls == 1
 
 
@@ -952,7 +992,7 @@ def test_externalization_marker_byte_count_normalizes_lone_surrogates():
     assert validate_sanitation_candidate(original, candidate) is not None
 
 
-def test_structured_payload_accepts_redaction_before_externalization():
+def test_redacted_externalization_requires_matching_sidecar_payload():
     original = [
         {
             "role": "assistant",
@@ -985,12 +1025,65 @@ def test_structured_payload_accepts_redaction_before_externalization():
         f"ref=20260915_raw_payload_assistant_{digest}_abc123.json]"
     )
 
-    assert validate_sanitation_candidate(original, candidate) is not None
+    assert validate_sanitation_candidate(original, candidate) is None
+
+    payload = {
+        "kind": "raw_payload",
+        "role": "assistant",
+        "content": externalized_redacted_payload,
+        "content_chars": len(externalized_redacted_payload),
+        "content_bytes": len(externalized_redacted_payload.encode()),
+    }
+    loader = lambda ref: payload if ref.endswith(".json") else None
+    assert validate_sanitation_candidate(
+        original,
+        candidate,
+        externalized_payload_loader=loader,
+    ) is not None
 
     candidate[0]["content"] = candidate[0]["content"].replace(
         "role=assistant", "role=user"
     )
-    assert validate_sanitation_candidate(original, candidate) is None
+    assert validate_sanitation_candidate(
+        original,
+        candidate,
+        externalized_payload_loader=loader,
+    ) is None
+
+
+def test_verified_unredacted_structured_externalization_counts_as_change():
+    original_content = [{"type": "text", "text": "ordinary output"}]
+    externalized_content = json.dumps(
+        original_content,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    digest = hashlib.sha256(externalized_content.encode()).hexdigest()[:12]
+    original = [{"role": "assistant", "content": original_content}]
+    candidate = copy.deepcopy(original)
+    candidate[0]["content"] = (
+        "[Externalized payload: kind=raw_payload; role=assistant; "
+        f"chars={len(externalized_content)}; "
+        f"bytes={len(externalized_content.encode())}; "
+        f"ref=20260915_raw_payload_assistant_{digest}_abc123.json]"
+    )
+    payload = {
+        "kind": "raw_payload",
+        "role": "assistant",
+        "content": externalized_content,
+        "content_chars": len(externalized_content),
+        "content_bytes": len(externalized_content.encode()),
+    }
+
+    changes = validate_sanitation_candidate(
+        original,
+        candidate,
+        externalized_payload_loader=lambda _ref: payload,
+    )
+
+    assert changes is not None
+    assert changes.changed_fields == 1
+    assert changes.placeholders == 1
 
 
 def test_externalization_marker_must_match_original_identity_and_size():
@@ -1099,6 +1192,47 @@ def test_engine_preflight_threshold_path_commits_sanitation(tmp_path):
     ) == _without_persistence_markers(harness.candidate)
 
 
+def test_threshold_preflight_does_not_spend_pass_budget_on_sanitation(tmp_path):
+    from agent.turn_context_compaction import CompactionOutcome, _run_preflight_passes
+
+    harness = _make_harness(tmp_path, rounds=1)
+    engine = harness.agent.context_compressor
+    engine.threshold_tokens = 1
+    engine.context_length = 100_000
+    engine.should_compress = lambda tokens: tokens >= engine.threshold_tokens
+    harness.agent.max_compression_attempts = 1
+    real_compress = engine.compress
+
+    def _sanitize_then_enable_generic(*args, **kwargs):
+        kwargs.pop("memory_context", None)
+        result = real_compress(*args, **kwargs)
+        engine.current_operation = None
+        engine.candidate = [{"role": "user", "content": "generic compacted context"}]
+        return result
+
+    engine.compress = _sanitize_then_enable_generic
+    outcome = CompactionOutcome(
+        messages=harness.messages,
+        active_system_prompt="system",
+        conversation_history=[],
+        current_turn_user_idx=0,
+    )
+
+    _run_preflight_passes(
+        harness.agent,
+        outcome,
+        engine,
+        sanitation_rough_tokens(harness.messages),
+        "system",
+        "default",
+    )
+
+    assert engine.calls == 2
+    assert _without_persistence_markers(outcome.messages) == [
+        {"role": "user", "content": "generic compacted context"}
+    ]
+
+
 @pytest.mark.parametrize(
     ("force", "bypass_cooldown"),
     [(True, False), (False, True)],
@@ -1202,13 +1336,17 @@ def test_sanitation_commit_failure_rolls_back_without_boundary_hooks(
     durable_before = harness.db.get_messages_as_conversation(
         harness.agent.session_id
     )
-    monkeypatch.setattr(
-        harness.db,
-        "sanitize_and_compact",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            RuntimeError("commit failed")
-        ),
-    )
+    real_commit = harness.db.sanitize_and_compact
+    commit_calls = 0
+
+    def _fail_once(*args, **kwargs):
+        nonlocal commit_calls
+        commit_calls += 1
+        if commit_calls == 1:
+            raise RuntimeError("commit failed")
+        return real_commit(*args, **kwargs)
+
+    monkeypatch.setattr(harness.db, "sanitize_and_compact", _fail_once)
     harness.agent.event_callback = lambda *_args, **_kwargs: (_ for _ in ()).throw(
         AssertionError("failed sanitation must not emit session:compress")
     )
@@ -1228,6 +1366,69 @@ def test_sanitation_commit_failure_rolls_back_without_boundary_hooks(
     assert harness.agent._last_compaction_in_place is False
     assert harness.agent.context_compressor.failure_cooldown_calls == 0
     assert "terminal_result=commit_failed" in caplog.text
+
+    harness.agent.context_compressor.current_operation = None
+    retried, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.agent.context_compressor.calls == 1
+    assert harness.memory.pre_compress_calls == 0
+    assert _without_persistence_markers(retried) == _without_persistence_markers(
+        harness.candidate
+    )
+    assert _without_persistence_markers(
+        harness.db.get_messages_as_conversation(harness.agent.session_id)
+    ) == _without_persistence_markers(harness.candidate)
+
+
+def test_sanitation_retry_survives_failure_after_candidate_rows_are_inserted(
+    tmp_path,
+    monkeypatch,
+):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+    real_insert = harness.db._insert_message_rows
+    insert_calls = 0
+
+    def _insert_then_fail(conn, session_id, messages):
+        nonlocal insert_calls
+        insert_calls += 1
+        result = real_insert(conn, session_id, messages)
+        if insert_calls == 1:
+            raise RuntimeError("late transaction failure")
+        return result
+
+    monkeypatch.setattr(harness.db, "_insert_message_rows", _insert_then_fail)
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+    assert returned is harness.messages
+
+    harness.agent.context_compressor.current_operation = None
+    retried, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.agent.context_compressor.calls == 1
+    assert harness.memory.pre_compress_calls == 0
+    assert _without_persistence_markers(retried) == _without_persistence_markers(
+        harness.candidate
+    )
+    assert _without_persistence_markers(
+        harness.db.get_messages_as_conversation(harness.agent.session_id)
+    ) == _without_persistence_markers(harness.candidate)
 
 
 def test_in_place_sanitation_mutation_validates_and_rolls_back_from_snapshot(

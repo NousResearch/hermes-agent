@@ -91,3 +91,51 @@ def test_sanitation_lost_lease_cannot_mutate_transcript(db: SessionDB) -> None:
         )
 
     assert [row["content"] for row in db.get_messages("sess1")] == ["original"]
+
+
+def test_sanitation_preserves_active_rows_absent_from_noncontiguous_snapshot(
+    db: SessionDB,
+) -> None:
+    first = db.append_message("sess1", role="user", content="represented-first")
+    db.append_message("sess1", role="user", content="concurrent-middle")
+    last = db.append_message("sess1", role="assistant", content="represented-last")
+    assert db.try_acquire_compression_lock("sess1", "sanitizer")
+
+    db.sanitize_and_compact(
+        "sess1",
+        [
+            {"role": "user", "content": "clean-first"},
+            {"role": "assistant", "content": "clean-last"},
+        ],
+        watermark=last,
+        represented_row_ids=(first, last),
+        lock_holder="sanitizer",
+    )
+
+    assert [row["content"] for row in db.get_messages("sess1")] == [
+        "clean-first",
+        "clean-last",
+        "concurrent-middle",
+    ]
+
+
+def test_sanitation_does_not_insert_ephemeral_recovery_scaffolding(db: SessionDB) -> None:
+    row_id = db.append_message("sess1", role="user", content="durable")
+    assert db.try_acquire_compression_lock("sess1", "sanitizer")
+
+    db.sanitize_and_compact(
+        "sess1",
+        [
+            {"role": "user", "content": "clean"},
+            {
+                "role": "assistant",
+                "content": "transient retry",
+                "_thinking_prefill": True,
+            },
+        ],
+        watermark=row_id,
+        represented_row_ids=(row_id,),
+        lock_holder="sanitizer",
+    )
+
+    assert [row["content"] for row in db.get_messages("sess1")] == ["clean"]

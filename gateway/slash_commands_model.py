@@ -89,9 +89,14 @@ class _ModelSwitchContext:
                 return
             model_cfg = cfg.get("model", {})
             if isinstance(model_cfg, dict):
-                self.current_model = model_cfg.get("default", "")
-                self.current_provider = model_cfg.get("provider", self.current_provider)
-                self.current_base_url = model_cfg.get("base_url", "")
+                for field, key in (
+                    ("current_model", "default"),
+                    ("current_provider", "provider"),
+                    ("current_base_url", "base_url"),
+                ):
+                    value = model_cfg.get(key)
+                    if value is not None:
+                        setattr(self, field, value)
             self.user_provs = cfg.get("providers")
             try:
                 from hermes_cli.config import get_compatible_custom_providers

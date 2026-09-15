@@ -154,7 +154,10 @@ class GatewayAgentCacheMixin:
             return
         if not persisted:
             return
-        override: Dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url")}
+        # Preserve partial overrides as partial. Legacy session entries may
+        # contain only ``model``; materializing absent route fields as ``None``
+        # would later erase the configured provider in /model command context.
+        override: Dict[str, Any] = dict(persisted)
         provider = persisted.get("provider")
         if provider:
             # Re-resolve credentials for the persisted provider. On failure (e.g. credentials removed

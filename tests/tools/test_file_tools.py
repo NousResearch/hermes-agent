@@ -1116,18 +1116,11 @@ class TestSecretFileReadRedaction:
 
         assert self.SYNTH not in out["content"]
         assert "«redacted" in out["content"]
-        assert "MAX_TOKENS: 100" in out["content"]
-        assert "5|MAX_TOKENS" in out["content"]  # the rendered gutter survives
+        assert "5|MAX_TOKENS: 100" in out["content"]  # non-secret scalar and rendered gutter survive
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_project_config_read_stays_raw(self, mock_get, tmp_path):
-        """A project's own config.yaml is NOT secret-bearing: source dumps are never mangled."""
-        body = f"4|      ADS_API_TOKEN: {self.SYNTH}\n"
-        mock_get.return_value = self._read_ops(body)
-
-        from tools.file_tools import read_file_tool
-        out = json.loads(read_file_tool(str(tmp_path / "proj-config.yaml"), task_id="plain-read"))
-
+        # A project's own config.yaml is NOT secret-bearing: source dumps are never mangled.
+        mock_get.return_value = self._read_ops(f"4|      ADS_API_TOKEN: {self.SYNTH}\n")
+        out = json.loads(read_file_tool(str(hermes_home.parent / "proj-config.yaml"), task_id="plain-read"))
         assert self.SYNTH in out["content"]
 
     @patch("tools.file_tools._get_file_ops")

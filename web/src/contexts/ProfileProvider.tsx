@@ -45,14 +45,16 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
     () => searchParams.get("profile") ?? "",
   );
 
-  // Mirror into the api module synchronously on every render where it
-  // changed, so fetches fired by child effects in the same commit see it.
-  setManagementProfile(profile);
-
   // A profile param arriving via in-app navigation (e.g. the Profiles
   // page's "Manage skills & tools" linking to /skills?profile=X) must win
   // over current state — it's an explicit scope request.
   const urlProfile = searchParams.get("profile");
+  const effectiveProfile = urlProfile ?? profile;
+
+  // Mirror into the api module synchronously on every render where it
+  // changed, so fetches fired by child effects in the same commit see it.
+  setManagementProfile(effectiveProfile);
+
   useEffect(() => {
     if (urlProfile !== null && urlProfile !== profile) {
       setManagementProfile(urlProfile);
@@ -64,19 +66,16 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   // Re-assert ?profile= after navigations that dropped it (bare nav links).
   // Runs on every pathname/profile change; no-ops when already in sync.
   useEffect(() => {
-    const inUrl = searchParams.get("profile") ?? "";
-    if ((profile || "") === inUrl) return;
+    if (urlProfile !== null || !profile) return;
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
-        if (profile) next.set("profile", profile);
-        else next.delete("profile");
+        next.set("profile", profile);
         return next;
       },
       { replace: true },
     );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pathname, profile]);
+  }, [pathname, profile, setSearchParams, urlProfile]);
 
   useEffect(() => {
     let cancelled = false;
@@ -110,25 +109,26 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setProfile = useCallback(
-    (name: string) => {
-      setManagementProfile(name);
-      setProfileState(name);
+    (name: string, options?: { clearResume?: boolean }) => {
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev);
           if (name) next.set("profile", name);
           else next.delete("profile");
+          if (options?.clearResume) next.delete("resume");
           return next;
         },
         { replace: true },
       );
+      setManagementProfile(name);
+      setProfileState(name);
     },
     [setSearchParams],
   );
 
   const value = useMemo(
-    () => ({ profile, currentProfile, profiles, setProfile }),
-    [profile, currentProfile, profiles, setProfile],
+    () => ({ profile: effectiveProfile, currentProfile, profiles, setProfile }),
+    [effectiveProfile, currentProfile, profiles, setProfile],
   );
 
   return (

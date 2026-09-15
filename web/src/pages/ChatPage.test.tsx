@@ -94,6 +94,9 @@ vi.mock("@/components/ChatSidebar", () => ({
 vi.mock("@/components/ChatSessionList", () => ({
   ChatSessionList: () => null,
 }));
+vi.mock("@/components/ProjectBotLauncher", () => ({
+  ProjectBotLauncher: () => <section data-testid="project-bot-launcher" />,
+}));
 vi.mock("@/components/Backdrop", () => ({ Backdrop: () => null }));
 vi.mock("@/plugins", () => ({
   PluginSlot: () => null,
@@ -332,6 +335,14 @@ describe("ChatPage side panel collapse", () => {
       </MemoryRouter>,
     );
   }
+
+  it("includes the project Bot launcher in the desktop chat rail", async () => {
+    await renderChat();
+
+    expect(
+      container.querySelector('[data-testid="project-bot-launcher"]'),
+    ).not.toBeNull();
+  });
 
   it("collapses the desktop side panel and persists the choice", async () => {
     localStorage.clear();

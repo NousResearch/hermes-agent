@@ -801,11 +801,24 @@ export const en: Translations = {
       description: 'Which keypress commits a message. Enter still starts a new line whenever sending moves off it.',
       modeEnter: 'Enter',
       modeDoubleEnter: 'Double tap',
+      modePause: 'Pause',
       modeModEnter: 'Enter + modifier',
       doubleTapTitle: 'Double-tap window',
       doubleTapDescription: 'How fast the two Enter presses have to land to count as a send.',
       doubleTapUnit: 'ms',
-      doubleTapFileHint: path => `Saved in ${path} — edit that file for exact values.`
+      typingIdleTitle: 'Typing pause',
+      typingIdleDescription: 'How long you have to stop typing before Enter sends rather than starting a new line.',
+      typingIdleUnit: 'ms',
+      graceTitle: 'Hold a guessed send',
+      graceDescription:
+        'Sends Hermes worked out on its own wait a moment so Esc can take them back. A keypress you actually chose is never held.',
+      graceOff: 'Never',
+      graceInferred: 'Guessed only',
+      graceAll: 'Every send',
+      graceMsTitle: 'Hold duration',
+      graceMsDescription: 'How long a held send waits before it goes.',
+      graceMsUnit: 'ms',
+      fileHint: path => `Saved in ${path} — edit that file for exact values.`
     }
   },
 

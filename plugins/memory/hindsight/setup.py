@@ -135,6 +135,38 @@ def run_setup(provider, hermes_home: str, config: dict) -> None:
     else:
         _prompt_embedded_llm(llm_provider, provider_config, env_writes, hermes_env)
 
+    # Step 3.5: v0.8.4+ recall parameters (optional)
+    print("\n  Advanced recall parameters (Hindsight >= 0.8.4 required):")
+    existing_prefer = provider_config.get("prefer_observations", False)
+    try:
+        val = input(
+            f"  Prefer observations over raw facts? [y/N] (current: {existing_prefer}): "
+        ).strip().lower()
+    except EOFError:
+        val = None  # stdin exhausted (non-interactive) — leave unchanged
+    if val in ("y", "yes", "n", "no", ""):
+        provider_config["prefer_observations"] = val in ("y", "yes")
+
+    existing_min = provider_config.get("min_scores", "")
+    if existing_min and isinstance(existing_min, dict):
+        existing_min = json.dumps(existing_min)
+    prompt = "  min_scores JSON (e.g. {\"semantic\": 0.7}) [blank to skip]"
+    if existing_min:
+        prompt += f" (current: {existing_min})"
+    prompt += ": "
+    try:
+        val = input(prompt).strip()
+    except EOFError:
+        val = None  # stdin exhausted (non-interactive) — leave unchanged
+    if val is not None:
+        if val:
+            provider_config["min_scores"] = val
+        elif "min_scores" in provider_config:
+            # Blank input clears the existing value — consistent with the
+            # prefer_observations prompt above (blank resets to default).
+            del provider_config["min_scores"]
+            print("  min_scores cleared.")
+
     provider_config.setdefault("bank_id", "hermes")
     provider_config.setdefault("recall_budget", "mid")
     # Preserve explicit 0 timeouts instead of treating them as blank.

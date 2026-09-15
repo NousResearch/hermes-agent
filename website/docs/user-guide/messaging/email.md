@@ -27,6 +27,17 @@ This is separate from the bundled [Himalaya email skill](/docs/user-guide/skills
 - **IMAP enabled** on the email account
 - **An app password** if using Gmail or another provider with 2FA
 
+For outbound-only cron and system delivery, IMAP is optional. Configure SMTP
+credentials and explicitly select send-only mode; Hermes will verify SMTP but
+will not connect to or poll an inbox:
+
+```yaml
+platforms:
+  email:
+    enabled: true
+    mode: send_only
+```
+
 ### Gmail Setup
 
 1. Enable 2-Factor Authentication on your Google Account

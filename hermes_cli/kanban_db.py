@@ -987,6 +987,10 @@ CREATE TABLE IF NOT EXISTS task_runs (
     max_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
     started_at          INTEGER NOT NULL,
+    -- Host suspend accumulated since boot at the moment this run started, so
+    -- ``enforce_max_runtime`` can discount sleep the worker never got to use.
+    -- NULL on legacy rows and on platforms without CLOCK_BOOTTIME.
+    suspend_base_seconds INTEGER,
     ended_at            INTEGER,
     outcome             TEXT,
     -- outcome: completed | blocked | crashed | timed_out | spawn_failed |
@@ -2087,6 +2091,23 @@ def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
     ).fetchone() is None
 
 
+def _suspended_seconds() -> Optional[int]:
+    """Seconds this host has spent suspended since boot, or None where the
+    platform cannot report it.
+
+    ``CLOCK_BOOTTIME`` counts suspend, ``CLOCK_MONOTONIC`` does not, so the
+    difference is accumulated sleep. It is process-independent, which is what a
+    persisted deadline needs: a baseline written by one gateway stays comparable
+    after a gateway restart within the same boot (monotonic values would not).
+    """
+    try:
+        return int(
+            time.clock_gettime(time.CLOCK_BOOTTIME) - time.clock_gettime(time.CLOCK_MONOTONIC)
+        )
+    except (AttributeError, OSError):
+        return None
+
+
 def _claim_and_open_run(
     conn: sqlite3.Connection, task_id: str, source_status: str, lock: str, expires: int, now: int,
     *, event_extra: Optional[dict] = None,
@@ -2117,12 +2138,13 @@ def _claim_and_open_run(
         INSERT INTO task_runs (
             task_id, profile, step_key, status,
             claim_lock, claim_expires, max_runtime_seconds,
-            started_at
-        ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+            started_at, suspend_base_seconds
+        ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
         """,
         (
             task_id, trow["assignee"] if trow else None, trow["current_step_key"] if trow else None,
             lock, expires, trow["max_runtime_seconds"] if trow else None, now,
+            _suspended_seconds(),
         ),
     )
     run_id = run_cur.lastrowid

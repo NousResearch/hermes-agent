@@ -880,6 +880,19 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # Same ordering rule as the ``tasks`` indexes above: index after column.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_events_run ON task_events(run_id, id)")
 
+    # task_runs.suspend_base_seconds back-fills as NULL: runs started before the
+    # column existed have no baseline, so they keep the raw wall-clock elapsed.
+    # Guarded like ``kanban_notify_subs`` below: DBs old enough to predate
+    # ``task_runs`` reach here without the table, and ``PRAGMA table_info`` on a
+    # missing table reports no columns rather than raising, so the ALTER would
+    # fail with ``no such table`` instead of the duplicate-column case
+    # ``_add_column_if_missing`` tolerates. SCHEMA_SQL creates the table with the
+    # column already on it.
+    if _table_exists(conn, "task_runs") and "suspend_base_seconds" not in _column_names(conn, "task_runs"):
+        _add_column_if_missing(
+            conn, "task_runs", "suspend_base_seconds", "suspend_base_seconds INTEGER",
+        )
+
     if _table_exists(conn, "kanban_notify_subs"):
         notify_cols = _column_names(conn, "kanban_notify_subs")
         for name, ddl in _NOTIFY_SUB_COLUMNS:

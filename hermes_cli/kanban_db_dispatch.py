@@ -429,6 +429,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
+        "       r.suspend_base_seconds AS suspend_base, "
         "       t.max_runtime_seconds, t.claim_lock "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -436,6 +437,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         "  AND COALESCE(r.started_at, t.started_at) IS NOT NULL "
         "  AND t.worker_pid IS NOT NULL"
     ).fetchall()
+    suspended_now = _kb._suspended_seconds()
     for row in rows:
         lock = row["claim_lock"] or ""
         if not lock.startswith(host_prefix):
@@ -443,6 +445,17 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         # Runtime is per attempt: ``tasks.started_at`` records the FIRST start,
         # so retries must be measured from the active task_runs row.
         elapsed = now - int(row["active_started_at"])
+        # ``started_at`` is wall clock, and wall clock advances while the host
+        # sleeps. A run that spanned an S3/s2idle suspend would otherwise be
+        # killed for time its worker never got to use, and the kill counts as a
+        # failure against the breaker. Discount only the sleep since THIS run
+        # started. A NULL baseline (run predating the column, or a platform
+        # without CLOCK_BOOTTIME) keeps the raw wall elapsed.
+        suspend_base = row["suspend_base"]
+        if suspended_now is not None and suspend_base is not None:
+            # Both clocks restart at boot, so a reboot makes this negative:
+            # clamp to no discount rather than extending the deadline.
+            elapsed -= max(0, suspended_now - int(suspend_base))
         limit = int(row["max_runtime_seconds"])
         if elapsed < limit:
             continue

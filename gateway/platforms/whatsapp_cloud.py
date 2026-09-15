@@ -315,7 +315,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         err = (body or {}).get("error") or {}
         message = err.get("message") or body.get("raw") or "unknown error"
         code = err.get("code")
-        return f"graph error {code} (HTTP {resp.status_code}): {message}" if code is not None else f"HTTP {resp.status_code}: {message}"
+        detail = f"graph error {code} (HTTP {resp.status_code}): {message}" if code is not None else f"HTTP {resp.status_code}: {message}"
+        if code == 131047:
+            detail += "; the 24-hour customer-service window expired: send an approved template with send_message whatsapp_template"
+        return detail
 
     async def _post_messages(self, payload: Dict[str, Any], *, fail_log: str, reject_log: str, reject_args: tuple = ()) -> tuple[list, Optional[str]]:
         """POST one /messages payload. Returns ``(response messages[], None)`` or ``([], error)``."""
@@ -374,6 +377,82 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if last_message_id:
             rich_sent_store.record(chat_id, last_message_id, formatted)
         return SendResult(success=True, message_id=last_message_id)
+
+    @staticmethod
+    def _template_text_component(component_type: str, values: Optional[list]) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Build a text-only template component, rejecting malformed tool input locally."""
+        if values is None:
+            return None, None
+        if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+            return None, f"Template {component_type}_parameters must be a list of strings"
+        return {"type": component_type, "parameters": [
+            {"type": "text", "text": value} for value in values
+        ]}, None
+
+    @classmethod
+    def _template_payload(
+        cls, chat_id: str, *, name: str, language_code: str, body_parameters: Optional[list] = None,
+        header_parameters: Optional[list] = None, button_parameters: Optional[list] = None,
+    ) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Construct Meta's approved-template payload from the safe public send interface."""
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_]+", name):
+            return None, "Template name must contain only letters, numbers, and underscores"
+        if not isinstance(language_code, str) or not re.fullmatch(r"[A-Za-z]{2,3}(?:_[A-Za-z]{2})?", language_code):
+            return None, "Template language_code must be a locale such as en_US or fr"
+        components: list[Dict[str, Any]] = []
+        for component_type, values in (("header", header_parameters), ("body", body_parameters)):
+            component, error = cls._template_text_component(component_type, values)
+            if error:
+                return None, error
+            if component:
+                components.append(component)
+        if button_parameters is not None:
+            if not isinstance(button_parameters, list):
+                return None, "Template button_parameters must be a list"
+            for button in button_parameters:
+                if not isinstance(button, dict):
+                    return None, "Each template button parameter must be an object"
+                sub_type, index = button.get("sub_type"), button.get("index")
+                if sub_type not in {"quick_reply", "url"}:
+                    return None, "Template button sub_type must be quick_reply or url"
+                if isinstance(index, int) and index >= 0:
+                    index = str(index)
+                if not isinstance(index, str) or not index.isdigit():
+                    return None, "Template button index must be a non-negative integer"
+                value_key = "payload" if sub_type == "quick_reply" else "text"
+                value = button.get(value_key)
+                if not isinstance(value, str) or not value:
+                    return None, f"Template {sub_type} button requires a non-empty {value_key}"
+                components.append({"type": "button", "sub_type": sub_type, "index": index,
+                                   "parameters": [{"type": value_key, value_key: value}]})
+        template: Dict[str, Any] = {"name": name, "language": {"code": language_code}}
+        if components:
+            template["components"] = components
+        return cls._outbound_payload(chat_id, "template", template, None), None
+
+    async def send_template(
+        self, chat_id: str, *, name: str, language_code: str, body_parameters: Optional[list] = None,
+        header_parameters: Optional[list] = None, button_parameters: Optional[list] = None,
+    ) -> SendResult:
+        """Send a Meta-approved template, including text variables and dynamic buttons.
+
+        Templates are the only Cloud API message type permitted after the 24-hour
+        customer-service window.  The caller supplies the already-approved template
+        name and locale; Hermes never attempts to infer or substitute a template.
+        """
+        if self._http_client is None:
+            return SendResult(success=False, error="Not connected")
+        payload, error = self._template_payload(
+            chat_id, name=name, language_code=language_code, body_parameters=body_parameters,
+            header_parameters=header_parameters, button_parameters=button_parameters,
+        )
+        if error:
+            return SendResult(success=False, error=error)
+        return await self._post_message_result(
+            payload,
+            fail_log="[whatsapp_cloud] template send failed",
+            reject_log="[whatsapp_cloud] template rejected (status=%d): %s",
+        )
 
     # ------------------------------------------------------------------ typing indicator + read receipts
     async def send_typing(self, chat_id: str, metadata=None) -> None:

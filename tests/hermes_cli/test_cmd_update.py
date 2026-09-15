@@ -1132,6 +1132,8 @@ class TestNodeRuntimeNpmResolution:
             patch.object(hm, "_desktop_dist_exists", return_value=False),
             patch.object(hm, "_resolve_node_runtime_npm", return_value="npm.cmd"),
             patch.object(hm, "_desktop_build_needed", return_value=True),
+            # Headless hosts skip the desktop rebuild; this test pins the rebuild mechanics.
+            patch("hermes_cli.main_desktop.desktop_display_available", return_value=True),
             patch.object(hm, "_run_logged_subprocess", return_value=build_ok) as desktop_build,
         ):
             had_desktop_app_before_update = update_cmd._desktop_app_present(desktop_dir)
@@ -1198,6 +1200,10 @@ class TestNodeRuntimeNpmResolution:
         monkeypatch.setattr(hm, "_desktop_dist_exists", lambda _desktop_dir: False)
         monkeypatch.setattr(hm, "_resolve_node_runtime_npm", lambda: "npm.cmd")
         monkeypatch.setattr(hm, "_desktop_build_needed", lambda *_args, **_kwargs: True)
+        # Headless hosts skip the desktop rebuild; this test pins the swap mechanics.
+        monkeypatch.setattr(
+            "hermes_cli.main_desktop.desktop_display_available", lambda: True, raising=False
+        )
         monkeypatch.setattr(hm, "_run_logged_subprocess", rebuild_desktop)
         monkeypatch.setattr(hm, "_clear_bytecode_cache", lambda *_args: 0)
         monkeypatch.setattr(hm, "_record_bytecode_fingerprint", lambda: None)

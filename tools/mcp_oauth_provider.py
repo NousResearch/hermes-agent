@@ -350,11 +350,27 @@ class HermesProviderMixin:
         return False
 
 
+# Slack MCP protected-resource metadata lists authorization_servers
+# ``https://mcp.slack.com``; Slack's RFC 8414 AS metadata has used both that
+# and ``https://slack.com`` as ``issuer`` while the token endpoint stays on
+# slack.com. Same authorization server, not a DNS takeover. Treating them as
+# different issuers strips the refresh token and Slack MCP dies at the next
+# 12-hour access-token expiry (background sessions cannot browser-reauth).
+_SLACK_MCP_ISSUERS = frozenset({"https://slack.com", "https://mcp.slack.com"})
+
+
 def _metadata_issuer(context: Any) -> str | None:
     """Discovered authorization-server issuer from the SDK auth context, without trailing slash."""
     meta = getattr(context, "oauth_metadata", None)
     issuer = getattr(meta, "issuer", None) if meta is not None else None
     return (str(issuer).rstrip("/") or None) if issuer else None
+
+
+def _issuers_equivalent(stored: str, current: str) -> bool:
+    """True when ``stored`` and ``current`` name the same authorization server."""
+    if stored == current:
+        return True
+    return stored in _SLACK_MCP_ISSUERS and current in _SLACK_MCP_ISSUERS
 
 
 def bind_issuer_from_context(context: Any) -> None:
@@ -374,8 +390,10 @@ def enforce_refresh_token_issuer(context: Any) -> None:
     metadata edit, server migration); sending the stored refresh token to the new issuer hands it a
     long-lived credential. On mismatch the refresh token is stripped (memory + disk) while an unexpired
     access token stays usable; full re-authorization happens at expiry. Token files predating the field
-    adopt the current issuer once rather than forcing a re-login. Runs after ``_initialize`` restored
-    tokens + metadata, before the SDK's ``can_refresh_token()`` decision."""
+    adopt the current issuer once rather than forcing a re-login. Slack MCP's resource host
+    (``https://mcp.slack.com``) and AS issuer (``https://slack.com``) are treated as the same server;
+    see ``_SLACK_MCP_ISSUERS``. Runs after ``_initialize`` restored tokens + metadata, before the
+    SDK's ``can_refresh_token()`` decision."""
     from tools.mcp_oauth import HermesTokenStorage
     storage = getattr(context, "storage", None)
     tokens = getattr(context, "current_tokens", None)
@@ -388,7 +406,7 @@ def enforce_refresh_token_issuer(context: Any) -> None:
     if stored is None:
         storage.stamp_issuer(current)
         return
-    if stored != current:
+    if not _issuers_equivalent(stored, current):
         logger.warning("MCP OAuth: authorization server issuer changed (%s -> %s); dropping the stored "
                        "refresh token rather than sending it to a different issuer", stored, current)
         storage.strip_refresh_token()

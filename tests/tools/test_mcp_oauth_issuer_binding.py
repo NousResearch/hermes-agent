@@ -70,6 +70,31 @@ def test_legacy_file_without_issuer_adopts_current_issuer_once(tmp_path):
     assert tokens2.refresh_token is None
 
 
+@pytest.mark.parametrize("stored,current", [
+    ("https://mcp.slack.com", "https://slack.com"),
+    ("https://slack.com", "https://mcp.slack.com"),
+    ("https://mcp.slack.com/", "https://slack.com"),
+    ("https://slack.com/", "https://mcp.slack.com/"),
+])
+def test_slack_mcp_resource_host_and_as_issuer_keep_the_refresh_token(tmp_path, stored, current):
+    """Slack PRM lists authorization_servers https://mcp.slack.com; AS metadata issuer has
+    been both that and https://slack.com. Same authorization server, not a takeover."""
+    storage, tokens = _stored(tmp_path, stored)
+    enforce_refresh_token_issuer(_context(storage, current, tokens))
+    assert tokens.refresh_token == "r"
+    on_disk = json.loads(_token_file(tmp_path).read_text())
+    assert on_disk["refresh_token"] == "r"
+    assert on_disk["access_token"] == "a"
+
+
+def test_slack_issuer_equivalence_does_not_accept_other_slack_hosts(tmp_path):
+    storage, tokens = _stored(tmp_path, "https://slack.com")
+    enforce_refresh_token_issuer(_context(storage, "https://attacker.slack.com", tokens))
+    assert tokens.refresh_token is None
+    on_disk = json.loads(_token_file(tmp_path).read_text())
+    assert "refresh_token" not in on_disk and on_disk["access_token"] == "a"
+
+
 def test_set_tokens_stamps_bound_issuer_and_get_tokens_keeps_it_out_of_the_sdk_model(tmp_path):
     storage = HermesTokenStorage("srv", hermes_home=tmp_path)
     bind_issuer_from_context(_context(storage, "https://as.example.com"))

@@ -3,7 +3,7 @@ import { execFile } from 'child_process'
 import { forceRedraw, onTerminalBackground, onTerminalForeground } from '@hermes/ink'
 import { stripAnsi } from '@hermes/shared/ansi'
 import { relativeLuminance } from '@hermes/shared/color'
-import type { JsonValue, SubagentStatus, Usage } from '@hermes/shared/gateway-events'
+import type { JsonValue, MessageCompletePayload, SubagentStatus, Usage } from '@hermes/shared/gateway-events'
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
@@ -1489,7 +1489,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
 
         if (!wasInterrupted) {
-          const payload = ev.payload ?? {}
+          const payload: Partial<MessageCompletePayload> = ev.payload ?? {}
           // A failed turn with no reply: the backend's assistant-slot text is
           // "Error: <raw provider body>". Render the structured error_surface
           // (layer/code/retryable) as a plain title + Details + next step

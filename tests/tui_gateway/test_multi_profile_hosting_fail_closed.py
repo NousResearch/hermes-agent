@@ -111,7 +111,7 @@ def test_rpc_scope_reaches_llm_oneshot_and_model_options(two_homes, monkeypatch)
     def build_payload(ctx, **kwargs):
         from hermes_constants import get_hermes_home
         seen["options"] = (Path(get_hermes_home()), get_secret("B_ONLY_TOKEN"), get_secret("A_ONLY_TOKEN"))
-        return {"providers": []}
+        return {"providers": [], "model": "m", "provider": "p"}  # the real payload's three keys
 
     monkeypatch.setattr("hermes_cli.inventory.build_model_options_payload", build_payload)
 
@@ -119,7 +119,7 @@ def test_rpc_scope_reaches_llm_oneshot_and_model_options(two_homes, monkeypatch)
     assert r["result"]["text"] == "t"
     assert seen["oneshot_home"] == b and seen["oneshot"][1:] == (B_VAL, None)
     r = server._methods["model.options"]("r2", {"profile": "b"})
-    assert r["result"] == {"providers": []}
+    assert r["result"] == {"providers": [], "model": "m", "provider": "p"}
     assert seen["options"] == (b, B_VAL, None)
 
 

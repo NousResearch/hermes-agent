@@ -87,6 +87,35 @@ export const requestScrollToBottom = (sessionId: string | null = null) => {
   handlers.get(sessionId)?.forEach(handler => handler())
 }
 
+export type ThreadPageDirection = -1 | 1
+
+// Bare PageUp/PageDown are global keybinds, while the scroll owner lives in
+// the focused thread. Route the intent by stable session key so kept-alive and
+// split transcripts cannot page together.
+const pageHandlers = new Map<string | null, Set<(direction: ThreadPageDirection) => void>>()
+
+export const onThreadPageScrollRequest = (
+  handler: (direction: ThreadPageDirection) => void,
+  sessionKey: string | null = null
+) => {
+  const scoped = pageHandlers.get(sessionKey) ?? new Set<(direction: ThreadPageDirection) => void>()
+
+  scoped.add(handler)
+  pageHandlers.set(sessionKey, scoped)
+
+  return () => {
+    scoped.delete(handler)
+
+    if (scoped.size === 0) {
+      pageHandlers.delete(sessionKey)
+    }
+  }
+}
+
+export const requestThreadPageScroll = (direction: ThreadPageDirection, sessionKey: string | null = null) => {
+  pageHandlers.get(sessionKey)?.forEach(handler => handler(direction))
+}
+
 // Inline edit grows a sticky human bubble. Fire on pointerdown so the viewport
 // escapes stick-to-bottom before focus/layout; close clears the edit flag when
 // the inline composer unmounts.

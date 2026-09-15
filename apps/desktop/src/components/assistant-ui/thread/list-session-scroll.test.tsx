@@ -3,8 +3,9 @@ import { act, render } from '@testing-library/react'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { rescopeConnectionScopedStores } from '@/lib/connection-scoped'
+import { keybindAction } from '@/lib/keybinds/actions'
 import { setActiveProfile } from '@/store/profile'
-import { saveThreadScrollPosition } from '@/store/thread-scroll'
+import { requestThreadPageScroll, saveThreadScrollPosition } from '@/store/thread-scroll'
 
 import { stubThreadEnvironment, stubThreadViewportSize } from '../test-utils'
 
@@ -97,6 +98,36 @@ function ScrollHarness({ messages, sessionKey }: ScrollHarnessProps) {
 }
 
 describe('list session-scroll restore', () => {
+  it('pages the requested conversation by exactly one viewport in either direction', async () => {
+    expect(keybindAction('conversation.scrollPageUp')?.defaults).toEqual(['pageup'])
+    expect(keybindAction('conversation.scrollPageDown')?.defaults).toEqual(['pagedown'])
+
+    const { container } = render(<ScrollHarness messages={sessionMessages('a')} sessionKey="a" />)
+    const vp = viewportEl(container)
+
+    await settleScroll()
+    expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H)
+
+    act(() => requestThreadPageScroll(1, 'a'))
+    expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H)
+    expect(vp.dataset.following).toBe('true')
+
+    act(() => requestThreadPageScroll(-1, 'other'))
+    expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H)
+
+    act(() => requestThreadPageScroll(-1, 'a'))
+    expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H * 2)
+    act(() => vp.dispatchEvent(new Event('scroll')))
+    await settleScroll()
+    expect(vp.dataset.following).toBe('false')
+
+    act(() => requestThreadPageScroll(1, 'a'))
+    expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H)
+    act(() => vp.dispatchEvent(new Event('scroll')))
+    await settleScroll()
+    expect(vp.dataset.following).toBe('true')
+  })
+
   it('restores a reading offset on return after switching away', async () => {
     saveThreadScrollPosition('a', { fromBottom: 800, kind: 'offset' })
 

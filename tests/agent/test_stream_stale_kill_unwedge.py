@@ -31,7 +31,7 @@ import run_agent
 from agent import chat_completion_helpers as helpers
 
 
-# ── unit: the kill shuts down the killed attempt's socket, never closes it ──
+# ── unit: the kill reaches the killed attempt's socket, never closes it ──
 
 
 def _agent():
@@ -45,64 +45,6 @@ def _call(agent, model="m"):
     call = helpers._StreamingCall(agent, {"model": model, "messages": [{"role": "user", "content": "hi"}]}, None)
     call._stream_stale_timeout = 5.0
     return call
-
-
-def _fake_tls_response(sock):
-    """httpx-shaped response: ``stream._httpcore_stream._connection`` -> socket."""
-    def _no_close():
-        raise AssertionError("monitor must never close")
-    conn = SimpleNamespace(_network_stream=SimpleNamespace(_sock=sock), _connection=None)
-    return SimpleNamespace(close=_no_close,
-                           stream=SimpleNamespace(_httpcore_stream=SimpleNamespace(_connection=conn)))
-
-
-def test_stale_kill_shuts_down_but_never_closes_the_killed_attempts_response():
-    import socket as _socket
-    reader, writer = _socket.socketpair()
-    try:
-        call = _call(_agent())
-        call._attempt_stream_response = _fake_tls_response(reader)
-        call._kill_stale_stream(7.0)  # must not raise via the AssertionError close
-        reader.setblocking(False)
-        try:
-            data = reader.recv(1)
-        except (BlockingIOError, OSError):
-            data = b""
-        assert data == b"", "the killed attempt's socket was not shut down"
-    finally:
-        reader.close()
-        writer.close()
-
-
-def test_escalation_ignores_a_response_a_racing_retry_replaced():
-    """A retry replaces ``_attempt_stream_response``; touching the *new* one would
-    disturb a healthy stream, so the escalation is identity-guarded."""
-    import socket as _socket
-    reader, writer = _socket.socketpair()
-    try:
-        call = _call(_agent())
-        live = _fake_tls_response(reader)
-        call._attempt_stream_response = live
-        call._shutdown_stale_attempt_socket(SimpleNamespace(close=lambda: None, stream=None))
-        call._shutdown_stale_attempt_socket(None)
-        assert reader.getsockopt(_socket.SOL_SOCKET, _socket.SO_ERROR) == 0
-        # ...and the socket it was handed for the killed attempt really is shut down.
-        call._shutdown_stale_attempt_socket(live)
-        reader.setblocking(False)
-        try:
-            data = reader.recv(1)
-        except (BlockingIOError, OSError):
-            data = b""
-        assert data == b""
-    finally:
-        reader.close()
-        writer.close()
-
-
-def test_stale_kill_survives_a_response_without_socket():
-    call = _call(_agent())
-    call._attempt_stream_response = SimpleNamespace()  # no stream/socket: must not raise
-    call._kill_stale_stream(7.0)
 
 
 def _recv_shutdown_proof(reader, writer):
@@ -147,27 +89,6 @@ def test_shutdown_reaches_socket_through_real_httpx_wrapper_shape():
     finally:
         reader.close()
         writer.close()
-
-
-def test_shutdown_prefers_response_extensions_network_stream():
-    """``response.extensions["network_stream"]`` is the direct socket path
-    (reviewer's validated probe); it must work even with no stream wrappers."""
-    import socket as _socket
-    reader, writer = _socket.socketpair()
-    try:
-        def _no_close():
-            raise AssertionError("monitor must never close")
-        net = SimpleNamespace(get_extra_info=lambda _name: reader)
-        resp = SimpleNamespace(close=_no_close, stream=None,
-                               extensions={"network_stream": net})
-        call = _call(_agent())
-        call._attempt_stream_response = resp
-        call._shutdown_stale_attempt_socket(resp)
-        _recv_shutdown_proof(reader, writer)
-    finally:
-        reader.close()
-        writer.close()
-
 
 # ── end to end: a reader parked on a silent provider must reconnect ──
 

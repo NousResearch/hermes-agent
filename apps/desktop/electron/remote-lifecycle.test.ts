@@ -1921,3 +1921,90 @@ test.skipIf(process.platform === 'win32')(
     }
   }
 )
+
+// A dashboard whose served token resolved is proven live or dead over the same
+// SSH channel that may itself be mid-teardown. A lost liveness answer must not
+// read as death: the backend is alive, the boot fails, and the reap is then
+// skipped on the equally-lost ownership probe — one orphan per attempt.
+function flakySsh(rules: any[]) {
+  let liveness = 0
+  let ownership = 0
+
+  return fakeSsh([
+    [
+      (cmd: string) => /kill -0 \d+/.test(cmd) && !cmd.includes('while'),
+      () => {
+        liveness += 1
+
+        return liveness === 1 ? '' : liveness === 2 ? '\n' : 'ALIVE\n'
+      }
+    ],
+    [
+      (cmd: string) => /print\("OWNED"/.test(cmd),
+      () => {
+        ownership += 1
+
+        return ownership === 1 ? '' : 'OWNED\n'
+      }
+    ],
+    ...rules
+  ])
+}
+
+test('connect() does not declare the dashboard dead when the liveness probe returns nothing once', async () => {
+  const ssh = flakySsh([
+    [/uname/, 'Linux\nx86_64'],
+    [/\[ -x/, 'OK'],
+    [/cat .*lock\.json/, ''],
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [/python3 -c/, ''],
+    [/printf '%s\\n'/, ''],
+    [/setsid/, '777\n'],
+    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=51999\n']
+  ])
+
+  const result = await connect(connectDeps(ssh, { platform: { os: 'Linux', arch: 'x86_64' } }))
+
+  assert.equal(result.reused, false)
+  assert.equal(result.pid, 777)
+  assert.equal(result.tokenFingerprint, fingerprintToken(result.token))
+})
+
+test('cleanupStale reaps the just-spawned backend instead of trusting one lost ownership answer', async () => {
+  const ssh = flakySsh([
+    [(cmd: string) => /kill 777 &&/.test(cmd), 'TERMINATED\n'],
+    [(cmd: string) => /printf '%s\\n'/.test(cmd), '']
+  ])
+
+  await cleanupStale(ssh, OWNERSHIP_ID, {
+    pid: 777,
+    spawnNonce: SPAWN_NONCE,
+    hermesPath: '/x/hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+  })
+
+  assert.ok(
+    ssh.calls.some(c => /kill 777\b/.test(c)),
+    'must reap the owned backend after a lost first answer'
+  )
+  assert.ok(ssh.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)))
+})
+
+test('cleanupStale keeps the ownership record when no definite verdict ever arrives', async () => {
+  const ssh = fakeSsh([
+    [/print\("OWNED"/, ''],
+    [(cmd: string) => /printf '%s\\n'/.test(cmd), '']
+  ])
+
+  await assert.rejects(
+    cleanupStale(ssh, OWNERSHIP_ID, {
+      pid: 777,
+      spawnNonce: SPAWN_NONCE,
+      hermesPath: '/x/hermes',
+      logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+    }),
+    (error: any) => error.kind === 'transient-transport-error'
+  )
+
+  assert.ok(!ssh.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)))
+})

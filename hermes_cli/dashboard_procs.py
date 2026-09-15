@@ -568,16 +568,19 @@ def _valid_lockfile_payload(parsed: object, ownership_id: str) -> bool:
     return parsed["logPath"].endswith(f"/{ownership_id}/{parsed['spawnNonce']}.log")
 
 
-def _lock_owned_serve_pids(base_dir: Path | None = None) -> set[int]:
-    """PIDs claimed by valid ``{hermes_home}/desktop-ssh/<ownershipId>/backend.lock.json`` records
-    (best-effort: a bad record contributes no PID; never raises)."""
+def _lock_owned_backend_records(base_dir: Path | None = None) -> list:
+    """Validated ``{hermes_home}/desktop-ssh/<ownershipId>/backend.lock.json`` records.
+
+    Best-effort: a bad/unreadable record contributes nothing; never raises. Each returned dict is
+    the parsed body plus a resolved absolute ``lockPath``, so callers can act on one backend.
+    """
     import json
     root = base_dir if base_dir is not None else _hermes_home_dir() / _REMOTE_LOCK_SUBDIR
-    owned: set[int] = set()
+    records: list = []
     try:
         entries = list(root.iterdir()) if root.is_dir() else []
     except OSError:
-        return owned
+        return records
     for entry in entries:
         ownership_id = entry.name
         lock_path = entry / "backend.lock.json"
@@ -591,8 +594,79 @@ def _lock_owned_serve_pids(base_dir: Path | None = None) -> set[int]:
         except (OSError, UnicodeDecodeError, ValueError):
             continue
         if _valid_lockfile_payload(parsed, ownership_id):
-            owned.add(parsed["pid"])  # validated as int above
-    return owned
+            records.append({**parsed, "lockPath": str(lock_path)})
+    return records
+
+
+def _lock_owned_serve_pids(base_dir: Path | None = None) -> set[int]:
+    """PIDs claimed by valid ``{hermes_home}/desktop-ssh/<ownershipId>/backend.lock.json`` records
+    (best-effort: a bad record contributes no PID; never raises)."""
+    return {record["pid"] for record in _lock_owned_backend_records(base_dir)}
+
+
+def _lock_started_at_epoch(record: dict) -> float | None:
+    """``startedAt`` (ISO-8601 UTC, as the Desktop writes it) as an epoch float; None if unusable.
+
+    An unparseable value is deliberately None — never a stale verdict: recycling a backend we
+    cannot date risks killing a healthy one.
+    """
+    from datetime import datetime, timezone
+    raw = record.get("startedAt")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _pid_alive(pid: int) -> bool:
+    """Liveness probe for a lock-claimed PID; False when liveness cannot be proven.
+
+    Delegates to ``gateway.status._pid_exists`` (psutil, then ctypes ``OpenProcess`` on Windows)
+    because a bare ``os.kill(pid, 0)`` is NOT a no-op there — it sends CTRL_C_EVENT to the target's
+    whole console group (bpo-14484). Unprobeable ⇒ False: a backend we cannot confirm is alive must
+    not be handed to a kill path or reported as stale.
+    """
+    try:
+        from gateway.status import _pid_exists
+        return bool(_pid_exists(pid))
+    except Exception:
+        pass
+    try:
+        import psutil
+        return bool(psutil.pid_exists(pid))
+    except Exception:
+        return False
+
+
+def stale_desktop_backend_pids(
+    started_before: float, *, base_dir: Path | None = None, is_alive=None,
+) -> list[int]:
+    """Live Desktop backends whose lock says they were spawned before *started_before* (epoch seconds).
+
+    A backend that outlived a source update keeps the PREVIOUS checkout's modules in memory (the
+    Desktop reuses it across reconnects, so this is routine — see the desktop backend-maintenance
+    skill). Update and doctor both need the same "which backends predate the code on disk" list;
+    the lock's ``startedAt`` is authoritative because the Desktop writes it at spawn.
+    """
+    is_alive = _pid_alive if is_alive is None else is_alive
+    stale: list[int] = []
+    for record in _lock_owned_backend_records(base_dir):
+        started_at = _lock_started_at_epoch(record)
+        if started_at is None or started_at >= started_before:
+            continue
+        pid = record["pid"]
+        try:
+            alive = bool(is_alive(pid))
+        except Exception:
+            alive = False
+        if alive and pid not in stale:
+            stale.append(pid)
+    return stale
 
 
 # Covers the gap between process start and the Desktop client writing backend.lock.json.

@@ -11,8 +11,16 @@ from .method_ctx import bind_module
 
 def _tui_compression_config_signature(cfg: dict | None) -> tuple:
     """Stable snapshot of compression/context keys that must apply next turn: the messaging-gateway
-    cache-busting extract plus ``idle_compact_after_seconds``/``tail_mode`` (live-TUI-only keys)."""
-    from gateway.run import GatewayRunner
+    cache-busting extract plus ``idle_compact_after_seconds``/``tail_mode`` (live-TUI-only keys).
+
+    ``gateway.run`` is imported lazily (never at module level — the TUI must not pay for the whole
+    messaging stack at startup) and through ``import_symbol``: a desktop ``hermes serve`` outlives
+    ``hermes update``, so a checkout pulled in place leaves ``gateway.session`` cached from before a
+    symbol ``gateway.run`` now imports. That stale-cache ImportError otherwise kills every turn until
+    the process is restarted.
+    """
+    from hermes_module_staleness import import_symbol
+    GatewayRunner = import_symbol("gateway.run", "GatewayRunner")
     keys = GatewayRunner._extract_cache_busting_config(cfg)
     picked = {k: v for k, v in keys.items() if k.startswith("compression.") or k == "model.context_length"}
     compression = cfg.get("compression") if isinstance(cfg, dict) and isinstance(cfg.get("compression"), dict) else {}

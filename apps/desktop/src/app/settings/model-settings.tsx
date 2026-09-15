@@ -1,4 +1,4 @@
-import type { ModelOptionProvider } from '@hermes/shared'
+import type { ModelOptionProvider, ReasoningEffort } from '@hermes/shared'
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@hermes/shared'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -29,6 +29,7 @@ import { useI18n } from '@/i18n'
 import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
+import { resolveModelReasoningEffort } from '@/lib/reasoning-effort'
 import { cn } from '@/lib/utils'
 import { setMainModelAssignment } from '@/store/cron-model-impact'
 import { notifyError, readableError } from '@/store/notifications'
@@ -562,7 +563,15 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
     .trim()
     .toLowerCase()
 
-  const effortValue = rawEffort === 'false' || rawEffort === 'disabled' ? 'none' : rawEffort || DEFAULT_REASONING_EFFORT
+  const effortValue = resolveModelReasoningEffort(
+    rawEffort === 'false' || rawEffort === 'disabled' ? 'none' : rawEffort,
+    DEFAULT_REASONING_EFFORT,
+    mainCaps
+  )
+
+  const effortChoices = REASONING_EFFORT_VALUES.filter(
+    value => mainCaps?.reasoning_efforts == null || mainCaps.reasoning_efforts.includes(value)
+  )
 
   const fastOn = isFastTier(getNested(config ?? {}, 'agent.service_tier'))
 
@@ -940,13 +949,18 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                 {m.reasoning}
                 <Select
                   onValueChange={value => void writeAgentDefault('agent.reasoning_effort', value)}
-                  value={effortValue}
+                  value={effortValue === 'auto' ? '' : effortValue}
                 >
                   <SelectTrigger className={cn('min-w-28', CONTROL_TEXT)}>
-                    <SelectValue />
+                    <SelectValue placeholder={t.shell.modelOptions.unverified} />
                   </SelectTrigger>
                   <SelectContent>
-                    {REASONING_EFFORT_VALUES.map(value => (
+                    {effortValue.startsWith('budget:') ? (
+                      <SelectItem value={effortValue}>
+                        {effortValue === 'budget:-1' ? t.shell.modelOptions.dynamicThinking : effortValue.slice(7)}
+                      </SelectItem>
+                    ) : null}
+                    {effortChoices.map(value => (
                       <SelectItem key={value} value={value}>
                         {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
                       </SelectItem>
@@ -1136,7 +1150,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                           {' · '}
                           {current.reasoning_effort === 'none'
                             ? `${m.reasoning} ${m.reasoningOff}`
-                            : (t.shell.modelOptions[current.reasoning_effort as keyof typeof t.shell.modelOptions] ??
+                            : (t.shell.modelOptions[current.reasoning_effort as ReasoningEffort] ??
                               current.reasoning_effort)}
                         </span>
                       )}

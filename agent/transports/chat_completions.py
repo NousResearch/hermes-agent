@@ -122,6 +122,8 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
     if not isinstance(reasoning_config, dict):
         return reasoning_config
     effort = str(reasoning_config.get("effort") or "").strip().lower()
+    if effort.startswith("budget:"):
+        return reasoning_config  # validated by the provider, not an effort ladder value
     clamped = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS) if effort else effort
     return {**reasoning_config, "effort": clamped} if clamped != effort else reasoning_config
 
@@ -185,9 +187,11 @@ def _snake_case_gemini_thinking_config(config: dict | None) -> dict | None:
     return translated or None
 
 
-def _raise_gemini_thinking_max_tokens(model: str, reasoning_config: dict | None, requested: Any) -> Any:
+def _raise_gemini_thinking_max_tokens(model: str, reasoning_config: dict | None, requested: Any, provider: str = "") -> Any:
     """Raise Gemini output caps that thinking tokens (billed against max_tokens) would otherwise exhaust."""
-    thinking_config = _build_gemini_thinking_config(model, reasoning_config)
+    from agent.gemini_catalog_reasoning import build_thinking_config
+    builder = build_thinking_config if provider == "gemini" else _build_gemini_thinking_config
+    thinking_config = builder(model, reasoning_config)
     if not thinking_config:
         return requested
     from agent.gemini_native_adapter import _effective_gemini_max_output_tokens
@@ -263,12 +267,13 @@ def _swap_developer_role(sanitized: list, model_lower: str) -> list:
 def _apply_max_tokens(api_kwargs: dict, model: str, reasoning_config: Any, params: dict, profile_max: Any = None) -> None:
     """Preserve internal task/recovery budgets and provider protocol exceptions."""
     max_tokens_fn = params.get("max_tokens_param_fn")
+    provider = getattr(params.get("provider_profile"), "name", None) or params.get("provider_name", "")
     for candidate in (params.get("ephemeral_max_output_tokens"), params.get("max_tokens")):
         if candidate is not None and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(_raise_gemini_thinking_max_tokens(model, reasoning_config, candidate)))
+            api_kwargs.update(max_tokens_fn(_raise_gemini_thinking_max_tokens(model, reasoning_config, candidate, provider)))
             return
     if profile_max and max_tokens_fn:
-        api_kwargs.update(max_tokens_fn(_raise_gemini_thinking_max_tokens(model, reasoning_config, profile_max)))
+        api_kwargs.update(max_tokens_fn(_raise_gemini_thinking_max_tokens(model, reasoning_config, profile_max, provider)))
 
 
 
@@ -434,7 +439,8 @@ class ChatCompletionsTransport(ProviderTransport):
                 extra_body["reasoning"] = {"enabled": not off, "effort": "none" if off else _effort}
 
         if str(params.get("provider_name") or "").strip().lower() == "gemini":
-            raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)
+            from agent.gemini_catalog_reasoning import build_thinking_config
+            raw_thinking_config = build_thinking_config(model, reasoning_config)
             if _is_gemini_openai_compat_base_url(base_url):
                 thinking_config = _snake_case_gemini_thinking_config(raw_thinking_config)
                 if thinking_config:

@@ -2926,6 +2926,10 @@ export const ja = defineLocale({
       fast: '高速'
     },
     modelOptions: {
+      dynamicThinking: '動的',
+      thinkingBudget: '思考バジェット（トークン）',
+      unverified: '未確認の設定',
+      unknownThinking: '思考設定は未確認',
       noOptions: 'このモデルにはオプションがありません',
       options: 'オプション',
       thinking: '思考',

@@ -57,6 +57,8 @@ class ProviderProfile:
     supports_health_check: bool = True  # False → doctor skips /models probe for this provider
     # False → fetch_models returns None without a network call (catalog comes from an SDK/subprocess).
     supports_model_listing: bool = True
+    model_catalog_authoritative: bool = False  # successful discovery replaces curated IDs
+    validate_reasoning_selection: bool = False  # opt in; other providers keep their existing policy
 
     # ── Vision support ────────────────────────────────────────
     # True when the provider's API accepts image content inside
@@ -113,6 +115,14 @@ class ProviderProfile:
     # empty = use main model
 
     # ── Hooks (override in subclass for complex providers) ───
+
+    def describe_models(self, *, model_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Optional model controls, from cached metadata only (no network/credentials).
+
+        Explicit reasoning_efforts constrain selectable levels, including an empty
+        list. Providers must use the same metadata when building requests.
+        """
+        return {}
 
     def resolve_aux_model(self, *, vision: bool = False) -> str:
         """Return a LIVE cheap-model id for auxiliary tasks, or "".

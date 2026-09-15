@@ -922,3 +922,6 @@ class TestReasoningEffortDefaults:
 
 
 
+
+
+pytestmark = pytest.mark.usefixtures("gemini_reasoning_catalog")

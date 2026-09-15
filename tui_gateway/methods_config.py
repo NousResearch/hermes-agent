@@ -156,7 +156,7 @@ def _cfg_get_reasoning(params):
         reasoning_config = getattr(session.get("agent"), "reasoning_config", None)
     if isinstance(reasoning_config, dict):
         enabled = reasoning_config.get("enabled") is not False
-        effort = str(reasoning_config.get("effort") or "medium") if enabled else "none"
+        effort = str(reasoning_config.get("effort") or "auto") if enabled else "none"
     else:
         raw_effort = (cfg.get("agent") or {}).get("reasoning_effort", "")
         # YAML `reasoning_effort: false` means thinking disabled, not "unset".

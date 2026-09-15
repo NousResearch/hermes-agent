@@ -604,6 +604,61 @@ class TestMultiplexProfileScope:
         }
 
 
+class TestExecBuzzChildEnv:
+    """_exec_buzz spawns the external buzz CLI; under multiplex, one process
+    serves several profiles and raw os.environ holds the LAUNCH profile's
+    .env residue. A served (secondary) profile's buzz invocation must not
+    inherit that residue — served_profile_child_env pins the served
+    profile's home and drops it, mirroring every other subprocess-spawning
+    call site this repo's multiplex retrofit already covers."""
+
+    @pytest.mark.asyncio
+    async def test_served_profile_exec_drops_launch_profile_residue(self, tmp_path, monkeypatch):
+        from agent.secret_scope import set_multiplex_active
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        launch_home = tmp_path / ".hermes"
+        served_home = launch_home / "profiles" / "served"
+        served_home.mkdir(parents=True)
+        (launch_home / ".env").write_text("TERMINAL_ENV=docker\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(launch_home))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+        captured = {}
+
+        class _FakeProc:
+            returncode = 0
+
+            async def communicate(self, _input):
+                return b"{}", b""
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            captured["env"] = kwargs["env"]
+            return _FakeProc()
+
+        monkeypatch.setattr(_buzz_mod.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+        set_multiplex_active(True)
+        token = set_hermes_home_override(str(served_home))
+        try:
+            await _buzz_mod._exec_buzz(
+                "/usr/bin/buzz", ["ping"], relay_url="https://served.relay", private_key="nsec1served",
+            )
+        finally:
+            reset_hermes_home_override(token)
+            set_multiplex_active(False)
+
+        env = captured["env"]
+        # The served profile's home is pinned, not the launch profile's raw path.
+        assert env["HERMES_HOME"] == str(served_home)
+        # The launch profile's TERMINAL_* bridge residue must not leak into
+        # a served secondary profile's buzz CLI invocation.
+        assert "TERMINAL_ENV" not in env
+        # The caller-resolved relay/key for the served profile still wins.
+        assert env["BUZZ_RELAY_URL"] == "https://served.relay"
+        assert env["BUZZ_PRIVATE_KEY"] == "nsec1served"
+
+
 # ── CLI error contract ────────────────────────────────────────────────────
 
 

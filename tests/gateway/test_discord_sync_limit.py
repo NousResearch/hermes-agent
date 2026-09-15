@@ -138,3 +138,52 @@ async def test_safe_sync_deletes_before_creating():
         f"Deletions must happen before creations to avoid exceeding 100-command limit. "
         f"Last delete at index {last_delete_idx}, first create at index {first_create_idx}"
     )
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_recreated_upserts_without_delete(adapter):
+    """Non-patchable field change: upsert by name, never delete first (#104399)."""
+    adapter._patchable_app_command_payload = MagicMock(return_value=True)
+    adapter._client.tree.fetch_commands = AsyncMock(
+        return_value=[SimpleNamespace(id="old_id", name="cmd_foo", type=1)],
+    )
+    adapter._client.tree.get_commands = MagicMock(
+        return_value=[_FakeTreeCommand(name="cmd_foo", command_type=1)],
+    )
+    mutation_log = []
+
+    async def mock_upsert(*args):
+        mutation_log.append(("upsert", args[-1].get("name")))
+
+    async def mock_delete(*args):
+        mutation_log.append(("delete", args[-1]))
+
+    adapter._client.http.upsert_global_command = mock_upsert
+    adapter._client.http.delete_global_command = mock_delete
+    adapter._client.http.edit_global_command = AsyncMock()
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert summary["recreated"] == 1
+    assert mutation_log == [("upsert", "cmd_foo")]
+    adapter._client.http.edit_global_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_recreated_does_not_delete_before_rate_limit(adapter):
+    """A 429 on upsert must not have already deleted the live command."""
+    adapter._patchable_app_command_payload = MagicMock(return_value=True)
+    adapter._client.tree.fetch_commands = AsyncMock(
+        return_value=[SimpleNamespace(id="old_id", name="cmd_foo", type=1)],
+    )
+    adapter._client.tree.get_commands = MagicMock(
+        return_value=[_FakeTreeCommand(name="cmd_foo", command_type=1)],
+    )
+    adapter._client.http.upsert_global_command = AsyncMock(side_effect=RuntimeError("429 Too Many Requests"))
+    adapter._client.http.delete_global_command = AsyncMock()
+    adapter._client.http.edit_global_command = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="429"):
+        await adapter._safe_sync_slash_commands()
+
+    adapter._client.http.delete_global_command.assert_not_awaited()

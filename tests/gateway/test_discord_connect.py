@@ -539,8 +539,15 @@ async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp
 
     timed_out_entry = json.loads(state_path.read_text(encoding="utf-8"))["999"]
     assert timed_out_entry["fingerprint"] == desired_fingerprint
-    assert "last_success_at" not in timed_out_entry
+    assert timed_out_entry["last_success_at"] == 101.0
+    assert timed_out_entry["retry_after_until"] > 0
     assert "summary" not in timed_out_entry
+
+    await adapter._run_post_connect_initialization()
+    assert sync.await_count == 1, "timeout must cool down before another full sync"
+
+    timed_out_entry["retry_after_until"] = 0
+    state_path.write_text(json.dumps({"999": timed_out_entry}), encoding="utf-8")
 
     await adapter._run_post_connect_initialization()
 

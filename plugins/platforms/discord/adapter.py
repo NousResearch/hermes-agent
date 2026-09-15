@@ -1979,7 +1979,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._write_command_sync_state(state)
 
     def _record_command_sync_attempt(self, app_id: Any, fingerprint: str) -> None:
-        self._update_command_sync_entry(app_id, fingerprint, keep_existing=True, drop=("last_success_at", "summary"))
+        # Keep last_success_at. Dropping it on every attempt made a timeout/429 look
+        # like "never synced", so the next reconnect re-ran the full delete+upsert loop
+        # (NousResearch/hermes-agent#104399).
+        self._update_command_sync_entry(app_id, fingerprint, keep_existing=True, drop=("summary",))
 
     def _record_command_sync_rate_limit(self, app_id: Any, fingerprint: str, retry_after: float) -> None:
         retry_after = max(1.0, float(retry_after))
@@ -2122,9 +2125,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         except asyncio.TimeoutError:
             logger.warning(
                 "[%s] Slash command sync timed out — Discord rate-limit bucket "
-                "may be saturated; will retry on next reconnect",
+                "may be saturated; backing off before another attempt",
                 self.name,
             )
+            client = self._client
+            timed_out_app_id = getattr(client, "application_id", None) if client else None
+            if timed_out_app_id is None and client is not None:
+                timed_out_app_id = getattr(getattr(client, "user", None), "id", None)
+            if timed_out_app_id:
+                self._record_command_sync_rate_limit(
+                    timed_out_app_id,
+                    self._desired_command_sync_fingerprint(),
+                    _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS,
+                )
         except asyncio.CancelledError:
             raise
         except Exception as e:  # pragma: no cover - defensive logging
@@ -2861,7 +2874,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 summary["unchanged"] += 1
                 continue
             if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
-                await mutate(http.delete_global_command, app_id, current.id)
+                # Upsert by name replaces in place. Delete-then-upsert lost the command
+                # when Discord 429'd between the two calls (#104399). Do not delete first.
                 await mutate(http.upsert_global_command, app_id, desired)
                 summary["recreated"] += 1
                 continue

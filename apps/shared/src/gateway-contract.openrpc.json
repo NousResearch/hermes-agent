@@ -22541,11 +22541,17 @@
         "type": "object"
       },
       "RollbackCheckpoint": {
-        "additionalProperties": false,
+        "additionalProperties": true,
+        "description": "``tools/checkpoint_manager.py::list_checkpoints`` row. ``reason`` is the manager's human\nlabel; ``message`` is kept as an alias for older TUI payloads that still read it.",
         "properties": {
           "hash": {
             "default": "",
             "title": "Hash",
+            "type": "string"
+          },
+          "short_hash": {
+            "default": "",
+            "title": "Short Hash",
             "type": "string"
           },
           "timestamp": {
@@ -22553,10 +22559,30 @@
             "title": "Timestamp",
             "type": "string"
           },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
           "message": {
             "default": "",
             "title": "Message",
             "type": "string"
+          },
+          "files_changed": {
+            "default": 0,
+            "title": "Files Changed",
+            "type": "integer"
+          },
+          "insertions": {
+            "default": 0,
+            "title": "Insertions",
+            "type": "integer"
+          },
+          "deletions": {
+            "default": 0,
+            "title": "Deletions",
+            "type": "integer"
           }
         },
         "title": "RollbackCheckpoint",

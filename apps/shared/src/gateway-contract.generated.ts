@@ -3158,10 +3158,17 @@ export interface RollbackListResult {
   enabled: boolean
   checkpoints?: RollbackCheckpoint[]
 }
+/** ``tools/checkpoint_manager.py::list_checkpoints`` row. ``reason`` is the manager's human label; ``message`` is kept as an alias for older TUI payloads that still read it. */
 export interface RollbackCheckpoint {
   hash?: string
+  short_hash?: string
   timestamp?: string
+  reason?: string
   message?: string
+  files_changed?: number
+  insertions?: number
+  deletions?: number
+  [key: string]: unknown
 }
 export interface RollbackRestoreParams {
   session_id: string

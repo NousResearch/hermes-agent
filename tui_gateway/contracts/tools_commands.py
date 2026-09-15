@@ -347,10 +347,18 @@ class RollbackListParams(Params):
     profile: str | None = None
 
 
-class RollbackCheckpoint(Result):
+class RollbackCheckpoint(_Open):
+    """``tools/checkpoint_manager.py::list_checkpoints`` row. ``reason`` is the manager's human
+    label; ``message`` is kept as an alias for older TUI payloads that still read it."""
+
     hash: str = ""
+    short_hash: str = ""
     timestamp: str = ""
+    reason: str = ""
     message: str = ""
+    files_changed: int = 0
+    insertions: int = 0
+    deletions: int = 0
 
 
 class RollbackListResult(Result):

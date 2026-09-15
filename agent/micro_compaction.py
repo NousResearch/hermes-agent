@@ -51,7 +51,7 @@ class MicroCompactionMixin:
                 self._rolling_summary_from_marker(messages[last].get("content"))
             )
             if recovered:
-                self._micro_compact_rolling_summary = recovered
+                self._micro_compact_rolling_summary = _cc()._redact_compaction_text(recovered)
                 # Rehydration proves containment: this marker (batch or micro) becomes
                 # supersede/defrag-eligible; unabsorbed markers never get the key.
                 messages[last][_cc().MICRO_COMPACT_MARKER_KEY] = True
@@ -168,9 +168,11 @@ class MicroCompactionMixin:
         # Empty base turns the merge prompt into a rewrite-compactly instruction.
         self._micro_compact_rolling_summary = ""
         fresh_summary = self._micro_summarize_one(old_summary)
-        self._micro_compact_rolling_summary = fresh_summary or old_summary
         if not fresh_summary:
+            self._micro_compact_rolling_summary = old_summary
             return False
+        fresh_summary = _cc()._redact_compaction_text(fresh_summary)
+        self._micro_compact_rolling_summary = fresh_summary
         # Rewrite only the newest MICRO marker (resume rehydrates from it); a batch marker holds
         # history we lack.
         entry = next((e for e in reversed(messages) if _is_micro_marker(e)), None)
@@ -250,13 +252,31 @@ class MicroCompactionMixin:
             _telemetry(_outcome, messages, tokens_after=_tokens_before, exchange_tokens=_exchange_tokens)
             return messages
 
+        updated_summary = _cc()._redact_compaction_text(updated_summary)
+        prev_summary = self._micro_compact_rolling_summary
+        prev_cursor = self._micro_compact_cursor
+        prev_failures = self._micro_compact_consecutive_failures
+        prev_fail_cursor = self._micro_compact_last_failure_cursor
         self._micro_compact_rolling_summary = updated_summary
         self._micro_compact_cursor = exchange_end
         self._reset_micro_failure_tracking()
 
         result = self._splice_micro_compact_result(messages, exchange_start, exchange_end, supersede=_cumulative)
+        if not self._sync_micro_compact_to_db(result):
+            self._micro_compact_rolling_summary = prev_summary
+            self._micro_compact_cursor = prev_cursor
+            # Count persist failures toward the skip threshold (#84723): a disk
+            # that keeps rejecting the splice retried forever when the counter
+            # was reset. Restore the pre-reset failure state and record this
+            # attempt so _record_micro_failure can skip the stuck exchange.
+            self._micro_compact_consecutive_failures = prev_failures
+            self._micro_compact_last_failure_cursor = prev_fail_cursor
+            self._record_micro_failure(exchange_start, exchange_end)
+            _telemetry(
+                "persist_failed", messages, tokens_after=_tokens_before, exchange_tokens=_exchange_tokens,
+            )
+            return messages
         self._micro_compact_cursor = self._cursor_after_splice(result, exchange_start + 1)
-        self._sync_micro_compact_to_db(result)
         _telemetry(
             "absorbed", result, tokens_after=estimate_messages_tokens_rough(result), exchange_tokens=_exchange_tokens,
         )
@@ -340,24 +360,29 @@ class MicroCompactionMixin:
         except Exception as exc:
             logger.debug("failed to emit micro-compaction telemetry: %s", exc)
 
-    def _sync_micro_compact_to_db(self, compacted_messages: List[Dict[str, Any]]) -> None:
+    def _sync_micro_compact_to_db(self, compacted_messages: List[Dict[str, Any]]) -> bool:
         """Persist the micro-compacted set to the session DB atomically and stamp rows persisted.
-        Without this the old exchange rows stay ``active=1`` and a resume double-loads both the
-        summary and the originals."""
+
+        Returns True when persist succeeded or there is no DB binding (in-memory-only).
+        Returns False when the write raised so the caller can refuse to publish the spliced
+        list (#84723). Without this, the old exchange rows stay ``active=1`` and a resume
+        double-loads both the summary and the originals."""
         session_db, session_id = getattr(self, "_session_db", None), getattr(self, "_session_id", "")
         if not session_db or not session_id:
-            return
+            return True
         try:
             # Every row except the marker is a carried-forward original: archive rewind-style.
             session_db.archive_and_compact(session_id, compacted_messages, tail_count=max(0, len(compacted_messages) - 1))
             # Shared post-commit stamp site with batch commit and proactive prune.
             # See #98450.
             _cc().stamp_db_persisted_markers(compacted_messages)
+            return True
         except Exception:
             logger.info(
-                "Micro-compaction DB sync failed — resume will double-load "
-                "compacted messages until the next batch compression"
+                "Micro-compaction DB sync failed — keeping the pre-splice "
+                "transcript rather than publishing an unsynced list"
             )
+            return False
 
     def _splice_micro_compact_result(
         self, messages: List[Dict[str, Any]], splice_start: int, splice_end: int, supersede: bool = True,

@@ -964,27 +964,14 @@ _DB_HANDLERS = {
 }
 
 
-class _EmptyObservationalStore:
-    """list/stats/pinned on a profile that has never created state.db."""
-
-    def __init__(self, db_path: Path):
-        self.db_path = db_path
-
-    def list_sessions_rich(self, **_kwargs):
-        return []
-
-    def session_count(self, source=None):
-        return 0
-
-    def message_count(self):
-        return 0
-
-    def close(self):
-        return None
-
-
-def _is_missing_session_store(exc: BaseException) -> bool:
-    return "unable to open database file" in str(exc).lower()
+def _print_empty_store(action: str, args) -> None:
+    """A profile that never created state.db: report empty instead of opening a writer that creates it."""
+    if action == "stats":
+        print("Total sessions: 0\nTotal messages: 0")
+    elif action == "pinned":
+        print("[]" if getattr(args, "json", False) else "No pinned sessions. Pin one with: hermes sessions pin <session_id>")
+    else:
+        print("No sessions found.")
 
 
 def cmd_sessions(args, sessions_parser=None):
@@ -994,15 +981,14 @@ def cmd_sessions(args, sessions_parser=None):
         return pre(args)
     observational = action in _OBSERVATIONAL_DB_ACTIONS
     try:
-        from hermes_state import SessionDB
+        from hermes_state import SessionDB, _default_db_path
         db = SessionDB(read_only=observational)
     except Exception as e:
-        if observational and _is_missing_session_store(e):
-            from hermes_state import _default_db_path
-            db = _EmptyObservationalStore(_default_db_path())
-        else:
-            print(f"Error: Could not open session database: {e}")
-            return 1
+        # mode=ro cannot create the store; a reader on a fresh profile reports empty rather than failing.
+        if observational and not _default_db_path().exists():
+            return _print_empty_store(action, args)
+        print(f"Error: Could not open session database: {e}")
+        return 1
     try:
         handler = _DB_HANDLERS.get(action)
         if handler is None:

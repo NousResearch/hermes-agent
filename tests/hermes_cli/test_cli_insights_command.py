@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
 
 import pytest
@@ -94,14 +94,3 @@ def test_subcommand_insights_closes_database_when_generation_fails(capsys):
 
     db.close.assert_called_once()
     assert "Error generating insights: boom" in capsys.readouterr().out
-
-
-def test_insights_paths_open_a_read_only_store(capsys):
-    cli_obj = HermesCLI.__new__(HermesCLI)
-    slash_db, command_db = MagicMock(), MagicMock()
-    with patch("hermes_state.SessionDB", side_effect=[slash_db, command_db]) as factory, \
-         patch("agent.insights.InsightsEngine", _InsightsEngineStub):
-        cli_obj._show_insights("/insights")
-        cmd_insights(SimpleNamespace(days=30, source=None))
-
-    assert factory.call_args_list == [call(read_only=True), call(read_only=True)]

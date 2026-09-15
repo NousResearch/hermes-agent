@@ -9,6 +9,7 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -310,8 +311,67 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     # Lightpanda sessions (Browser Use mode hides the tools that consume supervisor state).
     if not force_local and not (session_info.get("features") or {}).get("lightpanda"):
         _cdp._ensure_cdp_supervisor(task_id)
+        _bind_session_page_target(task_id, session_info)
 
     return session_info
+
+
+def _bind_session_page_target(task_id: str, session_info: Dict[str, Any]) -> None:
+    """Copy the supervisor's dedicated page target onto session_info.
+
+    Multi-session CDP isolation requires the public browser path (navigate /
+    click / …) to know which page this task_id owns (#69727).
+    """
+    if not session_info.get("cdp_url") and not _cdp._get_cdp_override_raw():
+        return
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+        if supervisor is None:
+            return
+        target_id = supervisor.page_target_id()
+        if target_id:
+            session_info["page_target_id"] = target_id
+    except Exception as exc:
+        _bt.logger.debug(
+            "Could not bind page_target_id for task=%s: %s", task_id, exc
+        )
+
+
+# A daemon caches snapshot refs and its CDP endpoint across commands.
+_cdp_binding_locks: Dict[str, threading.Lock] = {}
+_cdp_binding_locks_guard = threading.Lock()
+
+
+def _cdp_binding_lock(session_name: str) -> threading.Lock:
+    """Serialize commands and endpoint replacement for a task's private daemon."""
+    with _cdp_binding_locks_guard:
+        return _cdp_binding_locks.setdefault(session_name, threading.Lock())
+
+
+def _run_cdp_page_command(
+    task_id: str, session_info: Dict[str, Any], prefix: List[str],
+    command: str, args: List[str], engine: str, timeout: int,
+) -> Dict[str, Any]:
+    """Connect the driver to an immutable view of the supervisor-owned target."""
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+    supervisor = SUPERVISOR_REGISTRY.get(task_id)
+    if supervisor is None or not supervisor.page_target_id():
+        return {"success": False, "error": "No supervisor-owned CDP page is available"}
+    endpoint = supervisor.page_command_endpoint(timeout=min(timeout, 10))
+    prefix = [*prefix[:-1], endpoint]
+    previous_endpoint = session_info.get("_page_command_endpoint")
+    if previous_endpoint is not None and previous_endpoint != endpoint:
+        # agent-browser ignores a changed --cdp URL while its daemon is running.
+        closed = _spawn_and_collect(task_id, session_info, prefix + ["--json", "close"],
+                                    "close", engine, timeout)
+        if not closed.get("success"):
+            return closed
+    session_info["_page_command_endpoint"] = endpoint
+    return _spawn_and_collect(task_id, session_info, prefix + ["--json", command, *args],
+                              command, engine, timeout)
 
 
 def _discard_timed_out_browser_session(task_id: str, session_info: Dict[str, Any], task_socket_dir: str) -> None:
@@ -465,7 +525,7 @@ def _interpret_browser_command_output(command: str, stdout: str, stderr: str, re
         return {"success": False, "error": f"Non-JSON output from agent-browser for '{command}': {raw}"}
 
     # Empty snapshot content is a common sign of daemon/CDP issues.
-    if command == "snapshot" and parsed.get("success"):
+    if command == "snapshot" and isinstance(parsed, dict) and parsed.get("success"):
         snap_data = parsed.get("data", {})
         if not snap_data.get("snapshot") and not snap_data.get("refs"):
             _bt.logger.warning("snapshot returned empty content. Possible stale daemon or CDP connection issue. "
@@ -577,6 +637,7 @@ def _run_browser_command(
     # Cleanup stops the supervisor before closing the backend; keep it stopped.
     if command != "close" and session_info.get("cdp_url"):
         _cdp._ensure_cdp_supervisor(task_id)
+        _bind_session_page_target(task_id, session_info)
 
     # Cloud/CDP: ``--cdp <ws_url>`` (NEVER with --session: agent-browser >=0.13
     # would create a local browser and silently ignore --cdp). Local: ``--session <name>``.
@@ -592,10 +653,17 @@ def _run_browser_command(
         if engine != "auto" and not _bt._is_camofox_mode():
             backend_args += ["--engine", engine]
 
-    cmd_parts = _agent_browser_argv(browser_cmd) + backend_args + ["--json", command] + args
-
+    prefix = _agent_browser_argv(browser_cmd) + backend_args
     try:
-        result = _spawn_and_collect(task_id, session_info, cmd_parts, command, engine, timeout)
+        if session_info.get("cdp_url") and command != "close":
+            with _cdp_binding_lock(str(session_info["session_name"])):
+                result = _run_cdp_page_command(
+                    task_id, session_info, prefix, command, args, engine, timeout,
+                )
+        else:
+            result = _spawn_and_collect(
+                task_id, session_info, prefix + ["--json", command] + args, command, engine, timeout,
+            )
     except Exception as e:
         _bt.logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
         result = {"success": False, "error": str(e)}

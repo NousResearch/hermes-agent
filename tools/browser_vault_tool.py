@@ -351,6 +351,14 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     source = "user"
     backend = backend_for_handle(handle) if handle else None
     if backend is not None:
+        # A manager code is a credential too: authorize its fresh origin binding before resolving it.
+        try:
+            meta = backend.get_meta(handle)
+        except Exception:
+            meta = None
+        if meta is None or meta.kind != "login" or meta.origin != origin:
+            return json.dumps({"success": False, "error_type": "origin_mismatch",
+                               "error": "Refused: the login handle is not bound to this page's exact origin. Use browser_vault_list."})
         try:
             code = backend.resolve_otp(handle)
         except Exception:

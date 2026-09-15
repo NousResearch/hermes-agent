@@ -104,9 +104,11 @@ export function RenameProfileDialog({
       }
 
       await (scope == null ? renameProfile(currentName, trimmed) : renameProfile(currentName, trimmed, scope))
+
       if (!isDefault) {
         completeProfileRenameState(currentName, trimmed)
       }
+
       await onRenamed?.(trimmed)
       setStatus('done')
       window.setTimeout(onClose, 800)
@@ -114,6 +116,7 @@ export function RenameProfileDialog({
       if (!isDefault) {
         cancelProfileRenameState(currentName, trimmed)
       }
+
       setStatus('idle')
       setError(err instanceof Error ? err.message : p.failedRename)
     }

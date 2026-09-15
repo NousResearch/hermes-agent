@@ -42,6 +42,7 @@ function moveStorageValue(store: Storage, source: string, destination: string): 
 function migrateRememberedNavigation(store: Storage, oldName: string, newName: string): void {
   const oldScope = `.profile.${encodeURIComponent(oldName)}`
   const newScope = `.profile.${encodeURIComponent(newName)}`
+
   const keys = Array.from({ length: store.length }, (_, index) => store.key(index)).filter((key): key is string =>
     Boolean(key)
   )

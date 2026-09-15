@@ -167,3 +167,85 @@ async def test_acp_cancel_publishes_hard_stop_while_holding_runtime_lock():
 
 
 
+
+
+# ---- /reasoning (CLI parity: config inheritance + session command) ----------
+
+
+def test_acp_make_agent_inherits_reasoning_config(monkeypatch):
+    """ACP builds agents with the shared resolve_reasoning_config chokepoint,
+    so agent.reasoning_effort / per-model overrides are not silently dropped."""
+    captured = {}
+
+    class CapturingAgent(FakeAgent):
+        def __init__(self, **kwargs):
+            super().__init__()
+            captured.update(kwargs)
+
+    def mod(name, **attrs):
+        module = ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        return module
+
+    monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=CapturingAgent))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        mod("hermes_cli.config", load_config=lambda: {
+            "model": {"default": "m", "provider": "p"},
+            "agent": {"reasoning_effort": "high"},
+        }),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        mod("hermes_cli.runtime_provider", resolve_runtime_provider=lambda **_kwargs: {
+            "provider": "p", "api_mode": "chat_completions", "base_url": "u",
+            "api_key": "k", "command": None, "args": [],
+        }),
+    )
+
+    manager = SessionManager(db=NoopDb())
+    manager._make_agent(session_id="acp-session", cwd=".")
+
+    assert captured["reasoning_config"] == {"enabled": True, "effort": "high"}
+
+
+def test_reasoning_command_show_and_set():
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    fake.reasoning_config = None
+
+    show = acp_agent._handle_slash_command("/reasoning", state)
+    assert "Reasoning effort:" in show and "medium (default)" in show
+
+    out = acp_agent._handle_slash_command("/reasoning high", state)
+    assert "high" in out and "this session" in out
+    assert fake.reasoning_config == {"enabled": True, "effort": "high"}
+
+    out = acp_agent._handle_slash_command("/reasoning none", state)
+    assert "none" in out
+    assert fake.reasoning_config == {"enabled": False}
+
+    out = acp_agent._handle_slash_command("/reasoning banana", state)
+    assert "Unknown argument" in out
+    assert fake.reasoning_config == {"enabled": False}  # unchanged by invalid input
+
+    show = acp_agent._handle_slash_command("/reasoning", state)
+    assert "none (disabled)" in show
+
+
+def test_reasoning_command_global_scope_persists(monkeypatch):
+    import cli as cli_module
+
+    saved = {}
+    monkeypatch.setattr(
+        cli_module, "save_config_value",
+        lambda key, value: saved.setdefault(key, value) or True,
+    )
+    acp_agent, state, fake, _conn = make_agent_and_state()
+
+    out = acp_agent._handle_slash_command("/reasoning xhigh --global", state)
+    assert "saved to config" in out
+    assert saved == {"agent.reasoning_effort": "xhigh"}
+    assert fake.reasoning_config == {"enabled": True, "effort": "xhigh"}

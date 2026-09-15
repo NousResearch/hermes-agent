@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, delegated_child_context
 from agent.kanban_stop import (
     build_kanban_stop_nudge,
     kanban_stop_nudge_enabled,
@@ -54,6 +55,22 @@ def test_nudge_when_no_terminal_tool(clear_kanban_env):
     assert "protocol violation" in nudge.lower() or "protocol" in nudge.lower()
 
 
+def test_delegated_child_does_not_receive_worker_stop_nudge(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_parent")
+
+    with delegated_child_context():
+        assert kanban_stop_nudge_enabled() is False
+        assert build_kanban_stop_nudge(messages=[]) is None
+
+
+def test_delegated_child_subprocess_does_not_receive_worker_stop_nudge(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_parent")
+    clear_kanban_env.setenv(DELEGATED_CHILD_ENV_MARKER, "1")
+
+    assert kanban_stop_nudge_enabled() is False
+    assert build_kanban_stop_nudge(messages=[]) is None
+
+
 def test_no_nudge_after_kanban_complete(clear_kanban_env):
     clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
     messages = [
@@ -84,7 +101,6 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
 # without a terminal call, the dispatcher's bounded retry (streak of 3)
 # handles it.  See also tests/hermes_cli/test_kanban_core_functionality.py
 # for the dispatcher-side streak tests.
-
 
 
 

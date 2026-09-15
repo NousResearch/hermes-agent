@@ -967,6 +967,14 @@ def _refresh_cua_driver_after_update() -> None:
         install_cua_driver(upgrade=True, require_confirmed_update=True, show_installer_progress=False)
 
 
+def _print_checkpoint_footprint_notice() -> None:
+    """Surface a GB-scale /rollback store the user may not know is on (see the helper's docstring)."""
+    from tools.checkpoint_manager import checkpoint_footprint_notice
+    notice = checkpoint_footprint_notice()
+    if notice:
+        print(f"\n\033[1;33mℹ  {notice}\033[0m")
+
+
 def _print_plugin_compat_notice() -> None:
     """Installed plugins importing paths that the Sep 2026 decomposition scheduled for removal."""
     from hermes_cli.plugin_compat import compat_report, removal_in_effect, summary_lines
@@ -997,6 +1005,7 @@ def _print_post_update_notices_and_self_heals() -> None:
         ('hermes-acp launcher self-heal failed: %s', _ensure_acp_launcher),
         ('Windows bin launcher migration failed: %s', _migrate_windows_bin_path),
         ('cua-driver refresh failed: %s', _refresh_cua_driver_after_update),
+        ('Checkpoint footprint notice failed: %s', _print_checkpoint_footprint_notice),
         ('Plugin compat notice failed: %s', _print_plugin_compat_notice),
         # Legacy HERMES_NEMO_RELAY_ATIF_*/ATOF_* vars produce no traces since the Relay cutover;
         # generate each profile's relay-plugins.toml instead of leaving exports silently dead.

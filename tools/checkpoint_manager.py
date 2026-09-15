@@ -1178,6 +1178,32 @@ def auto_prune_from_config() -> Dict[str, object]:
         return {"skipped": True, "error": str(exc)}
 
 
+def checkpoint_footprint_notice() -> Optional[str]:
+    """One-line notice when ``/rollback`` checkpoints are on and their store sits at or above
+    ``checkpoints.max_total_size_mb``, else None. Checkpoints were on by default for a while
+    (Mar–May 2026) and that ``enabled: true`` persisted into user configs; many users carry a
+    GB-scale store for a feature they never invoke. The cap is a floor of one snapshot per
+    project, so a big store is expected, not broken — the notice names the opt-out. Never raises."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config().get("checkpoints") or {}
+        if not cfg.get("enabled", False):
+            return None
+        cap_mb = int(cfg.get("max_total_size_mb", 500) or 0)
+        status = store_status()
+        size = int(status["total_size_bytes"])
+        if cap_mb <= 0 or size < cap_mb * _MB:
+            return None
+        from hermes_cli.sizefmt import format_bytes
+        return (f"Filesystem checkpoints (/rollback) are on: {format_bytes(size)} across "
+                f"{status['project_count']} project(s), above the {cap_mb} MB cap (one snapshot per project is "
+                f"always kept). Not using /rollback? `hermes config set checkpoints.enabled false` then "
+                f"`hermes checkpoints clear`; or lower `checkpoints.retention_days`.")
+    except Exception as exc:
+        logger.debug("checkpoint footprint notice skipped: %s", exc)
+        return None
+
+
 def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
     """Summarise the shadow store: ``{"base", "store_size_bytes", "legacy_size_bytes",
     "total_size_bytes", "project_count", "projects", "pre_v2_projects", "legacy_archives"}``.

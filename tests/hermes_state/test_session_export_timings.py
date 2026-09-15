@@ -66,19 +66,35 @@ def test_export_session_includes_text_free_timing_evidence(tmp_path):
     assert "secret tool output" not in str(timings)
 
 
-def test_export_all_includes_timing_evidence(tmp_path):
+def test_lineage_export_timings_span_the_merged_messages_and_import_ignores_their_size(tmp_path):
+    """A compression lineage exports as one logical session: its timings must cover every
+    segment's messages, not just the last segment's. On import the derived block is stripped
+    from the per-session size measurement so a long lineage's intervals cannot trip the limit."""
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
-        db.create_session(session_id="s1", source="cli", model="test-model")
-        db.append_message("s1", "user", "hello", timestamp=10.0)
-        db.append_message("s1", "assistant", "hi", timestamp=11.0)
+        db.create_session(session_id="root", source="cli", model="m")
+        db.append_message("root", "user", "first", timestamp=100.0)
+        db.append_message("root", "assistant", "ok", timestamp=101.0)
+        db.end_session("root", end_reason="compression")
+        db.create_session(session_id="child", source="cli", model="m", parent_session_id="root")
+        db.append_message("child", "user", "second", timestamp=200.0)
+        db.append_message("child", "assistant", "done", timestamp=200.5)
 
-        exported = db.export_all()
+        exported = db.export_session_lineage("child")
+        assert exported["lineage_session_ids"] == ["root", "child"]
+        assert exported["timings"]["wall_clock_ms"] == 100_500
+        assert exported["timings"]["message_timestamps"] == {"available": 4, "missing": 0}
+        assert exported["segments"][-1]["timings"]["wall_clock_ms"] == 500
+
+        exported["timings"]["intervals"] = [{"pad": "x" * 100} for _ in range(60_000)]  # ~6 MiB
+        target = SessionDB(db_path=tmp_path / "target.db")
+        try:
+            report = target.import_sessions([exported])
+        finally:
+            target.close()
     finally:
         db.close()
-
-    assert exported[0]["timings"]["wall_clock_ms"] == 1000
-    assert exported[0]["timings"]["intervals"][0]["gap_ms"] == 1000
+    assert report["errors"] == [] and report["imported"] == 1
 
 
 def test_corrupt_timestamp_rows_count_as_missing_instead_of_aborting_export(tmp_path):

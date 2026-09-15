@@ -49,6 +49,29 @@ class OpenCodeGoProfile(ProviderProfile):
     # mimo-v2.5-pro and 400s; keys are normalized via _flat_model_name().
     _MODEL_MAX_TOKENS: dict[str, int] = {"mimo-v2.5-pro": 131072}
 
+    @staticmethod
+    def _tool_msg_with_name(msg: Any) -> bool:
+        return isinstance(msg, dict) and msg.get("role") == "tool" and "name" in msg
+
+    def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Drop ``name`` from tool-result messages on the wire copy only.
+
+        The Go relay's upstream rejects the OpenAI-spec ``name`` field on role-"tool"
+        messages with HTTP 400 ``messages.N: "name" is not supported by this endpoint``
+        (#112135). ``name`` is a legit Chat Completions field, so the shared sanitizer
+        keeps it (it only strips internal keys like ``tool_name``), and the rejected row
+        stays in history, so every later call in the session dies too. Copy-on-write:
+        only tool messages carrying ``name`` are copied — the stored trajectory and the
+        prompt-cache prefix are untouched, and the input list is returned as-is when
+        there is nothing to strip.
+        """
+        if not any(self._tool_msg_with_name(msg) for msg in messages):
+            return messages
+        return [
+            {k: v for k, v in msg.items() if k != "name"} if self._tool_msg_with_name(msg) else msg
+            for msg in messages
+        ]
+
     def get_max_tokens(self, model: str | None) -> int | None:
         cap = self._MODEL_MAX_TOKENS.get(_flat_model_name(model))
         return self.default_max_tokens if cap is None else cap

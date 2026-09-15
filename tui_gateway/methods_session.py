@@ -971,8 +971,9 @@ def _(rid, params: SessionActivateParams, session: dict) -> SessionActivateResul
             return refusal
         with session["history_lock"]:
             _rebind_live_transport(sid, session, current_transport() or _stdio_transport)
-    return SessionActivateResult.model_validate(_live_session_payload(
-        sid, session, touch=True, omit_messages=params.omit_messages))
+    snapshot = _live_session_payload(sid, session, touch=True, omit_messages=params.omit_messages)
+    # A LiveSessionSnapshot instance is not accepted as its own subclass; validate the attributes.
+    return SessionActivateResult.model_validate(snapshot, from_attributes=True)
 
 
 @method("session.delete")
@@ -1680,7 +1681,7 @@ def _(rid, params: SessionCompressParams) -> SessionCompressResult | dict:
     if err:
         return err
     if _session_uses_compute_host(session):
-        response = _compress_via_compute_host(rid, {"session_id": params.session_id, "focus_topic": params.focus_topic}, session)
+        response = _compress_via_compute_host(rid, params, session)
         return response if "error" in response else SessionCompressResult.model_validate(response["result"])
     session, err = _sess(params, rid)
     if err:

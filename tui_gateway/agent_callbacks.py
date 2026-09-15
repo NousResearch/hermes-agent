@@ -73,8 +73,10 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
             return
         if event_type not in ("subagent.tool", "subagent.complete"):
             return
-        if st["open_tool"]:
-            _emit("tool.complete", csid, ToolCompletePayload(**st["open_tool"]))
+        if open_tool := st["open_tool"]:
+            # open_tool is the tool.start shape (may carry ``preview``); tool.complete has no preview field.
+            _emit("tool.complete", csid, ToolCompletePayload(
+                tool_id=open_tool["tool_id"], name=open_tool["name"], args=open_tool["args"]))
         if event_type == "subagent.tool":
             st["seq"] += 1
             tool = {"name": str(payload.get("tool_name") or "tool"),

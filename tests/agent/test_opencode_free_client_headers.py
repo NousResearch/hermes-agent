@@ -111,3 +111,17 @@ def test_keyless_placeholder_blanks_authorization_under_paid_opencode_profile(mo
         shared=False,
     )
     assert _zen_call_headers(mock_openai).get("Authorization") == ""
+
+
+def test_async_aux_wrapper_keeps_keyless_authorization_blank():
+    """``_to_async_client`` rebuilds default_headers; the keyless placeholder must stay
+    blanked on the async twin too, or every async aux call ships the placeholder bearer."""
+    import openai
+    import agent.auxiliary_client as aux
+
+    sync_client = aux._create_openai_client(api_key="opencode-zen-free-keyless", base_url=ZEN_V1)
+    async_client, _ = aux._to_async_client(sync_client, "x-preview-f-free")
+    request = async_client._build_request(
+        openai._models.FinalRequestOptions.construct(method="post", url="/chat/completions", json_data={})
+    )
+    assert request.headers.get("authorization") == ""

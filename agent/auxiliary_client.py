@@ -4349,6 +4349,12 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         except Exception:
             inferred = ""
         headers = _endpoint_default_headers(sync_base_url, inferred, is_vision=is_vision, xai=True)
+    # Headers are rebuilt from scratch here, so re-apply the OpenCode keyless policy from
+    # _create_openai_client: the placeholder must never ship as a bearer (see #110831).
+    with contextlib.suppress(Exception):
+        from hermes_cli.models import OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER, opencode_zen_free_headers
+        if sync_client.api_key == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
+            headers = {**(headers or {}), **opencode_zen_free_headers()}
     if headers:
         async_kwargs["default_headers"] = headers
     _apply_required_codex_headers(async_kwargs, access_token=sync_client.api_key, base_url=sync_base_url)

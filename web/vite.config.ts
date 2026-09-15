@@ -69,6 +69,9 @@ function hermesDevToken(): Plugin {
 }
 
 export default defineConfig({
+  // Emit relative asset URLs so prefixed reverse proxies can serve every
+  // dashboard chunk through the external path (#90068).
+  base: "./",
   plugins: [
     react(),
     babel({ presets: [compilerPreset()] }),

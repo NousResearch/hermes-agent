@@ -165,6 +165,18 @@ def mount_spa(application: FastAPI):
             for attr in ('href="/assets/', 'src="/assets/', 'href="/favicon.ico"', 'href="/fonts/',
                          'href="/ds-assets/', 'src="/ds-assets/'):
                 html = html.replace(attr, attr.replace('"/', f'"{prefix}/', 1))
+        # Anchor Vite's relative asset URLs to the external prefix so lazy
+        # chunks and their dependencies do not escape a prefixed proxy
+        # (#90068).
+        asset_prefix = prefix or ""
+        asset_root = f"{asset_prefix}/assets/" if asset_prefix else "/assets/"
+        html = html.replace('href="./assets/', f'href="{asset_root}')
+        html = html.replace('src="./assets/', f'src="{asset_root}')
+        if prefix:
+            html = html.replace('href="./favicon.ico"', f'href="{prefix}/favicon.ico"')
+            html = html.replace('href="./fonts/', f'href="{prefix}/fonts/')
+            html = html.replace('href="./ds-assets/', f'href="{prefix}/ds-assets/')
+            html = html.replace('src="./ds-assets/', f'src="{prefix}/ds-assets/')
         theme_bootstrap = _render_active_theme_bootstrap_css()
         if theme_bootstrap:
             html = html.replace("</head>", f"{theme_bootstrap}</head>", 1)

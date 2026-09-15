@@ -16,6 +16,8 @@
 
 import type { PreviewInputHandle } from './preview-input'
 
+import { isMacPlatform } from '@/lib/platform'
+
 export interface DrivePoint {
   x: number
   y: number
@@ -121,13 +123,41 @@ export async function pressKey(input: PreviewInputHandle, key: string): Promise<
  *  click is a POINTER gesture, so it selects whatever paragraph sits under the
  *  cursor whenever the target turns out not to be a field, and the agent was
  *  leaving pages with their body text highlighted. There is no `char` phase —
- *  a chord is not text entry, and sending one types a literal 'a'. */
+ *  a chord is not text entry, and sending one types a literal 'a'.
+ *
+ *  The chord is the OS's select-all: Cmd+A on macOS, Ctrl+A everywhere else.
+ *  Sending both modifiers at once is not a chord any platform acts on, so the
+ *  select silently did nothing and typing APPENDED to the field's existing
+ *  value — visible corruption (e.g. a 9.99 price became 19999.99). */
 export async function selectAll(input: PreviewInputHandle): Promise<void> {
-  const chord = ['control', 'meta']
+  const chord = isMacPlatform() ? ['meta'] : ['control']
 
   input.send({ keyCode: 'a', modifiers: chord, type: 'keyDown' })
   input.send({ keyCode: 'a', modifiers: chord, type: 'keyUp' })
   await wait(KEY_MS)
+}
+
+/** Press a control key (End, Backspace, …) with NO `char` phase. A `char`
+ *  phase would type the key's literal meaning for editable content, which a
+ *  deletion or caret move must never do. */
+export async function pressControlKey(input: PreviewInputHandle, key: string): Promise<void> {
+  input.send({ keyCode: key, type: 'keyDown' })
+  input.send({ keyCode: key, type: 'keyUp' })
+  await wait(KEY_MS)
+}
+
+/** Empty the focused field deterministically: park the caret at the tail, then
+ *  Backspace `count` characters. Independent of any active selection, so it
+ *  still works when a re-render has just thrown a whole-field selection away —
+ *  End collapses any selection to the caret, and each Backspace is a real,
+ *  trusted key the page (React included) applies to the DOM as it stands.
+ *  `count` is the field's value length in UTF-16 code units. */
+export async function clearCharsBack(input: PreviewInputHandle, count: number): Promise<void> {
+  await pressControlKey(input, 'End')
+
+  for (let i = 0; i < count; i++) {
+    await pressControlKey(input, 'Backspace')
+  }
 }
 
 /** Type `text` a character at a time into whatever currently has focus. */

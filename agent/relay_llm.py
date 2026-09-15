@@ -71,6 +71,7 @@ class _ManagedAttempt:
         request: dict[str, Any], metadata: dict[str, Any] | None, *, name: str, model_name: str,
     ) -> None:
         self.runtime, self.session, self.request, self.metadata = runtime, session, request, metadata
+        self.provider_name = name
         self.logical = _logical_parent(runtime, session, parent, metadata)
         self.parent = self.logical[1] if self.logical is not None else parent
         self.body = _relay_request_body(request, metadata)
@@ -122,18 +123,38 @@ class _ManagedAttempt:
 
     def invoke(self, callback: Callable[..., Any], next_request: Any) -> Any:
         """Provider callback handed to Relay: run ``callback`` on Relay's (possibly rewritten) request."""
-        with self._recording_errors():
-            raw = self.run_callback(callback, self.provider_request(next_request))
+        from agent.llm_concurrency import acquire_provider_slot
+
+        permit = acquire_provider_slot(self.provider_name, cancelled=_callback_cancelled(callback))
+
+        def limited_callback(*args: Any) -> Any:
+            with permit.active():
+                return callback(*args)
+
+        try:
+            with self._recording_errors():
+                raw = self.run_callback(limited_callback, self.provider_request(next_request))
+        finally:
+            permit.release()
         return self._record(raw)
 
     async def invoke_async(self, callback: Callable[..., Any], next_request: Any) -> Any:
-        async def call_provider() -> Any:
-            with relay_runtime.managed_callback_guard():  # nested relay calls run unmanaged
-                return await callback(final_request)
+        from agent.llm_concurrency import acquire_provider_slot_async
 
-        with self._recording_errors():
-            final_request = self.provider_request(next_request)
-            raw = await self.context.copy().run(asyncio.create_task, call_provider())
+        permit = await acquire_provider_slot_async(
+            self.provider_name, cancelled=_callback_cancelled(callback))
+
+        async def call_provider() -> Any:
+            with permit.active():
+                with relay_runtime.managed_callback_guard():  # nested relay calls run unmanaged
+                    return await callback(final_request)
+
+        try:
+            with self._recording_errors():
+                final_request = self.provider_request(next_request)
+                raw = await self.context.copy().run(asyncio.create_task, call_provider())
+        finally:
+            permit.release()
         return self._record(raw)
 
     def run_managed(self, relay_call: Callable[..., Any], *callbacks: Any) -> Any:
@@ -182,7 +203,10 @@ def execute(
     ``session_id`` defaults to the inherited Hermes turn's session (unmanaged when there is none)."""
     attempt = _ManagedAttempt.resolve(session_id, request, metadata, name=name, model_name=model_name)
     if attempt is None:
-        return callback(request)
+        from agent.llm_concurrency import provider_slot
+
+        with provider_slot(name, cancelled=_callback_cancelled(callback)):
+            return callback(request)
     try:
         managed = _run_awaitable(attempt.run_managed(
             attempt.runtime.relay.llm.execute, partial(attempt.invoke, callback)
@@ -199,7 +223,10 @@ async def execute_async(
     """Async ``execute``."""
     attempt = _ManagedAttempt.resolve(session_id, request, metadata, name=name, model_name=model_name)
     if attempt is None:
-        return await callback(request)
+        from agent.llm_concurrency import provider_slot_async
+
+        async with provider_slot_async(name, cancelled=_callback_cancelled(callback)):
+            return await callback(request)
     try:
         managed = await attempt.run_managed(attempt.runtime.relay.llm.execute, partial(attempt.invoke_async, callback))
     except BaseException as exc:
@@ -218,10 +245,20 @@ def _has_running_event_loop() -> bool:
     return False
 
 
+def _callback_cancelled(callback: Callable[..., Any]) -> Callable[[], bool] | None:
+    """Return the owning agent's interrupt check for a bound provider callback."""
+    owner = getattr(callback, "__self__", None)
+    agent = getattr(owner, "agent", owner)
+    if agent is None or not hasattr(agent, "_interrupt_requested"):
+        return None
+    return lambda: bool(getattr(agent, "_interrupt_requested", False))
+
+
 def stream_current(
     request: dict[str, Any], stream_factory: Callable[[dict[str, Any]], Any], *, name: str, model_name: str,
     finalizer: Callable[[], Any], metadata: dict[str, Any] | None = None,
     defer_logical_completion: bool = False, completed_response_predicate: Callable[[Any], bool] | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> Any:
     """Run a provider stream under the inherited Hermes turn when present.
     With ``completed_response_predicate`` set, a factory that ignores ``stream=True`` and returns a
@@ -238,12 +275,16 @@ def stream_current(
     session_id = _current_session_id()
     # Inside a managed callback (on the Relay session's loop) a nested ManagedLlmStream would be
     # iterated synchronously on that loop, which asyncio forbids; the outer stream tracks this attempt.
-    if session_id is None or _has_running_event_loop():
+    from agent.llm_concurrency import provider_has_limit
+
+    if (session_id is None or _has_running_event_loop()) and not provider_has_limit(name):
         return stream_factory(request)
+    if session_id is None or _has_running_event_loop():
+        session_id = ""
     managed = stream(
         request, stream_factory, session_id=session_id, name=name, model_name=model_name,
         finalizer=finalizer, metadata=metadata, defer_logical_completion=defer_logical_completion,
-        completed_response_predicate=completed_response_predicate,
+        completed_response_predicate=completed_response_predicate, cancelled=cancelled,
     )
     if completed_response_predicate is not None:
         # Relay may defer the provider callback until the first pull; prime once (a real first chunk is buffered).
@@ -282,7 +323,11 @@ class ManagedLlmStream(Iterator[Any]):
         chunk_adapter: Callable[[Any], Any] | None = None, accept_chunk: Callable[[Any], bool] | None = None,
         completed_response_predicate: Callable[[Any], bool] | None = None,
         metadata: dict[str, Any] | None = None, defer_logical_completion: bool = False,
+        cancelled: Callable[[], bool] | None = None,
     ) -> None:
+        self._provider_name = name
+        self._provider_permit = None
+        self._provider_cancelled = cancelled or _callback_cancelled(stream_factory)
         self._defer_logical_completion = defer_logical_completion
         # Only auxiliary calls report model/provider on their logical scope.
         auxiliary = str((metadata or {}).get("call_role") or "").startswith("auxiliary:")
@@ -292,19 +337,29 @@ class ManagedLlmStream(Iterator[Any]):
         self._completed_response_predicate = completed_response_predicate
         self._raw_chunks: list[tuple[Any, Any]] = []
         self._prefetched_chunks: list[Any] = []
-        attempt = _ManagedAttempt.resolve(session_id, request, metadata, name=name, model_name=model_name)
-        if attempt is None:
-            self._start_unmanaged(request)
-            return
-        self._logical = attempt.logical
-        self._start_managed(attempt)
+        try:
+            attempt = _ManagedAttempt.resolve(session_id, request, metadata, name=name, model_name=model_name)
+            if attempt is None:
+                self._start_unmanaged(request)
+                return
+            self._logical = attempt.logical
+            self._start_managed(attempt)
+        except BaseException:
+            self._release_provider_permit()
+            raise
 
     def _start_unmanaged(self, request: dict[str, Any]) -> None:
-        raw_stream = self._stream_factory(request)
+        from agent.llm_concurrency import acquire_provider_slot
+
+        self._provider_permit = acquire_provider_slot(
+            self._provider_name, cancelled=self._provider_cancelled)
+        with self._provider_permit.active():
+            raw_stream = self._stream_factory(request)
         predicate = self._completed_response_predicate
         if predicate is not None and predicate(raw_stream):
             self.final_response = raw_stream
             self._stream = iter(())
+            self._release_provider_permit()
             return
         self._raw_stream_resource = raw_stream
         if self._on_stream_created is not None:
@@ -313,10 +368,15 @@ class ManagedLlmStream(Iterator[Any]):
 
     async def _provider_stream(self, attempt: _ManagedAttempt, next_request: Any):
         """Relay's provider callback: run the factory and yield JSON-encoded chunks."""
+        from agent.llm_concurrency import acquire_provider_slot
+
         run_callback = attempt.run_callback
+        permit = acquire_provider_slot(
+            self._provider_name, cancelled=self._provider_cancelled)
         raw_stream = None
         try:
-            raw_stream = run_callback(self._stream_factory, attempt.provider_request(next_request))
+            with permit.active():
+                raw_stream = run_callback(self._stream_factory, attempt.provider_request(next_request))
             predicate = self._completed_response_predicate
             if predicate is not None and run_callback(predicate, raw_stream):
                 self.final_response = raw_stream
@@ -340,13 +400,16 @@ class ManagedLlmStream(Iterator[Any]):
             self._callback_error = exc
             raise
         finally:
-            close = getattr(raw_stream, "close", None)
-            if callable(close):
-                try:
-                    run_callback(close)
-                except BaseException as exc:
-                    self._close_error = exc
-                    raise
+            try:
+                close = getattr(raw_stream, "close", None)
+                if callable(close):
+                    try:
+                        run_callback(close)
+                    except BaseException as exc:
+                        self._close_error = exc
+                        raise
+            finally:
+                permit.release()
 
     def _relay_finalizer(self, attempt: _ManagedAttempt) -> Any:
         # Relay may call this while unwinding a provider-stream failure; keep the original
@@ -487,6 +550,7 @@ class ManagedLlmStream(Iterator[Any]):
                 loop.close()
             self._finish_logical("success")
         finally:
+            self._release_provider_permit()
             self._release_runtime_lease()
 
     def _keep_first_close_error(self, exc: BaseException) -> None:
@@ -525,7 +589,13 @@ class ManagedLlmStream(Iterator[Any]):
             if loop is not None:
                 loop.close()
         finally:
+            self._release_provider_permit()
             self._release_runtime_lease()
+
+    def _release_provider_permit(self) -> None:
+        permit, self._provider_permit = self._provider_permit, None
+        if permit is not None:
+            permit.release()
 
     def _release_runtime_lease(self) -> None:
         lease, self._runtime_lease = self._runtime_lease, None

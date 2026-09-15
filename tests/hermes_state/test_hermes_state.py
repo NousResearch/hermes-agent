@@ -1841,6 +1841,36 @@ class TestSessionTitleLineage:
         # The unrelated holder keeps its title.
         assert db.get_session("a")["title"] == "shared"
 
+    def test_archived_holder_releases_title_to_successor(self, db):
+        """An archived row is retired identity — its title must not block the
+        replacement Bot Mode mints after the user archives the canonical chat
+        (#110871). Same transfer the compression-ancestor branch performs."""
+        db.create_session("old", "desktop")
+        db.set_session_title("old", "Bot Chat")
+        db.create_session("new", "desktop")
+        db.set_session_archived("old", True)
+
+        # The successor claims the name instead of the claim being dropped.
+        assert db.set_session_title("new", "Bot Chat") is True
+        assert db.get_session("new")["title"] == "Bot Chat"
+        # Retired row's title was freed, so the registry has exactly one holder.
+        assert db.get_session_by_title("Bot Chat")["id"] == "new"
+        assert db.get_session("old")["title"] is None
+        assert db.get_session("old")["title_source"] is None
+
+    def test_archived_conflict_does_not_steal_from_live_holder(self, db):
+        """The archived carve-out is one-directional: an archived session being
+        titled must not strip the name from a live holder (#110871)."""
+        db.create_session("live", "cli")
+        db.set_session_title("live", "shared")
+        db.create_session("old", "cli")
+        db.set_session_archived("old", True)
+
+        with pytest.raises(ValueError, match="already in use"):
+            db.set_session_title("old", "shared")
+        assert db.get_session("live")["title"] == "shared"
+
+
     def test_projected_tip_inherits_root_title_when_untitled(self, db):
         """A rotation that ended the root before the title carry ran leaves the name on the
         root only; the projected lineage row must still surface it (exact-title lookups such as

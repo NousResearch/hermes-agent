@@ -78,7 +78,7 @@ class SessionTitlesMixin:
 
         def _do(conn):
             current = conn.execute(
-                "SELECT title, title_source, hidden FROM sessions WHERE id = ?", (session_id,),
+                "SELECT title, title_source, hidden, archived FROM sessions WHERE id = ?", (session_id,),
             ).fetchone()
             if current is None:
                 return 0
@@ -97,7 +97,7 @@ class SessionTitlesMixin:
                 return 0
             if title:
                 conflict = conn.execute(
-                    "SELECT id FROM sessions WHERE title = ? AND id != ?", (title, session_id),
+                    "SELECT id, archived FROM sessions WHERE title = ? AND id != ?", (title, session_id),
                 ).fetchone()
                 if conflict:
                     conflict_id = conflict["id"]
@@ -105,6 +105,19 @@ class SessionTitlesMixin:
                     # user, so transfer it onto the tip (uniqueness + lineage kept).
                     if self._is_compression_ancestor(conn, ancestor_id=conflict_id, descendant_id=session_id):
                         conn.execute("UPDATE sessions SET title = NULL WHERE id = ?", (conflict_id,))
+                    elif conflict["archived"]:
+                        # An archived holder is retired identity: the canonical-title registry
+                        # (Bot Mode resolves exact titles on every open) treats it as absent,
+                        # so its name must transfer to the live claimant instead of blocking
+                        # it forever (#110871). Only a LIVE claimant may take the name;
+                        # an archived claimant still raises (inner else).
+                        if not current["archived"]:
+                            conn.execute(
+                                "UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?",
+                                (conflict_id,),
+                            )
+                        else:
+                            raise ValueError(f"Title '{title}' is already in use by session {conflict_id}")
                     else:
                         raise ValueError(f"Title '{title}' is already in use by session {conflict_id}")
             # CAS on the values just read (``IS`` is NULL-safe): a concurrent write between

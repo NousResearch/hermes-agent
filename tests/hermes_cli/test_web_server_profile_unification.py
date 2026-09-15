@@ -115,6 +115,63 @@ class TestProfileScopedEnv:
 
 class TestProfileScopedMcp:
 
+    def test_multiplexed_dashboard_resolves_same_named_mcp_servers_per_profile(
+        self, isolated_profiles, monkeypatch
+    ):
+        """Dashboard agent setup must keep same-named MCP credentials profile-local."""
+        from agent import secret_scope
+        from hermes_cli import mcp_config
+        from hermes_cli import web_server
+
+        default_home = isolated_profiles["default"]
+        worker_home = isolated_profiles["worker_beta"]
+        for home, token in ((default_home, "default-token"), (worker_home, "worker-token")):
+            (home / "config.yaml").write_text(
+                "gateway:\n  multiplex_profiles: true\n"
+                "mcp_servers:\n  shared:\n"
+                "    url: https://example.test/mcp\n"
+                "    headers:\n      Authorization: Bearer ${MCP_TOKEN}\n",
+                encoding="utf-8",
+            )
+            (home / ".env").write_text(f"MCP_TOKEN={token}\n", encoding="utf-8")
+
+        monkeypatch.setenv("MCP_TOKEN", "process-token")
+        previous = secret_scope.is_multiplex_active()
+        try:
+            web_server._configure_multiplex_secret_scope()
+            with _web_server_profiles._profile_scope(None):
+                default = mcp_config._resolve_mcp_server_config(
+                    mcp_config._get_mcp_servers()["shared"]
+                )
+            with _web_server_profiles._profile_scope("worker_beta"):
+                worker = mcp_config._resolve_mcp_server_config(
+                    mcp_config._get_mcp_servers()["shared"]
+                )
+        finally:
+            secret_scope.set_multiplex_active(previous)
+
+        assert default["headers"]["Authorization"] == "Bearer default-token"
+        assert worker["headers"]["Authorization"] == "Bearer worker-token"
+
+    def test_single_profile_dashboard_keeps_environment_secret_resolution(
+        self, isolated_profiles, monkeypatch
+    ):
+        """A dashboard without multiplexing retains its legacy single-profile behavior."""
+        from agent import secret_scope
+        from hermes_cli import web_server
+
+        (isolated_profiles["default"] / "config.yaml").write_text(
+            "gateway:\n  multiplex_profiles: false\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("MCP_TOKEN", "process-token")
+        previous = secret_scope.is_multiplex_active()
+        try:
+            web_server._configure_multiplex_secret_scope()
+            assert secret_scope.is_multiplex_active() is False
+            assert secret_scope.get_secret("MCP_TOKEN") == "process-token"
+        finally:
+            secret_scope.set_multiplex_active(previous)
+
     def test_mcp_bearer_secret_is_profile_scoped(self, client, isolated_profiles):
         secret = "worker-only-secret"
         response = client.post(

@@ -211,21 +211,31 @@ def _profile_scope(profile: Optional[str]):
     since #65828 its directory lookups resolve at call time through the same contextvar override set in step
     1.
     """
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import get_hermes_home
     from tools import skills_tool as _skills_tool
     from tools import skill_manager_tool as _skill_mgr
     with _config_profile_scope(profile) as scoped:
         profile_dir = get_hermes_home() if scoped is None else scoped
-        modules = (_skills_tool, _skill_mgr)
-        with _SKILLS_PROFILE_LOCK:
-            saved = [(m.HERMES_HOME, m.SKILLS_DIR) for m in modules]
-            for m in modules:
-                m.HERMES_HOME, m.SKILLS_DIR = profile_dir, profile_dir / "skills"
-            try:
-                yield scoped
-            finally:
-                for m, (home, skills_dir) in zip(modules, saved):
-                    m.HERMES_HOME, m.SKILLS_DIR = home, skills_dir
+        # A dashboard process can serve every local profile.  Its process env
+        # belongs to the launch profile, so MCP discovery and agent construction
+        # must inherit this request's secrets through their ContextVars.
+        hydrate_profile_secret_sources(profile_dir)
+        secret_token = set_secret_scope(build_profile_secret_scope(profile_dir))
+        try:
+            modules = (_skills_tool, _skill_mgr)
+            with _SKILLS_PROFILE_LOCK:
+                saved = [(m.HERMES_HOME, m.SKILLS_DIR) for m in modules]
+                for m in modules:
+                    m.HERMES_HOME, m.SKILLS_DIR = profile_dir, profile_dir / "skills"
+                try:
+                    yield scoped
+                finally:
+                    for m, (home, skills_dir) in zip(modules, saved):
+                        m.HERMES_HOME, m.SKILLS_DIR = home, skills_dir
+        finally:
+            reset_secret_scope(secret_token)
 
 
 @contextmanager

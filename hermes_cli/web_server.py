@@ -1196,6 +1196,22 @@ def _best_effort(what: str, fn) -> None:
         _log.debug("%s skipped: %s", what, exc)
 
 
+def _configure_multiplex_secret_scope() -> None:
+    """Enable fail-closed credential scoping when this dashboard serves profiles.
+
+    Dashboard sessions enter ``_profile_scope`` before agent construction and
+    MCP discovery.  The process-wide mode flag must therefore be derived from
+    the dashboard's loaded default-profile configuration before either path can
+    resolve a credential; otherwise same-named MCP servers share the process
+    environment's credentials (#111151).
+    """
+    from agent.secret_scope import set_multiplex_active
+
+    config = load_config() or {}
+    gateway = config.get("gateway") or {}
+    set_multiplex_active(bool(gateway.get("multiplex_profiles", False)))
+
+
 def _on_server_started(
     server,
     *,
@@ -1403,6 +1419,7 @@ def start_server(
         _log.debug("Nous auth keepalive did not start: %s", exc)
 
     _configure_auth_gate(host, allow_public, ssh_session_token, ssh_owner_nonce)
+    _configure_multiplex_secret_scope()
 
     # host_header_middleware validates Host against this (DNS rebinding,
     # GHSA-ppp5-vxwm-4cf7).

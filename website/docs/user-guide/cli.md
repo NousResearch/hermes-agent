@@ -294,7 +294,7 @@ To have the same skills active at the start of **every** new session — CLI, TU
 ```yaml
 skills:
   auto_load:
-    - hermes-agent-dev
+    - hermes-agent
     - github-pr-workflow
 ```
 

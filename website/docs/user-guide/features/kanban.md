@@ -502,6 +502,56 @@ surface.
 
 The lifecycle plus the load-bearing reference details (workspace kinds, deliverable `artifacts`, claiming created cards) ship in that system-prompt block, so every worker has them regardless of which profile it runs under — no per-profile skill setup required.
 
+### Nested processes do not inherit card identity
+
+The dispatcher seeds worker identity through the environment. Two groups of variables live
+there, and the difference matters:
+
+- **Identity** — `HERMES_KANBAN_TASK`, `HERMES_KANBAN_RUN_ID`, `HERMES_KANBAN_CLAIM_LOCK`,
+  `HERMES_KANBAN_GOAL_MODE` / `HERMES_KANBAN_GOAL_MAX_TURNS`. These say *this process is the
+  run that owns card X*, and every lifecycle gate reads them.
+- **Location** — `HERMES_KANBAN_BOARD` and `HERMES_KANBAN_WORKSPACE`. These say *which board and
+  directory you are working in*.
+
+A process a worker starts is **not** that worker. When the identity variables simply leak through
+`fork`/`exec`, a nested `hermes` session — a CLI call from the terminal tool, a background or PTY
+spawn, an `execute_code` cell, a cron job fired in-process with `cronjob(action="run")` — reads
+`HERMES_KANBAN_TASK` from the environment, concludes it *is* the worker for that card, and adopts
+the lifecycle. It can then call `kanban_complete` on the parent's card mid-run. That has happened:
+a diagnostic `hermes -z "…"` fired from inside a worker completed that worker's card with its own
+summary, and scratch-workspace cleanup on the completion deleted the still-running worker's
+backup directory. The card's audit trail looked complete and authoritative, and the process that
+actually did the work lost ownership of its own record.
+
+**What Hermes does about it.** Every child-process spawn surface routes through one shared
+environment builder that drops the identity keys and stamps the child with
+`HERMES_DELEGATED_CHILD_CONTEXT=1`, a marker that survives later `exec`s. Within the worker's own
+process, `delegate_task` children and cron jobs fired in-process are also excluded from the
+dispatcher-owned identity gate. Consequences a worker can rely on:
+
+- A nested session does not get the worker's Kanban tool schema, does not inherit `task_id` by
+  default, and is refused outright on mutation (`… refused: delegate_task child agents are not
+  Kanban run owners`).
+- Board and workspace are deliberately **kept**, so a nested `hermes -p other-profile` still reads
+  the same board and can inspect the same workspace — it just cannot close someone else's card.
+- Only the run that owns a card may `kanban_complete` or `kanban_block` it.
+
+**Workaround when you build the environment yourself.** The scrub covers processes Hermes spawns.
+A script that constructs its own environment, or spawns a child outside the terminal tool, is on
+its own — and any worker shelling out to bare `hermes` should still scrub explicitly:
+
+```bash
+env -u HERMES_KANBAN_TASK -u HERMES_KANBAN_WORKSPACE -u HERMES_KANBAN_BOARD hermes -z "..."
+```
+
+This is belt-and-braces on current builds (Hermes already scrubs its own children), and it is the
+only guard available on builds predating the fix. Use it for every `hermes` invocation a worker
+makes by hand.
+
+**Scope.** This is cooperative runtime scoping, not OS confinement: it makes an honest nested
+session unable to touch the parent's card, but anything with direct `kanban.db` access can still
+write to it. Treat it as protection against accidents, not against hostile code.
+
 ### Pinning extra skills to a specific task
 
 Sometimes a single task needs specialist context the assignee profile doesn't carry by default — a translation job that needs the `translation` skill, a review task that needs `github-code-review`, a security audit that needs `security-pr-audit`. Rather than editing the assignee's profile every time, attach the skills directly to the task.

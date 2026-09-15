@@ -259,9 +259,25 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const titlebarSlots = (
     <>
       <Slot area="titleBar.left" />
-      <Slot area="titleBar.center" />
       <Slot area="titleBar.right" />
     </>
+  )
+
+  // `titleBar.center` is genuinely centered — the kanban board switcher (and
+  // any other page-projected chrome) used to land inside the left-anchored
+  // cluster, overlapping the top-edge pane tabs (#107676, #110070).
+  const centerSlot = (
+    <div
+      className={cn(titlebarToolClusterClass, 'select-none')}
+      data-titlebar-cluster="center"
+      style={{
+        top: 'var(--titlebar-controls-top)',
+        left: '50%',
+        transform: 'translateX(-50%)'
+      }}
+    >
+      <Slot area="titleBar.center" />
+    </div>
   )
 
   const leftClusterClass = cn(
@@ -279,12 +295,15 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     const pageTools = [...leftTools, ...tools].filter(tool => !tool.hidden)
 
     return (
-      <div className={leftClusterClass}>
-        {pageTools.map(tool => (
-          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
-        ))}
-        {titlebarSlots}
-      </div>
+      <>
+        <div className={leftClusterClass} data-titlebar-cluster="left">
+          {pageTools.map(tool => (
+            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+          ))}
+          {titlebarSlots}
+        </div>
+        {centerSlot}
+      </>
     )
   }
 
@@ -302,8 +321,8 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}
         <Slot area="titleBar.left" />
-        <Slot area="titleBar.center" />
       </div>
+      {centerSlot}
 
       {visiblePaneTools.length > 0 && (
         <div

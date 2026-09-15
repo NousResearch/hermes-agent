@@ -131,6 +131,31 @@ describe('TitlebarControls fixed clusters', () => {
 
       expect(pluginChrome()).toBeNull()
     })
+
+    it('renders titleBar.center chrome in a centered cluster outside the left one (#107676)', () => {
+      renderControls('/kanban')
+
+      const left = document.querySelector('[data-titlebar-cluster="left"]')
+      const center = document.querySelector('[data-titlebar-cluster="center"]')
+
+      // The extension branch exposes measurement hooks for usePanelTitlebar.
+      expect(left).not.toBeNull()
+      expect(center).not.toBeNull()
+      // The center chrome must not be a descendant of the left-anchored
+      // cluster, or it lands on top of the top-edge pane tabs.
+      expect(left?.contains(center)).toBe(false)
+      expect(within(center as HTMLElement).getByText('plugin-chrome')).toBeTruthy()
+    })
+
+    it('keeps titleBar.center out of the left cluster on chat too', () => {
+      renderControls('/')
+
+      const left = document.querySelector('[data-titlebar-cluster="left"]')
+      const center = document.querySelector('[data-titlebar-cluster="center"]')
+
+      expect(center).not.toBeNull()
+      expect(left?.contains(center)).toBe(false)
+    })
   })
 })
 

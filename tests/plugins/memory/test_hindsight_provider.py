@@ -1098,6 +1098,79 @@ class TestShutdownRace:
         assert client.aretain_batch.call_count == 2
         assert provider._retain_queue.empty()
 
+    def test_shutdown_flushes_turn_buffered_by_memory_manager(self, tmp_path, monkeypatch):
+        """A partial batch queued by MemoryManager must survive process shutdown."""
+        from agent.memory_manager import MemoryManager
+        from plugins.memory import load_memory_provider
+
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({
+            "mode": "cloud",
+            "apiKey": "test-key",
+            "api_url": "http://localhost:9999",
+            "bank_id": "test-bank",
+            "budget": "mid",
+            "memory_mode": "hybrid",
+            "retain_every_n_turns": 3,
+            "retain_async": False,
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+
+        provider = load_memory_provider("hindsight", register_skills=False)
+        assert isinstance(provider, HindsightMemoryProvider)
+        provider.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
+        provider._client = _make_mock_client()
+        monkeypatch.setattr(
+            provider, "_resolve_retain_target", lambda fallback: (fallback, None)
+        )
+        client = provider._client
+        manager = MemoryManager()
+        manager.add_provider(provider)
+
+        manager.sync_all("last user turn", "last assistant turn", session_id="test-session")
+        manager.shutdown_all()
+
+        client.aretain_batch.assert_called_once()
+        content = json.loads(client.aretain_batch.call_args.kwargs["items"][0]["content"])
+        assert "last user turn" in json.dumps(content)
+        assert "last assistant turn" in json.dumps(content)
+
+    @pytest.mark.parametrize(("update_mode", "expected_final_turns"), [("append", 1), (None, 4)])
+    def test_shutdown_flush_uses_append_delta_but_full_legacy_snapshot(
+        self, provider_with_config, monkeypatch, update_mode, expected_final_turns
+    ):
+        """Final append writes only the tail; legacy overwrite rewrites the full document."""
+        from agent.memory_manager import MemoryManager
+
+        provider = provider_with_config(retain_every_n_turns=3, retain_async=False)
+        monkeypatch.setattr(
+            provider,
+            "_resolve_retain_target",
+            lambda fallback: ("test-session" if update_mode == "append" else fallback, update_mode),
+        )
+        client = provider._client
+        manager = MemoryManager()
+        manager.add_provider(provider)
+
+        for turn in range(1, 5):
+            manager.sync_all(
+                f"turn {turn} user", f"turn {turn} assistant", session_id="test-session"
+            )
+        manager.shutdown_all()
+
+        assert client.aretain_batch.call_count == 2
+        final_content = json.loads(
+            client.aretain_batch.call_args_list[-1].kwargs["items"][0]["content"]
+        )
+        assert len(final_content) == expected_final_turns
+        assert "turn 4 user" in json.dumps(final_content)
+        if update_mode == "append":
+            assert "turn 1 user" not in json.dumps(final_content)
+        else:
+            assert "turn 1 user" in json.dumps(final_content)
+
 
 # ---------------------------------------------------------------------------
 # on_session_switch — flush + prefetch reset behavior

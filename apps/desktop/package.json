@@ -116,6 +116,7 @@
     "clsx": "2.1.1",
     "cmdk": "1.1.1",
     "d3-force": "3.0.0",
+    "dbus-native": "0.15.2",
     "dnd-core": "14.0.1",
     "dompurify": "3.4.13",
     "driver.js": "1.8.0",

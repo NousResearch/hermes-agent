@@ -34,7 +34,7 @@ from utils import read_json_or_empty
 
 from .embedded import (
     _RETRIABLE_CONNECTION_MARKERS, _build_embedded_profile_env,
-    _check_local_runtime, _embedded_llm_api_key, _embedded_profile_env_path,
+    _check_local_runtime, _embedded_llm_api_key, _embedded_profile_env_is_current, _embedded_profile_env_path,
     _export_port_health_grace_timeout, _load_simple_env, _local_runtime_hint, _materialize_embedded_profile_env,
     _may_rewrite_profile_env,
 )
@@ -843,7 +843,7 @@ class HindsightMemoryProvider(MemoryProvider):
             # stop: restarting the daemon now would boot it keyless, which is the
             # exact outage this guards against. _get_client() above already passed
             # whatever key WAS available into the in-process client kwargs.
-            if _load_simple_env(_embedded_profile_env_path(self._config)) != _build_embedded_profile_env(self._config):
+            if not _embedded_profile_env_is_current(self._config):
                 if _may_rewrite_profile_env(self._config):
                     _materialize_embedded_profile_env(self._config)
                     if client._manager.is_running(profile):

@@ -8,7 +8,7 @@ import os
 
 from hermes_constants import INDICATOR_STYLES
 
-from .contracts.common import SessionLiveInfo
+from .contracts.events import SessionInfoPayload
 from .contracts.config_free_tier_control import ConfigSetParams, ConfigSetResult
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -36,7 +36,7 @@ def _write_display_sections(*, sections=None, drop_sections=(), **display_fields
 def _emit_session_info(sid: str, session: dict) -> None:
     agent = session.get("agent")
     if agent is not None:
-        _emit("session.info", sid, SessionLiveInfo(**_session_info(agent, session)))
+        _emit("session.info", sid, SessionInfoPayload(**_session_info(agent, session).model_dump(mode="json")))
 
 
 def _emit_all_session_info() -> None:

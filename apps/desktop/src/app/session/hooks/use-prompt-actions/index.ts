@@ -24,6 +24,7 @@ import {
   updateComposerAttachment
 } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
+import { clearComputerUseState } from '@/store/computer-use'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
@@ -747,6 +748,7 @@ export function usePromptActions({
     // an answer the backend will reject.
     clearAllPrompts(sessionId)
     clearClarifyRequest(undefined, sessionId)
+    clearComputerUseState(sessionId)
 
     try {
       await withSessionNotFoundResume(
@@ -1011,6 +1013,7 @@ export function usePromptActions({
       }
 
       clearNotifications()
+      clearComputerUseState(sessionId)
       updateSessionState(sessionId, state => applyReloadOptimistic(state, plan))
 
       try {
@@ -1074,6 +1077,7 @@ export function usePromptActions({
       clearSessionTodos(sessionId)
       resetSessionBackground(sessionId)
       clearPreviewArtifacts(sessionId)
+      clearComputerUseState(sessionId)
 
       // Capture before optimistic busy=true — otherwise interruptFirst is always
       // true and idle restores wrongly interrupt (and Stop→edit misses cooldown).
@@ -1196,6 +1200,7 @@ export function usePromptActions({
       clearSessionTodos(sessionId)
       resetSessionBackground(sessionId)
       clearPreviewArtifacts(sessionId)
+      clearComputerUseState(sessionId)
 
       // Before optimistic busy=true — see restoreToMessage (#83855).
       const interruptFirst = shouldInterruptBeforeRewind({

@@ -4726,11 +4726,21 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     return None, None
 
 
-def _named_custom_openai_wire_client(custom_base: str, custom_key: Any):
-    """Plain OpenAI client on the /v1 equivalent of a named custom entry's base URL."""
+def _named_custom_openai_wire_client(
+    custom_base: str, custom_key: Any, provider: str = "", *, is_vision: bool = False,
+):
+    """Plain OpenAI client on the /v1 equivalent of a named custom entry's base URL.
+
+    Applies the same endpoint-attribution headers as the explicit-custom route
+    (``_endpoint_default_headers``: Kimi's claude-code User-Agent, Copilot request
+    headers, the NVIDIA NIM fingerprint, else the provider profile), so a named
+    custom entry pointing at one of those hosts is not sent without them. This
+    route previously built ``_extra`` from ``default_query`` alone and only layered
+    the user's ``model.default_headers`` on top.
+    """
     _clean_base, _dq = _extract_url_query_params(_to_openai_base_url(custom_base))
     _extra = {"default_query": _dq} if _dq else {}
-    _headers = _apply_user_default_headers(None)
+    _headers = _endpoint_default_headers(custom_base, provider, is_vision=is_vision)
     if _headers:
         _extra["default_headers"] = _headers
     return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
@@ -4788,10 +4798,15 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
         except ImportError:
             logger.warning("Named custom provider %r declares api_mode=anthropic_messages but the anthropic SDK "
                            "is not installed — falling back to OpenAI-wire.", provider)
-            return _route_client(req, _named_custom_openai_wire_client(custom_base, custom_key), final_model)
+            return _route_client(
+                req,
+                _named_custom_openai_wire_client(
+                    custom_base, custom_key, provider, is_vision=req.is_vision),
+                final_model)
         return _route_client(
             req, AnthropicAuxiliaryClient(real_client, final_model, custom_key, custom_base, is_oauth=False), final_model)
-    client = _named_custom_openai_wire_client(custom_base, custom_key)
+    client = _named_custom_openai_wire_client(
+        custom_base, custom_key, provider, is_vision=req.is_vision)
     # codex_responses, or auto-detect via _wrap_transport (which reads the task-level api_mode).
     if entry_api_mode == "codex_responses":
         client = CodexAuxiliaryClient(client, final_model)

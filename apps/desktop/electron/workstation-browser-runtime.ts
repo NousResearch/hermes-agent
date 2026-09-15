@@ -167,6 +167,9 @@ interface PageInventory {
     value?: string
     disabled: boolean
   }>
+  wallDetected?: boolean
+  wallReason?: string
+  spaNotice?: string
 }
 
 interface BrowserTaskShowContext {
@@ -542,14 +545,223 @@ function pointScript(ref: string, focus: boolean): string {
   })()`
 }
 
+function detectAuthWall(url: string, title: string, text: string): { detected: boolean; reason?: string } {
+  const lowerUrl = url.toLowerCase()
+  const lowerTitle = title.toLowerCase()
+  const lowerText = text.toLowerCase()
+
+  const wallUrlPatterns = [
+    '/account-verification',
+    '/challenge',
+    '/checkpoint',
+    '/recaptcha',
+    '/turnstile',
+    '/cf-challenge',
+    'cf-turnstile',
+    '/waf-verify',
+    '/validatecaptcha',
+    '/interstitial',
+    '/auth/verify',
+    '/login/challenge',
+    '/gz/account-verification'
+  ]
+  for (const pat of wallUrlPatterns) {
+    if (lowerUrl.includes(pat)) {
+      return { detected: true, reason: `Verification URL pattern '${pat}' detected` }
+    }
+  }
+
+  const wallTitlePatterns = [
+    'just a moment',
+    'attention required',
+    'security check',
+    'robot check',
+    'human verification',
+    'are you a human',
+    'verificação de conta',
+    'verificar identidade',
+    'confirme que você é humano',
+    'cloudflare'
+  ]
+  for (const pat of wallTitlePatterns) {
+    if (lowerTitle.includes(pat)) {
+      return { detected: true, reason: `Page title indicates verification: "${title}"` }
+    }
+  }
+
+  const wallTextPatterns = [
+    'confirm you are human',
+    'verify you are a human',
+    'confirme que é você',
+    'confirme que você é uma pessoa real',
+    'complete the security check',
+    'checking if the site connection is secure',
+    'clique no botão para confirmar que é humano',
+    'valide sua identidade',
+    'digite o código que enviamos',
+    'turnstile'
+  ]
+  for (const pat of wallTextPatterns) {
+    if (lowerText.includes(pat)) {
+      return { detected: true, reason: `Verification text detected: "${pat}"` }
+    }
+  }
+
+  return { detected: false }
+}
+
+function extractItemsScript(customSelector: string | null, limit: number): string {
+  return `(function () {
+    var limit = ${limit};
+    var customSelector = ${JSON.stringify(customSelector)};
+    var containers = [];
+    var selectorUsed = customSelector;
+
+    if (customSelector) {
+      try {
+        containers = Array.from(document.querySelectorAll(customSelector));
+      } catch (e) {
+        return { error: 'invalid_selector', message: String(e), items: [] };
+      }
+    } else {
+      var candidateSelectors = [
+        'div[data-component-type="s-search-result"]',
+        'li.ui-search-layout__item',
+        '.s-result-item[data-asin]',
+        'div.Nv2PK',
+        'div[role="feed"] > div',
+        'div.sh-dgr__content',
+        'div.product-card, div.product-item, div.search-result, article'
+      ];
+      for (var i = 0; i < candidateSelectors.length; i++) {
+        var found = Array.from(document.querySelectorAll(candidateSelectors[i]));
+        if (found.length > 0) {
+          containers = found;
+          selectorUsed = candidateSelectors[i];
+          break;
+        }
+      }
+      if (containers.length === 0) {
+        var listItems = Array.from(document.querySelectorAll('ul > li, ol > li'));
+        var withLinks = listItems.filter(function(li) { return li.querySelector('a') !== null; });
+        if (withLinks.length >= 3) {
+          containers = withLinks;
+          selectorUsed = 'li';
+        }
+      }
+    }
+
+    var items = [];
+    for (var j = 0; j < containers.length && items.length < limit; j++) {
+      var c = containers[j];
+      var rect = c.getBoundingClientRect();
+      if (rect.width < 5 || rect.height < 5) continue;
+
+      var titleEl = c.querySelector('h1, h2, h3, h4, h5, [role="heading"], a.a-link-normal > span, .poly-component__title, a.ui-search-item__group__element, a.ui-search-link');
+      var title = '';
+      if (titleEl) {
+        title = (titleEl.innerText || titleEl.textContent || '').trim();
+      }
+      if (!title) {
+        var linkEl = c.querySelector('a[href]');
+        if (linkEl) {
+          title = (linkEl.innerText || linkEl.getAttribute('aria-label') || linkEl.getAttribute('title') || '').trim();
+        }
+      }
+      if (!title) {
+        var imgEl = c.querySelector('img[alt]');
+        if (imgEl) {
+          title = (imgEl.getAttribute('alt') || '').trim();
+        }
+      }
+
+      var link = c.tagName === 'A' ? c : c.querySelector('a[href]');
+      var url = '';
+      if (link && link.getAttribute('href')) {
+        try {
+          url = new URL(link.getAttribute('href'), location.href).href;
+        } catch(e) {
+          url = link.getAttribute('href') || '';
+        }
+      }
+
+      var priceEl = c.querySelector('.a-price .a-offscreen, .a-price, .price, .ui-search-price__second-line, [class*="price"], [class*="preco"], [class*="Price"]');
+      var price = '';
+      if (priceEl) {
+        price = (priceEl.innerText || priceEl.textContent || '').trim();
+      }
+      if (!price) {
+        var allText = c.innerText || '';
+        var priceMatch = allText.match(/(?:R\\$|\\$|€|£|BRL|USD)\\s*\\d+(?:[.,]\\d+)?(?:[.,]\\d{2})?/i);
+        if (priceMatch) {
+          price = priceMatch[0].trim();
+        }
+      }
+
+      var ratingEl = c.querySelector('[aria-label*="star"], [aria-label*="estrela"], [aria-label*="out of 5"], [class*="rating"], [class*="review-stars"]');
+      var rating = '';
+      if (ratingEl) {
+        rating = (ratingEl.getAttribute('aria-label') || ratingEl.innerText || '').trim();
+      }
+
+      var reviewsEl = c.querySelector('[aria-label*="ratings"], [aria-label*="avaliações"], a[href*="#customerReviews"], span.s-underline-text');
+      var reviews = '';
+      if (reviewsEl) {
+        reviews = (reviewsEl.innerText || reviewsEl.getAttribute('aria-label') || '').trim();
+      }
+
+      var snippet = '';
+      var pEl = c.querySelector('p, .snippet, [class*="description"]');
+      if (pEl) {
+        snippet = (pEl.innerText || pEl.textContent || '').trim().slice(0, 300);
+      }
+
+      if (title || price || url) {
+        items.push({
+          index: items.length + 1,
+          title: title.slice(0, 300),
+          url: url,
+          price: price.slice(0, 50),
+          rating: rating.slice(0, 50),
+          reviews: reviews.slice(0, 50),
+          snippet: snippet
+        });
+      }
+    }
+
+    return {
+      count: items.length,
+      selector_used: selectorUsed,
+      items: items
+    };
+  })()`
+}
+
 function formatInventory(inv: PageInventory, full: boolean): string {
   const lines: string[] = []
+
+  if (inv.wallDetected) {
+    lines.push(
+      '=================================================================',
+      '⚠️ [HUMAN_HANDOFF_REQUIRED]: Verification / Security Wall Detected!',
+      `Reason: ${inv.wallReason || 'Automated verification check'}`,
+      'ACTION REQUIRED: Please solve this verification challenge directly in the Hermes Workstation browser pane.',
+      'Once completed, inform the agent to continue your task.',
+      '=================================================================',
+      ''
+    )
+  }
+
   lines.push(`URL: ${inv.url}`)
 
   if (inv.title) {
     lines.push(`Title: ${inv.title}`)
   }
   lines.push('')
+
+  if (inv.spaNotice) {
+    lines.push(inv.spaNotice, '')
+  }
 
   if (inv.elements.length) {
     lines.push('Interactive elements:')
@@ -1536,11 +1748,17 @@ export class WorkstationBrowserRuntime {
 
         return this.snapshotForEntry(entry, false)
 
-      case 'browser_type':
-        await this.typeRef(entry, String(args.ref ?? ''), String(args.text ?? ''))
+      case 'browser_type': {
+        const clear = args.clear !== undefined ? Boolean(args.clear) : !Boolean(args.append)
+        const append = Boolean(args.append)
+        await this.typeRef(entry, String(args.ref ?? ''), String(args.text ?? ''), { clear, append })
         await delay(160)
 
         return this.snapshotForEntry(entry, false)
+      }
+
+      case 'browser_extract_items':
+        return this.extractItemsForEntry(entry, args)
 
       case 'browser_scroll':
         await this.scrollEntry(entry, String(args.direction ?? 'down'))
@@ -1839,10 +2057,50 @@ export class WorkstationBrowserRuntime {
       throw new Error('browser_tab_destroyed')
     }
 
-    const inv = (await wc.executeJavaScript(
+    let inv = (await wc.executeJavaScript(
       inventoryScript(full ? FULL_TEXT_CHARS : COMPACT_TEXT_CHARS, full ? FULL_ELEMENTS : COMPACT_ELEMENTS),
       true
     )) as PageInventory
+
+    // Canvas / WebGL SPA Settlement: if elements are sparse, check if canvas or heavy SPA is hydrating
+    if (inv.elements.length <= 2) {
+      try {
+        const spaCheck = (await wc.executeJavaScript(`(function () {
+          var hasCanvas = document.querySelector('canvas') !== null;
+          var isMaps = location.hostname.includes('google.') && location.pathname.includes('/maps');
+          var hasFeed = document.querySelector('div[role="feed"], main, #pane, [role="main"]') !== null;
+          return { hasCanvas: hasCanvas, isMaps: isMaps, hasFeed: hasFeed };
+        })()`, true)) as { hasCanvas?: boolean; isMaps?: boolean; hasFeed?: boolean }
+
+        if (spaCheck?.hasCanvas || spaCheck?.isMaps) {
+          for (let wait = 0; wait < 4; wait++) {
+            await delay(300)
+            const reInv = (await wc.executeJavaScript(
+              inventoryScript(full ? FULL_TEXT_CHARS : COMPACT_TEXT_CHARS, full ? FULL_ELEMENTS : COMPACT_ELEMENTS),
+              true
+            )) as PageInventory
+            if (reInv.elements.length > inv.elements.length) {
+              inv = reInv
+              break
+            }
+          }
+          if (inv.elements.length <= 2 && spaCheck?.hasCanvas) {
+            inv.spaNotice = '[Canvas/WebGL SPA active: scene rendered on canvas. Use Page Text below or browser_extract_items.]'
+          }
+        }
+      } catch {
+        // Best effort
+      }
+    }
+
+    // Proactive Human Handoff: check for auth or verification challenges
+    const wall = detectAuthWall(inv.url, inv.title, inv.text)
+    if (wall.detected) {
+      inv.wallDetected = true
+      inv.wallReason = wall.reason
+      this.lastError = `Human handoff required: ${wall.reason}`
+      this.emitState()
+    }
 
     return {
       success: true,
@@ -1854,7 +2112,9 @@ export class WorkstationBrowserRuntime {
       snapshot: formatInventory(inv, full),
       truncated: inv.truncated,
       total_text_chars: inv.totalTextChars,
-      element_count: inv.elements.length
+      element_count: inv.elements.length,
+      wall_detected: Boolean(inv.wallDetected),
+      wall_reason: inv.wallReason
     }
   }
 
@@ -1909,15 +2169,91 @@ export class WorkstationBrowserRuntime {
     await this.cdpClick(wc, point.x, point.y)
   }
 
-  private async typeRef(entry: BrowserEntry, ref: string, text: string): Promise<void> {
+  private async typeRef(
+    entry: BrowserEntry,
+    ref: string,
+    text: string,
+    options: { clear?: boolean; append?: boolean } = {}
+  ): Promise<void> {
     const wc = entry.view.webContents
     const point = await this.resolvePoint(entry, ref, true)
     await this.cdpClick(wc, point.x, point.y)
-    const modifiers = process.platform === 'darwin' ? 4 : 2 // Meta=4, Ctrl=2 in CDP Input domain.
-    await this.cdp(wc, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'a', code: 'KeyA', modifiers })
-    await this.cdp(wc, 'Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', modifiers })
-    await this.cdp(wc, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Backspace', code: 'Backspace' })
-    await this.cdp(wc, 'Input.dispatchKeyEvent', { type: 'keyUp', key: 'Backspace', code: 'Backspace' })
+
+    const shouldClear = options.clear !== false && !options.append
+    if (shouldClear) {
+      // 1. Try DOM select() on active element
+      try {
+        await wc.executeJavaScript(`(function () {
+          var el = document.activeElement;
+          if (el) {
+            if (typeof el.select === 'function') {
+              el.select();
+            } else if (window.getSelection && document.createRange) {
+              var range = document.createRange();
+              range.selectNodeContents(el);
+              var sel = window.getSelection();
+              if (sel) {
+                sel.removeAllRanges();
+                sel.addRange(range);
+              }
+            }
+          }
+        })()`, true)
+      } catch {
+        // best effort
+      }
+
+      // 2. Dispatch CDP SelectAll with windowsVirtualKeyCode: 65
+      const modifiers = process.platform === 'darwin' ? 4 : 2 // Meta=4, Ctrl=2 in CDP Input domain.
+      await this.cdp(wc, 'Input.dispatchKeyEvent', {
+        type: 'rawKeyDown',
+        key: 'a',
+        code: 'KeyA',
+        windowsVirtualKeyCode: 65,
+        modifiers
+      })
+      await this.cdp(wc, 'Input.dispatchKeyEvent', {
+        type: 'keyUp',
+        key: 'a',
+        code: 'KeyA',
+        windowsVirtualKeyCode: 65,
+        modifiers
+      })
+
+      // 3. Dispatch CDP Backspace with windowsVirtualKeyCode: 8
+      await this.cdp(wc, 'Input.dispatchKeyEvent', {
+        type: 'rawKeyDown',
+        key: 'Backspace',
+        code: 'Backspace',
+        windowsVirtualKeyCode: 8
+      })
+      await this.cdp(wc, 'Input.dispatchKeyEvent', {
+        type: 'keyUp',
+        key: 'Backspace',
+        code: 'Backspace',
+        windowsVirtualKeyCode: 8
+      })
+
+      // 4. Fallback: if value is still populated, clear it directly via DOM and dispatch input/change events
+      try {
+        await wc.executeJavaScript(`(function () {
+          var el = document.activeElement;
+          if (el) {
+            if ('value' in el && el.value) {
+              el.value = '';
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            } else if (el.isContentEditable && (el.innerText || el.textContent)) {
+              el.textContent = '';
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+          }
+        })()`, true)
+      } catch {
+        // best effort
+      }
+    }
+
     await this.cdp(wc, 'Input.insertText', { text })
   }
 
@@ -1977,6 +2313,31 @@ export class WorkstationBrowserRuntime {
     const result = await entry.view.webContents.executeJavaScript(expression, true)
 
     return { success: true, runtime: 'electron-chromium', task_id: entry.ownerTaskId, result }
+  }
+
+  private async extractItemsForEntry(
+    entry: BrowserEntry,
+    args: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    const wc = entry.view.webContents
+    if (wc.isDestroyed()) {
+      throw new Error('browser_tab_destroyed')
+    }
+    const selector = typeof args.selector === 'string' && args.selector.trim() ? args.selector.trim() : null
+    const limit =
+      typeof args.limit === 'number' && Number.isFinite(args.limit) ? Math.min(100, Math.max(1, args.limit)) : 20
+
+    const result = (await wc.executeJavaScript(extractItemsScript(selector, limit), true)) as Record<string, unknown>
+
+    return {
+      success: true,
+      runtime: 'electron-chromium',
+      task_id: entry.ownerTaskId,
+      tab_id: entry.id,
+      url: wc.getURL(),
+      title: wc.getTitle(),
+      ...result
+    }
   }
 
   private async screenshotForEntry(entry: BrowserEntry): Promise<Record<string, unknown>> {

@@ -49,6 +49,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "runtime": "electron-chromium",
                     "action": payload.get("action"),
                     "task_id": payload.get("task_id"),
+                    "arguments": payload.get("arguments"),
                     "kanban_card_id": payload.get("kanban_card_id"),
                     "run_id": payload.get("run_id"),
                 },
@@ -221,4 +222,39 @@ def test_dispatch_forwards_kanban_and_run_identities(controller, monkeypatch):
     decoded_env = json.loads(result_env)
     assert decoded_env["kanban_card_id"] == "card-env-789"
     assert decoded_env["run_id"] == "run-env-012"
+
+
+def test_browser_type_dispatches_with_clear_and_append(controller):
+    result = bw.workstation_routed_browser_handler(
+        "browser_type",
+        {"ref": "@e5", "text": "new query", "clear": False, "append": True},
+        fallback=lambda: pytest.fail("legacy fallback must not run"),
+        task_id="task-type",
+    )
+    decoded = json.loads(result)
+    assert decoded["runtime"] == "electron-chromium"
+    assert decoded["action"] == "browser_type"
+    assert decoded["arguments"]["ref"] == "@e5"
+    assert decoded["arguments"]["text"] == "new query"
+    assert decoded["arguments"]["clear"] is False
+    assert decoded["arguments"]["append"] is True
+
+
+def test_browser_extract_items_dispatches_with_selector_and_limit(controller):
+    result = bw.workstation_routed_browser_handler(
+        "browser_extract_items",
+        {"selector": "div.product-card", "limit": 15},
+        fallback=lambda: pytest.fail("legacy fallback must not run"),
+        task_id="task-extract",
+    )
+    decoded = json.loads(result)
+    assert decoded["runtime"] == "electron-chromium"
+    assert decoded["action"] == "browser_extract_items"
+    assert decoded["arguments"]["selector"] == "div.product-card"
+    assert decoded["arguments"]["limit"] == 15
+
+
+def test_workstation_schema_tools_includes_extract_items():
+    assert "browser_extract_items" in bw._WORKSTATION_SCHEMA_TOOLS
+
 

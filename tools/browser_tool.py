@@ -2203,7 +2203,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_type",
-        "description": "Type text into an input field identified by its ref ID. Clears the field first, then types the new text. Requires browser_navigate and browser_snapshot to be called first.",
+        "description": "Type text into an input field identified by its ref ID. Clears the field first by default, then types the new text. Set clear=false or append=true to append text. Requires browser_navigate and browser_snapshot to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -2214,6 +2214,16 @@ BROWSER_TOOL_SCHEMAS = [
                 "text": {
                     "type": "string",
                     "description": "The text to type into the field"
+                },
+                "clear": {
+                    "type": "boolean",
+                    "description": "Whether to clear existing text in the input before typing (default: true).",
+                    "default": True
+                },
+                "append": {
+                    "type": "boolean",
+                    "description": "Whether to append text to the end of the input instead of replacing it (default: false).",
+                    "default": False
                 }
             },
             "required": ["ref", "text"]
@@ -2299,6 +2309,25 @@ BROWSER_TOOL_SCHEMAS = [
                 "expression": {
                     "type": "string",
                     "description": "JavaScript expression to evaluate in the page context. Runs in the browser like DevTools console — full access to DOM, window, document. Return values are serialized to JSON. Example: 'document.title' or 'document.querySelectorAll(\"a\").length'"
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "browser_extract_items",
+        "description": "Batch extract structured items or cards (products, search results, list entries, articles, places) from the current page. Automatically detects repetitive cards or uses a CSS selector, extracting titles, links, prices, ratings, and snippets in one single call. Avoids multiple browser_console/snapshot calls.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "selector": {
+                    "type": "string",
+                    "description": "Optional CSS selector targeting the repeating item container (e.g., 'div[data-component-type=\"s-search-result\"]', 'li.ui-search-layout__item', 'div[role=\"feed\"] > div'). If omitted, automatically selects common product/result cards."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of items to extract (default: 20, max: 100).",
+                    "default": 20
                 }
             },
             "required": []
@@ -3680,13 +3709,21 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
-def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
+def browser_type(
+    ref: str,
+    text: str,
+    clear: bool = True,
+    append: bool = False,
+    task_id: Optional[str] = None
+) -> str:
     """
     Type text into an input field.
 
     Args:
         ref: Element reference (e.g., "@e3")
         text: Text to type
+        clear: Whether to clear existing text first (default True)
+        append: Whether to append to existing text (default False)
         task_id: Task identifier for session isolation
 
     Returns:
@@ -3705,8 +3742,9 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     if not ref.startswith("@"):
         ref = f"@{ref}"
 
-    # Use fill command (clears then types)
-    result = _run_browser_command(effective_task_id, "fill", [ref, text])
+    # Use fill (clears then types) or type (appends)
+    cmd = "type" if (append or not clear) else "fill"
+    result = _run_browser_command(effective_task_id, cmd, [ref, text])
 
     from agent.display import (
         redact_browser_typed_text_for_display,
@@ -5414,6 +5452,82 @@ if __name__ == "__main__":
     print("  snapshot = browser_snapshot(task_id='my_task')")
 
 
+def browser_extract_items(
+    selector: Optional[str] = None,
+    limit: int = 20,
+    task_id: Optional[str] = None
+) -> str:
+    """
+    Extract structured items or product cards from the current page.
+
+    Args:
+        selector: Optional CSS selector targeting container elements
+        limit: Maximum number of items to return (default 20)
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string with extracted cards (title, url, price, rating, reviews, snippet)
+    """
+    if _is_camofox_mode():
+        return json.dumps({"count": 0, "items": [], "error": "not_supported_in_camofox"}, ensure_ascii=False)
+
+    effective_task_id = _last_session_key(task_id or "default")
+    blocked = _blocked_private_page_action(effective_task_id, "extract_items")
+    if blocked is not None:
+        return blocked
+
+    import json as _json
+    js_expr = f"""
+    (() => {{
+        const limit = {min(100, max(1, int(limit)))};
+        const customSelector = {_json.dumps(selector)};
+        let containers = [];
+        let selectorUsed = customSelector;
+        if (customSelector) {{
+            try {{ containers = Array.from(document.querySelectorAll(customSelector)); }} catch (e) {{ return JSON.stringify({{ error: 'invalid_selector', items: [] }}); }}
+        }} else {{
+            const candidates = [
+                'div[data-component-type="s-search-result"]',
+                'li.ui-search-layout__item',
+                '.s-result-item[data-asin]',
+                'div.Nv2PK',
+                'div[role="feed"] > div',
+                'div.sh-dgr__content',
+                'article',
+                '.card'
+            ];
+            for (const c of candidates) {{
+                const found = Array.from(document.querySelectorAll(c));
+                if (found.length > 0) {{ containers = found; selectorUsed = c; break; }}
+            }}
+        }}
+        const items = [];
+        for (let i = 0; i < containers.length && items.length < limit; i++) {{
+            const c = containers[i];
+            const titleEl = c.querySelector('h1, h2, h3, h4, [role="heading"], a');
+            const linkEl = c.tagName === 'A' ? c : c.querySelector('a[href]');
+            const priceEl = c.querySelector('[class*="price"], [class*="preco"]');
+            items.push({{
+                title: titleEl ? (titleEl.innerText || '').trim().slice(0, 200) : '',
+                url: linkEl ? linkEl.href : '',
+                price: priceEl ? priceEl.innerText.trim().slice(0, 50) : ''
+            }});
+        }}
+        return JSON.stringify({{ count: items.length, selector_used: selectorUsed, items }});
+    }})()
+    """
+    result = _run_browser_command(effective_task_id, "eval", [js_expr])
+    if result.get("success"):
+        return str(result.get("result") or _json.dumps({"count": 0, "items": []}))
+    response = {
+        "success": False,
+        "error": result.get("error", "Extraction failed"),
+        "count": 0,
+        "items": []
+    }
+    return _json.dumps(response, ensure_ascii=False)
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -5554,7 +5668,7 @@ registry.register(
         lambda: routed_browser_handler(
             "browser_type",
             args,
-            fallback=lambda: browser_type(ref=args.get("ref", ""), text=args.get("text", ""), task_id=kw.get("task_id")),
+            fallback=lambda: browser_type(ref=args.get("ref", ""), text=args.get("text", ""), clear=args.get("clear", True), append=args.get("append", False), task_id=kw.get("task_id")),
             **_browser_router_kw(kw),
         ),
     ),
@@ -5670,3 +5784,26 @@ registry.register(
     check_fn=lambda: check_browser_routed_requirements("browser_console"),
     emoji="🖥️",
 )
+registry.register(
+    name="browser_extract_items",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_extract_items"],
+    handler=lambda args, **kw: _workstation_or_legacy(
+        "browser_extract_items",
+        args,
+        kw,
+        lambda: routed_browser_handler(
+            "browser_extract_items",
+            args,
+            fallback=lambda: browser_extract_items(
+                selector=args.get("selector"),
+                limit=args.get("limit", 20),
+                task_id=kw.get("task_id"),
+            ),
+            **_browser_router_kw(kw),
+        ),
+    ),
+    check_fn=lambda: check_browser_routed_requirements("browser_extract_items"),
+    emoji="📦",
+)
+

@@ -221,8 +221,8 @@ TOOLSETS = {
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp",
-            "browser_dialog", "browser_exec", "web_search"
+            "browser_vision", "browser_console", "browser_extract_items",
+            "browser_cdp", "browser_dialog", "browser_exec", "web_search"
         ],
         "includes": []
     },

@@ -29,6 +29,7 @@ from agent.vault_login_classifier import (  # noqa: E402
     ClassifiedLoginControl,
     LoginControl,
     build_fill_js,
+    build_inspection_js,
     classify_login_control,
     select_password_fill,
 )
@@ -177,6 +178,15 @@ class TestClassifier:
             _ctrl(autocomplete="new-password", type="password")
         ) is None
 
+    def test_new_password_allowed_only_when_explicitly_requested(self):
+        result = classify_login_control(
+            _ctrl(autocomplete="new-password", type="password"),
+            allow_new_password=True,
+        )
+        assert result is not None
+        assert result.score == 100
+        assert result.token == "new-password"
+
     def test_one_time_code_excluded(self):
         assert classify_login_control(_ctrl(autocomplete="one-time-code")) is None
 
@@ -220,12 +230,121 @@ class TestClassifier:
         fills = select_password_fill([pw1, pw2], "p")
         assert len(fills) == 1 and fills[0]["index"] == 1
 
+    def test_generated_fill_targets_password_and_confirmation_in_same_form(self):
+        first = ClassifiedLoginControl(
+            _ctrl(index=1, form_index=0, autocomplete="new-password", type="password"),
+            100,
+            "new-password",
+        )
+        confirmation = ClassifiedLoginControl(
+            _ctrl(index=2, form_index=0, autocomplete="new-password", type="password"),
+            100,
+            "new-password",
+        )
+        decoy_other_form = ClassifiedLoginControl(
+            _ctrl(index=3, form_index=1, autocomplete="new-password", type="password"),
+            100,
+            "new-password",
+        )
+
+        fills = select_password_fill(
+            [first, confirmation, decoy_other_form],
+            "p",
+            allow_new_password=True,
+        )
+
+        assert [(fill["index"], fill["token"]) for fill in fills] == [
+            (1, "new-password"),
+            (2, "new-password"),
+        ]
+
+    def test_generated_fill_prefers_new_password_over_earlier_current_password(self):
+        current = ClassifiedLoginControl(
+            _ctrl(index=0, form_index=0, autocomplete="current-password", type="password"),
+            100,
+            "current-password",
+        )
+        new = ClassifiedLoginControl(
+            _ctrl(index=1, form_index=1, autocomplete="new-password", type="password"),
+            100,
+            "new-password",
+        )
+        confirmation = ClassifiedLoginControl(
+            _ctrl(index=2, form_index=1, autocomplete="new-password", type="password"),
+            100,
+            "new-password",
+        )
+
+        fills = select_password_fill(
+            [current, new, confirmation], "p", allow_new_password=True
+        )
+
+        assert [(fill["index"], fill["token"]) for fill in fills] == [
+            (1, "new-password"),
+            (2, "new-password"),
+        ]
+
+    def test_password_fill_carries_inspected_control_fingerprint(self):
+        password = ClassifiedLoginControl(
+            _ctrl(
+                index=4,
+                form_index=2,
+                autocomplete="current-password",
+                type="password",
+                name="password-field",
+                label="Password label",
+                max_length=128,
+            ),
+            100,
+            "current-password",
+        )
+
+        [fill] = select_password_fill([password], "p")
+
+        assert fill["fingerprint"] == {
+            "autocomplete": "current-password",
+            "form_index": 2,
+            "label": "Password label",
+            "max_length": 128,
+            "name": "password-field",
+            "type": "password",
+        }
+
     def test_build_fill_js_contains_events(self):
         js = build_fill_js(
             [{"index": 0, "token": "current-password", "value": "x"}],
             expected_origin="https://example.com",
         )
         assert "InputEvent" in js and '"change"' in js and "filled" in js
+
+    def test_inspection_and_fill_reject_effectively_disabled_or_visually_hidden_controls(self):
+        inspection_js = build_inspection_js("nonce")
+        fill_js = build_fill_js(
+            [{"index": 0, "token": "current-password", "value": "x"}],
+            expected_origin="https://example.com",
+        )
+
+        for js in (inspection_js, fill_js):
+            assert 'matches(":disabled")' in js
+            assert "checkVisibility" in js
+            assert "getBoundingClientRect" in js
+            assert "rect.bottom <= 0" in js
+            assert "rect.left >= window.innerWidth" in js
+
+    def test_inspection_and_fill_bind_exact_element_and_form_objects(self):
+        inspection_js = build_inspection_js("nonce")
+        fill_js = build_fill_js(
+            [{"index": 0, "token": "current-password", "value": "x"}],
+            expected_origin="https://example.com",
+            nonce="nonce",
+        )
+
+        assert "originalForms: elements.map((element) => element.form)" in inspection_js
+        assert "Object.defineProperty(globalThis, stateKey" in inspection_js
+        assert "const state = globalThis[stateKey]" in fill_js
+        assert "delete globalThis[stateKey]" in fill_js
+        assert "stamped !== el" in fill_js
+        assert "state.originalForms[f.index] !== el.form" in fill_js
 
     def test_build_fill_js_leaves_no_dom_marker_and_binds_target_to_inspection(self):
         # P1-1: no persistent selector for filled controls. The fill targets the input by the
@@ -238,9 +357,22 @@ class TestClassifier:
         )
         assert "vaultSecret" not in js
         assert "data-vault-secret" not in js
-        assert "elements[f.index]" not in js
+        assert "document.querySelectorAll(\"input, select\")[f.index]" not in js
+        assert "state.elements[f.index]" in js
         assert "[data-hermes-vault-slot=" in js and "nonce + ':' + f.index" in js
-        assert 'f.token === "current-password" && el.type !== "password"' in js  # a password fill never lands in a text box
+        # Neither login nor generated-signup passwords may ever land in a text box.
+        assert 'f.token === "current-password" || f.token === "new-password"' in js
+        assert 'el.type !== "password"' in js
+        assert 'liveTokens.includes("new-password")' in js
+        assert 'liveAutocomplete !== norm(f.fingerprint.autocomplete)' in js
+        assert 'liveTokens.includes("one-time-code")' in js
+        assert "el.disabled || el.readOnly" in js
+        assert "getClientRects().length === 0" in js
+        assert "liveFormIndex !== f.fingerprint.form_index" in js
+        assert "liveName !== f.fingerprint.name" in js
+        assert "liveLabel !== f.fingerprint.label" in js
+        assert js.index("liveAutocomplete !== norm(f.fingerprint.autocomplete)") < js.index("setter.set.call")
+        assert js.index('liveTokens.includes("one-time-code")') < js.index("setter.set.call")
         assert js.index('removeAttribute("data-hermes-vault-slot")') > js.index("setter.set.call")
 
     def test_build_fill_js_asserts_origin_before_any_write(self):
@@ -351,6 +483,92 @@ class TestBrowserVaultTools:
         assert '"index": 0' not in secret_exprs[0]
         assert "user@example.com" not in secret_exprs[0]
 
+    def test_generated_login_fills_exact_new_password_control(self, store):
+        from tools import browser_vault_tool
+
+        meta = store.add_item(
+            "login",
+            "Disposable QA",
+            {
+                "identifier_type": "email",
+                "identifier": "qa@example.com",
+                "password": "generated-only-secret",
+            },
+            origin="https://example.com",
+            generated=True,
+        )
+        controls = [
+            {
+                "autocomplete": "username",
+                "formIndex": 0,
+                "index": 0,
+                "label": "",
+                "name": "email",
+                "type": "email",
+            },
+            {
+                "autocomplete": "new-password",
+                "formIndex": 0,
+                "index": 1,
+                "label": "",
+                "name": "password",
+                "type": "password",
+            },
+        ]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/register"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        secret_exprs = []
+
+        def fake_eval_secret(task_id, expression):
+            secret_exprs.append(expression)
+            return {"success": True, "result": json.dumps({"filled": 1})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
+            raw = browser_vault_tool.browser_vault_fill(meta.id)
+
+        out = json.loads(raw)
+        assert out["success"] is True
+        assert out["filled_fields"] == 1
+        assert len(secret_exprs) == 1
+        assert '"token": "new-password"' in secret_exprs[0]
+        assert "generated-only-secret" not in raw
+
+    def test_regular_login_never_fills_new_password_control(self, store):
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [
+            {
+                "autocomplete": "new-password",
+                "formIndex": 0,
+                "index": 0,
+                "label": "",
+                "name": "password",
+                "type": "password",
+            }
+        ]
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/register"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret") as secret_eval:
+            raw = browser_vault_tool.browser_vault_fill(meta.id)
+
+        out = json.loads(raw)
+        assert out["success"] is False
+        secret_eval.assert_not_called()
+        assert "s3cret-pw" not in raw
+
     def test_fill_toctou_navigation_writes_nothing(self, store):
         """P1-2 schedule regression: inspection passes on the allowed origin,
         the page navigates before the fill script runs, the in-script origin
@@ -432,7 +650,12 @@ class TestBrowserVaultTools:
             run_cmd.return_value = {"success": True, "data": {"result": "https://x.test"}}
             res = browser_vault_tool._eval_js("t", "window.location.href")
         assert res == {"success": True, "result": "https://x.test"}
-        run_cmd.assert_called_once()
+        assert run_cmd.call_count == 2
+        assert run_cmd.call_args_list[0].args[1:] == ("get", ["cdp-url"])
+        assert run_cmd.call_args_list[1].args[1:] == (
+            "eval",
+            ["window.location.href"],
+        )
 
     def test_vault_canary_redacted_from_browser_cdp_results(self, store):
         """P1-1 regression: a filled, non-token-shaped canary password must be

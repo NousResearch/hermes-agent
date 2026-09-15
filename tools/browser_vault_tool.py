@@ -9,7 +9,7 @@ tools):
   identifier — it is NOT a secret; the agent types it itself). Passwords are
   never returned.
 - ``browser_vault_fill``  → server-side fill of the CURRENT page from a vault
-  handle: the password field for logins, card fields for payment items (after
+  handle: the password control(s) for logins, card fields for payment items (after
   the user confirms), address fields for address items. The secret is
   resolved locally, the page origin must EXACTLY match the item's bound
   origin (pre-checked AND re-asserted synchronously inside the fill script),
@@ -32,6 +32,8 @@ import logging
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+_VAULT_ISOLATED_WORLD = "hermes-vault"
 
 
 # ---------------------------------------------------------------------------
@@ -64,9 +66,11 @@ def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
-        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+        supervisor = SUPERVISOR_REGISTRY.get(task_id) or _ensure_supervisor(task_id)
         if supervisor is not None:
-            sup = supervisor.evaluate_runtime(expression)
+            sup = supervisor.evaluate_runtime(
+                expression, world_name=_VAULT_ISOLATED_WORLD
+            )
             if sup.get("ok"):
                 return {"success": True, "result": sup.get("result")}
             err = str(sup.get("error") or "")
@@ -144,7 +148,9 @@ def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
             ),
         }
 
-    sup = supervisor.evaluate_runtime(expression)
+    sup = supervisor.evaluate_runtime(
+        expression, world_name=_VAULT_ISOLATED_WORLD
+    )
     if sup.get("ok"):
         return {"success": True, "result": sup.get("result")}
     return {
@@ -469,12 +475,16 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     if not isinstance(raw_controls, list):
         return json.dumps({"success": False, "error": "Page input inspection returned no usable controls."})
 
-    classify = classify_login_control if meta.kind == "login" else classify_checkout_control
     classified: list[ClassifiedLoginControl] = []
     for raw in raw_controls:
         if not isinstance(raw, dict):
             continue
-        result = classify(LoginControl.from_dict(raw))
+        control = LoginControl.from_dict(raw)
+        result = (
+            classify_login_control(control, allow_new_password=meta.generated)
+            if meta.kind == "login"
+            else classify_checkout_control(control)
+        )
         if result is not None:
             classified.append(result)
     if not classified:
@@ -484,7 +494,11 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     try:
         if meta.kind == "login":
             secret = {"password": backend.resolve_password(handle)}
-            fills = select_password_fill(classified, secret["password"])
+            fills = select_password_fill(
+                classified,
+                secret["password"],
+                allow_new_password=meta.generated,
+            )
         else:
             secret = backend.resolve_secret(handle)
             fills = select_checkout_fills(classified, secret, PAYMENT_FIELDS if meta.kind == "payment" else ADDRESS_FIELDS)
@@ -600,7 +614,8 @@ BROWSER_VAULT_FILL_SCHEMA = {
     "name": "browser_vault_fill",
     "description": (
         "Fill the CURRENT browser page from a vault handle (see browser_vault_list): a login item fills ONLY "
-        "the password field (type the identifier/username yourself first with the browser's input tool); a "
+        "password controls (a generated disposable login may fill password + confirmation; type the "
+        "identifier/username yourself first with the browser's input tool); a "
         "payment item fills card number/name/expiry/CVC after the user confirms in their UI; an address item "
         "fills the address fields. Values are resolved server-side and never appear in the conversation. "
         "Refused unless the page origin exactly matches the item's bound origin (re-checked atomically at "

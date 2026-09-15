@@ -74,12 +74,31 @@ Headless sessions (cron, webhooks, the API server) cannot confirm and are
 refused, so a prompt injection that reaches a checkout page can ask, but it
 cannot spend. Address fills need no confirmation.
 
+## Generating disposable logins
+
+Headless QA and browser automation can create a strong random login directly in
+the encrypted vault without putting a password in a prompt, command argument,
+environment variable, log or model context:
+
+```bash
+hermes vault generate-login \
+  --origin https://example.com \
+  --identifier qa@example.com \
+  --label "Disposable QA"
+```
+
+Only the opaque handle and non-secret metadata are printed. The agent can fill
+the generated password with `browser_vault_fill`, then remove it after the test
+with `hermes vault rm <handle>`. The generated password is not recoverable
+through the CLI. This command creates login items only; payment-card fills still
+require human confirmation.
+
 ## Managing what's saved
 
 - **Desktop → Settings → Passwords & Logins**: everything saved, the detected
   password managers with Unlock/Lock, Add, Remove.
-- **CLI**: `hermes vault list`, `hermes vault add`, `hermes vault rm <handle>`,
-  `hermes vault sources`.
+- **CLI**: `hermes vault list`, `hermes vault add`, `hermes vault generate-login`,
+  `hermes vault rm <handle>`, `hermes vault sources`.
 
 Items live encrypted under `~/.hermes/vault/` (Fernet key + vault file, both
 `0600`), scoped to the profile. Labels, site origins and login identifiers are

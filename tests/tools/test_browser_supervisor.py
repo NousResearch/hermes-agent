@@ -351,3 +351,29 @@ def test_evaluate_runtime_unserializable_value(chrome_cdp, supervisor_registry):
     out = supervisor.evaluate_runtime("Infinity")
     assert out["ok"] is True
     assert out["result"] == "Infinity"
+
+
+def test_evaluate_runtime_isolated_world_keeps_state_out_of_page_world(
+    chrome_cdp, supervisor_registry
+):
+    cdp_url, _port = chrome_cdp
+    supervisor = supervisor_registry.get_or_start(
+        task_id="pytest-isolated-vault", cdp_url=cdp_url
+    )
+
+    _fire_on_page(cdp_url, "void 0")
+    time.sleep(0.5)
+
+    stored = supervisor.evaluate_runtime(
+        "globalThis.__hermesVaultCanary = 42; 'stored'",
+        world_name="hermes-vault-test",
+    )
+    page_world = supervisor.evaluate_runtime("typeof globalThis.__hermesVaultCanary")
+    isolated_again = supervisor.evaluate_runtime(
+        "globalThis.__hermesVaultCanary",
+        world_name="hermes-vault-test",
+    )
+
+    assert stored == {"ok": True, "result": "stored", "result_type": "string"}
+    assert page_world["result"] == "undefined"
+    assert isolated_again["result"] == 42

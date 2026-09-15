@@ -12,7 +12,8 @@ Scoring:
 - type=password (not new/confirm/create/repeat) .. 90
 - type=email / type=tel .......................... 85
 - label/name regex heuristics .................. 70-75
-Hard exclusions: autocomplete ``new-password`` / ``one-time-code``, and
+Hard exclusions: autocomplete ``new-password`` (unless explicitly enabled for
+a generated credential) / ``one-time-code``, and
 label/name text matching ``(new|confirm|create|repeat)\\s*password``.
 """
 
@@ -47,7 +48,7 @@ _CHECKOUT_HEURISTICS = (
     (re.compile(r"\b(?:country)\b"), "country-name"),
 )
 
-_EXCLUDED_AUTOCOMPLETE = {"new-password", "one-time-code"}
+_EXCLUDED_AUTOCOMPLETE = {"one-time-code"}
 
 _RE_EXCLUDED_PASSWORD = re.compile(r"\b(?:new|confirm|create|repeat)\s*password\b")
 _RE_EMAIL = re.compile(r"\b(?:e[\s-]?mail|email address)\b")
@@ -96,12 +97,18 @@ class ClassifiedLoginControl:
     token: str
 
 
-def classify_login_control(control: LoginControl) -> Optional[ClassifiedLoginControl]:
+def classify_login_control(
+    control: LoginControl, *, allow_new_password: bool = False
+) -> Optional[ClassifiedLoginControl]:
     """Classify one control, or return None if it is not a login fill target."""
     autocomplete_tokens = [
         t for t in control.autocomplete.lower().split() if t
     ]
     if any(t in _EXCLUDED_AUTOCOMPLETE for t in autocomplete_tokens):
+        return None
+    if "new-password" in autocomplete_tokens:
+        if allow_new_password and control.type == "password":
+            return ClassifiedLoginControl(control, 100, "new-password")
         return None
 
     for token in LOGIN_AUTOFILL_TOKENS:
@@ -155,27 +162,58 @@ def classify_otp_controls(controls: List[LoginControl]) -> List[ClassifiedLoginC
 def select_password_fill(
     classified: List[ClassifiedLoginControl],
     password: str,
+    *,
+    allow_new_password: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Select the single best current-password control to fill.
+    """Select the single best allowed password control to fill.
 
     The vault fill path is password-only: the identifier is agent-visible
     metadata and is typed by the agent via normal input tools. This picks
-    the highest-scoring ``current-password`` control (ties broken by DOM
-    order) and returns ``[{"index": int, "token": "current-password",
+    the highest-scoring ``current-password`` control, or an exact
+    ``new-password`` control when explicitly enabled (ties broken by DOM
+    order), and returns ``[{"index": int, "token": str,
     "value": password}]`` or ``[]`` when no password field exists.
     """
-    passwords = [c for c in classified if c.token == "current-password"]
+    allowed_tokens = {"current-password"}
+    if allow_new_password:
+        allowed_tokens.add("new-password")
+    passwords = [c for c in classified if c.token in allowed_tokens]
     if not passwords or not password:
         return []
-    best_password = sorted(
-        passwords, key=lambda c: (-c.score, c.control.index)
-    )[0]
+    if allow_new_password:
+        explicit_new_passwords = [
+            candidate for candidate in passwords if candidate.token == "new-password"
+        ]
+        if explicit_new_passwords:
+            passwords = explicit_new_passwords
+    ranked = sorted(passwords, key=lambda c: (-c.score, c.control.index))
+    best_password = ranked[0]
+    selected = [best_password]
+    if best_password.token == "new-password":
+        # Signup forms commonly expose password + confirmation with the exact
+        # same token. Fill at most those two controls, and never cross forms.
+        selected = [
+            candidate
+            for candidate in ranked
+            if candidate.token == "new-password"
+            and candidate.control.form_index == best_password.control.form_index
+        ][:2]
     return [
         {
-            "index": best_password.control.index,
-            "token": "current-password",
+            "index": candidate.control.index,
+            "token": candidate.token,
+            "autocomplete": candidate.control.autocomplete.lower().strip(),
+            "fingerprint": {
+                "autocomplete": candidate.control.autocomplete.lower().strip(),
+                "form_index": candidate.control.form_index,
+                "label": candidate.control.label,
+                "max_length": candidate.control.max_length,
+                "name": candidate.control.name,
+                "type": candidate.control.type,
+            },
             "value": password,
         }
+        for candidate in selected
     ]
 
 
@@ -249,12 +287,21 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
   const nonce = __NONCE__;
   const elements = Array.from(document.querySelectorAll("input, select"));
   const forms = Array.from(document.forms);
+  const stateKey = "__hermesVaultInspection:" + nonce;
+  Object.defineProperty(globalThis, stateKey, {
+    value: { elements, originalForms: elements.map((element) => element.form) },
+    configurable: true,
+  });
   elements.forEach((element, index) => element.setAttribute("data-hermes-vault-slot", nonce + ":" + index));
   const out = elements.flatMap((element, index) => {
-    if (element.disabled || element.readOnly) return [];
+    if (element.disabled || element.readOnly || element.matches(":disabled")) return [];
     if (["hidden", "submit", "button", "reset", "file", "image", "checkbox", "radio"].includes(element.type)) return [];
     const style = getComputedStyle(element);
-    if (style.display === "none" || style.visibility === "hidden" || element.getClientRects().length === 0) return [];
+    if (style.display === "none" || style.visibility === "hidden" || Number.parseFloat(style.opacity || "1") <= 0.01) return [];
+    if (typeof element.checkVisibility === "function" && !element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return [];
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0 || rect.bottom <= 0 || rect.right <= 0 || rect.top >= window.innerHeight || rect.left >= window.innerWidth) return [];
+    if (element.getClientRects().length === 0) return [];
     const labels = element.labels ? Array.from(element.labels, (l) => l.textContent || "") : [];
     const ariaText = (element.getAttribute("aria-labelledby") || "")
       .split(/\\s+/).filter(Boolean)
@@ -289,12 +336,22 @@ def build_fill_js(fills: List[Dict[str, Any]], expected_origin: str, nonce: str 
     evaluated script, immediately before any write. If the page navigated between inspection and fill
     (TOCTOU), the script writes nothing and returns ``{"refused": "origin_changed", "found": <actual>}``:
     proof scope equals mutation scope (#88706). Targets resolve by the ``<nonce>:<index>`` stamp of
-    THIS inspection; a ``current-password`` fill additionally requires ``type=password``; ``<select>``
+    THIS inspection and exact element/form object references retained in the supervisor's isolated
+    vault world; a password fill additionally requires ``type=password``; ``<select>``
     controls (country, state, expiry month) match an option by value or visible text. No marker is
     left on filled controls so later model-driven DOM reads cannot address them deterministically.
     """
     payload = json.dumps(
-        [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
+        [
+            {
+                "index": f["index"],
+                "token": f.get("token", "current-password"),
+                "value": f["value"],
+                **({"autocomplete": f["autocomplete"]} if "autocomplete" in f else {}),
+                **({"fingerprint": f["fingerprint"]} if "fingerprint" in f else {}),
+            }
+            for f in fills
+        ]
     )
     return (_FILL_JS_TEMPLATE.replace("__EXPECTED_ORIGIN__", json.dumps(expected_origin))
             .replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce)))
@@ -307,12 +364,55 @@ _FILL_JS_TEMPLATE = """(() => {
   }
   const fills = __FILLS__;
   const nonce = __NONCE__;
+  const stateKey = "__hermesVaultInspection:" + nonce;
+  const state = globalThis[stateKey];
+  delete globalThis[stateKey];
+  const forms = Array.from(document.forms);
   let filled = 0;
   const norm = (t) => String(t || "").trim().toLowerCase();
   for (const f of fills) {
-    const el = document.querySelector('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]');
-    if (!el || (f.token === "current-password" && el.type !== "password")) continue;
+    const stamped = document.querySelector('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]');
+    const el = state && state.elements ? state.elements[f.index] : null;
+    if (!el || stamped !== el || !state.originalForms || state.originalForms[f.index] !== el.form) continue;
+    if ((f.token === "current-password" || f.token === "new-password") && el.type !== "password") continue;
     try {
+      if (f.token === "current-password" || f.token === "new-password") {
+        if (!f.fingerprint || el.disabled || el.readOnly || el.matches(":disabled")) continue;
+        if (["hidden", "submit", "button", "reset", "file", "image", "checkbox", "radio"].includes(el.type)) continue;
+        const style = getComputedStyle(el);
+        if (style.display === "none" || style.visibility === "hidden" || Number.parseFloat(style.opacity || "1") <= 0.01) continue;
+        if (typeof el.checkVisibility === "function" && !el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) continue;
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0 || rect.bottom <= 0 || rect.right <= 0 || rect.top >= window.innerHeight || rect.left >= window.innerWidth) continue;
+        if (el.getClientRects().length === 0) continue;
+        const liveAutocomplete = norm(el.autocomplete);
+        const liveTokens = liveAutocomplete.split(/\\s+/).filter(Boolean);
+        const labels = el.labels ? Array.from(el.labels, (label) => label.textContent || "") : [];
+        const ariaText = (el.getAttribute("aria-labelledby") || "")
+          .split(/\\s+/).filter(Boolean)
+          .map((id) => { const node = document.getElementById(id); return node ? (node.textContent || "") : ""; })
+          .join(" ");
+        const liveFormIndexRaw = el.form ? forms.indexOf(el.form) : -1;
+        const liveFormIndex = liveFormIndexRaw >= 0 ? liveFormIndexRaw : null;
+        const liveLabel = [
+          ...labels,
+          el.getAttribute("aria-label") || "",
+          ariaText,
+          el.getAttribute("placeholder") || "",
+          el.getAttribute("title") || "",
+        ].join(" ");
+        const liveName = [el.name, el.id].join(" ");
+        const liveMaxLength = el.maxLength > 0 ? el.maxLength : null;
+        const liveType = el.tagName === "SELECT" ? "select" : (el.type || "");
+        if (liveAutocomplete !== norm(f.fingerprint.autocomplete)) continue;
+        if (liveFormIndex !== f.fingerprint.form_index) continue;
+        if (liveLabel !== f.fingerprint.label) continue;
+        if (liveName !== f.fingerprint.name) continue;
+        if (liveMaxLength !== f.fingerprint.max_length) continue;
+        if (liveType !== f.fingerprint.type) continue;
+        if (f.token === "new-password" && !liveTokens.includes("new-password")) continue;
+        if (f.token === "current-password" && (liveTokens.includes("new-password") || liveTokens.includes("one-time-code"))) continue;
+      }
       if (el.tagName === "SELECT") {
         const want = norm(f.value);
         const opt = Array.from(el.options).find((o) => [o.value, o.textContent].some((t) => norm(t) === want || norm(t) === want.replace(/^0/, "")));

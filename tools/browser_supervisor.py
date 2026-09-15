@@ -202,12 +202,22 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             return _err(e)
         return {"ok": True, "dialog": dialog.to_dict()}
 
-    def evaluate_runtime(self, expression: str, *, return_by_value: bool = True,
-                         await_promise: bool = True, timeout: float = 10.0) -> Dict[str, Any]:
+    def evaluate_runtime(
+        self,
+        expression: str,
+        *,
+        return_by_value: bool = True,
+        await_promise: bool = True,
+        timeout: float = 10.0,
+        world_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Evaluate ``expression`` in the page's Runtime context over the live WS.
         Returns ``{"ok": True, "result", "result_type"}`` or ``{"ok": False, "error"}``.
         ``return_by_value=True`` JSON-serializes the result (DevTools-console
-        semantics); non-serializable objects come back as a description string."""
+        semantics); non-serializable objects come back as a description string.
+        ``world_name`` evaluates in a named isolated world whose globals are not
+        visible to page JavaScript; repeated calls reuse that world's state.
+        """
         loop = self._loop
         if loop is None or not loop.is_running():
             return _fail("supervisor loop is not running")
@@ -219,11 +229,48 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             return _fail("supervisor has no attached page session")
 
         def _run_eval(by_value: bool) -> Dict[str, Any]:
-            # userGesture: clipboard / fullscreen APIs need user activation.
-            params = {"expression": expression, "returnByValue": by_value,
-                      "awaitPromise": await_promise, "userGesture": True}
-            coro = self._cdp("Runtime.evaluate", params, session_id=session_id, timeout=timeout)
-            return _schedule(coro, loop, timeout=timeout + 1)
+            async def _evaluate() -> Dict[str, Any]:
+                # userGesture: clipboard / fullscreen APIs need user activation.
+                params: Dict[str, Any] = {
+                    "expression": expression,
+                    "returnByValue": by_value,
+                    "awaitPromise": await_promise,
+                    "userGesture": True,
+                }
+                if world_name:
+                    frame_tree = await self._cdp(
+                        "Page.getFrameTree", session_id=session_id, timeout=timeout
+                    )
+                    frame_id = (
+                        frame_tree.get("result", {})
+                        .get("frameTree", {})
+                        .get("frame", {})
+                        .get("id")
+                    )
+                    if not frame_id:
+                        raise RuntimeError("active page has no main frame")
+                    world = await self._cdp(
+                        "Page.createIsolatedWorld",
+                        {
+                            "frameId": frame_id,
+                            "worldName": world_name,
+                            "grantUniveralAccess": False,
+                        },
+                        session_id=session_id,
+                        timeout=timeout,
+                    )
+                    context_id = world.get("result", {}).get("executionContextId")
+                    if not context_id:
+                        raise RuntimeError("could not create isolated runtime world")
+                    params["contextId"] = context_id
+                return await self._cdp(
+                    "Runtime.evaluate",
+                    params,
+                    session_id=session_id,
+                    timeout=timeout,
+                )
+
+            return _schedule(_evaluate(), loop, timeout=timeout + 1)
 
         try:
             response = _run_eval(return_by_value)

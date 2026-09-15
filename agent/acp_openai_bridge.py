@@ -25,7 +25,8 @@ TOOL_CALL_JSON_RE = re.compile(
 TOOL_CALL_CONTRACT = (
     "Available tools (OpenAI function schema). "
     "When using a tool, emit ONLY <tool_call>{...}</tool_call> with one JSON object "
-    "containing id/type/function{name,arguments}. arguments must be a JSON string."
+    "containing either id/type/function{name,arguments} (arguments a JSON string) "
+    "or {name, args} / {name, arguments}."
 )
 
 __all__ = [
@@ -114,33 +115,56 @@ def render_tool_bridge_sections(
     return sections
 
 
+def _coerce_arguments(raw: Any) -> str:
+    """Normalize tool arguments to the OpenAI JSON-string form."""
+    if isinstance(raw, str):
+        return raw
+    return json.dumps({} if raw is None else raw, ensure_ascii=False)
+
+
 def _parse_tool_call(raw_json: str, ordinal: int) -> ChatCompletionMessageToolCall | None:
-    """One ``<tool_call>`` JSON body → tool call, or None when malformed. Missing id → ``acp_call_<ordinal>``."""
+    """One ``<tool_call>`` JSON body → tool call, or None when malformed. Missing id → ``acp_call_<ordinal>``.
+
+    Accepts OpenAI ``function{name,arguments}`` and native/Gemma/trajectory ``{name, args|arguments}``.
+    """
     try:
         obj = json.loads(raw_json)
     except Exception:
         return None
-    named = _named_function(obj)
-    if named is None:
+    if not isinstance(obj, dict):
         return None
-    fn, fn_name = named
-    fn_args = fn.get("arguments", "{}")
-    if not isinstance(fn_args, str):
-        fn_args = json.dumps(fn_args, ensure_ascii=False)
+    named = _named_function(obj)
+    if named is not None:
+        fn, fn_name = named
+        fn_args = _coerce_arguments(fn.get("arguments", "{}"))
+    else:
+        name = obj.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return None
+        if "args" not in obj and "arguments" not in obj:
+            return None
+        fn_name = name.strip()
+        fn_args = _coerce_arguments(obj["args"] if "args" in obj else obj["arguments"])
     call_id = obj.get("id")
     if not isinstance(call_id, str) or not call_id.strip():
         call_id = f"acp_call_{ordinal}"
     return build_openai_tool_call(call_id=call_id, name=fn_name, arguments=fn_args)
 
 
-def extract_tool_calls_from_text(text: str) -> tuple[list[ChatCompletionMessageToolCall], str]:
+def extract_tool_calls_from_text(
+    text: str, *, allow_bare_json: bool = True,
+) -> tuple[list[ChatCompletionMessageToolCall], str]:
     """Pull ``<tool_call>`` blocks out of an ACP response → ``(tool_calls, cleaned_text)`` with the consumed blocks
-    removed so the assistant message doesn't show raw JSON. Bare-JSON fallback runs only when no XML block parsed."""
+    removed so the assistant message doesn't show raw JSON. Bare-JSON fallback runs only when no XML block parsed
+    (ACP-only; chat-completions promotion passes ``allow_bare_json=False``)."""
     if not isinstance(text, str) or not text.strip():
         return [], ""
     extracted: list[ChatCompletionMessageToolCall] = []
     consumed_spans: list[tuple[int, int]] = []
-    for pattern, group in ((TOOL_CALL_BLOCK_RE, 1), (TOOL_CALL_JSON_RE, 0)):
+    patterns: list[tuple[re.Pattern[str], int]] = [(TOOL_CALL_BLOCK_RE, 1)]
+    if allow_bare_json:
+        patterns.append((TOOL_CALL_JSON_RE, 0))
+    for pattern, group in patterns:
         for m in pattern.finditer(text):
             call = _parse_tool_call(m.group(group), len(extracted) + 1)
             if call is not None:

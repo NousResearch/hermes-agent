@@ -130,6 +130,50 @@ def test_malformed_and_empty_input_never_raises():
     assert cleaned == "hi"
 
 
+def test_gemma_name_args_shape_is_parsed_and_stripped():
+    """Gemma3n / Ollama native XML uses {name, args}, not OpenAI function nesting."""
+    calls, cleaned = extract_tool_calls_from_text(
+        "Turning it off.\n<tool_call>\n"
+        '{"name": "ha_call_service", "args": {"action": "turn_off", "device_id": "light.salon"}}\n'
+        "</tool_call>"
+    )
+    assert [c.function.name for c in calls] == ["ha_call_service"]
+    assert json.loads(calls[0].function.arguments) == {
+        "action": "turn_off",
+        "device_id": "light.salon",
+    }
+    assert "<tool_call>" not in cleaned
+    assert cleaned == "Turning it off."
+
+
+def test_name_arguments_shape_and_args_json_string():
+    calls, _ = extract_tool_calls_from_text(
+        '<tool_call>{"name": "lookup", "arguments": {"city": "Paris"}}</tool_call>'
+    )
+    assert calls[0].function.name == "lookup"
+    assert json.loads(calls[0].function.arguments) == {"city": "Paris"}
+
+    calls, _ = extract_tool_calls_from_text(
+        '<tool_call>{"name": "lookup", "args": "{\\"city\\": \\"Lyon\\"}"}</tool_call>'
+    )
+    assert json.loads(calls[0].function.arguments) == {"city": "Lyon"}
+
+
+def test_name_without_args_is_not_a_tool_call():
+    calls, cleaned = extract_tool_calls_from_text(
+        '<tool_call>{"name": "lookup"}</tool_call>left'
+    )
+    assert calls == []
+    assert "left" in cleaned
+
+
+def test_rendered_contract_documents_native_name_args_shape():
+    sections = render_tool_bridge_sections(_TOOLS)
+    contract = sections[0]
+    assert "{name, args}" in contract or "{name,args}" in contract
+    assert "arguments" in contract
+
+
 # ── streaming shape ──────────────────────────────────────────────────────────
 
 

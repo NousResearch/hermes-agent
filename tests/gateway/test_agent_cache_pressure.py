@@ -15,7 +15,9 @@ import pytest
 
 from gateway.agent_cache_pressure import (
     AgentCacheBounds,
+    _cgroup_memory_current_bytes,
     plan_pressure_evictions,
+    read_memory_pressure_mb,
     resolve_agent_cache_bounds,
     resolve_memory_high_mb,
     transcript_persistence_caught_up,
@@ -96,6 +98,43 @@ class TestMemoryBudgetResolution:
         monkeypatch.setattr(acp, "_total_memory_bytes", lambda: None)
 
         assert resolve_memory_high_mb("auto") is None
+
+
+class TestMemoryPressureSignal:
+    """The pressure valve must see every process charged to its cgroup."""
+
+    def test_same_cgroup_child_memory_is_used_over_gateway_rss(self, monkeypatch):
+        """A code-kernel child can exceed the budget while the gateway stays small."""
+        import gateway.agent_cache_pressure as acp
+
+        monkeypatch.setattr(acp, "_cgroup_memory_current_bytes", lambda: 4_700 * 1024 * 1024)
+        monkeypatch.setattr(acp, "read_anon_rss_mb", lambda: 1_600)
+
+        assert read_memory_pressure_mb() == 4_700
+
+    def test_unavailable_cgroup_file_falls_back_to_anon_rss(self, monkeypatch):
+        import gateway.agent_cache_pressure as acp
+
+        monkeypatch.setattr(acp, "_cgroup_memory_current_bytes", lambda: None)
+        monkeypatch.setattr(acp, "read_anon_rss_mb", lambda: 1_600)
+
+        assert read_memory_pressure_mb() == 1_600
+
+    def test_unreadable_cgroup_memory_current_is_unavailable(self, monkeypatch):
+        """A restricted /sys mount must preserve the existing fail-open path."""
+        import gateway.agent_cache_pressure as acp
+        import gateway.cgroup_cleanup as cleanup
+
+        monkeypatch.setattr(acp.sys, "platform", "linux")
+        monkeypatch.setattr(cleanup, "_own_cgroup_path", lambda: "/hermes.service")
+
+        def denied(path, *, encoding):
+            assert str(path) == "/sys/fs/cgroup/hermes.service/memory.current"
+            raise OSError("cgroup filesystem is unavailable")
+
+        monkeypatch.setattr(acp.Path, "read_text", denied)
+
+        assert _cgroup_memory_current_bytes() is None
 
 
 class TestPersistenceGuard:
@@ -232,7 +271,7 @@ class TestGatewayPressureSweep:
     def _at_rss(self, monkeypatch, mb):
         import gateway.agent_cache_pressure as acp
 
-        monkeypatch.setattr(acp, "read_anon_rss_mb", lambda: mb)
+        monkeypatch.setattr(acp, "read_memory_pressure_mb", lambda: mb)
 
     def test_no_eviction_below_budget(self, monkeypatch):
         runner = self._runner()
@@ -493,7 +532,7 @@ class TestSalvageFollowups:
         runner._agent_cache_bounds_cache = AgentCacheBounds(
             memory_high_mb=1000, max_evictions_per_pass=8, protect_recent=0
         )
-        monkeypatch.setattr(acp, "read_anon_rss_mb", lambda: 4000)
+        monkeypatch.setattr(acp, "read_memory_pressure_mb", lambda: 4000)
 
         for i in range(3):
             agent = MagicMock()

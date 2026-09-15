@@ -786,8 +786,8 @@ class GatewayAgentCacheMixin:
         """Shed cached transcripts once the gateway heap nears its budget; returns count evicted.
 
         The LRU cap counts entries and the idle sweep counts seconds; neither knows one cached agent
-        pins a full ``_session_messages`` transcript (tens of MB), so RSS climbs until the cgroup
-        throttles. Above the anonymous-RSS budget this soft-evicts LRU agents (transcript rebuilt
+        pins a full ``_session_messages`` transcript (tens of MB), so memory climbs until the cgroup
+        throttles. Above the memory budget this soft-evicts LRU agents (transcript rebuilt
         from the persisted session next turn). Never touched: agents mid-turn, the most recently
         used sessions, and transcripts not yet on disk.
 
@@ -797,7 +797,7 @@ class GatewayAgentCacheMixin:
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
         from gateway.agent_cache_pressure import (
-            plan_pressure_evictions, read_anon_rss_mb, transcript_persistence_caught_up
+            plan_pressure_evictions, read_memory_pressure_mb, transcript_persistence_caught_up
         )
         bounds = self._agent_cache_bounds()
         _cache = getattr(self, "_agent_cache", None)
@@ -806,8 +806,8 @@ class GatewayAgentCacheMixin:
         # would point at the wrong subsystem.
         if not bounds.memory_high_mb or not _cache or _lock is None:
             return 0
-        rss_mb = read_anon_rss_mb()
-        if rss_mb is None or rss_mb < bounds.memory_high_mb:
+        memory_mb = read_memory_pressure_mb()
+        if memory_mb is None or memory_mb < bounds.memory_high_mb:
             return 0
         running_ids = self._running_agent_ids()
 
@@ -829,10 +829,10 @@ class GatewayAgentCacheMixin:
             _mid_turn = sum(1 for _, a in ordered if a is not None and id(a) in running_ids)
             _unflushed = sum(1 for _, a in ordered if _is_live(a) and not transcript_persistence_caught_up(a))
             logger.warning(
-                "Agent cache pressure: anon RSS %dMB over budget %dMB but no "
+                "Agent cache pressure: memory usage %dMB over budget %dMB but no "
                 "evictable session (%d cached, %d mid-turn, %d blocked on "
                 "un-flushed persistence)%s",
-                rss_mb, bounds.memory_high_mb, len(ordered), _mid_turn, _unflushed,
+                memory_mb, bounds.memory_high_mb, len(ordered), _mid_turn, _unflushed,
                 (
                     " — transcripts are not reaching the session DB "
                     "(session persistence disabled or failing?); the memory "
@@ -844,8 +844,8 @@ class GatewayAgentCacheMixin:
             return 0
         evicted_count = len(plan)
         logger.warning(
-            "Agent cache pressure: anon RSS %dMB over budget %dMB — evicting %d LRU session(s): %s",
-            rss_mb, bounds.memory_high_mb, evicted_count, ", ".join(key for key, _ in plan),
+            "Agent cache pressure: memory usage %dMB over budget %dMB — evicting %d LRU session(s): %s",
+            memory_mb, bounds.memory_high_mb, evicted_count, ", ".join(key for key, _ in plan),
         )
         try:
             threading.Thread(target=self._release_pressure_batch, args=(plan,), daemon=True,

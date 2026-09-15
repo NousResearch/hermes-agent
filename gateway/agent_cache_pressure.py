@@ -3,9 +3,17 @@
 Each cached ``AIAgent`` pins its full live transcript (tens of MB on a tool-heavy
 session); the LRU cap counts entries, not bytes, and the idle TTL defers eviction
 for busy sessions, so neither sees actual memory use.  This module supplies that
-signal — own anonymous RSS against a budget derived from the cgroup limit — and
+signal — cgroup v2 ``memory.current`` (total charged memory for the gateway's own
+cgroup, including child processes and reclaimable page cache) against a budget
+derived from the cgroup limit — and
 ``GatewayRunner`` sheds LRU transcripts via soft eviction (rebuilt from the
 persisted session next turn).  Pure/read-only; config under ``agent.agent_cache``.
+
+The 0.65 auto-budget fraction is headroom above *total charged memory* so the
+unit stays off ``memory.high``.  That is a deliberate composition change from the
+old process-local anon-only reading (``RssAnon``); this module does not switch to
+unit-scoped ``memory.stat`` ``anon``.  Anonymous RSS remains the fallback only
+when ``memory.current`` cannot be read.
 """
 
 from __future__ import annotations
@@ -16,8 +24,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Optional, Tuple
 
-# Shed well under the limit: once cgroup ``memory.high`` throttling kicks in (swap full),
-# a SIGTERM flush cannot finish inside systemd's stop timeout.
+# Shed well under the limit: 0.65 is headroom above total charged memory
+# (``memory.current``, including reclaimable page cache) so we stay off
+# cgroup ``memory.high``.  Once throttling kicks in (swap full), a SIGTERM
+# flush cannot finish inside systemd's stop timeout.
 _AUTO_BUDGET_FRACTION = 0.65
 # Below this a budget is noise — small containers would evict every pass and never keep a warm prefix.
 _AUTO_BUDGET_FLOOR_MB = 512
@@ -79,6 +89,34 @@ def _cgroup_limit_bytes() -> Optional[int]:
         if 0 < limit < (1 << 62):
             return limit
     return None
+
+
+def _cgroup_memory_current_bytes() -> Optional[int]:
+    """Memory charged to this cgroup, including gateway child processes.
+
+    ``memory.current`` is cgroup v2 total charged memory (reclaimable page cache
+    included), not unit-scoped ``memory.stat`` ``anon``.  If its path is
+    unavailable (non-Linux, cgroup v1, or a restricted mount), callers retain
+    the established per-process RSS signal rather than treating an unknown
+    value as pressure.
+    """
+    if sys.platform != "linux":
+        return None
+    try:
+        from gateway.cgroup_cleanup import _own_cgroup_path
+
+        own = _own_cgroup_path()
+    except Exception:
+        return None
+    if not own:
+        return None
+    try:
+        current = int(
+            Path(f"/sys/fs/cgroup{own}/memory.current").read_text(encoding="utf-8").strip()
+        )
+    except (OSError, ValueError):
+        return None
+    return current if current > 0 else None
 
 
 def _total_memory_bytes() -> Optional[int]:
@@ -152,6 +190,20 @@ def read_anon_rss_mb() -> Optional[int]:
         return int(psutil.Process(os.getpid()).memory_info().rss / _BYTES_PER_MB)
     except Exception:
         return None
+
+
+def read_memory_pressure_mb() -> Optional[int]:
+    """Memory signal for cache pressure, or None when it cannot be measured.
+
+    Prefer cgroup v2's ``memory.current`` (total charged memory, including
+    reclaimable page cache) so the 0.65 budget is stay-off-``memory.high``
+    headroom for the unit — not the old anon-only composition.  Preserve the
+    previous anonymous-RSS behavior whenever cgroup accounting is unavailable.
+    """
+    current = _cgroup_memory_current_bytes()
+    if current is not None:
+        return current // _BYTES_PER_MB
+    return read_anon_rss_mb()
 
 
 def transcript_persistence_caught_up(agent: Any) -> bool:

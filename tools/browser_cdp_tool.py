@@ -169,10 +169,11 @@ async def _cdp_call(ws_url: str, method: str, params: Dict[str, Any], target_id:
     """Make a single CDP call. With ``target_id``, ``Target.attachToTarget(flatten=True)`` multiplexes a
     page-level session over the browser-level WebSocket; without it ``method`` runs at browser level."""
     assert websockets is not None  # guarded by _WS_AVAILABLE at call-site
+    from agent.proxy_bypass import loopback_connect_kwargs
     # max_size=None: CDP responses (e.g. DOM.getDocument) can be large; ping_interval=None: CDP
     # servers don't expect pings.
     async with websockets.connect(ws_url, max_size=None, open_timeout=timeout, close_timeout=5,
-                                  ping_interval=None) as ws:
+                                  ping_interval=None, **loopback_connect_kwargs(ws_url)) as ws:
         next_id = 1
 
         async def _send(req: Dict[str, Any], what: str) -> Dict[str, Any]:

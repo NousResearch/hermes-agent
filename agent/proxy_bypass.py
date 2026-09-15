@@ -58,6 +58,39 @@ def no_proxy_entries(no_proxy_value: str | None = None) -> list[str]:
     return [part for part in re.split(r"[\s,]+", no_proxy_value.strip()) if part]
 
 
+# Loopback must never be dialed through a proxy. ``websockets>=14`` connects with
+# ``proxy=True`` and resolves it via ``urllib.request.getproxies()`` — on macOS that reads the
+# *system* proxy (``_scproxy``) even with no ``*_proxy`` env vars — so a local CDP endpoint
+# (``ws://127.0.0.1:<port>/devtools/...``) is dialed through the proxy and the handshake dies
+# with "did not receive a valid HTTP response" (#110565). ``urllib``'s bypass check honours
+# NO_PROXY in both casings, so children get the entries appended; in-process dials pass
+# ``proxy=None`` when the host is loopback.
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def is_loopback_host(host: str | None) -> bool:
+    """True for a host that must always bypass a proxy (loopback literal or ``localhost``)."""
+    return str(host or "").strip().lower().strip("[]") in LOOPBACK_HOSTS
+
+
+def loopback_connect_kwargs(url: str) -> dict:
+    """``websockets.connect`` kwargs for an in-process dial: ``{"proxy": None}`` when ``url``
+    targets loopback (skip the library's system-proxy auto-detection), else ``{}`` so remote
+    endpoints keep the default proxy behaviour."""
+    return {"proxy": None} if is_loopback_host(split_host_port(url)[0]) else {}
+
+
+def add_loopback_no_proxy(env: dict) -> dict:
+    """Append the loopback hosts to ``NO_PROXY`` / ``no_proxy`` in ``env`` (both casings),
+    keeping every operator-provided entry; returns ``env``."""
+    for key in ("NO_PROXY", "no_proxy"):
+        entries = no_proxy_entries(env.get(key) or "")
+        missing = [host for host in LOOPBACK_HOSTS if host not in entries]
+        if missing:
+            env[key] = ",".join(entries + missing)
+    return env
+
+
 def _ip_or_none(value: str, parse=ipaddress.ip_address):
     """``parse(value)`` or None on ``ValueError`` (``parse`` is ip_address / ip_network)."""
     try:

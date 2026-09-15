@@ -247,8 +247,12 @@ families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15
   as `srv.<name>` — including their own published functions and module state, so
   `tui_gateway.server` stays the one patch target. Called bare: imported names, un-published
   private helpers, and import-time plumbing (decorator factories run before the tail import).
+  `register(server)` runs INSIDE that import when the sibling is imported first, so it and anything
+  it calls use the `server` argument, never `srv`. Never bind `srv` locally (`for srv in …`): the
+  module-level name is assigned after the function, so pyflakes cannot see the `UnboundLocalError`.
   `methods_groups` is server-free on purpose (the gateway process imports it). See
-  `tui_gateway/method_ctx.py`.
+  `tui_gateway/method_ctx.py`; `tests/tui_gateway/test_split_module_facade_binding.py` imports every
+  sibling first in a clean process.
 - **Compat pointers are OFF LIMITS in-tree.** Old import paths kept alive for external plugins
   (`PLUGIN-COMPAT` blocks, `COMPAT_MANIFEST.md`, `compat_manifest.json`) must not be used by
   in-tree code or tests; `scripts/check_compat_pointers.py` runs in CI, and

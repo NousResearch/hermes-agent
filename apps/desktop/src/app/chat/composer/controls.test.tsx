@@ -132,6 +132,18 @@ describe('narrow tiles', () => {
 })
 
 describe('ComposerControls shortcut tooltips', () => {
+  it('hides Queue while idle even when the composer has a payload', () => {
+    renderControls({ busy: false, busyAction: 'queue', hasComposerPayload: true })
+
+    expect(screen.queryByLabelText('Queue message')).toBeNull()
+  })
+
+  it('shows Queue during a busy turn when the composer has a payload', () => {
+    renderControls({ busy: true, busyAction: 'queue', hasComposerPayload: true })
+
+    expect(screen.getByLabelText('Queue message')).toBeTruthy()
+  })
+
   it('shows Enter for Send', async () => {
     renderControls()
 

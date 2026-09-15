@@ -41,6 +41,7 @@ import { PanelEmpty } from '../overlays/panel'
 import { Pill } from '../settings/primitives'
 import { useDeepLinkHighlight } from '../settings/use-deep-link-highlight'
 
+import { KanbanToolsetControl } from './kanban-toolset-control'
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
 
 // The REAL Plugin Catalog page (docs site) embedded as a one-click picker —
@@ -218,6 +219,7 @@ function PackageRow({
   pkg,
   scope,
   scopeLabel,
+  toolsetProfile,
   busy,
   onAgentToggle,
   onAgentUpdate
@@ -225,6 +227,7 @@ function PackageRow({
   pkg: PluginPackage
   scope: null | string
   scopeLabel: string
+  toolsetProfile: ProfileScope
   busy: boolean
   onAgentToggle: (row: AgentPluginRow, enable: boolean) => void
   onAgentUpdate: (row: AgentPluginRow) => void
@@ -255,6 +258,11 @@ function PackageRow({
             {agent?.portable && <Pill>{p.portableBadge}</Pill>}
             {desktop?.status === 'error' && <Pill tone="primary">{d.failed}</Pill>}
           </div>
+          {desktop?.id === 'kanban' && (
+            <div className="mt-0.5 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+              {p.kanbanToolsHint}
+            </div>
+          )}
           {(desktop?.status === 'error' ? desktop.error : pkg.description) && (
             <div
               className={cn(
@@ -332,6 +340,8 @@ function PackageRow({
               </Tip>
             )}
           </>
+        ) : desktop?.id === 'kanban' ? (
+          <KanbanToolsetControl profile={toolsetProfile} scopeLabel={scopeLabel} />
         ) : pkg.agentMissingInProfile && desktop ? (
           <Tip label={desktop.packageOrigin?.repo ? p.installAgentHereTip(scopeLabel) : p.installAgentHereNoOrigin}>
             <span>
@@ -579,6 +589,7 @@ export const PluginsTab = memo(function PluginsTab({
                 pkg={pkg}
                 scope={scope}
                 scopeLabel={label}
+                toolsetProfile={profile}
               />
             ))}
           </div>

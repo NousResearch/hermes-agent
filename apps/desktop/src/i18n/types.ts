@@ -1495,6 +1495,10 @@ export interface Translations {
       emptyHint: string
       loadFailed: string
       toggleFailed: (name: string) => string
+      kanbanToolsHint: string
+      kanbanToolsUnavailable: string
+      kanbanToolsUpdateBackend: string
+      kanbanToolsSaved: (profile: string) => string
       legacyBackend: string
       portableBadge: string
       catalogTitle: string

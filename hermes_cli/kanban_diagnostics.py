@@ -604,7 +604,7 @@ def _rule_block_unblock_cycling(task, events, runs, now, cfg) -> list[Diagnostic
     task_id = _task_field(task, "id")
     actions: list[DiagnosticAction] = []
     if task_id:
-        cmd = f"hermes kanban events {task_id}"
+        cmd = f"hermes kanban show {task_id}"
         actions.append(_cli_hint(f"Check block reasons: {cmd}", cmd, suggested=True))
     return [Diagnostic(
         kind="block_unblock_cycling", severity="warning",

@@ -41,6 +41,11 @@ class TestParseModelInput:
         assert provider == "openrouter"
         assert model == "anthropic/claude-sonnet-4.5"
 
+    def test_stepfun_alias_resolved(self):
+        provider, model = parse_model_input("step:step-3.5-flash", "openrouter")
+        assert provider == "stepfun-plan"
+        assert model == "step-3.5-flash"
+
 
 # -- curated_models_for_provider ---------------------------------------------
 
@@ -77,7 +82,7 @@ class TestNormalizeProvider:
         assert normalize_provider("glm") == "zai"
         assert normalize_provider("kimi") == "kimi-coding"
         assert normalize_provider("moonshot") == "kimi-coding"
-        assert normalize_provider("step") == "stepfun"
+        assert normalize_provider("step") == "stepfun-plan"
         assert normalize_provider("github-copilot") == "copilot"
 
 
@@ -85,7 +90,8 @@ class TestProviderLabel:
     def test_known_labels_and_auto(self):
         assert provider_label("anthropic") == "Anthropic"
         assert provider_label("kimi") == "Kimi / Kimi Coding Plan"
-        assert provider_label("stepfun") == "StepFun Step Plan"
+        assert provider_label("stepfun") == "StepFun"
+        assert provider_label("stepfun-plan") == "StepFun Step Plan"
         assert provider_label("copilot") == "GitHub Copilot"
         assert provider_label("copilot-acp") == "GitHub Copilot ACP"
         assert provider_label("auto") == "Auto"
@@ -104,7 +110,7 @@ class TestProviderModelIds:
             "hermes_cli.models.fetch_api_models",
             return_value=["step-3.5-flash", "step-3-agent-lite"],
         ):
-            assert provider_model_ids("stepfun") == ["step-3.5-flash", "step-3-agent-lite"]
+            assert provider_model_ids("stepfun-plan") == ["step-3.5-flash", "step-3-agent-lite"]
 
 
     def test_anthropic_provider_uses_configured_base_url_for_live_catalog(self):

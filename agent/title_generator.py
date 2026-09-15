@@ -69,6 +69,8 @@ _TITLE_PROMPT_TEMPLATE = (
     "- Name what the user wants DONE, not that they asked a question.\n"
     "- Keep technical terms, filenames, numbers, and error codes exact.\n"
     "- Drop filler words: the, this, my, a, an.\n"
+    "- Ignore boilerplate thinking openers such as \"Here's a thinking process\", \"let me think about this\",\n"
+    "  or \"here's my thinking\" — look at what comes after them, not the opener itself.\n"
     "- No trailing punctuation, no quotes, no tool names, no 'Title:' prefix.\n"
     "- Never answer the message. Name it.\n"
     "- Always produce something, even for a bare greeting.\n"
@@ -109,6 +111,21 @@ _MACHINE_PREFIXES = (
     # message titled the session "[System: The active model for this chat has…" instead of the user's actual
     # question.
     "[System: The active model for this chat has changed to ",
+)
+
+# Model-emitted thinking preambles pasted into (or persisted as) a user's opening message. Unlike
+# _MACHINE_PREFIXES these aren't Hermes-authored, so is_titleable_user_message must keep treating the
+# turn as a real question — only the derived title must skip past the opener to the actual request.
+_THINKING_PREFIXES = (
+    "here's a thinking process",
+    "here is a thinking process",
+    "here's my thinking",
+    "here is my thinking",
+    "let me think about this",
+    "let me think step by step",
+    "my thinking process",
+    "here's how i'm thinking",
+    "here is how i'm thinking",
 )
 
 
@@ -178,9 +195,23 @@ def is_titleable_user_message(user_message: str) -> bool:
             and bool(_summarize_user_message(user_message).strip()))
 
 
+def _strip_thinking_prefix(text: str) -> str:
+    """Drop a boilerplate thinking-process opener (leading, case-insensitive, one pass).
+
+    Sessions whose opening message starts with a model's thinking preamble otherwise get the instant
+    title "Here's a thinking process" — the daemon-thread LLM upgrade that would fix it can lag or
+    fail silently. Pure text filter, cannot fail, no-op when nothing matches.
+    """
+    cleaned = (text or "").strip()
+    for prefix in _THINKING_PREFIXES:
+        if cleaned.lower().startswith(prefix):
+            return cleaned[len(prefix):].lstrip(":-— \n\r\t")
+    return cleaned
+
+
 def derive_title(user_message: str) -> Optional[str]:
     """Instant title: first meaningful line trimmed to a word boundary. No model, never fails."""
-    line = " ".join(_first_line(_summarize_user_message(user_message)).split())
+    line = " ".join(_first_line(_summarize_user_message(_strip_thinking_prefix(user_message))).split())
     if len(line) > MAX_DERIVED_TITLE_CHARS:
         cut = line[:MAX_DERIVED_TITLE_CHARS]
         space = cut.rfind(" ")

@@ -1,10 +1,11 @@
 """Hosted-room JSON-RPC contract: durable room identity, replay, and the process-owned
 same-gateway Discussion driver; ``groups.capabilities`` keeps that boundary machine-readable.
-
-Handlers are rebound onto server.py's globals at install (method_ctx.py); module-private
-helpers reach them through keyword defaults. ``_room_method`` is the shared envelope."""
+ Server-free on purpose: the gateway process imports this module for the
+hosted-room lifecycle, so the bound server is injected (``bind_server``) and module-private helpers reach
+it through keyword defaults. ``_room_method`` is the shared envelope."""
 
 from .method_ctx import HandlerRegistry
+from .rpc_frames import err_frame
 
 import contextlib
 import importlib
@@ -198,7 +199,7 @@ def _room_method(
             if service_code is not None:
                 service = get_hosted_room_service()
                 if service is None:
-                    return _err(rid, service_code, service_message)
+                    return err_frame(rid, service_code, service_message)
                 args += (service,)
             if db:
                 from gateway.hosted_rooms import default_db_path
@@ -208,8 +209,8 @@ def _room_method(
             except Exception as exc:
                 if room_code is not None and isinstance(exc, error_class(replica_only)):
                     reason = getattr(exc, "reason", None) if with_reason else None
-                    return _err(rid, room_code, str(exc), {"reason": reason} if reason else None)
-                return _err(rid, code, str(exc))
+                    return err_frame(rid, room_code, str(exc), {"reason": reason} if reason else None)
+                return err_frame(rid, code, str(exc))
         handler.__doc__ = fn.__doc__
         return method(name)(handler)
     return dec
@@ -455,7 +456,7 @@ def _(rid, params: GroupsPromoteParams, db_path) -> GroupsPromoteResult | dict:
     """Continue a replicated room on THIS gateway at ``epoch + 1``."""
     from gateway.hosted_room_replicas import promote_replica
     if params.confirm is not True:
-        return _err(rid, 4118, "promotion requires confirm=true acknowledging the previous authority can no longer commit")
+        return err_frame(rid, 4118, "promotion requires confirm=true acknowledging the previous authority can no longer commit")
     return GroupsPromoteResult(**promote_replica(
         db_path, room_id=params.room_id, reason=params.reason or "authority-unreachable"))
 
@@ -470,3 +471,4 @@ _passthrough(
 
 def register(server) -> None:
     _registry.install(server, globals())
+

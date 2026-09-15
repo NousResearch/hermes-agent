@@ -24,6 +24,7 @@ async def test_typing_transient_failure_enters_cooldown(monkeypatch):
     adapter = _make_adapter()
     now = {"value": 1000.0}
     monkeypatch.setattr("plugins.platforms.telegram.adapter.asyncio.get_running_loop", lambda: type("Loop", (), {"time": lambda self: now["value"]})())
+    adapter._chat_budget.clock = lambda: now["value"]
     monkeypatch.setattr(adapter, "_telegram_typing_cooldown_seconds", 30.0, raising=False)
 
     async def fail_once(**kwargs):
@@ -72,7 +73,9 @@ async def test_typing_dm_topic_fallback_success_does_not_cool_down(monkeypatch):
 @pytest.mark.asyncio
 async def test_typing_bad_thread_failure_does_not_cool_down(monkeypatch):
     adapter = _make_adapter()
-    monkeypatch.setattr("plugins.platforms.telegram.adapter.asyncio.get_running_loop", lambda: type("Loop", (), {"time": lambda self: 10.0})())
+    now = {"value": 10.0}
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.asyncio.get_running_loop", lambda: type("Loop", (), {"time": lambda self: now["value"]})())
+    adapter._chat_budget.clock = lambda: now["value"]
 
     async def bad_request(**kwargs):
         raise ValueError("message thread not found")
@@ -80,6 +83,7 @@ async def test_typing_bad_thread_failure_does_not_cool_down(monkeypatch):
     adapter._bot.send_chat_action = AsyncMock(side_effect=bad_request)
 
     await adapter.send_typing("123", metadata={"thread_id": "99"})
+    now["value"] = 11.0
     await adapter.send_typing("123", metadata={"thread_id": "99"})
 
     assert adapter._bot.send_chat_action.await_count == 2

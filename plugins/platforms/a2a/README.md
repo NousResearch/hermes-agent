@@ -34,7 +34,9 @@ a2a_agents:
 The agent gets five tools:
 
 - `a2a_discover(url)` — what can this agent do?
-- `a2a_call(agent, message, context_id?)` — send it a task, get the reply.
+- `a2a_call(agent, message, context_id?, metadata?)` — send it a task, get the
+  reply. `metadata` is forwarded to `SendMessage params.metadata` for extensions
+  advertised by the peer's Agent Card.
 - `a2a_list()` — configured peers, saved conversations, metrics.
 - `a2a_history(context_id)` — recall a saved A2A conversation.
 - `a2a_orchestrate(capability, message, mode?)` — fan-out a task to every

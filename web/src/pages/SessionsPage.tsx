@@ -33,6 +33,7 @@ import {
   Archive,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import type { Translations } from "@/i18n/types";
 import { formatSessionPruneResult } from "@/lib/session-prune";
 import { shouldRefreshSessions } from "@/lib/session-refresh";
 import {
@@ -126,7 +127,12 @@ function sourceBelongsToCategory(
   return !isAutomationSource(source);
 }
 
-function sourceLabel(source: string): string {
+function sourceLabel(t: Translations | null, source: string): string {
+  // Localized source names live in t.sessions.sources; fall back to the
+  // English title-case default for unknown sources.
+  const map = t?.sessions.sources as Record<string, string | undefined> | undefined;
+  const localized = map?.[source];
+  if (localized !== undefined) return localized;
   switch (source) {
     case "api_server":
       return "API server";
@@ -331,7 +337,7 @@ function MessageBubble({
     compaction: {
       bg: "bg-muted/50",
       text: "text-muted-foreground italic",
-      label: "Context handoff",
+      label: t.app.nav.contextHandoff ?? "Context handoff",
     },
   };
 
@@ -526,7 +532,7 @@ function SessionRow({
     <>
       <Badge tone="outline" className="text-xs">
         <SourceIcon className={`me-1 h-3 w-3 ${sourceInfo.color}`} />
-        {session.source ? sourceLabel(session.source) : "local"}
+        {session.source ? sourceLabel(t, session.source) : t.sessions.sources?.local ?? "local"}
       </Badge>
 
       {resumeInChatEnabled && (
@@ -890,7 +896,7 @@ export default function SessionsPage() {
   const allSourceOptions = useMemo(() => {
     const entries = Object.entries(stats?.by_source ?? {}).sort(
       ([aSource, aCount], [bSource, bCount]) =>
-        bCount - aCount || sourceLabel(aSource).localeCompare(sourceLabel(bSource)),
+        bCount - aCount || sourceLabel(t, aSource).localeCompare(sourceLabel(t, bSource)),
     );
     const seen = new Set(entries.map(([source]) => source));
     for (const source of pinnedSourceSelections) {
@@ -900,7 +906,7 @@ export default function SessionsPage() {
       }
     }
     return entries;
-  }, [pinnedSourceSelections, stats]);
+  }, [pinnedSourceSelections, stats, t]);
 
   const allSourceNames = useMemo(
     () => allSourceOptions.map(([source]) => source),
@@ -959,29 +965,34 @@ export default function SessionsPage() {
   );
 
   const defaultSourceFilterLabel = useMemo(() => {
-    if (sessionCategory === "chats") return "Any chat source";
-    if (sessionCategory === "automation") return "Any automation source";
+    if (sessionCategory === "chats") return t.app.nav.anyChatSource ?? "Any chat source";
+    if (sessionCategory === "automation")
+      return t.app.nav.anyAutomationSource ?? "Any automation source";
     return t.sessions.anySource;
-  }, [sessionCategory, t.sessions.anySource]);
+  }, [sessionCategory, t.sessions.anySource, t.app.nav]);
 
   const sourceMenuTitle = useMemo(() => {
-    if (sessionCategory === "chats") return "Chat sources";
-    if (sessionCategory === "automation") return "Automation sources";
+    if (sessionCategory === "chats") return t.app.nav.chatSources ?? "Chat sources";
+    if (sessionCategory === "automation")
+      return t.app.nav.automationSources ?? "Automation sources";
     return t.sessions.sourceFilter;
-  }, [sessionCategory, t.sessions.sourceFilter]);
+  }, [sessionCategory, t.sessions.sourceFilter, t.app.nav]);
 
   const sourceFilterLabel = useMemo(() => {
     if (selectedSources === null) {
       return defaultSourceFilterLabel;
     }
     if (selectedSources.length === 0) {
-      return "No sources";
+      return t.app.nav.noSources ?? "No sources";
     }
     if (selectedSources.length === 1) {
-      return sourceLabel(selectedSources[0]);
+      return sourceLabel(t, selectedSources[0]);
     }
-    return `${selectedSources.length} sources`;
-  }, [defaultSourceFilterLabel, selectedSources]);
+    return (t.app.nav.nSources ?? "{count} sources").replace(
+      "{count}",
+      String(selectedSources.length),
+    );
+  }, [defaultSourceFilterLabel, selectedSources, t]);
 
   const refreshEmptyCount = useCallback(() => {
     api
@@ -1018,13 +1029,13 @@ export default function SessionsPage() {
         onClick={() => setPruneOpen(true)}
         prefix={<Archive />}
       >
-        Prune old sessions
+        {t.app.nav.pruneOldSessions ?? "Prune old sessions"}
       </Button>,
     );
     return () => {
       setEnd(null);
     };
-  }, [setEnd]);
+  }, [setEnd, t]);
 
   useEffect(() => {
     if (!sourceMenuOpen) return;
@@ -1081,13 +1092,25 @@ export default function SessionsPage() {
         const text = await file.text();
         const importedSessions = parseImportSessions(text);
         const result = await api.importSessions(importedSessions);
-        showToast(`Import complete: ${importSummary(result)}`, "success");
+        showToast(
+        (t.sessions.importComplete ?? "Import complete: {summary}").replace(
+          "{summary}",
+          importSummary(result),
+        ),
+        "success",
+      );
         clearSelection();
         loadSessions(page, true);
         loadStats();
         refreshEmptyCount();
       } catch (error) {
-        showToast(`Import failed: ${errorMessage(error)}`, "error");
+        showToast(
+          (t.sessions.importFailed ?? "Import failed: {error}").replace(
+            "{error}",
+            errorMessage(error),
+          ),
+          "error",
+        );
       } finally {
         setImportingSessions(false);
         if (importInputRef.current) importInputRef.current.value = "";
@@ -1100,6 +1123,7 @@ export default function SessionsPage() {
       page,
       refreshEmptyCount,
       showToast,
+      t,
     ],
   );
 
@@ -1509,16 +1533,19 @@ export default function SessionsPage() {
         a.click();
         URL.revokeObjectURL(url);
       } catch {
-        showToast("Failed to export session", "error");
+      showToast(t.sessions.failedToExport ?? "Failed to export session", "error");
       }
     },
-    [rowProfile, showToast],
+    [showToast, t.sessions.failedToExport],
   );
 
   const handlePrune = useCallback(async () => {
     const days = parseInt(pruneDays, 10);
     if (!Number.isFinite(days) || days < 0) {
-      showToast("Enter a valid number of days", "error");
+      showToast(
+        t.sessions.invalidPruneDays ?? "Enter a valid number of days",
+        "error",
+      );
       return;
     }
     setPruning(true);
@@ -1530,11 +1557,11 @@ export default function SessionsPage() {
       setPage(0);
       loadStats();
     } catch {
-      showToast("Failed to prune sessions", "error");
+      showToast(t.sessions.failedToPrune ?? "Failed to prune sessions", "error");
     } finally {
       setPruning(false);
     }
-  }, [pruneDays, showToast, loadSessions, loadStats]);
+  }, [pruneDays, showToast, loadSessions, loadStats, t]);
 
   const pendingSession = sessionDelete.pendingId
     ? sessions.find((s) => s.id === sessionDelete.pendingId)
@@ -1655,10 +1682,12 @@ export default function SessionsPage() {
       >
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Prune old sessions</DialogTitle>
+            <DialogTitle>
+              {t.app.nav.pruneOldSessions ?? "Prune old sessions"}
+            </DialogTitle>
             <DialogDescription>
-              Permanently remove archived sessions whose last activity is older
-              than the given number of days. Active sessions are never pruned.
+              {t.app.nav.pruneOldSessionsDescription ??
+                "Permanently remove archived sessions whose last activity is older than the given number of days. Active sessions are never pruned."}
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-1.5">
@@ -1666,7 +1695,7 @@ export default function SessionsPage() {
               htmlFor="prune-days"
               className="text-xs font-medium text-muted-foreground"
             >
-              Older than (days)
+              {t.app.nav.olderThanDays ?? "Older than (days)"}
             </label>
             <Input
               id="prune-days"
@@ -1695,7 +1724,7 @@ export default function SessionsPage() {
               className="gap-1.5"
             >
               {pruning && <Spinner className="text-sm" />}
-              Prune
+              {t.app.nav.prune ?? "Prune"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1898,8 +1927,7 @@ export default function SessionsPage() {
                               onClick={(event) => {
                                 event.stopPropagation();
                                 toggleSourceFilter(source);
-                              }}
-                              aria-label={`${t.sessions.sourceFilter}: ${sourceLabel(source)}`}
+                              }}                                aria-label={`${t.sessions.sourceFilter}: ${sourceLabel(t, source)}`}
                             />
                             <button
                               type="button"
@@ -1908,7 +1936,7 @@ export default function SessionsPage() {
                             >
                               <SourceIcon className={`h-3.5 w-3.5 shrink-0 ${sourceColor}`} />
                               <span className="min-w-0 flex-1 truncate">
-                                {sourceLabel(source)}
+                                {sourceLabel(t, source)}
                               </span>
                               <span className="shrink-0 tabular-nums text-muted-foreground">
                                 {count}
@@ -1987,12 +2015,12 @@ export default function SessionsPage() {
                 className="shrink-0"
                 disabled={importingSessions}
                 onClick={() => importInputRef.current?.click()}
-                aria-label="Import exported sessions"
-                title="Import exported session JSON or JSONL"
+                aria-label={t.app.nav.importSessions ?? "Import sessions"}
+                title={t.app.nav.importSessionsTitle ?? "Import exported session JSON or JSONL"}
                 prefix={importingSessions ? <Spinner /> : <Upload />}
               >
                 <span className="font-mondwest normal-case text-xs">
-                  Import sessions
+                  {t.app.nav.importSessions ?? "Import sessions"}
                 </span>
               </Button>
             )}
@@ -2184,7 +2212,7 @@ export default function SessionsPage() {
                       className="shrink-0 self-start text-xs sm:self-center"
                     >
                       <Database className="me-1 h-3 w-3" />
-                      {s.source ? sourceLabel(s.source) : "local"}
+                      {s.source ? sourceLabel(t, s.source) : t.sessions.sources?.local ?? "local"}
                     </Badge>
                   </div>
                 ))}

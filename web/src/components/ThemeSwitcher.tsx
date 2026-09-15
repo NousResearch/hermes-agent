@@ -164,11 +164,17 @@ function ThemeSwitcherOptions({
   setTheme,
   themeName,
 }: ThemeSwitcherOptionsProps) {
+  const { t } = useI18n();
   return (
     <>
       {availableThemes.map((th) => {
         const isActive = th.name === themeName;
         const paletteTheme = BUILTIN_THEMES[th.name] ?? th.definition;
+        // Prefer the active locale's translated label/description; fall back
+        // to the API-provided English strings.
+        const label = t.theme?.themeNames?.[th.name] ?? th.label;
+        const description =
+          t.theme?.themeDescriptions?.[th.name] ?? th.description;
 
         return (
           <ListItem
@@ -192,11 +198,11 @@ function ThemeSwitcherOptions({
               <Typography
                 className="truncate text-display text-xs tracking-wide"
               >
-                {th.label}
+                {label}
               </Typography>
-              {th.description && (
+              {description && (
                 <Typography className="truncate text-xs tracking-normal text-text-tertiary">
-                  {th.description}
+                  {description}
                 </Typography>
               )}
             </div>

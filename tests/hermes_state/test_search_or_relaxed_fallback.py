@@ -1,14 +1,13 @@
 """OR-relaxed zero-result retry for paraphrased session search recall.
 
-Ported from nearai/ironclaw#7553 (``Filter::FtsRanked``): FTS5's implicit
-AND between query terms means a multi-word query worded even slightly
+FTS5's implicit AND between query terms means a multi-word query worded even slightly
 differently from the stored sentence returns nothing — a fact saved as
 "Sarah prefers the standup meeting scheduled early on Thursday mornings" is
 invisible to "when does Sarah like her standup scheduled" purely because the
 stored text has no "like". When the exact-match search (and the substring
 fallbacks) return zero rows, ``search_messages`` retries the same FTS index
-with the terms OR-joined, ranked by bm25 so rows covering more of the terms
-surface first.
+with the terms OR-joined; under the default rank sort rows covering more of
+the terms surface first.
 
 The retry is strictly additive: it only fires on a zero-result miss, never
 reorders existing hits, and respects explicit boolean operators.
@@ -44,76 +43,47 @@ def db(tmp_path):
         pass
 
 
-class TestOrRelaxedQueryHelper:
-    def test_multi_term_query_relaxes_to_or(self):
-        assert (
-            SessionDB._or_relaxed_query("sarah standup scheduled")
-            == "sarah OR standup OR scheduled"
-        )
-
-    def test_single_term_returns_none(self):
-        assert SessionDB._or_relaxed_query("standup") is None
-
-    def test_explicit_or_is_respected(self):
-        assert SessionDB._or_relaxed_query("alpha OR beta") is None
-
-    def test_explicit_not_is_respected(self):
-        assert SessionDB._or_relaxed_query("python NOT java") is None
-
-    def test_explicit_and_tokens_are_dropped(self):
-        assert (
-            SessionDB._or_relaxed_query("alpha AND beta")
-            == "alpha OR beta"
-        )
-
-    def test_quoted_phrase_is_one_unit(self):
-        assert (
-            SessionDB._or_relaxed_query('"docker networking" tls')
-            == '"docker networking" OR tls'
-        )
-
-    def test_lone_quoted_phrase_returns_none(self):
-        assert SessionDB._or_relaxed_query('"docker networking"') is None
+@pytest.mark.parametrize("query, expected", [
+    ("sarah standup scheduled", "sarah OR standup OR scheduled"),
+    ("alpha AND beta", "alpha OR beta"),
+    ('"docker networking" tls', '"docker networking" OR tls'),
+    ("standup", None),
+    ('"docker networking"', None),
+    ("alpha OR beta", None),
+    ("python NOT java", None),
+])
+def test_or_relaxed_query_rewrite(query, expected):
+    """Implicit-AND terms and explicit AND become an any-term OR query; a quoted phrase is one
+    unit; a single unit or explicit OR/NOT (exact semantics already expressed) does not relax."""
+    assert SessionDB._or_relaxed_query(query) == expected
 
 
-class TestParaphrasedRecall:
-    def test_exact_query_still_matches_exactly(self, db):
-        rows = db.search_messages("standup Thursday")
-        assert rows, "exact-term query must match without relaxation"
-        assert "standup" in rows[0]["snippet"].lower()
+def test_paraphrased_query_recovers_via_or_retry(db):
+    """Exact hits are untouched; a paraphrase whose extra word ("like") no stored row contains
+    is recovered by the OR retry, every partially-matching row comes back, and the caller's
+    role_filter still applies to the retried query."""
+    exact = db.search_messages("standup Thursday")
+    assert exact and "standup" in exact[0]["snippet"].lower()
 
-    def test_paraphrased_query_recovers_via_or_retry(self, db):
-        # "when does Sarah like her standup scheduled": implicit AND requires
-        # "like", which the stored sentence lacks — exact match returns
-        # nothing; the OR-relaxed retry must recover the row.
-        rows = db.search_messages("when does Sarah like her standup scheduled")
-        assert rows, "paraphrased query must recover via the OR-relaxed retry"
-        joined = " ".join(r["snippet"].lower() for r in rows)
-        assert "standup" in joined
+    rows = db.search_messages("when does Sarah like her standup scheduled")
+    assert rows and "standup" in " ".join(r["snippet"].lower() for r in rows)
 
-    def test_or_retry_recovers_all_partially_matching_rows(self, db):
-        rows = db.search_messages("sarah standup thursday daemon")
-        # No stored row contains every term, so only the OR retry can answer;
-        # both partial matches must come back (bm25 ordering between them is
-        # backend-weighted, not coverage-guaranteed).
-        joined = " ".join(r["snippet"].lower() for r in rows)
-        assert "standup" in joined
-        assert "daemon" in joined
+    joined = " ".join(r["snippet"].lower() for r in db.search_messages("sarah standup thursday daemon"))
+    assert "standup" in joined and "daemon" in joined
 
-    def test_genuinely_absent_terms_still_return_empty(self, db):
-        assert db.search_messages("zebra xylophone quantum") == []
+    assistant_only = db.search_messages("when does Sarah like her standup scheduled", role_filter=["assistant"])
+    assert assistant_only and all(r["role"] == "assistant" for r in assistant_only)
 
-    def test_explicit_not_query_is_not_relaxed(self, db):
-        # "standup NOT Thursday" must exclude the Thursday rows — relaxation
-        # would wrongly resurrect them.
-        rows = db.search_messages("standup NOT Thursday")
-        for r in rows:
-            assert "thursday" not in r["snippet"].lower()
 
-    def test_role_filter_applies_to_relaxed_retry(self, db):
-        rows = db.search_messages(
-            "when does Sarah like her standup scheduled",
-            role_filter=["assistant"],
-        )
-        for r in rows:
-            assert r["role"] == "assistant"
+def test_relaxation_does_not_fire_for_exact_semantics_or_absent_terms(db, monkeypatch):
+    """Explicit NOT keeps its exclusion (relaxing would resurrect the Thursday rows), a genuine
+    miss stays empty, and a CJK-routed miss never reaches the OR rewrite (the CJK index has its
+    own substring semantics)."""
+    not_rows = db.search_messages("standup NOT Thursday")
+    assert all("thursday" not in r["snippet"].lower() for r in not_rows)
+    assert db.search_messages("zebra xylophone quantum") == []
+
+    calls = []
+    monkeypatch.setattr(SessionDB, "_or_relaxed_query", staticmethod(lambda q: calls.append(q)))
+    assert db.search_messages("站会 周五") == []
+    assert calls == []

@@ -1129,13 +1129,14 @@ class SessionSearchMixin:
             if not matches and self._trigram_available and self._trigram_eligible_tokens(query):
                 matches = self._match_rows("messages_fts_trigram", fb_query, **route) or matches
 
-        # OR-relaxed retry (port of nearai/ironclaw#7553 ``Filter::FtsRanked``): the implicit AND
-        # between terms means a paraphrased multi-word query misses a stored sentence that lacks
-        # even ONE word ("when does Sarah like her standup scheduled" vs "Sarah prefers the standup
-        # meeting scheduled ... Thursday mornings"). Once the exact query and the substring
-        # fallbacks all miss, retry the unicode61 index matching ANY term; bm25 ranks rows covering
-        # more terms first. Gated on a zero-result miss so hits keep exact-match semantics and
-        # ordering; explicit OR/NOT, single-term and CJK-routed queries are left alone.
+        # OR-relaxed retry: the implicit AND between terms means a paraphrased multi-word query
+        # misses a stored sentence that lacks even ONE word ("when does Sarah like her standup
+        # scheduled" vs "Sarah prefers the standup meeting scheduled ... Thursday mornings"). Once
+        # the exact query and the substring fallbacks all miss, retry the unicode61 index matching
+        # ANY term. The caller's ``sort`` still applies (``route`` carries order_by_sql): rank order
+        # puts rows covering more terms first, newest/oldest keep their timestamp order. Gated on a
+        # zero-result miss so hits keep exact-match semantics; explicit OR/NOT, single-term and
+        # CJK-routed queries are left alone.
         if not matches and not is_cjk and not self._fts_stale:
             relaxed = self._or_relaxed_query(query)
             if relaxed is not None:

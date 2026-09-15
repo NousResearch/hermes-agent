@@ -327,6 +327,33 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 Wiring multiple Hermes profiles to reply to one another in a shared channel — by setting `"mentions"` or `"all"` across several profiles — is an unsupported topology. Discord auto-`@mentions` the replied-to author on every reply, so under `"mentions"` two bots will satisfy each other's mention gate and ack-loop. The gateway's bot loop guard bounds the damage rather than preventing it: after 20 bot-authored messages in one channel inside 5 minutes, further bot messages there are dropped for 10 minutes (tunable under `gateway.bot_loop_guard` in `config.yaml`; human messages are never counted). The supported configuration is still to leave `DISCORD_ALLOW_BOTS` at `"none"`. If you must accept a particular bot, scope the acceptance narrowly and never to another auto-replying agent.
 :::
 
+### Troubleshooting: a trusted agent bot is ignored
+
+If a Discord bot is present in `DISCORD_ALLOWED_USERS` but Hermes does not respond to it, check both authorization gates:
+
+1. `DISCORD_ALLOWED_USERS` (or `DISCORD_ALLOWED_ROLES`) authorizes the sender.
+2. `DISCORD_ALLOW_BOTS` authorizes messages authored by other bots. Its default is `none`, so the bot gate can still reject an otherwise-allowed bot.
+
+For a deliberately trusted peer bot, configure the setting in the profile that runs the gateway, then restart that profile's gateway:
+
+```bash
+hermes config set platforms.discord.extra.allow_bots mentions
+hermes gateway restart
+```
+
+For another profile, use the profile flag on both commands:
+
+```bash
+hermes -p <profile> config set platforms.discord.extra.allow_bots mentions
+hermes -p <profile> gateway restart
+```
+
+Use `mentions` rather than `all` when the peer must explicitly mention Hermes. Keep `DISCORD_ALLOWED_USERS` scoped to the trusted bot/user IDs as well. Do not put this behavioral setting in `.env` when the profile config can express it; environment variables take precedence and can make the resolved configuration appear inconsistent.
+
+:::warning Bot-to-bot loop risk
+Setting `DISCORD_ALLOW_BOTS=mentions` or `all` on multiple auto-replying Hermes profiles in the same channel is an unsupported topology. Discord reply references can mention the other bot automatically, causing an acknowledgement loop. Prefer one-way relay or human-mediated handoffs; if you enable peer-bot input anyway, test in a dedicated channel and keep the bot loop guard enabled.
+:::
+
 ### Config File (`config.yaml`)
 
 The `discord` section in `~/.hermes/config.yaml` mirrors the env vars above. Config.yaml settings are applied as defaults — if the equivalent env var is already set, the env var wins.

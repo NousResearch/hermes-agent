@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
+from agent.prompt_builder import drain_truncation_warnings
 from agent.subdirectory_hints import SubdirectoryHintTracker
 
 
@@ -134,6 +135,22 @@ class TestSubdirectoryHintTracker:
         assert "truncated AGENTS.md" in result and "bigdir/AGENTS.md" in result
         assert len(result) < len(body)
         assert any("TRUNCATED" in r.message and "AGENTS.md" in r.message for r in caplog.records)
+
+    def test_truncation_of_large_hints_does_not_queue_context_file_warning(self, tmp_path):
+        """Hint previews retain their marker without surfacing a startup-context warning in chat (#111772)."""
+        from agent import subdirectory_hints as sh
+
+        drain_truncation_warnings()
+        sub = tmp_path / "bigdir"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("x" * (sh._MAX_HINT_CHARS + 1), encoding="utf-8")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        result = tracker.check_tool_call("read_file", {"path": str(sub / "file.py")})
+
+        assert result is not None
+        assert "truncated AGENTS.md" in result
+        assert drain_truncation_warnings() == []
 
     def test_area_file_under_ceiling_is_delivered_whole(self, tmp_path):
         """An area AGENTS.md sized like ours (well under the ceiling) arrives intact — no marker."""

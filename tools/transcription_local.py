@@ -139,7 +139,26 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
         logger.info("Apple Silicon/Rosetta detected — loading faster-whisper on CPU "
                     "(int8) to avoid native device autodetection crashes")
         return WhisperModel(model_name, device="cpu", compute_type="int8")
+
+    # ``cuda:<index>`` selects a specific GPU.  ctranslate2 rejects the
+    # index embedded in the device string ("unsupported device cuda:3");
+    # faster-whisper exposes it via the separate ``device_index`` arg.
+    device_index: Optional[int] = None
+    if isinstance(device, str) and device.startswith("cuda:"):
+        try:
+            device_index = int(device.rsplit(":", 1)[1])
+        except ValueError:
+            raise ValueError(
+                f"Invalid STT device {device!r} — use 'cuda' or 'cuda:<index>'"
+            ) from None
+        device = "cuda"
+
     try:
+        if device_index is not None:
+            return WhisperModel(
+                model_name, device=device, device_index=device_index,
+                compute_type=compute_type,
+            )
         return WhisperModel(model_name, device=device, compute_type=compute_type)
     except Exception as exc:
         if not _looks_like_cuda_lib_error(exc):

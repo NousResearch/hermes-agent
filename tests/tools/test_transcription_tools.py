@@ -419,6 +419,91 @@ class TestTranscribeLocalExtended:
         mock_whisper_cls.assert_called_once_with("base", device="cpu", compute_type="float32")
 
 
+    def test_cuda_index_passed_as_device_index(self, tmp_path):
+        """`device: cuda:<n>` must be parsed into device=\"cuda\" + device_index=<n>.
+
+        ctranslate2 rejects the index embedded in the device string
+        (\"unsupported device cuda:3\"); faster-whisper accepts it via the
+        separate ``device_index`` argument.
+        """
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        mock_segment = MagicMock()
+        mock_segment.text = "hi"
+        mock_info = MagicMock()
+        mock_info.language = "pl"
+        mock_info.duration = 1.0
+
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([mock_segment], mock_info)
+        mock_whisper_cls = MagicMock(return_value=mock_model)
+
+        fake_config = {
+            "local": {
+                "device": "cuda:3",
+                "compute_type": "float16",
+            }
+        }
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch("tools.transcription_tools._load_stt_config", return_value=fake_config):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        mock_whisper_cls.assert_called_once_with(
+            "base", device="cuda", device_index=3, compute_type="float16")
+
+
+    def test_cuda_without_index_untouched(self, tmp_path):
+        """`device: cuda` (no index) keeps the old behaviour — no device_index arg."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([MagicMock(text="x")], MagicMock())
+        mock_whisper_cls = MagicMock(return_value=mock_model)
+
+        fake_config = {"local": {"device": "cuda", "compute_type": "auto"}}
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch("tools.transcription_tools._load_stt_config", return_value=fake_config):
+            from tools.transcription_tools import _transcribe_local
+            _transcribe_local(str(audio), "base")
+
+        mock_whisper_cls.assert_called_once_with("base", device="cuda", compute_type="auto")
+
+
+    def test_invalid_cuda_index_raises_clear_error(self, tmp_path):
+        """`cuda:abc` raises a readable config error, not a cryptic ctranslate2 one."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        mock_whisper_cls = MagicMock()
+
+        fake_config = {"local": {"device": "cuda:abc", "compute_type": "auto"}}
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch("tools.transcription_tools._load_stt_config", return_value=fake_config):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is False
+        assert "Invalid STT device" in result["error"]
+        # WhisperModel must never be reached with a garbage index.
+        mock_whisper_cls.assert_not_called()
+
+
     def test_cuda_out_of_memory_does_not_trigger_cpu_fallback(self, tmp_path):
         """'CUDA out of memory' is a real error, not a missing lib — surface it."""
         audio = tmp_path / "test.ogg"

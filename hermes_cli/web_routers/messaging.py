@@ -160,6 +160,16 @@ def _require_platform(platform_id: str) -> dict[str, Any]:
     return entry
 
 
+def _scoped_secret_keys() -> frozenset[str]:
+    try:
+        config = load_config()
+        onepassword = ((config.get("secrets") or {}).get("onepassword") or {})
+        mappings = onepassword.get("env") or {}
+        return frozenset(key for key, reference in mappings.items() if key and reference)
+    except Exception:
+        return frozenset()
+
+
 def _platform_enablement(
     platform_id: str, entry: dict[str, Any], env_on_disk: dict[str, str], scoped: bool
 ) -> tuple[bool, bool, dict | None]:
@@ -168,10 +178,13 @@ def _platform_enablement(
     os.environ and would leak the root install's tokens into the profile's state."""
     required = entry["required_env"]
     if scoped:
-        configured = bool(required) and all(env_on_disk.get(key) for key in required)
+        secret_keys = _scoped_secret_keys()
+        configured = all(env_on_disk.get(key) or key in secret_keys for key in required) if required else False
         try:
             plat_cfg = (load_config().get("platforms") or {}).get(platform_id)
             plat_cfg = plat_cfg if isinstance(plat_cfg, dict) else {}
+            if not required:
+                configured = bool(plat_cfg)
             hc = plat_cfg.get("home_channel")
             # Setup writes credentials without a platforms entry; explicit disable wins.
             raw_enabled = plat_cfg.get("enabled")
@@ -230,7 +243,8 @@ def _messaging_platform_payload(
 
     env_vars = [
         {
-            "key": key, "required": key in entry["required_env"], "is_set": bool(value),
+            "key": key, "required": key in entry["required_env"],
+            "is_set": bool(value) or (scoped and key in _scoped_secret_keys()),
             "redacted_value": redact_key(value) if value else None, **_messaging_env_info(key),
         }
         for key, value in ((key, env_value(key)) for key in entry["env_vars"])

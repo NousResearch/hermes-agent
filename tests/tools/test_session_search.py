@@ -498,6 +498,73 @@ def _linked_session_id(link: str) -> str:
 
 
 class TestSessionLink:
+    @pytest.mark.parametrize("dispatch_path, embedded_profile, explicit_profile", [
+        ("registry", None, None), ("registry", "work", None),
+        ("registry", "work", "work"), ("registry", "missing", "work"),
+        ("registry", "work", ""),
+        ("inline", None, None), ("inline", "work", None),
+    ])
+    @pytest.mark.parametrize("scroll", [False, True])
+    def test_raw_session_link_resolves_like_profile_path(
+        self, db, tmp_path, monkeypatch, embedded_profile, explicit_profile, scroll,
+        dispatch_path,
+    ):
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+        from tools.registry import registry
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        target_profile = explicit_profile or embedded_profile
+        target_home = home / "profiles" / target_profile if target_profile else home
+        target_home.mkdir(parents=True, exist_ok=True)
+        target = SessionDB(target_home / "state.db") if target_profile else db
+        agent = SimpleNamespace(
+            _get_session_db_for_recall=lambda: db,
+            session_id="s_current",
+        )
+        context = InlineToolContext(effective_task_id="test-task")
+
+        def dispatch(args):
+            if dispatch_path == "registry":
+                return registry.dispatch("session_search", args, db=db)
+            return INLINE_TOOL_EXECUTORS["session_search"](agent, args, context)
+
+        try:
+            target.create_session("s_link", source="cli")
+            anchor = target.append_message("s_link", role="user", content="linked conversation")
+            # Compare with the existing profile/id path, without depending on
+            # separate profile forwarding in the inline executor (#82938).
+            path = f"{target_profile}/s_link" if target_profile else "s_link"
+            args: dict[str, object] = {"session_id": path}
+            if scroll:
+                args["around_message_id"] = anchor
+            expected_json = dispatch(args)
+            assert isinstance(expected_json, str)
+            expected = json.loads(expected_json)
+            assert expected["success"] is True
+            assert expected["messages"][0]["content"] == "linked conversation"
+
+            value = f"{embedded_profile}/s_link" if embedded_profile else "s_link"
+            args.update(session_id=f"@session:{value}", profile=explicit_profile)
+            actual_json = dispatch(args)
+            assert isinstance(actual_json, str)
+            actual = json.loads(actual_json)
+            assert actual == expected
+        finally:
+            if target is not db:
+                target.close()
+
+    @pytest.mark.parametrize("link", ["@session:", "@session: "])
+    def test_empty_raw_session_link_does_not_browse(self, db, link):
+        result = json.loads(session_search(session_id=link, db=db))
+        assert result["success"] is False
+        assert "error" in result
+
     def test_link_carries_the_named_profile(self):
         assert _session_link("s_oldest", "work") == "@session:work/s_oldest"
 

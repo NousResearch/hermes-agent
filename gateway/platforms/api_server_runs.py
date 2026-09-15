@@ -47,6 +47,18 @@ _FIXED_EVENT_FIELDS = {
     "tool.completed": lambda tool, preview, kw: {
         "tool": tool, "duration": round(kw.get("duration", 0), 3), "error": kw.get("is_error", False)},
     "reasoning.available": lambda tool, preview, kw: {"text": preview or ""}}
+_TOOL_COMPLETED_PREVIEW_MAX_CHARS = 500
+
+
+def _tool_completed_preview(result: Any, redact_sensitive_text: Callable[..., str]) -> str:
+    """Bounded, secret-redacted result summary for the public run stream — redacted BEFORE
+    truncation so a cut never leaves a secret's prefix on the wire."""
+    if result is None:
+        return ""
+    text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+    preview = redact_sensitive_text(text, force=True)
+    limit = _TOOL_COMPLETED_PREVIEW_MAX_CHARS
+    return preview if len(preview) <= limit else preview[: limit - 3] + "..."
 
 
 def _remember_room_retention(request: "web.Request", claims: dict[str, Any]) -> None:
@@ -165,7 +177,11 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
         # lifecycle boundaries must land so clients can observe delegate_task failures.
         fields = _FIXED_EVENT_FIELDS.get(event_type)
         if fields is not None:
-            _push(_run_event(run_id, event_type, **fields(tool_name, preview, kwargs)))
+            event_fields = fields(tool_name, preview, kwargs)
+            if event_type == "tool.completed":
+                event_fields["preview"] = _tool_completed_preview(
+                    kwargs.get("result"), redact_sensitive_text)
+            _push(_run_event(run_id, event_type, **event_fields))
         elif event_type in {"subagent.start", "subagent.complete"}:
             event = _run_event(run_id, event_type)
             if preview is not None:

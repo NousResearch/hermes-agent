@@ -473,6 +473,15 @@ Statuses are retained briefly after terminal states (`completed`, `failed`, or `
 
 Server-Sent Events stream of the run's tool-call progress, token deltas, and lifecycle events. Designed for dashboards and thick clients that want to attach/detach without losing state.
 
+Tool lifecycle events carry `tool.started` (`tool`, `preview` of the arguments) and
+`tool.completed` (`tool`, `duration` in seconds, `error`, and a `preview` of the result). The
+`error` flag reflects the tool's own outcome — a non-zero terminal `exit_code`, a structured
+`{"error": ...}` result, a denied approval — whether the result arrives as a JSON string or an
+already-parsed object. The completion `preview` is the result text (structured results are
+JSON-encoded), passed through forced secret redaction and then truncated to 500 characters, so a
+client can tell an approval refusal (`BLOCKED: ...`) from an ordinary failure without receiving
+the unbounded tool payload.
+
 When the agent delegates work to background subagents, the stream also carries
 `subagent.start` and `subagent.complete` lifecycle events, so clients can
 observe delegation outcomes — including timeouts and failures — instead of the

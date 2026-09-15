@@ -24,6 +24,8 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "long_running_notifications": True,
     "busy_ack_detail": True,
     "busy_steer_ack_enabled": True,  # busy_input_mode=steer echo; the text still lands in the run
+    # Ping the triggering Discord user when their turn switches to a fallback model.
+    "mention_on_model_fallback": False,
     # Delete tool-progress / "⏳ Working" bubbles after a SUCCESSFUL final response where deletion is
     # supported (Telegram); failed runs keep them as breadcrumbs.
     "cleanup_progress": False,
@@ -177,6 +179,7 @@ _NORMALISERS: dict[str, Any] = {
     "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,
     "busy_steer_ack_enabled": _norm_bool,
+    "mention_on_model_fallback": _norm_bool,
     "thinking_progress": _norm_bool,
     "cleanup_progress": _norm_cleanup_progress,
     "live_status": _norm_tristate("full", "off", {"full", "verb", "off"}, extra_truthy={"all"}),

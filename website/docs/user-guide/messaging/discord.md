@@ -592,6 +592,22 @@ display:
       reasoning_style: subtext   # code | blockquote | subtext
 ```
 
+#### `display.mention_on_model_fallback`
+
+**Type:** boolean — **Default:** `false`
+
+When enabled, a model-fallback status notice mentions the Discord user who
+triggered the turn. Ordinary retry and progress messages remain unmentioned.
+This is useful when fallback means the primary provider's quota or account is
+unavailable and the notice must stand out in a busy channel.
+
+```yaml
+display:
+  platforms:
+    discord:
+      mention_on_model_fallback: true
+```
+
 ## Slash Command Access Control
 
 By default, every allowed user can run every slash command. To split your allowlist into **admins** (full slash command access) and **regular users** (only commands you explicitly enable), add `allow_admin_from` and `user_allowed_commands` to the Discord platform's `extra` block:

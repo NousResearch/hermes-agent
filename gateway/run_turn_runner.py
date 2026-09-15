@@ -42,6 +42,25 @@ _CARD_DESTINATION_REFUSALS = {
     "slack task_card requires a thread anchor (Slack streams are thread replies)",
 }
 
+_MODEL_FALLBACK_NOTICE_PREFIX = "⚠️ Model fallback:"
+
+
+def _mention_model_fallback(message: str, source: Any, *, enabled: bool) -> str:
+    """Mention the triggering Discord user on an opt-in model fallback notice.
+
+    Discord snowflakes are decimal; validating before interpolation prevents a
+    forged or malformed source identifier from creating arbitrary mentions.
+    """
+    user_id = str(getattr(source, "user_id", "") or "")
+    if (
+        enabled
+        and getattr(source, "platform", None) == Platform.DISCORD
+        and user_id.isdecimal()
+        and message.startswith(_MODEL_FALLBACK_NOTICE_PREFIX)
+    ):
+        return f"<@{user_id}> {message}"
+    return message
+
 
 def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
     """True when the adapter class renders native approval buttons. BasePlatformAdapter subclasses
@@ -882,6 +901,11 @@ class TurnRunner:
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
             return
+        platform_key = getattr(ctx.source.platform, "value", str(ctx.source.platform or ""))
+        mention_fallback = ctx.resolve_display_setting(
+            ctx.user_config, platform_key, "mention_on_model_fallback"
+        )
+        prepared = _mention_model_fallback(prepared, ctx.source, enabled=bool(mention_fallback))
         fut = self._schedule(
             _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),
             f"status_callback ({event_type}) scheduling error",

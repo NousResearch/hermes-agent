@@ -24,6 +24,8 @@ export function formatTimelineTimestamp(seconds: number | undefined): string {
   return date ? fmtTimelineClock.format(date) : ''
 }
 
+/** Precise `start → end` range. Tooltip / expanded-detail only — the default
+ *  label is a duration (`formatTimelineDuration`). */
 export function formatTimelineRange(start: number | undefined, end: number | undefined): string {
   const from = formatTimelineTimestamp(start)
 
@@ -34,6 +36,36 @@ export function formatTimelineRange(start: number | undefined, end: number | und
   const to = formatTimelineTimestamp(end)
 
   return to ? `${from} → ${to}` : from
+}
+
+/** Friendly local clock ("1:02 PM") — no seconds, no milliseconds. The
+ *  transcript's default label for an event that has no measured duration. */
+export function formatTimelineClock(seconds: number | undefined): string {
+  const date = timelineDate(seconds)
+
+  return date ? fmtClock.format(date) : ''
+}
+
+/** How long a settled event took, in human units — "21s", "2m 5s", and "<1s"
+ *  for anything under a second. A start→end range said the same thing twice at
+ *  millisecond precision, which is why the transcript stopped rendering it. */
+export function formatTimelineDuration(start: number | undefined, end: number | undefined): string {
+  const from = timelineDate(start)
+  const to = timelineDate(end)
+
+  if (!from || !to || to.getTime() < from.getTime()) {
+    return ''
+  }
+
+  const seconds = Math.floor((to.getTime() - from.getTime()) / 1000)
+
+  if (seconds < 1) {
+    return '<1s'
+  }
+
+  const minutes = Math.floor(seconds / 60)
+
+  return minutes < 1 ? `${seconds}s` : `${minutes}m ${seconds % 60}s`
 }
 
 function startOfDay(d: Date): number {

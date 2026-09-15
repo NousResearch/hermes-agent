@@ -167,9 +167,10 @@ class VaultItemMeta:
     identifier_type: Optional[str] = None
     identifier: Optional[str] = None
     has_otp: bool = False  # a TOTP seed is stored: 2FA codes can be minted without asking the user
+    generated: bool = False  # safe to fill into an explicit new-password control for disposable QA
 
     def to_dict(self) -> Dict[str, Any]:
-        out = {
+        out: Dict[str, Any] = {
             "id": self.id,
             "kind": self.kind,
             "label": self.label,
@@ -181,6 +182,8 @@ class VaultItemMeta:
             out["identifier_type"] = self.identifier_type
         if self.has_otp:
             out["has_otp"] = True
+        if self.generated:
+            out["generated"] = True
         return out
 
 
@@ -294,6 +297,7 @@ class VaultStore:
         label: str,
         secret: Dict[str, Any],
         origin: Optional[str] = None,
+        generated: bool = False,
     ) -> VaultItemMeta:
         """Add an item. ``secret`` is the sensitive payload (encrypted at rest).
 
@@ -348,6 +352,7 @@ class VaultStore:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "identifier_type": identifier_type,
             "identifier": identifier,
+            "generated": bool(generated) if kind == "login" else False,
             "secret": dict(secret),
         }
         with self._locked():
@@ -408,6 +413,7 @@ class VaultStore:
             identifier_type=rec.get("identifier_type") if identifier else None,
             identifier=identifier or None,
             has_otp=bool((rec.get("secret") or {}).get("otp_secret")),
+            generated=bool(rec.get("generated", False)),
         )
 
 

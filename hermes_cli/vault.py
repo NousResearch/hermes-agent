@@ -4,6 +4,9 @@ Subcommands:
 - ``hermes vault add``   interactive wizard; the password is read via
   getpass (never echoed, never accepted as argv). The login identifier is
   visible metadata and prompted normally.
+- ``hermes vault generate-login`` creates a strong random password directly
+  inside the encrypted vault. The password is never printed or accepted as
+  argv; only non-secret metadata and the opaque handle are returned.
 - ``hermes vault list``  metadata — labels, kinds, identifiers, origins,
   handles. Passwords are never shown.
 - ``hermes vault rm``    remove an item by handle/id.
@@ -17,12 +20,73 @@ server-side without ever seeing it.
 from __future__ import annotations
 
 import getpass
+import secrets
+import string
 
 
 def _console():
     from rich.console import Console
 
     return Console()
+
+
+_GENERATED_PASSWORD_SYMBOLS = "!@#$%^&*()-_=+"
+
+
+def _password_length(value: str) -> int:
+    import argparse
+
+    try:
+        length = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("password length must be an integer") from exc
+    if not 16 <= length <= 128:
+        raise argparse.ArgumentTypeError("password length must be between 16 and 128")
+    return length
+
+
+def _generate_password(length: int) -> str:
+    """Generate a site-friendly password without exposing it outside this process."""
+    groups = (string.ascii_lowercase, string.ascii_uppercase, string.digits, _GENERATED_PASSWORD_SYMBOLS)
+    chars = [secrets.choice(group) for group in groups]
+    alphabet = "".join(groups)
+    chars.extend(secrets.choice(alphabet) for _ in range(length - len(chars)))
+    # Fisher-Yates with the OS CSPRNG; random.shuffle's default PRNG is not suitable for credentials.
+    for index in range(len(chars) - 1, 0, -1):
+        other = secrets.randbelow(index + 1)
+        chars[index], chars[other] = chars[other], chars[index]
+    return "".join(chars)
+
+
+def _cmd_generate_login(args) -> bool:
+    from agent.vault_store import VaultError, get_vault_store
+
+    c = _console()
+    password = _generate_password(args.length)
+    try:
+        meta = get_vault_store().add_item(
+            kind="login",
+            label=args.label,
+            origin=args.origin,
+            generated=True,
+            secret={
+                "identifier_type": args.identifier_type,
+                "identifier": args.identifier,
+                "password": password,
+            },
+        )
+    except VaultError as exc:
+        c.print(f"[red]Error:[/] {exc}")
+        return False
+    finally:
+        password = ""
+
+    c.print(
+        f"[green]Generated and stored.[/] handle=[bold]{meta.id}[/] "
+        f"kind={meta.kind} identifier={meta.identifier} origin={meta.origin or '-'}"
+    )
+    c.print(f"[dim]The password was never displayed. Remove it with `hermes vault rm {meta.id}`.[/]")
+    return True
 
 
 def _cmd_add(args) -> None:
@@ -196,6 +260,28 @@ def register_cli(subparser) -> None:
     )
     p_add.set_defaults(_vault_handler=_cmd_add)
 
+    p_generate = subs.add_parser(
+        "generate-login",
+        help="Generate a strong login password directly inside the encrypted vault",
+    )
+    p_generate.add_argument("--origin", required=True, help="Exact site origin the login may fill on")
+    p_generate.add_argument("--identifier", required=True, help="Login email, username, or phone metadata")
+    p_generate.add_argument(
+        "--identifier-type",
+        choices=("email", "phone", "username"),
+        default="email",
+        help="Identifier kind (default: email)",
+    )
+    p_generate.add_argument("--label", default="Temporary generated login", help="Vault item label")
+    p_generate.add_argument(
+        "--length",
+        type=_password_length,
+        default=24,
+        metavar="N",
+        help="Generated password length, 16-128 (default: 24)",
+    )
+    p_generate.set_defaults(_vault_handler=_cmd_generate_login)
+
     p_list = subs.add_parser("list", help="List vault items (metadata only, never values)")
     p_list.set_defaults(_vault_handler=_cmd_list)
 
@@ -215,4 +301,5 @@ def vault_command(args) -> None:
     if handler is None:
         _cmd_list(args)
         return
-    handler(args)
+    if handler(args) is False:
+        raise SystemExit(1)

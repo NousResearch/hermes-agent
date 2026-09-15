@@ -5783,6 +5783,12 @@ def _wizard_post_setup() -> None:
     """Offer to install/start/restart the gateway once at least one platform has progress."""
     print()
     print(color("─" * 58, Colors.DIM))
+    if named_profile_served_by_running_multiplexer():
+        print_success(
+            f"Profile '{_current_profile_name()}' is already served by the default multiplexer."
+        )
+        print_info("No standalone gateway service was installed or started.")
+        return
     service_installed = _is_service_installed()
     service_running = _is_service_running()
 

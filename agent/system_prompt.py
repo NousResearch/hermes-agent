@@ -24,6 +24,7 @@ from agent.prompt_builder import (
     SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
 )
+from agent.message_sanitization import safe_strftime
 from agent import prompt_builder as _pb
 from agent.runtime_cwd import resolve_context_cwd
 from hermes_constants import get_default_hermes_root, get_hermes_home
@@ -420,7 +421,9 @@ def _zone_bits(now: Any, tz: Any) -> List[str]:
     """IANA key, abbreviation (if different) and UTC offset — all constant for
     the day, so the byte-stable date line stays cacheable."""
     _iana = getattr(tz, "key", None)
-    _abbrev = now.strftime("%Z")
+    # safe_strftime: tz names via the Windows code page can carry lone
+    # surrogates and make strftime itself raise (#102910).
+    _abbrev = safe_strftime(now, "%Z")
     _offset = now.strftime("%z")  # '-0400' -> 'UTC-04:00'
     bits = [_iana] if _iana else []
     if _abbrev and _abbrev != _iana:
@@ -439,7 +442,7 @@ def _timestamp_line(agent: Any) -> str:
     _bits = _zone_bits(now, _hermes_tz())
     _zone_suffix = f" ({', '.join(_bits)})" if _bits else ""
     _start = _session_start_like(agent, now)
-    timestamp_line = f"Conversation started: {_start.strftime('%A, %B %d, %Y')}{_zone_suffix}"
+    timestamp_line = f"Conversation started: {safe_strftime(_start, '%A, %B %d, %Y')}{_zone_suffix}"
     # Second line (maintainer design, salvaging #96224's anchor): long-lived sessions — Bot Mode
     # forever-chats, messenger channels people never close — span many days and many compactions. A lone
     # birth date leads the model to believe it is still living in that old day. The prompt is rebuilt at

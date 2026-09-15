@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { deferred } from '../test/deferred'
+
 const secondaryGateways: Array<{
   close: ReturnType<typeof vi.fn>
   connect: ReturnType<typeof vi.fn>
@@ -47,6 +49,7 @@ vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() })
 
 const {
   $gateway,
+  activeGatewayConnectionId,
   closeSecondaryGateways,
   configureGatewayRegistry,
   ensureGatewayForAgent,
@@ -566,21 +569,75 @@ describe('retainGatewayForAgent (#93602)', () => {
 })
 
 describe('attached shared-remote group turns (#96493)', () => {
-  function installAttachedSharedRemote() {
+  type AgentDescriptor = {
+    connectionId: string
+    port: number
+    profile: string
+    sharedRemote: boolean
+  }
+
+  function installAgentResolver(getConnectionFor: ReturnType<typeof vi.fn>): void {
     ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
       getConnection: vi.fn(async (profile: null | string) => ({ port: 4242, profile, token: 't' })),
-      getConnectionFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
-        connectionId,
-        port: 9119,
-        profile,
-        sharedRemote: true
-      })),
+      getConnectionFor,
       getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
         ok: true as const,
         wsUrl: `ws://${connectionId}/${profile}`
       })),
       touchBackend: vi.fn(async () => undefined)
     }
+  }
+
+  function installAttachedSharedRemote() {
+    const getConnectionFor = vi.fn(
+      async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+        connectionId,
+        port: 9119,
+        profile,
+        sharedRemote: true
+      })
+    )
+
+    installAgentResolver(getConnectionFor)
+
+    return getConnectionFor
+  }
+
+  function installDelayedSharedProbe(probe: Promise<AgentDescriptor>) {
+    const getConnectionFor = vi.fn(
+      async ({ connectionId, profile }: { connectionId: string; profile: string }) => {
+        if (connectionId === 'homelab' && profile === 'voter') {
+          return probe
+        }
+
+        return { connectionId, port: 9119, profile, sharedRemote: false }
+      }
+    )
+
+    installAgentResolver(getConnectionFor)
+
+    return getConnectionFor
+  }
+
+  async function activateLocalSecondary() {
+    const primary = makePrimary()
+
+    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'homelab' })
+    const getConnectionFor = installAttachedSharedRemote()
+    await ensureGatewayForAgent('local', 'default')
+
+    return { getConnectionFor, local: secondaryGateways[0], primary }
+  }
+
+  async function waitForSharedProbe(getConnectionFor: ReturnType<typeof vi.fn>): Promise<void> {
+    await vi.waitFor(() =>
+      expect(getConnectionFor).toHaveBeenCalledWith(
+        expect.objectContaining({ connectionId: 'homelab', profile: 'voter' })
+      )
+    )
+    await Promise.resolve()
+    await Promise.resolve()
   }
 
   it('reuses the primary socket for a named profile on the attached shared remote', async () => {
@@ -654,6 +711,233 @@ describe('attached shared-remote group turns (#96493)', () => {
 
     expect(secondaryGateways).toHaveLength(0)
     expect(primary.request).toHaveBeenCalledOnce()
+  })
+
+  it('activates the attached primary when leaving a local secondary for its named profile', async () => {
+    const { primary } = await activateLocalSecondary()
+    const localActivationEpoch = gatewayActivationEpoch()
+
+    expect($gateway.get()).toBe(secondaryGateways[0])
+
+    await ensureGatewayForAgent('homelab', 'voter')
+
+    expect(activeGatewayConnectionId()).toBe('homelab')
+    expect($gateway.get()).toBe(primary)
+    expect(gatewayActivationEpoch()).toBeGreaterThan(localActivationEpoch)
+    expect(secondaryGateways).toHaveLength(1)
+  })
+
+  it('waits for the commit barrier before activating an attached shared remote primary', async () => {
+    const barrier = deferred<void>()
+    const { getConnectionFor } = await activateLocalSecondary()
+    let settled = false
+
+    const activation = ensureGatewayForAgent('homelab', 'voter', { activationBarrier: barrier.promise }).finally(() => {
+      settled = true
+    })
+
+    await waitForSharedProbe(getConnectionFor)
+    expect(settled).toBe(false)
+    expect(activeGatewayConnectionId()).toBe('local')
+
+    barrier.resolve()
+    await expect(activation).resolves.toBe(true)
+    expect(activeGatewayConnectionId()).toBe('homelab')
+  })
+
+  it('does not activate an attached shared remote primary when aborted behind the commit barrier', async () => {
+    const barrier = deferred<void>()
+    const controller = new AbortController()
+    const { getConnectionFor, local } = await activateLocalSecondary()
+    let settled = false
+
+    const activation = ensureGatewayForAgent('homelab', 'voter', {
+      activationBarrier: barrier.promise,
+      signal: controller.signal
+    }).finally(() => {
+      settled = true
+    })
+
+    await waitForSharedProbe(getConnectionFor)
+    expect(settled).toBe(false)
+
+    controller.abort()
+    barrier.resolve()
+
+    await expect(activation).resolves.toBe(false)
+    expect(activeGatewayConnectionId()).toBe('local')
+    expect($gateway.get()).toBe(local)
+  })
+
+  it('does not activate the exact primary route when aborted behind the commit barrier', async () => {
+    const barrier = deferred<void>()
+    const controller = new AbortController()
+    const { local } = await activateLocalSecondary()
+    let settled = false
+
+    const activation = ensureGatewayForAgent('homelab', 'default', {
+      activationBarrier: barrier.promise,
+      signal: controller.signal
+    }).finally(() => {
+      settled = true
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(settled).toBe(false)
+    expect(activeGatewayConnectionId()).toBe('local')
+
+    controller.abort()
+    barrier.resolve()
+
+    await expect(activation).resolves.toBe(false)
+    expect(activeGatewayConnectionId()).toBe('local')
+    expect($gateway.get()).toBe(local)
+  })
+
+  it('rejects a primary activation after same-id connection metadata is republished', async () => {
+    const barrier = deferred<void>()
+    const primary = makePrimary()
+
+    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'homelab' })
+    await ensureGatewayForProfile('default')
+
+    let settled = false
+
+    const activation = ensureGatewayForAgent('homelab', 'default', {
+      activationBarrier: barrier.promise
+    }).finally(() => {
+      settled = true
+    })
+
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    setPrimaryGatewayConnection({ connectionId: 'homelab' })
+    barrier.resolve()
+
+    await expect(activation).resolves.toBe(false)
+    expect($gateway.get()).toBe(primary)
+  })
+
+  it('does not activate when primary ownership changes behind the commit barrier', async () => {
+    const barrier = deferred<void>()
+    const { getConnectionFor, local } = await activateLocalSecondary()
+    let settled = false
+
+    const activation = ensureGatewayForAgent('homelab', 'voter', {
+      activationBarrier: barrier.promise
+    }).finally(() => {
+      settled = true
+    })
+
+    await waitForSharedProbe(getConnectionFor)
+    expect(settled).toBe(false)
+
+    setPrimaryGateway(makePrimary() as never, 'default')
+    barrier.resolve()
+
+    await expect(activation).resolves.toBe(false)
+    expect(activeGatewayConnectionId()).toBe('local')
+    expect($gateway.get()).toBe(local)
+  })
+
+  it('does not let a slower shared-remote probe override a newer activation', async () => {
+    const probe = deferred<AgentDescriptor>()
+    const getConnectionFor = installDelayedSharedProbe(probe.promise)
+    const primary = makePrimary()
+
+    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'homelab' })
+    const staleActivation = ensureGatewayForAgent('homelab', 'voter')
+
+    await vi.waitFor(() =>
+      expect(getConnectionFor).toHaveBeenCalledWith(
+        expect.objectContaining({ connectionId: 'homelab', profile: 'voter' })
+      )
+    )
+    await expect(ensureGatewayForAgent('local', 'default')).resolves.toBe(true)
+    const local = $gateway.get()
+    const winnerEpoch = gatewayActivationEpoch()
+
+    probe.resolve({ connectionId: 'homelab', port: 9119, profile: 'voter', sharedRemote: true })
+
+    await expect(staleActivation).resolves.toBe(false)
+    expect(activeGatewayConnectionId()).toBe('local')
+    expect($gateway.get()).toBe(local)
+    expect(gatewayActivationEpoch()).toBe(winnerEpoch)
+  })
+
+  it('does not advance the epoch after an aborted isolated probe loses to a newer activation', async () => {
+    const probe = deferred<AgentDescriptor>()
+    const controller = new AbortController()
+    const getConnectionFor = installDelayedSharedProbe(probe.promise)
+    const primary = makePrimary()
+
+    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'homelab' })
+    const staleActivation = ensureGatewayForAgent('homelab', 'voter', { signal: controller.signal })
+
+    await vi.waitFor(() =>
+      expect(getConnectionFor).toHaveBeenCalledWith(
+        expect.objectContaining({ connectionId: 'homelab', profile: 'voter' })
+      )
+    )
+    controller.abort()
+    await expect(ensureGatewayForAgent('local', 'default')).resolves.toBe(true)
+    const local = $gateway.get()
+    const winnerEpoch = gatewayActivationEpoch()
+
+    probe.resolve({ connectionId: 'homelab', port: 9119, profile: 'voter', sharedRemote: false })
+
+    await expect(staleActivation).resolves.toBe(false)
+    expect(activeGatewayConnectionId()).toBe('local')
+    expect($gateway.get()).toBe(local)
+    expect(gatewayActivationEpoch()).toBe(winnerEpoch)
+  })
+
+  it('does not activate an isolated secondary when aborted behind the commit barrier', async () => {
+    const barrier = deferred<void>()
+    const controller = new AbortController()
+
+    const getConnectionFor = vi.fn(
+      async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+        connectionId,
+        port: 9119,
+        profile,
+        sharedRemote: false
+      })
+    )
+
+    const primary = makePrimary()
+
+    installAgentResolver(getConnectionFor)
+    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'homelab' })
+    await ensureGatewayForProfile('default')
+
+    let settled = false
+
+    const activation = ensureGatewayForAgent('archive', 'voter', {
+      activationBarrier: barrier.promise,
+      signal: controller.signal
+    }).finally(() => {
+      settled = true
+    })
+
+    await vi.waitFor(() => expect(secondaryGateways).toHaveLength(1))
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    expect(activeGatewayConnectionId()).toBe('homelab')
+
+    controller.abort()
+    barrier.resolve()
+
+    await expect(activation).resolves.toBe(false)
+    expect(activeGatewayConnectionId()).toBe('homelab')
+    expect($gateway.get()).toBe(primary)
   })
 
   it('openGatewayForAgent and ensureGatewayForAgent do not dial a secondary', async () => {

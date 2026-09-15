@@ -426,6 +426,12 @@ describe('ensureGatewayAgent commit hook (beforeActivate) — the Sessions switc
 
     const abandoned = ensureGatewayAgent('homelab', 'research', { signal: controller.signal })
     await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledTimes(1))
+    expect(ensureGatewayForAgent).toHaveBeenNthCalledWith(
+      1,
+      'homelab',
+      'research',
+      expect.objectContaining({ activationBarrier: expect.any(Promise), signal: controller.signal })
+    )
 
     controller.abort()
 

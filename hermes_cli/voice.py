@@ -8,7 +8,6 @@ import logging
 import os
 import re
 import sys
-import tempfile
 import threading
 import time
 from typing import Any, Callable, Optional
@@ -608,9 +607,12 @@ def _speak_whole_file(text: str) -> None:
         return
 
     # Pre-chosen MP3 path so we can play MP3 even when text_to_speech_tool auto-converts to OGG
-    # for messaging platforms (afplay's OGG is flaky).
-    os.makedirs(os.path.join(tempfile.gettempdir(), "hermes_voice"), exist_ok=True)
-    mp3_path = os.path.join(tempfile.gettempdir(), "hermes_voice", f"tts_{time.strftime('%Y%m%d_%H%M%S')}.mp3")
+    # for messaging platforms (afplay's OGG is flaky). The base dir must pass the write-safe
+    # guard (Docker defaults HERMES_WRITE_SAFE_ROOT=/opt/data) — same as gateway auto-TTS.
+    from gateway.platforms.base import tts_scratch_dir
+
+    voice_dir = tts_scratch_dir()
+    mp3_path = os.path.join(voice_dir, f"tts_{time.strftime('%Y%m%d_%H%M%S')}.mp3")
     _debug(f"speak_text: synthesizing {len(tts_text)} chars -> {mp3_path}")
     raw_result = text_to_speech_tool(text=tts_text, output_path=mp3_path)
     try:

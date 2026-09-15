@@ -548,6 +548,11 @@ DEFAULT_CONFIG = {
         # min_tail_user_messages: REAL (actionable) user messages guaranteed to survive in the tail.
         # 1 = single last-user anchor; raise (e.g. 3) when bulky tool outputs fill the tail budget.
         "min_tail_user_messages": 1,
+        # tail_assistant_max_chars: opt-in. Lean mode cuts a tail assistant message longer than
+        # this, leaving a recovery pointer. A degenerate generation (a model repeating one phrase)
+        # otherwise pins tens of thousands of tokens the tail budget cannot evict. 0 = never cut
+        # (default): the cut rewrites text the model really emitted, so it is opt-in.
+        "tail_assistant_max_chars": 0,
         # max_attempts: retry rounds before a turn gives up with "max compression attempts reached".
         # Raise (e.g. 6) for tool-schema-heavy sessions. Validated >= 1, cap 10.
         "max_attempts": 3,

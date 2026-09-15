@@ -654,6 +654,18 @@ compression:
   # cut back; the guarantee wins over the budget by design.
   min_tail_user_messages: 1
 
+  # lean tail only, OPT-IN (default: 0 = never cut). Cut an assistant message
+  # whose content exceeds this many characters, leaving a session_search
+  # recovery pointer. A degenerate generation — a model that collapses into
+  # repeating one phrase — writes a single message far larger than the whole
+  # tail budget, and neither the message-count floor nor the newest-assistant
+  # anchor can evict it, so compaction reclaims nothing and every later turn
+  # re-sends it. Enable only if you hit that: the cut rewrites text the model
+  # really emitted, and a long legitimate report would be cut too. 16000
+  # (~4K tokens) is what the deployment that hit this ran. tool_calls are never
+  # touched, and the full text stays in session history.
+  tail_assistant_max_chars: 0
+
   # Compression retry rounds before a turn gives up with "max compression
   # attempts reached" (default: 3, same as the previous hardcoded value).
   # Raise (e.g. 6) for tool-schema-heavy sessions where 3 rounds cannot bring

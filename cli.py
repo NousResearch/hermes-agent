@@ -4160,9 +4160,12 @@ def _run_quiet_single_query(cli, effective_query):
     # rate-limit/billing exit with the EX_TEMPFAIL sentinel so the dispatcher releases
     # the task without counting a failure (a quota window must not trip the breaker).
     _exit_code = 0
-    if isinstance(result, dict) and result.get("failed"):
-        _exit_code = 1
-        if os.environ.get("HERMES_KANBAN_TASK") and result.get("failure_reason") in ("rate_limit", "billing"):
+    if isinstance(result, dict):
+        failed = bool(result.get("failed"))
+        incomplete = bool(result.get("interrupted") or result.get("partial") or result.get("completed") is False)
+        if failed or incomplete:
+            _exit_code = 1
+        if failed and os.environ.get("HERMES_KANBAN_TASK") and result.get("failure_reason") in ("rate_limit", "billing"):
             try:
                 from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE
                 _exit_code = _RL_CODE

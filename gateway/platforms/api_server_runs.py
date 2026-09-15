@@ -70,6 +70,23 @@ def _run_event(run_id: str, name: str, **fields: Any) -> Dict[str, Any]:
     return {"event": name, "run_id": run_id, "timestamp": time.time(), **fields}
 
 
+def _terminal_result_fields(result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Map an agent result to one truthful API terminal status and wire fields."""
+    interrupted = bool(result.get("interrupted"))
+    partial = bool(result.get("partial"))
+    incomplete = partial or result.get("completed") is False
+    failed = bool(result.get("failed"))
+    status = "cancelled" if interrupted else "failed" if failed or incomplete else "completed"
+    fields = {
+        "completed": status == "completed",
+        "partial": partial,
+        "interrupted": interrupted,
+    }
+    if result.get("incomplete_reason"):
+        fields["incomplete_reason"] = result["incomplete_reason"]
+    return status, fields
+
+
 def _run_not_found(_openai_error, run_id: str) -> "web.Response":
     return _json_error(_openai_error, f"Run not found: {run_id}", code="run_not_found", status=404)
 
@@ -633,15 +650,18 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             None, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
         if not isinstance(result, dict):
             result = {}
+        terminal_status, terminal_fields = _terminal_result_fields(result)
+        # Undelivered steer text rides on every terminal event/status for client replay.
+        extra = {"pending_steer": result["pending_steer"]} if result.get("pending_steer") else {}
         if run_id in self._stopping_run_ids and result.get("interrupted") is True:
-            _finish("cancelled")
+            _finish("cancelled", extra, output=result.get("final_response", ""), usage=usage, **terminal_fields)
         elif result.get("failed"):
             # Non-retryable client errors (401/400) return failed=True rather than raising.
-            _finish("failed", error=_redact_api_error_text(result.get("error") or "agent run failed"))
+            _finish(
+                "failed", extra, output=result.get("final_response", ""), usage=usage,
+                error=_redact_api_error_text(result.get("error") or "agent run failed"), **terminal_fields)
         else:
-            # Undelivered steer text rides on the terminal event/status for client replay.
-            extra = {"pending_steer": result["pending_steer"]} if result.get("pending_steer") else {}
-            _finish("completed", extra, output=result.get("final_response", ""), usage=usage)
+            _finish(terminal_status, extra, output=result.get("final_response", ""), usage=usage, **terminal_fields)
     except asyncio.CancelledError:
         _finish("cancelled")
         raise

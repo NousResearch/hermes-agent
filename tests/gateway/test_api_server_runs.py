@@ -671,6 +671,47 @@ class TestSteerRun:
         assert adapter._run_statuses[run_id]["pending_steer"] == "tighten the ending"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("result", "terminal_status"),
+        [
+            ({"completed": False, "incomplete_reason": "turn limit"}, "failed"),
+            ({"partial": True, "incomplete_reason": "context limit"}, "failed"),
+            ({"interrupted": True}, "cancelled"),
+        ],
+    )
+    async def test_pending_steer_is_preserved_for_every_non_completed_terminal_result(
+        self, adapter, result, terminal_status
+    ):
+        """Incomplete and interrupted runs retain a late steer for client replay."""
+        app = _create_runs_app(adapter)
+        result.update(final_response="unfinished", pending_steer="try a narrower scope")
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_agent.run_conversation.return_value = result
+                mock_create.return_value = mock_agent
+
+                start_resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await start_resp.json())["run_id"]
+                for _ in range(40):
+                    status = adapter._run_statuses.get(run_id, {})
+                    if status.get("status") == terminal_status:
+                        break
+                    await asyncio.sleep(0.05)
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                events = await events_resp.text()
+
+        status = adapter._run_statuses[run_id]
+        assert status["status"] == terminal_status
+        assert status["pending_steer"] == "try a narrower scope"
+        assert f"run.{terminal_status}" in events
+        assert "try a narrower scope" in events
+
+    @pytest.mark.asyncio
     async def test_steer_requires_auth(self, auth_adapter):
         app = _create_runs_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:

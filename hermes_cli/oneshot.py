@@ -28,7 +28,7 @@ _ALL_TOOLSETS = {"all", "*"}
 _USAGE_KEYS = (
     "estimated_cost_usd", "cost_status", "cost_source", "input_tokens", "output_tokens",
     "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens", "api_calls",
-    "model", "provider", "session_id", "completed",
+    "model", "provider", "session_id", "completed", "partial", "incomplete_reason", "interrupted",
 )
 
 
@@ -256,9 +256,15 @@ def run_oneshot(
             real_stdout.write("\n")
         real_stdout.flush()
 
+    incomplete = (
+        bool(result.get("failed"))
+        or bool(result.get("interrupted"))
+        or bool(result.get("partial"))
+        or result.get("completed") is False
+    )
+    if incomplete:
+        return 2
     if not (response or "").strip():
-        if result.get("failed") or result.get("partial"):
-            return 2
         real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
         real_stderr.flush()
         return 1

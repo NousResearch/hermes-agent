@@ -3185,23 +3185,23 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
                 turn_messages = self._turn_transcript_messages(history, user_message, result) if is_dict else []
                 effective_runtime = self._effective_turn_runtime(runtime_request, result, usage)
-                await queue.put(_event_payload("assistant.completed", {
+                terminal_status, terminal_fields = _api_runs._terminal_result_fields(result if is_dict else {})
+                assistant_payload = {
                     "session_id": effective_session_id, "message_id": message_id,
-                    "content": final_response, "completed": True,
-                    "partial": bool(result.get("partial")) if is_dict else False,
-                    "interrupted": False, "runtime": effective_runtime}))
+                    "content": final_response, **terminal_fields, "runtime": effective_runtime}
+                await queue.put(_event_payload("assistant.completed", assistant_payload))
                 # A steer accepted after the final reply lands in result["pending_steer"]; surface
                 # it so clients can replay it rather than lose it.
                 pending_steer = result.get("pending_steer") if is_dict else None
-                completed_payload = {
-                    "session_id": effective_session_id, "message_id": message_id, "completed": True,
+                terminal_payload = {
+                    "session_id": effective_session_id, "message_id": message_id, **terminal_fields,
                     "messages": turn_messages, "usage": usage, "runtime": effective_runtime}
                 if pending_steer:
-                    completed_payload["pending_steer"] = pending_steer
-                await queue.put(_event_payload("run.completed", completed_payload))
+                    terminal_payload["pending_steer"] = pending_steer
+                await queue.put(_event_payload(f"run.{terminal_status}", terminal_payload))
                 self._set_run_status(
-                    run_id, "completed", session_id=effective_session_id, usage=usage,
-                    last_event="run.completed",
+                    run_id, terminal_status, session_id=effective_session_id, usage=usage,
+                    last_event=f"run.{terminal_status}", **terminal_fields,
                     **({"pending_steer": pending_steer} if pending_steer else {}))
             except asyncio.CancelledError:
                 self._set_run_status(run_id, "cancelled", last_event="run.cancelled")

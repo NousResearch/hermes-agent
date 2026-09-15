@@ -2,7 +2,9 @@
 
 import json
 
-from hermes_cli.oneshot import _write_usage_file
+import pytest
+
+from hermes_cli.oneshot import _write_usage_file, run_oneshot
 
 
 def _result(**overrides):
@@ -54,4 +56,18 @@ class TestWriteUsageFile:
         # Missing result fields serialize as null, not KeyError.
         assert report["estimated_cost_usd"] is None
 
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"final_response": "incomplete", "completed": False},
+        {"final_response": "partial", "partial": True},
+        {"final_response": "interrupted", "interrupted": True},
+    ],
+)
+def test_oneshot_returns_usage_error_for_non_terminal_success_results(monkeypatch, result):
+    """-z must fail even when an incomplete turn produced visible text."""
+    monkeypatch.setattr("hermes_cli.oneshot._run_agent", lambda *_args, **_kwargs: (result["final_response"], result))
+
+    assert run_oneshot("hello") == 2
 

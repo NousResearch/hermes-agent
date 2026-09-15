@@ -1,6 +1,7 @@
 """Focused tests for API server session-control endpoints."""
 
 import asyncio
+import json
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -383,6 +384,48 @@ async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter
     assert all(m.get("role") in ("assistant", "tool") for m in messages)
     # The tool call is preserved alongside the intermediate text.
     assert any(m.get("tool_calls") for m in messages)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result", "event_name", "status"),
+    [
+        ({"completed": False, "incomplete_reason": "turn limit"}, "run.failed", "failed"),
+        ({"partial": True, "incomplete_reason": "context limit"}, "run.failed", "failed"),
+        ({"interrupted": True}, "run.cancelled", "cancelled"),
+    ],
+)
+async def test_session_chat_stream_reports_non_success_terminal_result(
+    adapter, session_db, result, event_name, status
+):
+    """SSE and persisted status must agree that incomplete turns did not complete."""
+    session_id = session_db.create_session("terminal-result-session", "api_server")
+    result.update(final_response="unfinished")
+
+    async def fake_run(**_kwargs):
+        return result, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream", json={"message": "hello"}
+            )
+            body = await response.text()
+
+    payloads = {}
+    for block in body.split("\n\n"):
+        event = next((line[7:] for line in block.splitlines() if line.startswith("event: ")), None)
+        data = next((line[6:] for line in block.splitlines() if line.startswith("data: ")), None)
+        if event and data:
+            payloads[event] = json.loads(data)
+
+    assert event_name in payloads
+    assert payloads["assistant.completed"]["completed"] is False
+    assert payloads[event_name]["completed"] is False
+    if "incomplete_reason" in result:
+        assert payloads[event_name]["incomplete_reason"] == result["incomplete_reason"]
+    assert adapter._run_statuses[next(iter(adapter._run_statuses))]["status"] == status
 
 
 # ---------------------------------------------------------------------------

@@ -49,6 +49,26 @@ def test_quiet_one_shot_passes_turn_author_from_env(monkeypatch, capsys):
     assert capsys.readouterr().out.strip() == "ok"
 
 
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"final_response": "incomplete", "completed": False},
+        {"final_response": "partial", "partial": True},
+        {"final_response": "interrupted", "interrupted": True},
+    ],
+)
+def test_quiet_one_shot_rejects_non_terminal_success_results(monkeypatch, result):
+    """Automation must not receive exit 0 when a turn did not complete."""
+    agent = SimpleNamespace(run_conversation=lambda **_kwargs: result, session_id="s-1")
+
+    with pytest.raises(SystemExit) as exc:
+        cli._run_quiet_single_query(
+            SimpleNamespace(agent=agent, conversation_history=[], session_id="s-1"), "hello"
+        )
+
+    assert exc.value.code == 1
+
+
 def test_quiet_one_shot_consumes_the_variable_before_the_turn(monkeypatch):
     """Tool subprocesses spawned during the turn must not see the dispatcher's author."""
     seen = {}

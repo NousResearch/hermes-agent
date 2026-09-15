@@ -36,12 +36,38 @@ _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
 
 
 def _build_browser_env() -> dict:
-    """Credential-scrubbed env for an agent-browser subprocess (deferred import: test
-    harnesses stub the ``tools`` package)."""
+    """Credential-scrubbed env for an agent-browser subprocess.
+
+    ``browser.chrome_path`` is a non-secret operator override. Export it under
+    agent-browser's documented environment contract so local automation does
+    not silently fall back to the user's signed Google Chrome application.
+    """
     from tools.environments.local import hermes_subprocess_env
 
     env = hermes_subprocess_env(inherit_credentials=False)
     env.update({k: os.environ[k] for k in _BROWSER_PASSTHROUGH_KEYS if k in os.environ})
+
+    configured_path = str(
+        _browser_cfg("chrome_path", "", lambda value: value or "", "browser.chrome_path")
+    ).strip()
+    if configured_path:
+        try:
+            executable = Path(configured_path).expanduser()
+            exists = executable.is_file()
+        except (OSError, RuntimeError) as exc:
+            logger.warning(
+                "Configured browser.chrome_path is unusable; ignoring it: %s (%s)",
+                configured_path,
+                exc,
+            )
+        else:
+            if exists:
+                env["AGENT_BROWSER_EXECUTABLE_PATH"] = str(executable)
+            else:
+                logger.warning(
+                    "Configured browser.chrome_path does not exist; ignoring it: %s",
+                    executable,
+                )
     return env
 
 

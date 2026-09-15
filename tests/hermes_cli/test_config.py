@@ -1941,3 +1941,19 @@ def test_gateway_multiplex_keys_are_recognized_config_keys():
     known, suggestion = _validate_config_key("gateway.auto_migrate")
     assert known is False
     assert suggestion == "gateway.auto_multiplex_migration"
+
+
+@pytest.mark.parametrize("setting, expected", [(True, True), (False, False), (None, False), ("true", True), ("false", False)])
+def test_hosted_ocr_config_reaches_runtime_and_existing_settings_category(tmp_path, monkeypatch, setting, expected):
+    import yaml
+    from hermes_cli.web_server_config import _build_schema_from_config
+    from tools.read_extract import hosted_ocr_available
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"file_tools": {"hosted_ocr": setting}}), encoding="utf-8")
+    config = load_config()
+    assert config["file_tools"]["hosted_ocr"] == setting
+    assert hosted_ocr_available() is expected
+    schema = _build_schema_from_config(DEFAULT_CONFIG)
+    assert schema["file_tools.hosted_ocr"]["category"] == schema["agent.max_turns"]["category"]

@@ -142,20 +142,43 @@ def _anydoc_missing_error(path: str) -> str:
         "txt).")
 
 
+def _coerce_hosted_ocr(value: Any) -> Optional[bool]:
+    """Tri-state coercion for ``file_tools.hosted_ocr``: True/False/None.
+
+    Hand-edited YAML regularly carries quoted strings ("true", "false")
+    where the strict ``is True``/``is False`` branches would silently read
+    them as auto: a quoted 'false' would not disable the outbound call and
+    a quoted 'true' would not opt in. Uses the same token table as
+    ``hermes config set`` (true/1/yes/on, false/0/no/off). Anything else
+    stays None (auto).
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"true", "1", "yes", "on"}:
+            return True
+        if v in {"false", "0", "no", "off"}:
+            return False
+    return None
+
+
 def _hosted_ocr_config() -> tuple:
-    """(enabled, api_key, api_url); never raises, no network. Maintainer decision: the ONLY route
-    is a direct ``FIRECRAWL_API_KEY`` (anydoc defaults api_url); the Nous gateway's Parse proxy
-    live-probed broken, so it is NOT used. ``file_tools.hosted_ocr: false`` disables even with a
-    key. The key is a profile credential: read through the secret scope so a multiplexed
-    secondary never spends (or reveals its documents to) the default profile's Firecrawl key."""
+    """Resolve hosted OCR without network I/O. False disables uploads; True opts into the
+    keyless route when no profile key is set; None keeps the existing key-gated default.
+    Credentials stay profile-scoped, and the Nous gateway is not used."""
     from agent.secret_scope import get_secret
     api_key = get_secret("FIRECRAWL_API_KEY") or None
     enabled = api_key is not None
     with contextlib.suppress(Exception):
         from hermes_cli.config import load_config_readonly
         section = load_config_readonly().get("file_tools")
-        if isinstance(section, dict) and section.get("hosted_ocr") is False:
-            enabled = False
+        if isinstance(section, dict):
+            setting = _coerce_hosted_ocr(section.get("hosted_ocr"))
+            if setting is not None:
+                enabled = setting
     return enabled, api_key, None
 
 
@@ -193,8 +216,9 @@ def _ocr_scanned_pdf(mod: Any, path: str, exc: BaseException) -> str:
     hosted_error = ""
     if enabled:
         try:
-            extra = {k: v for k, v in (("api_key", api_key), ("api_url", api_url)) if v}
-            return mod.to_markdown(path, ocr="hosted", **extra).rstrip("\n") + "\n"
+            # None lets anydoc fall back to process credentials from another profile.
+            return mod.to_markdown(path, ocr="hosted", api_key=api_key or "",
+                                   api_url=api_url or "https://api.firecrawl.dev").rstrip("\n") + "\n"
         except Exception as hosted_exc:  # noqa: BLE001
             hosted_error = f"{type(hosted_exc).__name__}: {hosted_exc}"
     return _needs_ocr_warning(path, pages, hosted_error)  # whole doc is scans: the warning IS it

@@ -38,8 +38,9 @@ class _FakeRun:
             if key in endpoint:
                 rc = spec.get("returncode", 0)
                 if rc != 0:
-                    return subprocess.CompletedProcess(
-                        command, rc, stdout="", stderr=spec.get("stderr", ""))
+                    # Mirror real subprocess.run(check=True): a non-zero gh exit raises.
+                    raise subprocess.CalledProcessError(
+                        rc, command, output="", stderr=spec.get("stderr", ""))
                 return subprocess.CompletedProcess(
                     command, 0, stdout=json.dumps(spec["stdout"]), stderr="")
         raise AssertionError(f"unexpected gh api endpoint: {endpoint!r}")

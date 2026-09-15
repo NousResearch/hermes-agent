@@ -278,8 +278,19 @@ def _kill_pids_windows(pids: list[int], killed: list[int], failed: list[tuple[in
             failed.append((pid, str(e)))
 
 
+# SIGTERM -> SIGKILL grace for POSIX dashboard kills.  Must exceed the
+# dashboard lifespan teardown budget so a graceful shutdown always gets to
+# finish: hermes_cli/web_server.py::_lifespan finally block runs
+# stop_hosted_room_service(timeout=5.0) + hosted_room_start_thread.join(1.0)
+# + PTY_REGISTRY.close_all().  A SIGKILL landing inside that window skips
+# close_all() and orphans ui-tui / tui_gateway.entry children that keep
+# holding state.db-wal, making the next startup abort with a FATAL
+# DeletedWalGenerationError (#111912).
+_POSIX_TERM_GRACE_SECONDS = 12.0
+
+
 def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int, str]]) -> None:
-    """SIGTERM, wait up to ~3s for graceful exit, SIGKILL survivors."""
+    """SIGTERM, wait up to ``_POSIX_TERM_GRACE_SECONDS`` for graceful exit, SIGKILL survivors."""
     import signal as _signal
     import time as _time
 
@@ -297,7 +308,7 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
 
     for pid in pids:
         _send(pid, _signal.SIGTERM)
-    deadline = _time.monotonic() + 3.0
+    deadline = _time.monotonic() + _POSIX_TERM_GRACE_SECONDS
     pending = [p for p in pids if p not in killed and p not in {f[0] for f in failed}]
     while pending and _time.monotonic() < deadline:
         _time.sleep(0.1)

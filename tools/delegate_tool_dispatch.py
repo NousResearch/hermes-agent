@@ -91,8 +91,12 @@ def _report_child_done(parent_agent, spinner_ref, entry, tag, task_labels, n_tas
     label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
     status = entry.get("status", "?")
     _slot = f"{tag} · {idx+1}/{n_tasks}" if tag else f"{idx+1}/{n_tasks}"
-    completion_line = f"{'✓' if status == 'completed' else '✗'} [{_slot}] {label}  ({entry.get('duration_seconds', 0)}s)"
+    schema_invalid = entry.get("schema_valid") is False and status == "completed"
+    icon = "⚠" if schema_invalid else ("✓" if status == "completed" else "✗")
+    completion_line = f"{icon} [{_slot}] {label}  ({entry.get('duration_seconds', 0)}s)"
     _err_line = _clean_error_text(entry.get("error"), max_chars=120) if status in SUBAGENT_FAILURE_STATUSES else ""
+    if schema_invalid:
+        _err_line = "output_schema not satisfied — raw text returned (schema_valid=false)"
     if _err_line:
         completion_line += f" — {_err_line}"
     _print_completion_line(parent_agent, spinner_ref, completion_line)

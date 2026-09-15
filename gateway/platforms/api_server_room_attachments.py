@@ -121,6 +121,13 @@ def _record_staging_origin(
         )
 
 
+def _existing_connection(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(path.absolute().as_uri() + "?mode=rw", uri=True, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
 class RoomAttachmentSpool:
     """Private atomic target spool keyed to one exact peer-run attempt."""
 
@@ -130,11 +137,15 @@ class RoomAttachmentSpool:
         *,
         root: Path | str | None = None,
         clock=time.time,
+        _existing_only: bool = False,
     ) -> None:
         self.db_path = Path(db_path)
         self.root = Path(root or self.db_path.parent / "roomlink-attachment-spool")
         self.clock = clock
         self._lock = threading.RLock()
+        self._existing_only = _existing_only
+        if _existing_only:
+            return
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         try:
             os.chmod(self.root, 0o700)
@@ -145,6 +156,8 @@ class RoomAttachmentSpool:
         self.prune()
 
     def _connect(self) -> sqlite3.Connection:
+        if self._existing_only:
+            return _existing_connection(self.db_path)
         from hermes_state_wal import apply_wal_with_fallback
 
         self.db_path.parent.mkdir(parents=True, exist_ok=True)

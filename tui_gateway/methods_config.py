@@ -13,6 +13,12 @@ from .contracts.config_free_tier_control import (
     SetupStatusResult,
 )
 from .method_ctx import HandlerRegistry, bind_module
+from .contracts.projects_pets import (
+    ProjectsDiscoverReposResult,
+    ProjectsProjectSessionsResult,
+    ProjectsRecordReposResult,
+    ProjectsTreeResult,
+)
 
 from hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
 from hermes_constants import display_hermes_home as _display_hermes_home

@@ -28,6 +28,21 @@ method_ctx.py) and may reference server module globals (``_ok``, ``_err``).
 from __future__ import annotations
 
 from .method_ctx import HandlerRegistry
+from .contracts.base import Params
+from .contracts.profiles_vault_complete_foreign_subagents import (
+    VaultAddParams,
+    VaultAddResult,
+    VaultListResult,
+    VaultLockParams,
+    VaultLockResult,
+    VaultRemoveParams,
+    VaultRemoveResult,
+    VaultSourceSetParams,
+    VaultSourceSetResult,
+    VaultSourcesResult,
+    VaultUnlockParams,
+    VaultUnlockResult,
+)
 
 _registry = HandlerRegistry()
 

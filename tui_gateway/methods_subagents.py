@@ -7,6 +7,13 @@ existing subagent.steer RPC rather than introducing a second steering runtime.
 from __future__ import annotations
 
 from .method_ctx import HandlerRegistry, bind_module
+from .contracts.common import SessionParams
+from .contracts.profiles_vault_complete_foreign_subagents import (
+    SubagentIdParams,
+    SubagentInterruptResult,
+    SubagentListResult,
+    SubagentTailResult,
+)
 
 _registry = HandlerRegistry()
 method = _registry.method

@@ -3,6 +3,13 @@
 from __future__ import annotations
 
 from .method_ctx import HandlerRegistry, bind_module
+from .contracts.profiles_vault_complete_foreign_subagents import (
+    SessionForeignIdParams,
+    SessionForeignImportResult,
+    SessionForeignListParams,
+    SessionForeignListResult,
+    SessionForeignPreviewResult,
+)
 
 _registry = HandlerRegistry()
 method = _registry.method

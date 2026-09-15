@@ -14,9 +14,10 @@ from typing import Any
 # error/empty-response path, not silence.
 LIVE_GATEWAY_SILENT_MARKERS = frozenset({"[SILENT]", "SILENT", "NO_REPLY", "NO REPLY"})
 
-# only these persisted turn kinds are allowed to disappear when they emit a bare marker.
-# ordinary user turns must still get a visible fallback if a model emits one by mistake.
-MACHINERY_DISPLAY_KINDS = frozenset({"internal_notification", "model_switch", "auto_continue"})
+# Only these persisted user-row kinds may vanish on a bare marker; a human turn must get a
+# visible fallback instead. "internal_notification" is the only value gateway/run_turn.py
+# ever passes as persist_user_display_kind (self-injected MessageEvent(internal=True) turns).
+MACHINERY_DISPLAY_KINDS = frozenset({"internal_notification"})
 
 # Longer than any marker could plausibly be, even with stray punctuation.
 _MARKER_LENGTH_CAP = 64

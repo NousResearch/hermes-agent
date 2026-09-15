@@ -1407,10 +1407,6 @@ class GatewayTurnMixin:
             )
             _intentional_silence = False
             response = _UNEXPECTED_SILENCE_REPLY
-            # a stream consumer may have seen the marker before the final filter. make sure the
-            # visible fallback still goes through the normal final-send path.
-            if isinstance(agent_result, dict):
-                agent_result["already_sent"] = False
 
         # "(empty)" = the model produced no visible content after exhausting all retries.
         if response == "(empty)" and not _intentional_silence:

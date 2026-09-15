@@ -97,10 +97,9 @@ def test_failed_agent_result_never_counts_as_intentional_silence():
 
 def test_only_synthetic_turns_can_swallow_silence():
     result = {"failed": False}
-    for display_kind in ("internal_notification", "model_switch", "auto_continue"):
-        assert should_swallow_silence(result, "NO_REPLY", display_kind=display_kind)
+    assert should_swallow_silence(result, "NO_REPLY", display_kind="internal_notification")
 
-    for display_kind in (None, "steer", ""):
+    for display_kind in (None, "steer", "", "model_switch"):
         assert not should_swallow_silence(result, "NO_REPLY", display_kind=display_kind)
 
 

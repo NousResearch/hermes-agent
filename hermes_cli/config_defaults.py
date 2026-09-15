@@ -1762,6 +1762,13 @@ DEFAULT_CONFIG = {
         # no gate configured, so enabling this by default would halt dispatch everywhere
         # (see decision-hub-first-work/plans/02-minimal-bridge-alternative.md, section 5).
         "batch_approval_gate_enabled": False,
+        # Rule-4 retry-cap missing-constraint escalation (decision-hud bridge): when True,
+        # a task hitting 3 consecutive dispatch failures is gated on a resolved decision-hud
+        # missing_constraint card before it can be claimed again. Ships False — an operator
+        # must opt in per the same rationale as batch_approval_gate_enabled: fail-closed
+        # gating with no escape valve would permanently strand tasks on any board that
+        # hasn't adopted decision-hud, or during a decision-hud outage.
+        "retry_cap_escalation_enabled": False,
         # Profile for the root/orchestration task after Triage decomposition; "" = default profile.
         # Does not control the decomposer LLM path (see auxiliary.kanban_decomposer).
         "orchestrator_profile": "",

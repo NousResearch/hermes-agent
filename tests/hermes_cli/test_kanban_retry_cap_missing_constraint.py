@@ -61,6 +61,12 @@ def fresh_home(tmp_path, monkeypatch):
         staged_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(_REAL_DECISION_HUD_DB, staged_dir / "db.py")
     sys.modules.pop("_hermes_decision_hud_db_bridge", None)
+    # Rule 4 is config-gated off by default (kanban.retry_cap_escalation_enabled) —
+    # these tests exercise the gate itself, so opt in explicitly.
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"retry_cap_escalation_enabled": True}},
+    )
     return home
 
 
@@ -269,3 +275,27 @@ class TestRule4MissingConstraintEscalation:
             assert task.status == "blocked"
             assert task.consecutive_failures == 2
         assert _missing_constraint_rows("proj-regress", task_id) == []
+
+
+def test_retry_cap_gate_is_a_noop_when_config_disabled(fresh_home, monkeypatch):
+    """kanban.retry_cap_escalation_enabled defaults False — with no
+    override, _retry_cap_gate_ok must be a true no-op even at/above the
+    consecutive-failures threshold, matching the real DEFAULT_CONFIG
+    default. Regression guard added after adversarial review found this
+    gate originally had no opt-in at all (always-on, fail-closed with no
+    escape valve — unlike its F1/gate_precheck siblings)."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config", lambda: {"kanban": {}},
+    )
+    ok, reason = kbd._retry_cap_gate_ok("default", "t_whatever", consecutive_failures=10)
+    assert ok is True
+    assert reason == ""
+
+
+def test_retry_cap_escalation_enabled_defaults_to_false_in_real_config():
+    """Proves the real DEFAULT_CONFIG (not a test double) ships Rule 4
+    off, matching batch_approval_gate_enabled and gate_precheck_enabled's
+    opt-in precedent."""
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["kanban"]["retry_cap_escalation_enabled"] is False

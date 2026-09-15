@@ -1629,7 +1629,26 @@ def _retry_cap_gate_ok(board: Optional[str], task_id: str, consecutive_failures:
     Same fail-closed contract as ``check_batch_approval``: a ``project``
     that cannot be resolved, or any decision-hud error/unavailability, is
     treated as NOT resolved (refuse), never as "skip the check".
+
+    Config-gated via ``kanban.retry_cap_escalation_enabled`` (default
+    False): a true no-op below the threshold check when unset, matching
+    the opt-in precedent set by ``kanban.batch_approval_gate_enabled`` and
+    ``kanban.gate_precheck_enabled`` — adversarial review flagged that
+    without this, a decision-hud outage or a board that never adopted
+    decision-hud would permanently strand any task hitting 3 consecutive
+    failures, with no escape valve. Fail-closed only applies once an
+    operator has opted a board's Rule 4 gate in.
     """
+    from hermes_cli.config import load_config
+
+    try:
+        kanban_cfg = load_config().get("kanban") or {}
+        if not isinstance(kanban_cfg, dict):
+            kanban_cfg = {}
+    except Exception:
+        kanban_cfg = {}
+    if not kanban_cfg.get("retry_cap_escalation_enabled", False):
+        return True, ""
     if consecutive_failures < RETRY_CAP_ESCALATION_THRESHOLD:
         return True, ""
     project = _kb._slug_or_default(board)

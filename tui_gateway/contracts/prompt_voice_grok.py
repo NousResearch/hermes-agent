@@ -107,6 +107,44 @@ method("voice.grok.mute", params=VoiceGrokMuteParams, result=VoiceGrokMuteResult
        doc="Explicit mic mute, independent of the server-side AEC half-duplex gate (SPEC §7).")
 
 
+class VoiceGrokSpeakParams(Params):
+    """Renderer-submits design (SPEC §5, revised): the renderer is the sole ``prompt.submit``
+    caller, so once its own turn settles it asks the bridge to speak the finished reply — the
+    bridge itself never touches ``prompt.submit`` (single-submitter invariant)."""
+
+    session_id: str
+    text: str
+    profile: str | None = None
+
+
+class VoiceGrokSpeakResult(Result):
+    spoken: bool
+    reason: str | None = None  # "not_running" when the bridge has no live session for session_id
+
+
+method("voice.grok.speak", params=VoiceGrokSpeakParams, result=VoiceGrokSpeakResult,
+       doc="Make the bridge speak Hermes' finished reply verbatim (xAI force_message, SPEC §5 step 5).")
+
+
+class VoiceGrokRekeyParams(Params):
+    """Fresh-draft completion: the renderer's submit minted the chat session, so it re-keys the
+    bridge from the synthetic start id onto the real Hermes session id — events and delegation
+    route by session from then on. Idempotent."""
+
+    from_session_id: str
+    to_session_id: str
+    profile: str | None = None
+
+
+class VoiceGrokRekeyResult(Result):
+    rekeyed: bool
+    reason: str | None = None  # "not_running" when no bridge exists for from_session_id
+
+
+method("voice.grok.rekey", params=VoiceGrokRekeyParams, result=VoiceGrokRekeyResult,
+       doc="Re-key the voice bridge onto the chat's real Hermes session id (fresh-draft start).")
+
+
 # ── events (server → client) ─────────────────────────────────────────────────────
 
 
@@ -152,11 +190,14 @@ class VoiceGrokStatePayload(Payload):
 
 class VoiceGrokDelegationPayload(Payload):
     """``voice_live_grok_bridge._flush_delegation`` — a settled spoken utterance that is a real
-    request (SPEC §5). The renderer renders it like gpt-live's delegation; the Hermes turn it
-    becomes rides ``prompt.submit`` (surface ``voice-live``)."""
+    request (SPEC §5, renderer-submits revision). ``prompt`` is the user's last words (the turn
+    text the renderer submits — the persisted user row); ``context`` is the recent spoken
+    exchange riding the model input only (``voice_context``). The renderer's ``onDelegation``
+    is the SINGLE ``prompt.submit`` caller — the backend never submits on its behalf."""
 
     session_id: str
     delegation_id: str
+    prompt: str
     context: str
 
 

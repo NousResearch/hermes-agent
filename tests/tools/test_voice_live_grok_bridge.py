@@ -401,16 +401,13 @@ def test_function_call_events_are_logged_and_ignored(credential, harness):
     assert states(events)[-1] == "listening"
 
 
-# ── delegation seam (SPEC §5 — the event + sink; prompt.submit is t_f7cae076) ────
+# ── delegation (SPEC §5 revised: renderer-submits — event carries prompt+context) ─
 
 
-def test_utterance_settles_into_a_delegation_event_and_sink(credential, harness):
+def test_utterance_settles_into_a_delegation_event_with_prompt_and_context(credential, harness):
     events, make = harness
     connector = FakeConnector()
-    sink_calls = []
-    bridge, ws = establish(
-        connector, events, make,
-        delegation_sink=lambda sid, did, prompt, ctx: sink_calls.append((sid, did, prompt, ctx)))
+    bridge, ws = establish(connector, events, make)
     ws.push_event({"type": "conversation.item.input_audio_transcription.updated",
                    "item_id": "i1", "delta": "what's "})
     ws.push_event({"type": "conversation.item.input_audio_transcription.updated",
@@ -421,8 +418,10 @@ def test_utterance_settles_into_a_delegation_event_and_sink(credential, harness)
     delegation = next(p for t, p in events if t == EVENT_DELEGATION)
     assert delegation["session_id"] == "sess-1"
     assert delegation["delegation_id"].startswith("grok-")
+    # prompt = the user's last words (the turn text the renderer submits), context = the
+    # recent spoken exchange (voice_context, model input only).
+    assert delegation["prompt"] == "what's the time"
     assert "User: what's the time" in delegation["context"]
-    assert sink_calls and sink_calls[0][2] == "what's the time"
     assert "thinking" in states(events)
     # Transcript fragments stream to the UI as they arrive, not only at flush time.
     user_fragments = [p["text"] for t, p in events
@@ -442,6 +441,7 @@ def test_completed_transcript_finalizes_the_item_and_assistant_turns_join_contex
     ws.push_event({"type": "input_audio_buffer.speech_stopped"})
     wait_for(lambda: any(t == EVENT_DELEGATION for t, _ in events))
     delegation = next(p for t, p in events if t == EVENT_DELEGATION)
+    assert delegation["prompt"] == "thanks"
     assert delegation["context"] == "Voice assistant: It is noon.\nUser: thanks"
     speakers = [(p["speaker"], p["text"]) for t, p in events if t == EVENT_TRANSCRIPT]
     assert ("assistant", "It is noon.") in speakers

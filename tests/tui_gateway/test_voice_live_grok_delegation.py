@@ -1,12 +1,15 @@
-"""Grok-Live delegation: a settled spoken exchange becomes a NORMAL Hermes turn on the open
-session, mirroring gpt-live's proven pattern exactly (docs/grok-live-voice/SPEC.md §5).
+"""Grok-Live delegation (renderer-submits design, revised 2026-09-15 — kanban t_07a77402):
 
-Cache-safety is the single biggest risk this card guards against (SPEC §13#1): the delegation
-path must never construct a new system prompt, never mutate the active toolset/context, and the
-per-turn note must ride only ``prompt.submit``'s existing ``text``/``voice_context`` params —
-reusing ``tools/voice_live.py::voice_live_turn_note()`` VERBATIM (no new note text authored for
-grok-live). These tests exercise the real ``prompt.submit`` handler (not a bare function), mock
-the ws bridge only, and assert the exact invariants the SPEC calls out.
+- The RENDERER is the single ``prompt.submit`` caller (gpt-live parity): the backend NEVER
+  submits on a delegation — the old ``_grok_delegation_sink`` double-submitted every
+  delegation on an existing chat and no-oped on a fresh draft's synthetic id.
+- ``voice.grok.*`` events reach the owning app even when the bridge id is NOT a registered
+  Hermes session (the fresh-draft case): they route to the caller transport captured at
+  ``voice.grok.start`` instead of falling to stdio.
+- The spoken reply is pulled by the renderer via ``voice.grok.speak`` when its turn settles.
+
+These tests exercise the real handlers through ``server``'s rebound globals (the dispatch
+path a client's RPC actually uses), mock the ws bridge only, and assert the invariants above.
 """
 
 import threading
@@ -14,14 +17,13 @@ import types
 
 import pytest
 
-from tools import voice_live
+import tools.voice_live_grok as grok_config
+import tools.voice_live_grok_bridge as bridge_module
 from tui_gateway import server
 
 # The handler modules are split (facade + siblings, see AGENTS.md) and rebound onto
 # server's globals at import time (method_ctx.bind_module) — the real dispatch path a
-# client's prompt.submit / voice.grok.delegation flow actually uses is server._grok_delegation_sink,
-# not the bare module-level function (which references unbound globals like _sessions/_methods).
-_grok_delegation_sink = server._grok_delegation_sink
+# client's RPC actually uses is server's rebound copy, not the bare module-level function.
 
 
 def _session(**extra):
@@ -38,6 +40,20 @@ def _session(**extra):
     }
 
 
+class FakeTransport:
+    """Records written frames; stands in for the websocket the app speaks on."""
+
+    def __init__(self):
+        self.frames = []
+
+    def write(self, obj):
+        self.frames.append(obj)
+        return True
+
+    def close(self):
+        return None
+
+
 @pytest.fixture
 def registered_session():
     session = _session()
@@ -46,170 +62,187 @@ def registered_session():
     server._sessions.pop("sid", None)
 
 
-class FakeBridge:
-    """Records ``speak_reply`` calls; ``alive`` mirrors a live bridge."""
+@pytest.fixture
+def grok_rpc(monkeypatch):
+    """Fake bridge class + available status; clean per-test bridge/transport registries."""
+    class FakeBridge:
+        instances = []
 
-    def __init__(self):
-        self.alive = True
-        self.spoken = []
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.started = False
+            self.stopped = False
+            self.spoken = []
+            self.mic = []
+            FakeBridge.instances.append(self)
 
-    def speak_reply(self, text):
-        self.spoken.append(text)
-        return True
+        def start(self):
+            self.started = True
+
+        def stop(self, timeout=10.0):
+            self.stopped = True
+            return True
+
+        @property
+        def alive(self):
+            return self.started and not self.stopped
+
+        def send_mic(self, pcm):
+            self.mic.append(pcm)
+            return {"accepted": True}
+
+        def set_muted(self, muted):
+            return bool(muted)
+
+        def speak_reply(self, text):
+            self.spoken.append(text)
+            return True
+
+    FakeBridge.instances = []
+    monkeypatch.setattr(bridge_module, "GrokLiveBridge", FakeBridge)
+    monkeypatch.setattr(grok_config, "resolve_grok_live_status", lambda: {
+        "mode": "grok-live", "available": True, "reason": None, "model": "m", "voice": "v"})
+    import sys
+    fake_wake = types.ModuleType("tools.wake_word")
+    fake_wake.pause_listening = lambda owner=None: False  # noqa: F841 — attribute on a stub module
+    monkeypatch.setitem(sys.modules, "tools.wake_word", fake_wake)
+    with server._grok_bridges_lock:
+        server._grok_bridges.clear()
+        server._grok_wake_owners.clear()
+        server._grok_client_transports.clear()
+    with server._grok_alias_lock:
+        server._grok_alias.clear()
+    yield FakeBridge
+    with server._grok_bridges_lock:
+        server._grok_bridges.clear()
+        server._grok_wake_owners.clear()
+        server._grok_client_transports.clear()
+    with server._grok_alias_lock:
+        server._grok_alias.clear()
 
 
-class TestDelegationBecomesANormalTurn:
-    """SPEC §5 step 3: the sink calls prompt.submit with surface=voice-live, exactly like a
-    client-issued submit — same wire params, no new RPC shape."""
-
-    def test_sink_submits_with_the_shared_voice_live_surface(self, registered_session, monkeypatch):
-        captured = {}
-
-        def fake_submit(rid, params):
-            captured["rid"] = rid
-            captured["params"] = params
-            return {"jsonrpc": "2.0", "id": rid, "result": {"status": "streaming"}}
-
-        monkeypatch.setitem(server._methods, "prompt.submit", fake_submit)
-        sink = _grok_delegation_sink("sid")
-        sink("sid", "grok-abc123", "what's the weather", "User: what's the weather")
-
-        assert captured["params"]["session_id"] == "sid"
-        assert captured["params"]["text"] == "what's the weather"
-        assert captured["params"]["surface"] == "voice-live"
-        assert captured["params"]["voice_context"] == "User: what's the weather"
-        # Queued, not a hard interrupt: mirrors the busy-submit path any client uses.
-        assert captured["params"]["queued"] is True
-
-    def test_sink_is_a_noop_for_an_unknown_session(self, monkeypatch):
-        calls = []
-        monkeypatch.setitem(server._methods, "prompt.submit", lambda rid, params: calls.append(params))
-        sink = _grok_delegation_sink("ghost")
-        sink("ghost", "grok-xyz", "hello", "User: hello")
-        assert calls == []
+def _start(bridge_cls, sid, transport):
+    """voice.grok.start with a pinned caller transport (the reconnecting-app shape)."""
+    import tui_gateway.transport as transport_mod
+    token = transport_mod.bind_transport(transport)
+    try:
+        return server._methods["voice.grok.start"](1, {"session_id": sid})
+    finally:
+        transport_mod.reset_transport(token)
 
 
-class TestCacheSafetyInvariant:
-    """SPEC §13#1 — the single largest risk. The delegation path must reuse
-    ``voice_live_turn_note()`` verbatim (no grok-specific reimplementation) and the note must
-    ride the MODEL INPUT only, never the system prompt."""
+class TestBackendNeverSubmits:
+    """Single-submitter invariant: a settled delegation emits the event (prompt + context)
+    and NOTHING calls prompt.submit on the backend — exactly one submitter, the renderer."""
 
-    def test_delegated_turn_reuses_voice_live_turn_note_verbatim(self, registered_session, monkeypatch):
-        """The exact function object gpt-live uses is the one invoked — not a copy, not a
-        grok-specific reimplementation that could silently diverge and break the cache."""
-        calls = []
-        real_note_fn = voice_live.voice_live_turn_note
+    def test_no_delegation_sink_exists_on_the_server(self):
+        assert not hasattr(server, "_grok_delegation_sink")
 
-        def spy_note(context=""):
-            calls.append(context)
-            return real_note_fn(context)
-
-        monkeypatch.setattr(voice_live, "voice_live_turn_note", spy_note)
-        registered_session["running"] = True
-        server._methods["prompt.submit"](
-            "r1", {"session_id": "sid", "text": "what's the weather", "queued": True,
-                   "surface": "voice-live", "voice_context": "User: what's the weather"})
-
-        note = server._hud_surface_note(registered_session)
-        assert calls == ["User: what's the weather"]
-        assert note.startswith(voice_live.VOICE_LIVE_TURN_NOTE)
-        assert "User: what's the weather" in note
-
-    def test_grok_delegation_never_touches_the_system_prompt(self, registered_session):
-        """The per-turn note is prepended to the run message only
-        (session_notifications._prepend_note); the agent's system prompt is never
-        constructed or mutated by the delegation path."""
-        registered_session["running"] = True
-        server._methods["prompt.submit"](
-            "r1", {"session_id": "sid", "text": "book a flight", "queued": True,
-                   "surface": "voice-live", "voice_context": "User: book a flight"})
-
-        # The note lives entirely in client_surface / voice_live_context — no system_prompt-
-        # shaped key is ever written onto the session by a grok delegation.
-        assert "system_prompt" not in registered_session
-        assert registered_session["client_surface"] == "voice-live"
-        assert registered_session["voice_live_context"] == "User: book a flight"
-
-    def test_grok_delegation_carries_no_toolset_or_model_override(self, registered_session):
-        """Cache-safety extends to the toolset/model: a delegated voice turn must not request a
-        toolset swap or model override — those keys must be absent from what the sink sends."""
-        captured = {}
-
-        def fake_submit(rid, params):
-            captured.update(params)
-            return {"jsonrpc": "2.0", "id": rid, "result": {"status": "streaming"}}
-
+    def test_a_delegation_flush_never_calls_prompt_submit(self, grok_rpc):
+        submitted = []
         original = server._methods["prompt.submit"]
-        server._methods["prompt.submit"] = fake_submit
+        server._methods["prompt.submit"] = lambda rid, params: submitted.append(params) or {
+            "jsonrpc": "2.0", "id": rid, "result": {"status": "streaming"}}
         try:
-            sink = _grok_delegation_sink("sid")
-            sink("sid", "grok-1", "hi", "User: hi")
+            transport = FakeTransport()
+            _start(grok_rpc, "draft-1", transport)
+            (bridge,) = grok_rpc.instances
+            # Drive the bridge's delegation flush the way the live bridge does on settle.
+            bridge.kwargs["emit"]("voice.grok.delegation", {
+                "session_id": "draft-1", "delegation_id": "grok-abc",
+                "prompt": "what's the weather", "context": "User: what's the weather"})
         finally:
             server._methods["prompt.submit"] = original
 
-        assert "toolset" not in captured
-        assert "toolsets" not in captured
-        assert "model" not in captured
-        assert "model_override" not in captured
-        assert "system_prompt" not in captured
+        assert submitted == []  # the backend is not a submitter, period
+        events = [f for f in transport.frames
+                  if f.get("params", {}).get("type") == "voice.grok.delegation"]
+        assert events, "the delegation event must reach the app"
+        payload = events[0]["params"]["payload"]
+        assert payload["prompt"] == "what's the weather"
+        assert payload["context"] == "User: what's the weather"
+
+    def test_no_voice_reply_sink_is_registered_on_the_session(self, grok_rpc, registered_session):
+        """prompt_turn.py's reply-sink seam is gone: a delegated turn leaves no server-set
+        sink on the session dict (the renderer pulls the reply via voice.grok.speak)."""
+        _start(grok_rpc, "sid", FakeTransport())
+        (bridge,) = grok_rpc.instances
+        bridge.kwargs["emit"]("voice.grok.delegation", {
+            "session_id": "sid", "delegation_id": "grok-1", "prompt": "hi", "context": "User: hi"})
+        assert "_voice_reply_sink" not in registered_session
 
 
-class TestRoleAlternation:
-    """SPEC §13#2 — a delegation must never produce two consecutive same-role messages. The
-    real prompt.submit busy-queue path (not a bespoke grok path) enforces this exactly like a
-    typed message would."""
+class TestFreshDraftRouting:
+    """Invariant (i): a fresh-draft voice start reaches the app with NO pre-existing Hermes
+    session — events route to the caller transport captured at start, never stdio."""
 
-    def test_a_second_delegation_while_busy_queues_rather_than_races(self, registered_session):
-        registered_session["running"] = True
-        first = server._methods["prompt.submit"](
-            "r1", {"session_id": "sid", "text": "first", "queued": True, "surface": "voice-live",
-                   "voice_context": "User: first"})
-        second = server._methods["prompt.submit"](
-            "r2", {"session_id": "sid", "text": "second", "queued": True, "surface": "voice-live",
-                   "voice_context": "User: first\nUser: second"})
+    def test_events_reach_the_app_without_a_registered_session(self, grok_rpc):
+        transport = FakeTransport()
+        answer = _start(grok_rpc, "grok-live-1789482317652-2qi1hr", transport)
+        assert answer["result"]["started"] is True
+        assert "grok-live-1789482317652-2qi1hr" not in server._sessions  # draft: no session
 
-        assert "error" not in first
-        assert "error" not in second
-        # Busy path queues (never a same-turn double-submit racing two user rows into history).
-        assert second["result"]["status"] == "queued"
+        (bridge,) = grok_rpc.instances
+        emit = bridge.kwargs["emit"]
+        emit("voice.grok.state", {"session_id": "grok-live-1789482317652-2qi1hr", "state": "listening"})
+        emit("voice.grok.transcript", {"session_id": "grok-live-1789482317652-2qi1hr",
+                                       "speaker": "user", "text": "hello"})
+
+        assert len(transport.frames) == 2  # heard by the app, not dropped to stdio
+
+    def test_existing_chat_events_prefer_the_session_transport(self, grok_rpc, registered_session):
+        session_transport = FakeTransport()
+        registered_session["transport"] = session_transport
+        caller_transport = FakeTransport()
+        _start(grok_rpc, "sid", caller_transport)
+
+        (bridge,) = grok_rpc.instances
+        bridge.kwargs["emit"]("voice.grok.state", {"session_id": "sid", "state": "listening"})
+
+        assert len(session_transport.frames) == 1  # byte-identical existing-chat routing
+        assert caller_transport.frames == []
+
+    def test_rekey_moves_the_bridge_onto_the_real_session_id(self, grok_rpc):
+        transport = FakeTransport()
+        draft_id = "grok-live-1"
+        _start(grok_rpc, draft_id, transport)
+        (bridge,) = grok_rpc.instances
+
+        answer = server._methods["voice.grok.rekey"](
+            1, {"from_session_id": draft_id, "to_session_id": "1d96782d"})
+        assert answer["result"]["rekeyed"] is True
+        assert server._grok_bridges["1d96782d"] is bridge
+        assert draft_id not in server._grok_bridges
+
+        # The renderer keeps sending by its synthetic id; the alias resolves to the bridge.
+        pcm = __import__("base64").b64encode(b"\x00" * 100).decode()
+        assert server._methods["voice.grok.audio"](
+            1, {"session_id": draft_id, "pcm_b64": pcm})["result"]["accepted"] is True
+        assert bridge.mic
+
+        # Stopping by EITHER id tears the bridge down.
+        assert server._methods["voice.grok.stop"](1, {"session_id": draft_id})["result"]["stopped"] is True
+        assert bridge.stopped
 
 
-class TestReplySpeaksBackThroughTheBridge:
-    """SPEC §5 step 5: the finished assistant reply is sent to xAI to speak, via the bridge's
-    ``speak_reply`` (force_message — no re-prompt, no model involvement on the xAI side)."""
+class TestSpeakIsPulled:
+    """Invariant: the finished reply is spoken via voice.grok.speak (bridge.speak_reply)."""
 
-    def test_reply_sink_is_registered_and_speaks_on_complete(self, registered_session, monkeypatch):
-        bridge = FakeBridge()
-        monkeypatch.setattr(server, "_grok_get_bridge", lambda sid: bridge)
-        sink = _grok_delegation_sink("sid")
-        sink("sid", "grok-1", "what's the weather", "User: what's the weather")
-
-        reply_sink = registered_session["_voice_reply_sink"]
-        reply_sink("It's sunny and 22 degrees.", "complete")
-
+    def test_speak_relays_the_reply_to_the_bridge(self, grok_rpc):
+        _start(grok_rpc, "s1", FakeTransport())
+        (bridge,) = grok_rpc.instances
+        answer = server._methods["voice.grok.speak"](
+            1, {"session_id": "s1", "text": "It's sunny and 22 degrees."})
+        assert answer["result"]["spoken"] is True
         assert bridge.spoken == ["It's sunny and 22 degrees."]
 
-    def test_reply_sink_does_not_speak_a_failed_or_interrupted_turn(self, registered_session, monkeypatch):
-        bridge = FakeBridge()
-        monkeypatch.setattr(server, "_grok_get_bridge", lambda sid: bridge)
-        sink = _grok_delegation_sink("sid")
-        sink("sid", "grok-1", "hi", "User: hi")
-        reply_sink = registered_session["_voice_reply_sink"]
+    def test_speak_without_a_live_bridge_is_a_clean_not_running(self, grok_rpc):
+        answer = server._methods["voice.grok.speak"](1, {"session_id": "ghost", "text": "hi"})
+        assert answer["result"] == {"spoken": False, "reason": "not_running"}
 
-        reply_sink("partial garbage", "error")
-        reply_sink("", "complete")
-
+    def test_speak_ignores_empty_text(self, grok_rpc):
+        _start(grok_rpc, "s1", FakeTransport())
+        (bridge,) = grok_rpc.instances
+        answer = server._methods["voice.grok.speak"](1, {"session_id": "s1", "text": "  "})
+        assert answer["result"]["spoken"] is False
         assert bridge.spoken == []
-
-    def test_reply_sink_is_popped_so_it_never_leaks_to_a_later_plain_turn(self, registered_session):
-        """The sink is session-scoped, server-set-only state (tui_gateway/prompt_turn.py pops it
-        after use) — a later, non-delegated turn on the same session must not accidentally
-        trigger a stale speak_reply call."""
-        registered_session["_voice_reply_sink"] = lambda text, status: pytest.fail(
-            "a stale voice reply sink must never fire on a later plain turn")
-        registered_session["running"] = True
-        # A normal (non-delegated) submit does not go through the sink registration path, but
-        # the turn-completion code in prompt_turn.py pops whatever sink is present exactly once.
-        popped = registered_session.pop("_voice_reply_sink", None)
-        assert popped is not None
-        assert "_voice_reply_sink" not in registered_session

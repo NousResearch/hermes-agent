@@ -1765,3 +1765,32 @@ def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
             (t,),
         ).fetchone()
         assert row is None
+
+
+def test_archive_task_rejects_status_outside_expected_set_atomically(kanban_home):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="completed elsewhere")
+        conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (task_id,))
+        conn.commit()
+
+        assert (
+            kb.archive_task(
+                conn,
+                task_id,
+                expected_statuses={"triage", "todo", "scheduled", "ready", "running", "blocked"},
+            )
+            is False
+        )
+        assert kb.get_task(conn, task_id).status == "done"
+
+
+def test_archive_task_accepts_status_inside_expected_set(kanban_home):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="cancelled by operator")
+        current = kb.get_task(conn, task_id)
+        assert current is not None
+
+        assert kb.archive_task(conn, task_id, expected_statuses={current.status}) is True
+        archived = kb.get_task(conn, task_id)
+        assert archived is not None
+        assert archived.status == "archived"

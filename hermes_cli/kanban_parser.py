@@ -334,6 +334,13 @@ _SPECS = [
     ], help="Manually move one or more todo/blocked tasks to ready (recovery path)"),
     _cmd("archive", [
         _arg("task_ids", nargs="*", help="Task ids to archive (default mode)"),
+        _arg(
+            "--expected-status",
+            dest="expected_statuses",
+            nargs="+",
+            choices=sorted(kb.VALID_STATUSES - {"archived"}),
+            help="Archive only when the current status is one of these values",
+        ),
         _arg("--rm", dest="purge_ids", nargs="+",
              help="Permanently delete already-archived task ids from the board"),
     ], help="Archive one or more tasks"),

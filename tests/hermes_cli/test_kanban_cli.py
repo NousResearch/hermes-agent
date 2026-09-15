@@ -72,6 +72,25 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
+def test_archive_expected_status_refuses_stale_task_state(kanban_home, capsys):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="completed concurrently")
+        conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (task_id,))
+        conn.commit()
+
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+    args = parser.parse_args(
+        ["kanban", "archive", task_id, "--expected-status", "ready", "running"]
+    )
+
+    assert kc.kanban_command(args) == 1
+    assert f"cannot archive {task_id}" in capsys.readouterr().err
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, task_id).status == "done"
+
+
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")

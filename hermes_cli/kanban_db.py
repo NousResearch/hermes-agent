@@ -3538,7 +3538,13 @@ def specify_triage_task(
     return True
 
 
-def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> bool:
+def archive_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    signal_fn=None,
+    expected_statuses: Optional[set[str]] = None,
+) -> bool:
     """Archive a task; a *running* task's host-local worker is terminated.
 
     Clearing ``worker_pid`` in the DB alone left the OS process running past its
@@ -3552,6 +3558,15 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     termination outcome lands as its own ``archive_worker_termination`` event so
     the ``archived`` event stays atomic with the status flip.
     """
+    allowed_statuses: tuple[str, ...] | None = None
+    if expected_statuses is not None:
+        invalid = set(expected_statuses) - VALID_STATUSES
+        if invalid:
+            raise ValueError(f"invalid expected statuses: {sorted(invalid)}")
+        if not expected_statuses:
+            raise ValueError("expected_statuses must not be empty")
+        allowed_statuses = tuple(sorted(expected_statuses))
+
     with write_txn(conn):
         row = conn.execute(
             "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
@@ -3561,10 +3576,17 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
             return False
         was_running = row["status"] == "running"
         prev_pid, prev_lock = row["worker_pid"], row["claim_lock"]
+        status_guard = "status != 'archived'"
+        params: list[Any] = [task_id]
+        if allowed_statuses is not None:
+            placeholders = ", ".join("?" for _ in allowed_statuses)
+            status_guard = f"status IN ({placeholders})"
+            params.extend(allowed_statuses)
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
-            "WHERE id = ? AND status != 'archived'", (task_id,),
+            f"WHERE id = ? AND {status_guard}",
+            params,
         )
         if cur.rowcount != 1:
             return False

@@ -1,11 +1,17 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
+import { $clarifyRequest, $clarifyRequests } from './clarify'
+import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
+import { respondToServerRequest } from './server-requests'
 import { $activeSessionId } from './session'
+import { ambientRequestFor } from './session-gone-latch'
+import { requestForOwnedSession } from './session-states'
 
-// Blocking interactive prompts the gateway raises mid-turn. Each maps to a
-// `*.request` event the Python side emits while it blocks the agent thread
-// waiting for a `*.respond` RPC. Without a renderer for these, the agent
-// silently stalls until its timeout (default 5 min) and the tool is BLOCKED.
+// Blocking interactive prompts the gateway raises mid-turn. Each is a
+// server→client JSON-RPC request (`tui_gateway/server_requests.py`) the Python
+// side blocks on; `requestId` is that request's id and the card answers through
+// `store/server-requests.ts::respondToServerRequest`. Without a renderer for
+// these the channel answers -32601 and the tool fails fast.
 //
 // Like clarify, every prompt is parked under the runtime session id that raised
 // it (not one shared slot), so a *background* session running concurrently can
@@ -22,6 +28,7 @@ interface KeyedPrompt {
 
 interface PromptStore<T extends KeyedPrompt> {
   $active: ReadableAtom<null | T>
+  $all: ReadableAtom<Record<string, T>>
   clear: (sessionId?: string | null, requestId?: string) => void
   reset: () => void
   set: (request: T) => void
@@ -37,6 +44,7 @@ function keyedPromptStore<T extends KeyedPrompt>(): PromptStore<T> {
 
   return {
     $active: computed([$all, $activeSessionId], (all, activeId) => all[keyFor(activeId)] ?? null),
+    $all,
     reset: () => $all.set({}),
     set: request => $all.set({ ...$all.get(), [keyFor(request.sessionId)]: request }),
     clear(sessionId, requestId) {
@@ -64,17 +72,38 @@ function keyedPromptStore<T extends KeyedPrompt>(): PromptStore<T> {
   }
 }
 
-// Approval is session-keyed on the backend (one in-flight approval per session,
-// resolved via approval.respond {choice, session_id}). It carries no request_id,
-// unlike sudo/secret which are _block()-style request/response.
+// Approval is queue-backed on the backend (`tools/approval.py`): `requestId` is
+// the QUEUE entry's id (what `approval.pending` / `approval.received` /
+// `approval.respond` key on), stable across delivery paths. The live prompt
+// arrives as an `approval` server request whose id is `serverRequestId`; the
+// card answers that request when it is still open and falls back to the
+// `approval.respond` RPC when the prompt was restored from `approval.pending`.
 export interface ApprovalRequest extends KeyedPrompt {
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   allowPermanent?: boolean
+  choices?: string[]
   command: string
   description: string
+  requestId?: string
+  serverRequestId?: string
+  smartDenied?: boolean
+}
+
+interface ApprovalGateway {
+  request: (method: string, params: Record<string, unknown>) => Promise<unknown>
+}
+
+interface PendingApprovalPayload {
+  allow_permanent?: boolean
+  choices?: unknown
+  command?: unknown
+  description?: unknown
+  request_id?: unknown
+  smart_denied?: boolean
 }
 
 export interface SudoRequest extends KeyedPrompt {
+  command?: string
   requestId: string
 }
 
@@ -84,21 +113,288 @@ export interface SecretRequest extends KeyedPrompt {
   requestId: string
 }
 
+// External password-manager unlock (agent/vault_backends): `vault.unlock_prompt`
+// server request, answered `{value: password}`; "" keeps the manager locked.
+export interface VaultUnlockRequest extends KeyedPrompt {
+  backend: string
+  displayName: string
+  requestId: string
+}
+
 const approval = keyedPromptStore<ApprovalRequest>()
 const sudo = keyedPromptStore<SudoRequest>()
 const secret = keyedPromptStore<SecretRequest>()
+const vaultUnlock = keyedPromptStore<VaultUnlockRequest>()
+
+// "Save this login" for the page the agent is on (tools/browser_vault_tool): `vault.save_login`
+// server request, answered `{value: JSON {identifier, password}}`; "" declines.
+export interface VaultSaveLoginRequest extends KeyedPrompt {
+  origin: string
+  site: string
+  requestId: string
+}
+
+const vaultSave = keyedPromptStore<VaultSaveLoginRequest>()
+
+// Second-factor code for the page the agent is on: `vault.code` server request,
+// answered `{value: code}`; "" skips.
+export interface VaultCodeRequest extends KeyedPrompt {
+  site: string
+  hint: string
+  requestId: string
+}
+
+const vaultCode = keyedPromptStore<VaultCodeRequest>()
+
+// Inline approval anchors, keyed by session: a tile's inline bar mounting must
+// not suppress the PRIMARY session's floating fallback (and vice versa).
+const $approvalInlineAnchors = atom<Record<string, number>>({})
 
 export const $approvalRequest = approval.$active
+export const $approvalRequests = approval.$all
 export const setApprovalRequest = approval.set
 export const clearApprovalRequest = approval.clear
 
+export async function receiveApprovalRequest(gateway: ApprovalGateway | null, request: ApprovalRequest): Promise<void> {
+  // A prompt restored from `approval.pending` must not clobber the live server
+  // request that already carries the same queue entry (it knows how to answer).
+  const current = approval.$all.get()[keyFor(request.sessionId)]
+
+  if (current?.requestId && current.requestId === request.requestId && current.serverRequestId && !request.serverRequestId) {
+    return
+  }
+
+  setApprovalRequest(request)
+
+  if (gateway && request.requestId && request.sessionId) {
+    try {
+      await requestForOwnedSession(request.sessionId, ambientRequestFor(gateway), 'approval.received', {
+        request_id: request.requestId,
+        session_id: request.sessionId
+      })
+    } catch (error) {
+      if (isSessionGoneForBackgroundPolling(error)) {
+        markSessionGone(request.sessionId)
+
+        return
+      }
+
+      throw error
+    }
+  }
+}
+
+export async function replayPendingApproval(gateway: ApprovalGateway | null, sessionId: string | null): Promise<void> {
+  if (!gateway || !sessionId || isSessionGone(sessionId)) {
+    return
+  }
+
+  const previous = approval.$all.get()[keyFor(sessionId)]
+  let rawResult: unknown
+
+  try {
+    rawResult = await requestForOwnedSession(sessionId, ambientRequestFor(gateway), 'approval.pending', {
+      session_id: sessionId
+    })
+  } catch (error) {
+    if (isSessionGoneForBackgroundPolling(error)) {
+      markSessionGone(sessionId)
+
+      return
+    }
+
+    throw error
+  }
+
+  const result =
+    rawResult && typeof rawResult === 'object' ? (rawResult as { approvals?: PendingApprovalPayload[] }) : {}
+
+  // Live requests/responses outrank a replay that was already in flight.
+  if (approval.$all.get()[keyFor(sessionId)] !== previous || !Array.isArray(result.approvals)) {
+    return
+  }
+
+  const pending = result.approvals[0]
+
+  if (!pending) {
+    clearApprovalRequest(sessionId, previous?.requestId)
+
+    return
+  }
+
+  if (typeof pending.request_id !== 'string') {
+    return
+  }
+
+  if (previous?.requestId === pending.request_id) {
+    return
+  }
+
+  await receiveApprovalRequest(gateway, {
+    allowPermanent: pending.allow_permanent !== false,
+    choices: Array.isArray(pending.choices) ? pending.choices.filter(choice => typeof choice === 'string') : undefined,
+    command: typeof pending.command === 'string' ? pending.command : '',
+    description: typeof pending.description === 'string' ? pending.description : 'dangerous command',
+    requestId: pending.request_id,
+    sessionId,
+    smartDenied: pending.smart_denied === true
+  })
+}
+
+/**
+ * Resolve an approval: answer the live server request when it is still open
+ * (the response frame goes back over the socket it arrived on — the owner by
+ * construction), else the queue-level `approval.respond` RPC for a prompt that
+ * was restored from `approval.pending` or is being answered from another
+ * surface. Returns after the backend has the decision.
+ */
+export async function answerApproval(
+  gateway: ApprovalGateway | null,
+  request: Pick<ApprovalRequest, 'requestId' | 'serverRequestId' | 'sessionId'>,
+  choice: string,
+  all = false
+): Promise<void> {
+  if (respondToServerRequest(request.serverRequestId, { choice, ...(all ? { all: true } : {}) })) {
+    return
+  }
+
+  if (!gateway) {
+    throw new Error('Hermes gateway is not connected')
+  }
+
+  await requestForOwnedSession(request.sessionId, ambientRequestFor(gateway), 'approval.respond', {
+    ...(all ? { all: true } : {}),
+    choice,
+    ...(request.requestId ? { request_id: request.requestId } : {}),
+    session_id: request.sessionId ?? undefined
+  })
+}
+
+/** The prompt request for one specific session — the tile counterpart of the
+ *  active-session `$*Request` views (same map, fixed key). */
+export const sessionApprovalRequest = (sessionId: string | null) =>
+  computed(approval.$all, all => all[keyFor(sessionId)] ?? null)
+export const sessionSudoRequest = (sessionId: string | null) =>
+  computed(sudo.$all, all => all[keyFor(sessionId)] ?? null)
+export const sessionSecretRequest = (sessionId: string | null) =>
+  computed(secret.$all, all => all[keyFor(sessionId)] ?? null)
+
+export function registerApprovalInlineAnchor(sessionId: string | null): () => void {
+  const key = keyFor(sessionId)
+
+  const bump = (delta: number) => {
+    const all = $approvalInlineAnchors.get()
+    const next = Math.max(0, (all[key] ?? 0) + delta)
+    $approvalInlineAnchors.set({ ...all, [key]: next })
+  }
+
+  bump(1)
+
+  return () => bump(-1)
+}
+
+/** True when session `sessionId` has an inline approval bar mounted, so its
+ *  floating fallback should stand down. Per-session (not global). */
+export const sessionApprovalInlineVisible = (sessionId: string | null) =>
+  computed($approvalInlineAnchors, anchors => (anchors[keyFor(sessionId)] ?? 0) > 0)
+
 export const $sudoRequest = sudo.$active
+export const $sudoRequests = sudo.$all
 export const setSudoRequest = sudo.set
 export const clearSudoRequest = sudo.clear
 
 export const $secretRequest = secret.$active
+export const $secretRequests = secret.$all
 export const setSecretRequest = secret.set
 export const clearSecretRequest = secret.clear
+
+export const $vaultUnlockRequest = vaultUnlock.$active
+export const setVaultUnlockRequest = vaultUnlock.set
+export const clearVaultUnlockRequest = vaultUnlock.clear
+export const $vaultUnlockRequests = vaultUnlock.$all
+export const sessionVaultUnlockRequest = (sessionId: string | null) =>
+  computed(vaultUnlock.$all, all => all[keyFor(sessionId)] ?? null)
+
+export const $vaultSaveLoginRequest = vaultSave.$active
+export const setVaultSaveLoginRequest = vaultSave.set
+export const clearVaultSaveLoginRequest = vaultSave.clear
+export const $vaultSaveLoginRequests = vaultSave.$all
+export const sessionVaultSaveLoginRequest = (sessionId: string | null) =>
+  computed(vaultSave.$all, all => all[keyFor(sessionId)] ?? null)
+
+export const $vaultCodeRequest = vaultCode.$active
+export const setVaultCodeRequest = vaultCode.set
+export const clearVaultCodeRequest = vaultCode.clear
+export const $vaultCodeRequests = vaultCode.$all
+export const sessionVaultCodeRequest = (sessionId: string | null) =>
+  computed(vaultCode.$all, all => all[keyFor(sessionId)] ?? null)
+
+// True when the active session is blocked on the user (clarify question or an
+// approval / sudo / secret prompt). Mirrors the pet's `awaitingInput` concept
+// (agent/pet/state.py): the turn is paused on you, not working — so callers can
+// suppress "thinking" indicators and the Esc-to-interrupt shortcut while you
+// decide, instead of treating the wait as an in-flight turn.
+export const $activeSessionAwaitingInput = computed(
+  [
+    $clarifyRequest,
+    $approvalRequest,
+    $sudoRequest,
+    $secretRequest,
+    $vaultUnlockRequest,
+    $vaultSaveLoginRequest,
+    $vaultCodeRequest
+  ],
+  (clarify, approval, sudo, secret, vault, save, code) =>
+    Boolean(clarify || approval || sudo || secret || vault || save || code)
+)
+
+/** True when `sessionId` is parked on a blocking prompt that typing cannot
+ *  answer (approval / sudo / secret). Clarify is deliberately excluded: typing
+ *  a real message IS an answer to a clarify ("none of these" — the composer
+ *  skips it and routes the words), but no message text can approve a command
+ *  or supply a password. Imperative read — the composer checks this on Enter,
+ *  not on every render. */
+export const hasBlockingPromptRequest = (sessionId: string | null | undefined): boolean => {
+  const key = keyFor(sessionId)
+
+  return Boolean(
+    approval.$all.get()[key] ||
+    sudo.$all.get()[key] ||
+    secret.$all.get()[key] ||
+    vaultUnlock.$all.get()[key] ||
+    vaultSave.$all.get()[key] ||
+    vaultCode.$all.get()[key]
+  )
+}
+
+/** Reactive twin of `hasBlockingPromptRequest`, for the composer's busy-action
+ *  affordance (the primary button must advertise queue, not steer, while the
+ *  turn is parked on a prompt Enter can't answer). */
+export const sessionBlockingPrompt = (sessionId: string | null) =>
+  computed(
+    [approval.$all, sudo.$all, secret.$all, vaultUnlock.$all, vaultSave.$all, vaultCode.$all],
+    (approvals, sudos, secrets, vaults, saves, codes) => {
+      const key = keyFor(sessionId)
+
+      return Boolean(approvals[key] || sudos[key] || secrets[key] || vaults[key] || saves[key] || codes[key])
+    }
+  )
+
+/** Per-session `awaitingInput` — the tile composer's counterpart of
+ *  `$activeSessionAwaitingInput` (same sources, fixed session instead of the
+ *  active one). */
+export function sessionAwaitingInput(sessionId: string | null) {
+  return computed(
+    [$clarifyRequests, approval.$all, sudo.$all, secret.$all, vaultUnlock.$all, vaultSave.$all, vaultCode.$all],
+    (clarify, approvals, sudos, secrets, vaults, saves, codes) => {
+      const key = keyFor(sessionId)
+
+      return Boolean(
+        clarify[key] || approvals[key] || sudos[key] || secrets[key] || vaults[key] || saves[key] || codes[key]
+      )
+    }
+  )
+}
 
 // Drop in-flight prompts for `sessionId` (a turn ended) across all three kinds —
 // or every parked prompt when no session is given (global reset / tests).
@@ -107,6 +403,10 @@ export function clearAllPrompts(sessionId?: string | null): void {
     approval.reset()
     sudo.reset()
     secret.reset()
+    vaultUnlock.reset()
+    vaultSave.reset()
+    vaultCode.reset()
+    $approvalInlineAnchors.set({})
 
     return
   }
@@ -114,4 +414,7 @@ export function clearAllPrompts(sessionId?: string | null): void {
   approval.clear(sessionId)
   sudo.clear(sessionId)
   secret.clear(sessionId)
+  vaultUnlock.clear(sessionId)
+  vaultSave.clear(sessionId)
+  vaultCode.clear(sessionId)
 }

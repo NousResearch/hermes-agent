@@ -2,14 +2,22 @@ import { useEffect, useState } from 'react'
 
 import { ActionStatus } from '@/components/ui/action-status'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
+import { Field, FieldHint } from '@/components/ui/field'
+import { SanitizedInput } from '@/components/ui/sanitized-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { createProfile, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
-import { cn } from '@/lib/utils'
+import { slug } from '@/lib/sanitize'
 import type { ProfileInfo } from '@/types/hermes'
 
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -93,28 +101,24 @@ export function CreateProfileDialog({
         </DialogHeader>
 
         <form className="grid gap-4" onSubmit={handleSubmit}>
-          <div className="grid gap-1.5">
-            <label className="text-xs font-medium" htmlFor="new-profile-name">
-              {p.nameLabel}
-            </label>
-            <Input
+          <Field htmlFor="new-profile-name" label={p.nameLabel}>
+            <SanitizedInput
               aria-invalid={invalid}
               autoFocus
               id="new-profile-name"
-              onChange={event => setName(event.target.value)}
+              onValueChange={setName}
               placeholder="my-profile"
+              sanitize={slug}
               value={name}
             />
-            <p className={cn('text-[0.66rem] leading-4', invalid ? 'text-destructive' : 'text-muted-foreground')}>
-              {p.nameHint}
-            </p>
-          </div>
+            <FieldHint error={invalid}>{p.nameHint}</FieldHint>
+          </Field>
 
-          <div className="grid gap-1.5">
-            <label className="text-xs font-medium" htmlFor="new-profile-clone-from">
-              {p.cloneFrom}
-            </label>
-            <Select onValueChange={value => setCloneFrom(value === '__none__' ? null : value)} value={cloneFrom ?? '__none__'}>
+          <Field htmlFor="new-profile-clone-from" label={p.cloneFrom}>
+            <Select
+              onValueChange={value => setCloneFrom(value === '__none__' ? null : value)}
+              value={cloneFrom ?? '__none__'}
+            >
               <SelectTrigger className="h-9 rounded-md" id="new-profile-clone-from">
                 <SelectValue />
               </SelectTrigger>
@@ -127,13 +131,10 @@ export function CreateProfileDialog({
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">{p.cloneFromDesc}</p>
-          </div>
+            <FieldHint>{p.cloneFromDesc}</FieldHint>
+          </Field>
 
-          <div className="grid gap-1.5">
-            <label className="text-xs font-medium" htmlFor="new-profile-soul">
-              SOUL.md <span className="font-normal text-muted-foreground">- {p.soulOptional}</span>
-            </label>
+          <Field htmlFor="new-profile-soul" label="SOUL.md" optional optionalLabel={p.soulOptional}>
             <Textarea
               className="min-h-28 font-mono text-xs leading-5"
               id="new-profile-soul"
@@ -141,7 +142,7 @@ export function CreateProfileDialog({
               placeholder={p.soulPlaceholder(cloneFrom ? p.soulPlaceholderCloned : p.soulPlaceholderEmpty)}
               value={soul}
             />
-          </div>
+          </Field>
 
           {error && (
             <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">

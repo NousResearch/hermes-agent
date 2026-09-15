@@ -71,10 +71,9 @@ def _extract_dict_keys(source: str, dict_name: str) -> set[str]:
 
 
 def _cli_env_map_keys() -> set[str]:
-    """terminal config keys bridged by cli.load_cli_config()."""
+    """terminal config keys bridged by cli.load_cli_config() (via _mirror_config_to_env)."""
     import cli
-    source = inspect.getsource(cli.load_cli_config)
-    return _extract_dict_keys(source, "env_mappings")
+    return set(cli._TERMINAL_ENV_MAPPINGS.keys())
 
 
 def _gateway_env_map_keys() -> set[str]:
@@ -233,6 +232,27 @@ def test_docker_env_is_bridged_everywhere():
     assert "TERMINAL_DOCKER_ENV" in _terminal_tool_env_var_names()
 
 
+def test_docker_extra_args_is_bridged_everywhere():
+    """Regression pin for docker_extra_args config key being silently ignored.
+
+    ``terminal.docker_extra_args`` in config.yaml passes extra flags verbatim
+    to ``docker run`` (e.g. ``--gpus=all``, ``--shm-size=16g``).  The key was
+    present in DEFAULT_CONFIG, TERMINAL_CONFIG_ENV_MAP (so ``hermes config
+    set`` bridged it), terminal_tool._get_env_config (reads
+    TERMINAL_DOCKER_EXTRA_ARGS), and DockerEnvironment (applies extra_args) --
+    but it was MISSING from cli.py's env_mappings and gateway/run.py's
+    _terminal_env_map.  So a user who hand-edited config.yaml had their GPU /
+    shm-size flags silently dropped on the CLI and gateway/desktop paths,
+    while ``image``/``volumes`` (which were in those maps) bridged fine --
+    producing the "Hermes partially reads the Docker config" symptom.  Guard
+    all four bridging points so this cannot regress.
+    """
+    assert "docker_extra_args" in _cli_env_map_keys()
+    assert "docker_extra_args" in _gateway_env_map_keys()
+    assert "docker_extra_args" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_EXTRA_ARGS" in _terminal_tool_env_var_names()
+
+
 def test_docker_persist_across_processes_is_bridged_everywhere():
     """Regression pin for the cross-process container reuse toggle.
 
@@ -301,3 +321,12 @@ def test_docker_forward_env_is_bridged_everywhere():
     assert "docker_forward_env" in _gateway_env_map_keys()
     assert "docker_forward_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_FORWARD_ENV" in _terminal_tool_env_var_names()
+
+
+def test_docker_snap_compat_is_bridged_everywhere():
+    """#9730: ``terminal.docker_snap_compat`` must reach the container on the CLI, gateway and
+    ``hermes config set`` paths, like every other docker_* key (see docker_extra_args above)."""
+    assert "docker_snap_compat" in _cli_env_map_keys()
+    assert "docker_snap_compat" in _gateway_env_map_keys()
+    assert "docker_snap_compat" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_SNAP_COMPAT" in _terminal_tool_env_var_names()

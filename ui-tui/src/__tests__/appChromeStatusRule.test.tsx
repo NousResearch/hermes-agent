@@ -96,7 +96,6 @@ const baseProps = {
   liveSessionCount: 0,
   model: 'opus-4.8',
   sessionStartedAt: null,
-  showCost: false,
   status: 'ready',
   statusColor: DEFAULT_THEME.color.ok,
   t: DEFAULT_THEME,
@@ -105,9 +104,129 @@ const baseProps = {
   voiceLabel: ''
 }
 
+describe('StatusRule session title', () => {
+  it('marks only estimated context occupancy at every visible width', () => {
+    for (const cols of [80, 120, 200]) {
+      for (const estimated of [true, false]) {
+        const text = textContent(
+          StatusRule({
+            ...baseProps,
+            cols,
+            statusBarFields: new Set(['context_detail']),
+            usage: { ...baseProps.usage, context_estimated: estimated }
+          })
+        )
+
+        const context = text.match(/(~?\d+(?:\.\d+)?k(?:\/\d+k| tok))/)?.[1]
+
+        expect(context, `context must render at ${cols} columns`).toBeTruthy()
+        expect(context?.startsWith('~')).toBe(estimated)
+      }
+    }
+  })
+
+  it('pins the named session at the far-right edge instead of the cwd label', () => {
+    const element = StatusRule({
+      ...baseProps,
+      sessionTitle: 'weekly-digest'
+    })
+
+    const rendered = textContent(element)
+    const title = findElementWithText(element, 'weekly-digest')
+
+    expect(rendered).toContain('weekly-digest')
+    expect(rendered).not.toContain('~/repo')
+    // Regression for issue #82465: a raw, full-saturation accent-hue
+    // background (e.g. #FFBF00 on DARK_SEEDS) paired with statusFg (a
+    // near-white tone never designed to sit on it) rendered at roughly a
+    // 1.5-2:1 contrast ratio -- unreadable. No background fill at all;
+    // the accent color goes on the text instead, matching the theme's
+    // own convention that a raw accent hue is never used as a solid
+    // fill elsewhere (fills are always softened, e.g. activeRow).
+    expect(title?.props.backgroundColor).toBeUndefined()
+    expect(title?.props.color).toBe(DEFAULT_THEME.color.accent)
+  })
+})
+
+describe('StatusRule background-subagent indicator', () => {
+  it('renders ⛓ N on a wide terminal when subagents are running', () => {
+    const element = StatusRule({
+      ...baseProps,
+      usage: { ...baseProps.usage, active_subagents: 3 }
+    })
+
+    expect(textContent(element)).toContain('⛓ 3')
+  })
+
+  it('omits the segment when no subagents are running', () => {
+    const element = StatusRule({
+      ...baseProps,
+      usage: { ...baseProps.usage, active_subagents: 0 }
+    })
+
+    expect(textContent(element)).not.toContain('⛓')
+  })
+
+  it('omits the segment when the field is absent', () => {
+    const element = StatusRule({ ...baseProps })
+
+    expect(textContent(element)).not.toContain('⛓')
+  })
+
+  it('spells out the auto-resume hint when idle with subagents in flight', () => {
+    const element = StatusRule({
+      ...baseProps,
+      usage: { ...baseProps.usage, active_subagents: 1 }
+    })
+
+    expect(textContent(element)).toContain('resumes when subagent finishes')
+  })
+
+  it('pluralizes the resume hint for multiple in-flight subagents', () => {
+    const element = StatusRule({
+      ...baseProps,
+      usage: { ...baseProps.usage, active_subagents: 3 }
+    })
+
+    expect(textContent(element)).toContain('resumes when 3 subagents finish')
+  })
+
+  it('hides the resume hint mid-turn (a busy turn owns the indicator)', () => {
+    const element = StatusRule({
+      ...baseProps,
+      busy: true,
+      turnStartedAt: Date.now(),
+      usage: { ...baseProps.usage, active_subagents: 2 }
+    })
+
+    expect(textContent(element)).not.toContain('resumes when')
+  })
+
+  it('omits the resume hint when no subagents are running', () => {
+    const element = StatusRule({ ...baseProps })
+
+    expect(textContent(element)).not.toContain('resumes when')
+  })
+
+  it('drops the subagent segment before the bg segment on a narrow terminal', () => {
+    // cols=44 is below the subagents breakpoint (92) but the bg breakpoint
+    // (88) too — both gone. Assert the lower-priority subagent indicator is
+    // not shown when space is tight even with a live count.
+    const element = StatusRule({
+      ...baseProps,
+      cols: 44,
+      bgCount: 1,
+      usage: { ...baseProps.usage, active_subagents: 2 }
+    })
+
+    expect(textContent(element)).not.toContain('⛓')
+  })
+})
+
 describe('StatusRule session count click target', () => {
   it('makes the live session count itself clickable', () => {
     const openSwitcher = vi.fn()
+
     const element = StatusRule({
       bgCount: 0,
       busy: false,
@@ -117,7 +236,6 @@ describe('StatusRule session count click target', () => {
       model: 'kimi-k2.6',
       onSessionCountClick: openSwitcher,
       sessionStartedAt: null,
-      showCost: false,
       status: 'ready',
       statusColor: DEFAULT_THEME.color.ok,
       t: DEFAULT_THEME,
@@ -143,12 +261,19 @@ describe('StatusRule session count click target', () => {
       model: 'opus-4.8',
       onSessionCountClick: vi.fn(),
       sessionStartedAt: Date.now() - 60_000,
-      showCost: true,
       status: 'ready',
       statusColor: DEFAULT_THEME.color.ok,
       t: DEFAULT_THEME,
       turnStartedAt: null,
-      usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, cost_usd: 0.5, total: 50_000 },
+      usage: {
+        calls: 0,
+        context_max: 200_000,
+        context_percent: 25,
+        context_used: 50_000,
+        input: 0,
+        output: 0,
+        total: 50_000
+      },
       voiceLabel: 'voice off'
     })
 
@@ -157,9 +282,8 @@ describe('StatusRule session count click target', () => {
     // Must-keep essentials survive intact …
     expect(rendered).toContain('ready')
     expect(rendered).toContain('opus 4.8')
-    // … while the low-value tail (session count, cost) is dropped, not truncated.
+    // … while the low-value tail (session count) is dropped, not truncated.
     expect(rendered).not.toContain('3 sessions')
-    expect(rendered).not.toContain('$0.5000')
   })
 })
 
@@ -201,6 +325,7 @@ describe('StatusRule credits notice render priority', () => {
       ...baseProps,
       notice: { key: 'credits.depleted', kind: 'sticky', level: 'error', text: '✕ exhausted' }
     })
+
     const errText = findElementWithText(errEl, '✕ exhausted')
     expect(errText?.props.color).toBe(DEFAULT_THEME.color.error)
 
@@ -208,6 +333,7 @@ describe('StatusRule credits notice render priority', () => {
       ...baseProps,
       notice: { key: 'credits.restored', kind: 'ttl', level: 'success', text: '✓ restored', ttl_ms: 8000 }
     })
+
     const okText = findElementWithText(okEl, '✓ restored')
     expect(okText?.props.color).toBe(DEFAULT_THEME.color.statusGood)
   })
@@ -217,6 +343,7 @@ describe('StatusRule credits notice render priority', () => {
       ...baseProps,
       notice: { key: 'credits.90', kind: 'sticky', level: 'warn', text: '⚠ 90% used' }
     })
+
     const noticeText = findElementWithText(element, '90% used')
 
     // The leaf carries exactly the policy text — no extra prepended glyph.
@@ -225,6 +352,7 @@ describe('StatusRule credits notice render priority', () => {
 
   it('the notice text is the shrinkable element (flexShrink=1 + truncate-end) so a long notice ellipsizes', () => {
     const longText = '⚠ ' + 'x'.repeat(200)
+
     const element = StatusRule({
       ...baseProps,
       cols: 50,
@@ -241,23 +369,77 @@ describe('StatusRule credits notice render priority', () => {
         if (Array.isArray(node)) {
           for (const c of node) {
             const f = findShrinkBoxContaining(c)
-            if (f) return f
+
+            if (f) {
+              return f
+            }
           }
         }
+
         return null
       }
+
       if (node.props.flexShrink === 1 && textContent(node).includes('xxxxx') && node.type !== StatusRule) {
         // Prefer the closest shrink box that wraps the notice text.
         const deeper = findShrinkBoxContaining(node.props.children)
+
         return deeper ?? node
       }
+
       return findShrinkBoxContaining(node.props.children)
     }
+
     const shrinkBox = findShrinkBoxContaining(element)
     expect(shrinkBox).not.toBeNull()
 
     // Model survives on a narrow terminal because the notice yields.
     expect(textContent(element)).toContain('opus 4.8')
+  })
+})
+
+describe('StatusRule battery indicator', () => {
+  it('renders the battery label with a battery glyph on AC-off', () => {
+    const element = StatusRule({
+      ...baseProps,
+      battery: { available: true, category: 'good', percent: 82, plugged: false }
+    })
+
+    expect(textContent(element)).toContain('🔋 82%')
+  })
+
+  it('uses a bolt glyph while charging', () => {
+    const element = StatusRule({
+      ...baseProps,
+      battery: { available: true, category: 'good', percent: 82, plugged: true }
+    })
+
+    expect(textContent(element)).toContain('⚡ 82%')
+  })
+
+  it('colours the read-out by category (critical → theme statusCritical)', () => {
+    const element = StatusRule({
+      ...baseProps,
+      battery: { available: true, category: 'critical', percent: 7, plugged: false }
+    })
+
+    const leaf = findElementWithText(element, '7%')
+    expect(leaf?.props.color).toBe(DEFAULT_THEME.color.statusCritical)
+  })
+
+  it('omits the segment when battery is null', () => {
+    const element = StatusRule({ ...baseProps, battery: null })
+
+    expect(textContent(element)).not.toContain('%🔋')
+    expect(textContent(element)).not.toContain('🔋')
+  })
+
+  it('omits the segment when no battery is available (desktop/server)', () => {
+    const element = StatusRule({
+      ...baseProps,
+      battery: { available: false, category: 'dim', percent: null, plugged: null }
+    })
+
+    expect(textContent(element)).not.toContain('🔋')
   })
 })
 
@@ -295,6 +477,7 @@ describe('StatusRule idle-since read-out', () => {
 
   it('shows time since the last final agent response when idle', () => {
     const endedAt = Date.now() - 42_000
+
     const element = StatusRule({
       ...baseProps,
       lastTurnEndedAt: endedAt,
@@ -326,5 +509,61 @@ describe('StatusRule idle-since read-out', () => {
     })
 
     expect(findComponentByName(element, 'IdleSince')).toBeNull()
+  })
+})
+
+describe('StatusRule perf read-outs (cache hit / latency / tps)', () => {
+  const perfUsage = {
+    ...baseProps.usage,
+    avg_latency_s: 3.2,
+    avg_tps: 50.4,
+    cache_hit_pct: 87,
+    calls: 4,
+    input: 1000,
+    output: 500
+  }
+
+  it('renders all three segments on a wide terminal', () => {
+    const element = StatusRule({ ...baseProps, cols: 160, usage: perfUsage })
+    const rendered = textContent(element)
+
+    expect(rendered).toContain('◎ 87%')
+    expect(rendered).toContain('◷ 3.2s')
+    expect(rendered).toContain('↑ 50 t/s')
+  })
+
+  it('self-hides when the server omits the keys', () => {
+    const element = StatusRule({ ...baseProps, cols: 160 })
+    const rendered = textContent(element)
+
+    expect(rendered).not.toContain('◎')
+    expect(rendered).not.toContain('◷')
+    expect(rendered).not.toContain('t/s')
+  })
+
+  it('honors the display.status_bar.fields visibility filter', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 160,
+      statusBarFields: new Set(['model', 'context_pct', 'cache_hit']),
+      usage: perfUsage
+    })
+
+    const rendered = textContent(element)
+
+    expect(rendered).toContain('◎ 87%')
+    expect(rendered).not.toContain('◷')
+    expect(rendered).not.toContain('t/s')
+  })
+
+  it('hides the session title badge when the fields filter omits title', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 160,
+      sessionTitle: 'weekly-digest',
+      statusBarFields: new Set(['model', 'context_pct'])
+    })
+
+    expect(textContent(element)).not.toContain('weekly-digest')
   })
 })

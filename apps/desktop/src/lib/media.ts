@@ -1,3 +1,5 @@
+import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { capitalize } from '@/lib/text'
 import { $connection } from '@/store/session'
 
 export type MediaKind = 'audio' | 'image' | 'video' | 'file'
@@ -38,6 +40,17 @@ export function mediaKind(path: string): MediaKind {
   return mediaInfo(path)?.kind ?? 'file'
 }
 
+// Markdown is renderable content, not an opaque download: the preview rail
+// already knows how to render a `.md` file (rendered/source toggle), so the
+// MEDIA delivery path routes these to a preview instead of a download link.
+const MARKDOWN_EXTENSIONS = new Set(['md', 'markdown', 'mdown', 'mkd'])
+
+export function isMarkdownDocumentPath(path: string): boolean {
+  const ext = path.split(/[?#]/, 1)[0]?.split('.').pop()?.toLowerCase()
+
+  return ext ? MARKDOWN_EXTENSIONS.has(ext) : false
+}
+
 export function mediaMime(path: string): string {
   return mediaInfo(path)?.mime ?? 'application/octet-stream'
 }
@@ -54,6 +67,50 @@ export function mediaName(path: string): string {
 
 export function mediaMarkdownHref(path: string): string {
   return `#media:${encodeURIComponent(path)}`
+}
+
+export function isInlineMediaSrc(path: string): boolean {
+  return /^(?:https?|data):/i.test(path)
+}
+
+export function isArtifactFilePath(path: string): boolean {
+  return /^(?:file:|\/|[~.][\\/]|\.\.[\\/]|[a-z]:[\\/]|\\\\)/i.test(path)
+}
+
+export function isFileMediaPath(path: string): boolean {
+  return /^(?:file:|\/|~\/|[a-z]:[\\/]|\\\\)/i.test(path)
+}
+
+export async function resolveMediaDisplaySrc(path: string): Promise<string> {
+  if (isInlineMediaSrc(path) || !isFileMediaPath(path)) {
+    return path
+  }
+
+  if (window.hermesDesktop && isRemoteGateway()) {
+    return gatewayMediaDataUrl(path)
+  }
+
+  if (!window.hermesDesktop?.readFileDataUrl) {
+    return mediaExternalUrl(path)
+  }
+
+  return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+}
+
+// Audio/video need a seekable source instead of a whole-file data URL. Keep
+// remote URLs untouched and route filesystem paths through the Electron media
+// protocol. Its main-process handler reads local files directly or proxies a
+// remote gateway with the connection's bearer/cookie/token authentication.
+export async function resolveMediaPlaybackSrc(path: string): Promise<string> {
+  if (isInlineMediaSrc(path)) {
+    return path
+  }
+
+  if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
+    return isRemoteGateway() ? mediaGatewayStreamUrl(path) : mediaStreamUrl(path)
+  }
+
+  return resolveMediaDisplaySrc(path)
 }
 
 // Resolve a media path to a URL the shell can open. Remote mode rewrites
@@ -77,7 +134,30 @@ export function mediaExternalUrl(path: string): string {
   return /^file:/i.test(path) ? path : `file://${path}`
 }
 
-// Custom Electron scheme (registered in electron/main.cjs) that streams a local
+// Remote gateway audio/video is proxied by the Electron main process. OAuth
+// connections intentionally expose no static token to the renderer, so a bare
+// HTTPS source cannot authenticate reliably. The custom protocol keeps secrets
+// out of renderer URLs while forwarding Range requests to /api/files/stream.
+export function mediaGatewayStreamUrl(path: string): string {
+  const conn = $connection.get()
+
+  if (isRemoteGateway()) {
+    const file = encodeURIComponent(filePathFromMediaPath(path))
+
+    const scope = [
+      conn?.connectionId ? `connectionId=${encodeURIComponent(conn.connectionId)}` : '',
+      conn?.profile ? `profile=${encodeURIComponent(conn.profile)}` : ''
+    ]
+      .filter(Boolean)
+      .join('&')
+
+    return `hermes-media://remote/${file}${scope ? `?${scope}` : ''}`
+  }
+
+  return mediaExternalUrl(path)
+}
+
+// Custom Electron scheme (registered in electron/main.ts) that streams a local
 // file with Range support. Used for audio/video so playback bypasses the data
 // URL size cap and supports seeking. `path` may be a plain path or `file://…`.
 export function mediaStreamUrl(path: string): string {
@@ -114,23 +194,49 @@ export function isRemoteGateway(): boolean {
   return $connection.get()?.mode === 'remote'
 }
 
-// Fetch a gateway-local image as a data URL via the authenticated REST bridge.
-// Used in remote mode where readFileDataUrl (which reads THIS machine's disk)
-// can't see files the agent wrote on the gateway. Requires the gateway to
-// expose GET /api/media (hermes_cli/web_server.py).
+// Fetch gateway-local media as a data URL via the authenticated desktop FS
+// bridge. Remote Desktop artifacts can live anywhere the gateway can read
+// (workspace, skills, ~/.hermes/cache, etc.); /api/media is intentionally
+// narrower and rejects non-images plus images outside its media roots.
 export async function gatewayMediaDataUrl(path: string): Promise<string> {
-  const file = filePathFromMediaPath(path)
+  return readDesktopFileDataUrl(filePathFromMediaPath(path))
+}
 
-  const result = await window.hermesDesktop!.api<{ data_url: string }>({
-    path: `/api/media?path=${encodeURIComponent(file)}`
+// Remote-mode replacement for opening gateway-local file paths with file://.
+// The file lives on the gateway, so ask the Electron main process to fetch the
+// bytes through the authenticated backend connection and save them locally. This
+// avoids browser/OS downloads losing OAuth cookies and avoids the data-URL cap
+// used by preview endpoints.
+export async function downloadGatewayMediaFile(
+  path: string,
+  origin?: { sessionId: string; profile?: string }
+): Promise<{ canceled?: boolean; path?: string; saved: boolean }> {
+  // URI conversion belongs to the gateway OS, not the renderer's URL parser.
+  const file = path
+  const conn = $connection.get()
+
+  if (!window.hermesDesktop?.saveGatewayFile) {
+    throw new Error('Desktop file download bridge is unavailable')
+  }
+
+  return window.hermesDesktop.saveGatewayFile({
+    connectionId: conn?.connectionId,
+    path: file,
+    profile: origin?.profile ?? conn?.profile,
+    ...(origin ? { sessionId: origin.sessionId } : {}),
+    suggestedName: mediaName(file).replace(/(?:%[0-9a-f]{2})+/gi, encoded => {
+      try {
+        return decodeURIComponent(encoded)
+      } catch {
+        return encoded
+      }
+    })
   })
-
-  return result.data_url
 }
 
 export function mediaDisplayLabel(path: string): string {
   const escaped = mediaName(path).replace(/[[\]\\]/g, '\\$&')
   const kind = mediaKind(path)
 
-  return `${kind[0].toUpperCase()}${kind.slice(1)}: ${escaped}`
+  return `${capitalize(kind)}: ${escaped}`
 }

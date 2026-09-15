@@ -298,6 +298,6 @@ GitHub allows 5,000 API requests/hour for authenticated users. Each PR review us
 
 - **[Webhook-Based PR Reviews](./webhook-github-pr-review.md)** — get instant reviews when PRs are opened (requires a public endpoint)
 - **[Daily Briefing Bot](/guides/daily-briefing-bot)** — combine PR reviews with your morning news digest
-- **[Build a Plugin](/guides/build-a-hermes-plugin)** — wrap the review logic into a shareable plugin
+- **[Build a Plugin](/developer-guide/plugins)** — wrap the review logic into a shareable plugin
 - **[Profiles](/user-guide/profiles)** — run a dedicated reviewer profile with its own memory and config
 - **[Fallback Providers](/user-guide/features/fallback-providers)** — ensure reviews run even when one provider is down

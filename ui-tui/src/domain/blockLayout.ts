@@ -17,17 +17,24 @@ import { sectionMode } from './details.js'
  *   slash  — slash-command echoes (owns its margin)
  *   intro  — banner / panels (rendered out-of-band, never gapped here)
  */
-export type BlockGroup = 'diff' | 'intro' | 'model' | 'note' | 'slash' | 'trail' | 'user'
+export type BlockGroup = 'diff' | 'event' | 'intro' | 'model' | 'note' | 'slash' | 'trail' | 'user'
 
 export const messageGroup = (msg: Pick<Msg, 'kind' | 'role'>): BlockGroup => {
   switch (msg.kind) {
     case 'intro':
+
     case 'panel':
       return 'intro'
+
     case 'slash':
       return 'slash'
+
+    case 'event':
+      return 'event'
+
     case 'diff':
       return 'diff'
+
     case 'trail':
       return 'trail'
   }
@@ -47,12 +54,12 @@ export const messageGroup = (msg: Pick<Msg, 'kind' | 'role'>): BlockGroup => {
 // slash, the top+bottom margins for diff) or that are painted out-of-band
 // (intro). The grouping primitive only spaces the model working area —
 // model prose, reasoning/tool trails, and notes/errors.
-const SELF_SPACED: ReadonlySet<BlockGroup> = new Set(['diff', 'intro', 'slash', 'user'])
+const SELF_SPACED: ReadonlySet<BlockGroup> = new Set(['diff', 'event', 'intro', 'slash', 'user'])
 
 // Groups that already paint a trailing blank line beneath themselves
 // (marginBottom in MessageLine), so the block that follows must not add its
 // own leading gap or the single boundary would become a double gap.
-const PAINTS_TRAILING_GAP: ReadonlySet<BlockGroup> = new Set(['diff', 'user'])
+const PAINTS_TRAILING_GAP: ReadonlySet<BlockGroup> = new Set(['diff', 'event', 'user'])
 
 /**
  * Whether `cur` renders one blank line above it, given the block rendered
@@ -65,10 +72,7 @@ const PAINTS_TRAILING_GAP: ReadonlySet<BlockGroup> = new Set(['diff', 'user'])
  * assistant block therefore computes the same gap while it streams as the
  * settled segment does once it flushes, so the live area never jumps.
  */
-export const hasLeadGap = (
-  prev: Pick<Msg, 'kind' | 'role'> | undefined,
-  cur: Pick<Msg, 'kind' | 'role'>
-): boolean => {
+export const hasLeadGap = (prev: Pick<Msg, 'kind' | 'role'> | undefined, cur: Pick<Msg, 'kind' | 'role'>): boolean => {
   const group = messageGroup(cur)
 
   if (SELF_SPACED.has(group)) {

@@ -11,6 +11,7 @@ import { InputEvent } from '../events/input-event.js'
 import { TerminalFocusEvent } from '../events/terminal-focus-event.js'
 import instances from '../instances.js'
 import {
+  DECRPM_STATUS,
   INITIAL_STATE,
   type ParsedInput,
   type ParsedKey,
@@ -20,8 +21,16 @@ import {
 import reconciler from '../reconciler.js'
 import { clearSelection, finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js'
 import { getTerminalFocused, setTerminalFocused } from '../terminal-focus-state.js'
-import { TerminalQuerier, xtversion } from '../terminal-querier.js'
-import { isXtermJs, setXtversionName, supportsExtendedKeys } from '../terminal.js'
+import { decrqm, oscColor, TerminalQuerier, xtversion } from '../terminal-querier.js'
+import {
+  isXtermJs,
+  parseOscColor,
+  setTerminalBackgroundHex,
+  setTerminalForegroundHex,
+  setXtversionName,
+  skipKittyKeyboardProtocol,
+  supportsExtendedKeys
+} from '../terminal.js'
 import {
   DISABLE_KITTY_KEYBOARD,
   DISABLE_MODIFY_OTHER_KEYS,
@@ -30,7 +39,7 @@ import {
   FOCUS_IN,
   FOCUS_OUT
 } from '../termio/csi.js'
-import { DBP, DFE, DISABLE_MOUSE_TRACKING, EBP, EFE, SHOW_CURSOR } from '../termio/dec.js'
+import { DBP, DEC, DFE, DISABLE_MOUSE_TRACKING, EBP, EFE, SHOW_CURSOR } from '../termio/dec.js'
 
 import AppContext from './AppContext.js'
 import { ClockProvider } from './ClockContext.js'
@@ -50,6 +59,20 @@ const SUPPORTS_SUSPEND = false
 // but no signal reaches us. 5s is well above normal inter-keystroke gaps
 // but short enough that the first scroll after reattach works.
 const STDIN_RESUME_GAP_MS = 5000
+
+// Mouse-mode watchdog cadence. The stdin-gap re-assert above needs a
+// KEYSTROKE to fire — a mouse-only user whose terminal dropped the DEC
+// mouse modes (e.g. the terminal's own "disable mouse reporting" toggle,
+// which some emulators implement by clearing the modes) produces no stdin
+// at all: mouse reporting is exactly what's off. Recovery would need
+// input, input needs recovery — historically only a window resize broke
+// the deadlock. The watchdog closes it out-of-band: every tick it asks
+// the terminal whether mode 1000 is still set (DECRQM — answered on
+// stdin, no user action needed) and re-asserts tracking when the terminal
+// reports it lost. Terminals that gate delivery without clearing the mode
+// report SET, so an *active* user toggle is never fought; terminals that
+// don't answer DECRQM at all disable the watchdog permanently.
+const MOUSE_WATCHDOG_INTERVAL_MS = 2000
 type Props = {
   readonly children: ReactNode
   readonly stdin: NodeJS.ReadStream
@@ -101,6 +124,11 @@ type Props = {
   // fullscreen) re-enters alt-screen + mouse tracking. Idempotent on the
   // terminal side. Optional so testing.tsx doesn't need to stub it.
   readonly onStdinResume?: () => void
+  // Called for DECSET 1004 terminal focus transitions. The renderer uses
+  // focus-in as a strong signal that the emulator may have coalesced hidden
+  // tab writes or lost physical cursor state, so it can force one clean
+  // repaint instead of trusting incremental damage from before the blur.
+  readonly onTerminalFocusChange?: (isFocused: boolean) => void
   // Receives the declared native-cursor position from useDeclaredCursor
   // so ink.tsx can park the terminal cursor there after each frame.
   // Enables IME composition at the input caret and lets screen readers /
@@ -184,6 +212,21 @@ export default class App extends PureComponent<Props, State> {
   // Initialized to now so startup doesn't false-trigger.
   lastStdinTime = Date.now()
 
+  // Mouse-mode watchdog (see MOUSE_WATCHDOG_INTERVAL_MS). Runs while raw
+  // mode is on; each tick DECRQM-probes mode 1000 unless a mouse event
+  // arrived within the last interval (tracking provably alive → zero
+  // probe chatter during normal mouse use).
+  mouseWatchdogTimer: NodeJS.Timeout | null = null
+  // A probe round-trip is outstanding. Also latches permanently when the
+  // terminal never answers the DA1 sentinel (non-conforming) so a dead
+  // querier can't accumulate pending promises.
+  mouseWatchdogProbeInFlight = false
+  // Terminal ignored DECRQM (or reported the mode permanently reset) —
+  // probing is useless; the watchdog disables itself for the session.
+  mouseWatchdogUnsupported = false
+  // Timestamp of the last parsed mouse event (any kind).
+  lastMouseEventTime = 0
+
   // Determines if TTY is supported on the provided stdin
   isRawModeSupported(): boolean {
     return this.props.stdin.isTTY
@@ -236,6 +279,11 @@ export default class App extends PureComponent<Props, State> {
       this.incompleteEscapeTimer = null
     }
 
+    if (this.mouseWatchdogTimer) {
+      clearInterval(this.mouseWatchdogTimer)
+      this.mouseWatchdogTimer = null
+    }
+
     if (this.pendingHyperlinkTimer) {
       clearTimeout(this.pendingHyperlinkTimer)
       this.pendingHyperlinkTimer = null
@@ -286,9 +334,14 @@ export default class App extends PureComponent<Props, State> {
         // distinguishable from ctrl+<letter>. We write both the kitty stack
         // push (CSI >1u) and xterm modifyOtherKeys level 2 (CSI >4;2m) —
         // terminals honor whichever they implement (tmux only accepts the
-        // latter).
+        // latter). Ghostty gets only modifyOtherKeys — its kitty
+        // disambiguate mode strips Alt from Backspace (see
+        // skipKittyKeyboardProtocol).
         if (supportsExtendedKeys()) {
-          this.props.stdout.write(ENABLE_KITTY_KEYBOARD)
+          if (!skipKittyKeyboardProtocol()) {
+            this.props.stdout.write(ENABLE_KITTY_KEYBOARD)
+          }
+
           this.props.stdout.write(ENABLE_MODIFY_OTHER_KEYS)
         }
 
@@ -301,12 +354,41 @@ export default class App extends PureComponent<Props, State> {
         // init sequence completes — avoids interleaving with alt-screen/mouse
         // tracking enable writes that may happen in the same render cycle.
         setImmediate(() => {
-          void Promise.all([this.querier.send(xtversion()), this.querier.flush()]).then(([r]) => {
+          // OSC 11 + OSC 10 ride the same batch: the terminal's actual
+          // background drives light/dark theme detection where env heuristics
+          // (COLORFGBG, TERM_PROGRAM) are blind — notably xterm.js hosts. The
+          // FOREGROUND is the polarity tiebreaker for transparent profiles:
+          // those report the unset-default background (pure black) but the
+          // theme's real foreground, whose luminance reveals the pole.
+          void Promise.all([
+            this.querier.send(xtversion()),
+            this.querier.send(oscColor(11)),
+            this.querier.send(oscColor(10)),
+            this.querier.flush()
+          ]).then(([r, bg, fg]) => {
             if (r) {
               setXtversionName(r.name)
               logForDebugging(`XTVERSION: terminal identified as "${r.name}"`)
             } else {
               logForDebugging('XTVERSION: no reply (terminal ignored query)')
+            }
+
+            const bgHex = bg ? parseOscColor(bg.data) : undefined
+            const fgHex = fg ? parseOscColor(fg.data) : undefined
+
+            // Background first: a trusted OSC-11 answer settles polarity
+            // outright, so the foreground listener (the transparent-profile
+            // tiebreaker) sees it already resolved and stays silent.
+            if (bgHex) {
+              setTerminalBackgroundHex(bgHex)
+              logForDebugging(`OSC11: terminal background is ${bgHex}`)
+            } else {
+              logForDebugging('OSC11: no reply (terminal ignored query)')
+            }
+
+            if (fgHex) {
+              setTerminalForegroundHex(fgHex)
+              logForDebugging(`OSC10: terminal foreground is ${fgHex}`)
             }
           })
         })
@@ -325,6 +407,13 @@ export default class App extends PureComponent<Props, State> {
         setImmediate(() => {
           instances.get(this.props.stdout)?.reassertTerminalModes()
         })
+
+        // Mouse-mode watchdog: recovers tracking when the terminal drops
+        // the DEC mouse modes with no stdin and no resize to tell us (see
+        // MOUSE_WATCHDOG_INTERVAL_MS). Interval, not per-event: the whole
+        // point is firing when NO events arrive.
+        this.mouseWatchdogTimer = setInterval(this.probeMouseTracking, MOUSE_WATCHDOG_INTERVAL_MS)
+        this.mouseWatchdogTimer.unref?.()
       }
 
       this.rawModeEnabledCount++
@@ -334,6 +423,11 @@ export default class App extends PureComponent<Props, State> {
 
     // Disable raw mode only when no components left that are using it
     if (--this.rawModeEnabledCount === 0) {
+      if (this.mouseWatchdogTimer) {
+        clearInterval(this.mouseWatchdogTimer)
+        this.mouseWatchdogTimer = null
+      }
+
       this.props.stdout.write(DISABLE_MODIFY_OTHER_KEYS)
       this.props.stdout.write(DISABLE_KITTY_KEYBOARD)
       // Disable terminal focus reporting (DECSET 1004)
@@ -353,6 +447,60 @@ export default class App extends PureComponent<Props, State> {
       stdin.removeListener('readable', this.handleReadable)
       stdin.unref()
     }
+  }
+
+  // Mouse-mode watchdog tick. Asks the terminal whether DEC mode 1000 is
+  // still set (DECRQM); if the terminal reports RESET while we expect
+  // tracking on, someone cleared our modes out from under us (terminal
+  // "disable mouse reporting" toggle, an external app, tmux) — re-assert.
+  // See MOUSE_WATCHDOG_INTERVAL_MS for the full rationale. Timeout-free:
+  // the querier's DA1 sentinel resolves the probe with `undefined` when
+  // the terminal ignores DECRQM, which permanently disables the watchdog.
+  probeMouseTracking = (): void => {
+    if (this.mouseWatchdogUnsupported || this.mouseWatchdogProbeInFlight) {
+      return
+    }
+
+    const ink = instances.get(this.props.stdout)
+
+    // Only probe when tracking is supposed to be armed (alt screen active,
+    // not paused, preset ≠ 'off'). Covers /mouse off, editor handoffs, and
+    // inline mode without extra wiring.
+    if (!ink?.expectsMouseTracking || !this.props.stdout.isTTY) {
+      return
+    }
+
+    // A recent mouse event proves tracking is alive — skip the probe so
+    // normal mouse use generates zero query chatter.
+    if (Date.now() - this.lastMouseEventTime < MOUSE_WATCHDOG_INTERVAL_MS) {
+      return
+    }
+
+    this.mouseWatchdogProbeInFlight = true
+
+    void Promise.all([this.querier.send(decrqm(DEC.MOUSE_NORMAL)), this.querier.flush()])
+      .then(([r]) => {
+        this.mouseWatchdogProbeInFlight = false
+
+        if (!r || r.status === DECRPM_STATUS.NOT_RECOGNIZED || r.status === DECRPM_STATUS.PERMANENTLY_RESET) {
+          // Terminal ignored DECRQM or can't set the mode at all — probing
+          // is useless for the rest of the session.
+          this.mouseWatchdogUnsupported = true
+          logForDebugging('mouse watchdog: DECRQM unsupported, disabling')
+
+          return
+        }
+
+        // Re-check expectation: state may have legitimately changed (e.g.
+        // /mouse off, pause) while the probe was in flight.
+        if (r.status === DECRPM_STATUS.RESET && instances.get(this.props.stdout)?.expectsMouseTracking) {
+          logForDebugging('mouse watchdog: terminal lost mouse tracking, re-asserting')
+          instances.get(this.props.stdout)?.reassertTerminalModes()
+        }
+      })
+      .catch(() => {
+        this.mouseWatchdogProbeInFlight = false
+      })
   }
 
   // Helper to flush incomplete escape sequences
@@ -457,6 +605,19 @@ export default class App extends PureComponent<Props, State> {
         })
         stdin.addListener('readable', this.handleReadable)
       }
+
+      // Issue #31486: even after re-attaching, any bytes already buffered
+      // when the loop threw are stranded because Node only fires 'readable'
+      // on buffer transitions, not for data the consumer already saw. Schedule
+      // one drain on the next macrotask so the handler runs against a fresh
+      // try/catch and clears whatever is left.
+      if (this.rawModeEnabledCount > 0 && stdin.readableLength > 0) {
+        setImmediate(() => {
+          if (this.rawModeEnabledCount > 0 && this.props.stdin.readableLength > 0) {
+            this.handleReadable()
+          }
+        })
+      }
     }
   }
   handleInput = (input: string | undefined): void => {
@@ -480,6 +641,7 @@ export default class App extends PureComponent<Props, State> {
     // setTerminalFocused notifies subscribers: TerminalFocusProvider (context)
     // and Clock (interval speed) — no App setState needed.
     setTerminalFocused(isFocused)
+    this.props.onTerminalFocusChange?.(isFocused)
   }
   handleSuspend = (): void => {
     if (!this.isRawModeSupported()) {
@@ -555,9 +717,19 @@ function processKeysInBatch(app: App, items: ParsedInput[], _unused1: undefined,
     // Terminal sends 1-indexed col/row; convert to 0-indexed for the
     // screen buffer. Button bit 0x20 = drag (motion while button held).
     if (item.kind === 'mouse') {
+      // Proof-of-life for the mouse-mode watchdog: any parsed mouse event
+      // means tracking is armed, so the next probe tick can skip.
+      app.lastMouseEventTime = Date.now()
       handleMouseEvent(app, item)
 
       continue
+    }
+
+    // Wheel events stay ParsedKey (routed through the keybinding system),
+    // but they're mouse-tracking traffic all the same — stamp proof-of-life
+    // so a wheel-only user doesn't trigger redundant watchdog probes.
+    if (item.kind === 'key' && (item.name === 'wheelup' || item.name === 'wheeldown')) {
+      app.lastMouseEventTime = Date.now()
     }
 
     const sequence = item.sequence

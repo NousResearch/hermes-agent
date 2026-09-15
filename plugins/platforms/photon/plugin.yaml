@@ -58,6 +58,10 @@ optional_env:
     description: "Allow any sender to trigger the bot (dev only — disables allowlist)"
     prompt: "Allow all users? (true/false)"
     password: false
+  - name: PHOTON_READ_RECEIPTS
+    description: "Mark inbound iMessages read after forwarding to Hermes (true/false, default true)"
+    prompt: "Send read receipts? (true/false)"
+    password: false
   - name: PHOTON_REQUIRE_MENTION
     description: "Ignore group-chat messages unless they match a mention wake word (true/false, default false)"
     prompt: "Require a mention in group chats?"

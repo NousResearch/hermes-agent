@@ -20,7 +20,7 @@ Hermes Agent works with any OpenAI-compatible API. Supported providers include:
 - **[Nous Portal](/integrations/nous-portal)** — Nous Research's subscription gateway — 300+ models plus web/image/TTS/browser through one OAuth login (recommended for newcomers)
 - **OpenAI** — GPT-5.4, GPT-5-codex, GPT-4.1, GPT-4o, etc.
 - **Anthropic** — Claude models (direct API, OAuth via `hermes auth add anthropic`, OpenRouter, or any compatible proxy)
-- **Google** — Gemini models (direct API via `gemini` provider, the `google-gemini-cli` OAuth provider, OpenRouter, or compatible proxy)
+- **Google** — Gemini models (direct API via `gemini` provider, OpenRouter, or compatible proxy)
 - **z.ai / ZhipuAI** — GLM models
 - **Kimi / Moonshot AI** — Kimi models
 - **MiniMax** — global and China endpoints
@@ -28,21 +28,8 @@ Hermes Agent works with any OpenAI-compatible API. Supported providers include:
 
 Set your provider with `hermes model` or by editing `~/.hermes/.env`. See the [Environment Variables](./environment-variables.md) reference for all provider keys.
 
-### Does it work on Windows?
-
-**Yes, natively.** Hermes supports native Windows via the PowerShell installer — no WSL required. Run in PowerShell:
-
-```powershell
-iex (irm https://hermes-agent.nousresearch.com/install.ps1)
-```
-
-The installer provisions a PortableGit that backs the terminal tool's shell. See the [Windows (Native) Guide](../user-guide/windows-native.md) for details.
-
-WSL2 remains a fully supported alternative. To run Hermes inside WSL2, install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and use the standard install command:
-
-```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-```
+### Does it work on Windows/Android/Termux/my plataform??
+See **[Platform Support](../getting-started/platform-support.md)** for the full platform availability matrix.
 
 ### I run Hermes in WSL2. What's the best way to control my normal Windows Chrome?
 
@@ -61,20 +48,6 @@ See:
 
 - [Use MCP with Hermes](../guides/use-mcp-with-hermes.md#wsl2-bridge-hermes-in-wsl-to-windows-chrome)
 - [Browser Automation](../user-guide/features/browser.md#wsl2--windows-chrome-prefer-mcp-over-browser-connect)
-
-### Does it work on Android / Termux?
-
-Yes — Hermes now has a tested Termux install path for Android phones.
-
-Quick install:
-
-```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-```
-
-For the fully explicit manual steps, supported extras, and current limitations, see the [Termux guide](../getting-started/termux.md).
-
-Important caveat: the full `.[all]` extra is not currently available on Android because the `voice` extra depends on `faster-whisper` → `ctranslate2`, and `ctranslate2` does not publish Android wheels. Use the tested `.[termux]` extra instead.
 
 ### Is my data sent anywhere?
 
@@ -240,6 +213,21 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
 ### Provider & Model Issues
 
+#### The agent says "Hermes policy" or "Hermes guardrails" refused my request
+
+A model cannot reliably identify why it refused a request. If the refusal appears only in the assistant's prose, its claim that a hidden Hermes runtime policy caused it may be a hallucinated explanation or a restriction applied by the selected model or provider.
+
+Hermes enforcement is explicit: a blocked tool action returns a tool error naming the denied command or path, and an approval-required action shows an approval prompt. Hermes does not silently turn those execution controls into a general content-refusal layer. Provider-level controls can still apply when configured, such as Amazon Bedrock Guardrails.
+
+To isolate the source:
+
+1. Run `/status` to confirm the active model and provider.
+2. Check whether the refusal includes an actual Hermes tool error or approval prompt. If it is prose only, do not treat the model's attribution as runtime evidence.
+3. Retry in a fresh session with another configured model or provider. A refusal that changes with the model is model/provider behavior, not a Hermes execution control.
+4. If an explicit tool error appears, use its exact text when reporting the problem.
+
+See [Security](/user-guide/security) for Hermes' documented execution controls and [Providers](/integrations/providers) for provider configuration.
+
 #### `/model` only shows one provider / can't switch providers
 
 **Cause:** `/model` (inside a chat session) can only switch between providers you've **already configured**. If you've only set up OpenRouter, that's all `/model` will show.
@@ -296,7 +284,7 @@ Make sure the key matches the provider. An OpenAI key won't work with OpenRouter
 hermes model
 
 # Set a valid model
-hermes config set HERMES_MODEL anthropic/claude-opus-4.7
+hermes config set model.default anthropic/claude-opus-4.7
 
 # Or specify per-session
 hermes chat --model openrouter/meta-llama/llama-3.1-70b-instruct
@@ -331,6 +319,8 @@ If this happens on the first long conversation, Hermes may have the wrong contex
 
 Look at the CLI startup line — it shows the detected context length (e.g., `📊 Context limit: 128000 tokens`). You can also check with `/usage` during a session.
 
+**Local servers (llama.cpp, Ollama) that go silent instead of erroring:** when a provider rejects a request as too large, Hermes compacts the conversation and rebuilds the request. Hermes re-measures the *complete* rebuilt request (system prompt + tool schemas + messages) before retrying, and runs further bounded compaction passes if it is still over the threshold. If the request still cannot fit, the turn ends with `Context length exceeded: compression could not reduce the rebuilt request below the safe threshold` rather than sending an oversized request that llama.cpp would silently truncate (`stop processing: n_tokens = 65535, truncated = 1` in the server log). If you hit that message, the fix is almost always the configured `context_length` above: make it match the server's actual `-c` / `--ctx-size`.
+
 To fix context detection, set it explicitly:
 
 ```yaml
@@ -340,16 +330,18 @@ model:
   context_length: 131072  # your model's actual context window
 ```
 
-Or for custom endpoints, add it per-model:
+Or for custom endpoints, add it per-model on the provider entry:
 
 ```yaml
-custom_providers:
-  - name: "My Server"
-    base_url: "http://localhost:11434/v1"
+providers:
+  my-server:
+    api: "http://localhost:11434/v1"
     models:
       qwen3.5:27b:
         context_length: 64000
 ```
+
+(Older configs use the legacy `custom_providers:` list — still supported and auto-migrated to `providers:`.)
 
 See [Context Length Detection](../integrations/providers.md#context-length-detection) for how auto-detection works and all override options.
 
@@ -445,7 +437,7 @@ Configure in `~/.hermes/config.yaml` under your gateway's settings. See the [Mes
 **Solution:**
 ```bash
 # Install core messaging gateway dependencies
-pip install "hermes-agent[messaging]"  # Telegram, Discord, Slack, and shared gateway deps
+cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"  # Telegram, Discord, Slack, and shared gateway deps
 
 # Check for port conflicts
 lsof -i :8080
@@ -527,12 +519,18 @@ You can verify the plist has the correct PATH:
 
 **Solution:**
 ```bash
+# See exactly what the fixed prompt costs — breakdown by block
+# (system prompt, skills index, memory, tool schemas). Runs offline.
+hermes prompt-size
+
 # Compress the conversation to reduce tokens
 /compress
 
 # Check session token usage
 /usage
 ```
+
+If the baseline looks high before you've typed anything, that's the fixed prompt budget — the system prompt plus tool schemas sent on every call. Run [`hermes prompt-size`](/reference/cli-commands#hermes-prompt-size) to measure it, then trim: disable toolsets you don't use (`hermes tools`) and uninstall or disable skills you don't need (`hermes skills`).
 
 :::tip
 Use `/compress` regularly during long sessions. It summarizes the conversation history and reduces token usage significantly while preserving context.
@@ -636,6 +634,8 @@ No. Each messaging platform (Telegram, Discord, etc.) requires exclusive access 
 
 No. Each profile has its own memory store, session database, and skills directory. They are completely isolated. If you want to start a new profile with existing memories and sessions, use `hermes profile create newname --clone-all` to copy everything from the current profile, or add `--clone-from <profile>` to copy from a specific source profile.
 
+This isolation is also the reason to never run two agents against the *same* profile or Hermes home: both write memory automatically and each loads the other's writes at session start, so their stored state degrades with every session. One agent per profile; for genuinely shared memory across agents, use an [external memory provider](/user-guide/features/memory-providers).
+
 ### What happens when I run `hermes update`?
 
 `hermes update` pulls the latest code and reinstalls dependencies **once** (not per-profile). It then syncs updated skills to all profiles automatically. You only need to run `hermes update` once — it covers every profile on the machine.
@@ -672,6 +672,10 @@ For one-off model switches without delegation, use `/model` in the CLI:
 # ... write your content ...
 /model openai/gpt-5.4                   # switch back
 ```
+
+:::warning
+Each `/model` switch resets the prompt cache — the cache key includes the model, so the first message after every switch re-reads the whole conversation at full input price. On long sessions, prefer delegation (subagents get their own fresh context) or a new session over repeated back-and-forth switching.
+:::
 
 See [Subagent Delegation](../user-guide/features/delegation.md) for more on how delegation works.
 

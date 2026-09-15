@@ -80,7 +80,7 @@ Dashboard 由 s6 监管：若进程崩溃，`s6-supervise` 会在短暂退避后
 | `HERMES_DASHBOARD` | 设为 `1`（或 `true` / `yes`）以启用受监管的 dashboard 服务 | *（未设置——服务已注册但保持关闭）* |
 | `HERMES_DASHBOARD_HOST` | dashboard HTTP 服务器的绑定地址 | `0.0.0.0` |
 | `HERMES_DASHBOARD_PORT` | dashboard HTTP 服务器的端口 | `9119` |
-| `HERMES_DASHBOARD_INSECURE` | 设为 `1`（或 `true` / `yes`）以在不启用 OAuth 鉴权门控的情况下绑定。仅在可信网络（且通过没有 OAuth 契约的反向代理时）使用——dashboard 会暴露 API 密钥与会话数据 | *（未设置——当注册了 `DashboardAuthProvider` 时启用门控）* |
+| `HERMES_DASHBOARD_INSECURE` | **已弃用 / 空操作。** 以前用于绕过鉴权门控；自 2026 年 6 月的安全加固起，它不再禁用鉴权。任何非回环绑定都必须配置鉴权提供方 | *（被忽略——请改为配置提供方）* |
 
 容器内的 dashboard 默认绑定 `0.0.0.0`，否则发布的 `-p 9119:9119` 端口将无法从宿主机访问。若你要把它限制在容器回环地址（例如 sidecar / 反向代理拓扑），请显式设置 `HERMES_DASHBOARD_HOST=127.0.0.1`。
 
@@ -98,14 +98,14 @@ Dashboard 由 s6 监管：若进程崩溃，`s6-supervise` 会在短暂退避后
 无论选择哪种，调用方在访问受保护路由前都会先被重定向到登录页。完整说明见 [Web Dashboard → 鉴权](features/web-dashboard.md)。
 
 如果未注册提供者且绑定为非回环地址，dashboard **会在启动时
-失败关闭**，并给出指向缺失环境变量的具体错误信息。要显式
-退出门控——用于不使用 OAuth 契约、通过你自己的反向代理部署
-在可信局域网中的场景——请设置 `HERMES_DASHBOARD_INSECURE=1`。
-这会恢复旧的“无鉴权，但发出告警”模式，也是唯一可以禁用门控的
-路径；绑定地址不再隐式决定 `--insecure`。
+失败关闭**，并给出指向缺失环境变量的具体错误信息。现在已不再
+存在以无鉴权方式在公网绑定上提供 dashboard 的“逃生通道”：
+`HERMES_DASHBOARD_INSECURE=1` 现在是一个已弃用的空操作（它会
+打印告警并被忽略）。请改为配置鉴权提供方，或设置
+`HERMES_DASHBOARD_HOST=127.0.0.1` 并通过 SSH 隧道 / Tailscale 访问。
 
-:::warning `HERMES_DASHBOARD_INSECURE=1` 会暴露 API 密钥
-关闭鉴权门控会让任何能访问已发布端口的人都能看到 dashboard 的 API 面（包括模型密钥与会话数据）。除非你前面已经有自己的鉴权层，或它只运行在你完全信任的局域网内，否则不要启用它。
+:::warning 为什么移除了 `--insecure`
+无鉴权的公网 dashboard 是 2026 年 6 月 MCP 配置持久化攻击活动的入口：互联网扫描器访问到暴露的 dashboard（以及 OpenAI API 服务器），诱导 agent 植入 SSH 密钥后门。现在每个非回环绑定都强制启用鉴权门控。对于可信局域网 / homelab 主机，内置的用户名/密码提供方（`HERMES_DASHBOARD_BASIC_AUTH_USERNAME` + `_PASSWORD`）是满足该要求的零基础设施方式。
 :::
 
 当独立的 dashboard 容器与宿主机共享 PID 与网络命名空间时（例如 `network_mode: host`，正如仓库自带的 `docker-compose.yml` 中的 `dashboard` 服务那样），**是**支持将 dashboard 作为独立容器运行的。其 gateway 存活检测需要与 gateway 进程共享 PID 命名空间，因此该限制仅适用于在隔离的 bridge 网络容器中、且未共享 PID 命名空间的 dashboard。

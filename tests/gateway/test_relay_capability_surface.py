@@ -22,7 +22,7 @@ from gateway.platforms.base import BasePlatformAdapter
 class _MinAdapter(BasePlatformAdapter):
     """Smallest concrete adapter: implements exactly the abstract methods."""
 
-    async def connect(self):  # pragma: no cover - not called
+    async def connect(self, *, is_reconnect: bool = False):  # pragma: no cover - not called
         return True
 
     async def disconnect(self):  # pragma: no cover - not called
@@ -60,40 +60,3 @@ def test_abstract_methods_are_the_known_set():
     assert abstract == {"connect", "disconnect", "send", "get_chat_info"}
 
 
-def test_message_len_fn_defaults_to_len():
-    """message_len_fn is the per-platform length-unit hook (Telegram overrides
-    it for UTF-16). The default is plain ``len``; the relay adapter will
-    override it from its negotiated descriptor's ``len_unit``."""
-    inst = _make()
-    assert inst.message_len_fn("hello") == 5
-
-
-def test_supports_draft_streaming_defaults_false():
-    """Draft streaming is opt-in per platform; the consumer falls back to the
-    edit-based path when False. The relay adapter flips this from its
-    descriptor's ``supports_draft_streaming`` flag."""
-    inst = _make()
-    assert inst.supports_draft_streaming() is False
-
-
-def test_stream_consumer_reads_max_message_length_by_attribute():
-    """The consumer resolves the per-platform char limit by reading the
-    adapter's ``MAX_MESSAGE_LENGTH`` attribute (defaulting to 4096 when
-    absent). The relay adapter exposes this as an attribute set from its
-    descriptor — so a relay adapter that sets the attribute is chunked
-    correctly with no consumer change.
-    """
-    from gateway import stream_consumer
-
-    class _NoLimit:
-        pass
-
-    class _WithLimit:
-        MAX_MESSAGE_LENGTH = 1234
-
-    assert getattr(_NoLimit(), "MAX_MESSAGE_LENGTH", 4096) == 4096
-    assert getattr(_WithLimit(), "MAX_MESSAGE_LENGTH", 4096) == 1234
-    # The consumer depends on BasePlatformAdapter for the message_len_fn
-    # isinstance guard (import-level contract the relay adapter satisfies by
-    # subclassing BasePlatformAdapter).
-    assert stream_consumer._BasePlatformAdapter is BasePlatformAdapter

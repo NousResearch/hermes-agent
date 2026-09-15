@@ -15,12 +15,13 @@ sidebar_position: 1
 | 提供商 | 配置方式 |
 |----------|-------|
 | **Nous Portal** | `hermes model`（OAuth，订阅制） |
-| **OpenAI Codex** | `hermes model`（ChatGPT OAuth，使用 Codex 模型） |
+| **OpenAI Codex** | `hermes model` → **ChatGPT or Codex Subscription**（ChatGPT OAuth，使用 Codex 模型） |
 | **GitHub Copilot** | `hermes model`（OAuth 设备码流程，`COPILOT_GITHUB_TOKEN`、`GH_TOKEN` 或 `gh auth token`） |
 | **GitHub Copilot ACP** | `hermes model`（在本地生成 `copilot --acp --stdio` 子进程） |
 | **Anthropic** | `hermes model`（Claude Max + 额外用量积分，通过 OAuth；也支持 Anthropic API key 或手动 setup-token——见下方说明） |
 | **OpenRouter** | `~/.hermes/.env` 中的 `OPENROUTER_API_KEY` |
 | **NovitaAI** | `~/.hermes/.env` 中的 `NOVITA_API_KEY`（provider: `novita`，200+ 模型，Model API、Agent Sandbox、GPU Cloud） |
+| **AI Gateway** | `~/.hermes/.env` 中的 `AI_GATEWAY_API_KEY`（provider: `ai-gateway`） |
 | **z.ai / GLM** | `~/.hermes/.env` 中的 `GLM_API_KEY`（provider: `zai`） |
 | **Kimi / Moonshot** | `~/.hermes/.env` 中的 `KIMI_API_KEY`（provider: `kimi-coding`） |
 | **Kimi / Moonshot（中国）** | `~/.hermes/.env` 中的 `KIMI_CN_API_KEY`（provider: `kimi-coding-cn`；别名：`kimi-cn`、`moonshot-cn`） |
@@ -40,7 +41,6 @@ sidebar_position: 1
 | **DeepSeek** | `~/.hermes/.env` 中的 `DEEPSEEK_API_KEY`（provider: `deepseek`） |
 | **Hugging Face** | `~/.hermes/.env` 中的 `HF_TOKEN`（provider: `huggingface`，别名：`hf`） |
 | **Google / Gemini** | `~/.hermes/.env` 中的 `GOOGLE_API_KEY`（或 `GEMINI_API_KEY`）（provider: `gemini`） |
-| **Google Gemini（OAuth）** | `hermes model` → "Google Gemini (OAuth)"（provider: `google-gemini-cli`，支持免费层，浏览器 PKCE 登录） |
 | **LM Studio** | `hermes model` → "LM Studio"（provider: `lmstudio`，可选 `LM_API_KEY`） |
 | **自定义端点** | `hermes model` → 选择"Custom endpoint"（保存在 `config.yaml`） |
 
@@ -53,7 +53,7 @@ sidebar_position: 1
 
 ### Nous Portal
 
-[Nous Portal](https://portal.nousresearch.com) 是 Nous Research 的统一订阅网关，也是**运行 Hermes Agent 的推荐方式**。一次 OAuth 登录即可访问 300+ 前沿智能体模型（Claude、GPT、Gemini、DeepSeek、Qwen、Kimi、GLM、MiniMax、Grok 等），以及 [Tool Gateway](/user-guide/features/tool-gateway)（网页搜索、图像生成、TTS、浏览器自动化）和 [Nous Chat](https://chat.nousresearch.com)——费用从你的 Nous 订阅中扣除，无需单独管理各提供商账户。
+[Nous Portal](https://portal.nousresearch.com) 是 Nous Research 的统一订阅网关，也是**运行 Hermes Agent 的推荐方式**。一次 OAuth 登录即可访问 300+ 前沿智能体模型（Claude、GPT、Gemini、DeepSeek、Qwen、Kimi、GLM、MiniMax、Grok 等）以及 [Tool Gateway](/user-guide/features/tool-gateway)（网页搜索、图像生成、TTS、浏览器自动化）——费用从你的 Nous 订阅中扣除，无需单独管理各提供商账户。
 
 ```bash
 hermes setup --portal     # 全新安装——一条命令完成 OAuth + 提供商 + 网关配置
@@ -69,7 +69,22 @@ hermes portal info        # 随时查看登录状态和路由信息
 :::info Codex 说明
 OpenAI Codex 提供商通过设备码（device code）认证——打开一个 URL 并输入验证码。Hermes 将生成的凭据存储在 `~/.hermes/auth.json` 的自有认证存储中，并在存在 `~/.codex/auth.json` 时可导入现有的 Codex CLI 凭据。无需安装 Codex CLI。
 
-如果 token 刷新因终端错误（HTTP 4xx、`invalid_grant`、授权被撤销等）失败，Hermes 会将该刷新 token 标记为失效并停止重试，避免出现大量重复的认证失败。下一次请求会显示类型化的重新认证提示。运行 `hermes auth add codex-oauth`（或 `hermes model` → OpenAI Codex）开始新的设备码登录；成功交换后隔离状态自动解除。
+如果 token 刷新因终端错误（HTTP 4xx、`invalid_grant`、授权被撤销等）失败，Hermes 会将该刷新 token 标记为失效并停止重试，避免出现大量重复的认证失败。下一次请求会显示类型化的重新认证提示。运行 `hermes auth add openai-codex`（或 `hermes model` → **ChatGPT or Codex Subscription**）开始新的设备码登录；成功交换后隔离状态自动解除。
+
+在 Python/OpenSSL 3.5+ 上，如果网络中间设备拒绝 X25519MLKEM768 等后量子密钥交换组，设备码登录可能报 `[SSL: UNEXPECTED_EOF_WHILE_READING]` 或 TLS 握手超时（此时 curl 仍可能正常）。Hermes 不会修改默认 TLS 策略。请在运行 `hermes model` 前将 `OPENSSL_CONF` 指向一个把 `Groups` 限制为经典曲线的配置文件，或用 TLS 1.2 进行诊断：
+
+```ini
+openssl_conf = openssl_init
+
+[openssl_init]
+ssl_conf = ssl_sect
+
+[ssl_sect]
+system_default = system_default_sect
+
+[system_default_sect]
+Groups = x25519:secp256r1:secp384r1:x448
+```
 :::
 
 :::warning
@@ -512,79 +527,6 @@ model:
 
 基础 URL 可通过 `HF_BASE_URL` 覆盖。
 
-### 通过 OAuth 使用 Google Gemini（`google-gemini-cli`）
-
-`google-gemini-cli` 提供商使用 Google 的 Cloud Code Assist 后端——与 Google 自己的 `gemini-cli` 工具使用的 API 相同。支持**免费层**（个人账户每日配额充足）和**付费层**（通过 GCP 项目的 Standard/Enterprise）。
-
-**快速开始：**
-
-```bash
-hermes model
-# → 选择"Google Gemini (OAuth)"
-# → 查看政策警告，确认
-# → 浏览器打开 accounts.google.com，登录
-# → 完成——Hermes 在首次请求时自动开通免费层
-```
-
-Hermes 默认使用 Google 的**公开** `gemini-cli` 桌面 OAuth 客户端——与 Google 在其开源 `gemini-cli` 中包含的凭据相同。桌面 OAuth 客户端不是机密客户端（PKCE 提供安全保障）。你无需安装 `gemini-cli` 或注册自己的 GCP OAuth 客户端。
-
-**认证工作原理：**
-- 针对 `accounts.google.com` 的 PKCE 授权码流程
-- 浏览器回调地址 `http://127.0.0.1:8085/oauth2callback`（端口占用时自动回退到临时端口）
-- Token 存储在 `~/.hermes/auth/google_oauth.json`（chmod 0600，原子写入，跨进程 `fcntl` 锁）
-- 到期前 60 秒自动刷新
-- 无头环境（SSH、`HERMES_HEADLESS=1`）→ 粘贴模式回退
-- 并发刷新去重——两个并发请求不会触发双重刷新
-- `invalid_grant`（刷新 token 被撤销）→ 凭据文件被清除，提示用户重新登录
-
-**推理工作原理：**
-- 流量发送到 `https://cloudcode-pa.googleapis.com/v1internal:generateContent`
-  （流式传输为 `:streamGenerateContent?alt=sse`），而非付费的 `v1beta/openai` 端点
-- 请求体封装为 `{project, model, user_prompt_id, request}`
-- OpenAI 格式的 `messages[]`、`tools[]`、`tool_choice` 被转换为 Gemini 原生的
-  `contents[]`、`tools[].functionDeclarations`、`toolConfig` 格式
-- 响应转换回 OpenAI 格式，Hermes 其余部分无感知
-
-**层级与项目 ID：**
-
-| 你的情况 | 操作 |
-|---|---|
-| 个人 Google 账户，使用免费层 | 无需操作——登录即可开始聊天 |
-| Workspace / Standard / Enterprise 账户 | 将 `HERMES_GEMINI_PROJECT_ID` 或 `GOOGLE_CLOUD_PROJECT` 设置为你的 GCP 项目 ID |
-| VPC-SC 保护的组织 | Hermes 检测到 `SECURITY_POLICY_VIOLATED` 后自动强制使用 `standard-tier` |
-
-免费层在首次使用时自动开通 Google 托管项目。无需 GCP 配置。
-
-**配额监控：**
-
-```
-/gquota
-```
-
-以进度条显示每个模型的剩余 Code Assist 配额：
-
-```
-Gemini Code Assist quota  (project: 123-abc)
-
-  gemini-2.5-pro                      ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░   85%
-  gemini-2.5-flash [input]            ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░   92%
-```
-
-:::warning 政策风险
-Google 认为将 Gemini CLI OAuth 客户端用于第三方软件违反政策。部分用户反映账户受到限制。为降低风险，建议改用 `gemini` 提供商并通过 API key 访问。Hermes 会在 OAuth 开始前显示警告并要求明确确认。
-:::
-
-**自定义 OAuth 客户端（可选）：**
-
-如果你希望注册自己的 Google OAuth 客户端——例如将配额和授权范围限定在自己的 GCP 项目内——请设置：
-
-```bash
-HERMES_GEMINI_CLIENT_ID=your-client.apps.googleusercontent.com
-HERMES_GEMINI_CLIENT_SECRET=...   # 桌面客户端可选
-```
-
-在 [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials) 注册一个**桌面应用** OAuth 客户端，并启用 Generative Language API。
-
 ## 自定义与自托管 LLM 提供商
 
 Hermes Agent 可与**任何 OpenAI 兼容 API 端点**配合使用。只要服务器实现了 `/v1/chat/completions`，就可以将 Hermes 指向它。这意味着你可以使用本地模型、GPU 推理服务器、多提供商路由器或任何第三方 API。
@@ -793,7 +735,7 @@ hermes model
 **工具调用：** 使用 `--tool-call-parser` 并选择适合你模型系列的解析器：`qwen`（Qwen 2.5）、`llama3`、`llama4`、`deepseekv3`、`mistral`、`glm`。没有此标志，工具调用将以纯文本返回。
 
 :::caution SGLang 默认最大输出 128 tokens
-如果响应看起来被截断，在请求中添加 `max_tokens` 或在服务器上设置 `--default-max-tokens`。SGLang 的默认值是每次响应仅 128 tokens（如果请求中未指定）。
+如果响应看起来被截断，在服务器上设置 `--default-max-tokens`。SGLang 的默认值是每次响应仅 128 tokens（如果请求中未指定）。
 :::
 
 ---
@@ -882,7 +824,7 @@ Hermes 会自动以 64K 上下文长度加载 LM Studio 模型。
 
 ---
 
-### WSL2 网络（Windows 用户）
+### WSL2 网络（Windows 用户） {#wsl2-networking-windows-users}
 
 由于 Hermes Agent 需要 Unix 环境，Windows 用户在 WSL2 内运行它。如果你的模型服务器（Ollama、LM Studio 等）运行在 **Windows 主机**上，需要桥接网络——WSL2 使用具有独立子网的虚拟网络适配器，因此 WSL2 内的 `localhost` 指向 Linux 虚拟机，**而非** Windows 主机。
 
@@ -1050,7 +992,7 @@ model:
 #### 响应在句子中间被截断
 
 **可能原因：**
-1. **服务器上的输出上限（`max_tokens`）过低** — SGLang 默认每次响应 128 tokens。在服务器上设置 `--default-max-tokens`，或在 config.yaml 中配置 `model.max_tokens`。注意：`max_tokens` 只控制响应长度——与对话历史可以有多长无关（那是 `context_length`）。
+1. **服务器上的输出上限（`max_tokens`）过低** — SGLang 默认每次响应 128 tokens。在服务器上设置 `--default-max-tokens`；Hermes 不再提供用户输出上限设置。注意：`max_tokens` 只控制响应长度——与对话历史可以有多长无关（那是 `context_length`）。
 2. **上下文耗尽** — 模型填满了上下文窗口。增加 `model.context_length` 或在 Hermes 中启用[上下文压缩](/user-guide/configuration#context-compression)。
 
 ---
@@ -1148,10 +1090,10 @@ model:
 :::note 两个设置，容易混淆
 **`context_length`** 是**总上下文窗口**——输入和输出 token 的合计预算（例如 Claude Opus 4.6 为 200,000）。Hermes 用它来决定何时压缩历史记录以及验证 API 请求。
 
-**`model.max_tokens`** 是**输出上限**——模型在*单次响应*中最多可生成的 token 数。与对话历史可以有多长无关。行业标准名称 `max_tokens` 是常见的混淆来源；Anthropic 的原生 API 已将其重命名为 `max_output_tokens` 以更清晰。
+**输出上限**限制单次响应，而非对话历史。Hermes 不再读取 `model.max_tokens`、`HERMES_MAX_TOKENS` 或提供商及模型的输出上限设置。兼容端点使用服务器默认值；该值不一定是模型最大值。原生 Anthropic Messages 仍要求 `max_tokens`，Hermes 会提供内部值。Bedrock Converse 的可选输出限制默认省略。
 
 当自动检测获取的窗口大小不正确时，设置 `context_length`。
-仅当需要限制单次响应长度时，才设置 `model.max_tokens`。
+请删除旧的用户输出上限配置；内部任务预算与 MCP 采样安全预算保持不变。
 :::
 
 Hermes 使用多源解析链来检测模型和提供商的正确上下文窗口：
@@ -1477,7 +1419,7 @@ fallback_model:
 
 激活时，故障转移在不丢失对话的情况下中途切换模型和提供商。链按条目逐一尝试；每个会话激活一次。
 
-支持的提供商：`openrouter`、`nous`、`openai-codex`、`copilot`、`copilot-acp`、`anthropic`、`gemini`、`google-gemini-cli`、`qwen-oauth`、`huggingface`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`bedrock`、`azure-foundry`、`opencode-zen`、`opencode-go`、`kilocode`、`xiaomi`、`arcee`、`gmi`、`stepfun`、`lmstudio`、`alibaba`、`alibaba-coding-plan`、`tencent-tokenhub`、`custom`。
+支持的提供商：`openrouter`、`nous`、`openai-codex`、`copilot`、`copilot-acp`、`anthropic`、`gemini`、`qwen-oauth`、`huggingface`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`bedrock`、`azure-foundry`、`opencode-zen`、`opencode-go`、`kilocode`、`xiaomi`、`arcee`、`gmi`、`stepfun`、`lmstudio`、`alibaba`、`alibaba-coding-plan`、`tencent-tokenhub`、`custom`。
 
 :::tip
 故障转移仅通过 `config.yaml` 配置——或通过 `hermes fallback` 交互式配置。有关触发时机、链推进方式以及与辅助任务和委托的交互，参见[故障转移提供商](/user-guide/features/fallback-providers)。

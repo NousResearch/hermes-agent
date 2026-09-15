@@ -189,22 +189,23 @@ interface RuntimeKeyEvent {
 /** Match an ink ``key`` event against a parsed named key. The ink runtime
  * sets one boolean per named key; ``space`` is a printable char so it
  * arrives as ``ch === ' '`` rather than a dedicated ``key.space`` flag. */
-const _matchesNamedKey = (
-  named: VoiceRecordKeyNamed,
-  key: RuntimeKeyEvent,
-  ch: string
-): boolean => {
+const _matchesNamedKey = (named: VoiceRecordKeyNamed, key: RuntimeKeyEvent, ch: string): boolean => {
   switch (named) {
     case 'backspace':
       return key.backspace === true
+
     case 'delete':
       return key.delete === true
+
     case 'enter':
       return key.return === true
+
     case 'escape':
       return key.escape === true
+
     case 'space':
       return ch === ' '
+
     case 'tab':
       return key.tab === true
   }
@@ -236,7 +237,10 @@ export const parseVoiceRecordKey = (raw: unknown): ParsedVoiceRecordKey => {
     return DEFAULT_VOICE_RECORD_KEY
   }
 
-  const parts = lower.split('+').map(p => p.trim()).filter(Boolean)
+  const parts = lower
+    .split('+')
+    .map(p => p.trim())
+    .filter(Boolean)
 
   if (!parts.length) {
     return DEFAULT_VOICE_RECORD_KEY
@@ -325,11 +329,10 @@ export const parseVoiceRecordKey = (raw: unknown): ParsedVoiceRecordKey => {
 export const formatVoiceRecordKey = (parsed: ParsedVoiceRecordKey): string => {
   const modLabel =
     parsed.mod === 'super' ? (isMac ? 'Cmd' : 'Super') : parsed.mod[0].toUpperCase() + parsed.mod.slice(1)
+
   // Named tokens render in title case (Ctrl+Space, Ctrl+Enter); single
   // chars render upper-case to match the existing Ctrl+B convention.
-  const keyLabel = parsed.named
-    ? parsed.named[0].toUpperCase() + parsed.named.slice(1)
-    : parsed.ch.toUpperCase()
+  const keyLabel = parsed.named ? parsed.named[0].toUpperCase() + parsed.named.slice(1) : parsed.ch.toUpperCase()
 
   return `${modLabel}+${keyLabel}`
 }
@@ -382,6 +385,7 @@ export const isVoiceToggleKey = (
       // require an explicit alt bit for escape chords (Copilot round-7
       // follow-up on #19835).
       return (key.alt === true || (key.meta && key.escape !== true)) && !key.ctrl && key.super !== true
+
     case 'ctrl':
       // Require the Ctrl bit AND a clear Alt/Super so a chord like
       // Ctrl+Alt+<key> / Ctrl+Cmd+<key> doesn't spuriously match
@@ -397,6 +401,7 @@ export const isVoiceToggleKey = (
       }
 
       return _isDefaultVoiceKey(configured) && isMac && key.super === true && !key.alt && !key.meta
+
     case 'super':
       // Require the explicit ``key.super`` bit (kitty-style protocol)
       // AND clear Ctrl/Alt/Meta so Ctrl+Cmd+X or Alt+Cmd+X don't

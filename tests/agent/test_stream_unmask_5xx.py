@@ -292,3 +292,22 @@ def test_interrupt_during_probe_reraises(monkeypatch):
 
     with pytest.raises(InterruptedError):
         _run_handle_stream_error(call, _StreamErr(500))
+
+
+def test_pending_interrupt_suppresses_probe(monkeypatch):
+    """A /stop seen before the failure is handled must win over the probe.
+
+    The retry loop checks ``_interrupt_requested`` before opening another attempt;
+    the probe runs inside the handler, i.e. outside that check, so without its own
+    guard a stopped session still paid for one more request."""
+    call = _make_call({"model": "m", "messages": []})
+    _prime_probe_window(call)
+    call.agent._interrupt_requested = True
+    calls = _record_probe(monkeypatch, "probe must not run with a pending interrupt")
+
+    handled = _run_handle_stream_error(call, _StreamErr(500))
+
+    assert not handled
+    assert calls == []
+    assert isinstance(call.result["error"], _StreamErr)  # original error still propagates
+    assert call.agent._stream_5xx_probe_ts == 0.0  # a suppressed probe must not burn the window

@@ -3517,9 +3517,13 @@ class _StreamingCall(StreamingWaitMonitor):
         the original error. The successful delivery is bracketed by its own stream
         start/end pair (the failed attempt already emitted a terminal end), and a response
         that cannot be replayed restores the saved preference before propagating ``e``.
-        Interrupts re-raise (the outer handler routes them). True = handled (caller must
-        not overwrite result); False = propagate ``e``.
+        Interrupts re-raise (the outer handler routes them), and a /stop that arrived before
+        this point suppresses the probe entirely — the loop's pre-retry interrupt check owns
+        that decision, so a pending stop must not buy one more request.
+        True = handled (caller must not overwrite result); False = propagate ``e``.
         """
+        if getattr(self.agent, "_interrupt_requested", False):
+            return False
         status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
         if not isinstance(status, int) or status < 500 or self.deltas_were_sent["yes"]:
             return False

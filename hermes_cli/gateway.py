@@ -2562,6 +2562,8 @@ def ensure_gateway_service(context: str = "setup") -> bool:
     try:
         if _is_service_running():
             return True
+        if _served_profile_needs_no_service():
+            return True
         if not _is_service_installed():
             if supports_systemd and has_conflicting_systemd_units():
                 # Both units would fight over bot tokens; don't pile a fresh install onto a conflicted state.
@@ -4471,6 +4473,22 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
         return False
 
 
+def _served_profile_needs_no_service() -> bool:
+    """Print the "already served" note and return True when a setup flow must not install a standalone
+    service: a live multiplexing default gateway already serves this named profile, so the unit/plist it
+    would register can only sit dead (the start guard refuses it) or double-bind its platforms.
+    Shared by ``hermes setup gateway`` / ``hermes setup`` / ``hermes import`` (``ensure_gateway_service``)
+    and the ``hermes gateway setup`` wizard. See #111958."""
+    if not named_profile_served_by_running_multiplexer():
+        return False
+    print_success(
+        f"Profile '{_current_profile_name()}' is already served by the default multiplexer."
+    )
+    print_info("  (served now by the running multiplexed gateway — add its bot token and it connects)")
+    print_info("  No standalone gateway service was installed or started.")
+    return True
+
+
 def _named_profile_refused_under_multiplexer(force: bool = False) -> bool:
     """Print the served-profile refusal and return True when a named-profile gateway must not start:
     a multiplexing default gateway already serves it (a second one would double-bind its platforms: two
@@ -5783,6 +5801,8 @@ def _wizard_post_setup() -> None:
     """Offer to install/start/restart the gateway once at least one platform has progress."""
     print()
     print(color("─" * 58, Colors.DIM))
+    if _served_profile_needs_no_service():
+        return
     service_installed = _is_service_installed()
     service_running = _is_service_running()
 

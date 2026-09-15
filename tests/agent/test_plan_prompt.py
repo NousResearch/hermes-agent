@@ -46,6 +46,32 @@ class TestBuildPlanPrompt:
         prompt = build_plan_prompt("x")
         assert "do not start executing in this turn" in prompt
 
+    def test_complete_plan_is_presented_before_approval(self):
+        prompt = build_plan_prompt("x")
+        review = "present the complete saved plan for review"
+        delivery_boundary = "End the turn after presenting the plan"
+        approval = "On the next turn, after the user confirms"
+        assert review in prompt.lower()
+        assert delivery_boundary.lower() in prompt.lower()
+        assert approval.lower() in prompt.lower()
+        assert prompt.lower().index(review) < prompt.lower().index(delivery_boundary.lower())
+        assert prompt.lower().index(delivery_boundary.lower()) < prompt.lower().index(approval.lower())
+
+    def test_approval_handoff_uses_clarify_with_text_fallback(self):
+        prompt = build_plan_prompt("x")
+        assert "`clarify`" in prompt
+        assert "Approve plan for execution in a new turn" in prompt
+        assert "Request changes" in prompt
+        assert "Save only; do not execute" in prompt
+        assert "If `clarify` is unavailable" in prompt
+
+    def test_approval_never_authorizes_same_turn_or_later_privileged_actions(self):
+        prompt = build_plan_prompt("x")
+        assert "Never execute the plan in this `/plan` turn" in prompt
+        assert "approval response must only acknowledge the decision" in prompt
+        assert "separate explicit implementation request" in prompt
+        assert "does not approve later privileged" in prompt
+
 
 class TestPlanRegistryWiring:
     def test_plan_is_registered_and_resolves(self):

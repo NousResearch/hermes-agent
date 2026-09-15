@@ -51,9 +51,26 @@ Interaction style:
 - If the request is clear enough, write the plan directly.
 - If it is genuinely underspecified, ask a brief clarifying question instead
   of guessing.
-- After saving the plan, reply briefly with what you planned and the saved
-  path, and offer to execute it (e.g. via subagent-driven development) —
-  but do not start executing in this turn.
+- After saving, present the complete saved plan for review. On surfaces that
+  support file previews or attachments, attach the saved Markdown file and include
+  a concise summary; otherwise paste the full Markdown plan inline. A path or
+  summary by itself is not a review copy. Ask the user to confirm that the review
+  copy is visible. End the turn after presenting the plan; do not call `clarify`
+  in the same turn as the review copy.
+- On the next turn, after the user confirms the complete plan is visible, use the
+  `clarify` tool with one single-select question and these choices in order:
+  `Approve plan for execution in a new turn`, `Request changes`, and
+  `Save only; do not execute`. If `clarify` is unavailable, ask for the same
+  three choices in plain text.
+- If changes are requested, ask what to change, edit only the plan file, present
+  the updated complete plan, and repeat the visibility-confirmation step before
+  asking for another decision.
+- Never execute the plan in this `/plan` turn, including after approval; do not start executing in this turn.
+  An approval response must only acknowledge the decision and stop. Execution
+  requires a separate explicit implementation request after that acknowledgement.
+  Approval does not approve later privileged, destructive, credentialed,
+  production, deployment, or rollout actions; those retain their own authorization
+  gates.
 """
 
 

@@ -776,6 +776,36 @@ describe('usePromptActions /compress', () => {
     expect(renderedText).toContain('sure, here is the summary')
   })
 
+  it('refreshes the session list after a successful compress so the rotated tip replaces the stale row', async () => {
+    // Compression rotates the conversation onto a new stored-session row; the
+    // sidebar keeps serving the stale pre-compression row (still in the pin
+    // keep-set) until a projected list page evicts it. Without this refresh
+    // the user sees a duplicate, unpinned session appear next to their pinned
+    // chat.
+    const refreshSessions = vi.fn(async () => undefined)
+
+    const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>, _timeoutMs?: number) => {
+      if (method === 'session.compress') {
+        return {
+          removed: 2,
+          summary: { headline: 'Compressed: 4 → 2 messages' },
+          messages: [{ role: 'user', content: 'summarized context' }]
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={refreshSessions} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/compress')
+
+    expect(refreshSessions).toHaveBeenCalled()
+  })
+
   it('uses the compute-host response transcript and success output', async () => {
     const seeds: Record<string, unknown>[] = []
 

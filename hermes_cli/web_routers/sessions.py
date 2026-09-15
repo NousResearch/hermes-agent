@@ -484,6 +484,27 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
         # clients resolve them to whichever gateway happened to be active.
         session["profile"] = _serving_profile(profile)
         session["is_default_profile"] = session["profile"] == "default"
+        # Project the compression lineage the same way every list path does
+        # (_project_compression_tips): root id, the full id chain, and the
+        # lineage-wide pin. The desktop's sidebar dedupe keys on
+        # `_lineage_root_id` and renders Pinned from the projected flag — a raw
+        # row missing both used to render as a second, unpinned session after
+        # /compress rotated the conversation to a new tip row. Tip-only, like
+        # the list projection: stamping an ANCESTOR would let a stale root
+        # payload evict the live tip from the desktop's cache.
+        chain = db.get_compression_lineage(sid)
+        if len(chain) > 1 and sid == chain[-1]:
+            session["_lineage_root_id"] = chain[0]
+            session["_lineage_ids"] = chain
+            pinned = 0
+            for chain_sid in chain:
+                # chain members may have been pruned or deleted individually;
+                # a missing row is not a 500.
+                row = session if chain_sid == sid else db.get_session(chain_sid)
+                if row and row.get("pinned"):
+                    pinned = 1
+                    break
+            session["pinned"] = pinned
         return session
 
     return _with_db(profile, _detail, read_only=True)

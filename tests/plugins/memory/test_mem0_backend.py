@@ -678,3 +678,29 @@ class TestSelfHostedBackend:
         s = _StubServer()
         with pytest.raises(httpx.HTTPStatusError):
             _backend(s).delete("missing")  # 404 -> raise_for_status; 'not found' won't trip breaker
+
+
+def test_self_hosted_search_sends_the_session_ids_top_level_and_in_filters():
+    """The current mem0 server reads the session ids from ``filters`` and merges any top-level
+    copies into it; the shipped ``mem0/mem0-api-server`` image (mem0ai 0.1.x) reads them ONLY
+    top-level and answers 500 otherwise. Both must see ``user_id``."""
+    import json
+
+    import httpx
+
+    from plugins.memory.mem0._backend import SelfHostedBackend
+
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"results": [{"id": "m1", "memory": "tea", "score": 0.9}]})
+
+    backend = SelfHostedBackend("k", "http://mem0.local", transport=httpx.MockTransport(handler))
+    assert [r["memory"] for r in backend.search("tea", filters={"user_id": "alicia"}, top_k=3)] == ["tea"]
+
+    payload = seen[0]
+    assert payload["user_id"] == "alicia", "old servers read the id top-level only"
+    assert payload["filters"] == {"user_id": "alicia"}, "the current server reads it from filters"
+    assert payload["top_k"] == 3
+    assert "agent_id" not in payload and "run_id" not in payload, "only ids that were asked for"

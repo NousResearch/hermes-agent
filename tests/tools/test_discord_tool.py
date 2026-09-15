@@ -3,7 +3,7 @@
 import json
 import urllib.error
 from io import BytesIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -17,6 +17,7 @@ from tools.discord_tool import (
     _detect_capabilities,
     _discord_request,
     _get_bot_token,
+    _load_leave_guild_ids,
     _load_allowed_actions_config,
     _reset_capability_cache,
     check_discord_tool_requirements,
@@ -146,7 +147,21 @@ class TestDiscordRequest:
         req = call_args[0][0]
         assert "https://discord.com/api/v10/test" in req.full_url
         assert req.get_header("Authorization") == "Bot token123"
+        assert req.get_header("Content-Type") is None
+        assert req.data is None
         assert req.get_method() == "GET"
+
+    @patch("tools.discord_tool.urllib.request.urlopen")
+    def test_json_body_sets_content_type(self, mock_urlopen_fn):
+        mock_urlopen_fn.return_value = _mock_urlopen({"ok": True})
+        result = _discord_request("POST", "/test", "token123", body={"name": "Beta Guild"})
+        assert result == {"ok": True}
+
+        req = mock_urlopen_fn.call_args.args[0]
+        assert req.data == b'{"name": "Beta Guild"}'
+        assert req.get_header("Content-type") == "application/json"
+        assert req.get_header("Authorization") == "Bot token123"
+        assert req.get_header("User-agent") == "Hermes-Agent (https://github.com/NousResearch/hermes-agent)"
 
 
     @patch("tools.discord_tool.urllib.request.urlopen")
@@ -305,6 +320,704 @@ class TestCreateThread:
             "POST", "/channels/11/messages/1001/threads", "test-token",
             body={"name": "Discussion", "auto_archive_duration": 1440},
         )
+
+
+class TestCreateGuildChannels:
+    @pytest.mark.parametrize(
+        "action, channel_type",
+        [("create_category", 4), ("create_text_channel", 0), ("create_forum", 15)],
+    )
+    @patch("tools.discord_tool._discord_request")
+    def test_creation_uses_the_action_channel_type(
+        self, mock_req, monkeypatch, action, channel_type,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [[], {"id": "800", "name": "project"}]
+
+        result = json.loads(discord_admin_handler(
+            action=action, guild_id="111", name="project",
+        ))
+
+        assert result == {
+            "guild_id": "111", "channel_id": "800", "name": "project",
+            "type": _channel_type_name(channel_type), "created": True,
+        }
+        assert mock_req.call_args_list[0].args == (
+            "GET", "/guilds/111/channels", "test-token",
+        )
+        assert mock_req.call_args_list[1].args == (
+            "POST", "/guilds/111/channels", "test-token",
+        )
+        assert mock_req.call_args_list[1].kwargs["body"]["type"] == channel_type
+
+    @patch("tools.discord_tool._discord_request")
+    def test_exact_existing_channel_is_returned_without_post(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = [
+            {"id": "700", "name": "Projects", "type": 4, "parent_id": None},
+            {"id": "800", "name": "project", "type": 15, "parent_id": "700"},
+        ]
+
+        result = json.loads(discord_admin_handler(
+            action="create_forum", guild_id="111", name="project", category_id="700",
+        ))
+
+        assert result["channel_id"] == "800"
+        assert result["created"] is False
+        mock_req.assert_called_once_with("GET", "/guilds/111/channels", "test-token")
+
+    @pytest.mark.parametrize(
+        "channels",
+        [
+            [],
+            [{"id": "700", "name": "not-a-category", "type": 0, "parent_id": None}],
+        ],
+    )
+    @patch("tools.discord_tool._discord_request")
+    def test_creation_rejects_invalid_category_before_post(
+        self, mock_req, monkeypatch, channels,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = channels
+
+        result = json.loads(discord_admin_handler(
+            action="create_text_channel", guild_id="111", name="project", category_id="700",
+        ))
+
+        assert "error" in result
+        assert "category_id" in result["error"]
+        mock_req.assert_called_once_with("GET", "/guilds/111/channels", "test-token")
+
+    @patch("tools.discord_tool._discord_request")
+    def test_same_name_incompatible_channel_fails_without_post(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = [
+            {"id": "800", "name": "project", "type": 0, "parent_id": None},
+        ]
+        result = json.loads(discord_admin_handler(
+            action="create_forum", guild_id="111", name="project",
+        ))
+        assert "error" in result
+        assert "different type or category" in result["error"]
+        mock_req.assert_called_once_with("GET", "/guilds/111/channels", "test-token")
+
+    @patch("tools.discord_tool._discord_request")
+    def test_same_name_channel_with_requested_field_mismatch_is_not_compatible(
+        self, mock_req, monkeypatch,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = [
+            {
+                "id": "800", "name": "project", "type": 15, "parent_id": None,
+                "topic": "old",
+            },
+        ]
+        result = json.loads(discord_admin_handler(
+            action="create_forum", guild_id="111", name="project", topic="new",
+        ))
+        assert "error" in result
+        assert "requested settings" in result["error"]
+        mock_req.assert_called_once_with("GET", "/guilds/111/channels", "test-token")
+
+    @patch("tools.discord_tool._discord_request")
+    def test_optional_fields_and_zero_overwrite_values_are_preserved(
+        self, mock_req, monkeypatch,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            [{"id": "700", "name": "Projects", "type": 4, "parent_id": None}],
+            {"id": "800", "name": "project"},
+        ]
+        overwrites = [{"id": "222", "type": 0, "allow": 0, "deny": 0}]
+
+        result = json.loads(discord_admin_handler(
+            action="create_forum", guild_id="111", name="project", category_id="700",
+            topic="Work", position=0, nsfw=False, rate_limit_per_user=0,
+            permission_overwrites=overwrites,
+        ))
+
+        assert result["created"] is True
+        assert mock_req.call_args_list[1].kwargs["body"] == {
+            "name": "project", "type": 15, "parent_id": "700", "topic": "Work",
+            "position": 0, "nsfw": False, "rate_limit_per_user": 0,
+            "permission_overwrites": [{"id": "222", "type": 0, "allow": "0", "deny": "0"}],
+        }
+
+    @pytest.mark.parametrize(
+        "overwrites",
+        [
+            "not-an-array",
+            [{"id": "222", "type": 2, "allow": 0, "deny": 0}],
+            [{"id": "bad", "type": 0, "allow": 0, "deny": 0}],
+            [{"id": "222", "type": 0, "allow": -1, "deny": 0}],
+            [{"id": "222", "type": 0, "allow": None, "deny": 0}],
+            [
+                {"id": "222", "type": 0, "allow": 0, "deny": 0},
+                {"id": "222", "type": 0, "allow": 0, "deny": 0},
+            ],
+            [{"id": str(index + 1), "type": 0, "allow": 0, "deny": 0} for index in range(101)],
+        ],
+    )
+    @patch("tools.discord_tool._discord_request")
+    def test_malformed_overwrites_fail_before_http(
+        self, mock_req, monkeypatch, overwrites,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_admin_handler(
+            action="create_text_channel", guild_id="111", name="project",
+            permission_overwrites=overwrites,
+        ))
+        assert "error" in result
+        assert "permission_overwrites" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_grant_main_user_adds_only_view_and_manage_overwrites(
+        self, mock_req, monkeypatch,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("DISCORD_MAIN_USER_ID", "222")
+        mock_req.side_effect = [[], {"id": "333"}, {"id": "800", "name": "project"}]
+
+        result = json.loads(discord_admin_handler(
+            action="create_text_channel", guild_id="111", name="project",
+            grant_main_user_access=True,
+        ))
+
+        assert result["created"] is True
+        assert mock_req.call_args_list[1].args == ("GET", "/users/@me", "test-token")
+        assert mock_req.call_args_list[2].kwargs["body"]["permission_overwrites"] == [
+            {"id": "222", "type": 1, "allow": "1040", "deny": "0"},
+            {"id": "333", "type": 1, "allow": "1040", "deny": "0"},
+        ]
+
+    @pytest.mark.parametrize(
+        "main_id, allowed",
+        [(None, ""), (None, "*"), (None, "222,333"), ("not-numeric", "222")],
+    )
+    @patch("tools.discord_tool._discord_request")
+    def test_grant_main_user_fails_closed_before_http(
+        self, mock_req, monkeypatch, main_id, allowed,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        if main_id is None:
+            monkeypatch.delenv("DISCORD_MAIN_USER_ID", raising=False)
+        else:
+            monkeypatch.setenv("DISCORD_MAIN_USER_ID", main_id)
+        monkeypatch.setenv("DISCORD_ALLOWED_USERS", allowed)
+
+        result = json.loads(discord_admin_handler(
+            action="create_text_channel", guild_id="111", name="project",
+            grant_main_user_access=True,
+        ))
+
+        assert "error" in result
+        assert "DISCORD_MAIN_USER_ID" in result["error"]
+        mock_req.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "action, params",
+        [
+            ("create_text_channel", {"guild_id": "bad", "name": "x"}),
+            ("create_text_channel", {"guild_id": "111", "name": ""}),
+            ("create_text_channel", {"guild_id": "111", "name": "x", "topic": "x" * 4097}),
+            ("create_text_channel", {"guild_id": "111", "name": "x", "topic": "x" * 1025}),
+            ("create_text_channel", {"guild_id": "111", "name": "x", "position": -1}),
+            ("create_text_channel", {"guild_id": "111", "name": "x", "nsfw": 1}),
+            ("create_text_channel", {"guild_id": "111", "name": "x", "rate_limit_per_user": 21601}),
+            ("create_category", {"guild_id": "111", "name": "x", "topic": "unsupported"}),
+            ("create_category", {"guild_id": "111", "name": "x", "grant_main_user_access": True}),
+            ("create_role", {"guild_id": "111", "name": "x", "color": 0x1000000}),
+            ("create_role", {"guild_id": "111", "name": "x", "hoist": "false"}),
+        ],
+    )
+    @patch("tools.discord_tool._discord_request")
+    def test_creation_boundaries_fail_before_http(self, mock_req, monkeypatch, action, params):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_admin_handler(action=action, **params))
+        assert "error" in result
+        mock_req.assert_not_called()
+
+
+class TestEditGuildChannels:
+    @pytest.mark.parametrize(
+        "action, params, body",
+        [
+            ("rename_channel", {"name": "renamed"}, {"name": "renamed"}),
+            ("set_channel_topic", {"topic": "New topic"}, {"topic": "New topic"}),
+            (
+                "move_channel_to_category", {"category_id": "700", "position": 0},
+                {"parent_id": "700", "position": 0},
+            ),
+        ],
+    )
+    @patch("tools.discord_tool._discord_request")
+    def test_channel_edits_patch_only_requested_fields(
+        self, mock_req, monkeypatch, action, params, body,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        if action == "set_channel_topic":
+            mock_req.side_effect = [{"id": "800", "type": 0}, {"id": "800"}]
+        elif action == "move_channel_to_category":
+            mock_req.side_effect = [
+                {"id": "800", "type": 0, "guild_id": "111"},
+                {"id": "700", "type": 4, "guild_id": "111"},
+                {"id": "800"},
+            ]
+        else:
+            mock_req.return_value = {"id": "800"}
+
+        result = json.loads(discord_admin_handler(
+            action=action, channel_id="800", **params,
+        ))
+
+        assert result == {"channel_id": "800", "updated": True}
+        expected_calls = [call("PATCH", "/channels/800", "test-token", body=body)]
+        if action == "set_channel_topic":
+            expected_calls.insert(0, call("GET", "/channels/800", "test-token"))
+        elif action == "move_channel_to_category":
+            expected_calls[:0] = [
+                call("GET", "/channels/800", "test-token"),
+                call("GET", "/channels/700", "test-token"),
+            ]
+        assert mock_req.call_args_list == expected_calls
+
+    @pytest.mark.parametrize(
+        "destination",
+        [
+            {"id": "700", "type": 0, "guild_id": "111"},
+            {"id": "700", "type": 4, "guild_id": "999"},
+        ],
+    )
+    @patch("tools.discord_tool._discord_request")
+    def test_move_rejects_invalid_category_before_patch(
+        self, mock_req, monkeypatch, destination,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            {"id": "800", "type": 0, "guild_id": "111"},
+            destination,
+        ]
+
+        result = json.loads(discord_admin_handler(
+            action="move_channel_to_category", channel_id="800", category_id="700",
+        ))
+
+        assert "error" in result
+        assert "category_id" in result["error"]
+        assert mock_req.call_args_list == [
+            call("GET", "/channels/800", "test-token"),
+            call("GET", "/channels/700", "test-token"),
+        ]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_move_rejects_unsupported_source_type_before_patch(
+        self, mock_req, monkeypatch,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "800", "type": 4, "guild_id": "111"}
+
+        result = json.loads(discord_admin_handler(
+            action="move_channel_to_category", channel_id="800", category_id="700",
+        ))
+
+        assert "error" in result
+        assert "channel_id" in result["error"]
+        mock_req.assert_called_once_with("GET", "/channels/800", "test-token")
+
+    @pytest.mark.parametrize(
+        "action, expected_allow, expected_deny, locked",
+        [("lock_channel", "16", "2049", True), ("unlock_channel", "2064", "1", False)],
+    )
+    @patch("tools.discord_tool._discord_request")
+    def test_locking_changes_only_everyone_send_messages_bit(
+        self, mock_req, monkeypatch, action, expected_allow, expected_deny, locked,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            {
+                "id": "800", "guild_id": "111", "type": 0,
+                "permission_overwrites": [
+                    {"id": "111", "type": 0, "allow": "2064", "deny": "1"},
+                    {"id": "222", "type": 1, "allow": "7", "deny": "8"},
+                ],
+            },
+            {"id": "800"},
+        ]
+
+        result = json.loads(discord_admin_handler(
+            action=action, channel_id="800", guild_id="111",
+        ))
+
+        assert result == {"channel_id": "800", "guild_id": "111", "locked": locked}
+        assert mock_req.call_args_list[1].args == (
+            "PUT", "/channels/800/permissions/111", "test-token",
+        )
+        assert mock_req.call_args_list[1].kwargs["body"] == {
+            "type": 0, "allow": expected_allow, "deny": expected_deny,
+        }
+
+    @patch("tools.discord_tool._discord_request")
+    def test_lock_refuses_channel_from_another_guild(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "800", "guild_id": "999", "permission_overwrites": []}
+
+        result = json.loads(discord_admin_handler(
+            action="lock_channel", channel_id="800", guild_id="111",
+        ))
+
+        assert "error" in result
+        assert "guild_id" in result["error"]
+        mock_req.assert_called_once_with("GET", "/channels/800", "test-token")
+
+    @pytest.mark.parametrize("channel_type", [2, 4, 13])
+    @patch("tools.discord_tool._discord_request")
+    def test_lock_rejects_unsupported_channel_type_before_put(
+        self, mock_req, monkeypatch, channel_type,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {
+            "id": "800", "guild_id": "111", "type": channel_type,
+            "permission_overwrites": [],
+        }
+
+        result = json.loads(discord_admin_handler(
+            action="lock_channel", channel_id="800", guild_id="111",
+        ))
+
+        assert "error" in result
+        assert "channel_id" in result["error"]
+        mock_req.assert_called_once_with("GET", "/channels/800", "test-token")
+
+    @patch("tools.discord_tool._discord_request")
+    def test_set_topic_rejects_non_forum_limit_before_http(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "800", "type": 0}
+        result = json.loads(discord_admin_handler(
+            action="set_channel_topic", channel_id="800", topic="x" * 1025,
+        ))
+        assert "error" in result
+        assert "1024" in result["error"]
+        mock_req.assert_called_once_with("GET", "/channels/800", "test-token")
+
+    @patch("tools.discord_tool._discord_request")
+    def test_set_topic_allows_forum_limit(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [{"id": "800", "type": 15}, {"id": "800"}]
+        result = json.loads(discord_admin_handler(
+            action="set_channel_topic", channel_id="800", topic="x" * 4096,
+        ))
+        assert result == {"channel_id": "800", "updated": True}
+        assert mock_req.call_args_list == [
+            call("GET", "/channels/800", "test-token"),
+            call("PATCH", "/channels/800", "test-token", body={"topic": "x" * 4096}),
+        ]
+
+
+class TestManageRoles:
+    @patch("tools.discord_tool._discord_request")
+    def test_create_role_is_idempotent_and_preserves_zero_color(
+        self, mock_req, monkeypatch,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [[], {"id": "900", "name": "Editors"}]
+
+        result = json.loads(discord_admin_handler(
+            action="create_role", guild_id="111", name="Editors", color=0,
+            hoist=False, mentionable=True,
+        ))
+
+        assert result == {
+            "guild_id": "111", "role_id": "900", "name": "Editors", "created": True,
+        }
+        assert mock_req.call_args_list[0].args == ("GET", "/guilds/111/roles", "test-token")
+        assert mock_req.call_args_list[1].args == ("POST", "/guilds/111/roles", "test-token")
+        assert mock_req.call_args_list[1].kwargs["body"] == {
+            "name": "Editors", "color": 0, "hoist": False, "mentionable": True,
+        }
+
+    @patch("tools.discord_tool._discord_request")
+    def test_existing_unmanaged_role_is_returned_without_post(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = [
+            {"id": "900", "name": "Editors", "managed": False, "permissions": "0"},
+        ]
+        result = json.loads(discord_admin_handler(
+            action="create_role", guild_id="111", name="Editors",
+        ))
+        assert result["created"] is False
+        assert result["role_id"] == "900"
+        mock_req.assert_called_once_with("GET", "/guilds/111/roles", "test-token")
+
+    @patch("tools.discord_tool._discord_request")
+    def test_existing_privileged_role_is_an_incompatible_collision(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = [
+            {"id": "900", "name": "Editors", "managed": False, "permissions": "8"},
+        ]
+        result = json.loads(discord_admin_handler(
+            action="create_role", guild_id="111", name="Editors",
+        ))
+        assert "error" in result
+        assert "permissions" in result["error"]
+        mock_req.assert_called_once_with("GET", "/guilds/111/roles", "test-token")
+
+    @patch("tools.discord_tool._discord_request")
+    def test_update_role_rejects_empty_payload_before_http(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_admin_handler(
+            action="update_role", guild_id="111", role_id="900",
+        ))
+        assert "error" in result
+        assert "at least one" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_update_role_patches_only_supplied_fields(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "900", "name": "Editors"}
+        result = json.loads(discord_admin_handler(
+            action="update_role", guild_id="111", role_id="900", color=0,
+        ))
+        assert result == {"guild_id": "111", "role_id": "900", "updated": True}
+        mock_req.assert_called_once_with(
+            "PATCH", "/guilds/111/roles/900", "test-token", body={"color": 0},
+        )
+
+    def test_role_schema_does_not_expose_permissions_or_administrator(self):
+        schema = get_dynamic_schema_admin
+        properties = __import__("tools.discord_tool", fromlist=["_SCHEMA_PROPERTIES"])._SCHEMA_PROPERTIES
+        assert "permissions" not in properties
+        assert "administrator" not in properties
+        assert callable(schema)
+
+
+class TestLeaveGuild:
+    @pytest.fixture(autouse=True)
+    def _leave_config(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"leave_guild_ids": ["900000000000000001", "900000000000000002"]}},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_leave_guild_requires_approved_target_and_exact_name(
+        self, mock_req, monkeypatch,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = [{"id": "900000000000000001", "name": "Alpha Guild"}]
+
+        result = json.loads(discord_admin_handler(
+            action="leave_guild", guild_id="900000000000000001",
+            expected_guild_name="Wrong",
+        ))
+
+        assert "error" in result
+        assert "Alpha Guild" not in result["error"]
+        assert "expected_guild_name" in result["error"]
+        mock_req.assert_called_once_with(
+            "GET", "/users/@me/guilds", "test-token", params={"limit": "200"},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_leave_guild_is_idempotent_when_approved_target_is_absent(
+        self, mock_req, monkeypatch,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = []
+        result = json.loads(discord_admin_handler(
+            action="leave_guild", guild_id="900000000000000002",
+            expected_guild_name="Beta Guild",
+        ))
+        assert result == {
+            "guild_id": "900000000000000002", "name": "Beta Guild", "left": False,
+        }
+        mock_req.assert_called_once_with(
+            "GET", "/users/@me/guilds", "test-token", params={"limit": "200"},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_leave_guild_deletes_only_after_exact_identity_match(
+        self, mock_req, monkeypatch,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            [{"id": "900000000000000002", "name": "Beta Guild"}], None,
+        ]
+        result = json.loads(discord_admin_handler(
+            action="leave_guild", guild_id="900000000000000002",
+            expected_guild_name="Beta Guild",
+        ))
+        assert result == {
+            "guild_id": "900000000000000002", "name": "Beta Guild", "left": True,
+        }
+        assert mock_req.call_args_list[1].args == (
+            "DELETE", "/users/@me/guilds/900000000000000002", "test-token",
+        )
+
+    @patch("tools.discord_tool.time.sleep")
+    @patch("tools.discord_tool._discord_request")
+    def test_leave_guild_retries_delete_rate_limit_without_reinventory(
+        self, mock_req, mock_sleep, monkeypatch,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            [{"id": "900000000000000002", "name": "Beta Guild"}],
+            DiscordAPIError(429, '{"message":"You are being rate limited.","retry_after":0.5}'),
+            None,
+        ]
+
+        result = json.loads(discord_admin_handler(
+            action="leave_guild", guild_id="900000000000000002",
+            expected_guild_name="Beta Guild",
+        ))
+
+        assert result == {
+            "guild_id": "900000000000000002", "name": "Beta Guild", "left": True,
+        }
+        assert [item.args[0] for item in mock_req.call_args_list] == ["GET", "DELETE", "DELETE"]
+        mock_sleep.assert_called_once_with(0.5)
+
+    @pytest.mark.parametrize("body", ["not-json", '{"retry_after": "later"}', '{"retry_after": 5.1}'])
+    @patch("tools.discord_tool.time.sleep")
+    @patch("tools.discord_tool._discord_request")
+    def test_leave_guild_rejects_invalid_or_excessive_rate_limit_data(
+        self, mock_req, mock_sleep, monkeypatch, body,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            [{"id": "900000000000000002", "name": "Beta Guild"}],
+            DiscordAPIError(429, body),
+        ]
+
+        result = json.loads(discord_admin_handler(
+            action="leave_guild", guild_id="900000000000000002",
+            expected_guild_name="Beta Guild",
+        ))
+
+        assert "error" in result
+        assert "retry" in result["error"].lower()
+        assert body not in result["error"]
+        mock_sleep.assert_not_called()
+        assert mock_req.call_count == 2
+
+    @patch("tools.discord_tool.time.sleep")
+    @patch("tools.discord_tool._discord_request")
+    def test_leave_guild_stops_after_one_rate_limit_retry(
+        self, mock_req, mock_sleep, monkeypatch,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        rate_limit = DiscordAPIError(429, '{"retry_after":0}')
+        mock_req.side_effect = [
+            [{"id": "900000000000000002", "name": "Beta Guild"}], rate_limit, rate_limit,
+        ]
+
+        result = json.loads(discord_admin_handler(
+            action="leave_guild", guild_id="900000000000000002",
+            expected_guild_name="Beta Guild",
+        ))
+
+        assert "error" in result
+        assert "429" in result["error"]
+        assert mock_req.call_count == 3
+        mock_sleep.assert_called_once_with(0.0)
+
+    @pytest.mark.parametrize(
+        "guild_id,name",
+        [
+            ("900000000000000003", "Gamma Guild"),
+            ("999", "Other"),
+            ("*", "Beta Guild"),
+        ],
+    )
+    @patch("tools.discord_tool._discord_request")
+    def test_leave_guild_rejects_every_other_target_before_http(
+        self, mock_req, monkeypatch, guild_id, name,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_admin_handler(
+            action="leave_guild", guild_id=guild_id, expected_guild_name=name,
+        ))
+        assert "error" in result
+        mock_req.assert_not_called()
+
+    def test_new_surface_has_no_other_destructive_administration(self):
+        import tools.discord_tool as discord_tool
+
+        assert discord_tool._NEW_DESTRUCTIVE_ACTIONS == frozenset({"leave_guild"})
+        assert not ({"delete_channel", "delete_role", "ban", "kick", "purge", "webhook"} & _ACTIONS.keys())
+
+
+class TestExpandedAdminContract:
+    def test_original_actions_and_new_actions_are_disjoint_and_complete(self):
+        import tools.discord_tool as discord_tool
+
+        original = {
+            "list_guilds", "server_info", "list_channels", "channel_info", "list_roles",
+            "member_info", "search_members", "fetch_messages", "list_pins", "pin_message",
+            "unpin_message", "delete_message", "create_thread", "add_role", "remove_role",
+        }
+        expected_new = {
+            "create_category", "create_text_channel", "create_forum", "rename_channel",
+            "set_channel_topic", "move_channel_to_category", "lock_channel", "unlock_channel",
+            "create_role", "update_role", "leave_guild",
+        }
+        assert expected_new <= discord_tool._NEW_ACTION_NAMES
+        assert original | expected_new <= set(_ACTIONS)
+        assert original.isdisjoint(expected_new)
+
+    def test_manifest_declares_required_parameters_and_schema_fields(self):
+        import tools.discord_tool as discord_tool
+
+        expected = {
+            "create_category": ["guild_id", "name"],
+            "create_text_channel": ["guild_id", "name"],
+            "create_forum": ["guild_id", "name"],
+            "rename_channel": ["channel_id", "name"],
+            "set_channel_topic": ["channel_id", "topic"],
+            "move_channel_to_category": ["channel_id", "category_id"],
+            "lock_channel": ["channel_id", "guild_id"],
+            "unlock_channel": ["channel_id", "guild_id"],
+            "create_role": ["guild_id", "name"],
+            "update_role": ["guild_id", "role_id"],
+            "leave_guild": ["guild_id", "expected_guild_name"],
+        }
+        assert {name: discord_tool._REQUIRED_PARAMS[name] for name in expected} == expected
+        schema = discord_tool._build_schema(list(discord_tool._ADMIN_ACTIONS), tool_name="discord_admin")
+        assert schema is not None
+        assert expected.keys() <= set(schema["parameters"]["properties"]["action"]["enum"])
+        for field in {field for fields in expected.values() for field in fields}:
+            assert field in schema["parameters"]["properties"]
+
+    def test_admin_only_parameters_do_not_expand_the_core_discord_schema(self):
+        import tools.discord_tool as discord_tool
+
+        core = discord_tool._build_schema(list(_CORE_ACTIONS), tool_name="discord")
+        admin = discord_tool._build_schema(list(_ADMIN_ACTIONS), tool_name="discord_admin")
+        assert core is not None and admin is not None
+        admin_only = {
+            "category_id", "topic", "position", "nsfw", "rate_limit_per_user",
+            "permission_overwrites", "grant_main_user_access", "color", "hoist",
+            "mentionable", "expected_guild_name",
+        }
+        assert not (admin_only & core["parameters"]["properties"].keys())
+        assert admin_only <= admin["parameters"]["properties"].keys()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_new_action_api_error_is_actionable_and_redacts_token(
+        self, mock_req, monkeypatch, caplog,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "secret-token")
+        mock_req.side_effect = DiscordAPIError(500, "failed secret-token traceback")
+
+        result = json.loads(discord_admin_handler(
+            action="create_text_channel", guild_id="111", name="project",
+        ))
+
+        assert "error" in result
+        assert "retry" in result["error"].lower()
+        assert "secret-token" not in result["error"]
+        assert "secret-token" not in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -545,6 +1258,34 @@ class TestConfigAllowlist:
         )
         result = _load_allowed_actions_config()
         assert result == ["list_guilds", "list_channels", "fetch_messages"]
+
+    def test_leave_guild_ids_missing_defaults_to_empty(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"discord": {}})
+        assert _load_leave_guild_ids() == frozenset()
+
+    @pytest.mark.parametrize("raw", [None, "900000000000000001", ("900000000000000001",), [1]])
+    def test_leave_guild_ids_rejects_malformed_values(self, monkeypatch, raw):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"leave_guild_ids": raw}},
+        )
+        with pytest.raises(ValueError, match="discord.leave_guild_ids"):
+            _load_leave_guild_ids()
+
+    def test_leave_guild_ids_rejects_excessive_list(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"leave_guild_ids": [str(i + 1) for i in range(101)]}},
+        )
+        with pytest.raises(ValueError, match="at most"):
+            _load_leave_guild_ids()
+
+    def test_leave_guild_ids_accepts_numeric_string_list(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"leave_guild_ids": ["900000000000000001"]}},
+        )
+        assert _load_leave_guild_ids() == frozenset({"900000000000000001"})
 
 
     def test_config_load_failure_is_permissive(self, monkeypatch):

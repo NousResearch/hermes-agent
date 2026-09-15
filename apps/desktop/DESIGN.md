@@ -177,6 +177,14 @@ Notes:
 `warn`, `destructive`, `outline`, `solid` (primary fill — icon-corner counts).
 Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 
+## Context-sensitive dialogs
+
+Sudo password dialogs keep the backdrop unblurred (`DialogContent`'s
+`blurBackdrop={false}`) and show the complete, selectable command before the
+password field. Long commands wrap and scroll; missing backend context is
+explicit, never inferred from another tool row. Other dialogs retain the shared
+blurred backdrop.
+
 ## Form controls
 
 - **`controlVariants`** (`src/components/ui/control.ts`) is the shared shape for

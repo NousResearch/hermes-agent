@@ -257,7 +257,8 @@ _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT = (
     "Continue from the compressed conversation context above. This marker exists because the compacted "
     "transcript contained no preserved user turn."
 )
-# Content string is the authoritative marker: SessionDB drops ``_``-metadata.
+# Legacy content markers remain readable for transcripts emitted before runtime
+# notifications gained structural virtual-tool provenance.
 MAX_ITERATIONS_SUMMARY_REQUEST = (
     "You've reached the maximum number of tool-calling iterations allowed. Please provide a final response "
     "summarizing what you've found and accomplished so far, without calling any more tools."

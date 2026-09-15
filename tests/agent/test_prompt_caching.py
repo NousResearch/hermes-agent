@@ -91,6 +91,27 @@ def test_t20880_tool_heavy_native_loop_reproduction():
     assert _count_cache_markers(after_exchange.messages, after_exchange.tools) <= 4
 
 
+def test_native_tool_cache_marks_stable_and_context_boundaries_within_budget():
+    """Native tool-cache requests retain both reusable system tiers and one transaction."""
+    class CacheableContextPrefix(str):
+        stable_prefix = "stable prefix"
+
+    plan = build_prompt_cache_plan(
+        _tool_heavy_native_history(),
+        _tool_heavy_native_tools(),
+        native_anthropic=True,
+        static_system_prefix=CacheableContextPrefix("stable prefix\nvolatile suffix"),
+        direct_native_tool_cache=True,
+    )
+
+    system_parts = plan.messages[0]["content"]
+    assert [part["text"] for part in system_parts] == ["stable prefix", "\nvolatile suffix"]
+    assert all(part.get("cache_control") == MARKER for part in system_parts)
+    assert plan.tools[-1]["cache_control"] == MARKER
+    assert len(_native_marker_indexes(plan.messages) - {0}) == 1
+    assert _count_cache_markers(plan.messages, plan.tools) == 4
+
+
 class TestPromptCachePlan:
     def test_copies_sections_and_keeps_canonical_tools_plain(self):
         import copy

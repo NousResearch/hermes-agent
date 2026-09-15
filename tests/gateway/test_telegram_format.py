@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms.base import utf16_len
 
 
 # ---------------------------------------------------------------------------
@@ -460,6 +461,52 @@ async def test_send_escapes_chunk_indicator_for_markdownv2(adapter):
     assert len(sent_texts) > 1
     assert re.search(r" \\\([0-9]+/[0-9]+\\\)$", sent_texts[0])
     assert re.search(r" \\\([0-9]+/[0-9]+\\\)$", sent_texts[-1])
+
+
+@pytest.mark.asyncio
+async def test_html_stt_echo_split_sends_collapsed_quote_per_chunk(adapter):
+    """A long STT echo must keep <blockquote expandable> on every Telegram message.
+
+    truncate_message() on the wrapped HTML left the opening tag on chunk 1
+    and dumped the tail as plain text (or failed HTML parse).
+    """
+    from gateway.stt_echo import format_stt_transcript_echo
+
+    adapter.MAX_MESSAGE_LENGTH = 240
+    adapter._bot = MagicMock()
+    sent = []
+
+    async def _fake_send_message(**kwargs):
+        sent.append(kwargs)
+        msg = MagicMock()
+        msg.message_id = len(sent)
+        return msg
+
+    adapter._bot.send_message = AsyncMock(side_effect=_fake_send_message)
+    adapter._bot.send_chat_action = AsyncMock()
+
+    transcript = "\n".join(
+        f"Spoken paragraph {index:02d} with enough words to overflow."
+        for index in range(20)
+    )
+    content = format_stt_transcript_echo(transcript, "telegram")
+    result = await adapter.send(
+        "123", content, metadata={"telegram_html": True},
+    )
+
+    assert result.success is True
+    assert len(sent) > 1
+    total = len(sent)
+    for index, kwargs in enumerate(sent):
+        text = kwargs["text"]
+        assert kwargs["parse_mode"] == "HTML"
+        assert "<blockquote expandable>" in text
+        assert "</blockquote>" in text
+        assert text.startswith("🎙️")
+        assert text.rstrip().endswith(f"({index + 1}/{total})")
+        assert utf16_len(text) <= adapter.MAX_MESSAGE_LENGTH
+        # * The visible (N/M) marker is after the quote, not inside it.
+        assert text.rindex("</blockquote>") < text.rindex(f"({index + 1}/{total})")
 
 
 # =========================================================================

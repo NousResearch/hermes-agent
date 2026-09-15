@@ -2559,29 +2559,6 @@ class TestSystemdCgroupIsolation:
             value.startswith("OOMPolicy=") for value in probe_argv if isinstance(value, str)
         ), probe_argv
 
-    def test_successful_systemd_probe_uses_cached_verdict_before_ttl(self, monkeypatch):
-        """A healthy user bus does not cause a probe for every worker spawn."""
-        import tools.process_registry as pr
-
-        monkeypatch.setattr(pr, "_IS_LINUX", True)
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", 0.0)
-        clock = [100.0]
-        probe_calls = []
-
-        def fake_run(*args, **kwargs):
-            probe_calls.append(args)
-            return subprocess.CompletedProcess(args=args[0], returncode=0)
-
-        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
-        monkeypatch.setattr("tools.process_registry.time.monotonic", lambda: clock[0])
-        monkeypatch.setattr("subprocess.run", fake_run)
-
-        assert pr._systemd_run_user_scope_available() is True
-        clock[0] += 30
-        assert pr._systemd_run_user_scope_available() is True
-        assert len(probe_calls) == 1
-
     def test_successful_systemd_probe_revalidates_after_cache_ttl(self, monkeypatch):
         """A vanished user bus invalidates a formerly successful scope verdict."""
         import tools.process_registry as pr

@@ -81,17 +81,18 @@ WATCH_GLOBAL_COOLDOWN_SECONDS = 30
 # Under a systemd gateway with MemoryMax, local background commands inherit the gateway's
 # cgroup, so a memory-heavy executor can get the ENTIRE gateway killed by systemd-oomd;
 # ``systemd-run --user --scope`` gives the worker its own transient cgroup. Usability is
-# probed with a bounded cache (binary present but user D-Bus absent in system services/containers).
+# probed and cached for a bounded TTL (binary present but user D-Bus absent in system services/containers).
 # A memory-heavy executor (Codex, tests, Node) can push the whole cgroup past MemoryMax and trigger
 # systemd-oomd to kill the ENTIRE gateway — taking down the messaging control plane and silently losing the
 # active turn. We probe whether ``systemd-run --user --scope`` is actually usable (the binary can
 # exist on the PATH while the user D-Bus session is unavailable — common for system services and
-# containers), and cache the result briefly. See #70716.
+# containers), and cache the verdict for a bounded TTL. See #70716.
 _SYSTEMD_SCOPE_AVAILABLE: Optional[bool] = None
 _SYSTEMD_SCOPE_PROBE_LOCK = threading.Lock()
 _SYSTEMD_SCOPE_PROBED_AT = 0.0
-_SYSTEMD_SCOPE_FAILURE_TTL_SECONDS = 60.0
-_SYSTEMD_SCOPE_SUCCESS_TTL_SECONDS = 60.0
+# Both verdicts expire: the user bus can vanish after a True (session logout without linger,
+# #110803) and reappear after a False (linger enabled later, #104893).
+_SYSTEMD_SCOPE_PROBE_TTL_SECONDS = 60.0
 _MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
 _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
 _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
@@ -205,19 +206,11 @@ def systemd_user_bus_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
 
 
 def _systemd_scope_cached() -> Optional[bool]:
-    """Cached probe verdict, or None when a (re)probe is due.
-
-    Both verdicts expire: a user D-Bus can disappear after a successful probe,
-    while a failed probe can recover after linger or a login session starts.
-    """
+    """Cached probe verdict, or None when a (re)probe is due."""
     if _SYSTEMD_SCOPE_AVAILABLE is None:
         return None
-    ttl = (
-        _SYSTEMD_SCOPE_SUCCESS_TTL_SECONDS
-        if _SYSTEMD_SCOPE_AVAILABLE
-        else _SYSTEMD_SCOPE_FAILURE_TTL_SECONDS
-    )
-    return None if time.monotonic() - _SYSTEMD_SCOPE_PROBED_AT >= ttl else _SYSTEMD_SCOPE_AVAILABLE
+    stale = time.monotonic() - _SYSTEMD_SCOPE_PROBED_AT >= _SYSTEMD_SCOPE_PROBE_TTL_SECONDS
+    return None if stale else _SYSTEMD_SCOPE_AVAILABLE
 
 
 def _systemd_run_user_scope_available() -> bool:
@@ -330,6 +323,20 @@ class GatewayChildDispatch(NamedTuple):
 
     mode: Literal["in_process", "scoped", "degraded"]
     argv: List[str]
+
+
+def scoped_spawn_lost_user_bus() -> bool:
+    """After a ``systemd-run --user --scope`` wrapper exits before its child could start: True
+    when the user bus is gone (:func:`systemd_user_bus_env` derives nothing), in which case the
+    cached True verdict is replaced so the next dispatch re-probes and degrades instead of
+    consuming another occurrence on the same dead wrapper (#110803)."""
+    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
+    if systemd_user_bus_env({}):
+        return False
+    with _SYSTEMD_SCOPE_PROBE_LOCK:
+        _SYSTEMD_SCOPE_AVAILABLE = False
+        _SYSTEMD_SCOPE_PROBED_AT = time.monotonic()
+    return True
 
 
 def restart_safe_gateway_child_argv(

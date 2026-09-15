@@ -25,6 +25,10 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
 
+# A standalone adapter can block forever on a dead transport (#38780); bound the sender
+# coroutine itself so one hung send cannot wedge cron finalization or shutdown.
+_STANDALONE_SEND_TIMEOUT_SECONDS = 30.0
+
 
 # Validates user-supplied delivery platform names, preventing env-var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
@@ -1483,19 +1487,41 @@ def _standalone_send(
     """Run the standalone sender for one target: ``(result, None)`` or ``(None, error)`` (already
     logged — WARNING for a shutdown race, ERROR with traceback otherwise)."""
     from tools.send_message_tool import _send_to_platform
+
     job = t.job
     shutdown_msg = f"delivery to {t.where} skipped — interpreter is shutting down"
 
-    def _send():
-        return _send_to_platform(
-            t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
-            media_files=media_files)
+    # Media sends legitimately exceed the 30s text budget; use the configured media timeout.
+    send_timeout = (
+        _script._get_media_send_timeout()
+        if media_files
+        else _STANDALONE_SEND_TIMEOUT_SECONDS
+    )
+
+    async def _send():
+        # wait_for lives INSIDE this coroutine so the pre-start RuntimeError path's
+        # coro.close() releases the timeout wrapper together with the sender — closing
+        # an outer wait_for() wrapper separately would leave it unawaited.
+        return await asyncio.wait_for(
+            _send_to_platform(
+                t.platform,
+                t.pconfig,
+                t.chat_id,
+                content,
+                thread_id=t.thread_id,
+                media_files=media_files,
+            ),
+            timeout=send_timeout,
+        )
 
     def _warned(msg: str) -> tuple[None, str]:
         logger.warning("Job '%s': %s", job["id"], msg)
         return None, msg
 
     def _failed(e) -> tuple[None, str]:
+        if isinstance(e, TimeoutError):
+            # The send was cancelled at the deadline; it may still land server-side.
+            e = f"timed out after {send_timeout:g}s — delivery outcome unconfirmed"
         msg = f"delivery to {t.where} failed: {e}"
         logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
         return None, msg
@@ -1512,7 +1538,8 @@ def _standalone_send(
     try:
         return asyncio.run(coro), None
     except RuntimeError as run_err:
-        # asyncio.run() refuses inside a running loop; close the unstarted coro, retry in a thread.
+        # asyncio.run() refuses inside a running loop; close the unstarted coro (the
+        # wait_for wrapper lives inside it, so both are released), then retry in a thread.
         coro.close()
         if _sched._interpreter_shutting_down(run_err):
             return _warned(shutdown_msg)
@@ -1522,8 +1549,11 @@ def _standalone_send(
             try:
                 # A fresh thread does NOT inherit the profile ContextVars (home override + secret
                 # scope); run in the active context or the sender reads the default bot token.
-                return pool.submit(contextvars.copy_context().run, asyncio.run, _send()).result(
-                    timeout=30), None
+                # The +5s headroom lets the inner wait_for cancel the sender first; the future
+                # deadline is only the hard backstop.
+                return pool.submit(
+                    contextvars.copy_context().run, asyncio.run, _send()
+                ).result(timeout=send_timeout + 5), None
             finally:
                 pool.shutdown(wait=False)
         except Exception as e:

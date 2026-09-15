@@ -52,14 +52,14 @@ def load_picker_context() -> ConfigContext:
         current_base_url = str(model_cfg.get("base_url", "") or "")
     else:  # config.model can be a bare string in older configs
         current_model, current_provider, current_base_url = (str(model_cfg) if model_cfg else ""), "", ""
-    excluded = cfg.get("model_catalog", {}).get("excluded_providers") or []
-    allowed = cfg.get("model_catalog", {}).get("allowed_models") or []
+    catalog = cfg.get("model_catalog") if isinstance(cfg.get("model_catalog"), dict) else {}
+    excluded = catalog.get("excluded_providers") or []
     return ConfigContext(
         current_provider=current_provider, current_model=current_model, current_base_url=current_base_url,
         user_providers=stringify_provider_map(cfg.get("providers")),
         custom_providers=get_compatible_custom_providers(cfg),
         excluded_providers=excluded if isinstance(excluded, list) else [],
-        allowed_models=allowed if isinstance(allowed, list) else [],
+        allowed_models=catalog.get("allowed_models"),
     )
 
 

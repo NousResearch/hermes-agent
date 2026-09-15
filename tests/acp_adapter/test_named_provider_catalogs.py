@@ -273,6 +273,33 @@ class TestModelStateIncludesNamedProviders:
         assert choice_ids == ["custom:relay:model-a"]
         assert provider == "custom:relay"
         assert model == "model-a"
+    def test_named_custom_model_outside_allowlist_is_not_advertised(self):
+        from acp_adapter.model_catalog import build_model_state
+
+        class _Ctx:
+            allowed_models = [
+                {"provider": "nous", "model": "solar-pro-4"},
+            ]
+
+            def with_overrides(self, **_kwargs):
+                return self
+
+        with patch("hermes_cli.inventory.load_picker_context", return_value=_Ctx()), patch(
+            "hermes_cli.inventory.build_models_payload",
+            return_value={"providers": [{
+                "slug": "nous", "name": "Nous",
+                "models": ["solar-pro-4", "other"],
+            }]},
+        ), patch(
+            "acp_adapter.model_catalog._named_custom_provider_catalogs",
+            return_value=[("custom:relay", "Relay", [("secret-model", "")])],
+        ):
+            state = build_model_state("other", "nous", "")
+
+        ids = [item.model_id for item in state.available_models]
+        assert ids == ["nous:solar-pro-4"]
+        assert "custom:relay:secret-model" not in ids
+        assert "nous:other" not in ids
 
     def test_selector_choice_id_round_trips_through_parse_model_input(self):
         """The encoded choice id must resolve back to the named provider."""

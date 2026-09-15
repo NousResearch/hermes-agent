@@ -5,9 +5,31 @@ from __future__ import annotations
 from typing import Any
 
 
+def _raw_allowed_models(config: Any) -> Any:
+    """The configured value: a list of pairs, or a present non-list."""
+    if isinstance(config, dict) and "allowed_models" in config:
+        return config.get("allowed_models")
+    return config
+
+
+def allowed_models_restrict(config: Any) -> bool:
+    """True when a non-empty ``allowed_models`` value is present.
+
+    Absent / explicit ``[]`` keep the legacy unrestricted catalog. A present
+    non-empty value (including all-invalid entries or a non-list) is restrictive
+    so a malformed allowlist cannot silently widen to the full catalog.
+    """
+    raw = _raw_allowed_models(config)
+    if raw is None:
+        return False
+    if isinstance(raw, list):
+        return len(raw) > 0
+    return True
+
+
 def configured_allowed_models(config: Any) -> list[dict[str, str]]:
     """Return valid ``model_catalog.allowed_models`` entries."""
-    raw = config.get("allowed_models") if isinstance(config, dict) else config
+    raw = _raw_allowed_models(config)
     if not isinstance(raw, list):
         return []
     entries: list[dict[str, str]] = []
@@ -26,9 +48,9 @@ def configured_allowed_models(config: Any) -> list[dict[str, str]]:
 
 def model_is_allowed(model: str, provider: str, allowed_models: Any) -> bool:
     """Whether a resolved provider/model pair is present in the configured set."""
-    allowed = configured_allowed_models(allowed_models)
-    if not allowed:
+    if not allowed_models_restrict(allowed_models):
         return True
+    allowed = configured_allowed_models(allowed_models)
     target = (str(provider or "").strip().lower(), str(model or "").strip().lower())
     return any((entry["provider"].lower(), entry["model"].lower()) == target for entry in allowed)
 
@@ -36,13 +58,15 @@ def model_is_allowed(model: str, provider: str, allowed_models: Any) -> bool:
 def filter_allowed_model_rows(rows: list[dict], allowed_models: Any) -> list[dict]:
     """Return picker rows narrowed to configured provider/model pairs.
 
-    Invalid or empty configuration fails open so a hand-edited config cannot
-    make every picker unusable.
+    Absent or explicit empty configuration fails open. A present non-empty
+    allowlist is restrictive even when every entry is invalid.
     """
-    allowed = configured_allowed_models(allowed_models)
-    if not allowed:
+    if not allowed_models_restrict(allowed_models):
         return rows
-    pairs = {(entry["provider"].lower(), entry["model"].lower()) for entry in allowed}
+    pairs = {
+        (entry["provider"].lower(), entry["model"].lower())
+        for entry in configured_allowed_models(allowed_models)
+    }
     filtered: list[dict] = []
     for row in rows:
         slug = str(row.get("slug") or "").strip().lower()

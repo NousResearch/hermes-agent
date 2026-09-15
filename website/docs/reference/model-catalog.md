@@ -123,7 +123,7 @@ model_catalog:
       model: solar-pro-4
 ```
 
-Provider and model matching is case-insensitive. Each entry must include both fields; malformed entries are ignored so a hand-edited config cannot lock a user out of the picker.
+Provider and model matching is case-insensitive. Each entry must include both fields. Individual malformed entries are dropped; a present non-empty list with no valid pairs is an empty allowlist (nothing selectable) rather than the unrestricted catalog.
 
 ## Updating the manifest
 

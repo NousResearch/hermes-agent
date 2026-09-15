@@ -16,8 +16,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Authorization servers that advertise ``authorization_response_iss_parameter_supported`` and then
-# omit ``iss`` from the redirect (#111135). Exact issuer match, nothing else is relaxed.
-_ISS_OMITTING_ISSUERS = frozenset({"https://api.figma.com"})
+# omit ``iss`` from the redirect (#111135 Figma; #99984 bug 1 Cloudflare — advertises the flag,
+# never sends iss). Exact issuer match, nothing else is relaxed.
+_ISS_OMITTING_ISSUERS = frozenset({"https://api.figma.com", "https://mcp.cloudflare.com"})
 
 # Authorization-server metadata documents the SDK tries in its 401 branch (RFC 8414 / OIDC discovery).
 _ASM_DISCOVERY_PATHS = ("/.well-known/oauth-authorization-server", "/.well-known/openid-configuration")
@@ -103,10 +104,11 @@ class HermesProviderMixin:
         return await super()._perform_authorization()
 
     def _tolerate_missing_iss_for_known_server(self) -> None:
-        """Figma advertises ``authorization_response_iss_parameter_supported`` and then omits ``iss``
-        from the redirect, so the SDK's RFC 9207 check rejects every valid code (#111135). For that
-        one issuer only, fill a missing ``iss`` with the discovered issuer and warn; a present-but-
-        different ``iss`` still fails the SDK check, and every other server keeps the strict rule."""
+        """Authorization servers that advertise ``authorization_response_iss_parameter_supported``
+        and then omit ``iss`` from the redirect make the SDK's RFC 9207 check reject every valid
+        code (#111135 Figma; #99984 bug 1 Cloudflare). For those issuers only, fill a missing
+        ``iss`` with the discovered issuer and warn; a present-but-different ``iss`` still fails
+        the SDK check, and every other server keeps the strict rule."""
         issuer = _metadata_issuer(self.context)
         if issuer not in _ISS_OMITTING_ISSUERS:
             return

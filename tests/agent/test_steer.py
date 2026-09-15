@@ -661,6 +661,69 @@ class TestPreApiCallSteerDrain:
         assert "focus on error handling" in messages[-1]["content"]
         assert agent._pending_steer is None
 
+    def test_pre_api_drain_does_not_attach_to_prior_turn_tool_result(self):
+        from agent.turn_iteration_prep import _inject_steer_after_newest_tool_result
+        agent = _bare_agent()
+        old_tool = {"role": "tool", "content": "prior-turn-result", "tool_call_id": "tc_old"}
+        current_user = {"role": "user", "content": "what is this image"}
+        messages = [
+            {"role": "user", "content": "earlier"},
+            {"role": "assistant", "content": "ok", "tool_calls": [
+                {"id": "tc_old", "function": {"name": "terminal", "arguments": "{}"}}
+            ]},
+            old_tool,
+            current_user,
+        ]
+        before_old = dict(old_tool)
+        before_user = dict(current_user)
+        agent.steer("This resembles Markdown's # and ##.")
+        _inject_steer_after_newest_tool_result(
+            agent, messages, agent._drain_pending_steer(), current_turn_user_idx=3,
+        )
+        assert messages == [
+            messages[0], messages[1], old_tool, current_user,
+        ]  # no insert before current user
+        assert old_tool == before_old and current_user == before_user
+        assert agent._pending_steer == "This resembles Markdown's # and ##."
+        assert all(m.get("display_kind") != "steer" for m in messages)
+
+    def test_pre_api_drain_still_injects_after_in_turn_tool(self):
+        """Prior-turn tool + in-turn tool: steer lands after the current tool, not the old one."""
+        from agent.turn_iteration_prep import _inject_steer_after_newest_tool_result
+
+        agent = _bare_agent()
+        old_tool = {"role": "tool", "content": "prior-turn-result", "tool_call_id": "tc_old"}
+        current_user = {"role": "user", "content": "what is this image"}
+        current_tool = {"role": "tool", "content": "in-turn-result", "tool_call_id": "tc_new"}
+        messages = [
+            {"role": "user", "content": "earlier"},
+            {"role": "assistant", "content": "ok", "tool_calls": [
+                {"id": "tc_old", "function": {"name": "terminal", "arguments": "{}"}}
+            ]},
+            old_tool,
+            current_user,
+            {"role": "assistant", "content": "looking", "tool_calls": [
+                {"id": "tc_new", "function": {"name": "terminal", "arguments": "{}"}}
+            ]},
+            current_tool,
+        ]
+        before_old = dict(old_tool)
+        before_current_tool = dict(current_tool)
+        agent.steer("focus on the caption")
+        _inject_steer_after_newest_tool_result(
+            agent, messages, agent._drain_pending_steer(), current_turn_user_idx=3,
+        )
+        assert messages[-2] is current_tool
+        assert messages[-1]["role"] == "user"
+        assert messages[-1].get("display_kind") == "steer"
+        assert STEER_MARKER_OPEN in messages[-1]["content"]
+        assert "focus on the caption" in messages[-1]["content"]
+        assert old_tool == before_old
+        assert current_tool == before_current_tool
+        assert messages[2] is old_tool
+        assert messages[3] is current_user
+        assert agent._pending_steer is None
+
     def test_pre_api_drain_restashes_when_no_tool_message(self):
         """If there are no tool results yet (first iteration), the steer
         should be put back into _pending_steer for the post-tool drain."""
@@ -680,6 +743,18 @@ class TestPreApiCallSteerDrain:
         assert not found
         # Restash
         agent._pending_steer = _pre_api_steer
+        assert agent._pending_steer == "early steer"
+
+        # Production helper must take the same restash path (not only this
+        # reimplemented search loop).
+        from agent.turn_iteration_prep import _inject_steer_after_newest_tool_result
+        agent._pending_steer = None
+        agent.steer("early steer")
+        before = list(messages)
+        _inject_steer_after_newest_tool_result(
+            agent, messages, agent._drain_pending_steer(), current_turn_user_idx=0,
+        )
+        assert messages == before
         assert agent._pending_steer == "early steer"
 
 

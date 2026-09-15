@@ -188,3 +188,176 @@ describe('session cwd → terminal tab linking', () => {
     expect($activeTerminalId.get()).toBe(first)
   })
 })
+
+describe('auto-reveal background agent terminals', () => {
+  async function loadRevealStore() {
+    const $currentCwd = atom('/workspace')
+
+    vi.doMock('@/store/session', () => ({
+      $currentCwd
+    }))
+
+    const terminals = await import('./terminals')
+    const { $terminalTakeover } = await import('../store')
+
+    return { ...terminals, $currentCwd, $terminalTakeover }
+  }
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.resetModules()
+  })
+
+  it('auto: a newly surfaced background proc selects its tab and opens the pane', async () => {
+    window.localStorage.setItem('hermes.desktop.revealBackgroundTerminals', 'auto')
+
+    const { $activeTerminalId, $terminalTakeover, createTerminal, maybeAutoRevealAgentTerminal } =
+      await loadRevealStore()
+
+    createTerminal('/repo')
+    const agentId = maybeAutoRevealAgentTerminal('proc-new', 'sleep 10')
+
+    expect(agentId).toBeTruthy()
+    expect($activeTerminalId.get()).toBe(agentId)
+    expect($terminalTakeover.get()).toBe(true)
+  })
+
+  it('stack (default): surfaces the agent tab without selecting it or forcing takeover', async () => {
+    const { $activeTerminalId, $terminals, $terminalTakeover, createTerminal, maybeAutoRevealAgentTerminal } =
+      await loadRevealStore()
+
+    const userId = createTerminal('/repo')
+    const agentId = maybeAutoRevealAgentTerminal('proc-new', 'sleep 10')
+
+    expect(agentId).toBeTruthy()
+    expect($terminals.get().some(term => term.id === agentId && term.procId === 'proc-new')).toBe(true)
+    expect($activeTerminalId.get()).toBe(userId)
+    expect($terminalTakeover.get()).toBe(false)
+  })
+
+  it('auto: a user-closed agent tab is not resurrected and does not take over', async () => {
+    window.localStorage.setItem('hermes.desktop.revealBackgroundTerminals', 'auto')
+
+    const {
+      $activeTerminalId,
+      $terminals,
+      $terminalTakeover,
+      closeAgentTerminalByProc,
+      createTerminal,
+      ensureAgentTerminal,
+      maybeAutoRevealAgentTerminal
+    } = await loadRevealStore()
+
+    const userId = createTerminal('/repo')
+    expect(ensureAgentTerminal('proc-closed', 'sleep 10')).toBeTruthy()
+    closeAgentTerminalByProc('proc-closed')
+    expect($activeTerminalId.get()).toBe(userId)
+
+    // Wrapper-layer pin: stay-closed is delegated to ensureAgentTerminal
+    // (surfacedProcs → null). maybeAutoReveal must not resurrect the tab.
+    expect(ensureAgentTerminal('proc-closed', 'sleep 10')).toBeNull()
+    const result = maybeAutoRevealAgentTerminal('proc-closed', 'sleep 10')
+
+    expect(result).toBeNull()
+    expect($terminals.get().some(term => term.procId === 'proc-closed')).toBe(false)
+    expect($activeTerminalId.get()).toBe(userId)
+    expect($terminalTakeover.get()).toBe(false)
+  })
+
+  it('auto: close prunes first-sight so a re-surfaced / reused procId can reveal again', async () => {
+    window.localStorage.setItem('hermes.desktop.revealBackgroundTerminals', 'auto')
+
+    const {
+      $activeTerminalId,
+      $terminalTakeover,
+      closeAgentTerminalByProc,
+      createTerminal,
+      maybeAutoRevealAgentTerminal,
+      openAgentTerminal,
+      selectTerminal
+    } = await loadRevealStore()
+
+    const userId = createTerminal('/repo')
+    maybeAutoRevealAgentTerminal('proc-reuse', 'sleep 10')
+    closeAgentTerminalByProc('proc-reuse')
+
+    openAgentTerminal('proc-reuse', 'sleep 10')
+    selectTerminal(userId)
+    const { setTerminalTakeover } = await import('../store')
+    setTerminalTakeover(false)
+
+    const agentId = maybeAutoRevealAgentTerminal('proc-reuse', 'sleep 10')
+
+    expect(agentId).toBeTruthy()
+    expect($activeTerminalId.get()).toBe(agentId)
+    expect($terminalTakeover.get()).toBe(true)
+  })
+
+  it('auto: status updates for an already revealed or skipped id do not take over again', async () => {
+    window.localStorage.setItem('hermes.desktop.revealBackgroundTerminals', 'auto')
+
+    const {
+      $activeTerminalId,
+      $terminalTakeover,
+      createTerminal,
+      maybeAutoRevealAgentTerminal,
+      selectTerminal
+    } = await loadRevealStore()
+
+    const userId = createTerminal('/repo')
+    maybeAutoRevealAgentTerminal('proc-new', 'sleep 10')
+    selectTerminal(userId)
+    const { setTerminalTakeover } = await import('../store')
+    setTerminalTakeover(false)
+
+    maybeAutoRevealAgentTerminal('proc-new', 'sleep 10 — still running')
+
+    expect($activeTerminalId.get()).toBe(userId)
+    expect($terminalTakeover.get()).toBe(false)
+  })
+
+  it('auto: inactive-session procs are surfaced but never yank the pane', async () => {
+    window.localStorage.setItem('hermes.desktop.revealBackgroundTerminals', 'auto')
+
+    const { $activeTerminalId, $terminals, $terminalTakeover, createTerminal, maybeAutoRevealAgentTerminal } =
+      await loadRevealStore()
+
+    const userId = createTerminal('/repo')
+    const agentId = maybeAutoRevealAgentTerminal('proc-other', 'other session', false)
+
+    expect(agentId).toBeTruthy()
+    expect($terminals.get().some(term => term.id === agentId)).toBe(true)
+    expect($activeTerminalId.get()).toBe(userId)
+    expect($terminalTakeover.get()).toBe(false)
+  })
+
+  it('empty procId is a no-op even in auto mode', async () => {
+    window.localStorage.setItem('hermes.desktop.revealBackgroundTerminals', 'auto')
+
+    const { $activeTerminalId, $terminals, $terminalTakeover, createTerminal, maybeAutoRevealAgentTerminal } =
+      await loadRevealStore()
+
+    const userId = createTerminal('/repo')
+    const before = $terminals.get()
+
+    expect(maybeAutoRevealAgentTerminal('', 'untitled')).toBeNull()
+    expect($terminals.get()).toEqual(before)
+    expect($activeTerminalId.get()).toBe(userId)
+    expect($terminalTakeover.get()).toBe(false)
+  })
+
+  it('invalid preference fail-opens to stack (no select / no takeover)', async () => {
+    window.localStorage.setItem('hermes.desktop.revealBackgroundTerminals', 'always')
+
+    const { $activeTerminalId, $terminals, $terminalTakeover, createTerminal, maybeAutoRevealAgentTerminal } =
+      await loadRevealStore()
+
+    const userId = createTerminal('/repo')
+    const agentId = maybeAutoRevealAgentTerminal('proc-new', 'sleep 10')
+
+    expect(agentId).toBeTruthy()
+    expect($terminals.get().some(term => term.id === agentId)).toBe(true)
+    expect($activeTerminalId.get()).toBe(userId)
+    expect($terminalTakeover.get()).toBe(false)
+  })
+})

@@ -1,10 +1,11 @@
 # Current State
 
-Snapshot date: 2026-09-15. The audit started at
-`main@b6ac2d273a43e287122db377bcfa702af6e7553c`; after `origin/main` advanced
-with a docs-only commit, the working tree was rebased and revalidated on
-`main@80d4ffce3cfba3ed03474a5b8ebcede4a7fc1770`. The changes described below
-are in the current working tree and have not yet been committed.
+Snapshot date: 2026-09-15. The latest hardening audit started from
+`main@ce5d3260c9791eee24a9c07c389e95a6e4d38c57`, equal to `origin/main` after
+an explicit fetch. Vault containment/watching, runtime-derived Chromium UA and
+Hermes Work display branding were committed as `9a9bb78051`, `8a0fab1d56` and
+`b637b3f7a4` respectively. Pre-existing compactor/test/journal work remained
+outside those commits.
 
 This file describes **observed implementation state**, not target architecture.
 When it disagrees with code on current `main`, inspect the code and update this
@@ -13,6 +14,15 @@ file.
 ## Working now
 
 On `main` plus the current Workstation V3 hardening working tree:
+
+- Hermes Vault rejects cross-platform absolute/traversal paths before side
+  effects, excludes symlink escapes, writes atomically, and shares one bounded
+  process-wide manager/watcher between agent tools and Desktop plugin RPC.
+- Workstation Chromium advertises the actual `process.versions.chrome` engine
+  without Electron/Hermes product tokens.
+- Desktop display/installer/shortcut naming is `Hermes Work`; update identity,
+  `hermes://`, executable/artifact naming, AUMID and the historical `Hermes`
+  userData directory remain stable for upgrades.
 
 - Hermes Workstation is first-class in this downstream fork and Desktop exposes
   the built-in `/browser` route.

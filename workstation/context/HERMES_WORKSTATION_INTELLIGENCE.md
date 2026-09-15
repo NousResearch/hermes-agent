@@ -2098,8 +2098,11 @@ um segundo log operacional impossível de manter.
 `VaultManager.write_note()` aceita `subfolder`; qualquer evolução de escrita,
 importação, sync ou plugin deve garantir containment real dentro de
 `vault_dir`, inclusive `..`, symlink/reparse point e diferenças de gramática de
-path. O fato de a implementação atual resolver paths não transforma toda entrada
-futura em segura por definição.
+path. Desde o hardening de 2026-09-15, o owner valida gramática host + Windows
+antes de qualquer side effect, exclui symlinks de arquivo/diretório, revalida o
+parent e usa replace atômico. Tools e plugin RPC compartilham a instância
+process-wide e o watcher polling bounded/debounced. Novas operações devem
+passar pelas mesmas primitivas; não basta fazer `resolve()` depois da escrita.
 
 ---
 

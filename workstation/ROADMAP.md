@@ -848,6 +848,15 @@ Extend Execution Journal toward operational replay/evaluation.
 
 Hermes Workstation bridges human personal knowledge management and autonomous agent capability into a single shared, local-first medium: **Hermes Vault**. Rather than treating notes as external third-party software, Hermes Desktop exposes a first-class Obsidian-compatible Markdown vault where both the human and the agent co-author notes, link ideas, and navigate knowledge.
 
+Current verified slice (2026-09-15): the Markdown owner, plugin RPC, Desktop
+route/editor/preview/backlinks and `d3-force` graph are present. Filesystem
+containment is enforced before mutations, symlinked notes/directories are
+excluded, writes are atomic, and the process-wide manager runs a bounded,
+debounced external-change watcher. Persistent custom-root selection, richer
+CodeMirror live editing/`[[` completion, explicit MOC/synthesis flows and the
+remaining product-polish contracts below stay open; they are not implied by
+the existing MVP.
+
 ### Core Architectural Slices
 
 1. **Vault Engine & Local Indexer (`workstation/vault.py`)**:
@@ -869,8 +878,8 @@ Hermes Workstation bridges human personal knowledge management and autonomous ag
    - Interactive zoom, pan, filter by tag, and click-to-open.
 
 4. **Agent-Vault Bridge Tools**:
-   - Model tools for Hermes: `vault_search`, `vault_read`, `vault_create_note`, `vault_append`, and `vault_backlinks`.
-   - Continuous agent synthesis: converting browser research, conversation takeaways, and project decisions into connected notes.
+   - Model tools for Hermes: `vault_search`, `vault_read`, `vault_write`, `vault_append`, `vault_backlinks`, and `vault_graph`; do not add the historical `vault_create_note` alias without a demonstrated compatibility need.
+   - Explicit, opt-in agent synthesis: converting browser research, conversation takeaways, and project decisions into connected notes.
    - Map of Content (MOC) generator for automated knowledge clustering.
 
 ## V3.5 — Browser Automation Ergonomics & Autonomous Web Operations

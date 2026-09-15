@@ -148,6 +148,25 @@ the latest run including the shared-resource identity check passed **6 passed
 
 ## Resolved regression classes
 
+### KI-010 — Vault paths were contained only after write [RESOLVED]
+
+**Original symptom:** `VaultManager.write_note(..., subfolder=...)` created the
+resolved directory and wrote the note before `relative_to(vault_dir)` proved
+containment, allowing traversal/absolute-path side effects outside a custom or
+default Vault root.
+
+**Resolved behavior:** path input is parsed with host and Windows grammar,
+containment is proved before directory/file mutation, symlinked files and
+directories are excluded from scanning and mutation, and note replacement is
+atomic. The process-wide canonical manager also runs a bounded debounced
+watcher so external Markdown create/edit/rename/delete changes rebuild the
+same index used by tools and Desktop RPC.
+
+**Evidence:** `workstation/tests/test_vault.py` covers traversal, POSIX/Windows/
+UNC absolute paths, malformed titles, normal/custom roots, file/directory
+symlink escape where the host permits symlink creation, atomic CRUD and watcher
+lifecycle/external changes.
+
 ### KI-003 — Complete logical BrowserSessionState did not survive restart
 
 **Original symptom:** the persistent Chromium profile and BrowserTask-only

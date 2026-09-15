@@ -34,6 +34,17 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   getPoolLimits: () => ipcRenderer.invoke('hermes:pool-limits:get'),
   setPoolLimits: limits => ipcRenderer.invoke('hermes:pool-limits:set', limits),
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
+  gatewayWs: {
+    open: url => ipcRenderer.invoke('hermes:gateway-ws:open', url),
+    send: (id, data) => ipcRenderer.send('hermes:gateway-ws:send', { id, data }),
+    close: id => ipcRenderer.send('hermes:gateway-ws:close', id),
+    subscribe: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:gateway-ws:event', listener)
+
+      return () => ipcRenderer.removeListener('hermes:gateway-ws:event', listener)
+    }
+  },
   // Registry-scoped fresh WS URL: { connectionId, profile } → result shape of
   // getGatewayWsUrl, minted against that connection's backend.
   getGatewayWsUrlFor: payload => ipcRenderer.invoke('hermes:gateway:ws-url-for', payload),

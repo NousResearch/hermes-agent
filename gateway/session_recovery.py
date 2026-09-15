@@ -18,6 +18,9 @@ if TYPE_CHECKING:
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.session")
 
+# Telegram private-chat General/lobby thread ids (mirrors gateway.run).
+_TELEGRAM_DM_GENERAL_TOPIC_IDS = frozenset({"", "1"})
+
 
 def _origin_json(source) -> Optional[str]:
     """``source.to_dict()`` as JSON, or None when absent/unserializable."""
@@ -87,14 +90,104 @@ class SessionRecoveryMixin:
             return requested_profile is None or recovered_profile == requested_profile
         return recovered_profile == self._active_profile_name()
 
+    def _telegram_dm_topic_mode_enabled(self, source: SessionSource) -> bool:
+        """True when Telegram DM topic-mode is on for this chat. Missing chat_id / DB → False."""
+        if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
+            return False
+        chat_id = str(source.chat_id or "")
+        if not chat_id:
+            return False
+        db = getattr(self, "_db", None)
+        checker = getattr(db, "is_telegram_topic_mode_enabled", None)
+        if not callable(checker):
+            return False
+        try:
+            profile_name = str(getattr(source, "profile", None) or "").strip() or "default"
+            return checker(
+                chat_id=chat_id, user_id=str(source.user_id or ""), profile_name=profile_name,
+            ) is True
+        except Exception:
+            logger.debug("telegram DM topic-mode lookup failed; coalescing to chat root", exc_info=True)
+            return False
+
+    def _telegram_dm_thread_belongs_in_session_key(self, source: SessionSource) -> bool:
+        """True when a Telegram DM ``thread_id`` is a real topic-mode lane, not a synthetic suffix.
+
+        Topic-mode + a non-General ``message_thread_id`` keeps per-topic isolation. Anything else
+        (topic-mode off, General/lobby, missing chat_id, DB unreadable) omits the suffix so one
+        private chat cannot fan out into N concurrent sessions (#107133).
+        """
+        thread_id = str(source.thread_id or "")
+        if not thread_id or thread_id in _TELEGRAM_DM_GENERAL_TOPIC_IDS:
+            return False
+        return self._telegram_dm_topic_mode_enabled(source)
+
     def _generate_session_key(self, source: SessionSource, key_source: Optional[SessionSource] = None) -> str:
         """Session key for *source* (profile from *source*; key from *key_source* if given)."""
         from gateway.session import build_session_key
+        src = key_source if key_source is not None else source
+        include_telegram_dm_thread = True
+        if src.platform == Platform.TELEGRAM and src.chat_type == "dm":
+            include_telegram_dm_thread = self._telegram_dm_thread_belongs_in_session_key(src)
         return build_session_key(
-            key_source if key_source is not None else source,
+            src,
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
-            profile=self._resolve_profile_for_key(source))
+            profile=self._resolve_profile_for_key(source),
+            include_telegram_dm_thread=include_telegram_dm_thread,
+        )
+
+    def _adopt_telegram_dm_fanout_entry(self, source: SessionSource, session_key: str) -> None:
+        """MOVE a live same-chat Telegram DM suffix key onto the chat-root key.
+
+        Pre-fix traffic minted ``agent:<ns>:telegram:dm:<chat_id>:<extra>`` siblings. When the
+        canonical key is the chat root (topic-mode off) and a suffix sibling is already live —
+        especially with an active turn — reuse that session_id instead of starting a parallel
+        turn. Suspended rows and topic-mode keys are left alone.
+        """
+        if source.platform != Platform.TELEGRAM or source.chat_type != "dm" or not source.chat_id:
+            return
+        parts = session_key.split(":")
+        if len(parts) != 5 or parts[2] != "telegram" or parts[3] != "dm":
+            return
+        # Topic-mode: suffix keys are real DM topics — never fold them into the lobby root.
+        if self._telegram_dm_topic_mode_enabled(source):
+            return
+        prefix = session_key + ":"
+        migrated: Optional[SessionEntry] = None
+        with self._lock:
+            self._ensure_loaded_locked()
+            if session_key in self._entries:
+                return
+            best_key = None
+            best_entry = None
+            for key, entry in self._entries.items():
+                if not key.startswith(prefix):
+                    continue
+                extra = key[len(prefix):]
+                if not extra or ":" in extra:
+                    continue
+                if getattr(entry, "suspended", False):
+                    continue
+                if best_entry is None:
+                    best_key, best_entry = key, entry
+                    continue
+                best_active = bool(best_entry.active_turn_token)
+                cur_active = bool(entry.active_turn_token)
+                if cur_active and not best_active:
+                    best_key, best_entry = key, entry
+                elif cur_active == best_active and entry.updated_at > best_entry.updated_at:
+                    best_key, best_entry = key, entry
+            if best_key is None or best_entry is None:
+                return
+            migrated = self._entries.pop(best_key)
+            migrated.session_key = session_key
+            self._entries[session_key] = migrated
+        if migrated is not None:
+            self._save_entries()
+            self._record_gateway_session_peer(
+                migrated.session_id, session_key, source, display_name=migrated.display_name,
+            )
 
     def _legacy_slack_session_key(self, source: SessionSource) -> Optional[str]:
         """Pre-workspace Slack key for an explicitly scoped source. Deliberately Slack-only: an

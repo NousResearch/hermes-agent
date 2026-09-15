@@ -97,9 +97,10 @@ class TestDMThreadIsolationEdgeCases:
 
 
 class TestDMThreadIsolationCrossPlatform:
-    """Verify thread isolation is consistent across all platforms."""
+    """Slack/Discord DM threads stay isolated. Telegram private DMs do not key on
+    synthetic ``thread_id`` unless topic-mode is on (issue #107133)."""
 
-    @pytest.mark.parametrize("platform", [Platform.SLACK, Platform.TELEGRAM, Platform.DISCORD])
+    @pytest.mark.parametrize("platform", [Platform.SLACK, Platform.DISCORD])
     def test_thread_starts_empty_across_platforms(self, store, platform):
         """DM thread sessions start empty regardless of platform."""
         parent_source = _dm_source(platform=platform)
@@ -112,3 +113,18 @@ class TestDMThreadIsolationCrossPlatform:
 
         thread_transcript = store.load_transcript(thread_entry.session_id)
         assert len(thread_transcript) == 0
+        assert thread_entry.session_id != parent_entry.session_id
+
+    def test_telegram_dm_thread_id_does_not_split_session(self, store):
+        """Telegram DM reply-derived thread_ids share the chat's live session."""
+        parent_source = _dm_source(platform=Platform.TELEGRAM)
+        parent_entry = store.get_or_create_session(parent_source)
+        for msg in PARENT_HISTORY:
+            store.append_to_transcript(parent_entry.session_id, msg)
+
+        thread_source = _dm_source(platform=Platform.TELEGRAM, thread_id="thread_123")
+        thread_entry = store.get_or_create_session(thread_source)
+
+        assert thread_entry.session_id == parent_entry.session_id
+        assert thread_entry.session_key == parent_entry.session_key
+        assert len(store.load_transcript(thread_entry.session_id)) == 2

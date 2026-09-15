@@ -2685,6 +2685,22 @@ install_node_deps() {
         return 0
     fi
 
+    # Point node-gyp at the Hermes-managed Node instead of letting it download
+    # headers over the network -- but only when that Node actually exists:
+    # HAS_NODE can also mean a pre-existing system Node we left untouched, and
+    # nodedir pointing at nothing is worse than leaving it unset. Without this,
+    # node-gyp's bundled undici HTTP client crashes outright (`AssertionError:
+    # assert(!this.paused)` in client-h1.js) on some fraction of requests made
+    # through an HTTP(S)_PROXY -- a known upstream node-gyp/undici bug, not
+    # something in our control, and one every native rebuild (node-pty and
+    # friends) is exposed to whenever HTTP_PROXY/HTTPS_PROXY is set (as our
+    # sandbox's E2E tests do, and as corporate proxies commonly do for real
+    # users too). The official Node tarball node-bootstrap.sh extracts already
+    # ships include/node/*.h, so this needs no download at all.
+    if [ -f "$HERMES_HOME/node/include/node/node_version.h" ]; then
+        export npm_config_nodedir="$HERMES_HOME/node"
+    fi
+
     if [ -f "$INSTALL_DIR/package.json" ]; then
         log_info "Installing Node.js dependencies (browser tools)..."
         cd "$INSTALL_DIR"

@@ -189,6 +189,51 @@ def test_skill_read_tools_are_idempotent_and_block_repeated_identical_success_ou
         assert blocked.code == "idempotent_no_progress_block"
 
 
+def test_first_skill_view_unchanged_ack_is_allowed_but_replays_are_blocked():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=2,
+        )
+    )
+    args = {"name": "already-loaded"}
+    full_result = json.dumps({
+        "success": True,
+        "name": "already-loaded",
+        "content": "full skill instructions",
+    })
+    unchanged_result = json.dumps({
+        "success": True,
+        "status": "unchanged",
+        "name": "already-loaded",
+        "dedup": True,
+        "content_returned": False,
+    })
+
+    controller.after_call("skill_view", args, full_result, failed=False)
+    controller.observe_call("skill_view", args, full_result, failed=False)
+
+    assert controller.before_call("skill_view", args).allows_execution
+    first_ack = controller.after_call("skill_view", args, unchanged_result, failed=False)
+    first_observation = controller.observe_call(
+        "skill_view", args, unchanged_result, failed=False,
+    )
+    assert first_ack.action == "allow"
+    assert first_observation.notice is None
+    assert controller.halt_decision is None
+
+    assert controller.before_call("skill_view", args).allows_execution
+    replay = controller.after_call("skill_view", args, unchanged_result, failed=False)
+    controller.observe_call("skill_view", args, unchanged_result, failed=False)
+    assert replay.action == "warn"
+    assert replay.code == "idempotent_no_progress_warning"
+
+    blocked = controller.before_call("skill_view", args)
+    assert blocked.action == "block"
+    assert blocked.code == "idempotent_no_progress_block"
+
+
 def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_success_output_by_default():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)
@@ -357,6 +402,19 @@ def test_distinct_failing_terminal_commands_warn_but_never_halt():
     for i in range(8):
         last = c2.after_call("send_message", {"to": f"u{i}"}, '{"error": "no route"}', failed=True)
     assert last.should_halt and last.code == "same_tool_failure_halt"
+
+
+def test_distinct_same_tool_failure_warning_does_not_claim_exact_loop():
+    c = _HARD()
+    warning = None
+    for i in range(3):
+        warning = c.after_call(
+            "terminal", {"command": f"diagnostic-{i}"}, _RED, failed=True,
+        )
+
+    assert warning.code == "same_tool_failure_warning"
+    assert "different calls" in warning.message
+    assert "This looks like a loop" not in warning.message
 
 
 def test_browser_retry_after_action_is_not_a_replay():

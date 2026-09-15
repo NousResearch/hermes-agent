@@ -44,10 +44,19 @@ import {
   isEventsAuthRejection,
   isEventsAuthRejectionMessage,
   isEventsFeedMessage,
+  isEventsFeedMessage,
   shouldRetryEventsClose
 } from '@/lib/events-reconnect'
 import { credentialWarning, sidecarErrorMessage } from '@/lib/chat-sidebar-banner'
 import { titleFromSessionInfoPayload } from '@/lib/chat-title'
+import {
+  applyDashboardSubagentEvent,
+  formatDashboardSubagentElapsed,
+  isDashboardSubagentEventType,
+  isDashboardSubagentTerminal,
+  listDashboardSubagents,
+  type DashboardSubagentRoster
+} from '@/lib/dashboard-subagents'
 
 import { cn } from '@/lib/utils'
 import { AlertCircle, ChevronDown, KeyRound, RefreshCw } from 'lucide-react'
@@ -146,6 +155,9 @@ export function ChatSidebar({
   // Short name of a just-saved model awaiting confirm to reload (a fresh chat
   // session is how the running chat adopts it; we confirm before discarding it).
   const [pendingReloadModel, setPendingReloadModel] = useState<string | null>(null)
+  const [roster, setRoster] = useState<DashboardSubagentRoster>({})
+  const [expandedSubagentId, setExpandedSubagentId] = useState<string | null>(null)
+  const [nowMs, setNowMs] = useState(() => Date.now())
 
   const refreshEffectiveModel = useCallback(() => {
     void api
@@ -175,6 +187,8 @@ export function ChatSidebar({
     if (prevScopeKey.current === scopeKey) return
     prevScopeKey.current = scopeKey
     setError(null)
+    setRoster({})
+    setExpandedSubagentId(null)
     setVersion(v => v + 1)
   }, [scopeKey])
 
@@ -335,6 +349,11 @@ export function ChatSidebar({
     const offNewSession = feed.on('dashboard.new_session_requested', () => {
       onDashboardNewSessionRequest?.()
     })
+    const offSubagents = feed.onAny(ev => {
+      if (isDashboardSubagentEventType(ev.type)) {
+        setRoster(prev => applyDashboardSubagentEvent(prev, { type: ev.type, payload: ev.payload }))
+      }
+    })
 
     void connect()
 
@@ -348,6 +367,7 @@ export function ChatSidebar({
       offState()
       offSessionInfo()
       offNewSession()
+      offSubagents()
       feed.close()
     }
   }, [channel, feed, onDashboardNewSessionRequest, onSessionTitleChange, version])
@@ -358,10 +378,24 @@ export function ChatSidebar({
     refreshEffectiveModel()
   }, [refreshEffectiveModel, version])
 
+  const subagentRows = listDashboardSubagents(roster);
+  const hasLiveSubagent = subagentRows.some(
+    (row) => !isDashboardSubagentTerminal(row.status),
+  );
+  useEffect(() => {
+    if (!hasLiveSubagent) {
+      return;
+    }
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [hasLiveSubagent]);
+
   const reconnect = useCallback(() => {
     setError(null)
     setModelNotice(null)
     setPendingReloadModel(null)
+    setRoster({})
+    setExpandedSubagentId(null)
     setVersion(v => v + 1)
   }, [])
 
@@ -407,6 +441,45 @@ export function ChatSidebar({
           {STATE_LABEL[state]}
         </Badge>
       </Card>
+
+      {subagentRows.length > 0 && (
+        <section aria-label="Subagents">
+          <Card className="flex flex-col gap-2 px-3 py-2">
+            <div className="text-display text-xs tracking-wider text-text-tertiary">
+              subagents
+            </div>
+            {subagentRows.map((row) => {
+              const open = expandedSubagentId === row.id;
+              return (
+                <div key={row.id} className="min-w-0">
+                  <button
+                    type="button"
+                    aria-expanded={open}
+                    aria-label={row.goal}
+                    className="flex w-full min-w-0 items-center gap-2 text-left text-xs"
+                    onClick={() =>
+                      setExpandedSubagentId((cur) =>
+                        cur === row.id ? null : row.id,
+                      )
+                    }
+                  >
+                    <span className="shrink-0 text-text-tertiary">{row.status}</span>
+                    <span className="min-w-0 flex-1 truncate">{row.goal}</span>
+                    <span className="shrink-0 tabular-nums text-text-tertiary">
+                      {formatDashboardSubagentElapsed(row.startedAt, nowMs)}
+                    </span>
+                  </button>
+                  {open && (
+                    <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap text-[11px] text-text-secondary">
+                      {row.transcript.join("\n")}
+                    </pre>
+                  )}
+                </div>
+              );
+            })}
+          </Card>
+        </section>
+      )}
 
       {supportsReasoning && (
         <Card className="py-0">

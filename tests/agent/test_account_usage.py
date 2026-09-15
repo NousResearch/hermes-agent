@@ -1,16 +1,21 @@
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from agent import account_usage
 
 
 class _FakeResponse:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200):
         self._payload = payload
+        self.status_code = status_code
 
     def raise_for_status(self):
-        return None
+        if self.status_code >= 400:
+            request = httpx.Request("GET", "https://chatgpt.com/backend-api/wham/usage")
+            response = httpx.Response(self.status_code, request=request)
+            raise httpx.HTTPStatusError("request failed", request=request, response=response)
 
     def json(self):
         return self._payload
@@ -162,6 +167,40 @@ def test_codex_usage_account_id_read_failure_keeps_singleton_token(monkeypatch, 
     assert "ChatGPT-Account-Id" not in calls[0]["headers"]
 
 
+def test_codex_usage_retries_401_with_forced_refresh(monkeypatch, codex_usage_payload):
+    credential_calls = []
+    request_calls = []
+    responses = [_FakeResponse({}, status_code=401), _FakeResponse(codex_usage_payload)]
+
+    def resolve(**kwargs):
+        credential_calls.append(kwargs)
+        token = "fresh-token" if kwargs.get("force_refresh") else "revoked-token"
+        return {"api_key": token, "base_url": "https://chatgpt.com/backend-api/codex"}
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get(self, url, headers):
+            request_calls.append(headers["Authorization"])
+            return responses.pop(0)
+
+    monkeypatch.setattr(account_usage, "resolve_codex_runtime_credentials", resolve)
+    monkeypatch.setattr(account_usage, "_read_codex_tokens", lambda: {"tokens": {}})
+    monkeypatch.setattr(account_usage.httpx, "Client", lambda timeout: Client())
+
+    snapshot = account_usage.fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert snapshot.windows[0].label == "Session"
+    assert credential_calls == [
+        {"refresh_if_expiring": True},
+        {"refresh_if_expiring": True, "force_refresh": True},
+    ]
+    assert request_calls == ["Bearer revoked-token", "Bearer fresh-token"]
 
 
 # ── Banked rate-limit reset credits (`/usage reset`) ─────────────────────────
@@ -216,11 +255,53 @@ def _usage_payload_with_resets(primary_used, secondary_used, banked):
 
 
 
+def test_redeem_retries_401_with_forced_refresh(monkeypatch):
+    credential_calls = []
+    request_calls = []
+    client_count = 0
+    payload = _usage_payload_with_resets(100, 40, 1)
+
+    def resolve(base_url, api_key, *, force_refresh=False):
+        credential_calls.append(force_refresh)
+        token = "fresh-token" if force_refresh else "revoked-token"
+        return token, "https://chatgpt.com/backend-api/codex", None
+
+    class Client(_FakeResetClient):
+        def get(self, url, headers):
+            request_calls.append(("GET", headers["Authorization"]))
+            if headers["Authorization"] == "Bearer revoked-token":
+                return _FakeResponse({}, status_code=401)
+            return _FakeResponse(payload)
+
+        def post(self, url, headers=None, json=None):
+            request_calls.append(("POST", headers["Authorization"]))
+            return _FakeResponse({"code": "reset", "windows_reset": 2})
+
+    def client_factory(timeout):
+        nonlocal client_count
+        client_count += 1
+        return Client([], payload)
+
+    monkeypatch.setattr(account_usage, "_resolve_codex_usage_credentials", resolve)
+    monkeypatch.setattr(account_usage.httpx, "Client", client_factory)
+
+    result = account_usage.redeem_codex_reset_credit()
+
+    assert result.status == "reset"
+    assert credential_calls == [False, True]
+    assert request_calls == [
+        ("GET", "Bearer revoked-token"),
+        ("GET", "Bearer fresh-token"),
+        ("POST", "Bearer fresh-token"),
+    ]
+    assert client_count == 2
+
+
 def test_redeem_missing_credentials_reports_unavailable(monkeypatch):
     monkeypatch.setattr(
         account_usage,
         "_resolve_codex_usage_credentials",
-        lambda base_url, api_key: (_ for _ in ()).throw(RuntimeError("no creds")),
+        lambda base_url, api_key, **kwargs: (_ for _ in ()).throw(RuntimeError("no creds")),
     )
 
     result = account_usage.redeem_codex_reset_credit()

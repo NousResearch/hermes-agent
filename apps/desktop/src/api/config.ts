@@ -255,19 +255,16 @@ export function validateProviderCredential(
   })
 }
 
-export function getCustomEndpoints(profile?: null | string): Promise<CustomEndpointsResponse> {
+export function getCustomEndpoints(profile?: ProfileScope): Promise<CustomEndpointsResponse> {
   return hermesApi<CustomEndpointsResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/providers/custom-endpoints'
   })
 }
 
-export function saveCustomEndpoint(
-  endpoint: CustomEndpointUpdate,
-  profile?: null | string
-): Promise<CustomEndpointsResponse> {
+export function saveCustomEndpoint(endpoint: CustomEndpointUpdate, profile?: ProfileScope): Promise<CustomEndpointsResponse> {
   return hermesApi<CustomEndpointsResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/providers/custom-endpoints',
     method: 'POST',
     body: endpoint
@@ -276,10 +273,10 @@ export function saveCustomEndpoint(
 
 export function validateCustomEndpoint(
   endpoint: CustomEndpointUpdate,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<CustomEndpointValidationResponse> {
   return hermesApi<CustomEndpointValidationResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/providers/custom-endpoints/validate',
     method: 'POST',
     body: endpoint
@@ -288,18 +285,18 @@ export function validateCustomEndpoint(
 
 export function activateCustomEndpoint(
   id: string,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<{ ok: boolean; provider: string; model: string }> {
   return hermesApi<{ ok: boolean; provider: string; model: string }>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/providers/custom-endpoints/${encodeURIComponent(id)}/activate`,
     method: 'POST'
   })
 }
 
-export function deleteCustomEndpoint(id: string, profile?: null | string): Promise<CustomEndpointsResponse> {
+export function deleteCustomEndpoint(id: string, profile?: ProfileScope): Promise<CustomEndpointsResponse> {
   return hermesApi<CustomEndpointsResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/providers/custom-endpoints/${encodeURIComponent(id)}`,
     method: 'DELETE'
   })

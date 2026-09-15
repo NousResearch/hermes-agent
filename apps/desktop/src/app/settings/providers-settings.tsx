@@ -472,7 +472,7 @@ export function ProvidersSettings({
     }
   }
 
-  if (!vars) {
+  if (!vars || !settingsOwner) {
     return <SettingsSkeleton search sections={[{ rows: 6 }]} />
   }
 
@@ -534,7 +534,13 @@ export function ProvidersSettings({
   }
 
   if (view === 'custom-endpoints') {
-    return <CustomEndpointsSettings onConfigSaved={onConfigSaved} onMainModelChanged={onMainModelChanged} />
+    return (
+      <CustomEndpointsSettings
+        onConfigSaved={onConfigSaved}
+        onMainModelChanged={onMainModelChanged}
+        scope={settingsOwner}
+      />
+    )
   }
 
   if (view === 'local') {

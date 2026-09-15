@@ -1,4 +1,3 @@
-import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -9,6 +8,7 @@ import {
   activateCustomEndpoint,
   deleteCustomEndpoint,
   getCustomEndpoints,
+  type ProfileScope,
   saveCustomEndpoint,
   validateCustomEndpoint
 } from '@/hermes'
@@ -18,7 +18,7 @@ import { Check, Globe, Loader2, Plus, Save, Trash2, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
-import { $settingsRequestProfile } from '@/store/settings-scope'
+
 import type {
   CustomEndpoint,
   CustomEndpointApiMode,
@@ -32,6 +32,7 @@ import { SettingsProfileScope } from './profile-scope'
 interface CustomEndpointsSettingsProps {
   onConfigSaved?: () => void
   onMainModelChanged?: (provider: string, model: string) => void
+  scope: ProfileScope
 }
 
 interface EndpointForm {
@@ -103,12 +104,9 @@ function toPayload(
   }
 }
 
-export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: CustomEndpointsSettingsProps) {
+export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, scope }: CustomEndpointsSettingsProps) {
   const { t } = useI18n()
-  // Shared settings "Applies to" scope: read/write this profile's endpoints,
-  // not whichever Bot is active in the left rail. Undefined follows the
-  // active profile (request-shaped — never pass null, which retargets primary).
-  const scopeProfile = useStore($settingsRequestProfile)
+
   const mounted = useRef(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -123,7 +121,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   const [discoveredDetails, setDiscoveredDetails] = useState<CustomEndpointModelDetail[]>([])
 
   async function refresh() {
-    const data = await getCustomEndpoints(scopeProfile)
+    const data = await getCustomEndpoints(scope)
 
     if (mounted.current) {
       setEndpoints(data.endpoints)
@@ -142,7 +140,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
     async function load() {
       try {
-        const data = await getCustomEndpoints(scopeProfile)
+        const data = await getCustomEndpoints(scope)
 
         if (cancelled) {
           return
@@ -170,12 +168,12 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
       cancelled = true
       mounted.current = false
     }
-  }, [scopeProfile])
+  }, [scope])
 
   async function handleSave() {
     try {
       setSaving(true)
-      const response = await saveCustomEndpoint(toPayload(form, discoveredModels, discoveredDetails), scopeProfile)
+      const response = await saveCustomEndpoint(toPayload(form, discoveredModels, discoveredDetails), scope)
 
       if (!mounted.current) {
         return
@@ -210,7 +208,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   async function handleValidate() {
     try {
       setTesting(true)
-      const response = await validateCustomEndpoint(toPayload(form), scopeProfile)
+      const response = await validateCustomEndpoint(toPayload(form), scope)
 
       if (!mounted.current) {
         return
@@ -261,7 +259,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   async function handleActivate(endpoint: CustomEndpoint) {
     try {
       setActivating(endpoint.id)
-      const response = await activateCustomEndpoint(endpoint.id, scopeProfile)
+      const response = await activateCustomEndpoint(endpoint.id, scope)
 
       if (!mounted.current) {
         return
@@ -295,7 +293,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
     try {
       setDeleting(endpoint.id)
-      const response = await deleteCustomEndpoint(endpoint.id, scopeProfile)
+      const response = await deleteCustomEndpoint(endpoint.id, scope)
 
       if (!mounted.current) {
         return

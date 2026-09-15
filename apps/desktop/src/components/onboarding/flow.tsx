@@ -260,8 +260,9 @@ function ConfirmingModelPanel({
     queryKey: [
       'onboarding-model-options',
       flow.providerSlug,
+      ctx.profile,
       ctx.scope && typeof ctx.scope === 'object'
-        ? (ctx.scope.connectionId ?? ctx.scope.legacyConnection?.baseUrl)
+        ? (ctx.scope.connectionId ?? JSON.stringify(ctx.scope.legacyConnection))
         : ctx.profile
     ],
     queryFn: () => requestModelOptions({ explicitOnly: false, profile: ctx.profile, request: ctx.requestGateway })

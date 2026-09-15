@@ -7,10 +7,10 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
-import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronLeft, KeyRound, Loader2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
+import { requestModelOptions } from '@/lib/model-options'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { cn } from '@/lib/utils'
 import { $desktopBoot, type DesktopBootState } from '@/store/boot'
@@ -132,7 +132,7 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
 // other api_key provider is appended with a generic "paste {KEY}" affordance.
 // OAuth / external providers are intentionally excluded here — they go through
 // the OAuth picker / sign-in flow, not a pasted key.
-function useApiKeyCatalog(): ApiKeyOption[] {
+function useApiKeyCatalog(ctx: OnboardingContext): ApiKeyOption[] {
   const [rows, setRows] = useState<ModelOptionProvider[]>([])
 
   useEffect(() => {
@@ -142,7 +142,7 @@ function useApiKeyCatalog(): ApiKeyOption[] {
     // Promise.resolve().then so a synchronous throw (e.g. no desktop bridge in
     // tests) is funneled into the same .catch instead of escaping.
     void Promise.resolve()
-      .then(() => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false }))
+      .then(() => requestModelOptions({ explicitOnly: false, profile: ctx.profile, request: ctx.requestGateway }))
       .then(res => {
         if (!cancelled) {
           setRows(res.providers ?? [])
@@ -155,7 +155,7 @@ function useApiKeyCatalog(): ApiKeyOption[] {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [ctx])
 
   return useMemo(() => {
     const curatedByEnv = new Map(API_KEY_OPTIONS.map(o => [o.envKey, o]))
@@ -626,7 +626,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
 
   const ordered = useMemo(() => (providers ? sortProviders(providers) : []), [providers])
   const hasOauth = ordered.length > 0
-  const apiKeyOptions = useApiKeyCatalog()
+  const apiKeyOptions = useApiKeyCatalog(ctx)
 
   // localEndpoint forces the key form regardless of `mode` (which a manual
   // provider refresh may flip back to 'oauth'); it preselects the local option

@@ -172,7 +172,7 @@ CAMOFOX_URL=http://localhost:9377
 
 或通过 `hermes tools` → Browser Automation → Camofox 进行配置。
 
-设置 `CAMOFOX_URL` 后，所有浏览器工具将自动通过 Camofox 路由，而非 Browserbase 或 agent-browser。
+设置 `CAMOFOX_URL` 仅提供服务器地址。要启用 Camofox，请在 `hermes tools` → Browser Automation 中选择 Camofox（写入 `browser.cloud_provider: camofox`）——一旦存在浏览器后端选择，仅设置 `CAMOFOX_URL` 不再自动切换后端（从未配置过的环境仍会自动检测）。
 
 #### 持久化浏览器会话
 
@@ -287,7 +287,7 @@ CAMOFOX_ADOPT_EXISTING_TAB=true
 /browser disconnect              # Detach and return to cloud/local mode
 ```
 
-若浏览器尚未以远程调试模式运行，Hermes 将尝试自动启动支持的 Chromium 系浏览器并使用 `--remote-debugging-port=9222`。检测范围包括 Brave、Google Chrome、Chromium 和 Microsoft Edge，以及常见 Linux 安装路径（如 `/opt/brave-bin/brave` 和 `/snap/bin/brave`）。
+若浏览器尚未以远程调试模式运行，Hermes 将尝试自动启动支持的 Chromium 系浏览器并使用 `--remote-debugging-port=9222`。检测范围包括 Brave、Brave Origin/Nightly、Google Chrome、Chromium 和 Microsoft Edge，以及常见 Linux 安装路径和二进制名称（如 `brave-origin`、`brave-origin-nightly`、`/opt/brave.com/brave-origin/brave-origin`、`/opt/brave.com/brave-origin-nightly/brave-origin`、`/opt/brave-bin/brave` 和 `/snap/bin/brave`）。
 
 :::tip
 要手动启动带 CDP 的 Chromium 系浏览器，请使用专用的 user-data-dir，确保即使浏览器已以普通 profile 运行，调试端口也能正常开启：
@@ -409,7 +409,7 @@ Navigate to https://github.com/NousResearch
 - **`full=false`**（默认）：仅显示交互元素的紧凑视图
 - **`full=true`**：完整页面内容
 
-超过 8000 字符的快照将由 LLM 自动摘要。
+超过 15,000 字符的快照将按行边界自动截断（与 `web_extract` 使用相同的单页预算 —— 无 LLM 摘要）。发生截断时，完整快照会保存到 `~/.hermes/cache/web/`，工具输出中包含文件路径和可直接使用的 `read_file` 调用，代理无需重新截图即可翻阅完整的可访问性树（包括被截断部分的元素 ref）。
 
 ### `browser_click`
 
@@ -483,6 +483,8 @@ browser_console(expression="JSON.stringify(performance.timing)")
 ```
 
 当当前会话存在活跃的 CDP 监督器时（通常适用于任何对 CDP 兼容后端运行过 `browser_navigate` 的会话），执行通过监督器的持久 WebSocket 进行 — 无子进程启动开销。否则回退到标准 agent-browser CLI 路径。两种方式行为完全相同，仅延迟有差异。
+
+默认情况下执行不受限制 — 代理可以使用 `fetch`、读取存储、查询表单值并执行任何 DOM 提取。针对私有/内部地址的请求在非本地后端上仍会被拦截（SSRF 防护与此设置无关）。如果你在已登录的浏览器配置文件中浏览不可信页面，希望对敏感 JS 原语（Cookie、存储、剪贴板、网络调用、表单值）启用严格的黑名单，可在 `config.yaml` 中设置 `browser.restrict_evaluate: true`。注意该黑名单按原语*名称*匹配，因此也会拦截仅包含 `fetch` 或 `cookie` 等词的合法表达式。
 
 ### `browser_cdp`
 
@@ -621,7 +623,7 @@ Browserbase 提供自动隐身能力：
 ## 限制
 
 - **基于文本的交互** — 依赖无障碍树，而非像素坐标
-- **快照大小** — 大型页面可能在 8000 字符处被截断或由 LLM 摘要
+- **快照大小** — 大型页面在 15,000 字符处被截断（与 `web_extract` 一致；无 LLM 摘要）；完整快照会保存到 `~/.hermes/cache/web/`，输出中给出路径供 `read_file` 翻阅
 - **会话超时** — 云端会话根据提供商计划设置过期
 - **费用** — 云端会话消耗提供商额度；对话结束或非活跃后会话自动清理。使用 `/browser connect` 可免费本地浏览。
 - **不支持文件下载** — 无法从浏览器下载文件

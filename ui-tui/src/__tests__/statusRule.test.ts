@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { busyIndicatorWidth, StatusBarSegments, statusBarSegments, statusRuleWidths } from '../components/appChrome.js'
+import type { StatusBarSegments } from '../components/appChrome.js'
+import { busyIndicatorWidth, statusBarSegments, statusRuleWidths } from '../components/appChrome.js'
 
 describe('statusRuleWidths', () => {
   it('keeps the status rule within the terminal width', () => {
@@ -69,7 +70,18 @@ describe('statusBarSegments', () => {
       voice: true,
       bg: true,
       subagents: true,
+      cacheHit: true,
+      latency: true,
+      tps: true
     } satisfies StatusBarSegments)
+  })
+
+  it('sheds cache/latency/tps read-outs first as the terminal narrows', () => {
+    // 96/104/110-col breakpoints: these are the lowest-priority perf
+    // read-outs, so they disappear before any pre-existing segment.
+    expect(statusBarSegments(108)).toMatchObject({ cacheHit: true, latency: true, tps: false })
+    expect(statusBarSegments(100)).toMatchObject({ cacheHit: true, latency: false, tps: false })
+    expect(statusBarSegments(94)).toMatchObject({ cacheHit: false, latency: false, tps: false, subagents: true })
   })
 
   it('collapses the context bar to a token count on narrow terminals', () => {

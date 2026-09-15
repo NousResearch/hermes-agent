@@ -15,8 +15,12 @@ ASCII video: convert video/audio to colored ASCII MP4/GIF.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/creative/ascii-video` |
+| Path | `skills/creative\ascii-video` |
+| Version | `1.0.0` |
+| Author | SHL0MS, Hermes Agent |
+| License | MIT |
 | Platforms | linux, macos, windows |
+| Tags | `ASCII`, `Video`, `FFmpeg`, `Terminal-Art` |
 
 ## Reference: full SKILL.md
 

@@ -85,7 +85,6 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
 | 安装方式                                | 代码位置                       | `hermes` 二进制                          | 数据目录                              |
 | --------------------------------------- | ------------------------------ | ---------------------------------------- | ------------------------------------- |
-| pip install                             | Python site-packages           | `~/.local/bin/hermes`（console_scripts） | `~/.hermes/`                          |
 | 用户级（git 安装程序）                  | `~/.hermes/hermes-agent/`      | `~/.local/bin/hermes`（符号链接）        | `~/.hermes/`                          |
 | Root 模式（`sudo curl … \| sudo bash`） | `/usr/local/lib/hermes-agent/` | `/usr/local/bin/hermes`                  | `/root/.hermes/`（或 `$HERMES_HOME`） |
 
@@ -123,8 +122,6 @@ hermes setup --portal
 ---
 
 ## 前置条件
-
-**pip install：** 除 Python 3.11+ 外无其他前置条件，其余均自动处理。
 
 **Git 安装程序：** 唯一的前置条件是 **Git**。安装程序自动处理其余一切：
 
@@ -204,4 +201,4 @@ hermes setup --portal
 
 ## 安装方式自动检测
 
-Hermes 会自动检测安装方式（`pip`、git 安装程序、Homebrew 或 NixOS），`hermes update` 会打印对应路径的更新命令。无需设置任何环境变量——检测基于安装目录结构（Python site-packages、`~/.hermes/hermes-agent/`、Homebrew 前缀或 Nix store 路径）。`hermes doctor` 也会在其环境摘要中显示检测到的安装方式。
+Hermes 会自动检测安装方式（git 安装程序、Docker 或 NixOS），`hermes update` 会打印对应路径的更新命令。无需设置任何环境变量——检测基于安装目录结构（`~/.hermes/hermes-agent/` 检出、Docker 镜像标记或 Nix store 路径）。`hermes doctor` 也会在其环境摘要中显示检测到的安装方式。

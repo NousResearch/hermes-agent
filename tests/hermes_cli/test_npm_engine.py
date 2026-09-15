@@ -139,6 +139,10 @@ class TestInUseDeferral:
         npm.write_text("#!/bin/sh\n", encoding="utf-8")
         npm.chmod(0o755)
         monkeypatch.setenv("HERMES_HOME", str(home))
+        # Hermetic PATH: _upgrade_env() routes through with_hermes_node_path(),
+        # whose user-managed Node detection would otherwise probe a dev
+        # machine's real runtime through any faked subprocess.run.
+        monkeypatch.setenv("PATH", "")
         return npm
 
     def test_in_use_managed_tree_defers_upgrade_without_running_npm(
@@ -190,6 +194,10 @@ class TestRepairDecision:
         npm.write_text("#!/bin/sh\n", encoding="utf-8")
         npm.chmod(0o755)
         monkeypatch.setenv("HERMES_HOME", str(home))
+        # Hermetic PATH: _upgrade_env() routes through with_hermes_node_path(),
+        # whose user-managed Node detection would otherwise probe a dev
+        # machine's real runtime through any faked subprocess.run.
+        monkeypatch.setenv("PATH", "")
         return npm
 
     def test_upgrades_managed_npm_with_the_range_npm_asked_for(

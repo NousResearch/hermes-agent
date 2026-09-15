@@ -29,6 +29,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
 | **Arcee AI** | `ARCEEAI_API_KEY` in `~/.hermes/.env` (provider: `arcee`; aliases: `arcee-ai`, `arceeai`) |
 | **GMI Cloud** | `GMI_API_KEY` in `~/.hermes/.env` (provider: `gmi`; aliases: `gmi-cloud`, `gmicloud`) |
+| **Phoenix Grove** | `PGS_API_KEY` in `~/.hermes/.env` (provider: `pgsgrove`; aliases: `phoenix-grove`, `phoenixgrove`, `pgs`; curated open-weights coding plan, OpenAI-compatible at api.pgsgrove.com) |
 | **Nebius Token Factory** | `NEBIUS_API_KEY` in `~/.hermes/.env` (provider: `nebius-token-factory`; aliases: `nebius`, `nebius-tf`, `tokenfactory`) |
 | **Actual Computer** | `ACTUAL_API_KEY` in `~/.hermes/.env` for the hosted relay; set `model.base_url` in `config.yaml` for a local daemon (no key needed on loopback). Provider: `actual`; aliases: `actual-computer`, `actualcomputer`, `aci`. |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |

@@ -1,0 +1,5 @@
+name: pgsgrove-provider
+kind: model-provider
+version: 1.0.0
+description: Phoenix Grove
+author: Phoenix Grove Systems

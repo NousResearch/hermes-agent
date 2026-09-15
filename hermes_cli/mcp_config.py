@@ -426,14 +426,37 @@ def _probe_single_server(
     from tools.mcp_tool_loop import _ensure_mcp_loop, _run_on_mcp_loop
     from tools.mcp_tool_discovery import _connect_server
     from tools.mcp_tool_lifecycle import _stop_mcp_loop_if_idle
-    from tools.mcp_tool_common import _parse_boolish
+    from tools.mcp_tool_common import _parse_boolish, _safe_numeric
 
     config = _resolve_mcp_server_config(config)
+    default_timeout = 30.0
+    if config.get("auth") == "oauth":
+        # The first probe of an OAuth server IS its first login, and the browser
+        # consent happens inside this connection. The budget must outlast the
+        # callback waiter's own ``oauth.timeout`` or discovery cancels the flow
+        # while the user is still on the provider's approval page. An explicit
+        # budget (config or caller) still wins below.
+        oauth_cfg = config.get("oauth")
+        consent = _safe_numeric(
+            oauth_cfg.get("timeout") if isinstance(oauth_cfg, dict) else None,
+            300.0, coerce=float, minimum=1.0)
+        default_timeout = max(default_timeout, consent + 15.0)
     if connect_timeout is None:
-        try:
-            connect_timeout = max(1.0, float(config.get("connect_timeout", 30)))
-        except (TypeError, ValueError):
-            connect_timeout = 30.0
+        connect_timeout = config.get("connect_timeout")
+    # Normalize whichever source won — per-server config OR a caller override —
+    # through the same path: YAML strings, 0/negative, and non-finite values
+    # (nan/inf) must never reach asyncio.wait_for mid-probe.
+    connect_timeout = _safe_numeric(connect_timeout, default_timeout, coerce=float, minimum=1.0)
+
+    # Propagate the effective connect_timeout into the server config that
+    # _connect_server / MCPServerTask.run sees. Without this, _run_http falls
+    # back to its own 60 s default for the handshake even when the caller
+    # (dashboard OAuth, 'hermes mcp login') explicitly passes a 315 s floor.
+    # The mismatch caused session.initialize() to time out mid-consent and
+    # restart the OAuth flow under the user, silently superseding the state
+    # the browser had already been sent to (#80521).
+    config = dict(config)
+    config["connect_timeout"] = connect_timeout
 
     _ensure_mcp_loop()
     tools_found: List[Tuple[str, str]] = []

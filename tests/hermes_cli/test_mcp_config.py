@@ -344,6 +344,65 @@ class TestMcpTest:
         assert captured["outer_timeout"] == 310.0
         assert captured["shutdown"] is True
 
+    def test_probe_connect_timeout_propagates_to_transport(self, monkeypatch):
+        """The effective connect_timeout must reach the transport layer.
+
+        _probe_single_server is called with an explicit connect_timeout by the
+        dashboard OAuth flow and `hermes mcp login`. The value was used only for
+        the outer asyncio.wait_for; _run_http inside _connect_server fell back
+        to its own 60 s default, so the OAuth handshake could time out mid-
+        consent and restart under the user (#80521).
+        """
+        import hermes_cli.mcp_config as mc
+
+        seen = {}
+
+        class FakeServer:
+            _tools = []
+
+            async def shutdown(self):
+                return None
+
+        async def fake_connect(name, config):
+            seen["config"] = config
+            return FakeServer()
+
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", fake_connect)
+
+        mc._probe_single_server(
+            "reports",
+            {"url": "https://mcp.example/mcp"},
+            connect_timeout=315,
+        )
+
+        assert seen["config"]["connect_timeout"] == 315.0
+
+    def test_probe_default_connect_timeout_propagates_to_transport(self, monkeypatch):
+        """When no connect_timeout is supplied, the transport still receives a
+        clamped float so the probe and the handshake share the same bound."""
+        import hermes_cli.mcp_config as mc
+
+        seen = {}
+
+        class FakeServer:
+            _tools = []
+
+            async def shutdown(self):
+                return None
+
+        async def fake_connect(name, config):
+            seen["config"] = config
+            return FakeServer()
+
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", fake_connect)
+
+        mc._probe_single_server(
+            "reports",
+            {"url": "https://mcp.example/mcp"},
+        )
+
+        assert seen["config"]["connect_timeout"] == 30.0
+
 
 # ---------------------------------------------------------------------------
 # Tests: env var interpolation
@@ -532,6 +591,88 @@ class TestProbeEnvResolution:
 
         assert tools == [("do_thing", "a tool")]
         assert seen["config"]["headers"]["Authorization"] == "Bearer jwt-token-xyz"
+
+
+class TestProbeConnectTimeoutBudget:
+    """The probe budget must cover a human consent window AND reach the transport.
+
+    ``hermes mcp add --auth oauth`` probes the server to list its tools, and that first connection
+    is where the browser authorization happens. Two independent bounds apply: the probe's own
+    ``connect_timeout``, and — deep in ``tools/mcp_tool_transport.py::_negotiate_session`` —
+    ``config["connect_timeout"]`` around ``session.initialize()``, which is the call the consent
+    wait sits inside. A 30s default cancelled the flow while the user was still on the provider's
+    approval page, and callers that already widen the budget (``tui_gateway/mcp_oauth_sessions.py``,
+    ``hermes_cli/web_server_mcp.py``) never reached the transport with it.
+
+    Propagation shares its mechanism with upstream PR #103640 (chelsealong).
+    """
+
+    @pytest.mark.parametrize("config,passed,expected", [
+        # No explicit budget: cover oauth.timeout (the callback waiter's own bound) plus margin.
+        ({"auth": "oauth"}, None, 315.0),
+        ({"auth": "oauth", "oauth": {"timeout": 600}}, None, 615.0),
+        # Unusable consent timeouts must degrade to the default budget, never raise.
+        ({"auth": "oauth", "oauth": {"timeout": "soon"}}, None, 315.0),
+        ({"auth": "oauth", "oauth": {"timeout": float("inf")}}, None, 315.0),
+        ({"auth": "oauth", "connect_timeout": float("nan")}, None, 315.0),
+        # A hand-edited `oauth:` that isn't a mapping at all must not crash the probe.
+        ({"auth": "oauth", "oauth": "yes"}, None, 315.0),
+        ({"auth": "oauth", "oauth": ["timeout"]}, None, 315.0),
+        # An explicitly configured/passed budget is the user's call and wins either way —
+        # after the same normalization (YAML strings, 0/negative, non-finite).
+        ({"auth": "oauth", "connect_timeout": 45}, None, 45.0),
+        ({"auth": "oauth", "connect_timeout": "45"}, None, 45.0),
+        ({"auth": "oauth", "connect_timeout": 0}, None, 1.0),
+        ({"auth": "oauth"}, 315.0, 315.0),
+        ({"auth": "oauth"}, "315", 315.0),
+        ({"auth": "oauth"}, float("nan"), 315.0),
+        ({"auth": "header"}, float("-inf"), 30.0),
+        # Non-OAuth servers keep the historical default.
+        ({"auth": "header"}, None, 30.0),
+    ], ids=[
+        "oauth-default-consent",
+        "oauth-longer-consent",
+        "oauth-consent-nonnumeric",
+        "oauth-consent-infinite",
+        "oauth-config-nan",
+        "oauth-block-string",
+        "oauth-block-list",
+        "oauth-config-45",
+        "oauth-config-string-45",
+        "oauth-config-zero",
+        "caller-315",
+        "caller-string-315",
+        "caller-nan",
+        "caller-neg-inf",
+        "non-oauth-default",
+    ])
+    def test_effective_budget_reaches_the_transport(self, monkeypatch, config, passed, expected):
+        import hermes_cli.mcp_config as mc
+
+        seen = {}
+
+        class _FakeServer:
+            _tools = []
+
+            async def shutdown(self):
+                return None
+
+        async def _fake_connect(name, cfg):
+            seen["config"] = cfg
+            return _FakeServer()
+
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fake_connect)
+
+        caller_config = {"url": "https://mcp.acme.test/mcp", **config}
+        mc._probe_single_server("acme", caller_config, connect_timeout=passed)
+
+        # `connect_timeout` is the key tools/mcp_tool_transport.py::_run_http reads and hands to
+        # _negotiate_session; that it really bounds the handshake is pinned by
+        # tests/tools/test_mcp_stdio_init_timeout.py::test_hanging_initialize_is_bounded_not_leaked.
+        assert seen["config"]["connect_timeout"] == expected
+        # `hermes mcp add` saves the config it passed in — a derived budget must not land in
+        # config.yaml as if the user had chosen it.
+        assert caller_config.get("connect_timeout") is config.get("connect_timeout")
 
 
 class TestProbeCapabilityGating:

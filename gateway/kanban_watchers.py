@@ -37,6 +37,32 @@ _GC_INTERVAL_SECONDS = 3600.0
 _HEALTH_WINDOW = 6
 
 
+def _report_dispatcher_stuck(log, *, bad_ticks: int, results) -> None:
+    """Log the embedded gateway dispatcher's "stuck" warning naming EVERY
+    material suppression source — respawn_guarded reasons (``active_pr``,
+    ``recent_success``, ...) as well as ``rate_limited``, ``skipped_locked``,
+    and ``memory_pressure`` — not just respawn_guarded (#111910 review
+    finding 2). ``results`` is the ``(board_slug, DispatchResult)`` list from
+    one dispatcher tick; ``log`` takes a ``.warning(msg, *args)`` call so the
+    real loop passes the module ``logger`` and tests pass a fake."""
+    from hermes_cli import kanban_db_dispatch as _kbd
+
+    all_res = [res for _slug, res in (results or [])]
+    reasons = _kbd.summarize_dispatch_suppression(all_res)
+    reason_str = (
+        " Suppression reasons: "
+        + ", ".join(f"{k}={v}" for k, v in sorted(reasons.items())) + "."
+        if reasons else ""
+    )
+    log.warning(
+        "kanban dispatcher stuck: ready queue non-empty for "
+        "%d consecutive ticks but 0 workers spawned.%s Check "
+        "profile health (venv, PATH, credentials) and "
+        "`hermes kanban list --status ready`.",
+        bad_ticks, reason_str,
+    )
+
+
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
@@ -304,25 +330,7 @@ class GatewayKanbanWatchersMixin:
                     bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0
                 now = int(time.time())
                 if bad_ticks >= _HEALTH_WINDOW and now - last_warn_at >= 300:
-                    guarded = [
-                        item
-                        for _slug, res in (results or [])
-                        if res is not None
-                        for item in getattr(res, "respawn_guarded", [])
-                    ]
-                    reasons = _kbd.summarize_respawn_guard_reasons(guarded)
-                    reason_str = (
-                        " Respawn guard reasons: "
-                        + ", ".join(f"{k}={v}" for k, v in sorted(reasons.items())) + "."
-                        if reasons else ""
-                    )
-                    logger.warning(
-                        "kanban dispatcher stuck: ready queue non-empty for "
-                        "%d consecutive ticks but 0 workers spawned.%s Check "
-                        "profile health (venv, PATH, credentials) and "
-                        "`hermes kanban list --status ready`.",
-                        bad_ticks, reason_str,
-                    )
+                    _report_dispatcher_stuck(logger, bad_ticks=bad_ticks, results=results)
                     last_warn_at = now
             except asyncio.CancelledError:
                 logger.debug("kanban dispatcher: cancelled")

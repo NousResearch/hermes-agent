@@ -211,9 +211,9 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         if health_state["bad_ticks"] >= HEALTH_WINDOW:
             now = int(time.time())
             if now - health_state["last_warn_at"] >= 300:
-                reasons = kbd.summarize_respawn_guard_reasons(res.respawn_guarded)
+                reasons = kbd.summarize_dispatch_suppression([res])
                 reason_str = (
-                    " Respawn guard reasons: "
+                    " Suppression reasons: "
                     + ", ".join(f"{k}={v}" for k, v in sorted(reasons.items())) + "."
                     if reasons else ""
                 )

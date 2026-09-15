@@ -3231,17 +3231,23 @@ def promote_task(
     conn: sqlite3.Connection, task_id: str, *, actor: str, reason: Optional[str] = None,
     dry_run: bool = False,
 ) -> tuple[bool, Optional[str]]:
-    """Operator promotion ``todo``/``blocked`` -> ``ready`` with an audit event.
-    Refused while a parent is unfinished; ``dry_run`` only validates.
+    """Operator promotion ``todo``/``blocked``/``triage`` -> ``ready`` with an
+    audit event. Refused while a parent is unfinished; ``dry_run`` only
+    validates. ``triage`` is included so a task parked there by
+    ``block_loop_detected`` has a supported, dependency-safe recovery path
+    once the operator has fixed the root cause (#111910) — promoting from
+    triage also resets the loop-breaker counters, since the whole point of
+    the recovery is to give the task a clean retry instead of re-tripping
+    ``BLOCK_RECURRENCE_LIMIT`` on the very next same-kind block.
     Returns ``(ok, reason)``."""
     cur_status = _task_status(conn, task_id)
     if cur_status is None:
         return False, f"task {task_id} not found"
 
-    if cur_status not in ("todo", "blocked"):
+    if cur_status not in ("todo", "blocked", "triage"):
         return False, (
             f"task {task_id} is {cur_status!r}; promote only applies to "
-            f"'todo' or 'blocked'"
+            f"'todo', 'blocked', or 'triage'"
         )
 
     # No override: claim_task demotes ready -> todo on an undone parent whichever
@@ -3265,9 +3271,10 @@ def promote_task(
         return True, None
 
     with write_txn(conn):
+        reset_loop = ", block_kind = NULL, block_recurrences = 0" if cur_status == "triage" else ""
         upd = conn.execute(
-            "UPDATE tasks SET status = 'ready' "
-            "WHERE id = ? AND status IN ('todo', 'blocked')", (task_id,),
+            f"UPDATE tasks SET status = 'ready'{reset_loop} "
+            "WHERE id = ? AND status IN ('todo', 'blocked', 'triage')", (task_id,),
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"

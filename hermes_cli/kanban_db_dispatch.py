@@ -1273,6 +1273,35 @@ def summarize_respawn_guard_reasons(
     return counts
 
 
+def summarize_dispatch_suppression(
+    results: "list[Optional[DispatchResult]]",
+) -> dict[str, int]:
+    """Count every material dispatch-suppression source across one or more
+    :class:`DispatchResult`\\ s: ``respawn_guarded`` reasons (``active_pr``,
+    ``recent_success``, ...), plus ``rate_limited``, ``skipped_locked``, and
+    ``memory_pressure`` (bucketed by level, e.g. ``memory_pressure_critical``).
+
+    The CLI daemon and the embedded gateway dispatcher share this so a stuck
+    warning names EVERY reason the ready queue isn't draining, not only
+    ``respawn_guarded`` (#111910 review finding 2 — the accepted contract
+    requires rate_limited/skipped_locked/memory_pressure to be visible too).
+    """
+    counts: dict[str, int] = {}
+    for res in results or []:
+        if res is None:
+            continue
+        for reason, n in summarize_respawn_guard_reasons(res.respawn_guarded).items():
+            counts[reason] = counts.get(reason, 0) + n
+        if res.rate_limited:
+            counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
+        if res.skipped_locked:
+            counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
+        if res.memory_pressure:
+            key = f"memory_pressure_{res.memory_pressure}"
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
     """``hermes_cli.profiles.profile_exists``, or ``None`` when it cannot be
     imported (local import avoids a cycle; callers fall back to trusting the

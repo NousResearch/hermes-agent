@@ -331,7 +331,7 @@ _SPECS = [
         _bulk_ids("promote"),
         _arg("--dry-run", action="store_true", help="Validate the promotion without mutating state"),
         _arg("--json", dest="json", action="store_true", help="Emit machine-readable JSON result"),
-    ], help="Manually move one or more todo/blocked tasks to ready (recovery path)"),
+    ], help="Manually move one or more todo/blocked/triage tasks to ready (recovery path)"),
     _cmd("archive", [
         _arg("task_ids", nargs="*", help="Task ids to archive (default mode)"),
         _arg("--rm", dest="purge_ids", nargs="+",

@@ -209,3 +209,87 @@ def test_daemon_stuck_warning_includes_guard_reason(kanban_home, monkeypatch, ca
     stderr = capsys.readouterr().err
     assert "dispatcher stuck" in stderr
     assert "active_pr" in stderr
+
+
+def test_daemon_stuck_warning_includes_rate_limited_locked_and_memory_reasons(
+    kanban_home, monkeypatch, capsys,
+):
+    """The stuck warning must name EVERY material suppression source from the
+    accepted contract, not just ``respawn_guarded`` — a ready queue suppressed
+    by ``rate_limited``, ``skipped_locked``, or ``memory_pressure`` must not
+    show up as a bare zero-spawn count with no reason (#111910 review finding
+    2)."""
+    monkeypatch.setattr(kanban_ops.kbd, "has_spawnable_ready", lambda conn: True)
+
+    def _fake_run_daemon(*, interval, max_spawn, failure_limit, on_tick):
+        for _ in range(6):
+            on_tick(kb.DispatchResult(
+                rate_limited=["t_quota"], skipped_locked=True,
+                memory_pressure="critical",
+            ))
+
+    monkeypatch.setattr(kanban_ops.kbd, "run_daemon", _fake_run_daemon)
+
+    args = argparse.Namespace(
+        interval=0.0, max=None, failure_limit=2, force=True,
+        pidfile=None, verbose=False,
+    )
+    assert kanban_ops._cmd_daemon(args) == 0
+
+    stderr = capsys.readouterr().err
+    assert "dispatcher stuck" in stderr
+    assert "rate_limited" in stderr
+    assert "skipped_locked" in stderr
+    assert "memory_pressure" in stderr and "critical" in stderr
+
+
+def test_summarize_dispatch_suppression_covers_every_material_source():
+    """New shared helper: folds respawn_guarded reasons AND rate_limited /
+    skipped_locked / memory_pressure into one reason-count dict, so both the
+    CLI daemon and the embedded gateway watcher can report the full picture
+    instead of only respawn_guarded (#111910 review finding 2)."""
+    res = kb.DispatchResult(
+        respawn_guarded=[("t_a", "active_pr"), ("t_b", "active_pr")],
+        rate_limited=["t_quota1", "t_quota2"],
+        skipped_locked=True,
+        memory_pressure="elevated",
+    )
+    counts = kbd.summarize_dispatch_suppression([res])
+    assert counts["active_pr"] == 2
+    assert counts["rate_limited"] == 2
+    assert counts["skipped_locked"] == 1
+    assert counts["memory_pressure_elevated"] == 1
+    assert kbd.summarize_dispatch_suppression([]) == {}
+    assert kbd.summarize_dispatch_suppression([None]) == {}
+
+
+def test_gateway_stuck_warning_includes_every_suppression_reason():
+    """The embedded gateway dispatcher's stuck-warning log call — the actual
+    production function, not a reimplementation in the test — gets the same
+    full suppression detail as the CLI daemon: not just respawn_guarded, but
+    rate_limited / skipped_locked / memory_pressure too (#111910 review
+    finding 2)."""
+    from gateway import kanban_watchers as gkw
+
+    captured: list[tuple[str, tuple]] = []
+
+    class _FakeLogger:
+        def warning(self, msg, *args):
+            captured.append((msg, args))
+
+    results = [
+        ("board-a", kb.DispatchResult(respawn_guarded=[("t_a", "active_pr")])),
+        ("board-b", kb.DispatchResult(
+            rate_limited=["t_quota"], skipped_locked=True, memory_pressure="critical",
+        )),
+    ]
+    gkw._report_dispatcher_stuck(_FakeLogger(), bad_ticks=6, results=results)
+
+    assert len(captured) == 1
+    msg, args = captured[0]
+    rendered = msg % args
+    assert "dispatcher stuck" in rendered
+    assert "active_pr" in rendered
+    assert "rate_limited" in rendered
+    assert "skipped_locked" in rendered
+    assert "memory_pressure" in rendered and "critical" in rendered

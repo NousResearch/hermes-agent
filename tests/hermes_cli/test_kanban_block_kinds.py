@@ -80,6 +80,55 @@ def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Recovering a triage/block_loop_detected task (#111910 review finding 1:
+# the only supported dependency-safe exit from that state was none at all —
+# reopen-review only accepts 'review' and promote only accepted
+# 'todo'/'blocked').
+# ---------------------------------------------------------------------------
+
+
+def _triage_via_block_loop(conn, title="t"):
+    """Drive a task through the block_loop_detected -> triage transition."""
+    tid = _running_task(conn, title=title)
+    kb.block_task(conn, tid, reason="x", kind="capability")
+    kb.unblock_task(conn, tid)
+    _make_running_again(conn, tid)
+    kb.block_task(conn, tid, reason="x", kind="capability")
+    assert kb.get_task(conn, tid).status == "triage"
+    return tid
+
+
+def test_promote_recovers_block_loop_triage_task(kanban_home: Path) -> None:
+    """An operator who fixed the root cause can promote a
+    block_loop_detected/triage task straight back to 'ready' — the same
+    supported verb already used to recover a stuck 'todo'/'blocked' task
+    (#28822), extended to the one status it didn't cover."""
+    with kbc.connect_closing() as conn:
+        tid = _triage_via_block_loop(conn)
+        ok, err = kb.promote_task(conn, tid, actor="tester", reason="root cause fixed")
+        assert ok and err is None
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        # A deliberate operator recovery resets the loop memory — otherwise
+        # the very next same-kind block would immediately re-trip
+        # BLOCK_RECURRENCE_LIMIT with no chance to actually retry.
+        assert task.block_recurrences == 0
+
+
+def test_promote_triage_task_respects_undone_parents(kanban_home: Path) -> None:
+    """Promoting a triage task is still parent-gated like todo/blocked —
+    recovery from triage must not bypass an unfinished parent dependency."""
+    with kbc.connect_closing() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        tid = _triage_via_block_loop(conn, title="child")
+        kb.link_tasks(conn, parent_id=parent, child_id=tid)
+        ok, err = kb.promote_task(conn, tid, actor="tester")
+        assert not ok
+        assert parent in (err or "")
+        assert kb.get_task(conn, tid).status == "triage"
+
+
+# ---------------------------------------------------------------------------
 # Dependency routing
 # ---------------------------------------------------------------------------
 

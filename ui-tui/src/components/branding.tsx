@@ -80,7 +80,7 @@ const ruleIn = (label: string, w: number) => {
 
 function CompactBanner({ cols, t }: { cols: number; t: Theme }) {
   // -4 keeps a margin so exact-edge rows don't trip terminal pending-wrap.
-  const w = Math.max(28, cols - 4)
+  const w = Math.max(1, cols - 4)
 
   // No `opaque` (see ArtLines): the dashed rules are glyphs and the tagline's
   // centering spaces carry the text's own fg style, so every cell paints with
@@ -100,9 +100,13 @@ function CompactBanner({ cols, t }: { cols: number; t: Theme }) {
   )
 }
 
-export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
+export function Banner({ compact = false, maxWidth, t }: { compact?: boolean; maxWidth?: number; t: Theme }) {
   const term = useStdout().stdout?.columns ?? 80
   const cols = Math.max(1, Math.min(term, maxWidth ?? term))
+
+  if (compact) {
+    return <CompactBanner cols={cols} t={t} />
+  }
 
   if (cols < HIDE_BELOW) {
     return null

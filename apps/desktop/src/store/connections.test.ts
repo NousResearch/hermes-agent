@@ -252,38 +252,87 @@ describe('selectConnection', () => {
     expect(ensureGatewayAgent).toHaveBeenCalledWith('local', 'default', expect.anything())
   })
 
-  it('lets a later source choice win while an earlier dial is still pending', async () => {
-    let releaseDials!: () => void
+  it('cancels a stuck remote switch when the user clicks the active source', async () => {
+    let releaseRemoteDial!: () => void
 
-    const dialGate = new Promise<void>(resolve => {
-      releaseDials = resolve
+    const remoteDial = new Promise<void>(resolve => {
+      releaseRemoteDial = resolve
     })
 
     setConnectionsRegistry(registry)
     $connection.set({ connectionId: 'local', mode: 'local' })
-    openGatewayAgent.mockImplementation(async () => {
-      await dialGate
+    $activeSessionId.set('a93bb39d')
+    openGatewayAgent.mockImplementationOnce(async () => {
+      await remoteDial
     })
 
-    const openHomelab = selectConnection('homelab')
+    const stuckRemote = selectConnection('homelab')
     await Promise.resolve()
-    const stayLocal = selectConnection('local')
 
-    releaseDials()
-    await Promise.all([openHomelab, stayLocal])
+    // The user clicks back to the already-active local source before the
+    // remote dial resolves. That must cancel the pending remote switch —
+    // it must NOT run a full local->local switch that would wipe the live
+    // session list (#104676 symptom).
+    await selectConnection('local')
+
+    expect($pendingConnectionId.get()).toBeNull()
+    expect(beginGatewaySwitch).not.toHaveBeenCalled()
+    expect(wipeSessionListsForGatewaySwitch).not.toHaveBeenCalled()
+    expect($activeSessionId.get()).toBe('a93bb39d')
+    expect($connection.get()?.connectionId).toBe('local')
+
+    // The remote dial eventually resolves. Because we bumped switchRevision,
+    // its result must not commit and clobber the local state we returned to.
+    releaseRemoteDial()
+    await stuckRemote
+
+    expect(ensureGatewayAgent).not.toHaveBeenCalled()
+    expect($connection.get()?.connectionId).toBe('local')
+    expect($activeSessionId.get()).toBe('a93bb39d')
+    expect($gatewaySwitching.get()).toBe(false)
+  })
+
+  it('lets a later source choice between two remotes supersede an earlier pending dial', async () => {
+    let releaseFirstDial!: () => void
+
+    const firstDial = new Promise<void>(resolve => {
+      releaseFirstDial = resolve
+    })
+
+    setConnectionsRegistry({
+      ...registry,
+      connections: [
+        ...registry.connections,
+        { id: 'office', kind: 'remote', label: 'Office', tokenPreview: '...def', tokenSet: true }
+      ]
+    })
+    $connection.set({ connectionId: 'local', mode: 'local' })
+    openGatewayAgent.mockImplementationOnce(async () => {
+      await firstDial
+    })
+    openGatewayAgent.mockImplementationOnce(async () => {
+      // The winning dial succeeds immediately.
+    })
+
+    const stuckFirst = selectConnection('homelab')
+    await Promise.resolve()
+    const winner = selectConnection('office')
+    await Promise.all([winner])
+
+    // The superseded homelab dial still resolves later, but its result
+    // must NOT commit (the bumped revision invalidates it).
+    releaseFirstDial()
+    await stuckFirst
 
     expect(openGatewayAgent.mock.calls).toEqual([
       ['homelab', 'default'],
-      ['local', 'default']
+      ['office', 'default']
     ])
-    // The superseded dial never activates: the user doesn't flip through
-    // homelab on the way back to local, and only the winner commits.
-    expect(ensureGatewayAgent.mock.calls.map(call => [call[0], call[1]])).toEqual([['local', 'default']])
+    expect(ensureGatewayAgent).toHaveBeenCalledTimes(1)
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('office', 'default', expect.anything())
     expect(beginGatewaySwitch).toHaveBeenCalledTimes(1)
     expect(wipeSessionListsForGatewaySwitch).toHaveBeenCalledTimes(1)
-    // Only the latest intent repaints the profile list.
-    expect(refreshActiveProfile).toHaveBeenCalledTimes(1)
-    expect($connection.get()?.connectionId).toBe('local')
+    expect($connection.get()?.connectionId).toBe('office')
     expect($gatewaySwitching.get()).toBe(false)
   })
 

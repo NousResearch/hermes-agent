@@ -306,6 +306,20 @@ export async function selectConnection(connectionId: string, options: SelectConn
     currentConnectionId !== connectionId ||
     currentProfile !== targetProfile
 
+  if (pendingTarget !== null && currentConnectionId === connectionId && currentProfile === targetProfile) {
+    // The user clicked back to the already-active source while a remote switch
+    // is still in flight. Cancel the pending dial rather than starting another
+    // full switch: bumping the revision invalidates the in-flight remote dial's
+    // result so it can't commit a wipe after we've returned.
+    switchRevision += 1
+    pendingTarget = null
+    $pendingConnectionId.set(null)
+    $showAllProfiles.set(false)
+    await rememberConnection(connectionId)
+
+    return
+  }
+
   if (!switching) {
     await rememberConnection(connectionId)
 

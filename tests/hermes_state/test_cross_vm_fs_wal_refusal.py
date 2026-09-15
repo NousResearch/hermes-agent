@@ -97,9 +97,13 @@ class TestWalRefusalOnCrossVmFs:
         assert apply_wal_with_fallback(conn, db_label=str(db)) == "wal"
         conn.close()
 
-    def test_existing_wal_db_on_cross_vm_fs_warns_operator_once(self, tmp_path, monkeypatch, caplog):
+    @pytest.mark.parametrize("wal_reset_vulnerable", [False, True])
+    def test_existing_wal_db_on_cross_vm_fs_warns_operator_once(self, tmp_path, monkeypatch, caplog,
+                                                                wal_reset_vulnerable):
         # #110848: the fresh-DB refusal cannot help a database that is already WAL, and staying silent left the
         # reporter with a corrupting state.db and no signal. Keep WAL (never live-downgrade) but say so, once.
+        # The WAL-reset-vulnerable SQLite path (Debian/Ubuntu system Pythons) returns early too and must not be silent.
+        monkeypatch.setattr(hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda *a, **k: wal_reset_vulnerable)
         db = tmp_path / "already-wal.db"
         seed = sqlite3.connect(str(db))
         if str(seed.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower() != "wal":

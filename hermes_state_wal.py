@@ -285,11 +285,7 @@ def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.
         if configured == "delete":
             # Never-live-downgrade keeps WAL; tell the operator their delete did not apply.
             _log_configured_delete_overridden_once(db_label)
-        # #110848: the fresh-DB refusal below never sees a DB that was already WAL before the cross-VM check
-        # existed (or was created on a native volume and then moved). Keeping WAL is right; staying silent is not.
-        db_file = _connection_db_file(conn)
-        if db_file and _path_on_cross_vm_fs(db_file):
-            _log_once("cross_vm_fs_existing_wal", db_label)
+        _warn_existing_wal_on_cross_vm_fs(conn)
         _apply_wal_companions(conn)
         return "wal"
 
@@ -418,6 +414,16 @@ def _set_journal_mode_no_wait(conn: sqlite3.Connection, mode: str) -> str:
             conn.execute(f"PRAGMA busy_timeout={previous_timeout}")
 
 
+def _warn_existing_wal_on_cross_vm_fs(conn: sqlite3.Connection) -> None:
+    """#110848: the fresh-DB cross-VM refusal never sees a DB that was already WAL before the check existed (or was
+    created on a native volume and then moved). Keeping WAL is right (never live-downgrade); staying silent is not.
+    Both the vulnerable-SQLite and the regular already-WAL paths return early, so both must call this."""
+    db_file = _connection_db_file(conn)
+    if db_file and _path_on_cross_vm_fs(db_file):
+        # Keyed (and labelled) by path, not db_label: a gateway serving several profiles must hear about each one.
+        _log_once("cross_vm_fs_existing_wal", db_file)
+
+
 def _apply_delete_for_wal_reset_bug(conn: sqlite3.Connection, *, db_label: str, require_delete: bool = False) -> str:
     """Avoid enabling WAL when the linked SQLite has the WAL-reset bug.
 
@@ -431,6 +437,7 @@ def _apply_delete_for_wal_reset_bug(conn: sqlite3.Connection, *, db_label: str, 
         if require_delete:
             # Upgrading SQLite doesn't help here; emit the actionable message last.
             _log_configured_delete_overridden_once(db_label)
+        _warn_existing_wal_on_cross_vm_fs(conn)
         _apply_wal_companions(conn)
         return "wal"
     if current is None:

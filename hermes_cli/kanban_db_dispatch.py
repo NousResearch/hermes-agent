@@ -496,7 +496,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         # mismatch) is never signalled: the worker is already gone.
         killed = False
         kill = _kill_fn(signal_fn)
-        if kill is not None and _worker_alive(pid, started_at):
+        if kill is not None and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at)):
             _send_worker_signal(kill, pid, signal.SIGTERM)
             # Short polling wait — no time.sleep on the write txn.
             _poll_worker_exit(pid, started_at)

@@ -147,6 +147,8 @@ def load_gate_config(delegation_cfg: Any) -> Optional[GateConfig]:
     passthrough: tuple[str, ...] = ()
     if isinstance(passthrough_raw, (list, tuple)):
         passthrough = tuple(str(x).strip() for x in passthrough_raw if str(x).strip())
+    elif passthrough_raw is not None:
+        errors.append("delegation.quality_gate.env_passthrough must be a list of variable names")
     config_error = "; ".join(errors) or None
     if config_error:
         logger.warning("delegation.quality_gate is misconfigured; every judged child will be an error: %s", config_error)

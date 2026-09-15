@@ -764,6 +764,11 @@ class TestConfig:
         assert cfg.max_retries == 1
         assert cfg.config_error is None
 
+    def test_env_passthrough_wrong_type_is_config_error(self):
+        cfg = load_gate_config({"quality_gate": {"command": [sys.executable], "env_passthrough": "A_KEY"}})
+        assert cfg.env_passthrough == ()
+        assert "env_passthrough" in cfg.config_error
+
     def test_request_is_json_serializable(self):
         from tools.delegation_quality_gate import build_request
         req = build_request(GOAL, {"final_response": "x", "api_calls": 1}, 0, _StubChild([]), attempt=1,

@@ -265,7 +265,14 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             logger.info("Preserving session %s during %s: another backend owns an active lease", session_id, end_reason)
         if session_id:
             # The *session's* profile state.db (app-global remote mode), not the launch profile's.
+            # Fail closed for profile-owned sessions: a None db means the session's own state.db
+            # could not be opened, so gateway-ownership (row only in that db) cannot be proven
+            # either way. Assuming ownership would end a gateway-owned row (#60609 Groundhog Day
+            # loop) and interrupt its live delegations. Scoped to profile sessions: the launch
+            # profile keeps the "assume ownership" contract (see _session_has_active_delegations).
+            _profile_db_provably_open = False
             with contextlib.suppress(Exception), _session_db(session) as db:
+                _profile_db_provably_open = db is not None or not session.get("profile_home")
                 if db is not None:
                     # Never end gateway-originated sessions: Groundhog Day loop (gateway self-heals to the parent,
                     # compression splits back to the reaped child, forever).
@@ -273,6 +280,8 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
                         _tui_owns_lifecycle = False
                     elif _tui_owns_lifecycle:
                         db.end_session(session_id, end_reason)
+            if session.get("profile_home") and not _profile_db_provably_open:
+                _tui_owns_lifecycle = False
     # In-flight async delegations end WITH the session (no return address left). Always interrupt by THIS live UI
     # sid; by durable session_key only when the TUI owns the lifecycle — a viewer tab must not kill gateway work.
     with contextlib.suppress(Exception):

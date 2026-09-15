@@ -354,6 +354,62 @@ def test_truncation_without_a_profile_uses_the_shared_handle(server, launch_db, 
     ]
 
 
+def test_truncation_fails_closed_when_the_profile_db_cannot_be_opened(
+    server, launch_db, profile_db, monkeypatch
+):
+    """Unopenable profile state.db must refuse the turn, not skip the durable write.
+
+    ``_session_db`` yields None when the profile's state.db cannot be opened;
+    the legacy ``if db is not None`` skip would then truncate memory while the
+    profile DB keeps the old tail — the resume shows turns the user just edited
+    away (durable zombie history). Fail closed like session.branch (5008).
+    """
+    profile_home, pdb = profile_db
+    user_row_ids: list = []
+    history = _seed(pdb, _capture_user_row_ids=user_row_ids)
+    # Stamp the live rows with their durable ids: target resolution must not
+    # need the durable transcript, which is about to become unopenable.
+    user_turn = 0
+    for msg in history:
+        if msg["role"] == "user":
+            msg["_row_id"] = user_row_ids[user_turn]
+            user_turn += 1
+    _register(server, history, profile_home=profile_home)
+    _stop_after_truncate(server, monkeypatch)
+    # Make the profile db unopenable: drop the fixture's handle, then remove
+    # all permission bits (new sqlite opens fail; we run as non-root).
+    pdb.close()
+    (profile_home / "state.db").chmod(0)
+
+    resp = _rpc(
+        server,
+        "prompt.submit",
+        {
+            "session_id": SESSION_ID,
+            "text": "edited question 2",
+            "truncate_before_row_id": user_row_ids[1],
+            "truncate_before_user_ordinal": 1,
+            "confirm_truncate": True,
+        },
+    )
+
+    assert resp.get("error"), "expected fail-closed refusal"
+    assert resp["error"]["code"] == 5008
+    # Fail closed = memory untouched, nothing truncated, no turn started.
+    # (The durable tail is unopenable by construction; the refusal IS the
+    # guarantee that it was never rewritten.)
+    assert _texts(server._sessions[SESSION_ID]["history"]) == [
+        "question 1",
+        "answer 1",
+        "question 2",
+        "answer 2",
+        "question 3",
+        "answer 3",
+    ]
+    assert not server._sessions[SESSION_ID].get("running")
+
+
+
 # ---------------------------------------------------------------------------
 # /history and /context — slash.exec
 # ---------------------------------------------------------------------------

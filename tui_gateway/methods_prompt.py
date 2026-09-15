@@ -381,6 +381,20 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
     # Writes through _session_db (profile sessions own their state.db).
     fields = {}
     with _session_db(session) as db:
+        if db is None and session.get("profile_home"):
+            # Profile-owned session whose own state.db cannot be opened. Skipping the
+            # write here would truncate memory while the profile DB keeps the old tail —
+            # durable zombie history on resume, the exact class this write prevents.
+            # Memory-only sessions (no profile_home, launch db unavailable) keep the
+            # legacy skip: with nothing durable to diverge from, refusing would break
+            # stateless runs outright.
+            logger.error(
+                "prompt.submit: profile state.db unavailable for session %s (ordinal=%s); refusing truncation",
+                sid, ordinal)
+            return _err(
+                rid, 5008,
+                "state.db unavailable: refusing to truncate a profile-owned session "
+                "that cannot be persisted"), {}
         if db is not None:
             try:
                 # NULL session_key (old CLI-origin sessions) would trip an FK violation.

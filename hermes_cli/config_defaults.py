@@ -1648,6 +1648,11 @@ DEFAULT_CONFIG = {
         # enabled (e.g. `elevenlabs`). False = require explicit pip install for everything beyond
         # the base set (restricted/audited/air-gapped environments).
         "allow_lazy_installs": True,
+        # Operator opt-in: let delegate_task child contexts mutate Kanban boards through the
+        # CLI/DB layer. The fence exists because children lack a human in their loop; set this
+        # true only when delegated sessions are supervised and may file cards on boards they
+        # legitimately own.
+        "kanban_allow_delegated_writes": False,
     },
 
     "cron": {

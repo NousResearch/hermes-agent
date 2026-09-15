@@ -149,7 +149,7 @@ def kanban_command(args: argparse.Namespace) -> int:
 
     # Fast-fail for UX only; the durable trust boundary is in kanban_db, since children can
     # import DB mutators directly.
-    if _is_delegated_child_cli_mutation(args):
+    if _is_delegated_child_cli_mutation(args) and not kb._delegated_kanban_writes_allowed():
         return _err("kanban: delegate_task child contexts cannot mutate Kanban tasks via the CLI")
 
     # `boards …` manages board metadata and the current-board pointer itself, so it must ignore

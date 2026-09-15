@@ -129,8 +129,27 @@ def _assert_not_delegated_child_mutation(path: "str | Path | None" = None) -> No
     """
     from agent.delegation_context import kanban_path_is_fenced
 
+    if _delegated_kanban_writes_allowed():
+        return
     if kanban_path_is_fenced(kanban_home() if path is None else path):
         raise PermissionError("delegate_task child contexts cannot mutate Kanban tasks or boards")
+
+
+def _delegated_kanban_writes_allowed() -> bool:
+    """``security.kanban_allow_delegated_writes`` config knob — a documented operator opt-in.
+
+    The delegated-child Kanban fence is fail-closed by default because a child has
+    no human in its loop; an operator who *wants* supervised delegated contexts to
+    file cards (e.g. a personal assistant session that owns its board) can lift the
+    fence explicitly in ``config.yaml``. Read on every check so the knob takes
+    effect without restarting the CLI.
+    """
+    try:
+        from hermes_cli.config import read_user_config_raw
+
+        return bool((read_user_config_raw().get("security") or {}).get("kanban_allow_delegated_writes"))
+    except Exception:
+        return False
 
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:

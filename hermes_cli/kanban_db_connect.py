@@ -673,7 +673,9 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     ``<root>/kanban/current`` -> ``default``)."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
     from agent.delegation_context import kanban_path_is_fenced
-    if kanban_path_is_fenced(path):
+    from hermes_cli.kanban_db import _delegated_kanban_writes_allowed
+
+    if kanban_path_is_fenced(path) and not _delegated_kanban_writes_allowed():
         # Reads must not enter schema/backfill write transactions. Never create a
         # missing board or migrate on a descendant's behalf; the owner initializes it.
         conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)

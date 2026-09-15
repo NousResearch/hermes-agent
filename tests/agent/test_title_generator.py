@@ -356,30 +356,33 @@ class TestMaybeAutoTitle:
                 runtime_validator=None,
             )
 
-    def test_kanban_worker_uses_task_title_without_background_llm(self, tmp_path, monkeypatch):
-        """A dispatcher-provided task title is the worker session title, not an LLM prompt."""
+    def test_kanban_worker_is_named_after_its_card_without_the_llm_thread(self, tmp_path, monkeypatch):
+        """A worker's session takes the board card's title synchronously; no auxiliary model call (#111166)."""
+        from hermes_cli import kanban_db, kanban_db_connect
+
+        with kanban_db_connect.connect_closing(board="default") as conn:
+            task_id = kanban_db.create_task(conn, title="Fix flaky worker startup", board="default")
+            conn.commit()
+        monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
         db = SessionDB(tmp_path / "state.db")
         db.create_session(session_id="sess-1", source="kanban")
-        monkeypatch.setenv("HERMES_KANBAN_TASK_TITLE", "Fix flaky worker startup")
 
         with patch("agent.title_generator.auto_title_session") as mock_auto:
-            maybe_auto_title(db, "sess-1", "work kanban task t_b21733fb", [])
+            maybe_auto_title(db, "sess-1", f"work kanban task {task_id}", [])
 
         assert db.get_session_title("sess-1") == "Fix flaky worker startup"
         assert db.get_session_title_source("sess-1") == "llm"
         mock_auto.assert_not_called()
 
-    def test_kanban_task_title_keeps_manual_title_precedence(self, tmp_path, monkeypatch):
+    def test_kanban_worker_with_unreadable_card_falls_back_to_the_task_id(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_missing")
         db = SessionDB(tmp_path / "state.db")
         db.create_session(session_id="sess-1", source="kanban")
-        db.set_session_title("sess-1", "Operator-selected title")
-        monkeypatch.setenv("HERMES_KANBAN_TASK_TITLE", "Fix flaky worker startup")
 
         with patch("agent.title_generator.auto_title_session") as mock_auto:
-            maybe_auto_title(db, "sess-1", "work kanban task t_b21733fb", [])
+            maybe_auto_title(db, "sess-1", "work kanban task t_missing", [])
 
-        assert db.get_session_title("sess-1") == "Operator-selected title"
-        assert db.get_session_title_source("sess-1") == "user"
+        assert db.get_session_title("sess-1") == "Kanban task t_missing"
         mock_auto.assert_not_called()
 
     def test_writes_instant_title_before_the_model_runs(self, tmp_path):

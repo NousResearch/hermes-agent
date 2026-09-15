@@ -2327,7 +2327,6 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
-    env["HERMES_KANBAN_TASK_TITLE"] = task.title
     env["HERMES_KANBAN_WORKSPACE"] = workspace
     # Tag the session `kanban` so session-browsing surfaces filter it out by
     # source instead of rendering one sidebar row per attempt.

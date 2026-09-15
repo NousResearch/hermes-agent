@@ -466,6 +466,22 @@ def _session_is_untitled(session_db, session_id: str) -> bool:
         return False
 
 
+def _kanban_task_title() -> Optional[str]:
+    """Kanban worker: the card's title, or ``Kanban task <id>`` when the board can't be read; None elsewhere."""
+    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    if not task_id:
+        return None
+    try:
+        from hermes_cli import kanban_db, kanban_db_connect
+        with kanban_db_connect.connect_closing() as conn:
+            task = kanban_db.get_task(conn, task_id)
+        title = (task.title or "").strip() if task is not None else ""
+    except Exception:
+        logger.debug("Kanban task %s unreadable; naming the session after its id", task_id, exc_info=True)
+        title = ""
+    return title or f"Kanban task {task_id}"
+
+
 def maybe_auto_title(
     session_db,
     session_id: str,
@@ -479,25 +495,22 @@ def maybe_auto_title(
     """Instant inline title, then a daemon-thread upgrade. Call at the START of a turn, before the model."""
     if not session_db or not session_id or not user_message:
         return
-    # The dispatcher gives workers the task's human-written title. It is both
-    # more useful than the synthetic worker opener and available without
-    # competing with the worker for an auxiliary model request. Keep the
-    # existing derived < llm < user precedence: a manual title still wins.
-    kanban_task_title = os.environ.get("HERMES_KANBAN_TASK_TITLE", "").strip()
-    if kanban_task_title:
-        try:
-            persisted = _persist_session_title(
-                session_db, session_id, kanban_task_title, source="llm"
-            )
-            if persisted:
-                _notify_title(title_callback, persisted, "llm", "Kanban task title")
-        except Exception:
-            logger.debug("Kanban task title failed", exc_info=True)
-        return
     # History may be pre- or post-message. Skip only when BOTH past the opening turn AND named: count alone
     # left a machinery-opened session nameless; title alone never titles on an old store.
     user_msg_count = sum(1 for m in (conversation_history or []) if _is_real_user_turn(m))
-    if (user_msg_count > 1 and not _session_is_untitled(session_db, session_id)) or not is_titleable_user_message(user_message):
+    if user_msg_count > 1 and not _session_is_untitled(session_db, session_id):
+        return
+    kanban_title = _kanban_task_title()
+    if kanban_title:
+        # The card already carries a human-written name; an auxiliary model call per spawned worker
+        # only competes with the worker for capacity (#111166). Final (``llm``) authority: nothing
+        # upgrades it later, and a manual ``/title`` still wins inside ``set_auto_title``.
+        with suppress(Exception):
+            persisted = _persist_session_title(session_db, session_id, kanban_title, source="llm")
+            if persisted:
+                _notify_title(title_callback, persisted, "llm", "Kanban task title")
+        return
+    if not is_titleable_user_message(user_message):
         return
     if not _auto_title_enabled():  # config read after the cheap guards so the file isn't touched every turn
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")

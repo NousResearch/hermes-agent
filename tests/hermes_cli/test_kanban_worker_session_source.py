@@ -61,7 +61,6 @@ def test_worker_spawn_tags_session_source_kanban(monkeypatch, tmp_path):
     kbd._default_spawn(task, workspace)
 
     assert captured["env"]["HERMES_SESSION_SOURCE"] == "kanban"
-    assert captured["env"]["HERMES_KANBAN_TASK_TITLE"] == "ship it"
 
 
 def test_kanban_rows_stay_out_of_the_session_list(db):

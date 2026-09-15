@@ -6,9 +6,13 @@ import {
   filterModelHopRows,
   hopCurrentIndex,
   hopIsCurrent,
+  hopDetail,
+  hopLocked,
   hopPaintQuery,
+  hopPrice,
   keepReasoningLabel,
   listStep,
+  orderHopRows,
   paintHits,
   providerIndexAfterClearingFilter,
   searchAppend
@@ -184,5 +188,37 @@ describe('hop current edges', () => {
     expect(rows.filter(r => hopIsCurrent(r, ''))).toEqual([])
     expect(hopCurrentIndex(rows, '')).toBe(0)
     expect(hopCurrentIndex([], 'nous/hermes-4')).toBe(0)
+  })
+})
+
+describe('hop catalog extras', () => {
+  it('pins current then featured, then the rest', () => {
+    const nous = provider('nous')
+    nous.models = ['alpha', 'hermes-4', 'beta']
+    nous.featured_models = ['beta']
+    nous.is_current = true
+    const rows = buildModelHopRows([nous], ['n'])
+    expect(orderHopRows(rows, 'nous/hermes-4').map(r => r.model)).toEqual(['hermes-4', 'beta', 'alpha'])
+  })
+
+  it('formats price, free, sale, and locked', () => {
+    const nous = provider('nous')
+    nous.models = ['paid', 'free', 'sale', 'pro']
+    nous.unavailable_models = ['pro']
+    nous.pricing = {
+      paid: { input: '$1', output: '$2', free: false },
+      free: { input: '', output: '', free: true },
+      sale: { input: '$1', output: '$2', free: false, discount_percent: 50 }
+    }
+    nous.capabilities = { paid: { fast: true, reasoning: true } }
+    const rows = buildModelHopRows([nous], ['n'])
+    const by = Object.fromEntries(rows.map(r => [r.model, r]))
+    expect(hopPrice(by.paid!)).toBe('$1/$2')
+    expect(hopPrice(by.free!)).toBe('free')
+    expect(hopPrice(by.sale!)).toBe('$1/$2 -50%')
+    expect(hopLocked(by.pro!)).toBe(true)
+    expect(hopDetail(by.paid!)).toBe('$1/$2 · fast')
+    expect(hopDetail(by.pro!)).toBe('locked')
+    expect(hopDetail()).toBe('')
   })
 })

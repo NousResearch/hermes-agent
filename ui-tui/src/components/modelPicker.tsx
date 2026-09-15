@@ -91,6 +91,40 @@ export function listStep(sel: number, n: number, delta: number) {
   return Math.max(0, Math.min(n - 1, sel + delta))
 }
 
+export function hopLocked(h: ModelHopRow) {
+  return (h.provider.unavailable_models ?? []).includes(h.model)
+}
+
+/** Compact in/out $/M from inventory pricing. Empty when unknown. */
+export function hopPrice(h: ModelHopRow) {
+  const p = h.provider.pricing?.[h.model]
+  if (!p) return ''
+  if (p.free) return 'free'
+  const sale = typeof p.discount_percent === 'number' ? ` -${p.discount_percent}%` : ''
+  return `${p.input || '?'}/${p.output || '?'}${sale}`
+}
+
+export function hopDetail(h?: ModelHopRow) {
+  if (!h) return ''
+  const bits: string[] = []
+  const price = hopPrice(h)
+  if (price) bits.push(price)
+  if (h.provider.capabilities?.[h.model]?.fast) bits.push('fast')
+  if (hopLocked(h)) bits.push('locked')
+  return bits.join(' · ')
+}
+
+/** Current, then per-provider featured, then catalog order (OMP recents analogue). */
+export function orderHopRows(rows: ModelHopRow[], current: string) {
+  const at = new Map(rows.map((h, i) => [h.selector, i]))
+  const feat = (h: ModelHopRow) => (h.provider.featured_models ?? []).includes(h.model)
+  return [...rows].sort((a, b) => {
+    const ra = hopIsCurrent(a, current) ? 0 : feat(a) ? 1 : 2
+    const rb = hopIsCurrent(b, current) ? 0 : feat(b) ? 1 : 2
+    return ra - rb || (at.get(a.selector) ?? 0) - (at.get(b.selector) ?? 0)
+  })
+}
+
 /** Consecutive runs of `text` whose indices fuzzy-matched `q` (OMP /switch). */
 export function paintHits(text: string, q: string): { t: string; hit: boolean }[] {
   const hits = new Set(fuzzyScoreMulti(text, q.trim())?.positions ?? [])
@@ -180,18 +214,22 @@ export function providerIndexAfterClearingFilter(
   return providerRows.findIndex(row => row.provider.slug === provider.slug)
 }
 
-function HitLabel({ q, t, text }: { q: string; t: Theme; text: string }) {
+function HitLabel({ dim = 0, q, t, text }: { dim?: number; q: string; t: Theme; text: string }) {
+  let n = 0
   return (
     <>
-      {paintHits(text, q).map((p, i) =>
-        p.hit ? (
-          <Text key={i} color={t.color.accent}>
+      {paintHits(text, q).map((p, i) => {
+        const start = n
+        n += p.t.length
+        const color = p.hit ? t.color.accent : start < dim ? t.color.label : undefined
+        return color ? (
+          <Text key={i} color={color}>
             {p.t}
           </Text>
         ) : (
           p.t
         )
-      )}
+      })}
     </>
   )
 }
@@ -316,9 +354,12 @@ export function ModelPicker({
     if (stage !== 'hop') {
       return hopRows
     }
+    if (!filter.trim()) {
+      return orderHopRows(hopRows, currentModel)
+    }
 
     return filterModelHopRows(hopRows, filter)
-  }, [hopRows, filter, stage])
+  }, [hopRows, filter, stage, currentModel])
 
   const provider = filteredProviderRows[providerIdx]?.provider
   const allModels = useMemo(() => provider?.models ?? [], [provider])
@@ -648,7 +689,7 @@ export function ModelPicker({
       if (stage === 'hop') {
         const hop = filteredHopRows[modelIdx]
 
-        if (!hop) {
+        if (!hop || hopLocked(hop)) {
           return
         }
 
@@ -710,6 +751,9 @@ export function ModelPicker({
       const model = models[modelIdx]
 
       if (provider && model) {
+        if ((provider.unavailable_models ?? []).includes(model)) {
+          return
+        }
         if (pickerOffersReasoning(provider, model)) {
           // Step 3/3: effort for the picked model (skipped on reasoning-free routes).
           setPendingModel(model)
@@ -926,16 +970,18 @@ export function ModelPicker({
             const idx = offset + i
             const hop = filteredHopRows[idx]
             const current = hop ? hopIsCurrent(hop, currentModel) : false
+            const locked = hop ? hopLocked(hop) : false
+            const dim = hop ? hop.provider.slug.length + 1 : 0
 
             return row ? (
               <Text
-                color={t.color.muted}
+                color={locked ? t.color.label : t.color.muted}
                 {...chipRowProps(t, modelIdx === idx)}
                 key={hop?.selector ?? `hop-${idx}`}
                 wrap="truncate-end"
               >
                 {modelIdx === idx ? '▸ ' : current ? '* ' : '  '}
-                {idx + 1}. <HitLabel q={hopPaintQuery(filter)} t={t} text={row} />
+                {idx + 1}. <HitLabel dim={dim} q={hopPaintQuery(filter)} t={t} text={row} />
               </Text>
             ) : (
               <Text color={t.color.muted} key={`pad-${i}`} wrap="truncate-end">
@@ -947,6 +993,10 @@ export function ModelPicker({
 
         <Text color={t.color.muted} wrap="truncate-end">
           {offset + VISIBLE < labels.length ? ` ↓ ${labels.length - offset - VISIBLE} more` : ' '}
+        </Text>
+
+        <Text color={t.color.muted} wrap="truncate-end">
+          {hopDetail(filteredHopRows[modelIdx]) || ' '}
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">

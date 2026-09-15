@@ -767,14 +767,37 @@ def _iter_shell_command_payloads(command: str) -> Iterator[str]:
 
 # --- referenced-script reading ----------------------------------------------------------------
 
-def _has_binary_magic(data: bytes) -> bool:
+def _has_binary_magic(data: bytes, path: Optional[Path] = None) -> bool:
     """True when *data* starts with a known compiled-binary signature. Deliberately narrower than
     "contains a NUL": ``bash`` still executes a NUL-bearing script, so a padded script must not
-    bypass the scan. A shebang always wins (interpreted, never binary). Extensions are not
-    consulted: a suffixless script must still be scanned and fail closed if oversized."""
+    bypass the scan. A shebang always wins (interpreted, never binary) -- except a Python zipapp,
+    which is a shebang line glued to a real zip archive (a pip-installed ``yt-dlp`` ships as a
+    ~3 MB one). Its payload is compressed member data, not shell text, so scanning it is
+    meaningless, while its size tripped the oversized fail-closed branch below and turned
+    ``yt-dlp --version`` into a gateway-lifecycle refusal. Extensions are not consulted: a
+    suffixless script must still be scanned and fail closed if oversized."""
     if data.startswith(b"#!"):
-        return False
+        return _is_zipapp(data, path)
     return data.startswith(_BINARY_MAGICS)
+
+
+def _is_zipapp(data: bytes, path: Optional[Path]) -> bool:
+    """True when *data* is a shebang line immediately followed by zip local-file-header magic AND
+    *path* holds a readable central directory.
+
+    Both halves are required. The central directory is what makes this safe to trust: a shell
+    script whose second line merely begins with the bytes ``PK\x03\x04`` is not an archive, so
+    ``zipfile.is_zipfile`` rejects it and the file stays scannable (and, if oversized, still fails
+    closed). ``zipfile`` reads that directory from the end of the file, which is why a zipapp's
+    shebang prefix does not disturb it. Imported lazily: only a real zipapp reaches the import."""
+    if path is None:
+        return False
+    shebang_end = data.find(b"\n")
+    if shebang_end == -1 or not data[shebang_end + 1:].startswith(b"PK\x03\x04"):
+        return False
+    import zipfile
+
+    return zipfile.is_zipfile(path)
 
 
 def _read_referenced_script(
@@ -838,7 +861,7 @@ def _read_referenced_script_unlocked(
         # straight past an embedded NUL, so NUL-bearing text must fall through to the magic-number check +
         # NUL-strip below.
         data = os.read(descriptor, _BINARY_SNIFF_BYTES)
-        if _has_binary_magic(data):
+        if _has_binary_magic(data, path):
             return None, False
         # A regular file whose size already exceeds the cap fails closed without reading it (the
         # walk budget can be far below 1 MiB).
@@ -854,7 +877,7 @@ def _read_referenced_script_unlocked(
         return None, False
     finally:
         os.close(descriptor)
-    if _has_binary_magic(data):
+    if _has_binary_magic(data, path):
         return None, False
     # Size check BEFORE NUL stripping: stripping shrinks the buffer and would let an oversized file
     # slip under the threshold past this fail-closed branch.

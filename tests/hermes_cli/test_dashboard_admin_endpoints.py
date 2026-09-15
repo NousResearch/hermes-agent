@@ -849,6 +849,7 @@ class TestUpdateCheckEndpoint:
         import hermes_cli.banner as banner
 
         monkeypatch.setattr(banner, "check_for_updates", lambda: 5)
+        monkeypatch.setattr(banner, "upstream_commits_behind", lambda: [])
 
         r = self.client.get("/api/hermes/update/check")
         assert r.status_code == 200
@@ -868,7 +869,29 @@ class TestUpdateCheckEndpoint:
         # git/pip installs can apply the update in place from the dashboard.
         assert body["can_apply"] is True
 
+    def test_git_install_current_reports_no_update(self, monkeypatch):
+        monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda *a, **k: "git")
+        import hermes_cli.banner as banner
 
+        monkeypatch.setattr(banner, "check_for_updates", lambda: 0)
+
+        body = self.client.get("/api/hermes/update/check").json()
+        assert body["behind"] == 0
+        assert body["update_available"] is False
+        assert "latest version" in body["message"]
+
+    def test_unknown_git_distance_is_not_update_available(self, monkeypatch):
+        """Negative behind is uncomputable distance, never a false update badge."""
+        monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda *a, **k: "git")
+        import hermes_cli.banner as banner
+
+        monkeypatch.setattr(banner, "check_for_updates", lambda: -1)
+
+        body = self.client.get("/api/hermes/update/check").json()
+        assert body["behind"] == -1
+        assert body["update_available"] is False
+        assert "commits" not in body or body.get("commits") in (None, [])
+        assert "could not be determined" in body["message"]
 
     def test_managed_runtime_dashboard_is_not_applyable(self, monkeypatch):
         import hermes_cli.web_server as ws

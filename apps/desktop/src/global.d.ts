@@ -704,9 +704,11 @@ export interface DesktopUpdateStatus {
   reason?: string
   message?: string
   error?: string
-  /** Exact commits behind. null = update available, but the count is
-   *  unknowable (shallow clone without a merge-base) — never render it as a
-   *  literal number. */
+  /** Exact commits behind. null = the distance is unknowable (shallow
+   *  clone without a merge-base, local-only deployment branch) — never
+   *  render it as a literal number, and never treat it as proof that an
+   *  update is waiting: availability is carried solely by
+   *  `updateAvailable`. */
   behind?: number | null
   currentSha?: string
   /** Backend only: the version string the backend reports for itself. */

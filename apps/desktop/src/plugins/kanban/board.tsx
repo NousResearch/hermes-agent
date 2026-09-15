@@ -864,6 +864,7 @@ function Intro() {
 }
 
 const UNASSIGNED_LANE = 'unassigned'
+const UNASSIGNED_ASSIGNEE_FILTER = '__unassigned__'
 
 // ── filter kebab ─────────────────────────────────────────────────────────────
 
@@ -906,6 +907,10 @@ function FilterMenu({
         <DropdownMenuItem onSelect={() => onAssignee('')}>
           {k.allProfiles}
           {check(!assignee)}
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => onAssignee(UNASSIGNED_ASSIGNEE_FILTER)}>
+          {k.unassigned}
+          {check(assignee === UNASSIGNED_ASSIGNEE_FILTER)}
         </DropdownMenuItem>
         {board.assignees.map(name => (
           <DropdownMenuItem key={name} onSelect={() => onAssignee(name)}>
@@ -1179,7 +1184,8 @@ export function KanbanBoardPage() {
     const keep = (task: KanbanTask) =>
       (!q || `${task.title} ${task.body ?? ''} ${task.id}`.toLowerCase().includes(q)) &&
       (!tenant || task.tenant === tenant) &&
-      (!assignee || task.assignee === assignee)
+      (!assignee ||
+        (assignee === UNASSIGNED_ASSIGNEE_FILTER ? !task.assignee : task.assignee === assignee))
 
     return { ...board, columns: board.columns.map(col => ({ ...col, tasks: col.tasks.filter(keep) })) }
   }, [board, search, tenant, assignee])

@@ -29,8 +29,9 @@ from agent.skill_utils import (
     SKILL_PROMPT_DESC_LIMIT)
 from tools.skill_manager_guards import (
     _background_review_preflight, _background_review_read_before_write_guard, _background_review_write_guard,
-    _containing_skills_root, _curator_consolidation_delete_guard, _maybe_auto_propose_org_edit,
-    _org_mirror_write_guard, _pinned_guard, _validate_delete_target, _is_background_review, _refusal as _err)
+    _containing_skills_root, _curator_consolidation_delete_guard, _external_dirs_write_guard,
+    _maybe_auto_propose_org_edit, _org_mirror_write_guard, _pinned_guard, _validate_delete_target,
+    _is_background_review, _refusal as _err)
 from tools.skill_manager_batch import _skill_manage_batch
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
 
@@ -319,14 +320,15 @@ def _resolve_supporting_file(skill_dir: Path, file_path: str):
 
 def _locate_for_write(name: str, action: str, not_found_suffix: str = "", *,
                       org_guard: bool = True):
-    """Find the skill; run the org-mirror (unless ``org_guard=False``) and background-review
-    write guards -> ``(skill_dir, None)`` | ``(None, error_dict)``."""
+    """Find the skill; run the org-mirror (unless ``org_guard=False``), background-review,
+    and external_dirs write guards -> ``(skill_dir, None)`` | ``(None, error_dict)``."""
     existing = _find_skill(name)
     if not existing:
         return None, _err(_skill_not_found_error(name, not_found_suffix))
     skill_dir = existing["path"]
     guard = ((org_guard and _org_mirror_write_guard(name, skill_dir, action))
-             or _background_review_write_guard(name, skill_dir, action))
+             or _background_review_write_guard(name, skill_dir, action)
+             or _external_dirs_write_guard(name, skill_dir, action))
     return (None, guard) if guard else (skill_dir, None)
 
 

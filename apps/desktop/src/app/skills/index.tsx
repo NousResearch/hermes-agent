@@ -137,6 +137,11 @@ function skillSubtitle(skill: SkillInfo): React.ReactNode {
           hub
         </Badge>
       )}
+      {provenance === 'external' && (
+        <Badge className="shrink-0 normal-case" variant="muted">
+          external
+        </Badge>
+      )}
     </>
   )
 }

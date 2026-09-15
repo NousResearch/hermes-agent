@@ -2731,7 +2731,10 @@ def _persistent_repair_attempts_exhausted(db_path: Path) -> bool:
             return False
     elif recorded != fp:
         return False
-    return int(ledger.get("failed_attempts", 0)) >= _MAX_PERSISTENT_REPAIR_ATTEMPTS
+    try:
+        return int(ledger.get("failed_attempts", 0)) >= _MAX_PERSISTENT_REPAIR_ATTEMPTS
+    except (TypeError, ValueError):
+        return False
 
 
 def _persistent_repair_exhausted_error(db_path: Path) -> str:
@@ -5996,7 +5999,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     # surfaced error doesn't read as disk/permission damage.
                     raise sqlite3.OperationalError(
                         f"database is locked (another Hermes process held the "
-                        f"state.db write lock for over {patience_s:.0f}s — "
+                        f"state.db write lock for over {patience_s:g}s — "
                         "likely a long maintenance operation such as VACUUM, "
                         "a large WAL checkpoint, or an older pre-update "
                         "process; the database itself is healthy)"

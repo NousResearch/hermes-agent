@@ -30,6 +30,7 @@ from hermes_state import (
     _MAX_PERSISTENT_REPAIR_ATTEMPTS,
     _backup_db_file,
     _existing_malformed_backups,
+    _db_fingerprint,
     _persistent_repair_attempts_exhausted,
     _prune_malformed_backups,
     _record_repair_outcome,
@@ -161,3 +162,13 @@ class TestBackupDedupeAndCap:
         for _ in range(_MAX_PERSISTENT_REPAIR_ATTEMPTS):
             repair_state_db_schema(db)
         assert len(_existing_malformed_backups(db)) == 1
+
+
+def test_non_int_failed_attempts_reads_as_not_exhausted(tmp_path):
+    db = _make_unrepairable_db(tmp_path)
+    for bad in ("three", [], None, {}, 1.5):
+        _repair_ledger_path(db).write_text(json.dumps({
+            "fingerprint": _db_fingerprint(db),
+            "failed_attempts": bad,
+        }))
+        assert not _persistent_repair_attempts_exhausted(db)

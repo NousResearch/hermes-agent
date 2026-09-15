@@ -257,3 +257,21 @@ def test_render_handles_all_none_stats():
     empty["fts_tables"] = None
     lines = _render_state_db_stats(empty, holders=None)
     assert isinstance(lines, list)  # must not raise
+
+
+def test_holders_gt1_wal_emits_warn():
+    from hermes_cli.doctor import _render_state_db_stats
+
+    lines = _render_state_db_stats(
+        {"journal_mode": "wal", "messages": 1, "sessions": 1}, holders=3
+    )
+    kinds = [k for k, _, _ in lines]
+    assert "warn" in kinds
+    assert any("multiple processes hold this WAL" in t for _, t, _ in lines)
+
+
+def test_holders_gt1_delete_mode_no_wal_warn():
+    from hermes_cli.doctor import _render_state_db_stats
+
+    lines = _render_state_db_stats({"journal_mode": "delete"}, holders=3)
+    assert not any("multiple processes hold this WAL" in t for _, t, _ in lines)

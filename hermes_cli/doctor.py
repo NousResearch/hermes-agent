@@ -453,6 +453,18 @@ def _render_state_db_stats(stats: dict, holders=None) -> list:
     if row_bits:
         lines.append(("info", ", ".join(row_bits), ""))
 
+    if (
+        holders is not None
+        and holders > 1
+        and str(stats.get("journal_mode") or "").lower() == "wal"
+    ):
+        lines.append((
+            "warn",
+            f"multiple processes hold this WAL DB open ({holders})",
+            "(prefer one writer process, or set database.journal_mode: delete "
+            "after stopping all openers — see docs/state-db-recovery.md)",
+        ))
+
     fts = stats.get("fts_tables")
     if fts:
         present = [t for t, ok in fts.items() if ok]
@@ -2043,11 +2055,17 @@ def run_doctor(args):
     state_db_path = hermes_home / "state.db"
     if state_db_path.exists():
         try:
-            import sqlite3
-            conn = sqlite3.connect(str(state_db_path))
-            cursor = conn.execute("SELECT COUNT(*) FROM sessions")
-            count = cursor.fetchone()[0]
-            conn.close()
+            from hermes_state import _connect_tracked_db
+            conn = _connect_tracked_db(
+                f"file:{state_db_path}?mode=ro",
+                tracking_path=state_db_path,
+                uri=True,
+                timeout=2.0,
+            )
+            try:
+                count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+            finally:
+                conn.close()
             check_ok(f"{_DHH}/state.db exists ({count} sessions)")
 
             # FTS write-health probe (#50502): `SELECT COUNT(*)` above succeeds
@@ -2105,11 +2123,19 @@ def run_doctor(args):
                     report = repair_state_db_schema(state_db_path)
                     if report.get("repaired"):
                         try:
-                            conn = sqlite3.connect(str(state_db_path))
-                            count = conn.execute(
-                                "SELECT COUNT(*) FROM sessions"
-                            ).fetchone()[0]
-                            conn.close()
+                            from hermes_state import _connect_tracked_db
+                            conn = _connect_tracked_db(
+                                f"file:{state_db_path}?mode=ro",
+                                tracking_path=state_db_path,
+                                uri=True,
+                                timeout=2.0,
+                            )
+                            try:
+                                count = conn.execute(
+                                    "SELECT COUNT(*) FROM sessions"
+                                ).fetchone()[0]
+                            finally:
+                                conn.close()
                         except Exception:
                             count = "?"
                         backup_name = (
@@ -2181,13 +2207,40 @@ def run_doctor(args):
                     "(may indicate missed checkpoints)"
                 )
                 if should_fix:
-                    import sqlite3
-                    conn = sqlite3.connect(str(state_db_path))
-                    conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-                    conn.close()
+                    from hermes_state import _connect_tracked_db
+                    conn = _connect_tracked_db(
+                        str(state_db_path),
+                        tracking_path=state_db_path,
+                        timeout=5.0,
+                    )
+                    try:
+                        row = conn.execute(
+                            "PRAGMA wal_checkpoint(PASSIVE)"
+                        ).fetchone()
+                    finally:
+                        conn.close()
+                    busy, log, checkpointed = (row or (None, None, None))
                     new_size = wal_path.stat().st_size if wal_path.exists() else 0
-                    check_ok(f"WAL checkpoint performed ({wal_size // 1024}K → {new_size // 1024}K)")
-                    fixed_count += 1
+                    if busy:
+                        check_warn(
+                            f"WAL PASSIVE checkpoint busy "
+                            f"(busy={busy}, log={log}, checkpointed={checkpointed})",
+                            "(stop gateway/other holders, then retry or run "
+                            "'hermes sessions optimize' offline)",
+                        )
+                    else:
+                        check_ok(
+                            f"WAL PASSIVE checkpoint "
+                            f"({wal_size // 1024}K → {new_size // 1024}K; "
+                            f"log={log}, checkpointed={checkpointed})"
+                        )
+                        fixed_count += 1
+                        if new_size > 50 * 1024 * 1024:
+                            check_info(
+                                "WAL still large after PASSIVE — PASSIVE does not "
+                                "TRUNCATE; reclaim offline (sessions optimize) "
+                                "or rely on journal_size_limit (~64 MiB)"
+                            )
                 else:
                     issues.append("Large WAL file — run 'hermes doctor --fix' to checkpoint")
             elif wal_size > 10 * 1024 * 1024:  # 10 MB

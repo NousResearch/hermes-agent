@@ -148,3 +148,32 @@ class TestOpenLockPatience:
             SessionDB(db_path=bad_path)
         # Must fail well before a full patience window (loose bound).
         assert time.monotonic() - t0 < 15.0
+
+
+
+class TestActivityWritePatience:
+    def test_activity_exhausted_patience_keeps_honest_seconds(self, db, monkeypatch):
+        """Activity budget is 0.5s; {:.0f} would round that to "over 0s"."""
+        monkeypatch.setattr(SessionDB, "_ACTIVITY_WRITE_PATIENCE_S", 0.5)
+        db.create_session("a1", "cli")
+        started = threading.Event()
+        holder = threading.Thread(
+            target=_hold_write_lock, args=(db.db_path, 2.0, started)
+        )
+        holder.start()
+        try:
+            assert started.wait(5.0)
+            with pytest.raises(sqlite3.OperationalError) as ei:
+                db.touch_session_activity("a1", description="heartbeat")
+        finally:
+            holder.join(timeout=10.0)
+        text = str(ei.value)
+        assert "another Hermes process" in text
+        assert "healthy" in text
+        assert "over 0s" not in text  # must not round sub-second budget to zero
+        assert "over 0.5s" in text or "over 1s" in text or "over 0.50s" in text
+
+    def test_activity_patience_is_shorter_than_routine(self, db):
+        assert db._ACTIVITY_WRITE_PATIENCE_S < db._WRITE_PATIENCE_S
+        assert db._ACTIVITY_WRITE_PATIENCE_S <= 1.0
+        assert db._TRANSCRIPT_WRITE_PATIENCE_S > db._WRITE_PATIENCE_S

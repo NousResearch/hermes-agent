@@ -359,6 +359,18 @@ def _price_reference_response(
         return usage, None, None, None
 
 
+# Sentinel for a reference that returned no usable text: a reasoning model can spend its ENTIRE
+# output budget on hidden reasoning and return ``content: ""`` (finish_reason=length) — the call
+# bills, the advisor contributes nothing. Emitted as a ``[failed: …]`` note rather than a bare
+# placeholder so it routes through the EXISTING degraded_reference_policy path: the aggregator never
+# receives an empty "Reference N" block as though it were guidance.
+_EMPTY_REFERENCE_NOTE = "[failed: empty response]"
+
+# Pre-fix placeholder, kept in the classifier: any output already carrying it (a fan-out cached by
+# a long-lived pre-update agent process) must classify as failed, not as guidance.
+_LEGACY_EMPTY_REFERENCE_NOTE = "(empty response)"
+
+
 def _run_reference(
     slot: dict[str, Any], ref_messages: list[dict[str, Any]], *, temperature: float | None = None,
     max_tokens: int | None = None, reference_timeout: float | None = None, context_length_cache: Any = None,
@@ -394,7 +406,7 @@ def _run_reference(
             timeout=reference_timeout, reasoning_config=_slot_reasoning_config(slot),
             extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
         )
-        output_text = _extract_text(response) or "(empty response)"
+        output_text = _extract_text(response) or _EMPTY_REFERENCE_NOTE
         acct = _RefAccounting(*_price_reference_response(response, slot, runtime), messages=trimmed, output=output_text, **trace_fields)
         return label, output_text, acct
     except Exception as exc:
@@ -729,9 +741,22 @@ def _hash_messages(msgs: list[dict[str, Any]]) -> str:
     return hashlib.sha256("\u0000".join(f"{m.get('role')}:{m.get('content')}" for m in msgs).encode("utf-8", "replace")).hexdigest()
 
 
-def _is_failed_reference(text: str) -> bool:
-    """Whether a reference output is a ``[failed: …]`` / ``[skipped: …]`` sentinel."""
-    return text.lstrip().lower().startswith(("[failed:", "[skipped:"))
+def _is_failed_reference(text: Any) -> bool:
+    """Whether a reference output carries no usable guidance for the aggregator.
+
+    Covers the ``[failed: …]`` / ``[skipped: …]`` sentinels, blank/whitespace-only output, and the
+    legacy ``(empty response)`` placeholder. A reasoning model can spend its ENTIRE output budget on
+    hidden reasoning and return ``content: ""`` while still billing — that slot contributed nothing,
+    so it must be filtered out of the guidance AND disclosed by ``degraded_reference_policy`` rather
+    than counted as a successful reference. Non-string/absent input counts as failed (no text = no
+    guidance).
+    """
+    if not isinstance(text, str):
+        return not text
+    stripped = text.lstrip()
+    return not stripped.strip() or stripped.lower().startswith(
+        ("[failed:", "[skipped:", _LEGACY_EMPTY_REFERENCE_NOTE)
+    )
 
 
 def _join_reference_outputs(outputs: list[tuple[str, str, Any]], degraded: str = "") -> str:

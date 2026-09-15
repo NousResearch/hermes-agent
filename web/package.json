@@ -12,6 +12,8 @@
     "preview": "vite preview",
     "typecheck": "tsc -p . --noEmit",
     "test": "vitest run",
+    "test:rtl": "playwright test",
+    "test:rtl:update": "playwright test --update-snapshots",
     "check": "npm run typecheck && npm run test && npm run lint"
   },
   "dependencies": {

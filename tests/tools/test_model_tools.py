@@ -540,6 +540,26 @@ class TestBridgeDispatch:
     """handle_function_call routes tool_search/tool_describe inline, unwraps tool_call,
     and refuses tool_call targets outside the session-scoped deferrable catalog."""
 
+    @staticmethod
+    def _register_direct_surface_tool(name):
+        from tools.registry import registry
+
+        tool_def = {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": "Perform a desktop-only action.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        registry.register(
+            name=name,
+            handler=lambda args, **kwargs: json.dumps({"ok": True}),
+            schema=tool_def,
+            toolset="desktop_ui",
+        )
+        return tool_def
+
     def test_tool_search_and_describe_return_json_strings(self):
         with patch("model_tools.get_tool_definitions", return_value=[]):
             out = handle_function_call("tool_search", {"queries": ["anything"]})
@@ -551,6 +571,51 @@ class TestBridgeDispatch:
         with patch("model_tools.get_tool_definitions", return_value=[]):
             result = json.loads(handle_function_call("tool_call", {}))
         assert "requires 'calls'" in result["error"]
+
+    def test_describe_platform_disabled_direct_tool_is_not_found(self):
+        name = "test_describe_platform_disabled_direct_tool"
+        self._register_direct_surface_tool(name)
+
+        with patch("model_tools.get_tool_definitions", return_value=[]):
+            result = json.loads(handle_function_call("tool_describe", {"names": [name]}))
+
+        assert result["not_found"] == [name]
+        assert "not currently available" in result["hint"]
+        assert "errors" not in result
+
+    def test_call_platform_disabled_direct_tool_is_unavailable(self):
+        name = "test_call_platform_disabled_direct_tool"
+        self._register_direct_surface_tool(name)
+
+        with patch("model_tools.get_tool_definitions", return_value=[]):
+            result = json.loads(handle_function_call(
+                "tool_call", {"name": name, "arguments": {}}
+            ))
+
+        assert "not available in this session" in result["error"]
+        assert "call it directly" not in result["error"]
+
+    def test_describe_in_scope_direct_tool_keeps_direct_guidance(self):
+        name = "test_describe_in_scope_direct_tool"
+        tool_def = self._register_direct_surface_tool(name)
+
+        with patch("model_tools.get_tool_definitions", return_value=[tool_def]):
+            result = json.loads(handle_function_call("tool_describe", {"names": [name]}))
+
+        assert "call it directly" in result["errors"][name]
+        assert "not_found" not in result
+
+    def test_call_in_scope_direct_tool_keeps_direct_guidance(self):
+        name = "test_call_in_scope_direct_tool"
+        tool_def = self._register_direct_surface_tool(name)
+
+        with patch("model_tools.get_tool_definitions", return_value=[tool_def]):
+            result = json.loads(handle_function_call(
+                "tool_call", {"name": name, "arguments": {}}
+            ))
+
+        assert "call it directly" in result["error"]
+        assert "not available in this session" not in result["error"]
 
     def test_tool_call_rejects_out_of_scope_and_unwraps_in_scope(self):
         import tools.tool_search as ts

@@ -150,7 +150,7 @@ class FakeWebSocket {
     this.readyState = 3;
   }
 
-  send() {}
+  send = vi.fn();
 }
 
 type CloseEventLike = {
@@ -259,6 +259,64 @@ afterEach(async () => {
 });
 
 describe("ChatPage", () => {
+  it("sends a PTY keepalive frame every 20 seconds while the socket is open", async () => {
+    vi.useFakeTimers();
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(FakeWebSocket.instances).toHaveLength(1);
+
+      const socket = FakeWebSocket.instances[0];
+      await act(async () => socket.onopen?.());
+      socket.send.mockClear();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000);
+      });
+
+      expect(socket.send).toHaveBeenCalledWith("\x1b[RESIZE:80;24]");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("defers a reconnect while the chat tab is inactive", async () => {
+    vi.useFakeTimers();
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      const socket = FakeWebSocket.instances[0];
+      await act(async () => {
+        socket.onclose?.({ code: 1001, reason: "", wasClean: true });
+        root.render(
+          <MemoryRouter initialEntries={["/chat"]}>
+            <ChatPage isActive={false} />
+          </MemoryRouter>,
+        );
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+
+      expect(FakeWebSocket.instances).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("treats loopback 4401 closes as stale-token reload candidates", async () => {
     const { default: ChatPage } = await import("./ChatPage");
 

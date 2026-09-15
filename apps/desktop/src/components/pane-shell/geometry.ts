@@ -158,6 +158,31 @@ function sameRect(a: Rect | null, b: Rect | null) {
 // Workspace-edge CSS vars
 // ---------------------------------------------------------------------------
 
+// --- Sash-drag deferral ------------------------------------------------------
+// The tree sash sets this for the duration of a resize gesture (pointerdown to
+// pointerup). While set, `publishWorkspaceGeometry` skips its :root custom
+// property writes: each one invalidates computed style for the whole document,
+// and the sash's ResizeObserver fires per frame. Measured live (LoAF, real
+// session): drag frames of ~68ms with style+layout=67ms and no script ≥5ms;
+// suppressing the writes recovered 14fps → 51fps. The vars only align titlebar
+// chrome — republishing once on release is visually identical.
+let sashDragDepth = 0
+let onSashDragEnd: null | (() => void) = null
+
+export function beginSashDrag() {
+  sashDragDepth += 1
+}
+
+export function endSashDrag() {
+  sashDragDepth = Math.max(0, sashDragDepth - 1)
+
+  if (sashDragDepth === 0) {
+    onSashDragEnd?.()
+  }
+}
+
+const sashDragging = () => sashDragDepth > 0
+
 /**
  * Publish the workspace zone's viewport edges as root CSS vars:
  *   --workspace-left  : px from the viewport's left to the main zone
@@ -177,6 +202,12 @@ export function publishWorkspaceGeometry(): () => void {
   const ro = new ResizeObserver(() => measure())
 
   const measure = () => {
+    // DEFER during a sash drag (see beginSashDrag above) — republished once on
+    // release via the onSashDragEnd hook registered below.
+    if (sashDragging()) {
+      return
+    }
+
     const next = document.querySelector<HTMLElement>('[data-session-anchor="workspace"]')
 
     if (next !== el) {
@@ -216,11 +247,14 @@ export function publishWorkspaceGeometry(): () => void {
   // frame later, after the DOM committed. RO covers width changes (sash drags,
   // side collapses); window resize covers the rest.
   const unsubTree = $layoutTree.listen(() => requestAnimationFrame(measure))
+  // Drag released → publish the final geometry the deferral above skipped.
+  onSashDragEnd = () => requestAnimationFrame(measure)
   window.addEventListener('resize', measure)
   measure()
 
   return () => {
     unsubTree()
+    onSashDragEnd = null
     window.removeEventListener('resize', measure)
     ro.disconnect()
     root.style.removeProperty('--workspace-left')

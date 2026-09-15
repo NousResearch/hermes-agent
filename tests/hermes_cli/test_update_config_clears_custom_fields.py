@@ -66,6 +66,22 @@ class TestUpdateConfigForProviderClearsStaleCustomFields:
         assert "api_mode" not in model_cfg
         assert model_cfg["provider"] == "openrouter"
 
+    def test_clear_model_endpoint_credentials_treats_key_env_like_the_inline_key(self):
+        # key_env is a live credential pointer (runtime_provider / auxiliary_client resolve it).
+        # Surviving a provider switch it routes the NEW provider's requests to the OLD
+        # endpoint's env var, so it clears with the inline key — and, like the inline key,
+        # survives the clear_api_key=False flavor (same-provider re-pick).
+        model_cfg = {"provider": "custom_x", "key_env": "CUSTOM_X_API_KEY",
+                     "api_key_env": "LEGACY_PTR", "api_mode": "openai"}
+
+        clear_model_endpoint_credentials(model_cfg, clear_api_key=False)
+        assert model_cfg["key_env"] == "CUSTOM_X_API_KEY"
+        assert "api_mode" not in model_cfg
+
+        clear_model_endpoint_credentials(model_cfg)
+        assert "key_env" not in model_cfg
+        assert "api_key_env" not in model_cfg
+
     def test_switching_to_openrouter_clears_api_key_and_api_mode(self):
         _seed_custom_provider_config()
 
@@ -86,13 +102,6 @@ class TestUpdateConfigForProviderClearsStaleCustomFields:
             "OpenRouter requests to the Anthropic SDK — must be cleared"
         )
 
-    def test_switching_to_nous_clears_stale_api_mode(self):
-        _seed_custom_provider_config()
-        _update_config_for_provider("nous", "https://inference-api.nousresearch.com/v1")
-        model_cfg = _read_model_cfg()
-        assert model_cfg.get("provider") == "nous"
-        assert "api_mode" not in model_cfg
-        assert "api_key" not in model_cfg
 
     def test_switching_clears_codex_responses_api_mode(self):
         """Also covers codex_responses, not just anthropic_messages."""

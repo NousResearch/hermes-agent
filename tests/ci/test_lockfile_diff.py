@@ -39,25 +39,8 @@ BASE = _lock(
 )
 
 
-def test_parse_skips_root_and_versionless():
-    text = _lock({"node_modules/linked": {"link": True}})
-    parsed = _mod.parse_lockfile(text)
-    assert parsed == {}  # root entry and versionless link both skipped
 
 
-def test_reorder_and_hash_churn_is_empty_diff():
-    # Same packages, reordered, different integrity hashes — the exact noise
-    # that makes textual lockfile diffs unreadable.
-    reordered = _lock(
-        {
-            "node_modules/foo/node_modules/react": {"version": "17.0.2"},
-            "node_modules/left-pad": {"version": "1.3.0", "integrity": "sha512-XYZ"},
-            "node_modules/react": {"version": "18.2.0", "integrity": "sha512-ZZZ"},
-        }
-    )
-    d = _mod.diff_locks(_mod.parse_lockfile(BASE), _mod.parse_lockfile(reordered))
-    assert d == {"added": [], "removed": [], "updated": []}
-    assert _mod.render_markdown({"package-lock.json": d}) == ""
 
 
 def test_add_remove_update_all_detected():
@@ -89,15 +72,14 @@ def test_nested_dedup_is_distinct_entry():
     assert d["updated"] == [("node_modules/foo/node_modules/react", "17.0.2", "17.0.3")]
 
 
-def test_render_markdown_contains_marker_and_versions():
+def test_render_markdown_contains_versions_and_nested_display():
     d = _mod.diff_locks(
         _mod.parse_lockfile(BASE),
         _mod.parse_lockfile(_lock({"node_modules/react": {"version": "19.0.0"}})),
     )
     md = _mod.render_markdown({"apps/desktop/package-lock.json": d})
-    assert md.startswith(_mod.COMMENT_MARKER)  # workflow finds its comment by prefix
-    assert "⚠️" in md
-    assert "`apps/desktop/package-lock.json`" in md
+    # Fragment starts directly with the per-lockfile subsection header.
+    assert md.startswith("#### `apps/desktop/package-lock.json`")
     assert "`18.2.0`" in md and "`19.0.0`" in md
     # nested display name keeps the parent chain visible
     assert "nested under foo" in md

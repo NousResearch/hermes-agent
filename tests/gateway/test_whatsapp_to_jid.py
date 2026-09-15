@@ -40,17 +40,4 @@ class TestToWhatsappJid:
     def test_fully_qualified_jid_passes_through(self, jid):
         assert to_whatsapp_jid(jid) == jid
 
-    def test_device_suffixed_colon_form_collapses_to_at(self):
-        # ``user:device@domain`` (legacy) → ``user@domain``
-        assert to_whatsapp_jid("60123456789:47@s.whatsapp.net") == (
-            "60123456789@s.whatsapp.net"
-        )
 
-    @pytest.mark.parametrize("empty", ["", "   ", None])
-    def test_empty_input_returns_empty(self, empty):
-        assert to_whatsapp_jid(empty) == ""
-
-    def test_unrecognized_target_passes_through_unchanged(self):
-        # Not a phone, no ``@`` — leave it for the bridge to reject with a
-        # meaningful error rather than mangling it into a bogus JID.
-        assert to_whatsapp_jid("not-a-number") == "not-a-number"

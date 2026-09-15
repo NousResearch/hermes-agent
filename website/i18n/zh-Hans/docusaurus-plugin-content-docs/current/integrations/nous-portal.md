@@ -1,7 +1,7 @@
 ---
 sidebar_position: 1
 title: "Nous Portal"
-description: "一个订阅，300+ 前沿模型，Tool Gateway，以及 Nous Chat —— 运行 Hermes Agent 的推荐方式"
+description: "一个订阅，300+ 前沿模型，以及 Tool Gateway —— 运行 Hermes Agent 的推荐方式"
 ---
 
 # Nous Portal
@@ -38,7 +38,11 @@ Portal 代理了来自整个生态系统的精选 agentic 模型目录——统�
 | **Hermes** | Hermes-4-70B、Hermes-4-405B（对话，见[下方说明](#a-note-on-hermes-4)） |
 | **+ 其他所有模型** | 240+ 额外模型——完整的 agentic 前沿生态 |
 
-底层路由通过 OpenRouter 实现，因此模型可用性和故障转移行为与使用 OpenRouter 密钥一致——只是计费走你的 Nous 订阅。在会话中途用 `/model` 即可在 Claude Sonnet 4.6（适合代码）和 Gemini 2.5 Pro（适合长上下文）之间切换——无需新凭证，无需充值，不会遇到余额为零的意外报错。
+底层上，Portal 会为每个模型选择最合适的后端——部分模型通过 OpenRouter 路由，其他模型则通过专有或备用提供商，且某个模型的路由方式可能随时间调整。所有用量都统一计入你的 Nous 订阅。在会话中途用 `/model` 即可在 Claude Sonnet 4.6（适合代码）和 Gemini 2.5 Pro（适合长上下文）之间切换——无需新凭证，无需充值，不会遇到余额为零的意外报错。
+
+:::note
+由于路由是按模型进行的，并非总是经过 OpenRouter，OpenRouter 专有的请求扩展（如 `provider` 路由偏好、`session_id` 粘性路由或顶层 `cache_control`）不属于 Portal 的 API 契约，可能会被忽略，具体取决于该模型由哪个后端提供服务。
+:::
 
 ### Nous Tool Gateway
 
@@ -56,10 +60,6 @@ Portal 代理了来自整个生态系统的精选 agentic 模型目录——统�
 
 你也可以只启用特定的 gateway 工具（例如只开启网页搜索，不开启图像生成）——详见下方[将 gateway 与自有后端混用](#mixing-the-gateway-with-your-own-backends)。
 
-### Nous Chat
-
-你的 Portal 账号同样覆盖 [chat.nousresearch.com](https://chat.nousresearch.com)——Nous Research 的网页对话界面，使用相同的模型目录。适合离开终端时使用，或用于非 agent 的普通对话场景。
-
 ### 凭证不落入 dotfiles
 
 由于所有请求都通过一个经 OAuth 认证的 Portal 会话路由，你不会积累一个包含十几个长期 API 密钥的 `.env` 文件。磁盘上唯一的凭证是 `~/.hermes/auth.json` 中的 refresh token（刷新令牌），Hermes 会在每次请求时从中生成短期 JWT——详见下方[令牌处理](#token-handling)。
@@ -72,7 +72,7 @@ Portal 代理了来自整个生态系统的精选 agentic 模型目录——统�
 
 Nous Research 自家的 **Hermes 4** 系列（Hermes-4-70B、Hermes-4-405B）通过 Portal 提供，享有大幅折扣。这些是**前沿混合推理对话模型**——在数学、科学、指令遵循、schema 遵从、角色扮演和长文写作方面表现出色。
 
-但**不建议在 Hermes Agent 内部使用它们**。Hermes 4 针对对话和推理进行了调优，而非 agent 所依赖的高频工具调用循环。请将它们用于 [Nous Chat](https://chat.nousresearch.com)、研究工作流，或通过[订阅代理](/user-guide/features/subscription-proxy)从其他工具调用——但在 agent 场景下，请从目录中选择前沿 agentic 模型：
+但**不建议在 Hermes Agent 内部使用它们**。Hermes 4 针对对话和推理进行了调优，而非 agent 所依赖的高频工具调用循环。请将它们用于研究工作流，或通过[订阅代理](/user-guide/features/subscription-proxy)从其他工具调用——但在 agent 场景下，请从目录中选择前沿 agentic 模型：
 
 ```bash
 /model anthropic/claude-sonnet-4.6     # 最佳通用 agentic 模型
@@ -250,7 +250,7 @@ hermes portal
 
 ### 想使用 Portal 未暴露的特定提供商模型
 
-Portal 通过 OpenRouter 代理，因此 OpenRouter 支持的所有模型通常都可用。如果某个模型未出现在 `/model` 中，可直接尝试 OpenRouter 风格的 slug：
+Portal 会为每个模型选择合适的后端——部分模型通过 OpenRouter 路由，其他模型则通过专有或备用提供商——因此 OpenRouter 支持的大多数模型通常都可用。如果某个模型未出现在 `/model` 中，可直接尝试 OpenRouter 风格的 slug：
 
 ```bash
 /model anthropic/claude-opus-4.6

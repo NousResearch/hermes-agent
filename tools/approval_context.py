@@ -239,19 +239,22 @@ def _get_approval_mode() -> str:
 def _get_approval_timeout() -> int:
     """Read ``approvals.timeout`` (default 300s: gateway push notifications may
     not be seen for minutes; 60s failed closed before Telegram taps landed).
-    Clamped to ``agent.deadline.MAX_SAFE_TIMEOUT_S`` (~1 year): a larger value
-    overflows ``time_t`` inside ``Thread.join`` / ``Lock.acquire`` on macOS and
-    crashed every parallel tool batch; clamping at the single config-read site
-    keeps every consumer platform-safe at once."""
+    Clamped to ``agent.deadline.MAX_SAFE_TIMEOUT_S`` so larger values cannot
+    overflow platform waits inside ``Thread.join`` / ``Lock.acquire``."""
     try:
         raw = int(_get_approval_config().get("timeout", 300))
-    except (ValueError, TypeError):
+    except (OverflowError, ValueError, TypeError):
         return 300
     try:
         from agent.deadline import MAX_SAFE_TIMEOUT_S
         safe_cap = int(MAX_SAFE_TIMEOUT_S)
     except Exception:
-        safe_cap = 365 * 24 * 3600  # fail CLOSED: the raw value would re-open the overflow
+        # fail CLOSED: the raw value would re-open the overflow. Capped by threading.TIMEOUT_MAX
+        # too — a bare one year is itself over the Windows wait limit, so the fallback would have
+        # re-opened the overflow it exists to prevent.
+        import threading
+
+        safe_cap = int(min(365 * 24 * 3600, threading.TIMEOUT_MAX))
     if raw > safe_cap:
         logger.warning("approvals.timeout=%s exceeds the platform-safe maximum; clamping to %ss", raw, safe_cap)
     return min(raw, safe_cap)

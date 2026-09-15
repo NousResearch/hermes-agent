@@ -228,10 +228,17 @@ class TestClarifyTimeoutResolution:
     """resolve_clarify_timeout is the single source of truth for the clarify
     timeout, shared by the CLI, TUI/desktop, and messaging-gateway paths."""
 
-    def test_canonical_agent_key(self):
+    def test_canonical_agent_key_and_platform_cap(self):
+        from agent.deadline import MAX_SAFE_TIMEOUT_S
         from tools import clarify_gateway as cm
 
         assert cm.resolve_clarify_timeout({"agent": {"clarify_timeout": 900}}) == 900
+        assert cm.resolve_clarify_timeout(
+            {"agent": {"clarify_timeout": 315_360_000}}
+        ) == int(MAX_SAFE_TIMEOUT_S)
+        assert cm.resolve_clarify_timeout(
+            {"agent": {"clarify_timeout": float("inf")}}
+        ) == 3600
 
 
     def test_non_positive_preserved_as_unlimited_sentinel(self):
@@ -241,7 +248,6 @@ class TestClarifyTimeoutResolution:
 
         assert cm.resolve_clarify_timeout({"agent": {"clarify_timeout": 0}}) == 0
         assert cm.resolve_clarify_timeout({"clarify": {"timeout": -1}}) == -1
-
 
 class TestUnlimitedWait:
     """timeout <= 0 makes wait_for_response block until the answer arrives

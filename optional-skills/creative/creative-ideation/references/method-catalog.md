@@ -1,6 +1,8 @@
 # Method Catalog
 
-One-line summary + when-to-use for every method. Cross-reference with `heuristics.md` and the routing table in `SKILL.md`.
+One-line summary + when-to-use for every method. Cross-reference with `heuristics.md` and the routing model in `SKILL.md`.
+
+Each surface category below also has a **Boden creative-move** type, which is what the router diagnoses first (see `boden-creativity.md`): combinational (new links), exploratory (search the space), transformational (change the space). The mapping: combinational = `analogy-and-blending`, `biomimicry`, `chance-and-remix`; transformational = `lateral-provocations`, `pataphysics`, `first-principles`, `triz-principles`, `defamiliarization`, `leverage-points`; everything else is exploratory, except the two selection methods (`premortem-and-inversion`, `compression-progress`) and the two practice/synthesis methods (`creative-discipline`, `affinity-diagrams`).
 
 ## Random-stimulus
 

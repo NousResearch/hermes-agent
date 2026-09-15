@@ -175,7 +175,7 @@ _DESKTOP_PREVIOUS_SUFFIX = ".previous"
 
 def _desktop_staging_dir(desktop_dir: Path) -> Path:
     """Fresh staging dir ``apps/desktop/.staging-<pid>-<ts>``: a sibling of ``release/`` (same fs → the
-    swap is a a rename) but not inside it, so ``release/*-unpacked`` globs never see it. Sweeps leftovers."""
+    swap is a rename) but not inside it, so ``release/*-unpacked`` globs never see it. Sweeps leftovers."""
     for stale in desktop_dir.glob(f"{_DESKTOP_STAGING_PREFIX}*"):
         shutil.rmtree(stale, ignore_errors=True)
     return desktop_dir / f"{_DESKTOP_STAGING_PREFIX}{os.getpid()}-{int(_time_mod.time())}"
@@ -865,8 +865,7 @@ def _macos_legacy_adhoc_resign(codesign: str, app: Path) -> bool:
 
 def _desktop_macos_relaunchable_fixup(
     desktop_dir: Path, *, publisher_signing_configured: Optional[bool] = None,
-    release_dir: Optional[Path] = None,
-) -> bool:
+    release_dir: Optional[Path] = None) -> bool:
     """Re-sign a locally-built macOS app so in-place self-update doesn't reset TCC grants.
 
     A rebuilt ad-hoc bundle (new cdhash, no stable Designated Requirement) reports
@@ -1494,8 +1493,8 @@ def _check_desktop_skip_build(
             sys.exit(1)
         if not (_electron_dir(project_root) / "package.json").exists():
             print("✗ --skip-build --source requires existing desktop workspace dependencies.")
-            print(f"  Install first:  cd {PROJECT_ROOT} && npm ci")
-            print("  Or drop --skip-build to package automatically.")
+            print(f"  Install first:  cd {project_root} && npm ci")
+            print("  Or drop --skip-build to install dependencies and build automatically.")
             sys.exit(1)
         print(f"→ Skipping desktop source build (--skip-build --source); using dist at {desktop_dir / 'dist'}")
     elif packaged_executable is None:

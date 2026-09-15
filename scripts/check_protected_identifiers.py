@@ -27,7 +27,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 #: Paths owned by the platform layer. Everything else is upstream-owned.
-PLATFORM_PATHS = ("nova/", "deploy/", "docs/platform/", "tests/platform/")
+PLATFORM_PATHS = (
+    "nova/", "deploy/", "docs/platform/", "tests/platform/",
+    # Browser tests drive the Control Centre and check the runtime state it produced,
+    # so they are NOVA's own — the same side of the boundary as tests/platform/.
+    "tests/browser/",
+)
 
 #: Directories never scanned.
 SKIP_DIRS = {

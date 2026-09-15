@@ -54,6 +54,8 @@ export default function App() {
   const [agentNonce, setAgentNonce] = React.useState(0);
   // Re-reads branding after a settings save, so the shell reflects it at once.
   const [identityNonce, setIdentityNonce] = React.useState(0);
+  // Re-reads the corpora after a document is added or removed, so the counts follow.
+  const [knowledgeNonce, setKnowledgeNonce] = React.useState(0);
   const identity = usePanel<Identity>("/identity", 60000, identityNonce);
   const health = usePanel<Health>("/health");
   const agents = usePanel<{ agents: Agent[] }>("/agents", 15000, agentNonce);
@@ -62,7 +64,7 @@ export default function App() {
   const knowledge = usePanel<{
     retrieval_enabled: boolean; sources: KnowledgeSource[]; undeclared_in_index?: string[];
     index_detail?: string; document_extraction?: boolean;
-  }>("/knowledge");
+  }>("/knowledge", 15000, knowledgeNonce);
   const channels = usePanel<{ declared: boolean; channel_delivery: boolean; channels: Channel[]; catalogue: any[] }>("/channels");
   const policy = usePanel<Policy>("/policy");
   // Bumped after a pause/resume so the list reflects the runtime at once.
@@ -351,7 +353,7 @@ export default function App() {
               />
             )
             : route === "activity" ? <ActivityScreen decisions={decisions} />
-            : route === "knowledge" ? <KnowledgeScreen knowledge={knowledge} />
+            : route === "knowledge" ? <KnowledgeScreen knowledge={knowledge} onChanged={() => setKnowledgeNonce((n) => n + 1)} />
             : route === "channels" ? <ChannelsScreen channels={channels} />
             : route === "policies" ? <PoliciesScreen policy={policy} />
             : route === "usage" ? <UsageScreen budget={budget} />

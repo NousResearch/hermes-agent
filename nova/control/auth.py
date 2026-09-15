@@ -102,6 +102,11 @@ WRITE_ROUTES: Mapping[str, str] = {
     "/settings/identity": "admin",
     "/settings/logo": "admin",
     "/settings/agent-name": "admin",
+    # A corpus is what agents read. Adding to it, removing from it, or rebuilding the index
+    # all change what the workforce knows.
+    "/knowledge/upload": "admin",
+    "/knowledge/remove": "admin",
+    "/knowledge/reindex": "admin",
     # Putting a declared objective's steps on the board.
     "/objectives/submit": "admin",
     # Making the runtime deliver declared conversations to granted agents.

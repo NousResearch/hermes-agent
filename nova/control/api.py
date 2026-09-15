@@ -84,6 +84,9 @@ def _write_route(tail: str) -> Optional[str]:
     # it can be called.
     if len(parts) == 2 and parts[0] == "settings" and parts[1] in SETTINGS_ACTIONS:
         return f"/settings/{parts[1]}"
+    # /knowledge/<source>/<action>. Enumerated, like every other member action.
+    if len(parts) == 3 and parts[0] == "knowledge" and parts[2] in KNOWLEDGE_ACTIONS:
+        return f"/knowledge/{parts[2]}"
     # /agents/<id>/<action>. Kept item-level and enumerated rather than matched by prefix,
     # so a new action has to be added here before it can be called.
     if len(parts) == 3 and parts[0] == "agents" and parts[2] in AGENT_ACTIONS:
@@ -100,6 +103,10 @@ def _write_route(tail: str) -> Optional[str]:
 #: Ceiling on a persona. Matches the automation objective cap: both are text the model
 #: sees on every turn, and an unbounded one is a per-turn cost nobody reviewed.
 MAX_INSTRUCTIONS_CHARS = 20000
+
+#: What an administrator may do to a corpus. ``reindex`` is separate from upload so an
+#: operator who added files on the host by hand can make them searchable without one.
+KNOWLEDGE_ACTIONS = ("upload", "remove", "reindex")
 
 #: What an administrator may change about the tenant itself.
 SETTINGS_ACTIONS = ("organization", "identity", "logo", "agent-name")
@@ -182,6 +189,8 @@ class ControlAPI:
             return self._create_agent(principal, payload)
         if route.startswith("/settings/"):
             return self._settings_write(route.rsplit("/", 1)[1], principal, payload)
+        if route.startswith("/knowledge/"):
+            return self._knowledge_write(tail, route.rsplit("/", 1)[1], principal, payload)
         if route.startswith("/agents/"):
             return self._agent_action(tail, route.rsplit("/", 1)[1], principal, payload)
         return self._submit_objective(tail, principal, payload)
@@ -318,6 +327,8 @@ class ControlAPI:
             return self.agent_credentials(tail[len("/agents/") : -len("/credentials")])
         if tail.startswith("/agents/") and tail.endswith("/activity"):
             return self.agent_activity(tail[len("/agents/") : -len("/activity")], query)
+        if tail.startswith("/knowledge/") and tail.endswith("/documents"):
+            return self.knowledge_documents(tail[len("/knowledge/") : -len("/documents")])
         if tail == "/settings":
             return self.settings()
         if tail in ("/branding/logo", "/branding/favicon"):
@@ -949,6 +960,218 @@ class ControlAPI:
                 "saved": True,
                 "runtime": applied,
                 "correlation_id": correlation_id,
+            },
+        )
+
+    # -- knowledge ------------------------------------------------------------
+
+    def _source(self, source_id: str):
+        return next((s for s in self.bundle.knowledge.sources if s.id == source_id), None)
+
+    def knowledge_documents(self, source_id: str) -> Response:
+        """What is in one corpus, and what the index has of it.
+
+        Two facts that are only useful together. A document on disk that the index has
+        never seen is invisible to every agent, and that is precisely the state an upload
+        that skipped reindexing would leave behind — so the screen can say it.
+        """
+        from nova.knowledge.store import list_documents
+
+        source = self._source(source_id)
+        if source is None:
+            return _error(404, f"no knowledge source {source_id!r}")
+
+        indexed: dict[str, Any] = {}
+        detail = ""
+        index_path = self.runtime.knowledge_index_path
+        if index_path.is_file():
+            try:
+                from nova.knowledge import KnowledgeIndex
+
+                with KnowledgeIndex.open(index_path, create=False) as index:
+                    indexed = index.stats().get(source_id, {})
+            except NovaError as exc:
+                detail = str(exc)
+        else:
+            detail = "no index yet — nothing in this corpus is searchable"
+
+        return Response(
+            200,
+            {
+                "id": source.id,
+                "title": source.display_title,
+                "root": str(source.root),
+                "classification": source.classification,
+                "accepts": list(source.include),
+                "excludes": list(source.exclude),
+                "max_file_bytes": source.max_file_bytes,
+                "documents": [dict(row) for row in list_documents(source)],
+                "indexed": {
+                    "documents": indexed.get("documents", 0),
+                    "chunks": indexed.get("chunks", 0),
+                    "detail": detail,
+                },
+                "readable_by": sorted(
+                    a.id for a in self.bundle.agents if source_id in a.knowledge.sources
+                ),
+            },
+        )
+
+    def _reindex(self, source_id: str, correlation_id: str, actor: str) -> dict[str, Any]:
+        """Re-ingest one corpus so what is on disk is what agents can find.
+
+        Reported separately from the file write, for the same reason a bundle edit reports
+        "saved" and "applied" apart: a document stored but not indexed is a real state, and
+        one combined tick would let it read as done.
+        """
+        from nova.knowledge import ingest
+
+        try:
+            report = ingest(
+                self.bundle.knowledge,
+                self.runtime.knowledge_index_path,
+                source_ids=[source_id],
+                audit=self.audit.with_actor(actor) if self.audit else None,
+                correlation_id=correlation_id,
+            )
+        except NovaError as exc:
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001 — an index failure must not lose the upload
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        for source_report in getattr(report, "sources", ()) or ():
+            if getattr(source_report, "source_id", "") == source_id:
+                return {
+                    "ok": True,
+                    # `indexed` on the report is a count of documents written this run;
+                    # `unchanged` are the ones already current. Both are reported, because
+                    # "0 indexed" after an upload is alarming and "0 indexed, 12 unchanged"
+                    # is not.
+                    "documents": getattr(source_report, "indexed", 0),
+                    "unchanged": getattr(source_report, "unchanged", 0),
+                    "chunks": getattr(source_report, "chunks", 0),
+                    "removed": list(getattr(source_report, "removed", ()) or ()),
+                    # Pairs of (document, reason) — a file the ingester refused, which is
+                    # the one thing an operator needs to see after an upload.
+                    "skipped": [
+                        {"document": str(item[0]), "reason": str(item[1])}
+                        if isinstance(item, (tuple, list)) and len(item) == 2
+                        else {"document": str(item), "reason": ""}
+                        for item in (getattr(source_report, "skipped", ()) or ())
+                    ],
+                }
+        return {"ok": True, "documents": 0, "unchanged": 0, "chunks": 0,
+                "removed": [], "skipped": []}
+
+    def _knowledge_write(
+        self, tail: str, action: str, principal, payload: Mapping[str, Any]
+    ) -> Response:
+        """Add to, remove from, or rebuild a corpus."""
+        import base64
+        import binascii
+
+        from nova.knowledge.store import remove_document, store_document
+
+        parts = [part for part in tail.split("/") if part]
+        source_id = parts[1] if len(parts) > 2 else ""
+        source = self._source(source_id)
+        if source is None:
+            return _error(404, f"no knowledge source {source_id!r}")
+
+        if not self.runtime.capabilities.knowledge_retrieval:
+            return _error(
+                501,
+                f"runtime {self.runtime.name!r} cannot retrieve knowledge, so a document "
+                "added here would never be read",
+            )
+
+        correlation_id = new_correlation_id()
+        audit = self.audit.with_actor(principal.name)
+
+        if action == "reindex":
+            audit.record(kind="knowledge.reindexed", phase="intent", subject=source_id,
+                         correlation_id=correlation_id, detail={"actor": principal.name})
+            result = self._reindex(source_id, correlation_id, principal.name)
+            audit.record(
+                kind="knowledge.reindexed",
+                phase="committed" if result.get("ok") else "failed",
+                subject=source_id, correlation_id=correlation_id, detail=result,
+            )
+            return Response(200, {"ok": True, "source": source_id, "index": result})
+
+        if action == "remove":
+            name = str(payload.get("name") or "")
+            audit.record(kind="knowledge.document_removed", phase="intent", subject=source_id,
+                         correlation_id=correlation_id,
+                         detail={"name": name, "actor": principal.name})
+            try:
+                removed = remove_document(source, name)
+            except NovaError as exc:
+                audit.record(kind="knowledge.document_removed", phase="failed",
+                             subject=source_id, correlation_id=correlation_id,
+                             detail={"name": name}, error=str(exc))
+                return _error(400, str(exc))
+            if not removed:
+                audit.record(kind="knowledge.document_removed", phase="failed",
+                             subject=source_id, correlation_id=correlation_id,
+                             detail={"name": name}, error="not found")
+                return _error(404, f"{name!r} is not in {source_id!r}")
+            index = self._reindex(source_id, correlation_id, principal.name)
+            audit.record(kind="knowledge.document_removed", phase="committed",
+                         subject=source_id, correlation_id=correlation_id,
+                         detail={"name": name, "index": index})
+            return Response(200, {"ok": True, "source": source_id, "removed": name,
+                                  "index": index})
+
+        # upload
+        filename = str(payload.get("filename") or "")
+        raw = payload.get("data")
+        if not isinstance(raw, str) or not raw:
+            return _error(400, "send the document as base64 text under 'data'")
+        if raw.startswith("data:"):
+            _, _, raw = raw.partition(",")
+        try:
+            content = base64.b64decode(raw, validate=True)
+        except (binascii.Error, ValueError):
+            return _error(400, "the document must be base64-encoded")
+
+        audit.record(
+            kind="knowledge.document_added", phase="intent", subject=source_id,
+            correlation_id=correlation_id,
+            # The filename and its size, never the contents: a corpus holds the customer's
+            # documents, and copying one into the audit log doubles what a leak exposes.
+            detail={"filename": filename, "bytes": len(content), "actor": principal.name},
+        )
+        try:
+            stored = store_document(
+                source, filename=filename, data=content,
+                replace=bool(payload.get("replace")),
+            )
+        except NovaError as exc:
+            audit.record(kind="knowledge.document_added", phase="failed", subject=source_id,
+                         correlation_id=correlation_id, detail={"filename": filename},
+                         error=str(exc))
+            return _error(400, str(exc))
+        except OSError as exc:
+            audit.record(kind="knowledge.document_added", phase="failed", subject=source_id,
+                         correlation_id=correlation_id, detail={"filename": filename},
+                         error=str(exc))
+            return _error(500, f"the document could not be written: {exc}")
+
+        index = self._reindex(source_id, correlation_id, principal.name)
+        audit.record(
+            kind="knowledge.document_added",
+            phase="committed" if index.get("ok") else "failed",
+            subject=source_id, correlation_id=correlation_id,
+            detail={"name": stored["name"], "bytes": stored["bytes"], "index": index},
+        )
+        return Response(
+            200,
+            {
+                "ok": True, "source": source_id, "stored": stored,
+                # Separate keys on purpose: the document is on disk either way, and a
+                # failed index means no agent can find it yet.
+                "saved": True, "index": index,
             },
         )
 

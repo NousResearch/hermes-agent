@@ -1,4 +1,6 @@
 import * as React from "react";
+
+import { CorpusPanel } from "@/screens/corpus";
 import {
   Activity, Blocks, BookOpen, CircleCheck, Gauge, ListChecks, ShieldCheck, Target,
 } from "lucide-react";
@@ -438,11 +440,12 @@ export function ObjectivesScreen({ objectives }: { objectives: Loaded<{ objectiv
 /* ── Knowledge ────────────────────────────────────────────────────────────── */
 
 export function KnowledgeScreen({
-  knowledge,
-}: { knowledge: Loaded<{
+  knowledge, onChanged,
+}: { onChanged?: () => void; knowledge: Loaded<{
   retrieval_enabled: boolean; sources: KnowledgeSource[]; undeclared_in_index?: string[];
   index_detail?: string; document_extraction?: boolean;
 }> }) {
+  const [open, setOpen] = React.useState<string | null>(null);
   return (
     <PanelBody state={knowledge} empty={(d) =>
       !d.retrieval_enabled ? {
@@ -495,17 +498,29 @@ export function KnowledgeScreen({
                     <StatusPill state="waiting">Not indexed</StatusPill>
                   )}
                 </div>
-                <div className="border-glass-border mt-3 border-t pt-2.5">
-                  <p className="text-ink-faint text-[11px]">
+                <div className="border-glass-border mt-3 flex items-center gap-2 border-t pt-2.5">
+                  <p className="text-ink-faint min-w-0 flex-1 text-[11px]">
                     Readable by{" "}
                     <span className="text-ink-muted">
                       {(source.readable_by ?? []).length ? (source.readable_by ?? []).join(", ") : "nobody"}
                     </span>
                   </p>
+                  {/* Collapsed by default: the card is the overview, and opening one is
+                      asking about that corpus specifically. */}
+                  <button
+                    type="button"
+                    aria-expanded={open === source.id}
+                    onClick={() => setOpen(open === source.id ? null : source.id)}
+                    className="text-ink-faint hover:text-ink shrink-0 text-[11.5px] underline-offset-2 transition-colors hover:underline"
+                  >
+                    {open === source.id ? "Hide documents" : "Documents"}
+                  </button>
                 </div>
               </GlassCard>
             ))}
           </div>
+
+          {open ? <CorpusPanel sourceId={open} onChanged={onChanged} /> : null}
         </div>
       )}
     </PanelBody>

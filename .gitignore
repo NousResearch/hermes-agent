@@ -172,8 +172,10 @@ docs/superpowers/*
 # with HERMES_INSTALL_DIR=$HERMES_HOME or by older installers): every root-level
 # SQLite store (state.db, kanban.db, response_store.db, ...) with its
 # WAL/SHM/journal sidecars and retired-WAL capture dirs, the legacy transcripts,
-# the cron job store (jobs.json) and executions ledger, gateway lock/pid/state
-# files, cache/spill directories, and the profile's own config/credential/
+# the cron job store (jobs.json), its lock/heartbeat/output files and all three
+# cron SQLite stores (executions/deliveries/notepad, WAL-mode like the root
+# ones), gateway lock/pid/state files and per-launch markers, cache/spill
+# directories, and the profile's own config/credential/
 # memory/profile/pairing roots, the pre-update backups (the very copies a
 # swept state.db is restored from) and the secret vault are Hermes-managed
 # runtime state, never code changes. (`*-snapshots/` above already covers state-snapshots/.)
@@ -189,13 +191,26 @@ docs/superpowers/*
 /gateway/discord_message_recovery.db*
 /sessions/
 /browser-profile/
-/cron/executions.db*
+/cron/*.db
+/cron/*.db-wal
+/cron/*.db-shm
+/cron/*.db-journal
+/cron/*.db.retired-wal-*/
 /cron/jobs.json
+/cron/.jobs.lock
+/cron/ticker_heartbeat
+/cron/output/
 /cron.pid
 /gateway.lock
 /gateway.pid
 /gateway_state.json
+/gateway-starts.log
 /processes.json
+/.update_check
+/.clean_shutdown
+/active_profile
+/.hermes_history
+/slack_tokens.json
 /hook_outputs/
 /hooks/
 /cache/

@@ -1367,6 +1367,11 @@ class CLICommandsMixin:
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy of the
         full history so a different approach can be explored without losing the original."""
+        # An in-flight agent run would flush through the rotating session identity: the branch
+        # ends the parent row and repoints agent.session_id (_sync_agent_to_session), so the
+        # turn's remaining messages land on the branch. Refuse mid-turn like /handoff does.
+        if getattr(self, "_agent_running", False):
+            return _cp("  Agent is busy. Wait for the current turn to finish, then retry /branch.")
         from cli import _sync_process_session_id
         if not self.conversation_history:
             return _cp("  No conversation to branch — send a message first.")

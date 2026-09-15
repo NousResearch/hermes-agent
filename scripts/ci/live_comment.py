@@ -714,6 +714,13 @@ def resolve_pr_number(token: str, repo: str, head_sha: str) -> str:
     return ""
 
 
+def configured_watch_workflows(environment: Mapping[str, str]) -> list[str]:
+    """Return sibling workflows to watch, unless this is a CI-only update."""
+    if environment.get("SKIP_WATCH_WORKFLOWS", "").lower() == "true":
+        return []
+    return parse_watch_workflows(environment.get("WATCH_WORKFLOWS", ""))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--interval", type=int, default=15,
@@ -732,7 +739,7 @@ def main() -> int:
 
     # Sibling workflows to merge into the comment, one name per line. Their
     # runs are separate from the CI run, so the poller resolves them by name.
-    watch_workflows = parse_watch_workflows(os.environ.get("WATCH_WORKFLOWS", ""))
+    watch_workflows = configured_watch_workflows(os.environ)
 
     if not args.dry_run:
         if not token:

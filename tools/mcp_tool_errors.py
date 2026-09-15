@@ -305,25 +305,55 @@ def _exc_children(exc: BaseException) -> List[BaseException]:
     return list(nested) if nested else [c for c in (exc.__cause__, exc.__context__) if isinstance(c, BaseException)]
 
 
+def _iter_exception_nodes(exc: BaseException) -> List[BaseException]:
+    """Pre-order walk of an exception tree/chain, every node once. Cycle-safe: ``__cause__``/
+    ``__context__`` can point back at an ancestor (a raised-and-caught pair does this routinely),
+    which recursed until Python's recursion limit and replaced the real connect error with a
+    ``RecursionError``. Same visited-set + node-budget discipline as
+    :func:`_is_session_expired_error`."""
+    seen: set = set()
+    ordered: List[BaseException] = []
+    stack: List[BaseException] = [exc]
+    budget = _EXC_TRAVERSAL_MAX_NODES
+    while stack and budget > 0:
+        current = stack.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        budget -= 1
+        ordered.append(current)
+        stack.extend(reversed(_exc_children(current)))
+    return ordered
+
+
 def _format_connect_error(exc: BaseException) -> str:
     """Render nested MCP connection errors into an actionable short message."""
-    def _find_missing(current: BaseException) -> Optional[str]:
-        if isinstance(current, FileNotFoundError):
-            if getattr(current, "filename", None):
-                return str(current.filename)
-            match = re.search(r"No such file or directory: '([^']+)'", str(current))
+    nodes = _iter_exception_nodes(exc)
+
+    def _find_missing() -> Optional[str]:
+        for node in nodes:
+            if not isinstance(node, FileNotFoundError):
+                continue
+            if getattr(node, "filename", None):
+                return str(node.filename)
+            match = re.search(r"No such file or directory: '([^']+)'", str(node))
             if match:
                 return match.group(1)
-        return next(filter(None, map(_find_missing, _exc_children(current))), None)
+        return None
 
-    def _flatten_messages(current: BaseException) -> List[str]:
-        # A group's own str() is opaque — only its children speak.
-        text = "" if getattr(current, "exceptions", None) else str(current).strip()
-        messages = ([text] if text else []) + [m for child in _exc_children(current) for m in _flatten_messages(child)]
-        return messages or [current.__class__.__name__]
-    missing = _find_missing(exc)
+    def _flatten_messages() -> List[str]:
+        messages: List[str] = []
+        for node in nodes:
+            # A group's own str() is opaque — only its children speak.
+            if getattr(node, "exceptions", None):
+                continue
+            text = str(node).strip()
+            if text:
+                messages.append(text)
+        return messages or [exc.__class__.__name__]
+    missing = _find_missing()
     if not missing:
-        return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages(exc)))[:3]))
+        return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages()))[:3]))
     message = f"missing executable '{missing}'"
     if os.path.basename(missing) in {"npx", "npm", "node"}:
         message += (" (ensure Node.js is installed and PATH includes its bin directory, "

@@ -96,6 +96,7 @@ from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _shared_extra_or_secret,
     get_scoped_secret as _get_scoped_secret, send_error
 )
+from plugins.platforms.feishu.feishu_config_warnings import blocked_group_access_warning
 
 
 logger = logging.getLogger(__name__)
@@ -1417,6 +1418,15 @@ class FeishuAdapter(BasePlatformAdapter):
         if self._connection_mode == "webhook" and not (self._verification_token or self._encrypt_key):
             logger.error("[Feishu] Webhook mode requires FEISHU_VERIFICATION_TOKEN or FEISHU_ENCRYPT_KEY.")
             return False
+        if not is_reconnect:
+            warning = blocked_group_access_warning(
+                default_group_policy=self._default_group_policy,
+                allowed_group_users=self._allowed_group_users,
+                admins=self._admins,
+                group_rules=self._group_rules,
+            )
+            if warning:
+                logger.warning(warning)
         if not await asyncio.to_thread(_load_lark_oapi):
             logger.error("[Feishu] lark-oapi not installed")
             return False

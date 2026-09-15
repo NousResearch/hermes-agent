@@ -17,7 +17,9 @@ from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
-from hermes_constants import clear_named_profile_deleted, mark_named_profile_deleted, named_profile_is_deleted
+from hermes_constants import (
+    LOCAL_RUNTIME_ROOT_DIRS, clear_named_profile_deleted, mark_named_profile_deleted, named_profile_is_deleted,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,12 +47,11 @@ _CLONE_ALL_STRIP: list[str] = ["gateway.pid", "gateway_state.json", "processes.j
 # and resolved from the default root only. Named profiles never hold these at root, so the
 # gate avoids silently dropping user data from a named-profile source. Export uses a root
 # allow-list instead (``_DEFAULT_EXPORT_INCLUDE_ROOT``): an archive is a portable snapshot,
-# a clone must run. The last three mirror ``hermes_cli.backup._EXCLUDED_ROOT_DIRS`` — kept
-# as separate literals because importing it here would be circular; change both together.
+# a clone must run. The runtime trio is ``LOCAL_RUNTIME_ROOT_DIRS``, shared with
+# ``hermes_cli.backup._EXCLUDED_ROOT_DIRS`` so the two lists cannot drift.
 _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "hermes-agent", ".worktrees", "profiles", "bin", "node_modules",
-    "models", "runtimes", "node",
-})
+}) | LOCAL_RUNTIME_ROOT_DIRS
 
 # Per-profile history excluded from --clone-all for ANY source: SQLite session store
 # (+wal/shm, can reach many GB), session dirs, `hermes backup` archives, quick-backup

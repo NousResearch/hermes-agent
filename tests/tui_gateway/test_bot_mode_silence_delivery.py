@@ -64,7 +64,7 @@ def test_live_bot_chat_stream_holds_back_partial_silence_marker(monkeypatch):
         session = {"pending_title": None, "session_key": "k", "history_lock": contextlib.nullcontext(), "agent": agent}
         st = srv._TurnRun(agent=agent, one_turn_restore=None, terminal_callback=None, receipt_committed=True)
         srv._invoke_agent("sid", session, st, "ping", "ping", None, [], None, None)
-        return [p["text"] for e, p in events if e == "message.delta"], (session.get("inflight_turn") or {}).get("assistant", "")
+        return [p.text for e, p in events if e == "message.delta"], (session.get("inflight_turn") or {}).get("assistant", "")
 
     assert _run("NO_REPLY", ["NO_", "REPLY"]) == ([], "")
     assert _run("NO way, here is the answer.", ["NO", " way,", " here is the answer."]) == (

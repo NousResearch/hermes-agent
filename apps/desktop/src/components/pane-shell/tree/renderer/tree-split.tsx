@@ -26,7 +26,6 @@ import {
   isCollapsePane,
   paneRootSide,
   persistTree,
-  presetSplitWeights,
   setTreeGroupMinimized,
   setTreeSplitWeights
 } from '../store'
@@ -42,7 +41,6 @@ import {
   MINIMIZED_TRACK,
   paneChrome,
   type PaneSizing,
-  resolveCssPx,
   shownPaneIds,
   subtreeGone,
   type TrackContext
@@ -527,83 +525,6 @@ export function TreeSplit({
     [axis, editMode, horizontal, node.children, node.id, node.weights, hiddenPanes, narrow, overrides, panes]
   )
 
-  // Double-click a sash: every neighbor returns to its DEFAULT size.
-  //  - fixed zones (sidebar stacks): clear the drag override -> the declared
-  //    width (237px etc.) comes back;
-  //  - flex zones fronted by a size-declaring pane (a sidebar in a mixed
-  //    stack): pin the weight so the zone lands EXACTLY on that size;
-  //  - everything else: the preset's weights for this split (rearranging
-  //    panes keeps the applied preset's split ids), else even distribution.
-  const resetBoundary = useCallback(
-    (aIndex: number, bIndex: number) => {
-      const container = containerRef.current
-
-      if (!container) {
-        return
-      }
-
-      const setOverride = horizontal ? setPaneWidthOverride : setPaneHeightOverride
-
-      for (const [child, edge] of [
-        [node.children[aIndex], 'end'],
-        [node.children[bIndex], 'start']
-      ] as const) {
-        const zone = edgeFixedZone(child, edge, axis, trackCtx)
-
-        for (const paneId of zone ? shownPaneIds(zone, trackCtx) : []) {
-          setOverride(paneId, undefined)
-        }
-      }
-
-      const preset = presetSplitWeights(node.id, node.weights.length)
-      const weights = preset ?? [...node.weights]
-
-      const rect = container.getBoundingClientRect()
-      const totalPx = horizontal ? rect.width : rect.height
-      let pinned = false
-
-      for (const i of [aIndex, bIndex]) {
-        const child = node.children[i]
-
-        // Fixed tracks size themselves from the declared width (override
-        // cleared above) — weights only matter for FLEX zones.
-        if (child.type !== 'group' || fixedTrackSize(child, axis, trackCtx) !== null) {
-          continue
-        }
-
-        // The zone's natural default = the largest size any of its panes
-        // declares along this axis (a sessions+terminal stack is still a
-        // 237px sidebar at heart, whichever chip is fronted).
-        let px: number | null = null
-
-        for (const paneId of shownPaneIds(child, trackCtx)) {
-          const sizing = (paneFor(paneId)?.data ?? {}) as PaneSizing
-          const css = horizontal ? sizing.width : sizing.height
-          const resolved = css ? resolveCssPx(container, css, horizontal) : null
-
-          if (resolved !== null) {
-            px = Math.max(px ?? 0, resolved)
-          }
-        }
-
-        if (px === null || px <= 0 || px >= totalPx) {
-          continue
-        }
-
-        const others = weights.reduce((sum, w, j) => (j === i ? sum : sum + w), 0)
-
-        if (others > 0) {
-          weights[i] = (px * others) / (totalPx - px)
-          pinned = true
-        }
-      }
-
-      setTreeSplitWeights(node.id, !preset && !pinned ? weights.map(() => 1) : weights)
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [axis, editMode, horizontal, node.children, node.id, node.weights, hiddenPanes, narrow, overrides, panes]
-  )
-
   // A run of ONLY fixed tracks can't fill the container (grow-0 all around
   // leaves dead space — e.g. terminal + logs split into two 38vh zones with
   // the rail above them collapsed). An UNCAPPED last track absorbs the
@@ -640,6 +561,37 @@ export function TreeSplit({
 
     return { child, collapsed, minimized, narrowCollapsed, sizing, track }
   })
+
+  // Equalize the visible flex siblings; fixed tracks return to their declared
+  // size. Nested split weights and sizes on the other axis stay independent.
+  const equalizeSplit = () => {
+    const setOverride = horizontal ? setPaneWidthOverride : setPaneHeightOverride
+
+    const clearSizeOverrides = (child: LayoutNode) => {
+      if (isCollapsed(child) || isMinimized(child)) {
+        return
+      }
+
+      if (child.type === 'split') {
+        child.children.forEach(clearSizeOverrides)
+      } else {
+        shownPaneIds(child, trackCtx).forEach(paneId => setOverride(paneId, undefined))
+      }
+    }
+
+    const weights = tracks.map(({ child, collapsed, minimized, track }, i) => {
+      if (collapsed || minimized) {
+        return node.weights[i]
+      }
+
+      clearSizeOverrides(child)
+
+      return track === null ? 1 : node.weights[i]
+    })
+
+    setTreeSplitWeights(node.id, weights)
+    persistTree()
+  }
 
   const growable = tracks.map((_, i) => i).filter(i => !tracks[i].collapsed && !tracks[i].minimized)
   const allFixed = growable.length > 0 && growable.every(i => tracks[i].track !== null)
@@ -726,7 +678,7 @@ export function TreeSplit({
               <Sash
                 disabled={minimized || tracks[partner].minimized}
                 horizontal={horizontal}
-                onDoubleClick={() => resetBoundary(partner, i)}
+                onDoubleClick={equalizeSplit}
                 onPointerDown={e => startSash(partner, i, e)}
               />
             )}

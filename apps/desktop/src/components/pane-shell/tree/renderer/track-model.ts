@@ -122,33 +122,6 @@ export function computedPx(value: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback
 }
 
-/** Resolve an AUTHORED CSS length ("237px", "38vh", "clamp(18rem,36vw,32rem)")
- *  to px by measuring a probe inside `container` — handles every unit and
- *  math function the browser does. */
-export function resolveCssPx(container: HTMLElement, css: number | string, horizontal: boolean): number | null {
-  if (typeof css === 'number') {
-    return css
-  }
-
-  const probe = document.createElement('div')
-  probe.style.position = 'absolute'
-  probe.style.visibility = 'hidden'
-  probe.style.pointerEvents = 'none'
-
-  if (horizontal) {
-    probe.style.width = css
-  } else {
-    probe.style.height = css
-  }
-
-  container.appendChild(probe)
-  const rect = probe.getBoundingClientRect()
-  probe.remove()
-  const px = horizontal ? rect.width : rect.height
-
-  return Number.isFinite(px) && px > 0 ? px : null
-}
-
 /** Everything fixed-track resolution needs about the current view state. */
 export interface TrackContext {
   paneFor: (id: string) => Contribution | undefined

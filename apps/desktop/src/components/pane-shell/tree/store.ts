@@ -2006,48 +2006,6 @@ export function setTreeSplitWeights(splitId: string, weights: number[]) {
   }
 }
 
-function findSplitWeights(node: LayoutNode, splitId: string): number[] | null {
-  if (node.type !== 'split') {
-    return null
-  }
-
-  if (node.id === splitId) {
-    return node.weights
-  }
-
-  for (const child of node.children) {
-    const hit = findSplitWeights(child, splitId)
-
-    if (hit) {
-      return hit
-    }
-  }
-
-  return null
-}
-
-/**
- * The weights a layout preset declares for `splitId` — the ACTIVE preset
- * first, then any other preset that knows the id. (Rearranging panes marks
- * the active preset 'custom' but zone STRUCTURE — and so split ids — comes
- * from whichever preset was applied, so the original baseline stays
- * findable.) Null when no preset has a matching-shape split.
- */
-export function presetSplitWeights(splitId: string, length: number): number[] | null {
-  const activeId = $activePresetId.get()
-  const presets = [...registry.getArea('layouts')].sort((a, b) => Number(b.id === activeId) - Number(a.id === activeId))
-
-  for (const preset of presets) {
-    const weights = preset.data && isLayoutNode(preset.data) ? findSplitWeights(preset.data, splitId) : null
-
-    if (weights && weights.length === length) {
-      return [...weights]
-    }
-  }
-
-  return null
-}
-
 export function persistTree() {
   persist($layoutTree.get())
 }

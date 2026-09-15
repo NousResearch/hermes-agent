@@ -1594,21 +1594,32 @@ def run_conversation(
     """
     from agent.turn_context import export_current_turn_boundary
 
-    result = _run_conversation_turn(
-        agent,
-        user_message,
-        system_message=system_message,
-        conversation_history=conversation_history,
-        task_id=task_id,
-        stream_callback=stream_callback,
-        persist_user_message=persist_user_message,
-        persist_user_timestamp=persist_user_timestamp,
-        persist_user_display_kind=persist_user_display_kind,
-        persist_user_display_metadata=persist_user_display_metadata,
-        persist_user_platform_id=persist_user_platform_id,
-        moa_config=moa_config,
-        turn_author=turn_author,
-    )
+    try:
+        result = _run_conversation_turn(
+            agent,
+            user_message,
+            system_message=system_message,
+            conversation_history=conversation_history,
+            task_id=task_id,
+            stream_callback=stream_callback,
+            persist_user_message=persist_user_message,
+            persist_user_timestamp=persist_user_timestamp,
+            persist_user_display_kind=persist_user_display_kind,
+            persist_user_display_metadata=persist_user_display_metadata,
+            persist_user_platform_id=persist_user_platform_id,
+            moa_config=moa_config,
+            turn_author=turn_author,
+        )
+    finally:
+        # Restore the pre-skill reasoning level for the next turn (issue #108770). Every exit
+        # path above goes through here, so an error/interrupt cannot strand the raise.
+        try:
+            from agent.skill_reasoning import restore_skill_reasoning_override
+
+            restore_skill_reasoning_override(agent, getattr(agent, "_skill_reasoning_snapshot", None))
+            agent._skill_reasoning_snapshot = None
+        except Exception:
+            logger.debug("skill reasoning restore skipped", exc_info=True)
     return export_current_turn_boundary(agent, result, user_message)
 
 

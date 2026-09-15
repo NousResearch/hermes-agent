@@ -88,6 +88,26 @@ def test_compute_host_routes_relayed_response_and_lock_to_its_open_request(monke
         host.close()
 
 
+def test_compute_host_relays_a_clarify_lock_domain_error(monkeypatch):
+    """``clarify.lock`` answers a stale or malformed lock with an error frame; the host relays that
+    error (the parent maps it onto the client's rid) instead of crashing on ``.model_dump``."""
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, heartbeat_secs=0)
+    sid = "host-clarify-error"
+    server._sessions[sid] = {"history_lock": threading.Lock()}
+    monkeypatch.setattr(server, "invoke", lambda name, params: server._err(None, 4002, "unknown request"))
+
+    try:
+        host._handle_respond({"sid": sid, "request_id": "relay-lock",
+                              "params": {"lock": {"request_id": "gone", "question_id": "q0", "answer": "a"}}})
+        frame = _json_lines(out)[-1]
+        assert frame["type"] == "respond.ack"
+        assert frame["response"] == {"jsonrpc": "2.0", "id": "relay-lock", "error": {"code": 4002, "message": "unknown request"}}
+    finally:
+        server._sessions.pop(sid, None)
+        host.close()
+
+
 def test_mutator_route_table_matches_prd_inventory():
     assert MUTATOR_ROUTE_TABLE == {
         "prompt.submit": "turn-path",

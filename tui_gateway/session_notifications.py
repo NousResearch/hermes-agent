@@ -188,9 +188,11 @@ def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) 
         parts = wakeup.lstrip()[1:].split(None, 1)
         payload = srv.invoke("command.dispatch", CommandDispatchParams(
             name=parts[0] if parts else "", arg=parts[1] if len(parts) > 1 else "", session_id=sid))
-        if out := str(payload.output or "").strip():
+        if isinstance(payload, dict):  # command.dispatch's error frame: nothing ran, the tick completes below
+            payload = None
+        if payload is not None and (out := str(payload.output or "").strip()):
             srv._notif_loop_status(sid, out)
-        if payload.type == "send" and payload.message:
+        if payload is not None and payload.type == "send" and payload.message:
             if not srv._notif_claim_turn(session):
                 mgr.abandon_tick()
                 return

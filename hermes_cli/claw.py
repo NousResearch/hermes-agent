@@ -2,6 +2,7 @@
 
 import importlib.util
 import itertools
+import json
 import logging
 import subprocess
 import sys
@@ -26,6 +27,8 @@ _OPENCLAW_SCRIPT_INSTALLED = get_hermes_home() / "skills" / _SCRIPT_REL
 
 # Known OpenClaw directory names (current + legacy)
 _OPENCLAW_DIR_NAMES = (".openclaw", ".clawdbot", ".moltbot")
+# Config filenames inside such a directory, in the order the migrator itself probes them.
+_OPENCLAW_CONFIG_NAMES = ("openclaw.json", "clawdbot.json", "moltbot.json")
 # pgrep -f ERE anchored on a node interpreter as argv[0] (``node /usr/local/bin/openclaw gateway``).
 _OPENCLAW_NODE_CMDLINE_RE = r"^(\S*/)?node(js)?\s.*(openclaw|clawd)"
 
@@ -182,6 +185,42 @@ def _warn_if_gateway_running(auto_yes: bool) -> None:
         sys.exit(0)
 
 
+def _remote_gateway_url(source_dir: Path) -> Optional[str]:
+    """Remote gateway URL when the source is a remote-mode OpenClaw client, else ``None``.
+
+    Such a directory is a thin client: only ``gateway`` and a few local prefs live in
+    openclaw.json, and everything the migrator looks for (models, channels, MCPs, cron,
+    agent defaults, approvals) is on the server. See #38230."""
+    for name in _OPENCLAW_CONFIG_NAMES:
+        path = source_dir / name
+        if not path.exists():
+            continue
+        try:
+            config = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+            gateway = config.get("gateway") or {} if isinstance(config, dict) else {}
+        except (json.JSONDecodeError, OSError, AttributeError):
+            return None
+        if str(gateway.get("mode") or "").strip().lower() != "remote":
+            return None
+        url = str((gateway.get("remote") or {}).get("url") or "").strip()
+        return url or "(no gateway.remote.url configured)"
+    return None
+
+
+def _warn_if_remote_client(remote_url: Optional[str]) -> None:
+    """Explain up front why a remote-mode client migrates almost nothing (#38230)."""
+    if not remote_url:
+        return
+    _error_block(
+        "Source is a remote-mode OpenClaw client.",
+        f"  * gateway.mode = \"remote\" -> {remote_url}",
+        "Its model, channel, MCP, cron, agent and approval configuration lives on that "
+        "server, not in this directory, so most categories below will be skipped — only "
+        "local workspace files and skills can be migrated from here.",
+        "To migrate the full configuration, re-run against the server's OpenClaw directory: "
+        "hermes claw migrate --source <server-path>/.openclaw")
+
+
 def _find_migration_script() -> Path | None:
     """Find the openclaw_to_hermes.py script in known locations."""
     return next((c for c in (_OPENCLAW_SCRIPT, _OPENCLAW_SCRIPT_INSTALLED) if c.exists()), None)
@@ -265,9 +304,12 @@ def _cmd_migrate(args):
             f"  {_OPENCLAW_SCRIPT_INSTALLED}",
             "Make sure the openclaw-migration skill is installed.")
     opts.hermes_home = get_hermes_home()
+    remote_url = _remote_gateway_url(opts.source_dir)
     print()
     print_header("Migration Settings")
-    _info(f"Source:      {opts.source_dir}", f"Target:      {opts.hermes_home}",
+    _info(f"Source:      {opts.source_dir}",
+          *([f"Source mode: remote client ({remote_url})"] if remote_url else []),
+          f"Target:      {opts.hermes_home}",
           f"Preset:      {opts.preset}",
           f"Overwrite:   {'yes' if opts.overwrite else 'no (skip conflicts)'}",
           f"Secrets:     {'yes (allowlisted only)' if opts.migrate_secrets else 'no'}",
@@ -277,6 +319,7 @@ def _cmd_migrate(args):
     # Migrating tokens while OpenClaw or the gateway is active causes conflicts (e.g. Telegram 409).
     _warn_if_openclaw_running(opts.yes)
     _warn_if_gateway_running(opts.yes)
+    _warn_if_remote_client(remote_url)
     # Ensure config.yaml exists before migration tries to read it
     if not get_config_path().exists():
         save_config(load_config())

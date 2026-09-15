@@ -1,6 +1,7 @@
 """Tests for hermes claw commands."""
 
 from argparse import Namespace
+import json
 import subprocess
 from types import ModuleType
 from unittest.mock import MagicMock, patch
@@ -430,3 +431,76 @@ class TestWarnIfOpenclawRunning:
         assert "OpenClaw appears to be running" in captured.out
 
 
+
+
+# ---------------------------------------------------------------------------
+# Remote-mode source detection (#38230)
+# ---------------------------------------------------------------------------
+
+
+class TestMigrateRemoteModeSource:
+    """A remote-mode OpenClaw client keeps its real configuration on the server.
+
+    `hermes claw migrate` read none of that, emitted ~33 "No X configuration found" skips and
+    reported a clean run with no hint why — the source directory is a thin client.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_openclaw_running(self):
+        with patch.object(claw_mod, "_detect_openclaw_processes", return_value=[]):
+            yield
+
+    @staticmethod
+    def _migrate_with_gateway(tmp_path, gateway):
+        """Preview a migration whose source openclaw.json carries ``gateway``; return stdout."""
+        openclaw_dir = tmp_path / ".openclaw"
+        openclaw_dir.mkdir()
+        (openclaw_dir / "openclaw.json").write_text(
+            json.dumps({"gateway": gateway, "commands": {"native": "auto"},
+                        "meta": {"lastTouchedVersion": "2026.5.7"}}),
+            encoding="utf-8")
+
+        fake_mod = ModuleType("openclaw_to_hermes")
+        fake_mod.resolve_selected_options = MagicMock(return_value=set())
+        fake_migrator = MagicMock()
+        fake_migrator.migrate.return_value = {
+            "summary": {"migrated": 0, "skipped": 33, "conflict": 0, "error": 0},
+            "items": [{"kind": f"category-{n}", "status": "skipped",
+                       "reason": "No configuration found"} for n in range(33)],
+        }
+        fake_mod.Migrator = MagicMock(return_value=fake_migrator)
+
+        args = Namespace(
+            source=str(openclaw_dir), dry_run=True, preset="full", overwrite=False,
+            migrate_secrets=False, workspace_target=None, skill_conflict="skip",
+            yes=False, no_backup=False,
+        )
+        with (
+            patch.object(claw_mod, "_find_migration_script", return_value=tmp_path / "s.py"),
+            patch.object(claw_mod, "_load_migration_module", return_value=fake_mod),
+            patch.object(claw_mod, "get_config_path", return_value=tmp_path / "config.yaml"),
+            patch.object(claw_mod, "save_config"),
+            patch.object(claw_mod, "load_config", return_value={}),
+        ):
+            claw_mod._cmd_migrate(args)
+
+    def test_remote_mode_source_is_named_in_the_output(self, tmp_path, capsys):
+        """The run must say the source is a remote client and name the server it points at."""
+        self._migrate_with_gateway(tmp_path, {
+            "mode": "remote",
+            "remote": {"url": "wss://claw.example.net/gateway", "token": "super-secret"},
+        })
+
+        out = capsys.readouterr().out
+        assert "remote-mode OpenClaw client" in out
+        assert "wss://claw.example.net/gateway" in out
+        assert "Source mode: remote client" in out
+        assert "super-secret" not in out  # the warning names the server, never its token
+
+    def test_local_mode_source_is_unchanged(self, tmp_path, capsys):
+        """A normal local install must not grow a warning or an extra settings line."""
+        self._migrate_with_gateway(tmp_path, {"mode": "local", "auth": {"token": "t"}})
+
+        out = capsys.readouterr().out
+        assert "remote-mode OpenClaw client" not in out
+        assert "Source mode:" not in out

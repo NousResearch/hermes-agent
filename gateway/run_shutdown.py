@@ -7,6 +7,8 @@ so ``patch("gateway.run.X")`` keeps intercepting them at call time.
 
 from __future__ import annotations
 
+from agent.i18n import t
+
 import asyncio
 import dataclasses
 import json
@@ -932,15 +934,9 @@ class GatewayShutdownMixin:
         Called at the start of stop() while adapters are connected; send failures never block shutdown.
         """
         restart_source = self._restart_command_source if self._restart_requested else None
-        msg = (
-            "⚠️ Hermes is shutting down — your current task will be interrupted. "
-            "When it is back online, send any message and I'll try to pick up where we left off."
-        )
-        if self._restart_requested:
-            msg = (
-                "⚠️ Hermes is restarting — your current task will be interrupted. "
-                "Send any message after the restart and I'll try to resume where you left off."
-            )
+        action = t("gateway.busy.action_restarting" if self._restart_requested else "gateway.busy.action_shutting_down")
+        hint = t("gateway.shutdown.interrupt_resume" if self._restart_requested else "gateway.shutdown.interrupt")
+        msg = t("gateway.shutdown.notice", action=action, hint=hint)
         restart_key = None
         if restart_source is not None:
             with suppress(Exception):

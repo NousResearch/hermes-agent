@@ -23,27 +23,8 @@ PROFILE_BUILD_FLAG = "profile_build_offered"
 
 # Busy-input hints are keyed by the effective busy_input_mode that was just
 # applied so the message matches reality; "interrupt" is the default branch.
-_BUSY_INPUT_HINTS_GATEWAY = {
-    "queue": (
-        "💡 First-time tip — I queued your message instead of interrupting. Send `/busy interrupt` to make new messages "
-        "stop the current task immediately, or `/busy status` to check. This notice won't appear again."
-    ),
-    "steer": (
-        "💡 First-time tip — I steered your message into the current run; it will arrive after the next tool "
-        "call instead of interrupting. Send `/busy interrupt` or `/busy queue` to change this, or `/busy "
-        "status` to check. This notice won't appear again."
-    ),
-    "redirect": (
-        "💡 First-time tip — I redirected the current run using your message. Completed work stays in "
-        "context, and `/stop` still cancels the task. Send `/busy queue` to wait for a separate turn, or "
-        "`/busy status` to check. This notice won't appear again."
-    ),
-}
-_BUSY_INPUT_HINT_GATEWAY_DEFAULT = (
-    "💡 First-time tip — I just interrupted my current task to answer you. Send `/busy queue` to queue "
-    "follow-ups for after the current task instead, `/busy steer` to inject them mid-run without "
-    "interrupting, or `/busy status` to check. This notice won't appear again."
-)
+_BUSY_INPUT_HINTS_GATEWAY = {mode: f"gateway.busy.first_touch_{mode}" for mode in ("queue", "steer", "redirect")}
+_BUSY_INPUT_HINT_GATEWAY_DEFAULT = "gateway.busy.first_touch_interrupt"
 
 _BUSY_INPUT_HINTS_CLI = {
     "queue": (
@@ -67,7 +48,8 @@ _BUSY_INPUT_HINT_CLI_DEFAULT = (
 
 def busy_input_hint_gateway(mode: str) -> str:
     """Hint shown the first time a user messages while the agent is busy (markdown)."""
-    return _BUSY_INPUT_HINTS_GATEWAY.get(mode, _BUSY_INPUT_HINT_GATEWAY_DEFAULT)
+    from agent.i18n import t
+    return t(_BUSY_INPUT_HINTS_GATEWAY.get(mode, _BUSY_INPUT_HINT_GATEWAY_DEFAULT))
 
 
 def busy_input_hint_cli(mode: str) -> str:

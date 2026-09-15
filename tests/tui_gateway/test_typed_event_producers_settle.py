@@ -88,4 +88,3 @@ def test_failed_config_model_switch_reports_through_the_typed_error_event(emitte
     assert len(errors) == 1
     assert "provider refused" in ErrorPayload.model_validate(errors[0]["params"]["payload"]).message
     assert session["config_model_seen"] == ("new-model", "p"), "one attempt per config edit, recorded before the switch"
-

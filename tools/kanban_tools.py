@@ -598,6 +598,12 @@ def _handle_complete(args: dict, **kw) -> str:
                 f"Your task is still in-flight and its scratch workspace was kept. Fix the "
                 f"artifact path or storage error, then retry kanban_complete with the same "
                 f"handoff.")
+        except kb.LiveClaimError as claim_err:
+            # Env-less caller (orchestrator, another session) on a card a dispatcher
+            # worker is executing: refusing here is what keeps that worker's run open.
+            return tool_error(
+                f"kanban_complete refused: {claim_err}. Nothing changed. Wait for the worker "
+                f"to finish, or an operator can run `hermes kanban complete --force {tid}`.")
         except kb.HallucinatedCardsError as hall_err:
             # The gate runs before the write txn, so the task was NOT mutated;
             # say so explicitly or the model treats the error as terminal and

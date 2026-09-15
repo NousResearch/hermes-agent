@@ -547,9 +547,10 @@ def _drag_to(conn, task_id: str, s: str) -> bool:
 
 # Status verb dispatch shared by PATCH /tasks/{id} and POST /tasks/bulk: (conn, task_id,
 # payload) -> ok. ``review`` uses request_review (never a block, so it can't trip unblock-loop
-# detection) with ``force=True``: a dashboard action is a human override of a live worker claim.
+# detection) and ``done`` pass ``force=True``: a dashboard action is a human override of a live worker claim.
 _STATUS_HANDLERS: dict[str, Any] = {
-    "done": lambda conn, tid, p: kanban_db.complete_task(conn, tid, result=p.result, summary=p.summary, metadata=p.metadata),
+    "done": lambda conn, tid, p: kanban_db.complete_task(
+        conn, tid, result=p.result, summary=p.summary, metadata=p.metadata, force=True),
     "blocked": lambda conn, tid, p: kanban_db.block_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "scheduled": lambda conn, tid, p: kanban_db.schedule_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "review": lambda conn, tid, p: kanban_db.request_review(

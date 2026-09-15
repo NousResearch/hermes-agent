@@ -861,7 +861,7 @@ hermes kanban claim <id> [--ttl SECONDS]
 hermes kanban comment <id> "<text>" [--author NAME]
 
 # Bulk verbs — accept multiple ids:
-hermes kanban complete <id>... [--result "..."]
+hermes kanban complete <id>... [--result "..."] [--force]
 hermes kanban block <id> "<reason>" [--ids <id>...]
 hermes kanban unblock <id>...
 hermes kanban archive <id>...
@@ -1255,6 +1255,8 @@ hermes kanban runs t_abcd
 Runs are exposed on the dashboard (Run History section in the drawer, one coloured row per attempt) and on the REST API (`GET /api/plugins/kanban/tasks/:id` returns a `runs[]` array). `PATCH /api/plugins/kanban/tasks/:id` with `{status: "done", summary, metadata}` forwards both to the kernel, so the dashboard's "mark done" button is CLI-equivalent. `task_events` rows carry the `run_id` they belong to so the UI can group them by attempt, and the `completed` event embeds the first-line summary in its payload (capped at 400 chars) so gateway notifiers can render structured handoffs without a second SQL round-trip.
 
 **Bulk close caveat.** `hermes kanban complete a b c --summary X` is refused — structured handoff is per-run, so copy-pasting the same summary to N tasks is almost always wrong. Bulk close *without* `--summary` / `--metadata` still works for the common "I finished a pile of admin tasks" case.
+
+**Live-claim guard on complete.** A `running` task whose worker holds a live claim is only completed by that worker (`kanban_complete` from inside the run) or by an explicit operator override: `hermes kanban complete <id> --force` and the dashboard's "mark done" action. A claim-less `hermes kanban complete <id>` or an orchestrator session's `kanban_complete` is refused with a pointer to `--force` / `hermes kanban reclaim`, so a second session can no longer close a live worker's run underneath it. Completing `ready`, `blocked` or `review` cards without a claim is unchanged.
 
 **Reclaimed runs from status changes.** If you drag a running task off `running` in the dashboard (back to `ready`, or straight to `todo`), or archive a task that was still running, the in-flight run closes with `outcome='reclaimed'` rather than being orphaned. The `task_runs` row is always in a terminal state when `tasks.current_run_id` is `NULL`, and vice versa — that invariant holds across CLI, dashboard, dispatcher, and notifier.
 

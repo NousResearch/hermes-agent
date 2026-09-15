@@ -13814,6 +13814,18 @@
             ],
             "default": null,
             "title": "Error"
+          },
+          "iss": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Iss"
           }
         },
         "required": [

@@ -201,6 +201,23 @@ def test_deliver_callback_forwards_iss():
     assert flow._callback == ("abc", "s3cr3tstate", "https://as.example.com")
 
 
+def test_oauth_callback_rpc_relays_iss():
+    """The gateway ``mcp.servers.oauth.callback`` RPC accepts ``iss`` under the extra=forbid contract
+    and forwards it to the flow; the desktop renderer always sends the key (possibly null)."""
+    import tui_gateway.server as srv
+    from tui_gateway.contracts import registry as contracts
+
+    flow = _make_session()
+    contract = contracts.METHODS["mcp.servers.oauth.callback"]
+    params = {"session_id": "sess-relay-1", "name": "hosp", "code": "abc", "state": "s3cr3tstate",
+              "iss": "https://as.example.com"}
+    params, problem = contracts.validate_params(contract, params)
+    assert problem is None
+    out = srv._methods["mcp.servers.oauth.callback"](1, params)
+    assert out["result"]["ok"] is True
+    assert flow._callback == ("abc", "s3cr3tstate", "https://as.example.com")
+
+
 def test_loopback_listener_forwards_iss():
     """The gateway-hosted loopback listener parses ``iss`` off the redirect rather than dropping it."""
     import urllib.request

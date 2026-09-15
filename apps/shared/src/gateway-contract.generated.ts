@@ -3610,6 +3610,7 @@ export interface McpOauthCallbackParams {
   code?: string | null
   state?: string | null
   error?: string | null
+  iss?: string | null
 }
 export interface McpOauthCallbackResult {
   ok: boolean

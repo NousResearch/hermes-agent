@@ -419,6 +419,22 @@ class TestTranscribeLocalExtended:
         mock_whisper_cls.assert_called_once_with("base", device="cpu", compute_type="float32")
 
 
+    @pytest.mark.parametrize(
+        "configured, expected",
+        [("auto", "int8"), (None, "int8"), ("float32", "float32"), (" int8_float16 ", "int8_float16")],
+    )
+    def test_forced_cpu_path_honors_explicit_compute_type(self, configured, expected):
+        """On Apple Silicon/Rosetta the loader forces device=cpu, but must still honour the
+        documented ``stt.local.compute_type`` knob; ``auto``/unset keeps the historical int8."""
+        from tools import transcription_local
+
+        mock_whisper_cls = MagicMock(return_value=MagicMock())
+        with patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch.object(transcription_local, "_should_force_faster_whisper_cpu", return_value=True):
+            transcription_local._load_local_whisper_model("base", device="auto", compute_type=configured)
+
+        mock_whisper_cls.assert_called_once_with("base", device="cpu", compute_type=expected)
+
     def test_cuda_out_of_memory_does_not_trigger_cpu_fallback(self, tmp_path):
         """'CUDA out of memory' is a real error, not a missing lib — surface it."""
         audio = tmp_path / "test.ogg"

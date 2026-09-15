@@ -248,10 +248,8 @@ def _restart_obligation_is_discharged(marker: dict[str, str]) -> bool:
     The marker remembers the ``expected_sha`` the interrupted update pulled. A gateway
     that is live *now* and reports that same sha is serving the pulled code, so the
     restart the obligation was waiting for provably happened — regardless of why the
-    update exited before clearing the marker. Mirrors ``_live_fleet_covers_receipt``:
-    the fleet inventory decides when it returns rows, and the per-gateway identity
-    sources are consulted when it returns none, because "no rows" is ambiguous between
-    "nothing running" and "the probe itself failed" (#111272).
+    update exited before clearing the marker. Mirrors ``_live_fleet_covers_receipt``: the
+    per-gateway identity sources are consult...[truncated]
 
     Discharging is fail-open, so it demands positive identity evidence: a marker that
     recorded no ``expected_sha``, or that no live gateway can be identified for, stays
@@ -263,14 +261,13 @@ def _restart_obligation_is_discharged(marker: dict[str, str]) -> bool:
     try:
         from hermes_cli.update_receipt import collect_fleet_versions
         fleet = collect_fleet_versions()
-    except Exception as exc:  # noqa: BLE001 - see above: no rows is not a discharge
+    except Exception as exc:  # noqa: BLE001 - a failed probe is not a discharge
         logger.debug("Fleet version probe failed for the restart marker: %s", exc)
         fleet = []
     if fleet:
-        return all(
-            row.get("state") == "current" and row.get("code_sha") == expected_sha
-            for row in fleet
-        )
+        # Inventory rows exist: whether a current row discharges the obligation is
+        # decided by #105417, so this predicate does not rule on it.
+        return False
     live_shas = _live_gateway_code_shas()
     return bool(live_shas) and all(sha == expected_sha for sha in live_shas)
 

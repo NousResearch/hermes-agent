@@ -224,22 +224,6 @@ def test_marker_settled_when_degraded_probe_and_live_gateway_serves_pulled_sha(m
         state_path.unlink()
 
 
-def test_marker_settled_from_a_current_fleet_row(monkeypatch):
-    pulled_sha = "b" * 40
-    update_cmd._write_fleet_restart_pending_marker(expected_sha=pulled_sha)
-    marker = update_cmd._fleet_restart_pending_marker_path()
-    try:
-        _stub_fleet_probe(
-            monkeypatch,
-            rows=[{"profile": "default", "pid": 4242, "state": "current", "code_sha": pulled_sha}],
-        )
-
-        assert update_cmd._pending_fleet_restart_needed() is False
-        assert not marker.exists()
-    finally:
-        update_cmd._clear_fleet_restart_pending_marker()
-
-
 def test_marker_kept_when_live_gateway_still_serves_pre_update_sha(monkeypatch):
     """The narrow fix must not blanket-hide a genuinely stale gateway."""
     pulled_sha, pre_update_sha = "c" * 40, "d" * 40

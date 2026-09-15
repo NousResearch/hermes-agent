@@ -12,7 +12,10 @@ import {
   activeGatewayProfileKey,
   closeSecondaryGateways,
   configureGatewayRegistry,
-  setPrimaryGateway
+  ensureGatewayForAgent,
+  requestGatewayForAgent,
+  setPrimaryGateway,
+  setPrimaryGatewayConnection
 } from '@/store/gateway'
 import {
   $activeGatewayProfile,
@@ -51,6 +54,16 @@ import type { SubmitTextOptions } from './use-prompt-actions/utils'
 import { useSessionActions } from './use-session-actions'
 import { useSessionStateCache } from './use-session-state-cache'
 
+// Electron's legacy module is compiled with its own (non-strict) tsconfig.
+const { profileHasRemoteConnection, resolveProfileBackendRoute } = await vi.importActual<{
+  profileHasRemoteConnection: (config: unknown, profile: unknown) => boolean
+  resolveProfileBackendRoute: (profile: unknown, options: Record<string, unknown>) => { backend: string }
+}>('../../../../electron/connection-config')
+
+const { resolveRegistryLocalRoute } = await vi.importActual<{
+  resolveRegistryLocalRoute: (profile: unknown, options: Record<string, unknown>) => { delegate: boolean }
+}>('../../../../electron/connection-registry')
+
 // ── The real profile-rail reproduction (#94071, Sessions mode) ───────────────
 //
 //   primary / ambient source  = a remote gateway on `default`
@@ -68,11 +81,8 @@ import { useSessionStateCache } from './use-session-state-cache'
 // held the runtime — and 4001'd "session not found" while the orphaned omar
 // runtime was left to be ws-orphan-reaped.
 //
-// The explicit `local` source (This device) is different by design: a profile
-// pick made there takes the legacy profile-only door (ensureGatewayProfile,
-// so a per-profile remote override still resolves), and the draft's owner is
-// that v1 profile socket — the last case pins that the same one-socket
-// continuity holds there too.
+// The ambient source still uses the legacy profile-only door; the last case
+// pins that its one-socket continuity holds too.
 //
 // This suite drives the ACTUAL code path: the real registry store with mocked
 // sockets, the real store/profile switch, the real useSessionStateCache /
@@ -507,11 +517,7 @@ describe('profile rail: a fresh Omar chat keeps its exact registry owner across 
     expect($newChatConnectionId.get()).toBe(SOURCE_ID)
   })
 
-  it('keeps the legacy profile door when boot published `local` on the active primary gateway', async () => {
-    // The published identity survives the reload, but a pick on the explicit
-    // local source is still a legacy profile pick (per-profile remote
-    // overrides resolve through getConnection), so the draft's owner is the
-    // v1 profile socket, never the registry entry local::omar.
+  it('keeps the local registry source published at boot', async () => {
     const primary = makePrimary()
 
     setPrimaryGateway(primary as never, 'default')
@@ -522,9 +528,45 @@ describe('profile rail: a fresh Omar chat keeps its exact registry owner across 
 
     const desktop = window.hermesDesktop!
 
-    await waitFor(() => expect(desktop.getConnection).toHaveBeenCalledWith('omar'))
-    expect(desktop.getConnectionFor).not.toHaveBeenCalledWith({ connectionId: 'local', profile: 'omar' })
-    expect($newChatConnectionId.get()).toBeNull()
+    await waitFor(() =>
+      expect(desktop.getConnectionFor).toHaveBeenCalledWith({ connectionId: 'local', profile: 'omar' })
+    )
+    expect(desktop.getConnection).not.toHaveBeenCalledWith('omar')
+    expect($newChatConnectionId.get()).toBe('local')
+  })
+
+  it('does not publish a named local profile or send to primary when its descriptor rejects', async () => {
+    const primary = makePrimary()
+    primary.connectUrl = 'ws://127.0.0.1:4242/ws'
+    setPrimaryGateway(primary as never, 'default')
+    const connection = { connectionId: 'local', mode: 'local', profile: 'default' } as never
+    setConnection(connection)
+    setPrimaryGatewayConnection(connection)
+    $activeGatewayProfile.set('default')
+    vi.mocked(window.hermesDesktop!.getConnectionFor!).mockRejectedValue(new Error('local descriptor unavailable'))
+
+    const activated = await ensureGatewayForAgent('local', 'omar')
+    await ensureGatewayAgent('local', 'omar')
+
+    const witness = {
+      activated,
+      publishedProfile: $activeGatewayProfile.get(),
+      socketProfile: activeGatewayProfileKey(),
+      descriptorProfile: $connection.get()?.profile,
+      primaryStillActive: activeGateway() === (primary as never)
+    }
+
+    expect(witness).toEqual({
+      activated: false,
+      publishedProfile: 'default',
+      socketProfile: 'default',
+      descriptorProfile: 'default',
+      primaryStillActive: true
+    })
+    await expect(requestGatewayForAgent('local', 'omar', 'session.create', {})).rejects.toThrow(
+      'local descriptor unavailable'
+    )
+    expect(primary.request).not.toHaveBeenCalled()
   })
 
   function expectUninterruptedOwner({
@@ -688,18 +730,93 @@ describe('profile rail: a fresh Omar chat keeps its exact registry owner across 
     expectUninterruptedOwner({ ambientRequest: ambientRequest as GatewayRequestMock, omarSocket, primary })
   })
 
-  it('a pick on the explicit `local` source is a legacy profile pick: create and both turns ride the ONE v1 omar socket', async () => {
+  it.each([
+    ['selectProfile', selectProfile, false],
+    ['newSessionInProfile', newSessionInProfile, false],
+    ['selectProfile with override', selectProfile, true],
+    ['newSessionInProfile with override', newSessionInProfile, true]
+  ] as const)('keeps This device named picks on their exact owner with saved cloud primary (%s)', async (_name, pick, override) => {
+    const saved = { mode: 'cloud', profiles: override ? { omar: { mode: 'remote', url: 'https://override.invalid' } } : {} }
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    const desktop = window.hermesDesktop!
+
+    const localDescriptor = (profile: string) => ({
+      mode: 'local' as const,
+      profile,
+      port: OMAR_PORT,
+      token: 'test-local',
+      wsUrl: `ws://127.0.0.1:${OMAR_PORT}/ws`
+    })
+
+    // Exercise Electron's real routing policies at the IPC boundary; only the
+    // backend/socket transport is synthetic, never dial the user's gateways.
+    vi.mocked(desktop.getConnection).mockImplementation(async profile => {
+      const route = resolveProfileBackendRoute(profile, {
+        globalRemote: saved.mode === 'cloud',
+        primaryProfile: 'default',
+        primaryRemoteActive: true,
+        ownEntry: false,
+        profileRemoteOverride: profileHasRemoteConnection(saved, profile)
+      })
+
+      expect(route.backend).toBe(override && profile === 'omar' ? 'pool' : 'primary')
+
+      return { mode: 'remote', profile, wsUrl: `ws://override.invalid:${OMAR_PORT}/ws`, token: 'test-override' } as never
+    })
+    vi.mocked(desktop.getConnectionFor!).mockImplementation(async ({ connectionId, profile }) => {
+      expect(connectionId).toBe('local')
+
+      const route = resolveRegistryLocalRoute(profile, {
+        globalRemote: saved.mode === 'cloud',
+        profileRemoteOverride: profileHasRemoteConnection(saved, profile)
+      })
+
+      expect(route.delegate).toBe(override && profile === 'omar')
+
+      return route.delegate ? desktop.getConnection(profile) : (localDescriptor(profile || 'default') as never)
+    })
+    await ensureGatewayAgent('local', 'default')
+    pick('omar')
+    await waitFor(() => expect(activeGatewayProfileKey()).toBe('omar'))
+    expect(activeGatewayConnectionId()).toBe('local')
+    expect($connection.get()?.mode).toBe(override ? 'remote' : 'local')
+    expect($newChatConnectionId.get()).toBe('local')
+
+    if (override) {
+      expect(desktop.getConnection).toHaveBeenCalledWith('omar')
+    } else {
+      expect(desktop.getConnection).not.toHaveBeenCalled()
+    }
+
+    const omarSocket = activeGateway() as unknown as MockGateway
+    expect(omarSocket.connectUrl).toContain(override ? 'override.invalid' : '127.0.0.1')
+
+    const ambientRequest = vi.fn(async (method: string) => {
+      throw new Error(`explicit local traffic must not use ambient dispatcher: ${method}`)
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness ambientRequest={ambientRequest} onReady={h => (handle = h)} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+    await expect(handle!.submitText('first prompt')).resolves.toBe(true)
+    await settleTurn(handle!)
+    await expect(handle!.submitText('second prompt')).resolves.toBe(true)
+    expect(handle!.bindings()).toEqual({ runtimeForStored: RUNTIME_ID, storedForRuntime: STORED_ID })
+    expect(calls(omarSocket).filter(method => method === 'session.create')).toHaveLength(1)
+    expect(omarSocket.request.mock.calls.filter(([method]) => method === 'prompt.submit').map(([, params]) => params?.text))
+      .toEqual(['first prompt', 'second prompt'])
+    expect(getSessionOwnerHint(STORED_ID)).toEqual({ connectionId: 'local', profile: 'omar' })
+    expectUninterruptedOwner({ ambientRequest, omarSocket, primary })
+    expect(primary.request).not.toHaveBeenCalled()
+  })
+
+  it('an ambient profile pick keeps create and both turns on the ONE v1 omar socket', async () => {
     const primary = makePrimary()
     setPrimaryGateway(primary as never, 'default')
 
-    // Active registry source: `local` (This device), on its default profile.
-    await ensureGatewayAgent('local', 'default')
-    expect(activeGatewayConnectionId()).toBe('local')
-
-    // A profile pick on the explicit local source takes the profile-only door
-    // so a per-profile remote override resolves (the main process answers
-    // getConnection("omar")), never the registry entry local::omar. The draft's
-    // owner must be the socket that door opens: the v1 omar socket.
+    // No explicit registry source: legacy per-profile routing still applies.
+    expect(activeGatewayConnectionId()).toBeNull()
     const LEGACY_RUNTIME_ID = 'rt-omar-legacy-1'
     const LEGACY_STORED_ID = 'stored-omar-legacy-1'
 

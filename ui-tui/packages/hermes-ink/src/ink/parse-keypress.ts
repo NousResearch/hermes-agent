@@ -19,8 +19,27 @@ const FN_KEY_RE =
 // CSI u (kitty keyboard protocol): ESC [ codepoint [; modifier] u
 // Example: ESC[13;2u = Shift+Enter, ESC[27u = Escape (no modifiers)
 // Modifier is optional - when absent, defaults to 1 (no modifiers)
+//
+// Both parameters may carry colon-separated SUB-PARAMETERS, which kitty emits
+// once progressive-enhancement flags above 1 are in effect: the codepoint may
+// carry alternate keys (`ESC[97:65;2u` = base `a`, shifted `A`) and the
+// modifier may carry an event type (`ESC[97;2:1u` = press / 2 repeat /
+// 3 release). Hermes only ever pushes flags=1, so these normally cannot
+// arrive — but the push does not reach the real terminal through a
+// multiplexer without passthrough, and the terminal then keeps whatever flags
+// a previous application left behind. Without accepting sub-parameters the
+// regex fails to match, the key resolves to no name, and `input-event.ts`
+// swallows it: every keystroke silently does nothing. Skipping the extra
+// fields matches what `hermes_cli/curses_ui.py::_parse_csi_u_key` already
+// does on the Python side, so the two input paths agree.
+// The event type is CAPTURED rather than discarded: 1=press, 2=repeat,
+// 3=release. A release must not produce a keypress or every character would
+// arrive twice.
 // eslint-disable-next-line no-control-regex
-const CSI_U_RE = /^\x1b\[(\d+)(?:;(\d+))?u/
+const CSI_U_RE = /^\x1b\[(\d+)(?::\d+)*(?:;(\d+)(?::(\d+))?(?::\d+)*)?u/
+
+/** kitty event type 3 = key release; it must never be treated as a press. */
+const CSI_U_EVENT_RELEASE = '3'
 
 // xterm modifyOtherKeys: ESC [ 27 ; modifier ; keycode ~
 // Example: ESC[27;2;13~ = Shift+Enter. Emitted by Ghostty/tmux/xterm when
@@ -716,7 +735,11 @@ function parseKeypress(s: string = ''): ParsedKey {
     // Modifier defaults to 1 (no modifiers) when not present
     const modifier = match[2] ? parseInt(match[2], 10) : 1
     const mods = decodeModifier(modifier)
-    const name = keycodeToName(codepoint)
+    // A key RELEASE resolves to no name, so the CSI-u branch in
+    // input-event.ts swallows it. Without this every character would arrive
+    // twice whenever the terminal is reporting event types.
+    const name =
+      match[3] === CSI_U_EVENT_RELEASE ? undefined : keycodeToName(codepoint)
 
     return {
       kind: 'key',

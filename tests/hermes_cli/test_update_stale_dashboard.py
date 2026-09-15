@@ -479,13 +479,14 @@ class TestManualBackendRespawn:
              patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
              patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
              patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=argv), \
+             patch.object(main_dashboard, "_dashboard_cwd_for_pid", return_value="/install/root"), \
              patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=None), \
              patch.object(live, "_respawn_dashboard_processes", return_value=[]) as respawn, \
              patch("os.kill", side_effect=fake_kill), \
              patch("time.sleep"):
             _kill_stale_dashboard_processes(restart_managed=True)
 
-        respawn.assert_called_once_with([argv])
+        respawn.assert_called_once_with([(argv, "/install/root")])
         assert "when you're ready" not in capsys.readouterr().out
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
@@ -534,13 +535,14 @@ class TestManualBackendRespawn:
              patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
              patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
              patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=argv), \
+             patch.object(main_dashboard, "_dashboard_cwd_for_pid", return_value="/install/root"), \
              patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=None), \
              patch.object(live, "_respawn_dashboard_processes", return_value=[]) as respawn, \
              patch("os.kill", side_effect=fake_kill), \
              patch("time.sleep"):
             _kill_stale_dashboard_processes(restart_managed=True)
 
-        respawn.assert_called_once_with([argv])
+        respawn.assert_called_once_with([(argv, "/install/root")])
         assert "when you're ready" not in capsys.readouterr().out
 
     def test_respawn_adds_no_open_to_dashboard_commands(self, tmp_path, monkeypatch):
@@ -573,6 +575,75 @@ class TestManualBackendRespawn:
         assert failed == [["hermes", "serve"]]
         out = capsys.readouterr().out
         assert "✗ failed to restart" in out
+
+    def test_respawn_anchors_relative_argv_to_captured_cwd(self, tmp_path, monkeypatch):
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+        with patch.object(live.subprocess, "Popen") as popen:
+            failed = live._respawn_dashboard_processes([
+                (["./venv/bin/python", "./venv/bin/hermes", "dashboard"], "/install/root")
+            ])
+
+        assert failed == []
+        assert popen.call_args.kwargs["cwd"] == "/install/root"
+
+    def test_respawn_rejects_relative_argv_without_captured_cwd(self, tmp_path, monkeypatch):
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+        with patch.object(live.subprocess, "Popen") as popen:
+            failed = live._respawn_dashboard_processes([
+                (["./venv/bin/hermes", "dashboard"], None)
+            ])
+
+        assert failed == [["./venv/bin/hermes", "dashboard"]]
+        popen.assert_not_called()
+
+    def test_respawn_rejects_relative_script_without_captured_cwd(self, tmp_path, monkeypatch):
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        command = [sys.executable, "./bin/hermes_cli/main.py", "dashboard"]
+
+        with patch.object(live.subprocess, "Popen") as popen:
+            failed = live._respawn_dashboard_processes([(command, None)])
+
+        assert failed == [command]
+        popen.assert_not_called()
+
+    def test_duplicate_argv_keeps_first_candidate_cwd(self):
+        from hermes_cli.dashboard_procs import _restart_killed_backends
+
+        argv = ["./venv/bin/hermes", "dashboard", "--port", "8300"]
+        with patch.object(main_dashboard, "_respawn_dashboard_processes", return_value=[]) as respawn:
+            _restart_killed_backends(
+                [101, 202],
+                {101: None, 202: None},
+                {101: None, 202: None},
+                {101: argv, 202: argv},
+                {101: None, 202: None},
+                {101: "/install/first", 202: "/install/second"},
+            )
+
+        respawn.assert_called_once_with([(argv, "/install/first")])
+
+    def test_duplicate_argv_uses_selected_own_home_candidate_cwd(self, tmp_path, monkeypatch):
+        from hermes_cli.dashboard_procs import _restart_killed_backends
+
+        own_home = str(tmp_path / ".hermes")
+        monkeypatch.setenv("HERMES_HOME", own_home)
+        argv = ["./venv/bin/hermes", "dashboard", "--port", "8300"]
+        with patch.object(main_dashboard, "_respawn_dashboard_processes", return_value=[]) as respawn:
+            _restart_killed_backends(
+                [101, 202],
+                {101: None, 202: None},
+                {101: None, 202: None},
+                {101: argv, 202: argv},
+                {101: str(tmp_path / "foreign"), 202: own_home},
+                {101: "/foreign/install", 202: "/own/install"},
+            )
+
+        respawn.assert_called_once_with([(argv, "/own/install")])
 
 
 class TestFilterDashboardRespawnCandidates:

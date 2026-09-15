@@ -248,56 +248,31 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
         assert payload["host_local"] is True
 
 
-def test_stale_claim_reclaim_without_spawn_counts_failure(kanban_home):
-    """Automatic reclaim of a claim that was never spawned (``worker_pid``
-    NULL) must increment ``consecutive_failures`` (#111306): otherwise a
-    claim-without-spawn reclaims forever, ``consecutive_failures`` stays 0,
-    and the failure_threshold breaker can never trip."""
+def test_stale_claim_reclaim_without_spawn_counts_toward_breaker(kanban_home):
+    """A claim that expires without a worker ever spawning is a non-success
+    attempt (#111306): each automatic reclaim advances ``consecutive_failures``
+    and the breaker trips at ``failure_limit`` instead of the card spinning
+    claim -> reclaim -> claim forever."""
     with kbc.connect() as conn:
         t = kb.create_task(conn, title="never spawned", assignee="a")
         host = kb._claimer_id().split(":", 1)[0]
-        kb.claim_task(conn, t, claimer=f"{host}:worker")
-        # No _set_worker_pid: the claimer never spawned a worker.
-        old_expires = int(time.time()) - 3600
-        conn.execute(
-            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
-            (old_expires, t),
-        )
-        assert kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None) == 1
-        row = conn.execute(
-            "SELECT status, consecutive_failures FROM tasks WHERE id = ?",
-            (t,),
-        ).fetchone()
-        assert row["status"] == "ready"
-        assert row["consecutive_failures"] == 1
-
-
-def test_stale_claim_reclaim_dead_worker_counts_failure(
-    kanban_home, monkeypatch,
-):
-    """Automatic reclaim of a claim whose worker already died must increment
-    ``consecutive_failures`` (#111306): the reclaim had no live worker to
-    terminate, so it counts against the failure_threshold breaker."""
-    import hermes_cli.kanban_db as _kb
-
-    with kbc.connect() as conn:
-        t = kb.create_task(conn, title="dead worker", assignee="a")
-        host = _kb._claimer_id().split(":", 1)[0]
-        kb.claim_task(conn, t, claimer=f"{host}:worker")
-        kbd._set_worker_pid(conn, t, 12345)
-        old_expires = int(time.time()) - 3600
-        conn.execute(
-            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
-            (old_expires, t),
-        )
-        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
-        assert kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None) == 1
-        row = conn.execute(
-            "SELECT status, consecutive_failures FROM tasks WHERE id = ?",
-            (t,),
-        ).fetchone()
-        assert row["status"] == "ready"
-        assert row["consecutive_failures"] == 1
+        for expected in (1, 2):
+            kb.claim_task(conn, t, claimer=f"{host}:worker")
+            # No _set_worker_pid: the claimer never spawned a worker.
+            conn.execute(
+                "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+                (int(time.time()) - 3600, t),
+            )
+            assert kb.release_stale_claims(
+                conn, signal_fn=lambda _p, _s: None, failure_limit=2,
+            ) == 1
+            row = conn.execute(
+                "SELECT status, consecutive_failures FROM tasks WHERE id = ?", (t,),
+            ).fetchone()
+            assert row["consecutive_failures"] == expected
+        assert row["status"] == "blocked"
+        kinds = [e.kind for e in kb.list_events(conn, t)]
+        assert kinds[-2:] == ["reclaimed", "gave_up"]
 
 
 def test_stale_claim_extend_live_worker_does_not_count_failure(

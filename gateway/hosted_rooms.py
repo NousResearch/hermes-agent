@@ -621,7 +621,8 @@ def upsert_room_link_record(db_path: DbPath, *, record: Mapping[str, Any], max_l
                    trace_id=excluded.trace_id,
                    transport_security=excluded.transport_security,
                    status=excluded.status,
-                   updated_at=excluded.updated_at""",
+                   updated_at=excluded.updated_at
+                   WHERE excluded.updated_at >= hosted_room_links.updated_at""",
             tuple(record[column] for column in _LINK_COLUMNS))
 
 

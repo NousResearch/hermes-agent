@@ -1756,6 +1756,12 @@ DEFAULT_CONFIG = {
         # early failure evidence from long-running workers.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,
         "worker_log_backup_count": 1,
+        # Rule-1 batch-approval dispatch gate (decision-hud bridge): when True, a board's
+        # dispatch tick refuses to promote/spawn unless its board.json batch_approval_gate
+        # names a decision-hud-approved batch. Ships False — every currently-live board has
+        # no gate configured, so enabling this by default would halt dispatch everywhere
+        # (see decision-hub-first-work/plans/02-minimal-bridge-alternative.md, section 5).
+        "batch_approval_gate_enabled": False,
         # Profile for the root/orchestration task after Triage decomposition; "" = default profile.
         # Does not control the decomposer LLM path (see auxiliary.kanban_decomposer).
         "orchestrator_profile": "",

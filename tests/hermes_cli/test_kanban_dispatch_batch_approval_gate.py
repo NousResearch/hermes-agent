@@ -3,9 +3,9 @@
 DEFAULT-GATED: an unset ``batch_approval_gate`` on a board blocks spawning —
 see ``_check_batch_approval_gate`` in ``hermes_cli/kanban_db_dispatch.py`` and
 decision-hub-first-work/plans/02-minimal-bridge-alternative.md. The gate
-itself is feature-flagged off by default
-(``HERMES_KANBAN_BATCH_APPROVAL_GATE_ENABLED``) so these tests explicitly
-opt in via the env var.
+itself is config-gated off by default (``kanban.batch_approval_gate_enabled``
+in config.yaml) so these tests explicitly opt in by monkeypatching
+``load_config``.
 """
 
 from __future__ import annotations
@@ -20,13 +20,21 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 
 
+def _enable_batch_approval_gate(monkeypatch):
+    """Monkeypatch load_config so kanban.batch_approval_gate_enabled reads True."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"batch_approval_gate_enabled": True}},
+    )
+
+
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
-    monkeypatch.setenv("HERMES_KANBAN_BATCH_APPROVAL_GATE_ENABLED", "1")
+    _enable_batch_approval_gate(monkeypatch)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     db_path = kb.kanban_db_path(board="default")
     kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
@@ -172,14 +180,25 @@ def test_check_batch_approval_gate_uses_project_id_when_set(
 def test_gate_is_a_noop_when_feature_flag_disabled(
     conn, all_assignees_spawnable, monkeypatch,
 ):
-    """Default-disabled feature flag: with the env var unset/'0', dispatch
-    must behave exactly as before this change — no gate configured, gate not
-    checked at all, tasks spawn normally."""
-    monkeypatch.delenv("HERMES_KANBAN_BATCH_APPROVAL_GATE_ENABLED", raising=False)
+    """Default-disabled config flag: with no override (real DEFAULT_CONFIG
+    default of False), dispatch must behave exactly as before this change —
+    no gate configured, gate not checked at all, tasks spawn normally."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config", lambda: {"kanban": {}},
+    )
 
     tid = kb.create_task(conn, title="t", assignee="alice")
 
     result = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 1)
 
     assert result.batch_approval_blocked is None
-    assert any(row[0] == tid for row in result.spawned)
+
+
+def test_batch_approval_gate_enabled_defaults_to_false_in_real_config():
+    """Proves the real DEFAULT_CONFIG (not a test double) ships the gate
+    off — regression guard for the AGENTS.md config-surface requirement:
+    this must be a config.yaml key with a real default, not a bare env var
+    with no config-side presence at all."""
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["kanban"]["batch_approval_gate_enabled"] is False

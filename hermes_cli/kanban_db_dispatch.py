@@ -1844,20 +1844,24 @@ def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
 # lock hold and stall a sibling dispatcher's tick.
 def _check_batch_approval_gate(board: Optional[str]) -> Optional[str]:
     """Return a block reason string if this board's dispatch tick must not
-    spawn, else None. Feature-flagged: no-op (always returns None
-    immediately, without touching board metadata) unless
-    ``HERMES_KANBAN_BATCH_APPROVAL_GATE_ENABLED`` is set to a truthy value
-    ('1'/'true'/'yes'), since the underlying behavior is DEFAULT-GATED — an
-    unset batch_approval_gate is treated as "blocked", not "passed through".
-    See decision-hub-first-work/plans/02-minimal-bridge-alternative.md
-    section 5 for the migration/rollout rationale: shipping this gate
-    enabled by default would halt every board with no gate configured
-    (including boards with proven live dispatch activity), so it ships
-    disabled until an operator explicitly opts in.
+    spawn, else None. Config-gated via ``kanban.batch_approval_gate_enabled``
+    (default False): no-op (always returns None immediately, without
+    touching board metadata) unless set True, since the underlying behavior
+    is DEFAULT-GATED — an unset batch_approval_gate is treated as "blocked",
+    not "passed through". See
+    decision-hub-first-work/plans/02-minimal-bridge-alternative.md section 5
+    for the migration/rollout rationale: shipping this gate enabled by
+    default would halt every board with no gate configured (including
+    boards with proven live dispatch activity), so it ships disabled until
+    an operator explicitly opts in via config.yaml.
     """
-    if os.environ.get("HERMES_KANBAN_BATCH_APPROVAL_GATE_ENABLED", "").strip().lower() not in (
-        "1", "true", "yes", "on",
-    ):
+    from hermes_cli.config import load_config
+
+    try:
+        kanban_cfg = load_config().get("kanban") or {}
+    except Exception:
+        kanban_cfg = {}
+    if not kanban_cfg.get("batch_approval_gate_enabled", False):
         return None
     meta = _kb.read_board_metadata(board=board)
     gate = meta.get("batch_approval_gate")

@@ -178,6 +178,52 @@ async def test_queued_human_turn_also_gets_the_visible_fallback():
 
 
 @pytest.mark.asyncio
+async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_path):
+    """The chain's LAST turn decides whether a bare marker may vanish, not the opener."""
+    runner = _runner(monkeypatch, tmp_path)
+    runner._MAX_INTERRUPT_DEPTH = 8
+    runner._run_agent = AsyncMock(return_value={"final_response": "NO_REPLY", "messages": []})
+    runner._is_goal_continuation_event = MagicMock(return_value=False)
+    runner._session_key_for_source = MagicMock(return_value="agent:main:telegram:group:-1001:12345")
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="follow-up")
+    runner._adapter_for_source = MagicMock(return_value=None)
+    runner._refresh_agent_cache_message_count = AsyncMock()
+    turn_ctx = SimpleNamespace(
+        source=_source(), session_id="sid", session_key="agent:main:telegram:group:-1001:12345",
+        run_generation=1, _interrupt_depth=0, history=[], _status_thread_metadata=None,
+        context_prompt=None, result_holder=[None])
+    pending_event = SimpleNamespace(source=_source(), message_id="43", channel_prompt=None,
+                                    message_type=None, internal=True)
+
+    merged = await gateway_run.GatewayRunner._run_agent_queued_followup(
+        runner, turn_ctx, adapter=None, pending="hi again", pending_event=pending_event,
+        response="resp", result={"interrupted": True, "messages": []}, stream_task=None)
+
+    assert runner._run_agent.await_args.kwargs["persist_user_display_kind"] == "internal_notification"
+    assert merged["queued_terminal_display_kind"] == "internal_notification"
+
+    def _result(terminal_kind):
+        return {
+            "final_response": "[SILENT]", "tools": [], "history_offset": 0, "last_prompt_tokens": 0,
+            "api_calls": 1, "failed": False, "queued_terminal_inbound_id": "43",
+            "queued_terminal_display_kind": terminal_kind,
+            "messages": [{"role": "user", "content": "x"}, {"role": "assistant", "content": "[SILENT]"}],
+        }
+
+    # Human opener, internal terminal turn: silent.
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value=_result("internal_notification"))
+    assert await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1) == ""
+    # Internal opener, human terminal turn: visible fallback.
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value=_result(None))
+    response = await runner._handle_message_with_agent(
+        _event(internal=True), _source(), "agent:main:telegram:group:-1001:12345", 1)
+    assert "silence marker" in response
+
+
+@pytest.mark.asyncio
 async def test_empty_success_still_gets_empty_response_warning(monkeypatch, tmp_path):
     runner = _runner(monkeypatch, tmp_path)
     runner._run_agent = AsyncMock(return_value={

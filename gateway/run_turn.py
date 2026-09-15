@@ -1391,8 +1391,13 @@ class GatewayTurnMixin:
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
             response = ""
         _intentional_silence = self._is_intentional_silence(agent_result, response)
+        # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
+        # opened the chain: an internal follow-up may go silent, a human one must not.
+        _silence_kind = persist_user_display_kind
+        if isinstance(agent_result, dict) and "queued_terminal_display_kind" in agent_result:
+            _silence_kind = agent_result["queued_terminal_display_kind"]
         if _intentional_silence and not self._should_swallow_silence(
-            agent_result, response, display_kind=persist_user_display_kind,
+            agent_result, response, display_kind=_silence_kind,
         ):
             # the current inbound row is not in ``history`` yet, so use the turn metadata we
             # already carried into the agent run instead of guessing from an older row.
@@ -3605,6 +3610,8 @@ class GatewayTurnMixin:
         # distinct from the reply anchor above (None in forum topics). Carry it or two chained
         # topic turns with the same text would collide on one obligation id (queued-final-ledger).
         next_inbound_id = None
+        # Same rule as the top-level turn (see _prepare_turn): only self-injected events are machinery.
+        next_display_kind = "internal_notification" if getattr(pending_event, "internal", False) else None
         # See #60671.
         if pending_event is not None:
             next_source = getattr(pending_event, "source", None) or source
@@ -3677,6 +3684,7 @@ class GatewayTurnMixin:
                 run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,
                 channel_prompt=next_channel_prompt, message_type=next_message_type,
+                persist_user_display_kind=next_display_kind,
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(
@@ -3696,7 +3704,11 @@ class GatewayTurnMixin:
         # terminal reply, and is never redelivered. A deeper recursion has already set its own id,
         # so only fill the key while it is still absent: the innermost turn wins.
         if isinstance(merged, dict) and "queued_terminal_inbound_id" not in merged:
-            merged = {**merged, "queued_terminal_inbound_id": next_inbound_id}
+            merged = {
+                **merged,
+                "queued_terminal_inbound_id": next_inbound_id,
+                "queued_terminal_display_kind": next_display_kind,
+            }
         return merged
 
     async def _run_agent_cleanup_turn_tasks(

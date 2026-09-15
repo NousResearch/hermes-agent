@@ -13,6 +13,8 @@ import os
 import socket
 import asyncio
 import re
+import subprocess
+import sys
 from contextlib import contextmanager
 from typing import Any, Optional
 from urllib.parse import parse_qsl, quote, unquote, urljoin, urlparse, urlsplit, urlunsplit
@@ -131,6 +133,7 @@ _allow_private_resolved, _cached_allow_private = False, False
 
 _BENCHMARKING_NET = ipaddress.ip_network("198.18.0.0/15")
 _allow_tun_fakeip_resolved, _cached_allow_tun_fakeip = False, False
+_fakeip_route_probed, _cached_fakeip_route = False, False
 
 
 def _global_allow_tun_fakeip() -> bool:
@@ -161,14 +164,57 @@ def _resolve_allow_tun_fakeip() -> bool:
         if isinstance(sec, dict) and "allow_tun_fakeip" in sec:
             return is_truthy_value(sec.get("allow_tun_fakeip"), default=False)
     except Exception:
-        pass
-    # If a proxy is configured (e.g. system proxy / TUN companion), automatically permit TUN fake-ip
-    return _proxy_is_configured()
+        pass  # config unavailable (tests, early import) — keep default
+    # Proxy-auto is deliberately narrow: a proxy env var alone also exists on corp/CI
+    # machines with no TUN, where 198.18/15 routes to the default gateway instead of
+    # the tunnel. Only auto-enable when a fake-IP route is actually present.
+    if _proxy_is_configured() and _has_tun_fakeip_route():
+        logger.info("TUN fake-IP allowance active via proxy-auto (198.18.0.0/15 route present)")
+        return True
+    return False
+
+
+def _has_tun_fakeip_route() -> bool:
+    """True when the OS routes 198.18.0.0/15 into a tunnel interface (TUN fake-IP active).
+
+    Best-effort routing-table check, probed once and cached; any error keeps the default
+    (closed). On a machine without the tunnel this fails closed — set HERMES_ALLOW_TUN_FAKEIP
+    or ``security.allow_tun_fakeip`` explicitly if you know the setup provides fake-IP DNS.
+    """
+    global _fakeip_route_probed, _cached_fakeip_route
+    if _fakeip_route_probed:
+        return _cached_fakeip_route
+    _fakeip_route_probed, _cached_fakeip_route = True, _probe_tun_fakeip_route()
+    return _cached_fakeip_route
+
+
+def _probe_tun_fakeip_route() -> bool:
+    try:
+        if sys.platform == "darwin":
+            out = subprocess.run(["netstat", "-rn", "-f", "inet"], capture_output=True, text=True,
+                                 timeout=5).stdout
+        else:
+            out = subprocess.run(["ip", "route"], capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return False
+    for line in out.splitlines():
+        fields = line.split()
+        if not fields:
+            continue
+        target = fields[0]
+        # macOS: "198.18.0.1/32 ... utunNN" / "2/7 ... utunNN" (the /15 covered by that mask
+        # form); Linux: "198.18.0.0/15 via ... dev utunNN" or "198.18.0.0/15 dev utunNN".
+        if target in {"198.18.0.0/15", "2/7"} or target.startswith("198.18."):
+            iface = fields[-1]
+            if iface.startswith("utun") or iface.startswith("tun") or iface.startswith("wg"):
+                return True
+    return False
 
 
 def _reset_allow_tun_fakeip_cache() -> None:
-    global _allow_tun_fakeip_resolved, _cached_allow_tun_fakeip
+    global _allow_tun_fakeip_resolved, _cached_allow_tun_fakeip, _fakeip_route_probed, _cached_fakeip_route
     _allow_tun_fakeip_resolved = _cached_allow_tun_fakeip = False
+    _fakeip_route_probed = _cached_fakeip_route = False
 
 
 def _global_allow_private_urls() -> bool:

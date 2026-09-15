@@ -2,14 +2,14 @@ import babel from '@rolldown/plugin-babel'
 import react, { reactCompilerPreset } from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
-/** React Compiler preset scoped to modules that can actually contain
- *  components/hooks (JSX syntax or a react-ish import). The preset's default
- *  code filter matches any PascalCase/use* declaration — effectively every TS
- *  module — which made the babel pass parse all ~1.5k source files when only
- *  ~750 are React-bearing. */
+/** Keep React Compiler on the renderer's measured hot path. Compiling every
+ *  React-bearing desktop module adds roughly ten seconds to production builds,
+ *  while the upstream benchmark found the material win in streaming chat and
+ *  Markdown rendering. */
 function compilerPreset() {
   const preset = reactCompilerPreset()
-  preset.rolldown.filter.code = /\/>|<\/|from\s*['"][^'"]*react/
+  preset.rolldown.filter.id =
+    /[\\/]src[\\/](?:app[\\/]chat|components[\\/]assistant-ui|plugins[\\/]hermes-bots)[\\/].*\.tsx$/
 
   return preset
 }
@@ -114,7 +114,7 @@ const emojibaseAssets = () => ({
 
 export default defineConfig(({ command }) => ({
   base: './',
-  plugins: [react(), babel({ presets: [compilerPreset()] }), tailwindcss(), emojibaseAssets()],
+  plugins: [react(), babel({ presets: [compilerPreset()], sourceMap: false }), tailwindcss(), emojibaseAssets()],
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by
     // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins — and

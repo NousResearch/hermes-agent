@@ -58,8 +58,6 @@ def _format_live_review_output(sid: str, session: Optional[dict], arg: str) -> s
 def _format_live_usage_output(sid: str, session: dict, arg: str) -> str:
     agent = session.get("agent")
     usage = _session_usage_snapshot(session)
-    if agent is None and not usage:
-        return _NO_AGENT_USAGE
     if session.get("_metadata_message_count") is not None:
         message_count = int(session.get("_metadata_message_count") or 0)
     else:
@@ -80,7 +78,15 @@ def _format_live_usage_output(sid: str, session: dict, arg: str) -> str:
     rows += [("Messages:", f"{message_count:,}"), ("Compressions:", n("compressions"))]
     model = usage.get("model") or _metadata_mirror(session).get("model") or getattr(agent, "model", "") or "(unknown)"
     lines = ["Session Token Usage", "────────────────────────────────────────", f"Model: {model}"]
-    return "\n".join(lines + [f"{label:<30}{value}" for label, value in rows])
+    lines.extend(f"{label:<30}{value}" for label, value in rows)
+    from tui_gateway.usage_provider import _usage_provider_lines
+
+    account_lines, rate_limit_lines = _usage_provider_lines(session)
+    if account_lines:
+        lines.extend(["", *account_lines])
+    if rate_limit_lines:
+        lines.extend(["", *rate_limit_lines])
+    return "\n".join(lines)
 
 
 def _live_session_messages(session: dict) -> Optional[list]:
@@ -217,6 +223,8 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
     """Answer a slash command from the live session instead of the slash worker; None = not ours."""
     name = (name or "").lstrip("/").lower()
     arg = arg or ""
+    if name == "usage" and arg.strip():
+        return None
     if name == "model" and not arg.strip():
         return _format_live_model_output(session or {})
     if name in _ISOLATED_SESSION_READ_COMMANDS and not (session is not None and _session_uses_compute_host(session)):

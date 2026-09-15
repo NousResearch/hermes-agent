@@ -59,3 +59,40 @@ def test_empty_buffer_does_not_seed(monkeypatch):
     s = _Stub()
     s._handle_prompt_compose_command("/prompt")
     assert s._pending_agent_seed is None
+
+
+def test_compose_uses_shell_on_windows(monkeypatch):
+    """On Windows, subprocess.call must use shell=True so .CMD/.BAT shims
+    (e.g. VS Code's `code` is `code.CMD`) resolve. CreateProcess only
+    appends .exe, not .cmd, so without shell=True the editor never opens.
+    """
+    monkeypatch.setenv("EDITOR", "echo")
+    calls = []
+
+    def spy_call(*args, **kwargs):
+        calls.append(kwargs.get("shell", False))
+        return 0
+
+    monkeypatch.setattr("subprocess.call", spy_call)
+    monkeypatch.setattr("os.name", "nt")
+    _Stub()._compose_in_editor("")
+    assert calls, "subprocess.call was never invoked"
+    assert calls[0] is True, f"shell=True expected on Windows, got {calls[0]}"
+
+
+def test_compose_no_shell_on_posix(monkeypatch):
+    """On POSIX, subprocess.call must NOT use shell=True to avoid shell
+    injection via $EDITOR. The editor command is invoked directly.
+    """
+    monkeypatch.setenv("EDITOR", _fake_editor("test"))
+    calls = []
+
+    def spy_call(*args, **kwargs):
+        calls.append(kwargs.get("shell", False))
+        return 0
+
+    monkeypatch.setattr("subprocess.call", spy_call)
+    monkeypatch.setattr("os.name", "posix")
+    _Stub()._compose_in_editor("")
+    assert calls, "subprocess.call was never invoked"
+    assert calls[0] is False, f"shell=False expected on POSIX, got {calls[0]}"

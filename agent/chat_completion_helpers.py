@@ -3096,11 +3096,8 @@ class _StreamingCall(StreamingWaitMonitor):
             logger.debug("Streaming worker caught %s after request cancellation — exiting without retry.", type(e).__name__)
             return False
         _is_timeout = isinstance(e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout))
-        # ReadError is the aborted/reset body read (a stale-killed attempt's socket
-        # was shut down under a parked reader, ECONNRESET mid-body): the retry loop
-        # owns recovery. Without it an abort-induced read failure ended the turn
-        # instead of reconnecting — the "no response ... reconnecting" loop with
-        # no recovery.
+        # ReadError: abort/reset mid-body (stale-kill shutdown under a parked reader,
+        # ECONNRESET) — the retry loop owns recovery.
         _is_conn_err = isinstance(e, (_httpx.ConnectError, _httpx.ReadError, _httpx.RemoteProtocolError, ConnectionError))
         _is_stream_parse_err = self.agent._is_provider_stream_parse_error(e)
         _is_empty_stream = isinstance(e, EmptyStreamError)
@@ -3223,38 +3220,21 @@ class _StreamingCall(StreamingWaitMonitor):
         if response is None or response is not self._attempt_stream_response:
             return
         try:
-            import socket as _socket
-            from agent.agent_runtime_helpers import _connection_candidates, _socket_from_stream
+            from agent.agent_runtime_helpers import (
+                _connection_candidates, _shutdown_socket, _socket_from_candidate,
+            )
             exts = getattr(response, "extensions", None) or {}
             direct = exts.get("network_stream") if isinstance(exts, dict) else None
-            stream_obj = getattr(response, "stream", None)
-            inner = getattr(stream_obj, "_httpcore_stream", None)
-            if inner is None:
-                # httpx 0.28 nests one level deeper: BoundSyncStream._stream
-                # (ResponseStream)._httpcore_stream (httpcore byte stream).
-                inner = getattr(getattr(stream_obj, "_stream", None), "_httpcore_stream", None)
-            seen: set = set()
-            for start in (direct, inner, stream_obj, response):
-                if start is None or id(start) in seen:
+            for start in (direct, getattr(response, "stream", None)):
+                if start is None:
                     continue
-                seen.add(id(start))
                 for candidate in _connection_candidates(start):
-                    net = getattr(candidate, "_network_stream", None) or getattr(candidate, "_stream", None)
-                    sock = _socket_from_stream(net) if net is not None else None
-                    if sock is None:
-                        sock = _socket_from_stream(candidate)
+                    sock = _socket_from_candidate(candidate)
                     if sock is None:
                         continue
-                    try:
-                        settimeout = getattr(sock, "settimeout", None)
-                        if callable(settimeout):
-                            with contextlib.suppress(OSError):
-                                settimeout(0)
-                        sock.shutdown(_socket.SHUT_RDWR)
-                        logger.info("Shut down the stale stream's socket to unblock the reader "
-                                    "(attempt superseded; model=%s).", self.api_kwargs.get("model", "unknown"))
-                    except OSError:
-                        pass  # already shut / not connected: benign
+                    _shutdown_socket(sock)
+                    logger.info("Shut down the stale stream's socket to unblock the reader "
+                                "(attempt superseded; model=%s).", self.api_kwargs.get("model", "unknown"))
                     return
             logger.debug("Stale stream socket shutdown found no socket; pool sweep is the only abort")
         except Exception:

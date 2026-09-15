@@ -10,7 +10,7 @@ import urllib.request
 from contextlib import asynccontextmanager
 from typing import Dict, Optional, Set
 from utils import normalize_proxy_url
-from agent.proxy_bypass import should_bypass_proxy
+from agent.proxy_bypass import is_loopback_host, should_bypass_proxy
 from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
 from tools.mcp_tool_common import _core
@@ -54,10 +54,15 @@ def _mcp_proxy_mounts(httpx_mod, url: str, ssl_verify, client_cert, server_name:
     NO_PROXY goes through ``agent.proxy_bypass.should_bypass_proxy`` — the one matcher the LLM
     transport and the gateway adapters use (CIDR ranges and ``*.host`` forms the stdlib check
     does not understand) — plus ``urllib.request.proxy_bypass`` for the OS bypass list
-    (Windows ``ProxyOverride`` / macOS exceptions).
+    (Windows ``ProxyOverride`` / macOS exceptions). Loopback is never dialed through a proxy
+    (``agent.proxy_bypass.is_loopback_host``), NO_PROXY or not.
+
+    A mount wins over ``transport=`` for the URLs it matches, so each proxy transport is wrapped in
+    the same wire-body cap as the direct one. A proxy the installed httpx cannot build (e.g.
+    ``socks://`` without socksio) raises here and surfaces as this server's connect error.
     """
     host = urllib.parse.urlsplit(url).hostname or ""
-    if not host or should_bypass_proxy(url) or urllib.request.proxy_bypass(host):
+    if not host or is_loopback_host(host) or should_bypass_proxy(url) or urllib.request.proxy_bypass(host):
         return None
     proxies = urllib.request.getproxies()
     mounts: dict = {}
@@ -65,12 +70,9 @@ def _mcp_proxy_mounts(httpx_mod, url: str, ssl_verify, client_cert, server_name:
         proxy_url = normalize_proxy_url(proxies.get(scheme) or proxies.get("all"))
         if not proxy_url:
             continue
-        try:
-            # verify/cert apply to the CONNECT+TLS leg, so the proxy transport needs its own copy.
-            mounts[f"{scheme}://"] = httpx_mod.AsyncHTTPTransport(
-                proxy=proxy_url, verify=ssl_verify, **_present(cert=client_cert))
-        except Exception as exc:
-            logger.warning("MCP server '%s': cannot use %s proxy %s: %s", server_name, scheme, proxy_url, exc)
+        # verify/cert apply to the CONNECT+TLS leg, so the proxy transport needs its own copy.
+        mounts[f"{scheme}://"] = _make_mcp_body_cap_transport(httpx_mod, httpx_mod.AsyncHTTPTransport(
+            proxy=proxy_url, verify=ssl_verify, **_present(cert=client_cert)))
     return mounts or None
 
 
@@ -311,9 +313,13 @@ class MCPServerTransportMixin:
             ct = _content_type_base(resp)
             return _is_2xx(resp) and bool(ct) and ct not in self._MCP_CONTENT_TYPES
         probe_headers = dict(headers) if headers else {}
+        # Same route as the SDK client: TLS on an explicit transport (which also turns off httpx's own
+        # env proxy auto-detection) plus the repo's proxy mounts, so the probe and the handshake agree.
+        probe_transport = _httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))
         try:
-            async with _httpx.AsyncClient(verify=ssl_verify, follow_redirects=True, timeout=_httpx.Timeout(timeout),
-                                          **_present(cert=client_cert)) as client:
+            async with _httpx.AsyncClient(
+                    follow_redirects=True, timeout=_httpx.Timeout(timeout), transport=probe_transport,
+                    **_present(mounts=_mcp_proxy_mounts(_httpx, url, ssl_verify, client_cert, self.name))) as client:
                 resp = await client.head(url, headers=probe_headers)  # cheapest; GET on 405/501
                 if resp.status_code in (405, 501):
                     resp = await client.get(url, headers=probe_headers)

@@ -44,7 +44,11 @@ def test_proxy_env_becomes_a_mount_and_no_proxy_stays_direct(env_only_proxy, mon
 
     monkeypatch.setenv("HTTPS_PROXY", PROXY)
     mounts = _mcp_proxy_mounts(httpx, URL, True, None)
-    assert set(mounts) == {"https://"} and isinstance(mounts["https://"], httpx.AsyncHTTPTransport)
+    # The mount wins over transport= for matching URLs, so it must carry the wire-body cap itself.
+    assert set(mounts) == {"https://"} and type(mounts["https://"]).__name__ == "_BodyCapTransport"
+
+    monkeypatch.setenv("HTTP_PROXY", PROXY)  # loopback is never dialed through a proxy, NO_PROXY or not
+    assert _mcp_proxy_mounts(httpx, "http://127.0.0.1:5000/mcp", True, None) is None
 
     monkeypatch.setenv("NO_PROXY", "mcp.example.com")
     assert _mcp_proxy_mounts(httpx, URL, True, None) is None
@@ -107,3 +111,22 @@ def test_both_client_builders_carry_proxy_mounts_next_to_the_body_cap(env_only_p
     assert captured["mounts"]["https://"] is not None
     assert captured["headers"] == {"X-Test": "1"}  # SDK passthrough intact
     assert captured["transport"] is not None
+
+
+def test_preflight_probe_uses_the_same_proxy_mounts_as_the_connect_client(env_only_proxy, monkeypatch):
+    """The content-type preflight must reach the server the way the SDK client will: explicit mounts
+    (repo NO_PROXY/loopback rules), not httpx's own env auto-detection."""
+    import httpx
+
+    monkeypatch.setenv("HTTPS_PROXY", PROXY)
+    from tools.mcp_tool import MCPServerTask
+
+    class _Probe(_RecordingClient):
+        async def head(self, *a, **k):
+            raise httpx.ConnectError("stub")
+
+    with patch.object(httpx, "AsyncClient", _Probe):
+        asyncio.run(MCPServerTask("remote")._preflight_content_type(URL, timeout=1.0))
+    captured = _Probe.captured
+    assert type(captured["mounts"]["https://"]).__name__ == "_BodyCapTransport"
+    assert captured["transport"] is not None  # explicit transport: httpx env proxy auto-detection is off

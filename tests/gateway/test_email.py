@@ -75,6 +75,12 @@ class TestHelperFunctions(unittest.TestCase):
             "john@example.com"
         )
 
+    def test_normalize_email_subject_strips_reply_prefixes(self):
+        from plugins.platforms.email.adapter import _normalize_email_subject
+        self.assertEqual(
+            _normalize_email_subject(" RE: Fwd: 答复:  Project   Plan "),
+            "Project Plan",
+        )
 
     def test_strip_html_basic(self):
         from plugins.platforms.email.adapter import _strip_html
@@ -381,6 +387,152 @@ class TestThreadContext(unittest.TestCase):
             self.assertEqual(send_call["In-Reply-To"], "<original@test.com>")
             self.assertEqual(send_call["References"], "<original@test.com>")
             self.assertIn("Date", send_call)
+
+
+class TestSessionBySubject(unittest.TestCase):
+    """Opt-in per-subject session isolation (#26277)."""
+
+    def setUp(self):
+        self._prev_allow_all = os.environ.get("EMAIL_ALLOW_ALL_USERS")
+        os.environ["EMAIL_ALLOW_ALL_USERS"] = "true"
+        os.environ.pop("EMAIL_SESSION_BY_SUBJECT", None)
+
+    def tearDown(self):
+        if self._prev_allow_all is None:
+            os.environ.pop("EMAIL_ALLOW_ALL_USERS", None)
+        else:
+            os.environ["EMAIL_ALLOW_ALL_USERS"] = self._prev_allow_all
+        os.environ.pop("EMAIL_SESSION_BY_SUBJECT", None)
+
+    def _make_adapter(self, extra=None, **env):
+        from gateway.config import PlatformConfig
+        env_vars = {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }
+        env_vars.update(env)
+        with patch.dict(os.environ, env_vars, clear=False):
+            from plugins.platforms.email.adapter import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True, extra=extra or {}))
+
+    def _dispatch(self, adapter, subject, message_id="<msg@test.com>", body="Hello"):
+        import asyncio
+        captured = []
+
+        async def capture_handle(event):
+            captured.append(event)
+
+        adapter.handle_message = capture_handle
+        asyncio.run(adapter._dispatch_message({
+            "uid": b"7",
+            "sender_addr": "john@example.com",
+            "sender_name": "John Doe",
+            "subject": subject,
+            "message_id": message_id,
+            "in_reply_to": "",
+            "body": body,
+            "attachments": [],
+            "date": "",
+        }))
+        return captured[0]
+
+    def test_default_off_does_not_set_thread_id(self):
+        adapter = self._make_adapter()
+        event = self._dispatch(adapter, "RE: Fwd: 答复: Project   Plan")
+        self.assertEqual(event.source.chat_id, "john@example.com")
+        self.assertIsNone(event.source.thread_id)
+        self.assertIn("john@example.com", adapter._thread_context)
+
+    def test_session_by_subject_sets_thread_id(self):
+        adapter = self._make_adapter(EMAIL_SESSION_BY_SUBJECT="true")
+        event = self._dispatch(adapter, "RE: Fwd: 答复: Project   Plan")
+        self.assertEqual(event.source.chat_id, "john@example.com")
+        self.assertEqual(event.source.thread_id, "Project Plan")
+        self.assertIn("john@example.com\0Project Plan", adapter._thread_context)
+
+    def test_session_by_subject_from_extra_without_env(self):
+        adapter = self._make_adapter(extra={"session_by_subject": True})
+        event = self._dispatch(adapter, "Budget")
+        self.assertEqual(event.source.thread_id, "Budget")
+
+    def test_empty_subject_does_not_isolate(self):
+        adapter = self._make_adapter(EMAIL_SESSION_BY_SUBJECT="true")
+        event = self._dispatch(adapter, "   ")
+        self.assertIsNone(event.source.thread_id)
+        self.assertIn("john@example.com", adapter._thread_context)
+
+    def test_reply_uses_subject_thread_metadata(self):
+        import asyncio
+        adapter = self._make_adapter(EMAIL_SESSION_BY_SUBJECT="true")
+        budget_key = adapter._thread_context_key("user@test.com", "Budget")
+        roadmap_key = adapter._thread_context_key("user@test.com", "Roadmap")
+        adapter._thread_context[budget_key] = {
+            "subject": "Budget",
+            "message_id": "<budget@test.com>",
+        }
+        adapter._thread_context[roadmap_key] = {
+            "subject": "Roadmap",
+            "message_id": "<roadmap@test.com>",
+        }
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            asyncio.run(adapter.send(
+                "user@test.com",
+                "Approved.",
+                metadata={"thread_id": "Budget"},
+            ))
+            send_call = mock_server.send_message.call_args[0][0]
+            self.assertEqual(send_call["Subject"], "Re: Budget")
+            self.assertEqual(send_call["In-Reply-To"], "<budget@test.com>")
+
+    def test_send_document_uses_thread_metadata(self):
+        import asyncio
+        import tempfile
+        adapter = self._make_adapter(EMAIL_SESSION_BY_SUBJECT="true")
+        budget_key = adapter._thread_context_key("user@test.com", "Budget")
+        adapter._thread_context[budget_key] = {
+            "subject": "Budget",
+            "message_id": "<budget@test.com>",
+        }
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            f.write(b"doc")
+            tmp_path = f.name
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_server = MagicMock()
+                mock_smtp.return_value = mock_server
+                result = asyncio.run(adapter.send_document(
+                    "user@test.com", tmp_path, "Here is the file",
+                    metadata={"thread_id": "Budget"},
+                ))
+                self.assertTrue(result.success)
+                send_call = mock_server.send_message.call_args[0][0]
+                self.assertEqual(send_call["Subject"], "Re: Budget")
+                self.assertEqual(send_call["In-Reply-To"], "<budget@test.com>")
+        finally:
+            os.unlink(tmp_path)
+
+    def test_subject_from_context_key_after_missing_ctx(self):
+        import asyncio
+        adapter = self._make_adapter(EMAIL_SESSION_BY_SUBJECT="true")
+        adapter._thread_context.clear()
+        context_key = adapter._thread_context_key("user@test.com", "Budget")
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            asyncio.run(adapter.send(
+                "user@test.com",
+                "Still on this thread.",
+                metadata={"thread_id": "Budget"},
+            ))
+            send_call = mock_server.send_message.call_args[0][0]
+            self.assertEqual(send_call["Subject"], "Re: Budget")
+            self.assertIsNone(send_call["In-Reply-To"])
+        self.assertEqual(adapter._subject_from_context_key(context_key), "Budget")
 
 
 class TestSendMethods(unittest.TestCase):

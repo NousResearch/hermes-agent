@@ -431,6 +431,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `EMAIL_HOME_ADDRESS_NAME` | Display name for the email home target |
 | `EMAIL_POLL_INTERVAL` | Email polling interval in seconds |
 | `EMAIL_ALLOW_ALL_USERS` | Allow all inbound email senders |
+| `EMAIL_SESSION_BY_SUBJECT` | Isolate Email gateway sessions (and SMTP reply threading) by normalized subject instead of one rolling session per sender. Default `false`. |
 | `DINGTALK_CLIENT_ID` | DingTalk bot AppKey from developer portal ([open.dingtalk.com](https://open.dingtalk.com)) |
 | `DINGTALK_CLIENT_SECRET` | DingTalk bot AppSecret from developer portal |
 | `DINGTALK_ALLOWED_USERS` | Comma-separated DingTalk user IDs allowed to message the bot |

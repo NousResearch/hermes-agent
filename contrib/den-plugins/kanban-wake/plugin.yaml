@@ -1,0 +1,7 @@
+name: kanban-wake
+version: 1.0.0
+description: "Push a Telegram ping (via deliver_only webhook route kanban-wake) the moment a kanban card blocks or completes."
+author: "Den's Hermes"
+hooks:
+  - kanban_task_blocked
+  - kanban_task_completed

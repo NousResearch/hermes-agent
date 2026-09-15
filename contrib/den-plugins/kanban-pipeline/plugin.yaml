@@ -1,0 +1,6 @@
+name: kanban-pipeline
+version: 1.0.0
+description: "After a PR card completes, auto-create dependency-linked merge-gate (reviewer) and deploy+live-check (software-engineer) cards. Idempotent."
+author: "Den's Hermes"
+hooks:
+  - kanban_task_completed

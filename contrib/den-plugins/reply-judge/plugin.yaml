@@ -1,0 +1,6 @@
+name: reply-judge
+version: 1.0.0
+description: "Judge every final reply for length/fluff on chat platforms; rewrite via the auxiliary model into 1-5 plain sentences when it drifts. Config: reply_judge.max_chars (default 700), reply_judge.platforms (default telegram)."
+author: "Den's Hermes"
+hooks:
+  - transform_llm_output

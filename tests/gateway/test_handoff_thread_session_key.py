@@ -21,7 +21,12 @@ messages with ``chat_id = parent_channel``, so the parent channel is correct
 for those platforms and the guard must NOT apply to them.
 """
 
-from gateway.config import Platform
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
 
 
@@ -138,3 +143,90 @@ def test_slack_handoff_key_uses_parent_channel_not_thread_id():
         f"handoff key {handoff!r} lost the parent channel id — "
         "the Discord-specific guard leaked into Slack"
     )
+
+
+def test_slack_dm_handoff_key_matches_organic_thread_reply(monkeypatch):
+    """A Slack DM handoff must retain the inbound DM layout after a restart."""
+    channel_id = "D12345678"
+    thread_ts = "1690000000.123456"
+    team_id = "T12345678"
+    config = GatewayConfig(
+        platforms={Platform.SLACK: PlatformConfig(enabled=True, token="test")}
+    )
+    config.platforms[Platform.SLACK].home_channel = HomeChannel(
+        platform=Platform.SLACK,
+        chat_id=channel_id,
+        name="Slack DM",
+        scope_id=team_id,
+    )
+    adapter = MagicMock()
+    adapter.create_handoff_thread = AsyncMock(return_value=thread_ts)
+    runner = object.__new__(GatewayRunner)
+    runner.config = config
+    runner.adapters = {Platform.SLACK: adapter}
+
+    async def _send(*_args, **_kwargs):
+        return SimpleNamespace(success=True)
+
+    monkeypatch.setattr(
+        "gateway.delivery.resolve_delivery_transport",
+        lambda *_args: SimpleNamespace(adapter=adapter, send=_send),
+    )
+
+    destination = asyncio.run(
+        runner._handoff_resolve_destination(
+            {"id": "cli-session", "title": "work", "handoff_platform": "slack"},
+            profile_name=None,
+        )
+    )
+    handoff = runner._handoff_session_key(destination, profile_name=None)
+    organic = build_session_key(
+        SessionSource(
+            platform=Platform.SLACK,
+            chat_id=channel_id,
+            chat_type="dm",
+            user_id="U123456",
+            thread_id=thread_ts,
+            scope_id=team_id,
+        ),
+        thread_sessions_per_user=False,
+    )
+
+    assert handoff == organic
+
+
+def test_slack_channel_handoff_keeps_thread_layout(monkeypatch):
+    """A Slack channel handoff remains a shared thread, unlike a Slack DM."""
+    channel_id = "C12345678"
+    thread_ts = "1690000000.123456"
+    team_id = "T12345678"
+    config = GatewayConfig(
+        platforms={Platform.SLACK: PlatformConfig(enabled=True, token="test")}
+    )
+    config.platforms[Platform.SLACK].home_channel = HomeChannel(
+        platform=Platform.SLACK,
+        chat_id=channel_id,
+        name="Slack channel",
+        scope_id=team_id,
+    )
+    adapter = MagicMock()
+    adapter.create_handoff_thread = AsyncMock(return_value=thread_ts)
+    runner = object.__new__(GatewayRunner)
+    runner.config = config
+    runner.adapters = {Platform.SLACK: adapter}
+
+    monkeypatch.setattr(
+        "gateway.delivery.resolve_delivery_transport",
+        lambda *_args: SimpleNamespace(adapter=adapter, send=AsyncMock()),
+    )
+
+    destination = asyncio.run(
+        runner._handoff_resolve_destination(
+            {"id": "cli-session", "title": "work", "handoff_platform": "slack"},
+            profile_name=None,
+        )
+    )
+    handoff = runner._handoff_session_key(destination, profile_name=None)
+
+    assert destination.source.chat_type == "thread"
+    assert handoff == f"agent:main:slack:thread:{team_id}:{channel_id}:{thread_ts}"

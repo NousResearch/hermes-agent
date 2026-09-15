@@ -1496,7 +1496,12 @@ class GatewayStartupMixin:
         is_telegram_private_chat = (
             platform == Platform.TELEGRAM and looks_like_telegram_private_chat_id(home_chat_id)
         )
-        is_thread = bool(new_thread_id) and not is_telegram_private_chat
+        # Slack's DM threads retain `chat_type="dm"` on inbound events. Labeling a handoff-created
+        # DM thread as `thread` gives it a different persisted key after a gateway restart.
+        is_slack_private_chat = platform == Platform.SLACK and home_chat_id.startswith("D")
+        is_thread = bool(new_thread_id) and not (
+            is_telegram_private_chat or is_slack_private_chat
+        )
         # Discord builds in-thread messages with ``chat_id == thread id``: key on the thread's OWN id.
         dest_source = SessionSource(
             platform=platform,
@@ -1507,6 +1512,7 @@ class GatewayStartupMixin:
             chat_type="thread" if is_thread else "dm",
             user_id=home_chat_id if is_telegram_private_chat else "system:handoff",
             user_name="Handoff", thread_id=effective_thread_id, profile=profile_name,
+            scope_id=home.scope_id if platform == Platform.SLACK else None,
         )
         return self._HandoffDestination(
             platform=platform, platform_name=platform_name, transport=transport, home=home,

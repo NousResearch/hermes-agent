@@ -1721,10 +1721,10 @@ Hermes 使用两种不同的上下文范围：
 
 - **SOUL.md** 是 agent 的主要身份。它占据系统提示词的第 #1 槽位，完全替换内置的默认身份。编辑它以完全自定义 agent 是谁。
 - 如果 SOUL.md 缺失、为空或无法加载，Hermes 回退到内置默认身份。
-- **项目上下文文件使用优先级系统** —— 仅加载一种类型（第一个匹配优先）：`.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`。SOUL.md 始终独立加载。
+- **项目上下文文件使用优先级系统** —— 仅加载一种类型（第一个匹配优先）：先查找 `.hermes.md`；如果没有，再加载 AGENTS 系列文件，其中同一目录下的 `AGENTS.override.md` 优先于 `AGENTS.md`；之后才会尝试 `CLAUDE.md` 和 `.cursorrules`。SOUL.md 始终独立加载。
 - **AGENTS.md** 是分层的：如果子目录也有 AGENTS.md，所有都会合并。
 - 如果 `SOUL.md` 不存在，Hermes 会自动生成默认的 `SOUL.md`。
-- 所有加载的上下文文件上限为 20,000 字符，并进行智能截断。
+- 所有加载的上下文文件上限根据模型上下文窗口动态计算（下限 20,000、上限 500,000 字符），显式设置 `context_file_max_chars` 时以该值为准，并进行智能截断。
 
 另请参阅：
 - [个性与 SOUL.md](/user-guide/features/personality)

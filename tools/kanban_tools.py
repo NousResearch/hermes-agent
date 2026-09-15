@@ -542,9 +542,9 @@ def _handle_list(args: dict, **kw) -> str:
     _check(limit >= 1, "limit must be >= 1")
     _check(limit <= KANBAN_LIST_MAX_LIMIT, f"limit must be <= {KANBAN_LIST_MAX_LIMIT}")
     with _board(args.get("board")) as (kb, conn):
-        # Match CLI list: dependencies cleared since the last dispatcher tick
-        # should be visible to orchestrators immediately.
-        promoted = kb.recompute_ready(conn)
+        # Match CLI list: refresh todo dependencies, but leave blocked recovery
+        # to the dispatcher or an explicit lifecycle operation.
+        promoted = kb.recompute_ready(conn, include_blocked=False)
         # One extra row lets the output report truncation without dumping the board.
         rows = kb.list_tasks(
             conn, assignee=args.get("assignee"), status=args.get("status"),

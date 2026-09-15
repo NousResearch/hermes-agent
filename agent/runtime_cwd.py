@@ -92,3 +92,23 @@ def resolve_context_cwd() -> Path | None:
     launch dir). An existing configured path is honored verbatim — including the Hermes source tree, a
     legitimate workspace when developing Hermes; fallback-directory policy lives in the caller."""
     return _resolve_configured_cwd(override_is_final=True)
+
+
+def resolve_logical_cwd() -> str:
+    """The session's configured cwd as a raw string, WITHOUT host is_dir validation.
+
+    resolve_context_cwd/resolve_agent_cwd host-validate the path (it must be a real local dir),
+    which is correct for reading LOCAL context files but wrong for keying a lookup that lives off-host:
+    a non-local (ssh/docker) backend's cwd is a path inside the target environment and never exists on
+    this host, so host-validation would drop it. This returns the session override (else TERMINAL_CWD)
+    verbatim so callers can match it against config keyed on the working_dir (e.g. a project's
+    primary_path). Empty string when nothing is configured. Mirrors the non-local exemption in
+    tui_gateway.session_workdir._completion_cwd.
+
+    Off-host paths MUST be absolute (no '~' or relative): the lookup normalizes via
+    projects_db._normalize_path, which expands/abspaths against THIS host, so a relative or
+    '~'-prefixed off-host working_dir would mis-key and silently miss.
+    """
+    override = _SESSION_CWD.get()
+    override = "" if override is _UNSET else str(override).strip()
+    return override or scope_terminal_cwd().strip()

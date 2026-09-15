@@ -123,6 +123,49 @@ def format_model_for_display(model_name: str) -> str:
     return model_name
 
 
+def openrouter_routing_summary(model: str, provider: str, routing: Any) -> list[str]:
+    """Return configured OpenRouter routing lines for a model-switch confirmation.
+
+    This reports the route Hermes will request, not the provider that later serves a request.
+    Invalid or absent config deliberately produces no extra confirmation text.
+    """
+    if str(provider or "").strip().lower() != "openrouter" or not isinstance(routing, dict):
+        return []
+    keys = ("only", "order", "data_collection")
+    effective = {key: routing.get(key) for key in keys}
+    try:
+        from hermes_constants import resolve_per_model_provider_routing
+        effective.update({
+            key: value for key, value in resolve_per_model_provider_routing(
+                model, routing.get("models")
+            ).items() if key in effective
+        })
+    except Exception:
+        pass
+
+    def _providers(value: Any) -> list[str]:
+        if not isinstance(value, (list, tuple)):
+            return []
+        return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+    def _label(value: str) -> str:
+        return value.replace("-", " ").title()
+
+    lines: list[str] = []
+    pinned = _providers(effective["only"])
+    ordered = _providers(effective["order"])
+    route = pinned or ordered
+    if len(route) == 1:
+        suffix = " (pinned)" if pinned else ""
+        lines.append(f"Inference provider: {_label(route[0])}{suffix}")
+    elif route:
+        suffix = " (pinned)" if pinned else ""
+        lines.append(f"Inference routing: {' → '.join(_label(name) for name in route)}{suffix}")
+    if str(effective["data_collection"] or "").strip().lower() == "deny":
+        lines.append("Data collection: denied")
+    return lines
+
+
 def is_nous_hermes_non_agentic(model_name: str) -> bool:
     """True if *model_name* is a real Nous Hermes 3/4 chat model (single owner; cli.py uses it too)."""
     return bool(model_name and _NOUS_HERMES_NON_AGENTIC_RE.search(model_name))

@@ -1559,6 +1559,34 @@ class TestApprovalTimeoutIsNotConsent:
         assert "NOT consented" in r["message"]
         assert "rephrase" in r["message"].lower()
 
+    def test_notifier_unregistration_cancels_without_reporting_user_deny(self, monkeypatch):
+        """A completed parent turn drops a child prompt without inventing a /deny."""
+        from tools import approval as mod
+
+        self._force_short_timeout(monkeypatch, seconds=60)
+        notified = threading.Event()
+        mod.register_gateway_notify(self.SESSION_KEY, lambda _data: notified.set())
+        result_holder = {}
+
+        worker = threading.Thread(
+            target=lambda: result_holder.setdefault(
+                "result", mod.check_all_command_guards("rm -rf .git", "local")
+            )
+        )
+        worker.start()
+        assert notified.wait(timeout=5), "approval was never enqueued"
+
+        mod.unregister_gateway_notify(self.SESSION_KEY)
+        worker.join(timeout=5)
+
+        assert not worker.is_alive(), "unregistered approval wait did not return"
+        result = result_holder["result"]
+        assert result["approved"] is False
+        assert result["outcome"] == "cancelled"
+        assert result["cancelled"] is True
+        assert "denied by user" not in result["message"].lower()
+        assert "turn ended" in result["message"].lower()
+
     def test_timeout_emits_post_hook_with_timeout_outcome(self, monkeypatch):
         """Plugins must be able to distinguish timeout from explicit deny.
 

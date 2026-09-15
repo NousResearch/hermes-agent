@@ -73,8 +73,9 @@ def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str)
 def _finish(payload: dict, resolved: bool, choice: str | None, reason, **extra) -> dict:
     """Fire the post hook and build the decision dict. Unresolved (timeout) and
     a None choice both mean the user never answered."""
+    hook_choice = "cancelled" if extra.get("cancelled") else ("timeout" if not resolved else (choice or "timeout"))
     _ctx._fire_approval_hook("post_approval_response", **payload,
-                        choice="timeout" if not resolved else (choice or "timeout"), **extra)
+                        choice=hook_choice, **extra)
     return {"resolved": resolved, "choice": choice, "reason": reason, **extra}
 
 
@@ -98,11 +99,13 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
         choice, resolved = None, False
     else:
         choice = leader.result
-        resolved = choice is not None
+        resolved = choice is not None and choice != "cancelled"
     if choice == "once":
         # The post hook fires for the fresh prompt's own lifecycle, not here.
         return None
-    return _finish(payload, resolved, choice, getattr(leader, "reason", None), coalesced=True)
+    extra = {"cancelled": True} if choice == "cancelled" else {}
+    return _finish(payload, resolved, None if choice == "cancelled" else choice,
+                   getattr(leader, "reason", None), coalesced=True, **extra)
 
 
 def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *, surface: str = "gateway") -> dict:
@@ -173,4 +176,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         entry.result = "deny"
         entry.event.set()
     _drop_entry("answered" if state == "set" else state)
-    return _finish(payload, state != "timeout", entry.result, entry.reason)
+    cancelled = entry.result == "cancelled"
+    extra = {"cancelled": True} if cancelled else {}
+    return _finish(payload, state != "timeout" and not cancelled,
+                   None if cancelled else entry.result, entry.reason, **extra)

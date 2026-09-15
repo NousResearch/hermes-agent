@@ -127,12 +127,14 @@ def register_gateway_notify(session_key: str, cb) -> None:
 
 
 def unregister_gateway_notify(session_key: str) -> None:
-    """Unregister the callback and wake ALL blocked threads for this session so
-    they don't hang forever (agent run finished or interrupted)."""
+    """Unregister the callback and cancel ALL blocked waits for this ended turn."""
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
     for entry in entries:
+        # This is lifecycle teardown, not a user choice. /deny and interrupts
+        # still set "deny" through their explicit resolver paths.
+        entry.result = "cancelled"
         entry.event.set()
 
 
@@ -506,6 +508,18 @@ def _blocked(message: str, *, pattern_key: str, description: str) -> dict:
     return {"approved": False, "message": message, "pattern_key": pattern_key, "description": description}
 
 
+def _cancelled(*, pattern_key: str, description: str) -> dict:
+    """A turn boundary withdrew a prompt before the user made a decision."""
+    return {
+        "approved": False,
+        "cancelled": True,
+        "outcome": "cancelled",
+        "message": "CANCELLED: The approval request was withdrawn because the turn ended before the user responded.",
+        "pattern_key": pattern_key,
+        "description": description,
+    }
+
+
 def _user_approved(session_key: str, description: str) -> dict:
     """A human approval (incl. ESCALATE-then-approve or a smart-DENY owner
     override) resets the consecutive-denial tally."""
@@ -846,6 +860,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             if decision.get("notify_failed"):
                 return _denied(spec.notify_failed, pattern_key=pattern_key,
                                description=description, outcome="notify_failed", noun=spec.noun)
+            if decision.get("cancelled"):
+                return _cancelled(pattern_key=pattern_key, description=description)
             # Consent contract: silence is NOT consent, and an explicit deny is a hard
             # halt — both produce a BLOCKED outcome. ``/deny <reason>`` free text is
             # relayed verbatim so the agent can adapt rather than only hearing "denied".

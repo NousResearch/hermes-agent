@@ -594,6 +594,59 @@ class TestTryRecoverPrimaryTransport:
         assert agent.request_overrides == original_overrides
         assert agent.request_overrides is not agent._primary_runtime["request_overrides"]
 
+    def test_recovery_preserves_rotated_pool_credential(self):
+        """Transport recovery must not restore a pre-rotation snapshot key.
+
+        A credential pool can rotate after the primary runtime snapshot is
+        created.  Rebuilding the transport should preserve the live pool entry;
+        otherwise a rate-limited old key is retried while failures are attributed
+        to the healthy entry still stored in ``_credential_pool_entry_id``.
+        """
+
+        class _Entry:
+            id = "backup-entry"
+            label = "backup"
+            provider = "custom"
+            runtime_api_key = "backup-key"
+            runtime_base_url = "https://my-llm.example.com/v1"
+            access_token = runtime_api_key
+
+        class _Pool:
+            provider = "custom"
+
+            def entries(self):
+                return [_Entry()]
+
+        agent = _make_agent(provider="custom")
+        primary_runtime = getattr(agent, "_primary_runtime")
+        snapshot_key = primary_runtime["api_key"]
+        assert snapshot_key != _Entry.runtime_api_key
+
+        # Simulate a successful credential rotation after construction.  The
+        # immutable primary snapshot still contains the original key.
+        setattr(agent, "_credential_pool", _Pool())
+        setattr(agent, "_credential_pool_entry_id", _Entry.id)
+        agent.api_key = _Entry.runtime_api_key
+        client_kwargs = getattr(agent, "_client_kwargs")
+        client_kwargs["api_key"] = _Entry.runtime_api_key
+
+        error = _make_transport_error("APIConnectionError")
+        with (
+            patch.object(
+                agent, "_create_openai_client", return_value=MagicMock()
+            ) as create_client,
+            patch("time.sleep"),
+        ):
+            result = agent._try_recover_primary_transport(
+                error, retry_count=3, max_retries=3,
+            )
+
+        assert result is True
+        assert agent.api_key == _Entry.runtime_api_key
+        assert client_kwargs["api_key"] == _Entry.runtime_api_key
+        assert create_client.call_args.args[0]["api_key"] == _Entry.runtime_api_key
+        assert getattr(agent, "_credential_pool_entry_id") == _Entry.id
+
 
 
 

@@ -437,7 +437,9 @@ def _name_only_env_args(names) -> list[str]:
 _RO_MOUNT_SOURCES = (
     ("get_credential_file_mounts", True, "credential"),
     ("get_skills_directory_mount", False, "skills dir"),
-    ("get_cache_directory_mounts", False, "cache dir"))
+    ("get_cache_directory_mounts", False, "cache dir"),
+    ("get_hermes_context_file_mounts", True, "persona file"),
+    ("get_hermes_context_dir_mounts", False, "scripts dir"))
 
 
 def _readonly_skill_mount_args() -> list[str]:

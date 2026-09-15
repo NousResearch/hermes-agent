@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable, Dict, Iterator, List, Optional, Tuple
 
 from hermes_cli.config import cfg_get
-from hermes_constants import get_hermes_dir, get_hermes_home
+from hermes_constants import get_hermes_dir, get_hermes_home, named_profile_home
 
 from agent.skill_utils import EXCLUDED_SKILL_DIRS
 
@@ -288,6 +288,62 @@ def _cache_dir_roots(container_base: str, *, create_missing: bool) -> Iterator[T
 def get_cache_directory_mounts(container_base: str = "/root/.hermes") -> List[Dict[str, str]]:
     """Bind-mount entries for each cache directory (host layout via ``get_hermes_dir``)."""
     return [_mount(h, c) for h, c in _cache_dir_roots(container_base, create_missing=True)]
+
+
+# Persona/identity context living at the HERMES_HOME root. Docker terminal
+# containers bind-mount only subdirectories (skills, cache, credential files),
+# so without these mounts the in-container agent never sees the host persona
+# and falls back to the seeded default SOUL.md, and user scripts are
+# unreachable (#100900).
+_HERMES_CONTEXT_FILES: tuple[str, ...] = (
+    "SOUL.md",
+    "USER.md",
+    "MEMORY.md",
+    "IDENTITY.md",
+    "HEARTBEAT.md",
+    "BOOTSTRAP.md",
+    "AGENTS.md",
+)
+_HERMES_CONTEXT_DIRS: tuple[str, ...] = ("scripts",)
+
+
+def _hermes_context_mounts(
+    names: tuple[str, ...], container_base: str, *, is_dir: bool
+) -> List[Dict[str, str]]:
+    """Mount entries for HERMES_HOME-root context files/dirs that exist on the host.
+
+    A profile home (``…/profiles/<name>``) dual-mounts each entry to both the
+    default and the profile-specific container paths, so it stays visible
+    regardless of how the container-side session resolves HERMES_HOME.
+    """
+    home = get_hermes_home()
+    base = container_base.rstrip("/")
+    targets = [base]
+    profile_home = named_profile_home(home)
+    if profile_home is not None:
+        # Only the ``<root>/profiles/<name>`` suffix names the container-side
+        # profile path; a "profiles" component elsewhere in the host path
+        # (e.g. ``/srv/profiles/dev/.hermes``) must not hijack the target.
+        profile_target = f"{base}/{'/'.join(profile_home.parts[-2:])}"
+        if profile_target != base:
+            targets.append(profile_target)
+    mounts: List[Dict[str, str]] = []
+    for name in names:
+        host_path = home / name
+        if not (host_path.is_dir() if is_dir else host_path.is_file()):
+            continue
+        mounts.extend(_mount(host_path, f"{target}/{name}") for target in targets)
+    return mounts
+
+
+def get_hermes_context_file_mounts(container_base: str = "/root/.hermes") -> List[Dict[str, str]]:
+    """Bind-mount entries for persona files at the HERMES_HOME root (SOUL.md, ...)."""
+    return _hermes_context_mounts(_HERMES_CONTEXT_FILES, container_base, is_dir=False)
+
+
+def get_hermes_context_dir_mounts(container_base: str = "/root/.hermes") -> List[Dict[str, str]]:
+    """Bind-mount entries for HERMES_HOME context directories (``scripts``)."""
+    return _hermes_context_mounts(_HERMES_CONTEXT_DIRS, container_base, is_dir=True)
 
 
 def _remap_cache_path(path: str, container_base: str, src: str, dst: str, join: Callable[[str, Path], str]) -> Optional[str]:

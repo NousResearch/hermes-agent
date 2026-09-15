@@ -33,6 +33,18 @@ from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_p
 
 logger = logging.getLogger(__name__)
 
+# imaplib caps a single IMAP *response line* at ``_MAXLINE`` (1 MB by default).
+# ``UID SEARCH`` returns every matching UID on one space-separated line; on a large
+# mailbox that line exceeds 1 MB and imaplib raises "command: UID => got more than
+# 1000000 bytes", which aborts the connection probe and wedges the platform in an
+# endless reconnect loop (observed on a 420k-message Gmail INBOX -> ~2.8 MB line).
+# ``_seed_recent_uids`` avoids the unbounded SEARCH on connect; this raises the cap
+# as defense-in-depth for the ``UID SEARCH UNSEEN`` poll path, which is bounded in
+# practice but not by construction. Message bodies arrive as IMAP literals, not
+# lines, so they are unaffected by this limit.
+if getattr(imaplib, "_MAXLINE", 0) < 100_000_000:
+    imaplib._MAXLINE = 100_000_000
+
 _SECURITY_ALIASES = {"tls": "tls", "ssl": "tls", "implicit": "tls", "starttls": "starttls", "plain": "plain", "none": "plain"}
 # Automated senders (address substrings / bulk-mail headers) are silently ignored.
 _NOREPLY_PATTERNS = ("noreply", "no-reply", "no_reply", "donotreply", "do-not-reply", "mailer-daemon", "postmaster",
@@ -430,6 +442,36 @@ class EmailAdapter(BasePlatformAdapter):
         self._set_fatal_error(code, detail, retryable=retryable)
         return False
 
+    def _seed_recent_uids(self, imap) -> None:
+        """Seed ``_seen_uids`` with the newest ``_seen_uids_max`` UIDs.
+
+        ``UID SEARCH ALL`` returns every UID on a single line, which overflows
+        imaplib's line cap on a large INBOX (see ``_MAXLINE`` above) and costs a
+        multi-MB round trip to fetch UIDs that ``_trim_seen_uids`` immediately
+        discards. Sequence numbers are position-ordered, so ``lo:count`` is exactly
+        the newest ``_seen_uids_max`` messages -- the only ones the baseline keeps.
+        """
+        sel_status, sel_data = imap.select("INBOX")
+        count = 0
+        if sel_status == "OK" and sel_data and sel_data[0]:
+            try:
+                count = int(sel_data[0])
+            except (ValueError, TypeError):
+                count = 0
+        if count <= 0:
+            return
+        lo = max(1, count - self._seen_uids_max + 1)
+        status, data = imap.fetch(f"{lo}:{count}", "(UID)")
+        if status != "OK" or not data:
+            return
+        for item in data:
+            raw = item[0] if isinstance(item, tuple) else item
+            if not isinstance(raw, (bytes, bytearray)):
+                continue
+            m = re.search(rb"UID (\d+)", raw)
+            if m:
+                self._seen_uids.add(m.group(1))
+
     def _probe_imap(self, is_reconnect: bool) -> bool:
         """Connection test + seen-UID baseline. Sets a fatal error and returns False on failure."""
         try:
@@ -441,8 +483,7 @@ class EmailAdapter(BasePlatformAdapter):
                     self._seen_uids = set(snapshot)
                     passed = "[Email] IMAP reconnect test passed. Restored %d seen UIDs; messages received during the outage will be processed."
                 else:  # first connect (or no snapshot): mark all existing messages seen
-                    status, data = imap.uid("search", None, "ALL")
-                    self._seen_uids.update(data[0].split() if status == "OK" and data and data[0] else ())
+                    self._seed_recent_uids(imap)
                     passed = "[Email] IMAP connection test passed. %d existing messages skipped."
                 self._trim_seen_uids()
                 logger.info(passed, len(self._seen_uids))

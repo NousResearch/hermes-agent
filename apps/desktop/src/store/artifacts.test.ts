@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ArtifactDetection } from '@/lib/artifact-detect'
 
@@ -16,6 +16,14 @@ import { $previewTabs, closeRightRail, closeRightRailTab } from './preview'
 import { $activeSessionId, $selectedStoredSessionId } from './session'
 
 const HTML_DETECTION: ArtifactDetection = { kind: 'html', language: 'html', title: 'Pomodoro Timer' }
+const ARTIFACT_CONTENT_BUDGET = 4 * 1024 * 1024
+
+function retainedContentLength() {
+  return ['session-1', 'session-2'].flatMap(artifactsForSession).reduce(
+    (total, record) => total + record.versions.reduce((recordTotal, version) => recordTotal + version.content.length, 0),
+    0
+  )
+}
 
 describe('artifacts store', () => {
   beforeEach(() => {
@@ -27,6 +35,7 @@ describe('artifacts store', () => {
   })
 
   afterEach(() => {
+    vi.restoreAllMocks()
     $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
     clearArtifactRegistry()
@@ -62,6 +71,84 @@ describe('artifacts store', () => {
     expect(record?.versions).toHaveLength(2)
     expect(record?.versions.at(-1)?.content).toBe('<html>v2</html>')
     expect(artifactsForSession('session-1')).toHaveLength(1)
+  })
+
+  it('evicts the globally oldest history above the process-wide content budget', () => {
+    const oldestHistory = 'a'.repeat(ARTIFACT_CONTENT_BUDGET)
+    const newestExact = '<html>newest exact content</html>'
+
+    vi.spyOn(Date, 'now').mockReturnValueOnce(1).mockReturnValueOnce(2)
+    const result = upsertArtifact('session-1', HTML_DETECTION, oldestHistory)!
+    upsertArtifact('session-1', HTML_DETECTION, newestExact)
+
+    const record = getArtifact(result.artifactId)!
+
+    expect(record.versions.map(version => version.content)).toEqual([newestExact])
+    expect(retainedContentLength()).toBeLessThanOrEqual(ARTIFACT_CONTENT_BUDGET)
+  })
+
+  it('keeps a selected historical version pinned by hash when older history shifts its index', () => {
+    vi.spyOn(Date, 'now')
+      .mockReturnValueOnce(1)
+      .mockReturnValueOnce(2)
+      .mockReturnValueOnce(3)
+      .mockReturnValueOnce(4)
+
+    const result = upsertArtifact('session-1', HTML_DETECTION, 'older')!
+    upsertArtifact('session-1', HTML_DETECTION, 'selected')
+    upsertArtifact('session-1', HTML_DETECTION, 'latest')
+    selectArtifactVersion(result.artifactId, 1)
+    upsertArtifact(
+      'session-2',
+      { ...HTML_DETECTION, title: 'Large companion' },
+      'x'.repeat(ARTIFACT_CONTENT_BUDGET - 14)
+    )
+
+    const record = getArtifact(result.artifactId)!
+    const selectedIndex = $artifactVersionSelection.get()[result.artifactId]
+
+    expect(record.versions.map(version => version.content)).toEqual(['selected', 'latest'])
+    expect(record.versions[selectedIndex!]?.content).toBe('selected')
+    expect(selectedIndex).toBe(0)
+    expect(retainedContentLength()).toBeLessThanOrEqual(ARTIFACT_CONTENT_BUDGET)
+  })
+
+  it('falls back to newest when the selected historical version is evicted', () => {
+    vi.spyOn(Date, 'now').mockReturnValueOnce(1).mockReturnValueOnce(2).mockReturnValueOnce(3)
+    const result = upsertArtifact('session-1', HTML_DETECTION, 'selected')!
+    upsertArtifact('session-1', HTML_DETECTION, 'newer')
+    selectArtifactVersion(result.artifactId, 0)
+    upsertArtifact('session-1', HTML_DETECTION, 'x'.repeat(ARTIFACT_CONTENT_BUDGET))
+
+    expect(getArtifact(result.artifactId)?.versions.at(-1)?.content).toBe('x'.repeat(ARTIFACT_CONTENT_BUDGET))
+    expect(result.artifactId in $artifactVersionSelection.get()).toBe(false)
+  })
+
+  it('evicts the globally oldest whole record when latest-only content exceeds the budget', () => {
+    vi.spyOn(Date, 'now').mockReturnValueOnce(1).mockReturnValueOnce(2)
+    const old = upsertArtifact('session-1', HTML_DETECTION, 'a'.repeat(ARTIFACT_CONTENT_BUDGET / 2))!
+    const newest = upsertArtifact(
+      'session-2',
+      { ...HTML_DETECTION, title: 'Newest' },
+      'b'.repeat(ARTIFACT_CONTENT_BUDGET / 2 + 1)
+    )!
+
+    expect(getArtifact(old.artifactId)).toBeNull()
+    expect(getArtifact(newest.artifactId)?.versions[0]?.content).toBe('b'.repeat(ARTIFACT_CONTENT_BUDGET / 2 + 1))
+    expect(retainedContentLength()).toBeLessThanOrEqual(ARTIFACT_CONTENT_BUDGET)
+  })
+
+  it('keeps one oversized globally newest artifact exact while evicting older whole records', () => {
+    const oversizedNewest = '🚀'.repeat(ARTIFACT_CONTENT_BUDGET / 2 + 1)
+
+    vi.spyOn(Date, 'now').mockReturnValueOnce(1).mockReturnValueOnce(2)
+    const old = upsertArtifact('session-1', HTML_DETECTION, 'old')!
+    const newest = upsertArtifact('session-2', { ...HTML_DETECTION, title: 'Newest' }, oversizedNewest)!
+
+    expect(getArtifact(old.artifactId)).toBeNull()
+    expect(getArtifact(newest.artifactId)?.versions[0]?.content).toBe(oversizedNewest)
+    expect(retainedContentLength()).toBe(oversizedNewest.length)
+    expect(retainedContentLength()).toBeGreaterThan(ARTIFACT_CONTENT_BUDGET)
   })
 
   it('keeps different titles as separate artifacts', () => {

@@ -128,9 +128,9 @@ def _get_service_pids(all_profiles: bool = False) -> set:
     update path needs the whole fleet excluded from its sweep (#41403, #73626): sibling-profile launchd
     gateways found by the (BSD-fixed) ps scan must not be misclassified as manual processes and killed.
     Default-scope callers (``gateway status``, cron checks) keep seeing only the current profile's service;
-    the orphan reaper passes all_profiles=True for the same friendly-fire reason. The systemd branch mirrors
-    this: default scope filters to the current profile's exact unit name; ``all_profiles=True`` widens to
-    the ``hermes-gateway*`` fleet glob.
+    the orphan reaper passes all_profiles=True for the same friendly-fire reason. The systemd branch keeps
+    the named scan and, only for fleet exclusion, validates MainPIDs from other loaded services with the
+    canonical gateway process matcher.
     """
     pids: set = set()
 
@@ -168,6 +168,45 @@ def _get_service_pids(all_profiles: bool = False) -> set:
                         pass
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
+
+            if not all_profiles:
+                continue
+            try:
+                # Legacy/profile-renamed units are exclusion-only. Restart discovery remains name-gated.
+                result = subprocess.run(
+                    scope_args
+                    + ["list-units", "*.service", "--all", "--plain", "--no-legend", "--no-pager"],
+                    timeout=5,
+                    **_CAPTURE_TEXT,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                continue
+            for line in (result.stdout or "").strip().splitlines():
+                parts = line.split()
+                if len(parts) < 4 or not parts[0].endswith(".service") or parts[1] != "loaded":
+                    continue
+                svc = parts[0]
+                if svc.startswith("hermes-gateway"):
+                    continue
+                try:
+                    show = subprocess.run(
+                        scope_args + ["show", svc, "--property=MainPID", "--value"],
+                        timeout=5,
+                        **_CAPTURE_TEXT,
+                    )
+                    pid = int((show.stdout or "").strip())
+                except (FileNotFoundError, subprocess.TimeoutExpired, AttributeError, TypeError, ValueError):
+                    continue
+                if pid <= 0:
+                    continue
+                try:
+                    from gateway.status import _looks_like_gateway_process
+
+                    is_gateway = _looks_like_gateway_process(pid)
+                except Exception:
+                    continue
+                if is_gateway:
+                    pids.add(pid)
 
     # --- launchd (macOS) ---
     if is_macos():

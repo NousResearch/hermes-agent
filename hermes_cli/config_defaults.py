@@ -352,6 +352,8 @@ DEFAULT_CONFIG = {
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
         # per-page char budget for web_extract; larger pages truncate, full text kept in cache/web
         "extract_char_limit": 15000,
+        # Firecrawl scrape in-page wait before snapshot (ms). 0/negative omits waitFor (legacy).
+        "extract_wait_ms": 3000,
         # Keyless free-tier ring: with NO web backend configured or keyed, web_search/web_extract
         # rotate round-robin across exa, parallel, firecrawl, keenable public free tiers, failing
         # over on rate limits. Never pre-empts a configured/keyed backend. false = disable.

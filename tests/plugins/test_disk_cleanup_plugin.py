@@ -12,6 +12,7 @@ Covers the bundled plugin at ``plugins/disk-cleanup/``:
   * Bundled-plugin discovery via ``PluginManager.discover_and_load``.
 """
 
+import errno
 import importlib
 import json
 import sys
@@ -419,3 +420,63 @@ class TestBundledDiscovery:
         mgr.discover_and_load()
         assert "memory" not in mgr._plugins
         assert "context_engine" not in mgr._plugins
+
+
+# ---------------------------------------------------------------------------
+# Regression: ENAMETOOLONG from quoted terminal args (issue #105123)
+# ---------------------------------------------------------------------------
+class TestEnametoolongNeverRaises:
+    """shlex tokens from quoted args with \\n escapes can be one giant
+    "path"; Path.exists() does not swallow ENAMETOOLONG. The hook must
+    honour its never-raises contract and skip the candidate."""
+
+    def test_hook_survives_enametoolong_candidate(self, _isolate_env):
+        pi = _load_plugin_init()
+        # one component of ~340 chars: /home/.../kanban.db\nactivity.log\n... (literal backslash-n)
+        giant = "/home/bacimo/.hermes/kanban.db" + "\\n" + "\\n".join(
+            "entry_%03d.log" % i for i in range(30)
+        )
+        assert max(len(c) for c in giant.split("/")) > 255  # NAME_MAX exceeded
+        # sanity: unguarded Path.exists() on this candidate really raises
+        with pytest.raises(OSError) as ei:
+            Path(giant).expanduser().exists()
+        assert ei.value.errno == errno.ENAMETOOLONG
+
+        # the hook itself must NOT raise
+        pi._on_post_tool_call(
+            tool_name="terminal",
+            args={"command": 'printf "%s" ...' % giant},
+            result="",
+            task_id="t1", session_id="s1",
+        )
+
+    def test_hook_survives_enametoolong_from_result_text(self, _isolate_env):
+        # The regex scans raw result text; a >255-char component under an
+        # EXISTING parent (ENOENT-swallow does not apply) raises ENAMETOOLONG.
+        pi = _load_plugin_init()
+        long_dir = _isolate_env / "long"
+        long_dir.mkdir()
+        long_path = str(long_dir / ("y" * 400))
+        assert max(len(c) for c in long_path.split("/")) > 255
+        pi._on_post_tool_call(
+            tool_name="terminal",
+            args={"command": "ls"},
+            result="missing: " + long_path + " (skipped)\n",
+            task_id="t1", session_id="s1",
+        )
+
+    def test_legitimate_terminal_tracking_still_works(self, _isolate_env):
+        # Guard against over-broad fix: a real ephemeral file created by the
+        # command must still be tracked.
+        pi = _load_plugin_init()
+        p = _isolate_env / "test_from_cmd.py"
+        p.write_text("x")
+        pi._on_post_tool_call(
+            tool_name="terminal",
+            args={"command": "touch %s" % p},
+            result="",
+            task_id="t1", session_id="s1",
+        )
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        data = json.loads(tracked_file.read_text())
+        assert any(e["path"] == str(p) and e["category"] == "test" for e in data)

@@ -37,6 +37,16 @@ class TestToolsetIntersection:
         assert "memory" not in child
         assert "terminal" in child
 
+    def test_strip_blocked_keeps_composites_without_blocked_tools(self):
+        """Composite toolsets declare ``tools: []`` and grant their real surface via ``includes``.
+        ``all([])`` must not classify them as fully blocked — ``safe`` (no blocked tool at all)
+        and ``hermes-gateway`` (blocked tools subtracted later via disabled_toolsets) were
+        silently stripped, leaving children of those parents with no tools (regression)."""
+        child = _strip_blocked_tools(["safe", "hermes-gateway", "terminal"])
+        assert "safe" in child
+        assert "hermes-gateway" in child
+        assert "terminal" in child
+
     def test_empty_intersection_yields_empty_toolsets(self):
         """If parent has no overlap with requested, child gets nothing extra."""
         parent = SimpleNamespace(enabled_toolsets=["terminal"])

@@ -5,7 +5,7 @@ import hashlib
 import zlib
 from pathlib import Path
 
-EXPECTED_SHA256 = "44a5d453bd39efc17df7ac417006e10ba4e45a0da96a662c1b00cf27281b1569"
+EXPECTED_SHA256 = "a3077c6231341de680a99762e55a3621d756af9d6dbd7bf64ea4d5eb4e9e8c4b"
 
 root = Path(__file__).resolve().parent / "redteam_payload"
 parts = sorted(root.glob("*.b64"))

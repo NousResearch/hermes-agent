@@ -60,6 +60,50 @@ beforeEach(() => {
 })
 
 describe('session resolution', () => {
+  it.each([LOCAL_MEMBER, ROUTED_MEMBER])('does not bind a delayed resume to a replaced room: $connectionId', async member => {
+    const room = await loadRoom()
+    room.chat.updateGroupChat('Alpha', current => ({ ...current, roomId: 'same-id' }))
+    await room.turns.ensureGroupChatSession('Alpha', member)
+    const token = room.chat.$groupChats.get().Alpha.desktopAuthorityToken
+    const fences = await import('./group-command-fence')
+
+    const fence = fences.beginGroupCommandFence('same-id', 'delayed-resume', () => true,
+      () => room.chat.$groupChats.get().Alpha?.desktopAuthorityToken === token)
+
+    const { groupMemberKey } = await import('./group-membership')
+    const key = groupMemberKey(member)
+    const originalRequest = host.request as (method: string, params: unknown) => Promise<unknown>
+    const originalProfileRequest = host.requestProfile as (route: unknown, method: string, params: unknown) => Promise<unknown>
+
+    const replace = () => room.chat.$groupChats.set({ Alpha: {
+      roomId: 'same-id', log: [], watermarks: {}, sessions: { [key]: 'replacement-session' },
+      desktopAuthorityToken: 'authority:replacement'
+    } })
+
+    host.request = async (method: string, params: unknown) => {
+      const response = await originalRequest(method, params)
+
+      if (method === 'session.resume') {replace()}
+
+      return response
+    }
+
+    host.requestProfile = async (route: unknown, method: string, params: unknown) => {
+      const response = await originalProfileRequest(route, method, params)
+
+      if (method === 'session.resume') {replace()}
+
+      return response
+    }
+
+    try {
+      expect(await room.turns.ensureGroupChatSession('Alpha', member, fence)).toEqual({ runtime: null })
+      expect(room.chat.$groupChats.get().Alpha.sessions?.[key]).toBe('replacement-session')
+    } finally {
+      fences.releaseGroupCommandFence(fence)
+    }
+  })
+
   it('pins session titles to the roomId, with a legacy fallback to the display name', async () => {
     const room = await loadRoom()
 

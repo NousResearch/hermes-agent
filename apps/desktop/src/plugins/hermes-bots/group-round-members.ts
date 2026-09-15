@@ -11,6 +11,7 @@ import {
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
+import type { GroupCommandFence } from './group-command-fence'
 import { groupMemberKey } from './group-membership'
 import { buildGroupChatTurnPrompt, formatGroupChatLine } from './group-round-prompt'
 import { isGroupPassText, runGroupChatMemberTurn } from './group-turns'
@@ -23,6 +24,8 @@ export interface GroupRoundMemberContext {
   startEpoch: number
   binding: { isLive(): boolean }
   isCurrent(): boolean
+  leaseLive(): boolean
+  fence?: GroupCommandFence
 }
 
 /** #93129: a held member's skip must consume its delta exactly once —
@@ -116,9 +119,9 @@ async function runVisibleMemberTurn(
   updateGroupChat(context.group, (room: GroupChatRoom) => ({ ...room, turn }), { sync: false })
 
   try {
-    return await runGroupChatMemberTurn(context.group, member, prompt, context.thread, images)
+    return await runGroupChatMemberTurn(context.group, member, prompt, context.thread, images, context.fence)
   } finally {
-    if (context.binding.isLive() && $groupChats.get()[context.group]?.turn === turn) {
+    if (context.binding.isLive() && context.leaseLive() && $groupChats.get()[context.group]?.turn === turn) {
       updateGroupChat(context.group, (room: GroupChatRoom) => ({ ...room, turn: null }), { sync: false })
     }
   }
@@ -149,7 +152,7 @@ export async function runGroupRoundMember(
       clearBotAttention(groupMemberKey(member))
     }
   } catch (error: any) {
-    if (!binding.isLive()) {
+    if (!binding.isLive() || !context.leaseLive()) {
       return null
     }
 
@@ -179,7 +182,7 @@ export async function runGroupRoundMember(
   // during-turn tail is anchored by entry id, not index — the history
   // trim drops entries from the FRONT, so an index slice could
   // overshoot after a mid-turn trim and silently commit a stale turn.
-  if (!binding.isLive()) {
+  if (!binding.isLive() || !context.leaseLive()) {
     return null
   }
 
@@ -291,7 +294,7 @@ async function runGroupContinuationMember(
       clearBotAttention(memberKey)
     }
   } catch (error: any) {
-    if (!binding.isLive()) {
+    if (!binding.isLive() || !context.leaseLive()) {
       return null
     }
 

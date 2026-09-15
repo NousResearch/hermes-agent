@@ -43,9 +43,11 @@ import {
   migrateBotMeta,
   resolveRosterMentions
 } from './data'
+import { startDesktopRoomCommandRuntime, stopDesktopRoomCommandRuntime } from './desktop-room-command-runtime'
 import {
   $groupChats,
   $groupChatWorkspace,
+  activateClassicGroupAuthorities,
   assignLegacyThreads,
   handleSessionsGatewayTransition,
   pullGroupChatServerState,
@@ -55,7 +57,12 @@ import {
   sweepGroupChatMembersForRemovedConnection,
   updateGroupChat
 } from './group-chat'
+import { renameGroupChat } from './group-chat-view'
+import { boundedDesktopCommandSettled } from './group-command-receipts'
+import { storedClassicDesktopAuthority } from './group-desktop-authority'
 import { groupWorkspaceOwnerKey } from './group-membership'
+import { startHostedRoomRuntime, stopHostedRoomRuntime } from './hosted-room-runtime'
+import { reconcileHostedUserEvents, storedHostedUserEvent } from './hosted-user-events'
 import { annotateOrphanedGroupChatMembers } from './hygiene'
 import { BOTS_LOCALES } from './i18n'
 import { displayName } from './labels'
@@ -102,6 +109,66 @@ export default {
     loadBotSections()
     const disposeLocales = ctx.i18n.register(BOTS_LOCALES)
     setGroupChatSyncDisposed(false)
+    let roomServicesStarted = false
+    let roomServicesDisposed = false
+    let unbindGatewayListener: null | (() => void) = null
+    let unbindDesktopRoomRetry: null | (() => void) = null
+    let desktopRoomStart: null | Promise<void> = null
+    let desktopRoomRetryRequested = false
+
+    const startDesktopRoomCommands = () => {
+      if (roomServicesDisposed) {
+        return
+      }
+
+      if (desktopRoomStart) {
+        desktopRoomRetryRequested = true
+
+        return
+      }
+
+      desktopRoomStart = startDesktopRoomCommandRuntime(ctx.storage)
+        .catch(() => undefined)
+        .finally(() => {
+          desktopRoomStart = null
+
+          if (desktopRoomRetryRequested && !roomServicesDisposed) {
+            desktopRoomRetryRequested = false
+            startDesktopRoomCommands()
+          }
+        })
+    }
+
+    const startRoomServices = () => {
+      if (roomServicesStarted || roomServicesDisposed) {
+        return
+      }
+
+      roomServicesStarted = true
+      let bindingGatewayListener = true
+      unbindGatewayListener = host.state.gateway.listen(() => {
+        // Atom listeners seed synchronously. Treating that seed as a gateway
+        // transition bumps every room epoch and can cancel a startup send.
+        if (!bindingGatewayListener) {
+          handleSessionsGatewayTransition()
+          startDesktopRoomCommands()
+        }
+      })
+      bindingGatewayListener = false
+      void startHostedRoomRuntime(ctx.storage, {
+        renameGroupChat: (oldName, newName, members) =>
+          renameGroupChat(oldName, newName, members, {
+            hostedAlreadyRenamed: true
+          })
+      }).then(startDesktopRoomCommands, () => undefined)
+
+      if (unbindDesktopRoomRetry === null && typeof host.onEvent === 'function') {
+        unbindDesktopRoomRetry = host.onEvent('desktop_rooms.commands.pending', startDesktopRoomCommands)
+      }
+
+      startDesktopRoomCommands()
+    }
+
     startFaceClock()
     // The cross-connection relay rides every gateway socket this Desktop
     // holds: roster sync + envelope drain/deliver/reply loops.
@@ -113,6 +180,16 @@ export default {
       ctx.onDispose(disposeLocales)
       ctx.onDispose(stopFaceClock)
       ctx.onDispose(stopBotRelay)
+      ctx.onDispose(() => {
+        roomServicesDisposed = true
+        stopHostedRoomRuntime()
+        stopDesktopRoomCommandRuntime()
+
+        if (unbindDesktopRoomRetry) {
+          unbindDesktopRoomRetry()
+          unbindDesktopRoomRetry = null
+        }
+      })
     }
 
     // @-mention autocomplete: typing "@rese…" in ANY composer offers the
@@ -220,8 +297,9 @@ export default {
       /* no storage — default (silent) stays */
     }
 
-    // Hydrate persisted group-chat room logs (epoch/running are runtime-only
-    // and always reset — a loop can't survive a window reload anyway).
+    // Hydrate persisted group-chat room logs. Desktop epochs/running are
+    // runtime-only; hosted authority/cursor fields survive so the gateway
+    // driver can keep working while this window is gone and replay safely.
     try {
       // @ts-expect-error TODO(bot-mode-types): PluginStorage.get requires a fallback argument.
       Promise.resolve(ctx.storage?.get?.('group-chats'))
@@ -231,10 +309,14 @@ export default {
 
             for (const [name, room] of Object.entries(value)) {
               if (room && Array.isArray(room.log)) {
+                const log = room.log.map(storedHostedUserEvent)
                 rooms[name] = {
+                  ...storedClassicDesktopAuthority(room),
                   // Pre-thread entries get synthetic thread ids on hydrate so
                   // every UI/engine path can assume entry.thread exists.
-                  log: assignLegacyThreads(room.log),
+                  log: assignLegacyThreads(
+                    room.roomId && room.hosted ? reconcileHostedUserEvents(room.roomId, log) : log
+                  ),
                   watermarks: room.watermarks && typeof room.watermarks === 'object' ? room.watermarks : {},
                   sessions: room.sessions && typeof room.sessions === 'object' ? room.sessions : {},
                   sessionOwners: room.sessionOwners && typeof room.sessionOwners === 'object' ? room.sessionOwners : {},
@@ -243,8 +325,18 @@ export default {
                   // guard as the other maps — a held bot stays held across
                   // window restarts until explicitly released.
                   holds: room.holds && typeof room.holds === 'object' ? room.holds : {},
+                  desktopCommandSettled: boundedDesktopCommandSettled(room.desktopCommandSettled),
                   members: Array.isArray(room.members) ? room.members : [],
                   roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
+                  hosted: typeof room.hosted === 'string' && room.hosted ? room.hosted : null,
+                  hostedEpoch: Math.max(0, Number(room.hostedEpoch || 0)) || null,
+                  hostedConnectionId:
+                    typeof room.hostedConnectionId === 'string' && room.hostedConnectionId
+                      ? room.hostedConnectionId
+                      : null,
+                  hostedSeq: Math.max(0, Number(room.hostedSeq || 0)),
+                  hostedMembersVerified: room.hostedMembersVerified === true,
+                  continuityMode: room.hosted ? 'gateway' : room.continuityMode === 'gateway' ? 'gateway' : 'desktop',
                   image: typeof room.image === 'string' && room.image ? room.image : null,
                   rosterOrder: Number.isFinite(room.rosterOrder) ? room.rosterOrder : undefined,
                   pinned: Boolean(room.pinned),
@@ -279,8 +371,8 @@ export default {
 
               if (annotated.changed) {
                 // Per-room updateGroupChat keeps the durable record's full
-                // shape (sessionOwners, holds) in storage; sync:false —
-                // the scheduleGroupChatServerSync below publishes once.
+                // shape (sessionOwners, holds) in storage; sync:false because
+                // ordered room-service startup publishes after hydration.
                 for (const [roomName, room] of Object.entries(annotated.rooms)) {
                   if (room !== $groupChats.get()[roomName]) {
                     updateGroupChat(roomName, () => room, {
@@ -298,11 +390,17 @@ export default {
           // must hydrate the gateway projection instead of merely avoiding an
           // empty overwrite and then rendering an empty conversation.
           await pullGroupChatServerState().catch(() => false)
-          scheduleGroupChatServerSync($groupChats.get())
+          const authorityActivated = await activateClassicGroupAuthorities()
+
+          if (!authorityActivated) {
+            scheduleGroupChatServerSync($groupChats.get())
+          }
         })
         .catch(() => undefined)
+        .finally(startRoomServices)
     } catch {
       /* no storage — rooms start empty */
+      startRoomServices()
     }
 
     // Routines follow the chat you're in: track the focused chat's owner
@@ -314,8 +412,6 @@ export default {
     // duplicate listener per cycle (same survives-disable class as the face
     // clock before its onDispose hook — these kept firing until app restart).
     const unbindProfileListener = bindProfileSync($focusedBotOwner)
-    const unbindGatewayListener = host.state.gateway.listen(handleSessionsGatewayTransition)
-
     // #93492 root fix: the registry pushes a lifecycle event when a
     // connection is removed. The gateway store already disposes the dead
     // sockets; the persisted group-chat rosters referencing that connection

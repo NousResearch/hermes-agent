@@ -1,6 +1,6 @@
 import type * as HermesSdk from '@hermes/plugin-sdk'
 import { host } from '@hermes/plugin-sdk'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { WritableAtom } from 'nanostores'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -120,7 +120,10 @@ async function submitDialog() {
   render(<CreateGroupChatDialog onClose={onClose} onCreated={onCreated} open roster={roster} />)
 
   for (const checkbox of screen.getAllByRole('checkbox')) {fireEvent.click(checkbox)}
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create Group (2)' })) })
+  const submit = screen.getByRole('button', { name: 'Create Group (2)' }) as HTMLButtonElement
+
+  await waitFor(() => { expect(submit.disabled).toBe(false) })
+  await act(async () => { fireEvent.click(submit) })
 
   return { onCreated, onClose }
 }

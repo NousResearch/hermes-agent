@@ -169,7 +169,7 @@ def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
 
 def _format_live_tools_output(sid: str, session: dict, arg: str) -> str:
     info = _session_info(session.get("agent"), session)
-    groups = info.get("tools") if isinstance(info, dict) else {}
+    groups = info.tools
     if not isinstance(groups, dict) or not groups:
         return "No tools available."
     names = sorted({str(n) for g in groups.values() if isinstance(g, list) for n in g})

@@ -228,6 +228,12 @@ The lifecycle commands you'd run on the host work the same way from inside the c
 # Create a profile — registers the gateway-<name> s6 slot.
 docker exec hermes hermes profile create coder
 
+# From the HOST, on a bind-mounted ~/.hermes: the directory lands where the container reads it,
+# but a host process cannot reach /run/service, so no slot is registered here. With
+# profiles.runtime = auto (the default) Hermes notices the serving gateway is containerized and
+# prints the docker exec hand-off below instead of the host start command.
+hermes profile create coder
+
 # Start / stop / restart — dispatches s6-svc; the gateway lifecycle survives docker restart.
 docker exec hermes hermes -p coder gateway start
 docker exec hermes hermes -p coder gateway stop

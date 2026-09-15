@@ -240,19 +240,22 @@ class SlashCommandsMixin:
         request = parse_compress_args(args)
         if request.aggressive:
             return AGGRESSIVE_UNSUPPORTED
-        original_session_db = getattr(agent, "_session_db", None)
+        expects_durable_commit = getattr(agent, "_session_db", None) is not None
+        if expects_durable_commit:
+            # Slash commands do not pass through the ordinary per-turn reset.
+            # Clear a prior success before using this as the current commit receipt.
+            agent._last_compaction_in_place = False
         try:
-            # Stable ACP session id: suppress _compress_context's SQLite session split.
-            agent._session_db = None
             result = compress_now(
                 agent, state.history, request, system_message=getattr(agent, "_cached_system_prompt", "") or "",
                 task_id=state.session_id)
         except Exception as e:
             return f"Compression failed: {e}"
-        finally:
-            agent._session_db = original_session_db
         if result.status != "compressed":
             return "\n".join(render_compress_result(result))
+        if expects_durable_commit and getattr(agent, "_last_compaction_in_place", False) is not True:
+            finalize_context_engine_compression_notification(agent, committed=False)
+            return "Compression failed: compacted history was not committed."
         state.history = result.after_messages
         self.session_manager.save_session(state.session_id)
         finalize_context_engine_compression_notification(agent, committed=True)

@@ -42,6 +42,7 @@ def get_memory_dir() -> Path:
 
 from tools.memory_tool_store import (  # noqa: E402,F401  (re-exports)
     ENTRY_DELIMITER, MEMORY_BLOCK_HEADERS, MemoryStore, _scan_memory_content)
+from tools.memory_tool_store import validate_memory_batch
 
 
 def load_on_disk_store() -> "MemoryStore":
@@ -181,12 +182,13 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
         content = new_text
     # Strict providers send JSON null for optional fields; treat as omitted.
     target = "memory" if target is None else target
+    if operations is not None:
+        if invalid := validate_memory_batch(target, operations):
+            return tool_error(invalid, success=False)
     target_error = _memory_target_error(store, target)
     if target_error is not None:
         return json.dumps(target_error)
-    if operations:
-        if not isinstance(operations, list):
-            return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
+    if operations is not None:
         denied = _background_delete_gate(action, operations, target)
         if denied is not None:
             return denied
@@ -236,7 +238,7 @@ def check_memory_requirements() -> bool:
 
 def _memory_target_error(store: "MemoryStore", target: str) -> Optional[Dict[str, Any]]:
     """Return a shared validation error for an invalid or disabled target."""
-    if target not in {"memory", "user"}:
+    if not isinstance(target, str) or target not in {"memory", "user"}:
         from tools.registry import _bound_error_text
         return {"success": False,
                 "error": _bound_error_text(f"Invalid memory target '{target}'. Use 'memory' or 'user'.")}
@@ -253,7 +255,7 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
     if target_error is not None:
         return target_error
     if action == "batch":
-        return store.apply_batch(target, payload.get("operations") or [])
+        return store.apply_batch(target, payload.get("operations"))
     if action not in _STORE_ACTIONS:
         return {"success": False, "error": f"Unknown staged action '{action}'."}
     return _STORE_ACTIONS[action][0](store, target, payload.get("content") or "", payload.get("old_text") or "")
@@ -264,8 +266,10 @@ MEMORY_SCHEMA = {
     "description": (
         "Save durable facts to persistent memory that survive across sessions. Memory is "
         "injected into every future turn, so keep entries compact and high-signal.\n\n"
-        "HOW: make ALL your changes in ONE call via an 'operations' array (each item: "
-        "{action, content?, old_text?}). The batch applies atomically and the char limit is "
+        "HOW: make your changes in ONE call PER STORE via an 'operations' array (each item: "
+        "{action, content?, old_text?}). Set target once at the top level; never put target "
+        "inside an operation. Use separate calls for 'memory' and 'user'. Each batch applies "
+        "atomically to its one store and the char limit is "
         "checked only on the FINAL result — so a single call can remove/replace stale entries "
         "to free room AND add new ones, even when an add alone would overflow. The response "
         "reports current/limit chars and confirms completion; one batch call finishes the "
@@ -296,7 +300,7 @@ MEMORY_SCHEMA = {
             "target": {
                 "type": "string",
                 "enum": ["memory", "user"],
-                "description": "Which memory store: 'memory' for personal notes, 'user' for user profile."
+                "description": "Top-level store shared by every operation (defaults to memory): 'memory' for personal notes, 'user' for user profile. Use separate calls for different stores."
             },
             "content": {
                 "type": "string",
@@ -315,7 +319,8 @@ MEMORY_SCHEMA = {
                 "description": (
                     "Batch shape: a list of operations applied atomically in one call "
                     "against the final char budget. Preferred when making multiple changes "
-                    "or consolidating to make room. Each item is {action, content?, old_text?}."
+                    "or consolidating to make room in ONE store. Each item is {action, content?, "
+                    "old_text?}; target belongs only at the top level."
                 ),
                 "items": {
                     "type": "object",
@@ -326,6 +331,7 @@ MEMORY_SCHEMA = {
                         "old_text": {"type": "string", "description": "Substring identifying the entry for replace/remove."},
                     },
                     "required": ["action"],
+                    "additionalProperties": False,
                 },
             },
         },

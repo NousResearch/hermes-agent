@@ -13,13 +13,51 @@ from agent.kanban_stop import (
 
 @pytest.fixture
 def clear_kanban_env(monkeypatch):
-    for var in ("HERMES_KANBAN_TASK", "HERMES_KANBAN_STOP_NUDGE"):
+    for var in (
+        "HERMES_KANBAN_TASK",
+        "HERMES_KANBAN_STOP_NUDGE",
+        "HERMES_DELEGATED_CHILD_CONTEXT",
+    ):
         monkeypatch.delenv(var, raising=False)
     return monkeypatch
 
 
+def test_enabled_with_kanban_task(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_parent")
+
+    assert kanban_stop_nudge_enabled() is True
 
 
+def test_disabled_in_delegated_child_context(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_parent")
+
+    from agent.delegation_context import delegated_child_context
+
+    with delegated_child_context():
+        assert kanban_stop_nudge_enabled() is False
+        assert build_kanban_stop_nudge(messages=[]) is None
+
+    assert kanban_stop_nudge_enabled() is True
+
+
+def test_disabled_in_delegated_child_process_context(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_parent")
+    clear_kanban_env.setenv("HERMES_DELEGATED_CHILD_CONTEXT", "1")
+
+    assert kanban_stop_nudge_enabled() is False
+    assert build_kanban_stop_nudge(messages=[]) is None
+
+
+def test_disabled_in_non_dispatcher_owned_context(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_parent")
+
+    from agent.delegation_context import non_dispatcher_owned_context
+
+    with non_dispatcher_owned_context():
+        assert kanban_stop_nudge_enabled() is False
+        assert build_kanban_stop_nudge(messages=[]) is None
+
+    assert kanban_stop_nudge_enabled() is True
 
 
 def test_env_can_disable(clear_kanban_env):

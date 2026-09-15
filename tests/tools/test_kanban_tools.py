@@ -400,6 +400,104 @@ def test_heartbeat_extends_claim_expires(worker_env):
     )
 
 
+def test_auto_heartbeat_skips_delegated_child_context(monkeypatch, worker_env):
+    from agent.delegation_context import delegated_child_context
+    from tools import kanban_tools as kt
+
+    attempts = []
+
+    def unexpected_connect(*_args, **_kwargs):
+        attempts.append(True)
+        raise AssertionError("delegated child must not connect to the Kanban DB")
+
+    from hermes_cli import kanban_db_connect as kbc
+    monkeypatch.setattr(kbc, "connect", unexpected_connect)
+    monkeypatch.setattr(kt, "_AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(kt, "_auto_heartbeat_last_attempt", 0.0)
+
+    with delegated_child_context():
+        assert kt.heartbeat_current_worker_from_env() is False
+
+    assert attempts == []
+    assert kt._auto_heartbeat_last_attempt == 0.0
+
+
+def test_child_tick_preserves_rate_limit_slot_for_parent(monkeypatch, worker_env):
+    from agent.delegation_context import delegated_child_context
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    def heartbeat_events():
+        conn = kbc.connect()
+        try:
+            return [event for event in kb.list_events(conn, worker_env)
+                    if event.kind == "heartbeat"]
+        finally:
+            conn.close()
+
+    before = heartbeat_events()
+    previous_attempt = 1.0
+    now = previous_attempt + kt._AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS + 1.0
+    monkeypatch.setattr(kt, "_auto_heartbeat_last_attempt", previous_attempt)
+    monkeypatch.setattr(kt.time, "monotonic", lambda: now)
+
+    with delegated_child_context():
+        assert kt.heartbeat_current_worker_from_env() is False
+        assert kt._auto_heartbeat_last_attempt == previous_attempt
+
+    assert heartbeat_events() == before
+    # No reset of the shared timestamp or disabled rate limiter between ticks:
+    # the parent's real DB write must still succeed in the same clock window.
+    assert kt.heartbeat_current_worker_from_env() is True
+    assert kt._auto_heartbeat_last_attempt == now
+    assert len(heartbeat_events()) == len(before) + 1
+    assert kt.heartbeat_current_worker_from_env() is False
+    assert len(heartbeat_events()) == len(before) + 1
+
+
+def test_auto_heartbeat_skips_delegated_child_process(monkeypatch, worker_env):
+    from tools import kanban_tools as kt
+
+    attempts = []
+
+    def unexpected_connect(*_args, **_kwargs):
+        attempts.append(True)
+        raise AssertionError("delegated child must not connect to the Kanban DB")
+
+    monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", "1")
+    from hermes_cli import kanban_db_connect as kbc
+    monkeypatch.setattr(kbc, "connect", unexpected_connect)
+    monkeypatch.setattr(kt, "_AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(kt, "_auto_heartbeat_last_attempt", 0.0)
+
+    assert kt.heartbeat_current_worker_from_env() is False
+    assert attempts == []
+    assert kt._auto_heartbeat_last_attempt == 0.0
+
+
+def test_auto_heartbeat_skips_non_dispatcher_owned_context(monkeypatch, worker_env):
+    from agent.delegation_context import non_dispatcher_owned_context
+    from tools import kanban_tools as kt
+
+    attempts = []
+
+    def unexpected_connect(*_args, **_kwargs):
+        attempts.append(True)
+        raise AssertionError("non-owner context must not connect to the Kanban DB")
+
+    from hermes_cli import kanban_db_connect as kbc
+    monkeypatch.setattr(kbc, "connect", unexpected_connect)
+    monkeypatch.setattr(kt, "_AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(kt, "_auto_heartbeat_last_attempt", 0.0)
+
+    with non_dispatcher_owned_context():
+        assert kt.heartbeat_current_worker_from_env() is False
+
+    assert attempts == []
+    assert kt._auto_heartbeat_last_attempt == 0.0
+
+
 def test_comment_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_comment({

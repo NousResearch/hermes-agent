@@ -9,6 +9,11 @@ from __future__ import annotations
 import os
 from typing import Any, Iterable, Optional
 
+from agent.delegation_context import (
+    is_delegated_child_process_context,
+    is_dispatcher_owned_worker_context,
+)
+
 
 _TERMINAL_KANBAN_TOOLS = frozenset({"kanban_complete", "kanban_block"})
 
@@ -17,6 +22,14 @@ _DEFAULT_MAX_ATTEMPTS = 2
 
 def kanban_stop_nudge_enabled() -> bool:
     """On when ``HERMES_KANBAN_TASK`` is set, unless ``HERMES_KANBAN_STOP_NUDGE`` disables it."""
+    # delegate_task children and in-process cron jobs share the parent worker's
+    # environment, but do not own its Kanban lifecycle. Applying the terminal
+    # guard to either context replaces its result with instructions to complete
+    # or block the parent's card. The process marker also covers subprocesses
+    # spawned by a delegated child, where the ContextVar is no longer present.
+    if is_delegated_child_process_context() or not is_dispatcher_owned_worker_context():
+        return False
+
     if (os.environ.get("HERMES_KANBAN_STOP_NUDGE") or "").strip().lower() in {"0", "false", "no", "off"}:
         return False
     return bool((os.environ.get("HERMES_KANBAN_TASK") or "").strip())

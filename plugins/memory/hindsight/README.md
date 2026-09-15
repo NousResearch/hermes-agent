@@ -102,6 +102,42 @@ Config file: `~/.hermes/hindsight/config.json`
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
 
+### Optional auto-recall controls
+
+These controls are disabled by default. They affect automatic context injection,
+not explicit `hindsight_recall` / `hindsight_reflect` tool calls, retained facts or
+the active bank. They are available in the generic provider configuration panel
+and in `hindsight/config.json`.
+
+| Key | Default | Effect when enabled |
+|-----|---------|---------------------|
+| `recall_max_results` | `0` | Keep only the first N ranked recall results; 0 keeps all. This caps injected results, not server retrieval cost. |
+| `recall_live_status_bypass` | `false` | Skip automatic recall when both a time phrase and an operational-status phrase match. |
+| `recall_simple_budget` | `""` | Budget (`low`, `mid`, `high`) for short queries; empty disables. |
+| `recall_simple_max_words` | `0` | Word limit for the short-query budget; 0 disables. |
+| `recall_document_tags` | `[]` | Base tags for document-filtered recall; requires matching document terms. |
+| `recall_document_terms` | `[]` | Case-insensitive phrases that activate document filtering. |
+| `recall_document_tag_routes` | `{}` | Additional tag -> phrase-list mapping, e.g. `{"topic:network": ["router", "network"]}`. |
+| `recall_document_types` | `["world", "observation"]` | Fact types used when document filtering matches. |
+
+The live-status and short-query classifiers are simple English/German phrase
+heuristics, not intent detection: they can skip useful context or miss a live
+question. Short queries containing known analysis/comparison phrases keep the
+normal budget. Classification uses the full query before truncation. For
+current-message routing, combine with the existing `recall_sync: true`; the
+default asynchronous mode still prefetches from the preceding turn.
+
+Document filtering searches **already retained** facts in the current bank. It
+does not watch folders, synchronize, import, tag or alter documents. A matching
+query replaces the configured recall tags/types with the document scope;
+base tags and all matching route tags use `tags_match: "all"`. Overly restrictive
+tags can produce no useful matches, and filters are not an access-control
+boundary. Nonmatching queries keep the normal scope.
+
+With `prefetch_method: "reflect"`, only bypass and short-query budget apply;
+document filters and the result cap are recall-only. No Mental Models setting
+is changed by these controls.
+
 ### Integration
 
 | Key | Default | Description |

@@ -281,3 +281,27 @@ def test_auth_refresh_retry_failure_reaches_the_configured_chain_over_http(
         "401, then the refreshed retry fails on credits, then the configured chain: %r"
         % (seen,)
     )
+
+
+def test_exhausted_ladder_raises_the_narrowed_error(monkeypatch, hermetic):
+    """No chain answers: the retry's own failure surfaces, not the healed 401."""
+    monkeypatch.setattr(aux, "_refresh_nous_auxiliary_client",
+                        lambda **kwargs: (_FakeClient(), AUX_MODEL))
+
+    def _no_chain(first_err, route):
+        hermetic.append(first_err)
+        yield from ()
+        return None
+
+    monkeypatch.setattr(aux, "_ladder_provider_fallback", _no_chain)
+    failure = _credit_error()
+
+    def perform(step):
+        raise failure
+
+    with pytest.raises(_ApiError) as raised:
+        aux._drive_ladder(_ladder(), perform)
+
+    assert raised.value is failure, (
+        "the ladder must surface the actionable retry failure, got %r" % (raised.value,))
+    assert hermetic == [failure]

@@ -6842,8 +6842,6 @@ class _LadderStep(NamedTuple):
     args: tuple
 
 
-_RERAISE_ORIGINAL = object()
-
 # Ordered (predicate, reason) pairs for the provider-fallback rung: first match
 # wins, so a payment-flavoured 429 reads as "payment error", not "rate limit".
 _FALLBACK_REASONS: Tuple[Tuple[Callable[[Exception], bool], str], ...] = (
@@ -7143,7 +7141,7 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
                    # All fallback layers exhausted — emit a single user-visible warning so the operator
                    # knows aux task is about to fail. (#26882) The error itself is re-raised below.
                    # (#26882)
-                   "(fallback_chain + main agent model). Raising original error.",
+                   "(fallback_chain + main agent model). Raising the last error.",
                    task or "call", tag, reason, resolved_provider)
     return None
 
@@ -7158,7 +7156,7 @@ def _aux_recovery_ladder(
     """Ordered recovery rungs after the primary request failed (generator): parameter
     strips → Nous heal/refresh → credential refresh/pool rotation → provider fallback.
     Each rung returns a response, narrows ``first_err`` and falls through, or re-raises.
-    Returns ``_RERAISE_ORIGINAL`` when exhausted (after evicting a connection-poisoned client)."""
+    Raises the narrowed ``first_err`` when exhausted (after evicting a connection-poisoned client)."""
     tag = " (async)" if async_mode else ""
     route = _LadderRoute(
         client, task, tag, async_mode, base_info, resolved_provider, resolved_model,
@@ -7190,7 +7188,9 @@ def _aux_recovery_ladder(
         except Exception:
             logger.debug("Auxiliary%s: cache eviction after connection error failed",
                          tag, exc_info=True)
-    return _RERAISE_ORIGINAL
+    # The narrowed error is the actionable one (e.g. a 404 "requires credits" from the
+    # retry after a healed 401), so surface it rather than the original.
+    raise first_err
 
 
 def _drive_ladder(ladder, perform: Callable[[_LadderStep], Any]) -> Any:
@@ -7457,12 +7457,9 @@ def _call_llm_impl(
             if kind == "retry":
                 return _retry_same_provider_sync(**kw)
             return _call_fallback_candidate_sync(*args, **kw)
-        result = _drive_ladder(
+        return _drive_ladder(
             _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=False, route_info=route_info),
             _perform)
-        if result is _RERAISE_ORIGINAL:
-            raise
-        return result
 
 
 def _coerce_llm_message(response):
@@ -7608,12 +7605,9 @@ async def _async_call_llm_impl(
             fb_client, fb_model, fb_label = args
             fb_client, _ = _to_async_client(fb_client, fb_model or "", is_vision=(task == "vision"))
             return await _call_fallback_candidate_async(fb_client, fb_model, fb_label, **kw)
-        result = await _drive_ladder_async(
+        return await _drive_ladder_async(
             _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=True, route_info=route_info),
             _perform)
-        if result is _RERAISE_ORIGINAL:
-            raise
-        return result
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

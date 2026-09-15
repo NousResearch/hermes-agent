@@ -3,6 +3,8 @@ import os
 import stat
 import threading
 
+from datetime import datetime, timezone
+
 import pytest
 
 from plugins.memory.supermemory import (
@@ -15,6 +17,27 @@ from plugins.memory.supermemory import (
     _probe_supermemory_connection,
     _save_supermemory_config,
 )
+
+
+@pytest.fixture
+def frozen_capture_clock(monkeypatch):
+    """Pin the capture clock so custom_id expectations cannot straddle a 4h-bucket boundary.
+
+    Both the provider's write and the test's expectation call now() separately; near a
+    bucket edge (hh:59:59.99 → hh:00:00) those two reads can land in different buckets
+    and fail the equality assert. Freezing the module's datetime makes both reads
+    identical by construction.
+    """
+    fixed = datetime(2026, 9, 15, 10, 30, 0, tzinfo=timezone.utc)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed
+
+    import plugins.memory.supermemory as sm
+    monkeypatch.setattr(sm, "datetime", _FrozenDatetime)
+    return fixed
 
 
 class FakeClient:
@@ -126,7 +149,7 @@ def test_capture_custom_id_buckets_by_four_hours():
     assert _capture_custom_id("", datetime(2026, 9, 12, 23, 0, tzinfo=timezone.utc)) == "hermes_2026-09-12_b5"
 
 
-def test_sync_turn_writes_turn_to_session_document(provider):
+def test_sync_turn_writes_turn_to_session_document(provider, frozen_capture_clock):
     # Every completed turn is appended to one document per session per 4h window.
     provider.sync_turn("hello", "hi there", session_id="session-1")
     assert len(provider._client.add_calls) == 1
@@ -144,7 +167,7 @@ def test_sync_turn_skips_empty_turn(provider):
     assert provider._client.add_calls == []
 
 
-def test_failed_turn_write_is_retried_at_session_end(provider):
+def test_failed_turn_write_is_retried_at_session_end(provider, frozen_capture_clock):
     provider._client.fail_add = True
     provider.sync_turn("hello", "hi there", session_id="session-1")
     assert provider._client.add_calls == []
@@ -159,7 +182,7 @@ def test_failed_turn_write_is_retried_at_session_end(provider):
     assert provider._pending_turns == []
 
 
-def test_pending_turns_are_batched_with_next_turn(provider):
+def test_pending_turns_are_batched_with_next_turn(provider, frozen_capture_clock):
     provider._client.fail_add = True
     provider.sync_turn("one", "uno", session_id="session-1")
     provider._client.fail_add = False
@@ -169,7 +192,7 @@ def test_pending_turns_are_batched_with_next_turn(provider):
     assert provider._pending_turns == []
 
 
-def test_session_switch_flushes_pending_to_old_session(provider):
+def test_session_switch_flushes_pending_to_old_session(provider, frozen_capture_clock):
     provider._client.fail_add = True
     provider.sync_turn("hello", "hi", session_id="session-1")
     provider._client.fail_add = False
@@ -179,7 +202,7 @@ def test_session_switch_flushes_pending_to_old_session(provider):
     assert provider._pending_turns == []
 
 
-def test_failed_switch_flush_keeps_old_session_turns_for_later_retry(provider):
+def test_failed_switch_flush_keeps_old_session_turns_for_later_retry(provider, frozen_capture_clock):
     provider._client.fail_add = True
     provider.sync_turn("old turn", "old reply", session_id="session-1")
     provider.on_session_switch("session-2", reset=True)  # flush fails: service unavailable at the boundary
@@ -226,7 +249,7 @@ def test_concurrent_sync_turn_and_session_switch_do_not_duplicate_pending(provid
     assert provider._session_id == "session-2"
 
 
-def test_failed_switch_flush_is_retried_at_shutdown(provider):
+def test_failed_switch_flush_is_retried_at_shutdown(provider, frozen_capture_clock):
     provider._client.fail_add = True
     provider.sync_turn("old turn", "old reply", session_id="session-1")
     provider.on_session_switch("session-2", reset=True)
@@ -236,7 +259,7 @@ def test_failed_switch_flush_is_retried_at_shutdown(provider):
     assert provider._pending_turns == []
 
 
-def test_sync_turn_drops_inline_image_payloads(provider):
+def test_sync_turn_drops_inline_image_payloads(provider, frozen_capture_clock):
     blob = "A" * 4096
     provider.sync_turn(f"describe this data:image/png;base64,{blob}", "a screenshot", session_id="session-1")
     call = provider._client.add_calls[0]
@@ -261,7 +284,7 @@ def test_merge_metadata_stamps_sm_source():
     assert "source" not in merged2
 
 
-def test_shutdown_joins_threads_and_flushes_buffer(provider, monkeypatch):
+def test_shutdown_joins_threads_and_flushes_buffer(provider, monkeypatch, frozen_capture_clock):
     started = threading.Event()
     release = threading.Event()
 

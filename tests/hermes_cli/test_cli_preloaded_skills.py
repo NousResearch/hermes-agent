@@ -134,6 +134,83 @@ def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
         _real_finalize(created["cli"])
 
 
+def test_dispatched_worker_survives_unknown_pinned_skill(monkeypatch, tmp_path):
+    """A kanban card whose pins ALL fail to resolve must not kill its own worker.
+
+    Regression: card t_bc0a9c07 pinned `seo`/`marketing` (category labels, not
+    installed skills); agent init raised `Unknown skill(s)` and the worker
+    exited before doing any work. In a dispatcher-owned worker context the pin
+    is dropped with a warning plus a durable `skill_pin_unresolved` task event
+    instead of aborting — the interactive fail-loud path above is unchanged.
+    """
+    import cli as cli_mod
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_skills as ks
+
+    db_path = tmp_path / "kanban.db"
+    kbc.init_db(db_path)
+    with kbc.connect(db_path) as conn:
+        tid = kb.create_task(conn, title="pinned-card", assignee="worker")
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "jarvis-os")
+
+    created = {}
+
+    def fake_cli(**kwargs):
+        created["cli"] = _DummyCLI(**kwargs)
+        return created["cli"]
+
+    monkeypatch.setattr(cli_mod, "HermesCLI", fake_cli)
+    monkeypatch.setattr(
+        cli_mod,
+        "build_preloaded_skills_prompt",
+        lambda skills, task_id=None: ("", [], ["seo", "marketing"]),
+    )
+
+    with pytest.raises(SystemExit):
+        cli_mod.main(skills="seo,marketing", list_tools=True)
+
+    cli_obj = created["cli"]
+    assert ks.is_kanban_worker_context() is True
+    _real_finalize(cli_obj)  # pre-fix: raises ValueError -> the worker dies
+    assert cli_obj.system_prompt == "base prompt"
+    assert cli_obj.preloaded_skills == []
+
+    with kbc.connect(db_path) as conn:
+        pinned = [e for e in kb.list_events(conn, tid) if e.kind == ks.SKILL_PIN_UNRESOLVED]
+    assert len(pinned) == 1, "the dropped pin must leave a durable task event"
+    assert pinned[0].payload["skills"] == ["seo", "marketing"]
+    assert pinned[0].payload["phase"] == "preload"
+
+
+def test_interactive_session_without_worker_context_still_fails_loud(monkeypatch):
+    """The fail-soft is scoped to dispatched workers: a human typo stays loud."""
+    import cli as cli_mod
+
+    created = {}
+
+    def fake_cli(**kwargs):
+        created["cli"] = _DummyCLI(**kwargs)
+        return created["cli"]
+
+    monkeypatch.setattr(cli_mod, "HermesCLI", fake_cli)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setattr(
+        cli_mod,
+        "build_preloaded_skills_prompt",
+        lambda skills, task_id=None: ("", [], ["seo"]),
+    )
+
+    with pytest.raises(SystemExit):
+        cli_mod.main(skills="seo", list_tools=True)
+
+    with pytest.raises(ValueError, match=r"Unknown skill\(s\): seo"):
+        _real_finalize(created["cli"])
+
+
 def test_show_banner_does_not_print_skills():
     """show_banner() no longer prints the activated skills line — it moved to run()."""
     cli_obj = _make_real_cli(compact=False)

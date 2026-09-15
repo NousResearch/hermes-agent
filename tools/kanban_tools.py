@@ -895,7 +895,15 @@ def _handle_create(args: dict, **kw) -> str:
             initial_status=str(args.get("initial_status") or "running"),
             created_by=os.environ.get("HERMES_PROFILE") or "worker", session_id=session_id)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
-        return _ok(task_id=new_tid, **landed, subscribed=_maybe_auto_subscribe(conn, new_tid))
+        # A dead pin would silently cost the worker its briefing (and pre-fix,
+        # abort it): surface the flag in the create result the caller reads.
+        from hermes_cli.kanban_skills import pin_warning_text, unresolved_skill_pins
+
+        dead_pins = unresolved_skill_pins(skills, assignee=landed.get("assignee") or assignee)
+        pin_extra = {"skill_pin_warning": pin_warning_text(dead_pins)} if dead_pins else {}
+        return _ok(
+            task_id=new_tid, **landed, subscribed=_maybe_auto_subscribe(conn, new_tid), **pin_extra,
+        )
 
 
 def _resolve_notify_target() -> Optional[dict[str, Any]]:

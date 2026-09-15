@@ -1299,6 +1299,20 @@ def create_task(
 
     now = int(time.time())
 
+    # Pins that match no installed skill are flagged on the card, never refused:
+    # category labels (`research`, `devops`) are common on existing cards, and a
+    # write refusal would break their creation instead of teaching anything. The
+    # flag is what the dispatcher's worker would otherwise discover the hard way.
+    # See hermes_cli/kanban_skills.py.
+    from hermes_cli.kanban_skills import SKILL_PIN_UNRESOLVED, unresolved_skill_pins
+
+    unresolved_pins = unresolved_skill_pins(skills_list, assignee=assignee)
+    if unresolved_pins:
+        _log.warning(
+            "kanban: task for assignee %r pins unresolvable skill(s): %s",
+            assignee or "(unassigned)", ", ".join(unresolved_pins),
+        )
+
     # Only persistent kinds inherit the board ``default_workdir``: a scratch
     # task inheriting it would point cleanup at the user's source tree.
     if workspace_path is None and project_repo is None and workspace_kind in {"dir", "worktree"}:
@@ -1372,6 +1386,19 @@ def create_task(
                         task_id,
                         "blocked",
                         {"reason": "initial_status", "status": "blocked", "actor": created_by or "user"},
+                    )
+                if unresolved_pins:
+                    # Durable flag so `hermes kanban show` (and the writes that
+                    # follow) can see WHY the worker ran without these skills.
+                    _append_event(
+                        conn,
+                        task_id,
+                        SKILL_PIN_UNRESOLVED,
+                        {
+                            "skills": unresolved_pins,
+                            "phase": "create",
+                            "hint": "pin matched no installed skill; the worker runs without it",
+                        },
                     )
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
                 inherit_creator_origin(conn, task_id, creator_task_id, created_at=now)

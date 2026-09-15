@@ -2371,6 +2371,9 @@ def get_skill_commands() -> dict:
 
 build_skill_invocation_message = _lazy_shim("agent.skill_commands", "build_skill_invocation_message")
 build_preloaded_skills_prompt = _lazy_shim("agent.skill_commands", "build_preloaded_skills_prompt")
+# Worker-side pin fail-soft: an unresolvable card pin must never abort a run (see
+# hermes_cli/kanban_skills.py). Lazily imported so startup stays free of kanban imports.
+handle_unresolvable_pins = _lazy_shim("hermes_cli.kanban_skills", "handle_unresolvable_pins")
 
 
 def get_skill_bundles() -> dict:
@@ -3086,7 +3089,8 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         skills_prompt, loaded_skills, missing_skills = result
         if missing_skills:
             missing_display = ", ".join(missing_skills)
-            # A typo'd name must not crash a kanban worker; only a fully-missing set fails loudly.
+            # A typo'd name must not crash a kanban worker; a fully-missing set
+            # only fails loudly where no card is responsible for it.
             if loaded_skills:
                 logger.warning(
                     "Unknown skill(s) requested, skipping: %s. "
@@ -3095,7 +3099,10 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                     missing_display,
                     ", ".join(loaded_skills),
                 )
-            else:
+                handle_unresolvable_pins(missing_skills, loaded_skills)
+            elif not handle_unresolvable_pins(missing_skills):
+                # Worker context: the pin was flagged on the card and the run
+                # continues. Every other surface (a human typo) still fails loud.
                 raise ValueError(f"Unknown skill(s): {missing_display}")
         if skills_prompt:
             self.system_prompt = "\n\n".join(p for p in (self.system_prompt, skills_prompt) if p).strip()

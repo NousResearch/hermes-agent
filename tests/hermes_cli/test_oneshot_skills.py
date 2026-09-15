@@ -38,6 +38,19 @@ class TestBuildPreloadedSkillsPrompt:
         with pytest.raises(ValueError, match="Unknown skill"):
             _build_preloaded_skills_prompt("not-a-skill")
 
+    def test_worker_context_all_missing_does_not_raise(self, monkeypatch):
+        """A dispatched worker must survive a dead pin (the `seo`/`marketing` crash)."""
+        import agent.skill_commands as sc
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_deadpin")
+        monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+        monkeypatch.setattr(
+            sc, "build_preloaded_skills_prompt",
+            lambda parsed, **kw: ("", [], list(parsed)),
+        )
+        assert _build_preloaded_skills_prompt("not-a-skill") is None
+
     def test_partial_success_returns_prompt(self, monkeypatch):
         import agent.skill_commands as sc
 

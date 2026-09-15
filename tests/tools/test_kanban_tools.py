@@ -469,6 +469,26 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_flags_a_dead_skill_pin(worker_env):
+    """The create result carries the pin warning the caller can act on."""
+    from tools import kanban_tools as kt
+
+    d = json.loads(kt._handle_create({
+        "title": "dead pin card", "assignee": "peer", "skills": ["seo", "marketing"],
+    }))
+    assert d["ok"] is True
+    assert "seo" in d["skill_pin_warning"]
+    assert "marketing" in d["skill_pin_warning"]
+
+
+def test_create_omits_the_pin_warning_without_pins(worker_env):
+    from tools import kanban_tools as kt
+
+    d = json.loads(kt._handle_create({"title": "no pins", "assignee": "peer"}))
+    assert d["ok"] is True
+    assert "skill_pin_warning" not in d
+
+
 @pytest.mark.parametrize("explicit", [{"workspace_kind": "scratch"}, {"project": ""}])
 @pytest.mark.parametrize("target_scoped", [False, True])
 def test_create_explicit_scratch_ignores_ambient_board_project(

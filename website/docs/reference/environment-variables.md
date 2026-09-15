@@ -948,5 +948,5 @@ These go in `~/.hermes/config.yaml` under the `provider_routing` section:
 | `data_collection` | `"allow"` (default) or `"deny"` to exclude data-storing providers |
 
 :::tip
-Use `hermes config set` to set environment variables — every variable documented on this page (and any platform `*_HOME_CHANNEL` / `*_ALLOWED_USERS` style setting) is saved to `.env`, the same file the setup flows write; dotted `config.yaml` settings go to `config.yaml`.
+Use `hermes config set` to set environment variables — API keys, the optional variables Hermes registers, and any platform `*_HOME_CHANNEL` / `*_ALLOWED_USERS`-style setting are saved to `.env`, the same file the setup flows write; dotted `config.yaml` settings go to `config.yaml`.
 :::

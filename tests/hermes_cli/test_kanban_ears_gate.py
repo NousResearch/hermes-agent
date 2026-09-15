@@ -222,3 +222,49 @@ def test_ears_malformed_sentence_is_treated_as_failure_not_invented(kanban_home)
     with kbc.connect() as conn:
         child = kb.get_task(conn, outcome.child_ids[0])
     assert child.ears_sentence is None
+
+
+def test_ears_refusal_report_not_filed_when_decompose_write_fails(kanban_home):
+    """Adversarial-review regression: if decompose_triage_task's DB write
+    fails/no-ops (e.g. the task already got decomposed by a concurrent
+    sweep), no EARS problem report should have been filed for a child that
+    was never actually created — the report must be deferred until AFTER
+    the write is confirmed."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="vague idea 3", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test split",
+        "tasks": [
+            {
+                "title": "do the vague thing",
+                "body": "not enough detail to specify behavior",
+                "assignee": "researcher",
+                "parents": [],
+                "ears_refusal": "no concrete trigger to restate",
+            },
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "researcher"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose.decompose_triage_task",
+            return_value=None,  # simulates "already decomposed / moved out of triage"
+        ), patch(
+            "hermes_cli.kanban_decompose._dh_bridge.push_problem_report",
+            return_value=(True, "report-789"),
+        ) as mock_report:
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert not outcome.ok
+    assert "already decomposed" in outcome.reason
+    # The write never succeeded -> no report should have been filed for a
+    # child that doesn't exist.
+    mock_report.assert_not_called()

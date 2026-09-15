@@ -191,16 +191,30 @@ def validate_ears_sentence(sentence: object) -> bool:
     return any(p.match(text) for p in _EARS_PATTERNS)
 
 
-def _resolve_ears_sentence(entry: dict, *, task_id: str, child_title: str) -> Optional[str]:
-    """Validate ``entry.get("ears_sentence")``; on any failure (explicit
-    ``ears_refusal``, missing/malformed sentence) file a problem report via
-    decision-hud and return ``None`` — never invents a sentence. See the
-    module docstring's OWNER CHOICE section for the fail-open (proceed with
-    ``ears_sentence=None``) rationale.
+def _resolve_ears_sentence(
+    entry: dict, *, task_id: str, child_title: str,
+) -> tuple[Optional[str], Optional[dict]]:
+    """Validate ``entry.get("ears_sentence")``; returns
+    ``(ears_sentence, pending_report)`` — never invents a sentence.
+    ``pending_report`` is a kwargs dict for
+    :func:`hermes_cli.plugin_bridges.decision_hud.push_problem_report`, or
+    ``None`` when validation succeeded.
+
+    IMPORTANT: this function no longer pushes the report itself. Adversarial
+    review found the report was previously filed eagerly, before the
+    caller's DB write (``specify_triage_task``/``decompose_triage_task``)
+    had even been attempted — a subsequent write failure (a race under
+    concurrent decompose sweeps, a DB error, "already decomposed") left
+    orphaned problem reports referencing tasks/children that were never
+    actually created. Callers must call
+    :func:`_flush_pending_ears_reports` only AFTER their write succeeds.
+    See the module docstring's OWNER CHOICE section for the fail-open
+    (proceed with ``ears_sentence=None``) rationale — that design is
+    unchanged; only the report's timing moved.
     """
     candidate = entry.get("ears_sentence")
     if validate_ears_sentence(candidate):
-        return candidate.strip()  # type: ignore[union-attr]
+        return candidate.strip(), None  # type: ignore[union-attr]
 
     refusal = entry.get("ears_refusal")
     if isinstance(refusal, str) and refusal.strip():
@@ -215,12 +229,22 @@ def _resolve_ears_sentence(entry: dict, *, task_id: str, child_title: str) -> Op
             f"refuse, but the returned sentence (if any) failed the mechanical "
             f"EARS-shape check: {candidate!r}"
         )
-    ok, detail = _dh_bridge.push_problem_report(
-        project="kanban", problem=problem, context=f"task_id={task_id}", reporter="decomposer",
-    )
-    if not ok:
-        logger.warning("decompose: EARS problem report failed for task %s: %s", task_id, detail)
-    return None
+    pending_report = {
+        "project": "kanban", "problem": problem,
+        "context": f"task_id={task_id}", "reporter": "decomposer",
+    }
+    return None, pending_report
+
+
+def _flush_pending_ears_reports(pending_reports: list[dict], *, task_id: str) -> None:
+    """Push every pending EARS problem report — call ONLY after the
+    caller's DB write for these entries has actually succeeded."""
+    for pending_report in pending_reports:
+        ok, detail = _dh_bridge.push_problem_report(**pending_report)
+        if not ok:
+            logger.warning(
+                "decompose: EARS problem report failed for task %s: %s", task_id, detail,
+            )
 
 
 @dataclass
@@ -337,7 +361,9 @@ def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
     mode_title = title_val if title_val is not None else task.title
     # Rule 6: resolve the EARS restatement (validate/refuse+report; never
     # invent) — see module docstring for the fail-open owner choice.
-    ears_sentence_val = _resolve_ears_sentence(parsed, task_id=task.id, child_title=mode_title)
+    ears_sentence_val, pending_report = _resolve_ears_sentence(
+        parsed, task_id=task.id, child_title=mode_title,
+    )
     with kbc.connect_closing() as conn:
         ok = kb.specify_triage_task(
             conn, task.id, title=title_val, body=body_val, assignee=assignee_val, author=author,
@@ -345,19 +371,28 @@ def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
         )
     if not ok:
         return DecomposeOutcome(task.id, False, "task moved out of triage before promotion")
+    # Flush only after the write is confirmed — a report referencing a
+    # promotion that never happened would be misleading.
+    if pending_report is not None:
+        _flush_pending_ears_reports([pending_report], task_id=task.id)
     return DecomposeOutcome(task.id, True, "single task (no fanout)", fanout=False, new_title=title_val)
 
 
-def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[list[dict], str]:
-    """Validate/normalise the LLM's ``tasks`` list; ``(children, "")`` or ``([], reason)``.
-    Unknown assignees route to the default; never assignee=None."""
+def _clean_children(
+    task_id: str, raw_tasks: list, routing: _Routing,
+) -> tuple[list[dict], str, list[dict]]:
+    """Validate/normalise the LLM's ``tasks`` list; ``(children, "", pending_reports)``
+    or ``([], reason, [])``. Unknown assignees route to the default; never
+    assignee=None. ``pending_reports`` are EARS problem reports to flush
+    ONLY after the caller's DB write for these children succeeds."""
     children: list[dict] = []
+    pending_reports: list[dict] = []
     for idx, entry in enumerate(raw_tasks):
         if not isinstance(entry, dict):
-            return [], f"tasks[{idx}] is not an object"
+            return [], f"tasks[{idx}] is not an object", []
         title = entry.get("title")
         if not isinstance(title, str) or not title.strip():
-            return [], f"tasks[{idx}].title is missing or empty"
+            return [], f"tasks[{idx}].title is missing or empty", []
         title_clean = title.strip()[:200]
         body = entry.get("body")
         assignee = entry.get("assignee")
@@ -373,25 +408,31 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[l
         parents = entry.get("parents") or []
         if not isinstance(parents, list):
             parents = []
+        # Rule 6: resolve the EARS restatement (validate/refuse+report;
+        # never invent) — see module docstring for the fail-open owner
+        # choice. Report is deferred, not fired here — see
+        # _flush_pending_ears_reports.
+        ears_sentence_val, pending_report = _resolve_ears_sentence(
+            entry, task_id=task_id, child_title=title_clean,
+        )
+        if pending_report is not None:
+            pending_reports.append(pending_report)
         children.append({
             "title": title_clean,
             "body": body.strip() if isinstance(body, str) else "",
             "assignee": chosen,
-            # Rule 6: resolve the EARS restatement (validate/refuse+report;
-            # never invent) — see module docstring for the fail-open owner
-            # choice.
-            "ears_sentence": _resolve_ears_sentence(entry, task_id=task_id, child_title=title_clean),
+            "ears_sentence": ears_sentence_val,
             # Drop non-int, out-of-range and self parent indices.
             "parents": [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx],
         })
-    return children, ""
+    return children, "", pending_reports
 
 
 def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
     raw_tasks = parsed.get("tasks") or []
     if not isinstance(raw_tasks, list) or not raw_tasks:
         return DecomposeOutcome(task_id, False, "decomposer returned fanout=true with empty tasks list")
-    children, reason = _clean_children(task_id, raw_tasks, routing)
+    children, reason, pending_reports = _clean_children(task_id, raw_tasks, routing)
     if reason:
         return DecomposeOutcome(task_id, False, reason)
     try:
@@ -411,6 +452,11 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) ->
         return DecomposeOutcome(task_id, False, f"DB error: {type(exc).__name__}")
     if child_ids is None:
         return DecomposeOutcome(task_id, False, "task already decomposed or moved out of triage")
+    # Flush only after the fan-out write is confirmed — reports filed
+    # before this point would reference children that were never created
+    # if the write above had failed or no-opped.
+    if pending_reports:
+        _flush_pending_ears_reports(pending_reports, task_id=task_id)
     return DecomposeOutcome(
         task_id, True, f"decomposed into {len(child_ids)} children", fanout=True, child_ids=child_ids,
     )

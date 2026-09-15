@@ -600,9 +600,25 @@ After your command exits successfully:
 
 1. If `{output_path}` exists and is non-empty → Hermes reads it as UTF-8 text.
 2. Otherwise, if the command wrote to stdout → Hermes uses that.
-3. Otherwise → error: "Command STT provider wrote no output file and produced no stdout".
+3. Otherwise, if the command created an empty `{output_path}` → a successful empty transcript (no speech).
+4. Otherwise → error: "Command STT provider wrote no output file and produced no stdout".
 
 This lets you use the registry for both file-writing CLIs (`whisper-cli`, `parakeet-asr`) and curl-style one-liners that emit transcript to stdout (`curl … | jq -r .text`).
+
+An empty file is an explicit no-speech result, such as when voice activity detection
+(VAD) rejects a noise-only clip. Voice mode can then re-listen without reporting a
+transcription failure. Non-zero exits, timeouts, unreadable files, and missing output
+remain errors. Write diagnostic messages to stderr: non-empty stdout is still
+interpreted as transcript text, even when the output file is empty.
+
+For noise-sensitive local command providers, enable the engine's own VAD before
+recognition. A microphone volume threshold alone does not distinguish speech from
+clicks or rustling. For example, a VAD-capable `whisper-cli` can use `--vad` and
+`--vad-model /path/to/silero-model.bin` in the configured command. The model must
+already exist and the command must still handle audio conversion and write the
+transcript to `{output_path}`. Hermes does not automatically enable or install VAD
+for arbitrary command providers, and this behavior does not block legitimate short
+utterances by their text.
 
 For `format: json` / `srt` / `vtt`, Hermes returns the raw file content as the `transcript` field. Extracting `.text` from JSON is out of scope for the runner — either configure `format: txt`, or post-process JSON downstream.
 

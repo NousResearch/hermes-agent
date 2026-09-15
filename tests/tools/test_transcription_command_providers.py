@@ -24,6 +24,7 @@ import wave
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 
 from tools.transcription_common import BUILTIN_STT_PROVIDERS
 from tools.transcription_command import (
@@ -194,6 +195,45 @@ class TestRenderCommandSTTTemplate:
 
 
 class TestTranscribeCommandSTT:
+    @pytest.mark.parametrize("writes_file, stdout, success", [
+        (True, "", True),
+        (True, "spoken words", True),
+        (False, "", False),
+    ])
+    def test_empty_output_contract(self, tmp_path, writes_file, stdout, success):
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        payload = "import sys; "
+        if writes_file:
+            payload += "open(sys.argv[1], 'w').close(); "
+        payload += f"sys.stdout.write({stdout!r})"
+        result = _transcribe_command_stt(
+            str(audio), "fake-cli",
+            {"command": f'"{sys.executable}" -c "{payload}" {{output_path}}'}, {},
+        )
+        assert result["success"] is success
+        if success:
+            assert result["transcript"] == stdout
+        else:
+            assert "no output file" in result["error"]
+
+    def test_voice_loop_accepts_vad_silence_from_real_config(self, tmp_path):
+        import json
+        from hermes_constants import get_hermes_home
+        from tools.voice_mode import transcribe_recording
+
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(json.dumps({"stt": {
+            "enabled": True,
+            "provider": "fake-cli",
+            "providers": {"fake-cli": {
+                "type": "command", "command": _python_emit_command(""),
+            }},
+        }}), encoding="utf-8")
+        result = transcribe_recording(str(audio))
+        assert result["success"] is True
+        assert result["transcript"] == ""
+
     def test_writes_transcript_to_output_path(self, tmp_path):
         audio = _make_silent_wav(tmp_path / "input.wav")
         cfg = {

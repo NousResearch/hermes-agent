@@ -177,6 +177,87 @@ class TestHandleUpdateCommand:
         assert call_kwargs.get("start_new_session") is True
         assert "Starting Hermes update" in result
 
+    @pytest.mark.asyncio
+    async def test_spawns_via_systemd_run_when_available(self, tmp_path, monkeypatch):
+        """When systemd-run + a user manager are available, the updater is
+        spawned as a transient systemd unit (its own cgroup) so a gateway
+        restart cannot SIGKILL it mid-build — the whole point of the fix for
+        the recurring update-driver death."""
+        runner = _make_runner()
+        event = _make_event()
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        mock_popen = MagicMock()
+
+        def which_all(x):
+            return f"/usr/bin/{x}"
+
+        # User manager reachable: probe succeeds.
+        mock_run = MagicMock()
+        mock_run.return_value.returncode = 0
+
+        monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("shutil.which", side_effect=which_all), \
+             patch("subprocess.Popen", mock_popen), \
+             patch("subprocess.run", mock_run):
+            result = await runner._handle_update_command(event)
+
+        # First call is the probe (systemd-run ... true), second the real spawn.
+        assert mock_popen.call_count == 1
+        call_args = mock_popen.call_args[0][0]
+        assert call_args[0] == "/usr/bin/systemd-run"
+        assert "--user" in call_args
+        assert "--collect" in call_args
+        # Transient unit carries the update command (bash -c <update_cmd>).
+        assert call_args[-3] == "bash"
+        assert call_args[-2] == "-c"
+        assert "--gateway" in call_args[-1]
+        assert "Starting Hermes update" in result
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_setsid_when_systemd_probe_fails(self, tmp_path, monkeypatch):
+        """If systemd-run exists but the user manager is unreachable, fall
+        back to the setsid spawn (no silent failure)."""
+        runner = _make_runner()
+        event = _make_event()
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        mock_popen = MagicMock()
+        mock_run = MagicMock()
+        mock_run.returncode = 1  # probe fails
+
+        monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
+             patch("subprocess.Popen", mock_popen), \
+             patch("subprocess.run", mock_run):
+            result = await runner._handle_update_command(event)
+
+        call_args = mock_popen.call_args[0][0]
+        assert call_args[0] == "/usr/bin/setsid"
+        call_kwargs = mock_popen.call_args[1]
+        assert call_kwargs.get("start_new_session") is True
+        assert "Starting Hermes update" in result
+
 
 # ---------------------------------------------------------------------------
 # Platform allowlist gate

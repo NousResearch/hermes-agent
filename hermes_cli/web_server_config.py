@@ -514,6 +514,31 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
 )
 
 
+def _plugin_aux_tasks() -> List[Dict[str, Any]]:
+    """Auxiliary tasks registered by plugins (``PluginContext.register_auxiliary_task``) for the
+    Hermes home active in this context.
+
+    Callers run inside ``_profile_scope`` / ``_config_profile_scope``, and ``get_plugin_manager()``
+    keys its manager on the same context-local home, so a request for profile B enumerates
+    B's plugins even though this process was started for profile A. Discovery failure is
+    fail-soft: the built-in slots must keep working without plugins.
+    """
+    try:
+        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        return [dict(entry) for entry in get_plugin_auxiliary_tasks()
+                if entry.get("key") and entry["key"] not in _AUX_TASK_SLOTS]
+    except Exception:
+        _log.debug("plugin auxiliary task lookup failed", exc_info=True)
+        return []
+
+
+def _aux_task_slots() -> Tuple[str, ...]:
+    """Every auxiliary slot the dashboard may read or assign: built-ins first (UI order), then
+    plugin-registered keys. The picker in ``hermes model`` (``main_provider_setup._all_aux_tasks``)
+    folds plugin tasks in the same way; the dashboard must not disagree with it."""
+    return _AUX_TASK_SLOTS + tuple(entry["key"] for entry in _plugin_aux_tasks())
+
+
 def _dashboard_code_skew_guard() -> Optional[str]:
     """Return a "restart required" message when this process runs stale code, else None.
 
@@ -620,7 +645,7 @@ def _stale_aux_pins(cfg: dict, new_provider: str) -> list:
     aux_cfg = cfg.get("auxiliary", {})
     if not isinstance(aux_cfg, dict):
         return stale_aux
-    for slot in _AUX_TASK_SLOTS:
+    for slot in _aux_task_slots():
         slot_cfg = aux_cfg.get(slot)
         if not isinstance(slot_cfg, dict):
             continue
@@ -716,10 +741,11 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
         return slot_cfg if isinstance(slot_cfg, dict) else {}
 
     effort = _normalize_aux_reasoning_effort(reasoning_effort) if reasoning_effort is not _UNSET else _UNSET
+    slots = _aux_task_slots()
 
     if task == "__reset__":
         # Reset every slot to provider="auto", model="", no effort override — keeps other fields intact.
-        for slot in _AUX_TASK_SLOTS:
+        for slot in slots:
             slot_cfg = _slot(slot)
             slot_cfg["provider"] = "auto"
             slot_cfg["model"] = ""
@@ -734,10 +760,10 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
     if not provider:
         raise HTTPException(status_code=400, detail="provider required for auxiliary")
 
-    targets = [task] if task else list(_AUX_TASK_SLOTS)
+    targets = [task] if task else list(slots)
     new_provider = provider.strip().lower()
     for slot in targets:
-        if slot not in _AUX_TASK_SLOTS:
+        if slot not in slots:
             raise HTTPException(status_code=400, detail=f"unknown auxiliary task: {slot}")
         slot_cfg = _slot(slot)
         prev_provider = str(slot_cfg.get("provider") or "").strip().lower()

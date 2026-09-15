@@ -176,6 +176,30 @@ _THINK_BLOCK_OPEN_RE = re.compile(r"<think[\s>].*\Z", flags=re.DOTALL | re.IGNOR
 # header line plus indented ``•`` bullets) is a UI affordance, not speech.
 _VERIFIER_FOOTER_RE = re.compile(r"^\s*⚠️?\s*File-mutation verifier:.*(?:\n[ \t]+•.*)*", flags=re.MULTILINE)
 
+_VERIFIER_FOOTER_COUNT_RE = re.compile(r"(\d+)\s*file")
+
+
+def downgrade_verifier_footer_for_messaging(text: str) -> str:
+    """Replace the full developer-register verifier footer with one neutral line (#97109).
+
+    Messaging recipients get ``<header> N file change(s) described above did not
+    actually take effect.`` — no paths, no tool names, no shell commands, so the
+    gateway's bare-path media extractor (#35584) structurally cannot fire. The
+    ``File-mutation verifier:`` header shape is kept so ``_VERIFIER_FOOTER_RE``
+    still matches for TTS stripping (#40772). Idempotent: re-applying yields the
+    same line. Non-footer text (and ``\"\"``) passes through untouched.
+    """
+    if not text or "File-mutation verifier" not in text:
+        return text
+
+    def _neutral(match: re.Match) -> str:
+        _count = _VERIFIER_FOOTER_COUNT_RE.search(match.group(0))
+        _n = _count.group(1) if _count else ""
+        _what = f"{_n} file change(s)" if _n else "a change"
+        return f"⚠️ File-mutation verifier: {_what} described above did not actually take effect."
+
+    return _VERIFIER_FOOTER_RE.sub(_neutral, text)
+
 
 def strip_nonspoken_blocks(text: str) -> str:
     """Remove ``<think>`` reasoning blocks and the file-mutation verifier footer."""

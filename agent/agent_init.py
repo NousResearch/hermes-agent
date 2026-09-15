@@ -1197,13 +1197,24 @@ def _apply_display_config(agent, _agent_cfg, platform):
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
 
 
-def _memory_provider_agent_context() -> str:
+def _normalize_memory_platform(platform: Any) -> str:
+    """Return a stable lower-case platform name without trusting caller shape."""
+    value = getattr(platform, "value", platform)
+    try:
+        normalized = str(value or "").strip().lower()
+    except Exception:
+        normalized = ""
+    return normalized or "cli"
+
+
+def _memory_provider_agent_context(platform: Any = None) -> str:
     """Classify the executing agent for external-memory providers.
 
     A delegated child wins over ``HERMES_KANBAN_TASK`` because children can
     temporarily inherit a dispatcher's environment before their launcher
     scrubs it. Dispatcher-owned workers are otherwise identified by their
-    task marker; ordinary CLI and gateway agents remain primary.
+    task marker. Remaining lifecycle-owned platforms derive their own context;
+    ordinary CLI and gateway agents remain primary.
     """
     from agent.delegation_context import (
         is_delegated_child_process_context,
@@ -1214,17 +1225,22 @@ def _memory_provider_agent_context() -> str:
         return "subagent"
     if os.environ.get("HERMES_KANBAN_TASK") and is_dispatcher_owned_worker_context():
         return "kanban"
-    return "primary"
+    return {
+        "cron": "cron",
+        "flush": "flush",
+        "subagent": "subagent",
+    }.get(_normalize_memory_platform(platform), "primary")
 
 
 def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     """Scoping kwargs for ``MemoryManager.initialize_all`` (status_callback is CLI-only:
     gateway status travels a different path and the indicator no-ops without it)."""
+    runtime_platform = _normalize_memory_platform(platform)
     kwargs = {
         "session_id": agent.session_id,
-        "platform": platform or "cli",
+        "platform": runtime_platform,
         "hermes_home": str(get_hermes_home()),
-        "agent_context": _memory_provider_agent_context(),
+        "agent_context": _memory_provider_agent_context(runtime_platform),
     }
     if kwargs["platform"] == "cli":
         kwargs["warning_callback"] = agent._emit_warning
@@ -1268,6 +1284,8 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
         "memory" in (agent.enabled_toolsets or [])
         and "memory" not in (agent.disabled_toolsets or [])
     )
+    _provider_init_kwargs = _memory_provider_init_kwargs(agent, platform)
+    _memory_writes_enabled = _provider_init_kwargs["agent_context"] == "primary"
     if not skip_memory or _memory_toolset_requested:
         # Memory is optional — don't break agent init
         with suppress(Exception):
@@ -1285,6 +1303,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
                     user_char_limit=mem_config.get("user_char_limit", 1375),
                     memory_enabled=agent._memory_enabled,
                     user_profile_enabled=agent._user_profile_enabled,
+                    writes_enabled=_memory_writes_enabled,
                 )
                 agent._memory_store.load_from_disk()
 
@@ -1296,9 +1315,10 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
             if _mem_provider_name and _mem_provider_name.strip():
                 from agent.memory_manager import MemoryManager as _MemoryManager
                 from plugins.memory import load_memory_provider as _load_mem
-                agent._memory_manager = _MemoryManager()
+                agent._memory_manager = _MemoryManager(
+                    agent_context=_provider_init_kwargs["agent_context"]
+                )
                 _mp = _load_mem(_mem_provider_name)
-                _provider_init_kwargs = _memory_provider_init_kwargs(agent, platform)
                 _admitted = True
                 if _mp is not None:
                     _pre_admit = getattr(_mp, "pre_admit", None)

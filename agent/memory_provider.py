@@ -150,6 +150,13 @@ class MemoryProvider(ABC):
     def shutdown(self) -> None:
         """Clean shutdown — flush queues, close connections."""
 
+    def shutdown_read_only(self) -> None:
+        """Release a read-only context without invoking a provider's write-flushing shutdown.
+
+        Providers may override this when they can close resources without persisting
+        memory. The default intentionally does nothing for legacy compatibility.
+        """
+
     # -- Optional hooks (override to opt in) ---------------------------------
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:

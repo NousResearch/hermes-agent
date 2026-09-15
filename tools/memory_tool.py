@@ -240,6 +240,12 @@ def _memory_target_error(store: "MemoryStore", target: str) -> Optional[Dict[str
         from tools.registry import _bound_error_text
         return {"success": False,
                 "error": _bound_error_text(f"Invalid memory target '{target}'. Use 'memory' or 'user'.")}
+    if not getattr(store, "writes_enabled", True):
+        return {
+            "success": False,
+            "error": "Built-in memory writes are disabled in this non-primary execution context.",
+            "target": target,
+        }
     if store.target_enabled(target):
         return None
     label = "USER.md" if target == "user" else "MEMORY.md"

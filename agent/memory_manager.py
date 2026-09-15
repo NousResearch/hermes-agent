@@ -287,11 +287,14 @@ class MemoryManager:
     swallows per-provider exceptions.
     """
 
-    def __init__(self, *, external_prefetch_timeout: Optional[float] = None) -> None:
+    def __init__(self, *, external_prefetch_timeout: Optional[float] = None,
+                 agent_context: str = "primary") -> None:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
         self._external_prefetch_spill_config: Optional[Dict[str, Any]] = None
         self._has_external: bool = False
+        self.agent_context = str(agent_context or "primary").strip().lower()
+        self.writes_enabled = self.agent_context == "primary"
         timeout = external_prefetch_timeout
         timeout = _EXTERNAL_PREFETCH_TIMEOUT_S if timeout is None else float(timeout)
         if timeout <= 0:
@@ -383,8 +386,11 @@ class MemoryManager:
 
     def build_system_prompt(self) -> str:
         """Join every provider's non-empty ``system_prompt_block()`` with blank lines."""
-        blocks = self._each_provider("system_prompt_block() failed", lambda p: p.system_prompt_block(),
-                                      level=logging.WARNING)
+        providers = self._providers if self.writes_enabled else []
+        blocks = self._each_provider(
+            "system_prompt_block() failed", lambda p: p.system_prompt_block(),
+            level=logging.WARNING, providers=providers,
+        )
         return "\n\n".join(b for b in blocks if b and b.strip())
 
     # A /skill or /bundle turn embeds the whole skill body in the model-facing message;
@@ -462,6 +468,8 @@ class MemoryManager:
 
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
         """Queue background prefetch on all providers for the next turn (see ``sync_all``)."""
+        if not self.writes_enabled:
+            return
         providers = list(self._providers)
         clean_query = self._strip_skill_scaffolding(query) if providers else None
         if not clean_query:
@@ -486,6 +494,8 @@ class MemoryManager:
         open after the user saw the response. The single worker also serializes writes (turn N before N+1).
         ``turn_author`` reaches only providers whose ``sync_turn`` accepts it.
         """
+        if not self.writes_enabled:
+            return
         providers = list(self._providers)
         clean_user_content = self._strip_skill_scaffolding(user_content) if providers else None
         if not clean_user_content:
@@ -561,6 +571,8 @@ class MemoryManager:
     def get_all_tool_schemas(self) -> List[Dict[str, Any]]:
         """Collect deduplicated tool schemas from all providers; reserved core tool names are
         skipped because :meth:`add_provider` refuses to route them."""
+        if not self.writes_enabled:
+            return []
         from toolsets import _HERMES_CORE_TOOLS
 
         schemas: List[Dict[str, Any]] = []
@@ -582,13 +594,17 @@ class MemoryManager:
         return schemas
 
     def get_all_tool_names(self) -> set:
-        return set(self._tool_to_provider)
+        return set(self._tool_to_provider) if self.writes_enabled else set()
 
     def has_tool(self, tool_name: str) -> bool:
-        return tool_name in self._tool_to_provider
+        return self.writes_enabled and tool_name in self._tool_to_provider
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         """Route a tool call to its provider; returns a JSON string (tool_error on failure)."""
+        if not self.writes_enabled:
+            return tool_error(
+                f"External memory provider tools are disabled in {self.agent_context} context."
+            )
         provider = self._tool_to_provider.get(tool_name)
         if provider is None:
             return tool_error(f"No memory provider handles tool '{tool_name}'")
@@ -599,6 +615,9 @@ class MemoryManager:
             return tool_error(f"Memory tool '{tool_name}' failed: {e}")
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
+        if not self.writes_enabled:
+            return
+
         def _tick(p: MemoryProvider) -> None:
             # A provider written before the author kwargs declares (turn_number, message) only; it still gets its tick.
             params = _signature_params(p.on_turn_start)
@@ -608,6 +627,8 @@ class MemoryManager:
         self._each_provider("on_turn_start failed", _tick)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+        if not self.writes_enabled:
+            return
         self._each_provider("on_session_end failed", lambda p: p.on_session_end(messages), level=logging.WARNING,
                             exc_info=True)
 
@@ -628,7 +649,7 @@ class MemoryManager:
         share the same worker. If the executor is unavailable, ``_submit_background`` degrades to inline
         execution — the pre-#16454 synchronous behavior, slow but correct.
         """
-        if not self._providers:
+        if not self.writes_enabled or not self._providers:
             return
         snapshot = list(messages or [])
 
@@ -649,7 +670,7 @@ class MemoryManager:
         """Notify providers that ``AIAgent.session_id`` rotated without teardown
         (``/resume``, ``/branch``, ``/reset``, ``/new``, compression). ``rewound=True``
         (``/undo``): same id, truncated transcript."""
-        if not new_session_id:
+        if not self.writes_enabled or not new_session_id:
             return
         if rewound:  # forward only when set so it never pollutes providers' **kwargs
             kwargs["rewound"] = True
@@ -668,6 +689,8 @@ class MemoryManager:
 
     def supports_pre_compress_checkpoint(self, api_version: int = PRE_COMPRESS_CHECKPOINT_API_VERSION) -> bool:
         """Return whether an active provider guarantees checkpoint API support."""
+        if not self.writes_enabled:
+            return False
         versions = (self._checkpoint_api_version(p) for p in self._providers)
         return any(v is not None and v >= api_version for v in versions)
 
@@ -680,6 +703,12 @@ class MemoryManager:
         only to checkpoint (v2+) providers. With ``require_checkpoint`` at least one checkpoint provider
         must succeed — its exception propagates so the caller keeps the uncompressed transcript.
         """
+        if not self.writes_enabled:
+            if require_checkpoint:
+                raise RuntimeError(
+                    f"No pre-compress checkpoint is available in {self.agent_context} context"
+                )
+            return ""
         parts = []
         checkpoint_succeeded = False
         for provider in self._providers:
@@ -720,6 +749,8 @@ class MemoryManager:
     def on_memory_write(self, action: str, target: str, content: str,
                         metadata: Optional[Dict[str, Any]] = None) -> None:
         """Notify external providers when the built-in memory tool writes (skips builtin, the source)."""
+        if not self.writes_enabled:
+            return
 
         def _notify(provider: MemoryProvider) -> None:
             mode = self._provider_memory_write_metadata_mode(provider)
@@ -774,6 +805,8 @@ class MemoryManager:
                 logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)
 
     def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
+        if not self.writes_enabled:
+            return
         self._each_provider(
             "on_delegation failed",
             lambda p: p.on_delegation(task, result, child_session_id=child_session_id, **kwargs),
@@ -782,8 +815,11 @@ class MemoryManager:
     def shutdown_all(self) -> None:
         """Drain the background executor (bounded), then shut providers down in reverse order."""
         self._drain_sync_executor()
-        self._each_provider("shutdown failed", lambda p: p.shutdown(), level=logging.WARNING,
-                            providers=self._providers[::-1])
+        method = "shutdown" if self.writes_enabled else "shutdown_read_only"
+        self._each_provider(
+            f"{method} failed", lambda p: getattr(p, method)(), level=logging.WARNING,
+            providers=self._providers[::-1],
+        )
 
     @property
     def shutdown_drain_state(self) -> Dict[str, Any]:

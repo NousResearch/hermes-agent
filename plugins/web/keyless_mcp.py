@@ -161,7 +161,19 @@ def mcp_call(url: str, tool: str, arguments: Dict[str, Any], timeout: int = _TIM
         raise KeylessMCPError(f"request failed: {exc}") from exc
     if response.status_code >= 400:
         raise KeylessMCPError(f"HTTP {response.status_code}: {response.text[:300]}")
-    return _parse_mcp_body(response.text)
+    # ``requests`` only decodes bodies with an explicit charset; a bare
+    # ``text/event-stream`` content-type falls back to ISO-8859-1 (RFC 2616
+    # default), which mangles UTF-8 CJK/emoji into lone control bytes.
+    # ``_parse_mcp_body`` then splits the SSE JSON on those bytes
+    # (``str.splitlines`` treats ``\x85`` as a line break) and dies with
+    # "Unrecognized MCP response shape" — but only for non-ASCII pages.
+    # Force UTF-8 whenever the endpoint declares no charset.
+    content_type = (response.headers.get("content-type") or "").lower()
+    if "charset" in content_type:
+        body = response.text
+    else:
+        body = response.content.decode("utf-8", errors="replace")
+    return _parse_mcp_body(body)
 
 
 # --- Parallel (search.parallel.ai) — JSON text payloads -----------------------

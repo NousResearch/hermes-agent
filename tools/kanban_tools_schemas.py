@@ -508,12 +508,21 @@ KANBAN_UNBLOCK_SCHEMA = _schema(
     "kanban_unblock",
     (
         "Unblock a Kanban task. It moves to ready when all parents are done, "
-        "or todo while any parent remains open. Orchestrator-only — only "
-        "profiles with the kanban toolset can unblock routed work; "
-        "dispatcher-spawned task workers never see this tool."
+        "or todo while any parent remains open. Orchestrator profiles may "
+        "unblock any task. Dispatcher-spawned workers may unblock OTHER "
+        "tasks — never their own assigned task (self-unblock is refused) — "
+        "and must pass `evidence`: the machine-checkable fact that satisfied "
+        "the card's declared wake condition. Actor and evidence are recorded "
+        "in the task's audit event."
     ),
     {
         "task_id": _prop("string", "Blocked task id to move to ready or parent-gated todo."),
+        "evidence": _prop("string", (
+            "Required for dispatcher workers: what you verified that satisfied the "
+            "blocked card's wake condition, with the concrete proof (file, command "
+            "result, URL, or record) — e.g. 'plugin v1.2.17 live on 10/10 profiles, "
+            "commit 276b603'. Ignored for orchestrator profiles."
+        )),
     },
     ["task_id"],
 )

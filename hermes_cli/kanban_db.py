@@ -3306,9 +3306,15 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
     return "ready" if _parents_satisfied(conn, task_id) else "todo"
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def unblock_task(
+    conn: sqlite3.Connection, task_id: str, *, actor: Optional[str] = None,
+    evidence: Optional[str] = None,
+) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
-    when that is where it left off), closing any leaked run first."""
+    when that is where it left off), closing any leaked run first. ``actor``/
+    ``evidence`` ride the ``unblocked`` event for the audit trail (who resumed the
+    card and what proof they cited); both stay optional so existing callers — the
+    CLI and the cron recompute paths — keep their current event shape."""
     now = int(time.time())
     with write_txn(conn):
         resume_status = (
@@ -3339,14 +3345,14 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
-        _append_event(
-            conn, task_id, "unblocked",
-            (
-                {"status": new_status, "resume_status": resume_status}
-                if new_status != "ready" or resume_status != "ready"
-                else None
-            ),
-        )
+        payload: dict = {}
+        if new_status != "ready" or resume_status != "ready":
+            payload.update({"status": new_status, "resume_status": resume_status})
+        if actor:
+            payload["actor"] = str(actor)
+        if evidence:
+            payload["evidence"] = redact_review_value(str(evidence))
+        _append_event(conn, task_id, "unblocked", payload or None)
         return True
 
 

@@ -2,7 +2,7 @@
 subdirectories via tool calls, load project context files (AGENTS.md, CLAUDE.md,
 .cursorrules) from them and append to the tool result — context arrives without
 touching the system prompt (prompt caching preserved). Complements the startup
-CWD-only loading in ``prompt_builder.py``."""
+loading in ``prompt_builder.py`` (which merges the git-root → cwd AGENTS.md chain)."""
 
 import hashlib
 import logging

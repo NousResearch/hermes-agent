@@ -13,8 +13,8 @@ Hermes Agent automatically discovers and loads context files that shape how it b
 | File | Purpose | Discovery |
 |------|---------|-----------| 
 | **.hermes.md** / **HERMES.md** | Project instructions (highest priority) | Walks to git root |
-| **AGENTS.override.md** | Personal, per-directory override of AGENTS.md (typically gitignored) | CWD at startup + subdirectories progressively |
-| **AGENTS.md** | Project instructions, conventions, architecture | CWD at startup + subdirectories progressively |
+| **AGENTS.override.md** | Personal, per-directory override of AGENTS.md (typically gitignored) | Git root → CWD chain at startup; subdirectories progressively |
+| **AGENTS.md** | Project instructions, conventions, architecture | Git root → CWD chain at startup; subdirectories progressively |
 | **CLAUDE.md** | Claude Code context files (also detected) | CWD at startup + subdirectories progressively |
 | **SOUL.md** | Global personality and tone customization for this Hermes instance | `HERMES_HOME/SOUL.md` only |
 | **.cursorrules** | Cursor IDE coding conventions | CWD only |
@@ -47,7 +47,7 @@ Outside a git repository, only the working directory itself is checked — paren
 
 ### Progressive Subdirectory Discovery
 
-At session start, Hermes loads the `AGENTS.md` from your working directory into the system prompt. As the agent navigates into subdirectories during the session (via `read_file`, `terminal`, `search_files`, etc.), it **progressively discovers** context files in those directories and injects them into the conversation at the moment they become relevant.
+At session start, Hermes loads the `AGENTS.md` chain (git root → working directory) into the system prompt. As the agent navigates into subdirectories during the session (via `read_file`, `terminal`, `search_files`, etc.), it **progressively discovers** context files in those directories and injects them into the conversation at the moment they become relevant.
 
 ```
 my-project/
@@ -137,9 +137,9 @@ Context files are loaded by `build_context_files_prompt()` in `agent/prompt_buil
 
 1. **Path extraction** — after each tool call, file paths are extracted from arguments (`path`, `workdir`, shell commands)
 2. **Ancestor walk** — the directory and up to 5 parent directories are checked (stopping at already-visited directories)
-3. **Hint loading** — if an `AGENTS.md`, `CLAUDE.md`, or `.cursorrules` is found, it's loaded (first match per directory)
+3. **Hint loading** — if an `AGENTS.override.md`, `AGENTS.md`, `CLAUDE.md`, or `.cursorrules` is found, it's loaded (first match per directory)
 4. **Security scan** — same prompt injection scan as startup files
-5. **Truncation** — capped at 8,000 characters per file
+5. **Truncation** — capped at 32,000 characters per file (head/tail truncated beyond that, with a marker)
 6. **Injection** — appended to the tool result, so the model sees it in context naturally
 
 The final prompt section looks roughly like:

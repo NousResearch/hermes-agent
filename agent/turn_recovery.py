@@ -386,11 +386,21 @@ def _recover_format_errors(
         )
         return True
 
-    # 400 ``invalid_encrypted_content`` on a stale ``codex_reasoning_items`` blob:
+    # 400 ``invalid_encrypted_content`` on a stale ``codex_reasoning_items`` blob,
+    # OR a strict relay's ``MissingParameter(input.content)`` on the empty assistant
+    # placeholder that must follow a replayed reasoning item. Both recover the same way:
     # disable replay for the session, strip cached items, retry once.
+    replay_rejected = classified.reason in (
+        FailoverReason.invalid_encrypted_content,
+        FailoverReason.empty_reasoning_follow_content,
+    )
+    already_retried = (
+        _retry.invalid_encrypted_content_retry_attempted
+        or _retry.empty_reasoning_follow_content_retry_attempted
+    )
     if (
-        classified.reason == FailoverReason.invalid_encrypted_content
-        and not _retry.invalid_encrypted_content_retry_attempted
+        replay_rejected
+        and not already_retried
         and agent.api_mode == "codex_responses"
         and bool(getattr(agent, "_codex_reasoning_replay_enabled", True))
         and any(
@@ -402,16 +412,25 @@ def _recover_format_errors(
         )
     ):
         _retry.invalid_encrypted_content_retry_attempted = True
+        _retry.empty_reasoning_follow_content_retry_attempted = True
         replay_stats = agent._disable_codex_reasoning_replay(messages)
+        if classified.reason == FailoverReason.empty_reasoning_follow_content:
+            user_note = (
+                "Provider rejected the empty assistant item following a replayed reasoning block "
+                "(input.content) — disabled encrypted-reasoning replay"
+            )
+            log_note = "Empty reasoning-follow-content recovery: disabled replay"
+        else:
+            user_note = "Encrypted reasoning replay was rejected by the provider — disabled replay"
+            log_note = "Invalid encrypted reasoning recovery: disabled replay"
         _vlines(
             agent,
-            f"⚠️  Encrypted reasoning replay was rejected by the provider — "
-            f"disabled replay and stripped {replay_stats['items']} item(s) from "
+            f"⚠️  {user_note} and stripped {replay_stats['items']} item(s) from "
             f"{replay_stats['messages']} message(s), retrying...",
         )
         logger.warning(
-            "%sInvalid encrypted reasoning recovery: disabled replay and stripped %d items from %d messages",
-            agent.log_prefix, replay_stats["items"], replay_stats["messages"],
+            "%s%s and stripped %d items from %d messages",
+            agent.log_prefix, log_note, replay_stats["items"], replay_stats["messages"],
         )
         return True
 

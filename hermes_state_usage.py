@@ -284,7 +284,11 @@ class SessionUsageMixin:
         where the cached agent holds cumulative totals)."""
         usage = {k: v for k, v in locals().items() if k in _MODEL_USAGE_FIELDS}
         # Ensure the row exists: under concurrent load create_session() may have failed on
-        # locking, and the UPDATE would silently affect 0 rows.
+        # locking, and the UPDATE would silently affect 0 rows. The minted row carries the
+        # placeholder ``unknown`` source; a later writer's real surface replaces it in
+        # _insert_session_row's upsert, so the placeholder cannot outlive the session's creator
+        # (#111999). Until then the token guard is the only thing holding the row — never a
+        # session the user is shown as theirs.
         self._insert_session_row(session_id, "unknown", model=model)
         sql = _TOKEN_UPDATE_ABSOLUTE_SQL if absolute else _TOKEN_UPDATE_DELTA_SQL
         has_usage = bool(input_tokens or output_tokens or cache_read_tokens or cache_write_tokens or reasoning_tokens
@@ -380,7 +384,8 @@ class SessionUsageMixin:
         if not session_id or not task:
             return
         usage["api_call_count"] = 1 if api_call_count is None else int(api_call_count)
-        # FK to sessions.id: same INSERT OR IGNORE guard as update_token_counts.
+        # FK to sessions.id: same INSERT OR IGNORE guard as update_token_counts (its placeholder
+        # source is repairable by the session's real creator — see _insert_session_row).
         self._insert_session_row(session_id, "unknown")
         self._execute_write(lambda conn: self._record_model_usage(conn, session_id, task=task, **usage))
 

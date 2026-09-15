@@ -32,6 +32,19 @@ def test_detect_only_json(tmp_path, capsys):
     assert payload["recipe"]["build"] == ["go build ./..."]
 
 
+def test_detect_only_does_not_restore_pytest_hint_without_tests(tmp_path, capsys):
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='x'\n[tool.pytest.ini_options]\naddopts='-q'\n",
+        encoding="utf-8",
+    )
+
+    code = run_verify_command(make_args(tmp_path, detect_only=True, json=True))
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["recipe"]["test"] == []
+
+
 def test_no_recipe_found(tmp_path, capsys):
     code = run_verify_command(make_args(tmp_path, detect_only=True))
     assert code == 1

@@ -1551,3 +1551,61 @@ def _launch_bundled_desktop(
     sys.exit(0)
 
 
+def cmd_gui_install(args: argparse.Namespace) -> None:
+    """Create per-user Windows shortcuts for the packaged Desktop app."""
+    if sys.platform != "win32":
+        print("`hermes desktop install` is currently supported on Windows only.")
+        return
+
+    from hermes_cli.main import PROJECT_ROOT
+
+    desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+    packaged_executable = _desktop_packaged_executable(desktop_dir)
+    if packaged_executable is None:
+        print("No packaged Desktop app found.")
+        print("Build it first with: hermes desktop --build-only")
+        raise SystemExit(1)
+
+    try:
+        app_data = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+        start_menu = app_data / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+        desktop = Path(os.environ.get("USERPROFILE", Path.home())) / "Desktop"
+        paths = (start_menu / "Hermes.lnk", desktop / "Hermes.lnk")
+
+        for shortcut_path in paths:
+            shortcut_path.parent.mkdir(parents=True, exist_ok=True)
+            if shortcut_path.exists() and not getattr(args, "force", False):
+                print(f"Already exists: {shortcut_path}")
+                continue
+            _create_windows_shortcut(
+                shortcut_path,
+                packaged_executable,
+                packaged_executable.parent,
+            )
+            print(f"Created: {shortcut_path}")
+    except OSError as exc:
+        print(f"Unable to create Hermes shortcuts: {exc}")
+        raise SystemExit(1) from exc
+
+    print("Hermes Desktop is ready to open from the Windows Desktop or Start Menu.")
+
+
+def _create_windows_shortcut(shortcut_path: Path, target_path: Path, working_directory: Path) -> None:
+    """Create a Windows ``.lnk`` through the built-in Windows Script Host."""
+    def ps_quote(value: Path) -> str:
+        return "'" + str(value).replace("'", "''") + "'"
+
+    script = (
+        "$shell = New-Object -ComObject WScript.Shell; "
+        f"$shortcut = $shell.CreateShortcut({ps_quote(shortcut_path)}); "
+        f"$shortcut.TargetPath = {ps_quote(target_path)}; "
+        f"$shortcut.WorkingDirectory = {ps_quote(working_directory)}; "
+        f"$shortcut.IconLocation = {ps_quote(target_path)},0; "
+        "$shortcut.Description = 'Hermes Desktop'; $shortcut.Save()"
+    )
+    subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )

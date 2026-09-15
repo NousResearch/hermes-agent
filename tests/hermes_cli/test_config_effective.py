@@ -122,3 +122,49 @@ def _reset_caches_keep_last_good():
 
     cfg._RAW_CONFIG_CACHE.clear()
     config_effective._EFFECTIVE_CACHE.clear()
+
+
+def test_raw_cache_hit_replaces_last_good_and_backup(homes):
+    """Regression for #109876: a snapshot accepted through the shared raw cache (refreshed by
+    another raw-config caller such as ``read_raw_config()``) must become the last-known-good AND
+    the newest durable good backup — so a later torn write recovers the NEWER accepted policy,
+    never the first-ever snapshot (older ``approvals``, providers, routing)."""
+    import time
+
+    from hermes_cli import config
+    from hermes_cli.config_backups import load_newest_good_backup
+    from hermes_cli.config_effective import load_user_config_effective
+
+    home, _ = homes
+    cfg = home / "config.yaml"
+    _write(cfg, "approvals:\n  deny: [old]\n")
+    assert load_user_config_effective(cfg)["approvals"]["deny"] == ["old"]
+    assert load_newest_good_backup(cfg)["approvals"]["deny"] == ["old"]
+
+    time.sleep(1.1)  # good copies are named at second granularity; keep the v1 and v2 copies distinct
+    cfg.write_text("approvals:\n  deny: [new]\n", encoding="utf-8")  # the file moves on, caches stay
+    assert config.read_raw_config()["approvals"]["deny"] == ["new"]
+    assert load_user_config_effective(cfg)["approvals"]["deny"] == ["new"]  # served off the raw-cache hit
+    assert load_newest_good_backup(cfg)["approvals"]["deny"] == ["new"]
+
+    cfg.write_text("approvals: [unterminated\n", encoding="utf-8")
+    _reset_caches_keep_last_good()
+    assert load_user_config_effective(cfg)["approvals"]["deny"] == ["new"]
+
+
+def test_good_backup_matches_active_home_by_inode(homes):
+    """Regression for #109876: the active-home gate matches by inode, not lexical Path equality
+    — reading through a symlinked alias of the active config.yaml still publishes the good copy
+    UNDER THE ACTIVE NAME (a fresh process recovering through the canonical path finds it),
+    while another profile's file still never creates backups/ inside that profile."""
+    from hermes_cli.config_effective import load_user_config_effective
+
+    home, _ = homes
+    _write(home / "config.yaml", USER_YAML)
+    alias = home / "alias-config.yaml"
+    alias.symlink_to(home / "config.yaml")
+
+    load_user_config_effective(alias)
+
+    assert list((home / "backups" / "config").glob("config.yaml.good.*"))
+    assert not list((home / "backups" / "config").glob("alias-config.yaml.*"))

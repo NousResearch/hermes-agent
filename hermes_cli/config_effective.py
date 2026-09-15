@@ -48,6 +48,26 @@ def _recover_user_raw(config_path: Path, path_key: str, exc: Exception) -> Dict[
     return copy.deepcopy(raw) if raw is not None else {}
 
 
+def _backup_active_home_good(config_path: Path) -> None:
+    """Keep the active home's durable good copy in step with a snapshot the loader just accepted
+    (the same copy ``load_config`` keeps: a fresh process recovers from it — see
+    ``_recover_user_raw``). ``backup_config`` skips when the newest ``good`` copy already holds
+    identical bytes, so every accepted signature may publish through it.
+
+    Only for the ACTIVE home — a read of another profile's file (doctor, TUI cwd lookup) must
+    not create backups/ inside that profile. Identity is by inode (a symlinked or relativized
+    alias names the same file), not lexical Path equality, and the copy is written under the
+    active path's name so a fresh process recovering through the canonical path finds it."""
+    active = _config.get_config_path()
+    try:
+        same = config_path.samefile(active)
+    except OSError:  # samefile needs both files to exist; resolve instead
+        same = config_path.resolve() == active.resolve()
+    if same:
+        from hermes_cli.config_backups import backup_config
+        backup_config(active, "good")
+
+
 def load_user_config_effective(config_path: Optional[Path] = None, *, fail_closed: bool = False) -> Dict[str, Any]:
     """User ``config.yaml`` → ``${VAR}`` expansion → managed overlay → model-key canonicalization.
     NO ``DEFAULT_CONFIG`` merge: a key absent from the file (and from the managed layer) is absent
@@ -74,7 +94,12 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
         raw_hit = _config._RAW_CONFIG_CACHE.get(path_key)
         if user_sig is not None and raw_hit is not None and raw_hit[:2] == user_sig:
             raw = copy.deepcopy(raw_hit[2])  # one parse per process, shared with read_raw_config()
-            _LAST_GOOD_USER_RAW.setdefault(path_key, copy.deepcopy(raw))
+            # The snapshot accepted through the shared raw cache must also become the
+            # last-known-good (and the durable backup): setdefault would pin the first-ever
+            # snapshot, so a later torn write resurrects an older policy this process already
+            # served past (#109876).
+            _LAST_GOOD_USER_RAW[path_key] = copy.deepcopy(raw)
+            _backup_active_home_good(config_path)
         elif user_sig is not None:
             try:
                 with open(config_path, encoding="utf-8") as f:
@@ -87,12 +112,7 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
                 raw = loaded if isinstance(loaded, dict) else {}
                 _config._RAW_CONFIG_CACHE[path_key] = (*user_sig, copy.deepcopy(raw))
                 _LAST_GOOD_USER_RAW[path_key] = copy.deepcopy(raw)
-                # Same copy load_config keeps: a fresh process recovers from it (see _recover_user_raw).
-                # Only for the ACTIVE home — a read of another profile's file (doctor, TUI cwd lookup)
-                # must not create backups/ inside that profile.
-                if config_path == _config.get_config_path():
-                    from hermes_cli.config_backups import backup_config
-                    backup_config(config_path, "good")
+                _backup_active_home_good(config_path)
 
         env_snapshot = _config._env_ref_snapshot(raw)
         managed = managed_scope.load_managed_config()

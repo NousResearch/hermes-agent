@@ -63,15 +63,32 @@ def get_model_info(profile: Optional[str] = None):
         if not model_name:
             return dict(_EMPTY_MODEL_INFO, provider=provider)
 
-        try:
-            from agent.model_metadata import get_model_context_length
-            # config_context_length=None: ignore the override — we want the auto value
-            auto_ctx = get_model_context_length(model=model_name, base_url=base_url, provider=provider,
-                                                config_context_length=None)
-        except Exception:
-            auto_ctx = 0
-
         config_ctx_int = config_ctx if isinstance(config_ctx, int) and config_ctx > 0 else 0
+
+        # An explicit model.context_length against a local endpoint makes the probe pure
+        # cost. Local bridges and proxies commonly implement only the generation route
+        # (e.g. POST /v1/messages), so discovery fails against them and surfaces
+        # provider-down / cooldown noise in the dashboard while generation is healthy.
+        # With an override configured the probe cannot report anything the operator has
+        # not already stated. is_local_endpoint() is this module's own predicate, so
+        # loopback, container DNS, RFC-1918 and Tailscale all resolve consistently.
+        auto_ctx = 0
+        probe_skipped = False
+        if config_ctx_int > 0 and base_url:
+            try:
+                from agent.model_metadata import is_local_endpoint
+                probe_skipped = is_local_endpoint(base_url)
+            except Exception:
+                probe_skipped = False
+
+        if not probe_skipped:
+            try:
+                from agent.model_metadata import get_model_context_length
+                # config_context_length=None: ignore the override — we want the auto value
+                auto_ctx = get_model_context_length(model=model_name, base_url=base_url, provider=provider,
+                                                    config_context_length=None)
+            except Exception:
+                auto_ctx = 0
 
         caps = {}
         try:

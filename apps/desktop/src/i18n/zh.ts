@@ -374,6 +374,7 @@ export const zh = defineLocale({
       'view.toggleReview': '切换审查面板',
       'view.toggleStatusbar': '切换状态栏',
       'view.toggleTabStrip': '切换标签',
+      'view.toggleProfileRail': '切换配置档案栏',
       'view.showFiles': '显示文件浏览器',
       'view.showBrowser': '打开浏览器',
       'view.showTerminal': '显示终端',
@@ -2820,6 +2821,7 @@ export const zh = defineLocale({
   },
 
   sidebar: {
+    profileRail: '配置档案栏',
     gatewayGroups: {
       grouping: '网关与配置',
       rename: '重命名分组',

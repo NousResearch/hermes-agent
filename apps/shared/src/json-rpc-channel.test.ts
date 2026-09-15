@@ -210,6 +210,30 @@ describe('JsonRpcRequestChannel', () => {
     expect(unhandled).toEqual(['not.declared'])
   })
 
+  it('refuses a clarify without the kind discriminator (-32602) instead of handing it to a typed handler', () => {
+    const channel = new JsonRpcRequestChannel()
+    const { sent, transport } = spyTransport()
+    const seen: string[] = []
+
+    channel.attach(transport)
+    channel.onServerRequest('clarify', req => void seen.push(req.params.kind))
+
+    channel.handleFrame(
+      JSON.stringify({
+        id: 'srq-old',
+        jsonrpc: '2.0',
+        method: 'clarify',
+        params: { questions: [{ qid: 'q1', question: 'Which?', choices: [], multi_select: false }], session_id: 's1' }
+      })
+    )
+
+    const [frame] = sent.map(f => JSON.parse(f) as { id: string; error?: { code: number } })
+
+    expect(seen).toEqual([])
+    expect(frame.id).toBe('srq-old')
+    expect(frame.error?.code).toBe(-32602)
+  })
+
   it('re-delivers open_requests through their generated method, tagged replayed', async () => {
     const delivered: Array<{ id: string; replayed?: boolean; sessionId: string | null }> = []
     const channel = new JsonRpcRequestChannel()

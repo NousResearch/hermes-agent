@@ -94,6 +94,23 @@ describe('acceptsTriggerCompletion', () => {
     expect(press(' ', { query: '' })).toBe(false)
   })
 
+  it('types the first space after a free-text command instead of chipping the command', () => {
+    // Before that first space is inserted, the query is still just `title`, so
+    // `freeTextArgStage` is false. The command itself must still protect the
+    // key: otherwise `/title First Last` becomes a `/title` chip plus unrelated
+    // prose, and the title action loses its argument.
+    expect(
+      acceptsTriggerCompletion({
+        activeExplicit: false,
+        freeTextCommand: true,
+        freeTextArgStage: false,
+        key: ' ',
+        kind: '/',
+        query: 'title'
+      })
+    ).toBe(false)
+  })
+
   // The `/goal <prose>` class: the popover may be live over free-form text, so
   // the keys that mean something else in prose must keep meaning it.
   it('sends the prose rather than the unchosen first row', () => {

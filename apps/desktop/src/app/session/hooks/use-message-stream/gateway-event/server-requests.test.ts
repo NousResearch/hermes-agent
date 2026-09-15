@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
 import { $toursEnabled } from '@/store/tours'
 
 import { handleServerRequest } from './server-requests'
@@ -38,6 +39,33 @@ describe('connection request routing', () => {
 
     expect(handled).toBe(false)
     expect(respond).not.toHaveBeenCalled()
+  })
+})
+
+describe('clarify request routing', () => {
+  afterEach(() => {
+    clearClarifyRequest()
+    deps.activeSessionIdRef.current = null
+  })
+
+  it.each([
+    ['a single question', { choices: ['yes', 'no'], question: 'Ship it?' }],
+    [
+      'a batch of questions',
+      {
+        questions: [
+          { qid: 'q1', question: 'Choose a color' },
+          { choices: ['small', 'large'], qid: 'q2', question: 'Choose a size' }
+        ]
+      }
+    ]
+  ])('stores %s under the runtime session id', (_kind, payload) => {
+    deps.activeSessionIdRef.current = 'runtime-session'
+
+    deliver('clarify', { ...payload, session_id: 'agent-session' }, 'runtime-session')
+
+    expect($clarifyRequests.get()['runtime-session']).toMatchObject({ requestId: 'srq-1' })
+    expect($clarifyRequests.get()['agent-session']).toBeUndefined()
   })
 })
 

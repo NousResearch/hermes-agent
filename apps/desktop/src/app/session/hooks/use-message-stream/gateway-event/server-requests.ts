@@ -81,6 +81,10 @@ const notifyInput = (ctx: ServerRequestContext, body: string) => {
 const clarify: Handler = ctx => {
   const { deps, request, sessionId } = ctx
   const p = request.params
+  // `clarify.request` carries the agent session id, whereas the desktop
+  // transcript and ClarifyTool are indexed by the active runtime session id.
+  // Keep the request in the same namespace the renderer queries.
+  const runtimeSessionId = deps.activeSessionIdRef.current
 
   if (sessionId && deps.sessionInterrupted(sessionId)) {
     request.respond({ answer: '' })
@@ -126,7 +130,7 @@ const clarify: Handler = ctx => {
           questions,
           receivedAt: Date.now() / 1000,
           requestId: request.id,
-          sessionId: sessionId || null
+          sessionId: runtimeSessionId || null
         }
       : {
           choices: choices.length > 0 ? choices : null,
@@ -134,7 +138,7 @@ const clarify: Handler = ctx => {
           question,
           receivedAt: Date.now() / 1000,
           requestId: request.id,
-          sessionId: sessionId || null
+          sessionId: runtimeSessionId || null
         }
 
   rememberServerRequest(request)

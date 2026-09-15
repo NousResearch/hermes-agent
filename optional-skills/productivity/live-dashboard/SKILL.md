@@ -2,12 +2,13 @@
 name: live-dashboard
 description: "Build self-updating dashboards from live sources."
 version: 0.2.0
-author: Hermes Agent
+author: Teknium (teknium1), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [Dashboards, Monitoring, Status, Automation, Reporting]
+    tags: [dashboards, monitoring, status, automation, reporting]
+    category: productivity
     related_skills: [product-price-monitor, competitor-news-monitor, email-inbox-triage, google-workspace]
     blueprint:
       schedule: "0 8 * * *"
@@ -16,7 +17,7 @@ metadata:
 
 # Live Dashboard
 
-Turn one sentence — "make a dashboard for our visa applications, update it daily from the email threads and the case-status site" — into a persistent, self-refreshing status page. The user describes what they want to see; you define the data contract, build a self-contained HTML dashboard, verify one live refresh, then schedule the recurring tick. Inspired by Energy's (getenergy.com) natural-language live dashboards, adapted to Hermes's cron + connector architecture.
+Turn one sentence — "make a dashboard for our visa applications, update it daily from the email threads and the case-status site" — into a persistent, self-refreshing status page. The user describes what they want to see; you define the data contract, build a self-contained HTML dashboard, verify one live refresh, then schedule the recurring tick.
 
 Setup runs once in the foreground; the recurring refresh runs as a `cronjob` tick. Installing this skill offers a daily all-dashboards sweep via `/suggestions` (the frontmatter blueprint).
 

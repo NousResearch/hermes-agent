@@ -17,10 +17,10 @@ Build self-updating dashboards from live sources.
 | Source | Optional — install with `hermes skills install official/productivity/live-dashboard` |
 | Path | `optional-skills/productivity/live-dashboard` |
 | Version | `0.2.0` |
-| Author | Hermes Agent |
+| Author | Teknium (teknium1), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
-| Tags | `Dashboards`, `Monitoring`, `Status`, `Automation`, `Reporting` |
+| Tags | `dashboards`, `monitoring`, `status`, `automation`, `reporting` |
 | Related skills | [`product-price-monitor`](/docs/user-guide/skills/bundled/productivity/productivity-product-price-monitor), [`competitor-news-monitor`](/docs/user-guide/skills/bundled/research/research-competitor-news-monitor), [`email-inbox-triage`](/docs/user-guide/skills/bundled/email/email-email-inbox-triage), [`google-workspace`](/docs/user-guide/skills/bundled/productivity/productivity-google-workspace) |
 
 ## Reference: full SKILL.md
@@ -31,7 +31,7 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # Live Dashboard
 
-Turn one sentence — "make a dashboard for our visa applications, update it daily from the email threads and the case-status site" — into a persistent, self-refreshing status page. The user describes what they want to see; you define the data contract, build a self-contained HTML dashboard, verify one live refresh, then schedule the recurring tick. Inspired by Energy's (getenergy.com) natural-language live dashboards, adapted to Hermes's cron + connector architecture.
+Turn one sentence — "make a dashboard for our visa applications, update it daily from the email threads and the case-status site" — into a persistent, self-refreshing status page. The user describes what they want to see; you define the data contract, build a self-contained HTML dashboard, verify one live refresh, then schedule the recurring tick.
 
 Setup runs once in the foreground; the recurring refresh runs as a `cronjob` tick. Installing this skill offers a daily all-dashboards sweep via `/suggestions` (the frontmatter blueprint).
 

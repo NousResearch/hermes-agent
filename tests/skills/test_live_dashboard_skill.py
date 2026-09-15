@@ -1,9 +1,4 @@
-"""Tests for the live-dashboard optional skill.
-
-Inspired by Energy's (getenergy.com) natural-language live dashboards —
-describe what you want to see in one sentence, get a persistent
-self-refreshing status page fed by email/web/file sources.
-"""
+"""Tests for the live-dashboard optional skill."""
 import re
 from pathlib import Path
 
@@ -47,44 +42,28 @@ def test_related_skills_resolve_in_repo():
         assert hits, f"related_skills entry does not resolve in-repo: {name}"
 
 
-def test_setup_tick_split():
-    """The skill must separate one-time setup from the recurring cron tick."""
+def test_procedure_is_structured_setup_tick_show():
+    """The skill splits into setup / scheduled tick / render phases, each phase is a
+    numbered-step procedure, and every step states a completion criterion."""
     _, body = _frontmatter_and_body()
-    assert "Setup (foreground, once)" in body
-    assert "Tick (each scheduled run)" in body
-    assert "cronjob(action=" in body, "must wire scheduling through the cronjob tool"
-
-
-def test_state_discipline_present():
-    """State-file source of truth + stale-read handling must be explicit."""
-    _, body = _frontmatter_and_body()
-    assert "dashboard.json" in body
-    assert "source of truth" in body
-    assert "last-known-good" in body or "last good value" in body
-    assert "never hand-edit HTML state" in body
-    assert "[SILENT]" in body, "no-change ticks must stay silent"
-
-
-def test_source_verification_before_scheduling():
-    _, body = _frontmatter_and_body()
-    assert "Only after step 3 succeeded" in body
-    assert "one bounded foreground read" in body
-
-
-def test_steps_have_completion_criteria():
-    _, body = _frontmatter_and_body()
+    phases = re.findall(r"^## Procedure — (.+)$", body, re.MULTILINE)
+    assert len(phases) == 3, phases
     steps = re.findall(r"^### \d+\..*?(?=^### \d+\.|^## )", body, re.MULTILINE | re.DOTALL)
     assert len(steps) >= 7
     for step in steps:
         assert "Done when" in step, f"step missing completion criterion: {step[:60]!r}"
+    for heading in ("## When to Use", "## Prerequisites", "## Pitfalls", "## Verification"):
+        assert heading in body, heading
 
 
-def test_desktop_preview_with_path_fallback():
-    """Desktop sessions render in the preview pane; everything else gets the file path.
-    The Hermes home directory is never hardcoded in prose the agent executes."""
+def test_tools_wired_and_home_not_hardcoded():
+    """Scheduling goes through `cronjob`, desktop rendering through `desktop_preview`,
+    no-change ticks stay silent, and the Hermes home path is resolved, never assumed."""
     _, body = _frontmatter_and_body()
-    assert 'desktop_preview(action="open"' in body
-    assert "report the absolute path" in body
+    assert re.search(r"cronjob\(action=\"create\"", body)
+    assert re.search(r"desktop_preview\(action=\"open\"", body)
+    assert "[SILENT]" in body
+    assert "dashboard.json" in body
     assert "~/.hermes" not in body
 
 

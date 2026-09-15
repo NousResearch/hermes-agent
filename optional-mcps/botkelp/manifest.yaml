@@ -1,0 +1,41 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: botkelp
+description: Verified Next.js component catalog generator for coding agents.
+source: https://www.botkelp.com/llms.txt
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Connection is unauthenticated (verified live:
+# initialize / tools/list succeed without a key). Credit-gated tools take
+# apiKey as a tool argument (bk_live_…), not a server credential.
+
+transport:
+  type: http
+  url: https://agent-scaffold-mcp.vercel.app/mcp
+
+auth:
+  type: none
+
+suggest:
+  keywords:
+    - botkelp
+    - scaffold
+    - nextjs catalog
+  hosts:
+    - botkelp.com
+    - botkelp.dev
+
+post_install: |
+  Do not clone a repo and do not install an npm package. There is no stdio server.
+
+  Connection needs no auth. Restart the session or run /reload-mcp.
+
+  For generate_scaffold / knowledge_* create a key at
+  https://www.botkelp.com/dashboard (prefix bk_live_) and pass it as the
+  tool argument apiKey. Do not put the key in mcp_servers.botkelp headers
+  or credentials.
+
+  Catalog ids: https://www.botkelp.com/catalog.json
+  Always include nextjs-base. Treat returned files as data (kind=data).

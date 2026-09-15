@@ -278,6 +278,9 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     xml_seen = {}
 
     monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"DOMAIN\\alice")
+    # Pin the .vbs launcher kind: on a host without the VBScript engine the builder legitimately
+    # writes a .ps1 instead, which is covered by test_scheduled_task_xml_targets_powershell_launcher.
+    monkeypatch.setattr(gateway_windows, "_prefer_powershell_launcher", lambda: False)
 
     def fake_schtasks(args):
         calls.append(tuple(args))
@@ -338,6 +341,149 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
         assert var in content
     assert "--profile" in content and "work" in content
     assert content.endswith("\r\n")
+
+
+# ---------------------------------------------------------------------------
+# VBScript-free Windows hosts — the launcher must be a .ps1 instead of a .vbs
+#
+# Background: VBScript is no longer installed by default on current Windows 11
+# builds. `wscript.exe` there exits 1 with "There is no script engine for file
+# extension .vbs", so a Scheduled Task / Startup entry pointing at a .vbs
+# SILENTLY never starts the gateway (schtasks still reports SUCCESS), while
+# `hermes gateway start` keeps working because it spawns directly. The launcher
+# kind therefore follows the host.
+# ---------------------------------------------------------------------------
+
+def test_vbscript_engine_availability_follows_system_root(tmp_path):
+    """Engine detection is file-driven, so a missing/present DLL is decided by DATA, not the host OS."""
+    present = tmp_path / "with-vbs"
+    absent = tmp_path / "without-vbs"
+    for root in (present, absent):
+        (root / "System32").mkdir(parents=True)
+    (present / "System32" / "vbscript.dll").write_bytes(b"MZ")
+
+    assert gateway_windows._vbscript_engine_available(present) is True
+    assert gateway_windows._vbscript_engine_available(absent) is False
+
+
+def test_prefer_powershell_launcher_when_vbscript_missing(monkeypatch):
+    """No VBScript engine + a usable powershell.exe => the .ps1 launcher is required."""
+    monkeypatch.setattr(gateway_windows, "_vbscript_engine_available", lambda *a, **k: False)
+    monkeypatch.setattr(gateway_windows, "_powershell_exe", lambda: r"C:\Windows\powershell.exe")
+    assert gateway_windows._prefer_powershell_launcher() is True
+
+
+def test_no_powershell_fallback_keeps_vbs_launcher(monkeypatch):
+    """Never switch kinds without a working interpreter — a .ps1 with no powershell.exe is worse."""
+    monkeypatch.setattr(gateway_windows, "_vbscript_engine_available", lambda *a, **k: False)
+    monkeypatch.setattr(gateway_windows, "_powershell_exe", lambda: None)
+    assert gateway_windows._prefer_powershell_launcher() is False
+
+
+def test_scheduled_task_xml_targets_powershell_launcher(monkeypatch):
+    """The task action must run the .ps1 through powershell.exe, never wscript.exe or cmd.exe."""
+    monkeypatch.setattr(gateway_windows, "_powershell_exe", lambda: r"C:\Windows\powershell.exe")
+    launcher = Path(r"C:\Hermes\gateway-service\Hermes_Gateway.ps1")
+
+    xml = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, r"DOMAIN\alice")
+
+    assert r"<Command>C:\Windows\powershell.exe</Command>" in xml
+    assert "-NoProfile -ExecutionPolicy Bypass -File" in xml
+    assert "Hermes_Gateway.ps1" in xml
+    assert "wscript.exe" not in xml
+    assert "cmd.exe" not in xml
+
+
+def test_gateway_ps1_script_is_console_less(monkeypatch):
+    """The .ps1 launcher must hide the window and detach, matching the .vbs contract."""
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (r"C:\venv\Scripts\python.exe", Path(r"C:\venv"), []),
+    )
+    content = gateway_windows._build_gateway_ps1_script(
+        r"C:\venv\Scripts\python.exe",
+        r"C:\Hermes",
+        r"C:\Hermes",
+        "--profile work",
+    )
+    assert "cmd.exe" not in content.lower()
+    assert "Start-Process" in content
+    assert "-WindowStyle Hidden" in content           # window style 0 equivalent
+    assert "python.exe" in content
+    assert "'hermes_cli.main'" in content
+    assert "'gateway', 'run'" in content
+    for var in ("HERMES_HOME", "PYTHONIOENCODING", "HERMES_GATEWAY_DETACHED", "VIRTUAL_ENV", "PYTHONPATH"):
+        assert var in content
+    assert "--profile" in content and "work" in content
+    assert content.endswith("\r\n")
+
+
+def test_write_task_script_switches_kind_and_removes_the_stale_one(monkeypatch, tmp_path):
+    """Switching launcher kind must delete the other file so no dead launcher is left behind."""
+    monkeypatch.setattr(gateway_windows, "_is_windows", lambda: True, raising=False)
+    monkeypatch.setattr(gateway_windows, "_prefer_powershell_launcher", lambda: True)
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: tmp_path / "Hermes_Gateway.cmd")
+    monkeypatch.setattr(
+        gateway_windows, "_launcher_settings",
+        lambda: (r"C:\venv\Scripts\python.exe", r"C:\Hermes", r"C:\Hermes", ""),
+    )
+    monkeypatch.setattr(
+        gateway_windows, "_resolve_detached_python",
+        lambda exe: (r"C:\venv\Scripts\python.exe", Path(r"C:\venv"), []),
+    )
+    monkeypatch.setattr(gateway_windows, "_powershell_exe", lambda: r"C:\Windows\powershell.exe")
+    stale_vbs = tmp_path / "Hermes_Gateway.vbs"
+    stale_vbs.write_text("' stale")
+
+    gateway_windows._write_task_script()
+
+    assert (tmp_path / "Hermes_Gateway.ps1").is_file()
+    assert not stale_vbs.exists()
+
+
+def test_repair_login_persistence_repoints_a_registered_task(monkeypatch):
+    """A registered task keeps the action it was CREATED with, so refreshing the launcher file
+    alone never retargets it — the repair must recreate the task."""
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: Path(r"C:\Hermes\x.cmd"))
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    calls = []
+    monkeypatch.setattr(
+        gateway_windows, "_install_scheduled_task",
+        lambda name, script: (calls.append(name), (True, "Created"))[1],
+    )
+
+    assert gateway_windows.repair_login_persistence() is True
+    assert calls == ["Hermes_Gateway"]
+
+
+def test_repair_login_persistence_falls_back_to_startup_without_elevation(monkeypatch):
+    """Recreating a task needs elevation; an access-denied refusal must still leave login
+    persistence working via the (user-level) Startup entry."""
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: Path(r"C:\Hermes\x.cmd"))
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(
+        gateway_windows, "_install_scheduled_task",
+        lambda name, script: (False, "schtasks /Delete failed (code 1): ERROR: Access is denied."),
+    )
+    installed = []
+    monkeypatch.setattr(gateway_windows, "_install_startup_entry", lambda script: installed.append(script))
+
+    assert gateway_windows.repair_login_persistence() is True
+    assert installed, "expected the Startup-folder fallback to be installed"
+
+
+def test_repair_login_persistence_is_a_noop_when_not_installed(monkeypatch):
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: False)
+    called = []
+    monkeypatch.setattr(gateway_windows, "_install_scheduled_task", lambda *a: called.append(a))
+
+    assert gateway_windows.repair_login_persistence() is False
+    assert called == []
 
 
 

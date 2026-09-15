@@ -6,6 +6,7 @@ import { type LiveHistoryMessage, type LiveTranscriptFragment, VoiceLiveSession 
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
 
+import { micError } from './use-mic-recorder'
 import type { ConversationStatus } from './use-voice-conversation'
 
 /** How long an accepted delegation may sit before the gateway shows the turn running. */
@@ -65,6 +66,29 @@ export function delegationPrompt(context: LiveTranscriptFragment[]): { context: 
     .join('\n')
 
   return { context: transcript, prompt: prompt || transcript.slice(-400) }
+}
+
+/**
+ * Close reasons the app itself emits, mapped to their friendly copy key.
+ * Server-sent `session.closed` reasons are unbounded, so anything unlisted
+ * passes through verbatim (never redacted, never mislabeled).
+ */
+const FRIENDLY_END_REASON_KEYS = {
+  closed: 'liveEndedClosed',
+  connection_lost: 'liveEndedConnectionLost'
+} as const
+
+type FriendlyEndReasonKey = (typeof FRIENDLY_END_REASON_KEYS)[keyof typeof FRIENDLY_END_REASON_KEYS]
+
+export function liveSessionEndBody(
+  reason: string,
+  usageSeconds: number | null | undefined,
+  copy: { liveEndedClosed: string; liveEndedConnectionLost: string }
+): string {
+  const key = (FRIENDLY_END_REASON_KEYS as Record<string, FriendlyEndReasonKey | undefined>)[reason]
+  const label = key ? copy[key] : reason
+
+  return usageSeconds != null ? `${label} (${Math.round(usageSeconds)}s)` : label
 }
 
 /**
@@ -252,7 +276,7 @@ export function useVoiceLiveConversation({
         if (reason !== 'close_requested') {
           notify({
             kind: 'warning',
-            message: usageSeconds != null ? `${reason} (${Math.round(usageSeconds)}s)` : reason,
+            message: liveSessionEndBody(reason, usageSeconds, voiceCopy),
             title: voiceCopy.liveEnded
           })
           latest.current.onFatalError?.()
@@ -330,19 +354,14 @@ export function useVoiceLiveConversation({
         return
       }
 
-      notifyError(error, voiceCopy.couldNotStartSession)
+      // The live path opens the mic itself, so getUserMedia DOMExceptions get
+      // the same friendly copy the recorder path already has. Non-mic start
+      // failures (signalling, API) keep their own messages.
+      notifyError(error instanceof DOMException ? micError(error, voiceCopy) : error, voiceCopy.couldNotStartSession)
       setStatus('idle')
       latest.current.onFatalError?.()
     }
-  }, [
-    end,
-    refreshStatus,
-    setDelegation,
-    voiceCopy.couldNotStartSession,
-    voiceCopy.liveDelegationFailed,
-    voiceCopy.liveEnded,
-    voiceCopy.liveError
-  ])
+  }, [end, refreshStatus, setDelegation, voiceCopy])
 
   // Drive the reply back into the voice: stream commentary as Hermes writes
   // it (sentence-chunked), quiet tool progress as thinking appends, and clear

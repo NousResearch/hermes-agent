@@ -33,7 +33,7 @@ interface MicRecorderHandle {
   cancel: () => void
 }
 
-function micError(error: unknown, copy: MicRecorderErrorCopy): Error {
+export function micError(error: unknown, copy: MicRecorderErrorCopy): Error {
   const name = error instanceof DOMException ? error.name : ''
 
   if (name === 'NotAllowedError' || name === 'SecurityError') {

@@ -210,15 +210,15 @@ class TestRuntimeProvider:
             assert result["api_key"] == "aws-sdk"
             assert result["bedrock_openai"] is True, model_id
 
-    def test_bedrock_openai_context_length_is_272k(self):
-        """AWS model cards list a 272K context window for the Mantle OpenAI
+    def test_bedrock_openai_context_length_is_1m(self):
+        """AWS model cards list "Context window: 1M tokens" for the Mantle OpenAI
         models; make sure we do not fall back to the 128K default."""
         from agent.bedrock_adapter import (
             BEDROCK_OPENAI_RESPONSES_MODEL_IDS,
             get_bedrock_context_length,
         )
         for model_id in BEDROCK_OPENAI_RESPONSES_MODEL_IDS:
-            assert get_bedrock_context_length(model_id) == 272_000
+            assert get_bedrock_context_length(model_id) == 1_000_000
 
 
 # ---------------------------------------------------------------------------

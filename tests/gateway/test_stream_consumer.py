@@ -25,6 +25,7 @@ def test_stream_send_metadata_carries_original_reply_anchor():
     assert consumer._metadata_for_send(final=True) == {
         "reply_to_message_id": "456",
         "notify": True,
+        "final": True,
     }
 
 
@@ -1506,4 +1507,3 @@ class TestFlushPendingSync:
 
         consumer.finish()
         await task
-

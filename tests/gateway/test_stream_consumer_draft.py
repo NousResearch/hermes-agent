@@ -138,6 +138,7 @@ class TestDraftStreamingHappyPath:
         assert sent_content == "Hello world!"
         final_metadata = final_call.kwargs.get("metadata") or {}
         assert final_metadata.get("notify") is True
+        assert final_metadata.get("final") is True
         assert "expect_edits" not in final_metadata
 
     @pytest.mark.asyncio
@@ -195,6 +196,7 @@ class TestDraftStreamingHappyPath:
         send_mock = adapter.__dict__["send"]
         metadata = send_mock.call_args.kwargs.get("metadata") or {}
         assert metadata.get("notify") is True
+        assert metadata.get("final") is True
         assert "expect_edits" not in metadata
 
 
@@ -448,4 +450,3 @@ class TestRichAwareOverflow:
         adapter.edit_message.assert_not_called()
         adapter.delete_message.assert_awaited_once_with("12345", "preview1")
         assert consumer.final_response_sent is True
-

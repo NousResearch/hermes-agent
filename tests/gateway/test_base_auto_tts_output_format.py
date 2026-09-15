@@ -140,3 +140,100 @@ async def test_base_auto_tts_skips_playback_when_tool_reports_failure():
     adapter.play_tts.assert_not_awaited()
     # Text reply still goes out.
     assert adapter.sent and adapter.sent[0]["content"] == "reply text"
+
+
+# ---------------------------------------------------------------------------
+# Auto-TTS ordering: the text reply must not be gated behind full playback (#109996)
+# ---------------------------------------------------------------------------
+
+async def _run_ordered_auto_tts(platform: Platform, reply: str):
+    """Run one auto-TTS voice turn and return (adapter, order, play_captions).
+
+    ``order`` records the relative sequence of the final-text send ("text") and
+    each TTS playback ("play"); ``play_captions`` records the caption each
+    playback was asked to carry.
+    """
+    adapter = _DummyAdapter(platform)
+    adapter._keep_typing = _hold_typing()
+    adapter._should_auto_tts_for_chat = lambda _chat_id: True
+    order, play_captions = [], []
+
+    async def fake_play_tts(*, chat_id, audio_path, caption=None, metadata=None):
+        order.append("play")
+        play_captions.append(caption)
+        return SendResult(success=True, message_id="tts-1")
+
+    adapter.play_tts = fake_play_tts
+
+    original_send_final = adapter._send_final_text
+
+    async def recording_send_final(event, session_key, text, metadata, is_eph, ttl, record):
+        order.append("text")
+        return await original_send_final(
+            event, session_key, text, metadata, is_eph, ttl, record)
+
+    adapter._send_final_text = recording_send_final
+    adapter.set_message_handler(lambda _event: asyncio.sleep(0, result=reply))
+    event = _make_voice_event(platform)
+
+    def fake_tts(*, text, output_path=None):
+        from pathlib import Path
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"fake audio")
+        return json.dumps({"success": True, "file_path": output_path})
+
+    with patch("tools.tts_tool.check_tts_requirements", return_value=True), patch(
+        "tools.tts_tool.text_to_speech_tool", side_effect=fake_tts
+    ):
+        await adapter._process_message_background(
+            event, build_session_key(event.source)
+        )
+    return adapter, order, play_captions
+
+
+@pytest.mark.asyncio
+async def test_auto_tts_text_precedes_playback_on_non_telegram():
+    """Non-Telegram voice turns: the reply text is sent BEFORE the audio plays, so
+    the user reads the answer while it is spoken instead of after (#109996)."""
+    _adapter, order, _captions = await _run_ordered_auto_tts(
+        Platform.DISCORD, "read while listening " * 40)
+    assert order == ["text", "play"]
+
+
+@pytest.mark.asyncio
+async def test_auto_tts_overlong_telegram_reply_precedes_playback():
+    """Telegram replies beyond the 1024-char caption limit cannot ride the voice
+    file, so they must go text-first too — precisely the replies with the longest
+    playback wait (#109996)."""
+    _adapter, order, _captions = await _run_ordered_auto_tts(
+        Platform.TELEGRAM, "y" * 1500)
+    assert order == ["text", "play"]
+
+
+@pytest.mark.asyncio
+async def test_auto_tts_short_telegram_reply_keeps_caption_order():
+    """Telegram replies within the caption limit keep the old order: the first
+    voice file carries the text as its caption and no separate text is sent."""
+    adapter, order, captions = await _run_ordered_auto_tts(
+        Platform.TELEGRAM, "short spoken reply")
+    assert order == ["play"]
+    assert captions == ["short spoken reply"]
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_auto_tts_telegram_reply_at_exact_caption_limit_keeps_caption_order():
+    """A Telegram reply of exactly TELEGRAM_CAPTION_LIMIT chars still fits the caption,
+    so it keeps the caption order; one char more flips it to text-first. Pins the
+    predicate and the playback decision to the same shared limit (#109996)."""
+    from gateway.platforms.base import TELEGRAM_CAPTION_LIMIT
+
+    adapter, order, captions = await _run_ordered_auto_tts(
+        Platform.TELEGRAM, "z" * TELEGRAM_CAPTION_LIMIT)
+    assert order == ["play"]
+    assert captions == ["z" * TELEGRAM_CAPTION_LIMIT]
+    assert adapter.sent == []
+
+    _adapter2, order2, _captions2 = await _run_ordered_auto_tts(
+        Platform.TELEGRAM, "z" * (TELEGRAM_CAPTION_LIMIT + 1))
+    assert order2 == ["text", "play"]

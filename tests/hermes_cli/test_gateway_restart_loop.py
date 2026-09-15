@@ -1881,6 +1881,71 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
         assert any("head -c" in c for c in calls)
 
 
+class TestNonShellBundleDoesNotBurnRemoteReadBudget:
+    """#105758: a Node/Python CLI bundle's regex-literal and URL tokens must not be chased as
+    referenced scripts. Before the fix, each bogus slash-containing token pulled from the bundle's
+    own content was treated as a candidate script path and charged a remote read; a bundle with
+    more distinct bogus tokens than the 64-read cap exhausted the budget and the guard failed
+    closed, blocking a benign direct invocation of the CLI."""
+
+    def test_content_derived_bare_paths_do_not_exhaust_remote_read_budget(self, tmp_path):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        bundle = tmp_path / "ob"
+        # Mimics a minified Node bundle: a shebang for a non-shell interpreter followed by many
+        # standalone slash-containing tokens (regex literals in real bundles), each shaped like an
+        # absolute path but resolving to nothing on disk.
+        lines = [f"/bogus/regex_literal_{i}/tail" for i in range(100)]
+        bundle.write_text("#!/usr/bin/env node\n" + "\n".join(lines) + "\n", encoding="utf-8")
+
+        remote_reads = []
+
+        def read_remote_script(path):
+            remote_reads.append(path)
+            return None
+
+        blocked = contains_gateway_lifecycle_command_or_referenced_script(
+            f"{bundle} --version",
+            cwd=str(tmp_path),
+            read_remote_script=read_remote_script,
+        )
+
+        assert blocked is False
+        assert remote_reads == []
+
+    def test_executable_no_shebang_second_hop_is_still_scanned(self, tmp_path):
+        """The content_derived gate must not key on shebang/suffix alone.
+
+        A real second-hop wrapper script is often invoked as ``./name`` with the executable bit
+        set and no shebang and no ``.sh``-family suffix — bash's ENOEXEC fallback still runs it as
+        a shell script. Gating solely on shebang/suffix (as ``_looks_like_shell_script`` did before
+        this test) reintroduces, one level down, exactly the bypass
+        ``test_nul_padded_script_without_shebang_is_scanned`` guards against at the top level: an
+        attacker who controls both files defeats the guard by simply omitting a shebang and an
+        .sh-family suffix on the referenced script.
+        """
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        wrapper = tmp_path / "wrapper.sh"
+        wrapper.write_text("#!/bin/sh\n./payload\n")
+        wrapper.chmod(0o755)
+
+        payload = tmp_path / "payload"
+        payload.write_text("hermes gateway restart\n")
+        payload.chmod(0o755)
+
+        assert (
+            contains_gateway_lifecycle_command_or_referenced_script(
+                f"bash {wrapper}", cwd=str(tmp_path)
+            )
+            is True
+        )
+
+
 class TestCronCreateLifecycleBlockExtra:
     """Additional cron create lifecycle guard coverage."""
 

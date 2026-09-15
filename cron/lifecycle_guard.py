@@ -108,6 +108,7 @@ _LAUNCHCTL_LIFECYCLE_VERBS_RE = re.compile(
 _HERMES_GATEWAY_LABEL_RE = re.compile(r"(?i)\bhermes[.\-]?gateway\b")
 
 _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
+_SHELL_SCRIPT_SUFFIXES = (".sh", ".bash", ".zsh")
 _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
 _SHELL_COMMAND_FLAGS = {"-c", "--command"}
 _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
@@ -681,6 +682,39 @@ def _resolve_script_directory(script_path: str) -> Optional[str]:
 
 # --- referenced-script discovery --------------------------------------------------------------
 
+def _looks_like_shell_script(path: Path) -> bool:
+    """True when *path* is plausibly a shell script: a shell suffix, a leading ``#!`` shebang line,
+    or the executable bit set on a regular file.
+
+    Gates only the bare-path branch of ``_references_at`` when the token it is judging came from a
+    referenced script's own content rather than a command that will actually run — see
+    ``content_derived`` there. A non-shell interpreter (Node, Python, ...) never starts a real
+    script with ``#!``-less garbage, so shape checks stay cheap: two bytes, no shlex. The executable
+    bit is also required (not just suffix/shebang) because a POSIX shell's ENOEXEC fallback runs any
+    executable, shebang-less, non-.sh-suffixed file handed to it via ``./name`` — the same shape
+    that ``test_nul_padded_script_without_shebang_is_scanned`` already covers one level up, at the
+    directly-invoked (non content-derived) branch.
+    """
+    if path.suffix in _SHELL_SCRIPT_SUFFIXES:
+        return True
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except (OSError, ValueError):
+        return False
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            return False
+        if metadata.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+            return True
+        return os.read(descriptor, 2) == b"#!"
+    except OSError:
+        return False
+    finally:
+        os.close(descriptor)
+
+
 def _iter_option_values(segment: list[str], start: int, option: str) -> Iterator[str]:
     """Yield values given to *option*, in both ``--opt v`` and ``--opt=v`` form."""
     prefix = option + "="
@@ -692,8 +726,20 @@ def _iter_option_values(segment: list[str], start: int, option: str) -> Iterator
             yield token[len(prefix):]
 
 
-def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterator[Path]:
-    """Yield the scripts the token at *index* executes, if any."""
+def _references_at(
+    segment: list[str], index: int, cwd: Optional[str], content_derived: bool = False
+) -> Iterator[Path]:
+    """Yield the scripts the token at *index* executes, if any.
+
+    ``content_derived`` marks that *segment* was tokenized out of a referenced script's own text
+    rather than a command a shell will actually run. In that mode the bare-path branch below — the
+    only branch that *guesses* a token is a script from its shape — requires the candidate to look
+    like a shell script (see ``_looks_like_shell_script``): a non-shell interpreted bundle (Node,
+    Python, ...) can contain hundreds of slash-containing tokens from regex literals and strings
+    that resolve to real files (``/usr/bin/env``) without being scripts at all, and chasing them
+    exhausts the remote-read budget on an innocent CLI invocation (#105758). The ``.``/``source`` and
+    shell-argument branches name an interpreter explicitly and stay unconditional.
+    """
     if index >= len(segment):
         return
     executable = segment[index]
@@ -727,11 +773,15 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
 
     # A bare "/" is pathlib's division operator in Python sources, not an executable; resolving it
     # hits the filesystem root and fails the regular-file check, hard-blocking innocent .py scripts.
-    if executable.strip("/") and ("/" in executable or executable.endswith((".sh", ".bash", ".zsh"))):
-        yield from _resolved_or_nothing(executable, cwd)
+    if executable.strip("/") and ("/" in executable or executable.endswith(_SHELL_SCRIPT_SUFFIXES)):
+        for resolved in _resolved_or_nothing(executable, cwd):
+            if not content_derived or _looks_like_shell_script(resolved):
+                yield resolved
 
 
-def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -> Iterator[Path]:
+def _iter_referenced_shell_scripts(
+    command: str, *, cwd: Optional[str] = None, content_derived: bool = False
+) -> Iterator[Path]:
     """Yield scripts executed directly or through a POSIX shell. Each segment is read at the
     original token AND at the peeled wrapper target — additive on purpose: peeling must never REMOVE
     a reference (a local ``./timeout`` is a script, not the coreutils wrapper)."""
@@ -739,10 +789,10 @@ def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -
         index = _command_token_index(segment)
         if index is None:
             continue
-        yield from _references_at(segment, index, cwd)
+        yield from _references_at(segment, index, cwd, content_derived)
         peeled = _peel_transparent_prefixes(segment, index)
         if peeled != index:
-            yield from _references_at(segment, peeled, cwd)
+            yield from _references_at(segment, peeled, cwd, content_derived)
 
 
 def _iter_shell_command_payloads(command: str) -> Iterator[str]:
@@ -906,6 +956,7 @@ def _read_script_for_scanning(script_path: str) -> str:
 def _contains_unsafe_gateway_action(
     command: str, *, cwd: Optional[str], depth: int, visited: set[Path], budget: _LifecycleScanBudget,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None,
+    content_derived: bool = False,
 ) -> bool:
     # Charge BEFORE _direct_lifecycle_scan: every scan in it tokenizes with shlex.
     if not budget.charge_text(command):
@@ -915,17 +966,17 @@ def _contains_unsafe_gateway_action(
     if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
         return True
 
-    def recurse(text: str, cwd: Optional[str]) -> bool:
+    def recurse(text: str, cwd: Optional[str], *, content_derived: bool) -> bool:
         return _contains_unsafe_gateway_action(
             text, cwd=cwd, depth=depth + 1, visited=visited, budget=budget,
-            read_remote_script=read_remote_script,
+            read_remote_script=read_remote_script, content_derived=content_derived,
         )
 
     for payload in _iter_shell_command_payloads(command):
-        if recurse(payload, cwd):
+        if recurse(payload, cwd, content_derived=content_derived):
             return True
 
-    for script_path in _iter_referenced_shell_scripts(command, cwd=cwd):
+    for script_path in _iter_referenced_shell_scripts(command, cwd=cwd, content_derived=content_derived):
         # Do not touch a FileProvider path even to discover whether the file is hydrated.
         if _on_cloud_path(script_path):
             return True
@@ -953,7 +1004,7 @@ def _contains_unsafe_gateway_action(
         if not script_text:
             continue
         # Relative references inside a script resolve against that script's directory, not the cwd.
-        if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd):
+        if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd, content_derived=True):
             return True
     return False
 

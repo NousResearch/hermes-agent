@@ -137,6 +137,10 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
     inject credentials via the process env (systemd, ``op run``), so the scope
     must stay a ``.env`` overlay, not a blindfold (otherwise cron 401s). With no
     scope: multiplex INACTIVE reads ``os.environ``; ACTIVE raises (fail closed).
+
+    An explicit ``HERMES_HOME`` override (dashboard/TUI routed profile) counts as
+    a multiplexed context for secret resolution: a scoped miss fails closed with
+    ``default`` rather than leaking the ambient launch-profile ``os.environ``.
     """
     if _is_global_env(name):
         return _environ_or(name, default)
@@ -145,7 +149,11 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
         val = scope.get(name)
         if val is not None:
             return val
-        return default if _MULTIPLEX_ACTIVE else _environ_or(name, default)
+        # Explicit HERMES_HOME override = routed profile = fail closed on misses.
+        from hermes_constants import get_hermes_home_override
+        if get_hermes_home_override() is not None or _MULTIPLEX_ACTIVE:
+            return default
+        return _environ_or(name, default)
     if _MULTIPLEX_ACTIVE:
         raise UnscopedSecretError(
             name,

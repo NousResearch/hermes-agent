@@ -221,6 +221,98 @@ def test_untrusted_adopter_of_a_full_profiles_connection_keeps_its_own_trust_gat
     assert handlers._trust_gate_check("x", "t") is None and len(asked) == 1
 
 
+def test_dashboard_profile_context_isolates_connections_without_global_multiplex_flag(
+    two_profiles, tmp_path, monkeypatch
+):
+    """A dashboard's explicit profile context must key MCP connections even when the
+    process-wide gateway multiplexer flag is off (#111151)."""
+    import tools.mcp_tool as core
+    from agent.secret_scope import (
+        build_profile_secret_scope, reset_secret_scope, set_secret_scope,
+    )
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from hermes_cli.mcp_config import _resolve_mcp_server_config
+    from tools import mcp_tool_discovery as disc
+    from tools import mcp_tool_registration as reg
+    from tools.registry import _check_fn_cached, check_fn_cache_scope, invalidate_check_fn_cache
+
+    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: False)
+    monkeypatch.setenv("MCP_TOKEN", "launch-token")
+    invalidate_check_fn_cache()
+
+    def profile_a_available():
+        from agent.secret_scope import get_secret
+        return get_secret("MCP_TOKEN") == "profile-a-token"
+
+    home_a = tmp_path / "profiles" / "a"
+    home_b = tmp_path / "profiles" / "b"
+    (home_a / ".env").write_text("MCP_TOKEN=profile-a-token\n", encoding="utf-8")
+    (home_b / ".env").write_text("MCP_TOKEN=profile-b-token\n", encoding="utf-8")
+    raw_config = {
+        "url": "https://mcp.example/x",
+        "headers": {"Authorization": "Bearer ${MCP_TOKEN}"},
+    }
+
+    scope_a = two_profiles("a")
+    secret_a = None
+    try:
+        hydrate_profile_secret_sources(home_a)
+        secret_a = set_secret_scope(build_profile_secret_scope(home_a))
+        config_a = _resolve_mcp_server_config(raw_config)
+        assert config_a["headers"]["Authorization"] == "Bearer profile-a-token"
+        assert check_fn_cache_scope() == scope_a
+        assert _check_fn_cached(profile_a_available) is True
+        server_a = _server("x", config_a)
+        disc._adopt_server("x", server_a)
+        server_a._registered_tool_names = reg._register_server_tools("x", server_a, config_a)
+    finally:
+        if secret_a is not None:
+            reset_secret_scope(secret_a)
+
+    scope_b = two_profiles("b")
+    secret_b = None
+    try:
+        hydrate_profile_secret_sources(home_b)
+        secret_b = set_secret_scope(build_profile_secret_scope(home_b))
+        config_b = _resolve_mcp_server_config(raw_config)
+        assert config_b["headers"]["Authorization"] == "Bearer profile-b-token"
+        assert core._mcp_registry_scope() == scope_b
+        assert check_fn_cache_scope() == scope_b
+        assert _check_fn_cached(profile_a_available) is False
+
+        connected = []
+
+        def fake_pass(new_servers):
+            for name, config in new_servers.items():
+                server = _server(name, config)
+                connected.append(server)
+                disc._adopt_server(name, server)
+
+        with patch.object(disc, "_run_discovery_pass", fake_pass), \
+                patch.object(disc._loop, "_ensure_mcp_loop", lambda: None):
+            disc.register_mcp_servers({"x": config_b})
+
+        assert connected
+        assert core._servers[(scope_a, "x")]._config["headers"]["Authorization"] == "Bearer profile-a-token"
+        assert core._servers[(scope_b, "x")] is connected[0]
+        assert connected[0]._config["headers"]["Authorization"] == "Bearer profile-b-token"
+        assert disc._get_connected_server_for_call("x") is connected[0]
+
+        # Without an explicit routed context, the inactive process keeps the
+        # legacy single-profile/global slot.
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        unscoped = set_hermes_home_override(None)
+        try:
+            assert core._mcp_registry_scope() is None
+            assert check_fn_cache_scope() is None
+        finally:
+            reset_hermes_home_override(unscoped)
+    finally:
+        if secret_b is not None:
+            reset_secret_scope(secret_b)
+        invalidate_check_fn_cache()
+
+
 def test_parallel_safe_opt_in_is_per_profile(two_profiles):
     """B's ``supports_parallel_tool_calls`` on its own same-named server never makes A's serial
     server's tool parallel-safe (the batch planner would run two A calls concurrently)."""

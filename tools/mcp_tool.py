@@ -400,12 +400,14 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
 # ---- Module-level state (every mutation under ``_lock``) ----
 #
 # Every ledger below is keyed by the CONNECTION KEY from ``tools.mcp_tool_scope``: the bare
-# server name outside a multiplexer, ``(owner_scope, name)`` under one. Two profiles naming the
+# server name without an active profile context, ``(owner_scope, name)`` for a global
+# multiplexer or an explicitly routed profile session. Two profiles naming the
 # same server with their own credentials are two connections; a name-keyed ledger let the first
-# profile's connection shadow the second's (never connected, silently tool-less — #106005).
+# profile's connection shadow the second's (never connected, silently tool-less — #106005, #111151).
 
 _servers: Dict[Any, MCPServerTask] = {}
-# Profile registry scope per live connection (None outside multiplex) so a multiplexed
+# Profile registry scope per live connection (None for an unscoped single-profile connection) so
+# a multiplexed
 # /reload-mcp tears down only its own profile's servers.
 _server_scope_keys: Dict[Any, Optional[str]] = {}
 # Registry scopes that have adopted a live server connection. The owning scope above remains
@@ -637,10 +639,33 @@ def _update_death_supervisor(verb: str, pgids) -> None:
 
 
 def _mcp_registry_scope() -> Optional[str]:
-    """Registry scope for MCP registrations: a profile overlay under a multiplexer, else None."""
+    """Registry scope for MCP registrations.
+
+    An explicit ``HERMES_HOME`` context is already a profile identity on
+    dashboard/TUI sessions, even when the process-wide gateway multiplexer
+    flag is off. Keep the flag as the deployment-level guard for ambient
+    gateway work, but never collapse an explicitly routed profile back into
+    the process-global MCP slot (#111151).
+
+    The dashboard may route the ``default`` profile explicitly (override ==
+    process home). That profile already has the global slot from startup
+    discovery — creating a second scoped slot would duplicate the connection
+    for no isolation benefit. Normalize it back to the global slot only when
+    the multiplexer is off (the multiplexer's own default is intentionally
+    scoped).
+    """
+    from hermes_constants import get_hermes_home_override, get_process_hermes_home, hermes_home_key
     from agent.secret_scope import is_multiplex_active
-    if not is_multiplex_active():
+
+    override = get_hermes_home_override()
+    if override is None and not is_multiplex_active():
         return None
+    if override is not None and not is_multiplex_active():
+        try:
+            if hermes_home_key(override) == hermes_home_key(get_process_hermes_home()):
+                return None
+        except Exception:
+            pass
     from tools.registry import registry
     return registry.current_scope_key()
 

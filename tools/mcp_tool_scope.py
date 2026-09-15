@@ -2,11 +2,13 @@
 
 Every ledger in ``tools.mcp_tool`` (``_servers``, connecting/error/cooldown maps, circuit
 breaker, lazy configs, trust metadata) is keyed by a *connection key*: the bare server name
-outside a multiplexer (single-profile processes are unchanged, byte for byte), and
-``(owner_scope, name)`` under one. Two profiles that both configure ``github`` with their own
+without an active profile context (single-profile processes are unchanged, byte for byte), and
+``(owner_scope, name)`` for a global multiplexer or an explicitly routed profile session. An explicit profile ``HERMES_HOME`` context also counts as
+an owner scope, even when the process-wide gateway multiplexer flag is off: dashboard/TUI
+sessions can be multiplexed by their host without being a messaging gateway. Two profiles that both configure ``github`` with their own
 token are two connections; keying by name alone let the first profile's connection shadow the
 second's forever — its ``register_mcp_servers`` saw the name as "already connected", adopted
-nothing (different credentials) and left the profile silently tool-less (#106005, #91654).
+nothing (different credentials) and left the profile silently tool-less (#106005, #91654, #111151).
 
 A profile may still *adopt* another profile's live connection when the route and credentials
 match (``mcp_tool_registration._same_server_route``); ``_server_tool_scopes[key]`` records every
@@ -25,6 +27,7 @@ ServerKey = Union[str, Tuple[str, str]]
 
 def _server_key(name: str, scope: Optional[str] = None, *, current: bool = True) -> ServerKey:
     """Connection key for *name* owned by *scope* (the current registry scope when *current*).
+
     ``None`` scope (no multiplexer) keeps the bare name."""
     if scope is None and current:
         scope = _core._mcp_registry_scope()
@@ -42,6 +45,7 @@ def _key_scope(key: ServerKey) -> Optional[str]:
 
 def _key_visible_in_scope(key: ServerKey, scope: Optional[str]) -> bool:
     """Whether the connection under *key* serves *scope*: owned by it or adopted into it.
+
     Caller holds ``_core._lock`` or tolerates a racy read (status surfaces)."""
     if scope is None:
         return True

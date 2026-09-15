@@ -1646,8 +1646,14 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     profile_dir = get_profile_dir(canon)
     if profile_dir.exists():
         raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
-    _get_profiles_root().mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="hermes_profile_import_") as tmpdir:
+    profiles_root = _get_profiles_root()
+    profiles_root.mkdir(parents=True, exist_ok=True)
+    # Keep staging on the destination volume so the final move stays an atomic
+    # rename instead of falling back to a MAX_PATH-sensitive recursive copy on
+    # Windows when HERMES_HOME and the system temp directory use different drives.
+    with tempfile.TemporaryDirectory(
+        prefix="hermes_profile_import_", dir=profiles_root
+    ) as tmpdir:
         staging_root = Path(tmpdir)
         safe_extract_targz(archive, staging_root)
         extracted = staging_root / archive_root

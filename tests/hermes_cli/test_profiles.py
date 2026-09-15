@@ -11,6 +11,7 @@ import os
 import shutil
 import sys
 import tarfile
+import tempfile
 import types
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -832,6 +833,28 @@ class TestRenameProfile:
 
 class TestExportImport:
     """Tests for export_profile() / import_profile()."""
+
+    def test_import_stages_on_profiles_volume(self, profile_env, tmp_path, monkeypatch):
+        archive = tmp_path / "portable.tar.gz"
+        payload = b"model: test\n"
+        with tarfile.open(archive, "w:gz") as tf:
+            info = tarfile.TarInfo("portable/config.yaml")
+            info.size = len(payload)
+            tf.addfile(info, io.BytesIO(payload))
+
+        observed = {}
+        temporary_directory = tempfile.TemporaryDirectory
+
+        def recording_temporary_directory(*args, **kwargs):
+            observed["dir"] = kwargs.get("dir")
+            return temporary_directory(*args, **kwargs)
+
+        monkeypatch.setattr(tempfile, "TemporaryDirectory", recording_temporary_directory)
+
+        result = import_profile(str(archive), name="imported")
+
+        assert result == _get_profiles_root() / "imported"
+        assert observed["dir"] == _get_profiles_root()
 
 
 

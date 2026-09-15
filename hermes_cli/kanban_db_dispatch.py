@@ -8,12 +8,14 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from dataclasses import field
@@ -66,10 +68,177 @@ DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
-_RESPAWN_GUARD_PR_URL_RE = re.compile(
-    r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
+# The active-PR guard is content based, so resolve the referenced PR before
+# deferring a task. Bound both the per-task and per-dispatch lookup work: a
+# large or adversarial comment set must not hold the dispatcher indefinitely.
+_GITHUB_PR_LOOKUPS_PER_TASK = 8
+_GITHUB_PR_LOOKUPS_PER_DISPATCH = 32
+_GITHUB_PR_LOOKUP_TIMEOUT_SECONDS = 2.0
+_GITHUB_PR_LOOKUP_TOTAL_BUDGET_SECONDS = 10.0
+_GITHUB_PR_COMMENT_SCAN_LIMIT = 64
+_GITHUB_PR_COMMENT_BODY_LIMIT = 64 * 1024
+_GITHUB_PR_STATE_CACHE_TTL = 300  # 5 minutes
+_GITHUB_PR_STATE_CACHE_MAX_ENTRIES = 256
+_GITHUB_PR_URL_RE = re.compile(
+    r"https?://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)",
     re.IGNORECASE,
 )
+# Use monotonic timestamps so wall-clock changes cannot extend cache entries.
+# Only active/unknown states are cached. Caching MERGED/CLOSED could allow a
+# reopened PR to bypass the duplicate-work guard.
+_github_pr_state_cache: dict[tuple[str, str], tuple[float, Optional[str]]] = {}
+_github_pr_state_cache_lock = threading.Lock()
+_RESPAWN_GUARD_RESUME_EVENT_KINDS = (
+    "claimed", "completed", "spawned", "status", "promoted", "unblocked",
+    "reclaimed", "blocked", "changes_requested",
+)
+
+
+def _should_emit_respawn_guard_event(
+    conn: sqlite3.Connection, task_id: str, reason: str,
+) -> bool:
+    """Return whether ``reason`` changed since the last guard event.
+
+    Repeated dispatcher ticks must not append an unbounded event row for the
+    same unchanged guard. A lifecycle event resets the sequence and permits a
+    fresh guard event when the task is deferred again.
+    """
+    last_guard = conn.execute(
+        "SELECT id, payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'respawn_guarded' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if last_guard is None:
+        return True
+    last_resume = conn.execute(
+        "SELECT id FROM task_events "
+        "WHERE task_id = ? AND kind IN (" + ",".join("?" for _ in _RESPAWN_GUARD_RESUME_EVENT_KINDS) + ") "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id, *_RESPAWN_GUARD_RESUME_EVENT_KINDS),
+    ).fetchone()
+    if last_resume is not None and last_resume["id"] > last_guard["id"]:
+        return True
+    try:
+        payload = json.loads(last_guard["payload"] or "{}")
+    except (TypeError, ValueError):
+        payload = {}
+    return not isinstance(payload, dict) or payload.get("reason") != reason
+
+
+def _github_pr_state(
+    repo: str, number: str, *, timeout: float = 10.0,
+) -> Optional[str]:
+    """Return a GitHub PR state, or ``None`` when it cannot be resolved.
+
+    ``gh`` is intentionally an optional runtime dependency. Missing ``gh``,
+    missing authentication, a network failure, malformed output, or an
+    unexpected state all resolve to ``None``; the caller fails closed and
+    preserves the original duplicate-PR protection. Only ``MERGED`` and
+    ``CLOSED`` are considered inactive.
+    """
+    key = (repo.lower(), number)
+    now = time.monotonic()
+    with _github_pr_state_cache_lock:
+        cached = _github_pr_state_cache.get(key)
+    if cached is not None and now - cached[0] < _GITHUB_PR_STATE_CACHE_TTL:
+        return cached[1]
+
+    state: Optional[str] = None
+    try:
+        completed = subprocess.run(
+            ["gh", "pr", "view", number, "--repo", repo, "--json", "state"],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        if completed.returncode == 0:
+            payload = json.loads(completed.stdout or "{}")
+            if isinstance(payload, dict):
+                candidate = payload.get("state")
+                if isinstance(candidate, str):
+                    state = candidate.strip().upper() or None
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        # Best effort only: unknown state must not weaken the guard.
+        state = None
+
+    # Do not cache inactive states: a PR can be reopened, and an inactive
+    # result must never be reused to permit duplicate work. Active/unknown
+    # values are conservative if reused across an auth/context change.
+    if state in {"MERGED", "CLOSED"}:
+        with _github_pr_state_cache_lock:
+            _github_pr_state_cache.pop(key, None)
+    else:
+        with _github_pr_state_cache_lock:
+            if (
+                key not in _github_pr_state_cache
+                and len(_github_pr_state_cache) >= _GITHUB_PR_STATE_CACHE_MAX_ENTRIES
+            ):
+                oldest_key = min(
+                    _github_pr_state_cache,
+                    key=lambda item: _github_pr_state_cache[item][0],
+                )
+                _github_pr_state_cache.pop(oldest_key, None)
+            _github_pr_state_cache[key] = (now, state)
+    return state
+
+
+def _has_active_pr_comment(
+    conn: sqlite3.Connection,
+    task_id: str,
+    cutoff: int,
+    *,
+    lookup_budget: Optional[list[int]] = None,
+    lookup_deadline: Optional[float] = None,
+) -> bool:
+    """Return whether a recent comment references an open/unknown GitHub PR.
+
+    The comment scan is bounded as well as the subprocess work. If a task has
+    more comments or a larger body than the scan limits, the guard fails closed
+    without materializing or regex-scanning the unbounded remainder.
+    """
+    comments = conn.execute(
+        "SELECT substr(body, 1, ?) AS body, length(body) AS body_length "
+        "FROM task_comments WHERE task_id = ? AND created_at >= ? "
+        "ORDER BY created_at DESC LIMIT ?",
+        (
+            _GITHUB_PR_COMMENT_BODY_LIMIT,
+            task_id,
+            cutoff,
+            _GITHUB_PR_COMMENT_SCAN_LIMIT + 1,
+        ),
+    ).fetchall()
+    if len(comments) > _GITHUB_PR_COMMENT_SCAN_LIMIT:
+        return True
+    lookups = 0
+    for comment in comments:
+        if int(comment["body_length"] or 0) > _GITHUB_PR_COMMENT_BODY_LIMIT:
+            return True
+        body = comment["body"]
+        if not body:
+            continue
+        for match in _GITHUB_PR_URL_RE.finditer(body):
+            if lookups >= _GITHUB_PR_LOOKUPS_PER_TASK:
+                return True
+            if lookup_budget is not None:
+                if not lookup_budget or lookup_budget[0] <= 0:
+                    return True
+                lookup_budget[0] -= 1
+            if lookup_deadline is not None:
+                remaining = lookup_deadline - time.monotonic()
+                if remaining <= 0:
+                    return True
+                timeout = min(_GITHUB_PR_LOOKUP_TIMEOUT_SECONDS, remaining)
+            else:
+                timeout = 10.0
+            lookups += 1
+            repo = f"{match.group(1)}/{match.group(2)}"
+            state = _github_pr_state(repo, match.group(3), timeout=timeout)
+            if state not in {"MERGED", "CLOSED"}:
+                return True
+    return False
 
 
 @dataclass
@@ -118,10 +287,6 @@ class DispatchResult:
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
     stale: list[str] = field(default_factory=list)
     """Task ids reclaimed for no heartbeat within ``dispatch_stale_timeout_seconds``."""
-    respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
-    """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
-    (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
-    within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
@@ -133,6 +298,10 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
+    (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
+    within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
 
 
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in
@@ -1123,7 +1292,12 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 
 
 def check_respawn_guard(
-    conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    lane: str = "ready",
+    pr_lookup_budget: Optional[list[int]] = None,
+    pr_lookup_deadline: Optional[float] = None,
 ) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
@@ -1135,8 +1309,10 @@ def check_respawn_guard(
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR). The review
-    lane skips the last two: they are the *inputs* to a review handoff. Stale /
+    (a recent PR URL whose GitHub state is ``OPEN`` or unknown; ``MERGED`` and
+    ``CLOSED`` references no longer guard). A latest ``changes_requested`` run
+    is an explicit rework handoff and bypasses the PR guard. The review lane
+    skips the last two: they are the *inputs* to a review handoff. Stale /
     dead claim locks are NOT a guard reason — the reclaim passes own those.
     """
     row = conn.execute(
@@ -1154,7 +1330,10 @@ def check_respawn_guard(
     latest_run = conn.execute(
         "SELECT outcome, ended_at FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY ended_at DESC LIMIT 1",
+        # id breaks the tie when two runs end within the same second (a
+        # review handoff + reviewer verdict routinely do) — without it the
+        # older run can shadow the newer verdict.
+        "ORDER BY ended_at DESC, id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
     if latest_run is not None and latest_run["outcome"] == "rate_limited":
@@ -1203,14 +1382,25 @@ def check_respawn_guard(
         if not requeued_after:
             return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # 4. A recent GitHub PR comment only guards while the referenced PR is
+    #    still active. Historical audit/evidence comments commonly retain URLs
+    #    after the PR was merged or closed; those must not strand a task.
+    #    A fresh changes_requested verdict is an explicit rework handoff to
+    #    the same implementer, so its existing PR must be reused rather than
+    #    blocked by the duplicate-work guard.
+    #    Unknown state fails closed so an unavailable `gh` or GitHub outage
+    #    preserves the original duplicate-PR protection.
+    if latest_run is not None and latest_run["outcome"] == "changes_requested":
+        return None
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
-    ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+    if _has_active_pr_comment(
+        conn,
+        task_id,
+        pr_cutoff,
+        lookup_budget=pr_lookup_budget,
+        lookup_deadline=pr_lookup_deadline,
+    ):
+        return "active_pr"
 
     return None
 
@@ -1501,6 +1691,8 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    pr_lookup_budget: Optional[list[int]] = None,
+    pr_lookup_deadline: Optional[float] = None,
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
@@ -1522,7 +1714,13 @@ def _dispatch_lane_task(
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
-    guard_reason = check_respawn_guard(conn, task_id, lane=lane)
+    guard_reason = check_respawn_guard(
+        conn,
+        task_id,
+        lane=lane,
+        pr_lookup_budget=pr_lookup_budget,
+        pr_lookup_deadline=pr_lookup_deadline,
+    )
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
         # Event so ``hermes kanban tail`` shows why the task looks stuck.
@@ -1532,9 +1730,16 @@ def _dispatch_lane_task(
         # the operator's intent ("default") was perfectly clear (#27145). Mutating the row (not just the
         # in-memory view) keeps diagnostics and the board state consistent: the task is now legitimately
         # owned by ``kanban.default_assignee``, not "unassigned but secretly routed".
-        if not dry_run:
+        if not dry_run and _should_emit_respawn_guard_event(conn, task_id, guard_reason):
+            guard_payload: dict[str, Any] = {"reason": guard_reason}
+            if guard_reason == "rate_limit_cooldown":
+                guard_payload["window_seconds"] = _kb._resolve_rate_limit_cooldown_seconds()
+            elif guard_reason == "recent_success":
+                guard_payload["window_seconds"] = _RESPAWN_GUARD_SUCCESS_WINDOW
+            elif guard_reason == "active_pr":
+                guard_payload["window_seconds"] = _RESPAWN_GUARD_PR_WINDOW
             with _kb.write_txn(conn):
-                _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
+                _kb._append_event(conn, task_id, "respawn_guarded", guard_payload)
         return False
 
     def _count_spawn(name: str) -> None:
@@ -1807,10 +2012,14 @@ def _dispatch_once_locked(
             "GROUP BY assignee"
         ):
             per_profile_running[prow["assignee"]] = int(prow["n"])
+    pr_lookup_budget = [_GITHUB_PR_LOOKUPS_PER_DISPATCH]
+    pr_lookup_deadline = time.monotonic() + _GITHUB_PR_LOOKUP_TOTAL_BUDGET_SECONDS
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        pr_lookup_budget=pr_lookup_budget,
+        pr_lookup_deadline=pr_lookup_deadline,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0

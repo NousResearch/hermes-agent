@@ -6,6 +6,7 @@ from agent.usage_pricing import (
     format_cost_label,
     estimate_usage_cost,
     get_pricing_entry,
+    has_known_pricing,
     normalize_usage,
     resolve_billing_route,
 )
@@ -962,3 +963,76 @@ def test_flat_entries_unaffected_by_tier_machinery():
     )
     # 250k * $0.25/M + 10k * $1.50/M
     assert result.amount_usd == Decimal("0.0775")
+
+
+def test_ollama_cloud_priced_from_official_docs_snapshot():
+    """ollama.com moved cloud models to per-token credit billing with a published
+    price table (https://ollama.com/pricing). Before the snapshot existed,
+    ollama-cloud routes fell to billing_mode=unknown and every cost label
+    rendered "n/a" (#19469)."""
+    result = estimate_usage_cost(
+        "glm-5.3-flash",
+        CanonicalUsage(input_tokens=40_000, output_tokens=8_000, cache_read_tokens=80_000),
+        provider="ollama-cloud", base_url="https://ollama.com/v1",
+    )
+    # 40k * $0.15/M + 80k * $0.03/M (Ollama "cached input") + 8k * $0.50/M
+    assert result.amount_usd == Decimal("0.0124")
+    assert result.status == "estimated"
+    assert result.source == "official_docs_snapshot"
+
+
+def test_ollama_cloud_route_classified_by_slug_or_host():
+    """The route must classify by provider slug OR by endpoint host: users can
+    reach ollama.com through the ollama-cloud provider or any custom endpoint
+    pointing at the same host."""
+    by_slug = resolve_billing_route("glm-5.3-flash", provider="ollama-cloud")
+    by_host = resolve_billing_route("glm-5.3-flash", base_url="https://ollama.com/v1")
+    assert by_slug.provider == by_host.provider == "ollama-cloud"
+    assert by_slug.billing_mode == by_host.billing_mode == "official_docs_snapshot"
+
+
+def test_ollama_cloud_tagged_ids_normalize_to_priced_library_names():
+    """Cloud ids carry a marker and/or variant tag the pricing table doesn't list:
+    minimax-m3:cloud (vision aux route), gemma4:31b, deepseek-v4-flash:0731.
+    Ids that ARE priced exactly (gpt-oss:120b) must keep their own row and not
+    normalize onto a differently-priced sibling (gpt-oss:20b)."""
+    for model in ("minimax-m3:cloud", "gemma4:31b", "deepseek-v4-flash:0731", "mistral-large-3:675b", "qwen3.5:397b"):
+        entry = get_pricing_entry(model, provider="ollama-cloud", base_url="https://ollama.com/v1")
+        assert entry is not None, model
+    exact = get_pricing_entry("gpt-oss:120b", provider="ollama-cloud", base_url="https://ollama.com/v1")
+    assert exact is not None
+    assert exact.input_cost_per_million == Decimal("0.15")
+    assert exact.cache_read_cost_per_million == Decimal("0.014")
+
+
+def test_local_daemon_cloud_tagged_models_burn_ollama_credits():
+    """A local Ollama daemon tags ollama.com-proxied models :cloud/-cloud; those
+    calls consume ollama.com per-token credits even though the endpoint is
+    localhost. Plain local models stay unmetered."""
+    cloud = resolve_billing_route("glm-5.3-flash:cloud", provider="custom", base_url="http://127.0.0.1:11434/v1")
+    assert cloud.provider == "ollama-cloud"
+    assert cloud.billing_mode == "official_docs_snapshot"
+    named = resolve_billing_route("glm-5.3-flash:cloud", provider="custom:ollama-launch", base_url="http://127.0.0.1:11434/v1")
+    assert named.provider == "ollama-cloud"
+    local = resolve_billing_route("llama3.2-vision:11b", provider="custom", base_url="http://127.0.0.1:11434/v1")
+    assert local.billing_mode == "unknown"
+    remote_plain = resolve_billing_route("some-model", provider="custom:relay", base_url="http://192.168.0.10:11434/v1")
+    assert remote_plain.billing_mode == "unknown"
+
+
+def test_ollama_cloud_full_catalog_priced():
+    """Every model id ollama.com/v1/models served as of 2026-09 must price —
+    directly or via tag normalization. Guards against snapshot rows drifting
+    from the live catalog (a typo'd row key silently renders cost as n/a)."""
+    catalog_ids = (
+        "deepseek-v4-flash:0731", "deepseek-v4-pro:0813", "deepseek-v4.1-flash",
+        "gemma4:31b", "glm-5.1", "glm-5.2", "glm-5.3", "glm-5.3-flash",
+        "gpt-oss:120b", "gpt-oss:20b", "kimi-k2.6", "kimi-k2.7-code", "kimi-k3",
+        "minimax-m2.7", "minimax-m3", "mistral-large-3:675b", "nemotron-3-nano:30b",
+        "nemotron-3-super", "nemotron-3-ultra", "qwen3.5:397b",
+    )
+    unpriced = [
+        mid for mid in catalog_ids
+        if not has_known_pricing(mid, provider="ollama-cloud", base_url="https://ollama.com/v1")
+    ]
+    assert unpriced == []

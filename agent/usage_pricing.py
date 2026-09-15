@@ -232,6 +232,33 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         "kimi-k2p7-code-fast": ("1.90", "8.00", "0.38"), "glm-5p2-fast": ("2.10", "6.60", "0.21"),
         "glm-5p1-fast": ("2.80", "8.80", "0.52"),
     }),
+    # Ollama Cloud (ollama.com/v1) bills per-token credits; published per-million
+    # rates: https://ollama.com/pricing (retrieved 2026-09-11). On Pro/Max plans
+    # these amounts burn the monthly included credit balance. "Cached input" maps
+    # to cache_read; no cache-write rate is published. DeepSeek rows are off-peak;
+    # peak (Mon-Fri 12:00-18:00 UTC) is 2x and not modeled (same convention as the
+    # DeepSeek snapshot above).
+    ("ollama-cloud", "https://ollama.com/pricing", "ollama-cloud-pricing-2026-09-11", {
+        "deepseek-v4-flash": ("0.22", "0.66", "0.007"),
+        "deepseek-v4.1-flash": ("0.15", "0.60", "0.003"),
+        "deepseek-v4-pro": ("0.66", "1.98", "0.022"),
+        "gemma4": ("0.14", "0.40", "0.05"),
+        ("glm-5.3", "glm-5.2"): ("1.40", "4.40", "0.26"),
+        "glm-5.1": ("1.00", "3.20", "0.20"),
+        "glm-5.3-flash": ("0.15", "0.50", "0.03"),
+        "gpt-oss:120b": ("0.15", "0.60", "0.014"),
+        "gpt-oss:20b": ("0.07", "0.30", "0.035"),
+        "kimi-k3": ("3.00", "15.00", "0.30"),
+        "kimi-k2.7-code": ("0.95", "4.00", "0.19"),
+        "kimi-k2.6": ("0.95", "4.00", "0.16"),
+        "minimax-m3": ("0.60", "2.40", "0.12"),
+        "minimax-m2.7": ("0.30", "1.20", "0.06"),
+        "mistral-large-3": ("0.50", "1.50"),
+        "nemotron-3-nano": ("0.06", "0.24"),
+        "nemotron-3-super": ("0.015", "0.60", "0.015"),
+        "nemotron-3-ultra": ("0.10", "3.00", "0.10"),
+        "qwen3.5": ("0.60", "3.60"),
+    }),
 )
 
 _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {}
@@ -347,6 +374,8 @@ def resolve_billing_route(
         return BillingRoute(provider="openrouter", model=model, base_url=url, billing_mode="official_models_api")
     if provider_name == "nous" or host("inference-api.nousresearch.com"):
         return BillingRoute(provider="nous", model=model, base_url=base_url or _NOUS_DEFAULT_BASE_URL, billing_mode="official_models_api")
+    if provider_name == "ollama-cloud" or host("ollama.com"):
+        return BillingRoute(provider="ollama-cloud", model=bare, base_url=url, billing_mode="official_docs_snapshot")
     snapshot_provider = _SNAPSHOT_PROVIDER_ALIASES.get(provider_name)
     if snapshot_provider is None:
         if (
@@ -358,7 +387,15 @@ def resolve_billing_route(
             snapshot_provider = "fireworks"
     if snapshot_provider:
         return BillingRoute(provider=snapshot_provider, model=bare, base_url=url, billing_mode="official_docs_snapshot")
-    if provider_name in {"custom", "local"} or (base and base_url_hostname(base) in ("localhost", "127.0.0.1")):
+    if provider_name in {"custom", "local"} or provider_name.startswith("custom:") or (
+        base and base_url_hostname(base) in ("localhost", "127.0.0.1")
+    ):
+        # A local Ollama daemon tags models proxied to ollama.com with :cloud /
+        # -cloud (e.g. glm-5.3-flash:cloud on a custom ollama-launch endpoint);
+        # those calls still consume ollama.com per-token credits, so price them
+        # on the ollama-cloud snapshot. Any other local model is unmetered.
+        if model.lower().endswith((":cloud", "-cloud")):
+            return BillingRoute(provider="ollama-cloud", model=model, base_url=url, billing_mode="official_docs_snapshot")
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=url, billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=bare if model else "", base_url=url, billing_mode="unknown")
 
@@ -388,9 +425,24 @@ def _normalize_anthropic_model_name(model: str) -> str:
     return re.sub(r"(\d+)\.(\d+)", r"\1-\2", _strip_prefix(model.lower().strip(), ("anthropic/",)))
 
 
+def _normalize_ollama_cloud_model_name(model: str) -> str:
+    """Ollama ids carry a cloud marker and/or a variant tag the pricing table
+    doesn't: ``minimax-m3:cloud`` (vision route), ``gemma4:31b``,
+    ``deepseek-v4-flash:0731-cloud``. Strip ``:cloud``/``-cloud`` first, then
+    the remaining ``:tag`` — exact ids like ``gpt-oss:120b`` hit the snapshot
+    directly before this runs."""
+    name = model.lower().strip()
+    if name.endswith(":cloud") or name.endswith("-cloud"):
+        name = name[:-6]
+    return name.split(":", 1)[0]
+
+
 # Anthropic dot-notation (opus-4.7) and Bedrock region-prefixed ids need
 # normalizing before a second lookup.
-_MODEL_NORMALIZERS = {"anthropic": _normalize_anthropic_model_name, "bedrock": _normalize_bedrock_model_name}
+_MODEL_NORMALIZERS = {
+    "anthropic": _normalize_anthropic_model_name, "bedrock": _normalize_bedrock_model_name,
+    "ollama-cloud": _normalize_ollama_cloud_model_name,
+}
 
 
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:

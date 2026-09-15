@@ -370,14 +370,15 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
 def _worktree_has_unpushed_commits(worktree_path: str, timeout: int = 10) -> bool:
     """Whether a worktree has commits unreachable from any remote branch. Fails SAFE toward True.
 
-    No remote-tracking refs = no baseline -> False. A shallow boundary can disconnect an older
-    HEAD from origin/* so public commits look unpushed; ``_deepen_shallow_repo`` first if affordable.
+    No remote-tracking refs = no baseline -> True: without a reachable upstream, cleanup cannot
+    prove that local commits are redundant. A shallow boundary can disconnect an older HEAD from
+    origin/* so public commits look unpushed; ``_deepen_shallow_repo`` first if affordable.
     """
     try:
         remote_refs = _git_out(["for-each-ref", "--format=%(refname)", "refs/remotes"], worktree_path,
                                timeout=timeout)
         if not remote_refs:
-            return remote_refs is None  # no remote-tracking refs: nothing to be unpushed against
+            return True  # no remote-tracking refs: no baseline can prove local work was pushed
         unpushed = _git_out(["log", "--oneline", "HEAD", "--not", "--remotes"], worktree_path,
                             timeout=timeout)
         return unpushed is None or bool(unpushed)

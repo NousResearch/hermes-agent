@@ -106,6 +106,30 @@ class TestAuditVerdicts:
         assert record.verdict == "keep"
         assert "unpushed" in record.reason
 
+    def test_unique_commits_without_a_remote_keep_tree_and_branch(self, tmp_path, monkeypatch):
+        """No remote means there is no baseline that can prove local work is merged."""
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        (tmp_path / "home").mkdir()
+        local_repo = tmp_path / "local-repo"
+        _git(["init", "-b", "main", str(local_repo)], tmp_path)
+        (local_repo / "README.md").write_text("hello\n")
+        _git(["add", "."], local_repo)
+        _git(["commit", "-m", "init"], local_repo)
+        (local_repo / ".worktrees").mkdir()
+
+        tree, branch = _add_worktree(local_repo, "hermes-local-work")
+        (tree / "new.py").write_text("x = 1\n")
+        _git(["add", "."], tree)
+        _git(["commit", "-m", "unique local work"], tree)
+
+        records = worktree_gc.audit_worktrees(str(local_repo), with_sizes=False)
+        record = _verdict(records, "hermes-local-work")
+        assert record.verdict == "keep"
+        assert "unpushed" in record.reason
+        assert worktree_gc.reclaim_worktrees(str(local_repo), records=records) == []
+        assert tree.exists()
+        assert _git(["rev-parse", "--verify", branch], local_repo)
+
     def test_patch_equivalent_commits_reap(self, repo):
         """The squash/rebase-merge leak: local commit unreachable from any
         remote ref but patch-equivalent to an upstream commit → merged work."""

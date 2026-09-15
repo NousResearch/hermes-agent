@@ -873,7 +873,17 @@ def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ..
     # utf-8-sig + surrogateescape: a Windows editor may leave a BOM (breaks the
     # first key match) or save cp1252; round-trip undecodable bytes unchanged so
     # updating one credential cannot corrupt an unrelated value.
-    existing_lines = env_path.read_text(encoding="utf-8-sig", errors="surrogateescape").splitlines() if env_path.exists() else []
+    # newline="": universal-newline translation on read would turn every CRLF
+    # into LF, so the file's real ending could never be detected below.
+    if env_path.exists():
+        with env_path.open("r", encoding="utf-8-sig", errors="surrogateescape", newline="") as fh:
+            existing = fh.read()
+    else:
+        existing = ""
+    existing_lines = existing.splitlines()
+    # Adopt the file's own line ending instead of the platform default: writing
+    # one variable must not rewrite every untouched line from LF to CRLF.
+    eol = "\r\n" if "\r\n" in existing else "\n"
     updated_keys = set()
     new_lines = []
     for line in existing_lines:
@@ -885,7 +895,10 @@ def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ..
         new_lines.append(f"{key_match}={_env_line_safe(env_writes[key_match])}" if key_match in env_writes else line)
     new_lines += [f"{key}={_env_line_safe(val)}" for key, val in env_writes.items() if key not in updated_keys]
     _secure_secret_file(env_path, create=True)
-    env_path.write_text("\n".join(new_lines) + ("\n" if new_lines else ""), encoding="utf-8", errors="surrogateescape")
+    # newline="": ``eol`` above is the only thing allowed to decide the line
+    # ending, so text mode cannot translate it on the way out.
+    with env_path.open("w", encoding="utf-8", errors="surrogateescape", newline="") as fh:
+        fh.write(eol.join(new_lines) + (eol if new_lines else ""))
     _secure_secret_file(env_path)
 
 

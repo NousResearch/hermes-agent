@@ -258,6 +258,10 @@ DEFAULT_CONFIG = {
 
     "terminal": {
         "backend": "local",
+        # macOS-only opt-in confinement for the local backend. "none" preserves the
+        # historical direct-host execution path; Seatbelt never applies to other backends.
+        "local_sandbox": "none",  # none | seatbelt
+        "local_sandbox_network": "deny",  # explicit Seatbelt network policy: allow | deny
         "modal_mode": "auto",
         # Remote-backend connection-class failures (SSH host unreachable, Docker daemon down):
         # "warn" = structured degraded tool result with reason + retry hint; "fail" = raise error +

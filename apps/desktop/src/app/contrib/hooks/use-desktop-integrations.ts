@@ -1,8 +1,10 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
 import { openSession } from '@/app/open-session'
+import { $diskPluginsScanPending } from '@/contrib/runtime-loader'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
@@ -100,6 +102,7 @@ export function useDesktopIntegrations({
   }, [])
 
   const restoredRef = useRef(false)
+  const diskPluginsScanPending = useStore($diskPluginsScanPending)
 
   // Wait until boot has adopted the primary profile, then restore that profile's
   // navigation exactly once. The same effect owns subsequent writes so the
@@ -141,6 +144,14 @@ export function useDesktopIntegrations({
         // decided; treating an unloaded list as authoritative would erase valid
         // remembered navigation permanently.
         if (sessions.length === 0 && !restorableNonSessionRoute && (routeSession || last)) {
+          return
+        }
+
+        // A remembered plugin page looks session-shaped until its route
+        // registers, and disk plugins load async. Hold the latch through the
+        // first disk scan so a page that is merely late is not erased as stale
+        // (an already-running backend can hand us the session list first).
+        if (routeSession && diskPluginsScanPending) {
           return
         }
 
@@ -187,7 +198,7 @@ export function useDesktopIntegrations({
     } else if (!routedSessionId && !isOverlayView(appViewForPath(locationPathname))) {
       setRememberedRoute(locationPathname, activeProfile)
     }
-  }, [activeProfile, locationPathname, navigate, profileReady, resumeLastSession, routedSessionId, sessions])
+  }, [activeProfile, diskPluginsScanPending, locationPathname, navigate, profileReady, resumeLastSession, routedSessionId, sessions])
 
   useEffect(() => {
     if (!profileReady || !resumeExhaustedSessionId) {

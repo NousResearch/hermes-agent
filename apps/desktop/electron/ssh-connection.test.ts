@@ -1139,7 +1139,10 @@ test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#11
 
     assert.ok(err2 && err2.code !== 0, 'hung launcher must exit non-zero')
 
-    const { stdout: grandStrays } = await execFileAsync('sh', ['-c', `ps -eo args | grep "[s]leep ${grandSecs}$" || true`])
+    const { stdout: grandStrays } = await execFileAsync('sh', [
+      '-c',
+      `ps -eo args | grep "[s]leep ${grandSecs}$" || true`
+    ])
 
     assert.equal(grandStrays.trim(), '', 'watchdog killed the launcher’s grandchild too')
   }

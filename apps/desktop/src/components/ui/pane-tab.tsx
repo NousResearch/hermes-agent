@@ -264,19 +264,31 @@ export const PaneTabStrip = React.forwardRef<HTMLDivElement, PaneTabStripProps>(
       // active tab's primary underline is the only seam.
       className={cn(
         'group/pane-header relative flex min-w-0 shrink-0 select-none bg-(--ui-sidebar-surface-background) [--pane-tab-active-bg:var(--ui-sidebar-surface-background)]',
-        titlebar ? 'h-full flex-1 [-webkit-app-region:drag]' : 'h-7 [-webkit-app-region:no-drag]',
+        titlebar ? 'h-full flex-1' : 'h-7 [-webkit-app-region:no-drag]',
         className
       )}
       ref={ref}
       {...props}
     >
       <div
-        className="flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className={cn(
+          'flex min-w-0 overflow-x-auto overflow-y-hidden overscroll-x-contain [-webkit-app-region:no-drag] [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
+          titlebar ? 'max-w-full shrink' : 'flex-1'
+        )}
         ref={listRef}
         role="tablist"
       >
         {children}
       </div>
+      {titlebar && (
+        // Only unoccupied titlebar gutter moves the window. Keeping the drag
+        // region beside the tablist avoids relying on nested no-drag carve-outs.
+        <div
+          aria-hidden="true"
+          className="min-w-0 flex-1 [-webkit-app-region:drag]"
+          data-window-drag-handle=""
+        />
+      )}
       {trailing}
     </div>
   )

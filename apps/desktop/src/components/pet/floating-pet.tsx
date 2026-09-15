@@ -26,6 +26,7 @@ import { $gatewayState } from '@/store/session'
 import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
+import { petFacingTransform } from './pet-facing'
 import { PET_STARTUP_RETRY_MS, petInfoPollIntervalMs } from './pet-info-poll'
 import { PetSprite, roamWalkRow } from './pet-sprite'
 import { usePetRoam } from './use-pet-roam'
@@ -50,12 +51,6 @@ function clampPoint(x: number, y: number, w: number, h: number): Point {
     x: Math.min(Math.max(0, x), Math.max(0, (window.innerWidth || 800) - w)),
     y: Math.min(Math.max(0, y), Math.max(0, (window.innerHeight || 600) - h))
   }
-}
-
-// The sprite art faces left by default, so mirror it when the pet's center sits
-// on the left half of the window — it always faces inward, toward the content.
-function facing(leftX: number, petW: number): string {
-  return leftX + petW / 2 < (window.innerWidth || 800) / 2 ? 'scaleX(-1)' : 'none'
 }
 
 function loadPosition(): Point {
@@ -379,7 +374,7 @@ export function FloatingPet() {
       el.style.top = `${next.y}px`
 
       if (spriteWrapRef.current) {
-        spriteWrapRef.current.style.transform = facing(next.x, petW)
+        spriteWrapRef.current.style.transform = petFacingTransform(next.x, petW, window.innerWidth || 800)
       }
     },
     [clamp, petW]
@@ -499,7 +494,12 @@ export function FloatingPet() {
         style={{
           lineHeight: 0,
           position: 'relative',
-          transform: roamDir !== 0 ? (walk.mirror ? 'scaleX(-1)' : 'none') : facing(position.x, petW),
+          transform:
+            roamDir !== 0
+              ? walk.mirror
+                ? 'scaleX(-1)'
+                : 'none'
+              : petFacingTransform(position.x, petW, window.innerWidth || 800),
           zIndex: 1
         }}
       >

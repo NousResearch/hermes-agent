@@ -1,6 +1,7 @@
 """Tests for cmd_update — branch fallback when remote branch doesn't exist."""
 
 import hashlib
+from pathlib import Path
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import ANY, patch
@@ -11,6 +12,24 @@ from hermes_cli.main import cmd_update, PROJECT_ROOT
 from hermes_cli import main_web_build
 from hermes_cli import main_install_repair
 from hermes_cli import update_cmd
+
+
+def test_successful_managed_update_removes_stale_legacy_venv(tmp_path, monkeypatch):
+    from hermes_cli.update_cmd_deps import _remove_stale_legacy_venv
+
+    root = tmp_path / "hermes-agent"
+    for relative in (Path("venv/bin/python"), Path("venv/Scripts/python.exe")):
+        interpreter = root / relative
+        interpreter.parent.mkdir(parents=True, exist_ok=True)
+        interpreter.write_text("current", encoding="utf-8")
+    legacy = root / ".venv"
+    legacy.mkdir()
+    (legacy / "orphaned-package").write_text("old", encoding="utf-8")
+    (root / ".hermes-bootstrap-complete").write_text("complete", encoding="utf-8")
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+
+    assert _remove_stale_legacy_venv(root) is True
+    assert not legacy.exists()
 
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):

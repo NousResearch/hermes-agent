@@ -746,10 +746,14 @@ def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
             continue
         model_ids = _live_or_curated_ids(hermes_id, b.curated)
         # A providers.<built-in>.models block extends the discovered catalog; section 3 cannot
-        # emit it later because this row owns the slug.
+        # emit it later because this row owns the slug. discover_models: false pins the row to
+        # just the declared list instead, matching the custom-endpoint semantics (#107106).
         configured = user_providers.get(hermes_id) if isinstance(user_providers, dict) else None
         configured_models = _declared_model_ids(configured.get("models")) if isinstance(configured, dict) else []
-        model_ids = list(dict.fromkeys([*configured_models, *model_ids]))
+        if isinstance(configured, dict) and configured_models and not _discover_flag(configured):
+            model_ids = list(configured_models)
+        else:
+            model_ids = list(dict.fromkeys([*configured_models, *model_ids]))
         pinfo = get_provider_info(mdev_id)
         display_name = pconfig.name if pconfig and pconfig.name else (pinfo.name if pinfo else mdev_id)
         b.add_builtin_row(
@@ -844,9 +848,10 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict) -> None:
         b.seen_slugs.add(pid.lower())
 
 
-def _lap_canonical_rows(b: _PickerBuild) -> None:
+def _lap_canonical_rows(b: _PickerBuild, user_providers: dict) -> None:
     """Section 2b: CANONICAL_PROVIDERS missed by sections 1/2."""
     from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.model_switch import _declared_model_ids
     from hermes_cli.models import CANONICAL_PROVIDERS
     for cp in CANONICAL_PROVIDERS:
         if _skip(b.seen_slugs, b.excluded, cp.slug):
@@ -871,6 +876,12 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             model_ids = _aws_live_or_curated_ids(cp.slug, b.curated)
         else:
             model_ids = _live_or_curated_ids(cp.slug, b.curated, merge_models_dev=False)
+        # discover_models: false + a non-empty providers.<slug>.models narrows this row to the
+        # declared list instead of the live catalog, mirroring section 1 (#107106).
+        configured = user_providers.get(cp.slug) if isinstance(user_providers, dict) else None
+        configured_models = _declared_model_ids(configured.get("models")) if isinstance(configured, dict) else []
+        if isinstance(configured, dict) and configured_models and not _discover_flag(configured):
+            model_ids = list(configured_models)
         b.add_builtin_row(
             cp.slug, cp.label, cp.slug == b.current_provider, model_ids, "canonical", uncapped_ok=False)
 
@@ -1132,7 +1143,7 @@ def list_authenticated_providers(
 
     _lap_builtin_rows(b, data, user_providers)
     _lap_overlay_rows(b, data)
-    _lap_canonical_rows(b)
+    _lap_canonical_rows(b, user_providers)
     if user_providers and isinstance(user_providers, dict):
         _lap_user_provider_rows(b, user_providers)
     _lap_bare_custom_row(b, custom_providers)

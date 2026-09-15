@@ -415,10 +415,18 @@ The contract is deliberately narrow:
   rendered after memory/profile context and before session metadata; plugins
   cannot reorder or replace core prompt content.
 - A callable receives a read-only mapping with `session_id`, `model`,
-  `provider`, `platform`, `profile_name`, and `cwd`. It runs **once for a new
-  session**. Its rendered bytes are frozen on compression and recovered from
-  the already-persisted full system prompt after a process restart/resume;
-  plugin state is not re-read for an existing session.
+  `provider`, `platform`, `profile_name`, `cwd`, and Core-owned Session Project
+  fields: `project_affinity_status`, `project_id`, `project_root`,
+  `project_generation`, and `project_context_hash`. It runs only at a system
+  prompt generation boundary: new session, compression rebuild, or an explicit
+  Project switch that invalidates the prior prompt. Its rendered bytes stay
+  frozen between boundaries and are recovered from the already-persisted full
+  system prompt after a process restart/resume.
+- A Python plugin that needs current runtime enforcement rather than prompt
+  guidance may call `ctx.get_session_project_affinity(session_id)`. It returns
+  an immutable, profile-scoped snapshot with status `bound`, `unbound`,
+  `partial`, `stale`, `missing`, or `unavailable`; it never selects, repairs,
+  or writes Project authority.
 - `max_chars` is capped at 4,000 characters. All plugin sections together,
   including their audit headings, are capped at 8,000 characters and 32
   sections. Empty, non-string, oversized, aggregate-over-budget, or raising

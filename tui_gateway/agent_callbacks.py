@@ -125,7 +125,7 @@ def _agent_cbs(sid: str) -> dict:
     return callbacks
 
 
-def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
+def _apply_project_workspace(task_id: str, project_id: str, path: str, _name: str = "") -> dict | None:
     """Intentional workspace move from the project_* tools: re-anchor the live session's cwd
     and push session.info. The ONLY auto-cwd path — an explicit tool call, never a `cd`."""
     if not path:
@@ -139,19 +139,52 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
             ("", None))
     resolved = os.path.abspath(os.path.expanduser(str(path)))
     if session is None or not os.path.isdir(resolved):
-        return
-    # explicit switch supersedes a settle-adopted cwd
+        return None
+    runtime_affinity = None
+    try:
+        from agent.project_affinity import load_project_affinity_candidate
+
+        candidate = load_project_affinity_candidate(project_id=project_id, project_root=resolved)
+        if candidate is not None:
+            with _session_db(session) as owner_db:
+                generations = owner_db.update_session_workspace_project_affinity(
+                    session.get("session_key", ""),
+                    cwd=resolved,
+                    project_id=candidate.project_id,
+                    project_root=candidate.project_root,
+                    project_context_hash=candidate.context_hash,
+                ) if owner_db is not None else None
+            if generations is not None:
+                git_generation, generation = generations
+                runtime_affinity = {
+                    "status": "bound",
+                    "project_id": candidate.project_id,
+                    "project_root": candidate.project_root,
+                    "generation": generation,
+                    "context_hash": candidate.context_hash,
+                }
+    except Exception:
+        logger.debug("failed to persist project affinity before workspace move", exc_info=True)
+    if runtime_affinity is None:
+        return None
+    # The owner is durable before the live workspace moves, so a storage failure
+    # cannot split session affinity from cwd/sidebar state.
     session.update(cwd=resolved, explicit_cwd=True, cwd_from_settle=False)
     _register_session_cwd(session)
-    _persist_session_cwd_and_schedule_git_meta(session, resolved)
+    _persist_session_git_meta(session, resolved, git_generation)
     try:
         agent = session.get("agent")
+        if agent is not None:
+            from agent.system_prompt import invalidate_system_prompt
+
+            invalidate_system_prompt(agent)
         info = _session_info(agent, session) if agent is not None else {
             "cwd": resolved, "branch": git_probe.branch(resolved),
             "project": _project_info_for_cwd(resolved), "lazy": True}
         _emit("session.info", sid, info)
     except Exception:
         logger.debug("failed to emit session.info after project workspace move", exc_info=True)
+    return runtime_affinity
 
 
 def _wire_callbacks(sid: str):

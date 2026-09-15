@@ -1,9 +1,11 @@
 """Kanban dashboard plugin: board-header dispatcher toggles.
 
 PATCH /boards/{slug} with dispatch_enabled / auto_decompose_enabled /
-review_dispatch_enabled — tri-state (``None`` = leave unchanged), same
-convention as default_workdir/project_id. Attaches the plugin router to a
-bare FastAPI app, as in test_kanban_dashboard_plugin.py.
+review_dispatch_enabled — tri-state (``None`` = leave unchanged) at the
+PATCH-request layer, but read_board_metadata() always returns all three
+keys, fail-closed-defaulted True ("inherit global"/enabled) per F4 — see
+hermes_cli/kanban_db.py's read_board_metadata docstring. Attaches the
+plugin router to a bare FastAPI app, as in test_kanban_dashboard_plugin.py.
 """
 
 from __future__ import annotations
@@ -50,11 +52,14 @@ def test_new_board_defaults_omit_toggle_overrides(client):
     r = client.post("/api/plugins/kanban/boards", json={"slug": "widget", "name": "Widget"})
     assert r.status_code == 200, r.text
     board = r.json()["board"]
-    # No override written yet — the tri-state keys are absent, letting the
-    # frontend/dispatcher fall back to their own defaults.
-    assert "dispatch_enabled" not in board
-    assert "auto_decompose_enabled" not in board
-    assert "review_dispatch_enabled" not in board
+    # No override written yet — read_board_metadata()'s F4 fail-closed
+    # contract means the tri-state keys are always present, defaulted True
+    # ("inherit global"/enabled), never merely absent (see kanban_db.py's
+    # read_board_metadata docstring on why a present-but-corrupt board.json
+    # must be distinguishable from a never-configured one).
+    assert board["dispatch_enabled"] is True
+    assert board["auto_decompose_enabled"] is True
+    assert board["review_dispatch_enabled"] is True
 
 
 def test_patch_sets_one_flag_without_touching_others(client):
@@ -64,8 +69,8 @@ def test_patch_sets_one_flag_without_touching_others(client):
     assert r.status_code == 200, r.text
     board = r.json()["board"]
     assert board["dispatch_enabled"] is False
-    assert "auto_decompose_enabled" not in board
-    assert "review_dispatch_enabled" not in board
+    assert board["auto_decompose_enabled"] is True
+    assert board["review_dispatch_enabled"] is True
 
 
 def test_unrelated_patch_preserves_existing_overrides(client):
@@ -92,8 +97,8 @@ def test_patch_can_flip_each_flag_independently(client):
     assert r.status_code == 200
     board = r.json()["board"]
     assert board["auto_decompose_enabled"] is False
-    assert "dispatch_enabled" not in board
-    assert "review_dispatch_enabled" not in board
+    assert board["dispatch_enabled"] is True
+    assert board["review_dispatch_enabled"] is True
 
     r = client.patch("/api/plugins/kanban/boards/widget", json={"review_dispatch_enabled": False})
     assert r.status_code == 200
@@ -101,7 +106,7 @@ def test_patch_can_flip_each_flag_independently(client):
     assert board["review_dispatch_enabled"] is False
     # Prior write is preserved across this second independent write.
     assert board["auto_decompose_enabled"] is False
-    assert "dispatch_enabled" not in board
+    assert board["dispatch_enabled"] is True
 
 
 def test_boards_list_surfaces_toggle_overrides(client):

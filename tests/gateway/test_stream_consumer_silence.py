@@ -138,7 +138,7 @@ class TestStreamedSilenceSuppression:
 
         adapter = _make_draft_adapter() if transport == "draft" else _make_native_streaming_adapter()
         consumer = GatewayStreamConsumer(
-            adapter, "chat_1", StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1, cursor=""),
+            adapter, "chat_1", StreamConsumerConfig(transport="auto", edit_interval=0.01, buffer_threshold=1, cursor=""),
         )
         consumer.on_delta("Visible preamble")
         consumer.on_segment_break()
@@ -146,11 +146,54 @@ class TestStreamedSilenceSuppression:
         consumer.finish("\u200b")
         await consumer.run()
 
+        from gateway.run import GatewayRunner
+
+        result = {"final_response": "\u200b", "response_previewed": True}
+        runner = GatewayRunner.__new__(GatewayRunner)
+        await runner._run_agent_mark_streamed_delivery(result, SimpleNamespace(
+            source=SimpleNamespace(chat_id="chat_1"), session_key="key",
+            stream_consumer_holder=[consumer],
+        ))
+        assert not result.get("already_sent")
         if transport == "draft":
             assert adapter.send_calls[-1]["content"].startswith("Visible preamble")
+            assert adapter.edit_calls == []
         else:
             assert adapter.frames[-1]["finalize"] is True
             assert adapter.frames[-1]["text"].startswith("Visible preamble")
+
+    @pytest.mark.asyncio
+    async def test_format_only_overflow_tail_does_not_erase_substantive_heads(self):
+        import asyncio
+        from tests.gateway.test_stream_final_contract import _make_draft_adapter
+
+        adapter = _make_draft_adapter()
+        adapter.MAX_MESSAGE_LENGTH = 600
+        adapter.delete_message = AsyncMock(return_value=True)
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_1", StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1, cursor=""),
+        )
+        # The first 500 characters fill the platform budget; only format controls
+        # remain in the active tail after the substantive head is sent.
+        text = "x" * 500 + "\u200b" * 5
+        consumer.on_delta(text[:400])
+        task = asyncio.create_task(consumer.run())
+        try:
+            async with asyncio.timeout(2):
+                while not adapter.send_calls:
+                    await asyncio.sleep(0.01)
+                consumer.on_delta(text[400:])
+                while not adapter.edit_calls:
+                    await asyncio.sleep(0.01)
+            consumer.finish(text)
+            await task
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        adapter.delete_message.assert_not_awaited()
+        assert adapter.edit_calls[0]["content"] == "x" * 500
+        assert consumer.final_content_delivered
+        assert consumer.delivered_final_matches(text)
 
     @pytest.mark.asyncio
     async def test_invisible_only_stream_is_fully_suppressed(self):
@@ -230,4 +273,3 @@ class TestStreamedSilenceSuppression:
         adapter.delete_message.assert_awaited_once_with("chat_1", "preview_1")
         assert consumer.final_content_delivered is False
         assert consumer.already_sent is False
-

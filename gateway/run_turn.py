@@ -1442,7 +1442,9 @@ class GatewayTurnMixin:
         # and would be delivered verbatim (peer agents would ingest it as a completed turn).
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
             response = ""
-        _allow_human_silence = self._allows_human_silence_markers(source)
+        _allow_human_silence = agent_result.get("queued_terminal_allow_human_silence")
+        if _allow_human_silence is None:
+            _allow_human_silence = self._allows_human_silence_markers(source)
         _intentional_silence = self._is_intentional_silence(
             agent_result, response, allow_invisible=_allow_human_silence,
         )
@@ -3768,12 +3770,14 @@ class GatewayTurnMixin:
         # reply is recorded under the first message's id, so a first reply that was refused (flood
         # control) has its outstanding row replaced and marked delivered by an identical-text
         # terminal reply, and is never redelivered. A deeper recursion has already set its own id,
-        # so only fill the key while it is still absent: the innermost turn wins.
+        # so only fill the key while it is still absent: the innermost turn wins. Its profile
+        # also owns the silence opt-in, even when the outer handler runs under another profile.
         if isinstance(merged, dict) and "queued_terminal_inbound_id" not in merged:
             merged = {
                 **merged,
                 "queued_terminal_inbound_id": next_inbound_id,
                 "queued_terminal_display_kind": next_display_kind,
+                "queued_terminal_allow_human_silence": self._allows_human_silence_markers(next_source),
             }
         return merged
 
@@ -3852,7 +3856,9 @@ class GatewayTurnMixin:
         if not isinstance(response, dict) or response.get("failed"):
             return
         _final = response.get("final_response") or ""
-        _is_empty_sentinel = not _final or _final == "(empty)"
+        # Empty/format-only finals belong to response shaping; never reconcile them by
+        # overwriting a cumulative stream's already-visible preamble with blank content.
+        _is_empty_sentinel = not _final or _final == "(empty)" or is_invisible_only_response(_final)
         # response_previewed: only suppress if that EXACT text was delivered, not unrelated commentary.
         # Unrelated commentary/progress must not be mistaken for the final response (#14238).
         _previewed = bool(response.get("response_previewed"))

@@ -1,7 +1,6 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { fuzzyRank } from '@hermes/shared/fuzzy'
 import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared/gateway-events'
-import { modelSearchText } from '@hermes/shared/model-search-text'
 import { REASONING_EFFORTS } from '@hermes/shared/reasoning-effort'
 import { useEffect, useMemo, useState } from 'react'
 
@@ -18,9 +17,157 @@ const VISIBLE = 12
 const MIN_WIDTH = 40
 const MAX_WIDTH = 90
 
-type Stage = 'provider' | 'key' | 'model' | 'reasoning' | 'disconnect'
+type Stage = 'hop' | 'provider' | 'key' | 'model' | 'reasoning' | 'disconnect'
 
 type ProviderRow = { name: string; provider: ModelOptionProvider }
+
+export type ModelHopRow = {
+  hay: string
+  model: string
+  name: string
+  provider: ModelOptionProvider
+  selector: string
+}
+
+/** Flat catalog rows for the omp `/switch` hop: `provider/id` searchable. */
+export function buildModelHopRows(providers: ModelOptionProvider[], names: string[]): ModelHopRow[] {
+  const rows: ModelHopRow[] = []
+
+  providers.forEach((provider, i) => {
+    const name = names[i] ?? provider.name ?? provider.slug
+
+    for (const model of provider.models ?? []) {
+      const selector = `${provider.slug}/${model}`
+      rows.push({
+        hay: selector.toLowerCase(),
+        model,
+        name,
+        provider,
+        selector
+      })
+    }
+  })
+
+  return rows
+}
+
+export function hopIsCurrent(h: ModelHopRow, current: string) {
+  return h.selector === current || (!!h.provider.is_current && h.model === current)
+}
+
+export function hopCurrentIndex(rows: ModelHopRow[], current: string) {
+  const i = rows.findIndex(h => hopIsCurrent(h, current))
+  return i < 0 ? 0 : i
+}
+
+/** Printable paste (or one typed char). Drops controls so Tab/Esc/newlines never enter the filter. */
+export function searchAppend(prev: string, ch: string) {
+  let add = ''
+  for (const c of ch) {
+    if (c >= ' ') add += c
+  }
+  return add ? prev + add : prev
+}
+
+export function keepReasoningLabel(current: string) {
+  const v = current.trim().toLowerCase()
+  if (!v || v === 'hide' || v === 'show') return 'Keep current effort'
+  return `Keep current effort (${v})`
+}
+
+/** Clamp a list index. Empty list stays 0; page/home/end use a large |delta|. */
+export function listStep(sel: number, n: number, delta: number) {
+  if (n <= 0) return 0
+  return Math.max(0, Math.min(n - 1, sel + delta))
+}
+
+export function hopLocked(h: ModelHopRow) {
+  return (h.provider.unavailable_models ?? []).includes(h.model)
+}
+
+/** Compact in/out $/M from inventory pricing. Empty when unknown. */
+export function hopPrice(h: ModelHopRow) {
+  const p = h.provider.pricing?.[h.model]
+  if (!p) return ''
+  if (p.free) return 'free'
+  const sale = typeof p.discount_percent === 'number' ? ` -${p.discount_percent}%` : ''
+  return `${p.input || '?'}/${p.output || '?'}${sale}`
+}
+
+export function hopDetail(h?: ModelHopRow) {
+  if (!h) return ''
+  const bits: string[] = []
+  const price = hopPrice(h)
+  if (price) bits.push(price)
+  if (h.provider.capabilities?.[h.model]?.fast) bits.push('fast')
+  if (hopLocked(h)) bits.push('locked')
+  return bits.join(' · ')
+}
+
+/** Current, then per-provider featured, then catalog order (OMP recents analogue). */
+export function orderHopRows(rows: ModelHopRow[], current: string) {
+  const at = new Map(rows.map((h, i) => [h.selector, i]))
+  const feat = (h: ModelHopRow) => (h.provider.featured_models ?? []).includes(h.model)
+  return [...rows].sort((a, b) => {
+    const ra = hopIsCurrent(a, current) ? 0 : feat(a) ? 1 : 2
+    const rb = hopIsCurrent(b, current) ? 0 : feat(b) ? 1 : 2
+    return ra - rb || (at.get(a.selector) ?? 0) - (at.get(b.selector) ?? 0)
+  })
+}
+
+/** Cheap hop rank: substring (higher) else subsequence. No fuzzyScore — that crawls the whole catalog. */
+export function hopMatch(hay: string, query: string): number | null {
+  const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  if (!tokens.length) return 0
+  let score = 0
+  for (const token of tokens) {
+    const at = hay.indexOf(token)
+    if (at >= 0) {
+      score += 1000 - at
+      continue
+    }
+    let i = 0
+    for (const c of token) {
+      i = hay.indexOf(c, i)
+      if (i < 0) return null
+      i += 1
+    }
+  }
+  return score
+}
+
+export function filterModelHopRows(rows: ModelHopRow[], query: string): ModelHopRow[] {
+  const q = query.trim()
+  if (!q) {
+    return rows
+  }
+
+  const slash = q.indexOf('/')
+  let pool = rows
+  let rest = q
+  if (slash >= 0) {
+    const providerQuery = q.slice(0, slash).trim().toLowerCase()
+    rest = q.slice(slash + 1)
+    if (providerQuery) {
+      pool = rows.filter(
+        row => row.hay.startsWith(providerQuery) || (row.provider.name ?? '').toLowerCase().startsWith(providerQuery)
+      )
+    }
+    if (!rest.trim()) {
+      return pool
+    }
+  }
+
+  const ranked: { i: number; s: number; row: ModelHopRow }[] = []
+  pool.forEach((row, i) => {
+    const s = hopMatch(row.hay, rest)
+    if (s == null) return
+    ranked.push({ i, s, row })
+  })
+  ranked.sort((a, b) => b.s - a.s || a.i - b.i)
+  return ranked.map(r => r.row)
+}
+
 
 /** Rows of the effort step (step 3/3): the shared ladder, the off state, then
  *  "keep current" (empty value = no `--reasoning` flag on the emitted command). */
@@ -29,6 +176,8 @@ export const REASONING_PICKER_ROWS: ReadonlyArray<{ label: string; value: string
   { label: 'none (disable reasoning)', value: 'none' },
   { label: 'Keep current effort', value: '' }
 ]
+
+export const KEEP_REASONING_IDX = REASONING_PICKER_ROWS.length - 1
 
 /** False only when the catalog says the picked model has no reasoning control;
  *  unknown capabilities keep the step (a no-op dial beats hiding a real one). */
@@ -65,6 +214,7 @@ export function ModelPicker({
   allowPersistGlobal = true,
   gw,
   initialRefresh = false,
+  initialStage = 'hop',
   maxWidth,
   onCancel,
   onSelect,
@@ -73,15 +223,19 @@ export function ModelPicker({
 }: ModelPickerProps) {
   const [providers, setProviders] = useState<ModelOptionProvider[]>([])
   const [currentModel, setCurrentModel] = useState('')
+  const [currentReasoning, setCurrentReasoning] = useState('')
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(true)
   const [persistGlobal, setPersistGlobal] = useState(false)
   const [providerIdx, setProviderIdx] = useState(0)
   const [modelIdx, setModelIdx] = useState(0)
-  const [reasoningIdx, setReasoningIdx] = useState(0)
+  const [reasoningIdx, setReasoningIdx] = useState(KEEP_REASONING_IDX)
   // Model chosen on step 2, awaiting the effort pick on step 3.
   const [pendingModel, setPendingModel] = useState('')
-  const [stage, setStage] = useState<Stage>('provider')
+  // Hop Enter that offers reasoning must Esc back to the hop catalog, not the
+  // wizard's provider-scoped model list (same emit path as the model stage).
+  const [reasoningOrigin, setReasoningOrigin] = useState<'hop' | 'model'>('model')
+  const [stage, setStage] = useState<Stage>(initialStage === 'provider' ? 'provider' : 'hop')
   const [keyInput, setKeyInput] = useState('')
   const [keySaving, setKeySaving] = useState(false)
   const [keyError, setKeyError] = useState('')
@@ -120,14 +274,23 @@ export function ModelPicker({
         const next = r.providers ?? []
         setProviders(next)
         setCurrentModel(String(r.model ?? ''))
+        gw.request<{ value?: string }>('config.get', {
+          key: 'reasoning',
+          ...(sessionId ? { session_id: sessionId } : {})
+        })
+          .then(raw => {
+            const effort = asRpcResult<{ value?: string }>(raw)
+            setCurrentReasoning(String(effort?.value ?? ''))
+          })
+          .catch(() => setCurrentReasoning(''))
         setProviderIdx(
           Math.max(
             0,
             next.findIndex(p => p.is_current)
           )
         )
-        setModelIdx(0)
-        setStage('provider')
+        setModelIdx(hopCurrentIndex(buildModelHopRows(next, providerDisplayNames(next)), String(r.model ?? '')))
+        setStage(initialStage === 'provider' ? 'provider' : 'hop')
         setErr('')
         setLoading(false)
       })
@@ -157,9 +320,22 @@ export function ModelPicker({
     return fuzzyRank(
       providerRows,
       filter,
-      row => `${row.name} ${row.provider.slug} ${(row.provider.models ?? []).join(' ')}`
+      row => `${row.name} ${row.provider.slug}`
     ).map(r => r.item)
   }, [providerRows, filter, stage])
+
+  const hopRows = useMemo(() => buildModelHopRows(providers, names), [providers, names])
+
+  const filteredHopRows = useMemo(() => {
+    if (stage !== 'hop') {
+      return hopRows
+    }
+    if (!filter.trim()) {
+      return orderHopRows(hopRows, currentModel)
+    }
+
+    return filterModelHopRows(hopRows, filter)
+  }, [hopRows, filter, stage, currentModel])
 
   const provider = filteredProviderRows[providerIdx]?.provider
   const allModels = useMemo(() => provider?.models ?? [], [provider])
@@ -169,9 +345,14 @@ export function ModelPicker({
       return allModels
     }
 
-    // modelSearchText adds aliases for brand-less wire ids (e.g. Kimi
-    // Coding `k3` still matches a "kimi" query).
-    return fuzzyRank(allModels, filter, modelSearchText).map(r => r.item)
+    const ranked: { i: number; s: number; id: string }[] = []
+    allModels.forEach((id, i) => {
+      const s = hopMatch(id.toLowerCase(), filter)
+      if (s == null) return
+      ranked.push({ i, s, id })
+    })
+    ranked.sort((a, b) => b.s - a.s || a.i - b.i)
+    return ranked.map(r => r.id)
   }, [allModels, filter, stage])
 
   const models = filteredModels
@@ -189,9 +370,23 @@ export function ModelPicker({
     }
   }, [models.length, modelIdx])
 
+  useEffect(() => {
+    if (stage === 'hop' && modelIdx >= filteredHopRows.length && filteredHopRows.length > 0) {
+      setModelIdx(0)
+    }
+  }, [filteredHopRows.length, modelIdx, stage])
+
+  useEffect(() => {
+    if (stage !== 'hop' || loading || hopRows.length > 0) {
+      return
+    }
+
+    setStage('provider')
+  }, [hopRows.length, loading, stage])
+
   const back = () => {
     // Esc first clears an active filter on the list stages, before navigating.
-    if ((stage === 'provider' || stage === 'model') && filter.trim()) {
+    if ((stage === 'provider' || stage === 'model' || stage === 'hop') && filter.trim()) {
       // Preserve the selected provider across filter clear (same fix as
       // Enter→key/model and Ctrl+D transitions above).
       const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
@@ -209,9 +404,9 @@ export function ModelPicker({
     }
 
     if (stage === 'reasoning') {
-      setStage('model')
+      setStage(reasoningOrigin)
       setPendingModel('')
-      setReasoningIdx(0)
+      setReasoningIdx(KEEP_REASONING_IDX)
 
       return
     }
@@ -232,10 +427,16 @@ export function ModelPicker({
 
   // On the list stages we capture printable keys (including 'q') into the
   // filter, so the shared overlay q/Esc handler must yield to our own handler.
-  const listStage = stage === 'provider' || stage === 'model' || stage === 'reasoning'
+  const listStage = stage === 'hop' || stage === 'provider' || stage === 'model' || stage === 'reasoning'
   useOverlayKeys({ disabled: listStage, onBack: back, onClose: onCancel })
 
   useInput((ch, key) => {
+    // Loading/error/empty: Esc/q close. Never absorb type/Enter into a hidden hop filter.
+    if (loading || err || !providers.length) {
+      if (key.escape || ch === 'q') onCancel()
+      return
+    }
+
     // Key entry stage handles its own input
     if (stage === 'key') {
       if (keySaving) {
@@ -379,6 +580,24 @@ export function ModelPicker({
         return
       }
 
+      const rn = REASONING_PICKER_ROWS.length
+      if (key.pageUp || key.wheelUp) {
+        setReasoningIdx(v => listStep(v, rn, key.pageUp ? -VISIBLE : -1))
+        return
+      }
+      if (key.pageDown || key.wheelDown) {
+        setReasoningIdx(v => listStep(v, rn, key.pageDown ? VISIBLE : 1))
+        return
+      }
+      if (key.home) {
+        setReasoningIdx(0)
+        return
+      }
+      if (key.end) {
+        setReasoningIdx(KEEP_REASONING_IDX)
+        return
+      }
+
       if (allowPersistGlobal && key.ctrl && ch === 'g') {
         setPersistGlobal(v => !v)
 
@@ -413,7 +632,8 @@ export function ModelPicker({
       return
     }
 
-    const count = stage === 'provider' ? filteredProviderRows.length : models.length
+    const count =
+      stage === 'hop' ? filteredHopRows.length : stage === 'provider' ? filteredProviderRows.length : models.length
     const sel = stage === 'provider' ? providerIdx : modelIdx
     const setSel = stage === 'provider' ? setProviderIdx : setModelIdx
 
@@ -429,7 +649,49 @@ export function ModelPicker({
       return
     }
 
+    if (key.pageUp || key.wheelUp) {
+      setSel(v => listStep(v, count, key.pageUp ? -VISIBLE : -1))
+      return
+    }
+    if (key.pageDown || key.wheelDown) {
+      setSel(v => listStep(v, count, key.pageDown ? VISIBLE : 1))
+      return
+    }
+    if (key.home) {
+      setSel(0)
+      return
+    }
+    if (key.end) {
+      setSel(v => listStep(v, count, count))
+      return
+    }
+
     if (key.return) {
+      if (stage === 'hop') {
+        const hop = filteredHopRows[modelIdx]
+
+        if (!hop || hopLocked(hop)) {
+          return
+        }
+
+        if (pickerOffersReasoning(hop.provider, hop.model)) {
+          const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, hop.provider)
+
+          if (fullProviderIdx >= 0) {
+            setProviderIdx(fullProviderIdx)
+          }
+
+          setPendingModel(hop.model)
+          setReasoningIdx(KEEP_REASONING_IDX)
+          setReasoningOrigin('hop')
+          setStage('reasoning')
+        } else {
+          onSelect(modelPickerCommand(hop.model, hop.provider.slug, allowPersistGlobal && persistGlobal))
+        }
+
+        return
+      }
+
       if (stage === 'provider') {
         if (!provider) {
           return
@@ -470,10 +732,14 @@ export function ModelPicker({
       const model = models[modelIdx]
 
       if (provider && model) {
+        if ((provider.unavailable_models ?? []).includes(model)) {
+          return
+        }
         if (pickerOffersReasoning(provider, model)) {
           // Step 3/3: effort for the picked model (skipped on reasoning-free routes).
           setPendingModel(model)
-          setReasoningIdx(0)
+          setReasoningIdx(KEEP_REASONING_IDX)
+          setReasoningOrigin('model')
           setStage('reasoning')
         } else {
           onSelect(modelPickerCommand(model, provider.slug, allowPersistGlobal && persistGlobal))
@@ -525,9 +791,18 @@ export function ModelPicker({
       return
     }
 
-    // Any other printable single character extends the filter.
-    if (ch && !key.ctrl && !key.meta && ch.length === 1 && ch >= ' ') {
-      setFilter(v => v + ch)
+    const nav =
+      key.tab ||
+      key.return ||
+      key.escape ||
+      key.home ||
+      key.end ||
+      key.pageUp ||
+      key.pageDown ||
+      key.upArrow ||
+      key.downArrow
+    if (!key.ctrl && !key.meta && !nav && searchAppend('', ch)) {
+      setFilter(v => searchAppend(v, ch))
       setSel(0)
     }
   })
@@ -640,6 +915,79 @@ export function ModelPicker({
     )
   }
 
+  // ── Session hop (omp /switch): flat provider/id list ──────────────────
+  if (stage === 'hop') {
+    const labels = filteredHopRows.map(row => row.selector)
+    const { items, offset } = windowItems(labels, modelIdx, VISIBLE)
+    const noMatches = !!filter.trim() && labels.length === 0
+
+    return (
+      <Box flexDirection="column" width={width}>
+        <Text bold color={t.color.accent} wrap="truncate-end">
+          Switch model
+        </Text>
+
+        <Text color={t.color.muted} wrap="truncate-end">
+          Session-only · type provider/model · /model --provider for providers
+        </Text>
+
+        <Text color={t.color.muted} wrap="truncate-end">
+          Current: {currentModel || '(unknown)'}
+        </Text>
+        <Text color={filter ? t.color.accent : t.color.muted} wrap="truncate-end">
+          {filter ? `filter: ${filter}▎` : 'type to search · ↑/↓ select'}
+        </Text>
+        <Text color={t.color.muted} wrap="truncate-end">
+          {offset > 0 ? ` ↑ ${offset} more` : ' '}
+        </Text>
+
+        {noMatches ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            no models match
+          </Text>
+        ) : (
+          Array.from({ length: VISIBLE }, (_, i) => {
+            const row = items[i]
+            const idx = offset + i
+            const hop = filteredHopRows[idx]
+            const current = hop ? hopIsCurrent(hop, currentModel) : false
+            const locked = hop ? hopLocked(hop) : false
+
+            return row ? (
+              <Text
+                color={locked ? t.color.label : t.color.muted}
+                {...chipRowProps(t, modelIdx === idx)}
+                key={hop?.selector ?? `hop-${idx}`}
+                wrap="truncate-end"
+              >
+                {modelIdx === idx ? '▸ ' : current ? '* ' : '  '}
+                {idx + 1}. {row}
+              </Text>
+            ) : (
+              <Text color={t.color.muted} key={`pad-${i}`} wrap="truncate-end">
+                {' '}
+              </Text>
+            )
+          })
+        )}
+
+        <Text color={t.color.muted} wrap="truncate-end">
+          {offset + VISIBLE < labels.length ? ` ↓ ${labels.length - offset - VISIBLE} more` : ' '}
+        </Text>
+
+        <Text color={t.color.muted} wrap="truncate-end">
+          {hopDetail(filteredHopRows[modelIdx]) || ' '}
+        </Text>
+
+        <Text color={t.color.muted} wrap="truncate-end">
+          persist: {allowPersistGlobal ? (persistGlobal ? 'global' : 'session') : 'session'}
+          {allowPersistGlobal ? ' · ^g toggle' : ' only'}
+        </Text>
+        <OverlayHint t={t}>↑/↓ select · Enter use · type nous/claude · Esc close</OverlayHint>
+      </Box>
+    )
+  }
+
   // ── Provider selection stage ─────────────────────────────────────────
   if (stage === 'provider') {
     const rows = filteredProviderRows.map(({ provider: p, name }) => {
@@ -740,7 +1088,7 @@ export function ModelPicker({
             wrap="truncate-end"
           >
             {reasoningIdx === idx ? '▸ ' : '  '}
-            {idx + 1}. {row.label}
+            {idx + 1}. {row.value === '' ? keepReasoningLabel(currentReasoning) : row.label}
           </Text>
         ))}
 
@@ -826,6 +1174,7 @@ interface ModelPickerProps {
   allowPersistGlobal?: boolean
   gw: GatewayClient
   initialRefresh?: boolean
+  initialStage?: 'hop' | 'provider'
   maxWidth?: number
   onCancel: () => void
   onSelect: (value: string) => void

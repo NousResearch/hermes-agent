@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { inlineSlashTrigger } from '../domain/slash.js'
+import { inlineSlashTrigger, modelSlashIntent } from '../domain/slash.js'
 import { completionRequestForInput } from '../hooks/useCompletion.js'
 
 describe('inlineSlashTrigger', () => {
@@ -89,5 +89,40 @@ describe('completionRequestForInput — inline skill references', () => {
   it('routes a real mid-message path to path completion, not skills', () => {
     expect(completionRequestForInput('open src/foo/ba')).toMatchObject({ method: 'complete.path' })
     expect(completionRequestForInput('open /usr/lo')).toMatchObject({ method: 'complete.path' })
+  })
+})
+
+describe('modelSlashIntent', () => {
+  it('opens the hop overlay for a bare /model', () => {
+    expect(modelSlashIntent('')).toEqual({ type: 'overlay' })
+    expect(modelSlashIntent('--refresh')).toEqual({ type: 'overlay', refresh: true })
+  })
+
+  it('opens the provider list when --provider has no slug', () => {
+    expect(modelSlashIntent('--provider')).toEqual({ type: 'overlay', stage: 'provider' })
+    expect(modelSlashIntent('--provider --refresh')).toEqual({
+      type: 'overlay',
+      refresh: true,
+      stage: 'provider'
+    })
+  })
+
+  it('sets the model when a positional id is present', () => {
+    expect(modelSlashIntent('claude-sonnet-4.6 --provider nous')).toEqual({ type: 'set' })
+  })
+})
+
+describe('completionRequestForInput — /model args', () => {
+  it('asks the slash completer for /model flags and hops', () => {
+    expect(completionRequestForInput('/model ')).toEqual({
+      method: 'complete.slash',
+      params: { text: '/model ' },
+      replaceFrom: 1
+    })
+    expect(completionRequestForInput('/model --pro')).toEqual({
+      method: 'complete.slash',
+      params: { text: '/model --pro' },
+      replaceFrom: 1
+    })
   })
 })

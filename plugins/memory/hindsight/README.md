@@ -131,7 +131,7 @@ Available in `hybrid` and `tools` memory modes:
 | Tool | Description |
 |------|-------------|
 | `hindsight_retain` | Store information with auto entity extraction; supports optional per-call `tags` |
-| `hindsight_recall` | Multi-strategy search (semantic + entity graph); accepts an optional `bank` and returns bank/document/source provenance per hit |
+| `hindsight_recall` | Multi-strategy search (semantic + entity graph); accepts an optional `bank` and returns bank/document/source provenance per hit, plus `path` when a document sync recorded one and, for observations, `sources` (the distinct documents behind their supporting facts, up to 3) |
 | `hindsight_reflect` | Cross-memory synthesis (LLM-powered); accepts an optional `bank` |
 
 ## Environment Variables

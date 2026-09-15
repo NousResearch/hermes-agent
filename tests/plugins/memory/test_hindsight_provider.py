@@ -565,6 +565,42 @@ class TestToolHandlers:
         assert count == 2
         assert "Auditable memory [bank=test-bank; document_id=doc-17; source=session-import]" in prefetch_result
 
+    def test_recall_provenance_cites_synced_path_and_observation_sources(self, provider):
+        paths = [f"notes/{name}.md" for name in "abcde"]
+        provider._client.arecall.return_value = SimpleNamespace(
+            results=[
+                SimpleNamespace(text="Alpha launches in March", document_id="notes/alpha.md",
+                                metadata={"path": "notes/alpha.md", "vault": "Notes"}),
+                SimpleNamespace(text="The user leads Alpha", document_id=None, metadata=None,
+                                source_fact_ids=["f1", "f2", "f3", "gone"]),
+                SimpleNamespace(text="Broad summary", document_id=None, metadata=None, source_fact_ids=paths),
+            ],
+            source_facts={
+                "f1": SimpleNamespace(document_id="notes/team.md", metadata={"path": "notes/team.md"}),
+                "f2": SimpleNamespace(document_id="notes/team.md", metadata={"path": "notes/team.md"}),
+                "f3": SimpleNamespace(document_id="session-42", metadata={"source": "hermes"}),
+                **{path: SimpleNamespace(document_id=path, metadata={"path": path}) for path in paths},
+            },
+        )
+
+        result = json.loads(provider.handle_tool_call("hindsight_recall", {"query": "alpha"}))["result"]
+
+        assert provider._client.arecall.call_args.kwargs["include_source_facts"] is True
+        assert result.splitlines() == [
+            "1. Alpha launches in March [bank=test-bank; document_id=notes/alpha.md; source=unknown; path=notes/alpha.md]",
+            "2. The user leads Alpha [bank=test-bank; document_id=unknown; source=unknown; sources=notes/team.md, session-42]",
+            "3. Broad summary [bank=test-bank; document_id=unknown; source=unknown; "
+            "sources=notes/a.md, notes/b.md, notes/c.md (+2 more)]",
+        ]
+        prefetch_result, _ = provider._do_recall("alpha")
+        assert "- The user leads Alpha [bank=test-bank; document_id=unknown; source=unknown; " \
+               "sources=notes/team.md, session-42]" in prefetch_result
+
+    def test_source_facts_not_requested_when_observations_are_excluded(self, provider_with_config):
+        provider = provider_with_config(recall_types="world,experience")
+        provider.handle_tool_call("hindsight_recall", {"query": "q"})
+        assert "include_source_facts" not in provider._client.arecall.call_args.kwargs
+
 
     def test_reflect_success(self, provider):
         result = json.loads(provider.handle_tool_call(

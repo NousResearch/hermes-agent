@@ -95,6 +95,7 @@ def test_mutator_route_table_matches_prd_inventory():
         "session.reset": "idle-gated",
         "session.history.reload": "idle-gated",
         "slash.retry": "idle-gated",
+        "slash.refine": "idle-gated",
     }
 
 

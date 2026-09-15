@@ -551,7 +551,7 @@ def maybe_auto_title(
     # profile under multiplex, titling X's session with the default profile's model and billing its key.
     try:
         from agent.memory_provider import spawn_context_thread
-        spawn_context_thread(_run, name="auto-title").start()
+        spawn_context_thread(_run, name="auto-title", args=(), kwargs={}).start()
     except Exception:
         with _title_in_flight_lock:
             _title_in_flight.discard(session_id)

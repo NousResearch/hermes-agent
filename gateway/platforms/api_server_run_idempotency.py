@@ -106,6 +106,19 @@ class RunIdempotencyStore:
                 add_column_if_missing(self._conn, "run_idempotency", column, f"{column} {ddl}")
         self._conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS run_idempotency_run_id ON run_idempotency(run_id)")
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS run_event_journal (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                dedupe_key TEXT NOT NULL,
+                event_json TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                UNIQUE (run_id, dedupe_key)
+            )"""
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS run_event_journal_run_cursor ON run_event_journal(run_id, event_id)"
+        )
         self._conn.commit()
         self._lock = threading.Lock()
         self._tighten_permissions()
@@ -223,6 +236,68 @@ class RunIdempotencyStore:
                 "UPDATE run_idempotency SET status_json=?, updated_at=? WHERE run_id=?",
                 (_encode_status(status), time.time(), run_id))
             self._conn.commit()
+
+    def register_run(self, scope: str, run_id: str, status: Dict[str, Any], *,
+                     owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0) -> None:
+        """Persist a run that has no client idempotency key.
+
+        The internal key is never exposed or accepted from clients; keeping the
+        run in the same scoped table lets status and event replay use one durable
+        ownership boundary for keyed and legacy runs alike.
+        """
+        now = time.time()
+        internal_key = f"__run__:{run_id}"
+        with self._immediate_txn():
+            self._conn.execute(
+                "INSERT OR IGNORE INTO run_idempotency("
+                "scope,idempotency_key,fingerprint,run_id,status_json,owner_pid,owner_started,"
+                "retention_until,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (scope, internal_key, run_id, run_id, _encode_status(status), int(owner_pid or 0),
+                 int(owner_started or 0), max(0.0, float(retention_until or 0)), now, now))
+            self._conn.commit()
+
+    EVENT_JOURNAL_LIMIT = 256
+
+    def append_event(self, run_id: str, event: Dict[str, Any], *, dedupe_key: str = None) -> Dict[str, Any]:
+        """Append one public event and return its stable cursor envelope."""
+        payload = dict(event)
+        key = str(dedupe_key or json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        encoded = _encode_status(payload)
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT event_id, event_json FROM run_event_journal WHERE run_id=? AND dedupe_key=?",
+                (run_id, key),
+            ).fetchone()
+            if row is None:
+                now = time.time()
+                cursor = self._conn.execute(
+                    "INSERT INTO run_event_journal(run_id,dedupe_key,event_json,created_at) VALUES(?,?,?,?)",
+                    (run_id, key, encoded, now),
+                ).lastrowid
+                self._conn.execute(
+                    """DELETE FROM run_event_journal WHERE run_id=? AND event_id NOT IN
+                       (SELECT event_id FROM run_event_journal WHERE run_id=? ORDER BY event_id DESC LIMIT ?)""",
+                    (run_id, run_id, self.EVENT_JOURNAL_LIMIT),
+                )
+                self._conn.commit()
+                row = (cursor, encoded)
+            result = json.loads(row[1])
+            result["event_id"] = int(row[0])
+            return result
+
+    def events_after(self, run_id: str, cursor: int = 0, *, limit: int = None) -> list[Dict[str, Any]]:
+        """Read ordered, bounded events strictly after a per-run cursor."""
+        limit = max(1, min(int(limit or self.EVENT_JOURNAL_LIMIT), self.EVENT_JOURNAL_LIMIT))
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT event_id, event_json FROM run_event_journal WHERE run_id=? AND event_id>? "
+                "ORDER BY event_id ASC LIMIT ?", (run_id, int(cursor or 0), limit)).fetchall()
+        events = []
+        for event_id, event_json in rows:
+            event = json.loads(event_json)
+            event["event_id"] = int(event_id)
+            events.append(event)
+        return events
 
     def close(self) -> None:
         with self._lock:

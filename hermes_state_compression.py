@@ -53,7 +53,7 @@ def _cooldown_row(exists: bool, cooldown_until, error) -> Dict[str, Any]:
 # A wait is only a claim on the NEXT handoff, so a waiter row must not outlive the wait that
 # created it. Bound it by the longest legitimate wait (acquire_session_turn_lease's 1800s
 # default) plus slack: past that the row is a leak that would fence the conversation off, not a
-# queue position (#84776).
+# queue position (measured: t_ebfd74d3).
 SESSION_TURN_WAITER_STALE_SECONDS = 1860.0
 
 
@@ -97,7 +97,7 @@ def _session_turn_waiter_ahead(conn, conversation_id: str, holder: str, enqueued
 
     ``enqueued_at`` is the caller's own queue position, or None for an ordinary claim that has
     not been waiting: an ordinary claim never jumps a live wait, while a waiting claim is
-    admitted as soon as its wait is the oldest (#84776).
+    admitted as soon as its wait is the oldest (measured: t_ebfd74d3).
     """
     row = conn.execute(
         "SELECT holder, enqueued_at FROM session_turn_waiters "
@@ -589,8 +589,9 @@ class SessionCompressionMixin:
         Fairness is part of the same transaction: a claim that has published a wait
         (``waiter_enqueued_at``) is admitted once its wait is the oldest, and an ordinary claim
         is denied while a live wait is queued ahead of it, so the handoff at release goes to the
-        turn that waited instead of to whichever process polls first (#84776). Dead waits are
-        pruned here, so a waiter that died mid-wait cannot fence the conversation off.
+        turn that waited instead of to whichever process polls first (measured: t_ebfd74d3).
+        Dead waits are pruned here, so a waiter that died mid-wait cannot fence the conversation
+        off.
         """
         from hermes_state import _compression_lock_holder_process_is_dead
         if not session_id or not holder:
@@ -702,7 +703,8 @@ class SessionCompressionMixin:
         after. ``should_abort()`` True (e.g. ``/stop``) returns False at once.
 
         The wait is published in ``session_turn_waiters`` before the first attempt and withdrawn
-        when it ends, which is what makes the handoff FIFO rather than first-poller-wins (#84776).
+        when it ends, which is what makes the handoff FIFO rather than first-poller-wins
+        (measured: t_ebfd74d3).
         """
         from hermes_state import classify_persistence_error
         deadline = time.monotonic() + max(0.0, float(wait_seconds))

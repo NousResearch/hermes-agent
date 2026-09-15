@@ -1,4 +1,4 @@
-"""Turn-lease starvation must queue an inbound delivery, never fail it (#84776, card t_d4f85953).
+"""Turn-lease starvation must queue an inbound delivery, never fail it (card t_d4f85953).
 
 Reproduced in production: a turn that makes no model call and no tool completion still holds the
 lease, and its transcript writes keep refreshing it. An inbound delivery (peer dm / bot-mode
@@ -13,6 +13,7 @@ admitted on that conversation drains it as its first user message, exactly once.
 from __future__ import annotations
 
 import json
+import os
 import threading
 
 from agent.turn_facade_lease import admit_durable_turn_lease
@@ -234,6 +235,60 @@ def test_drain_preserves_strict_role_alternation(tmp_path, monkeypatch):
     finally:
         lease.stop_refresher()
         lease.join_threads()
+
+
+def test_queue_home_follows_the_process_hermes_home(tmp_path, monkeypatch):
+    """The spool must land in the store the live-delivery router uses for this profile."""
+    from agent.turn_facade_lease import _lease_queue_dir, _lease_queue_home
+
+    profile_home = tmp_path / "profile-home"
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    assert _lease_queue_home() == profile_home
+    assert _lease_queue_dir(_lease_queue_home()) == str(
+        profile_home / "runtime" / "bot_live_delivery"
+    )
+
+
+def test_real_store_reports_holder_and_queue_depth_on_the_receipt(tmp_path, monkeypatch):
+    """The receipt's holder / queue fields must come off the real durable store, not a stub."""
+    from hermes_state import SessionDB
+
+    _queue_home(tmp_path, monkeypatch)
+    # The real store honours the full wait budget (1800s) before it gives up; a stub returns at
+    # once. Scale the budget down so the test exercises the real denial path without the wait.
+    monkeypatch.setattr("agent.turn_facade_lease.LEASE_WAIT_SECONDS", 0.25)
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("s1", source="test")
+    holder = f"pid={os.getpid()}:turn=holder:platform=api_server"
+    assert db.try_acquire_session_turn_lease("s1", holder, ttl_seconds=60) is True
+    waiter = f"pid={os.getpid()}:turn=waiter:platform=api_server"
+    assert db.register_session_turn_waiter("s1", waiter) is True
+
+    admission = _admit(
+        _agent(db),
+        [{"role": "user", "content": "hi"}],
+        inbound_delivery={"message": "queued body", "author": "peer", "delivery_id": "real-1"},
+    )
+    result = admission.early_result
+    assert result["queued"] is True
+    assert result["holder"] == holder
+    assert result["queue_depth"] == 1
+    assert isinstance(result["waiter_age_s"], float)
+    assert result["waiter_age_s"] >= 0.0
+
+    # Released for real: the next admitted turn on this conversation drains it exactly once.
+    db.release_session_turn_lease("s1", holder)
+    db.clear_session_turn_waiter("s1", waiter)
+    second = _admit(_agent(db), [{"role": "assistant", "content": "prior"}])
+    lease = second.lease
+    assert lease is not None
+    try:
+        assert second.drained_delivery_ids == ["real-1"]
+        assert second.conversation_history[-1] == {"role": "user", "content": "queued body"}
+    finally:
+        lease.stop_refresher()
+        lease.join_threads()
+    db.close()
 
 
 def test_drain_failure_does_not_break_the_turn(tmp_path, monkeypatch):

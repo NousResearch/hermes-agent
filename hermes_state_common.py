@@ -520,7 +520,7 @@ CREATE TABLE IF NOT EXISTS session_turn_leases (
 -- A turn that is waiting for the lease publishes its wait here for as long as it waits, so the
 -- handoff at release goes to the oldest waiter instead of to whichever process polls first. Rows
 -- are transient (deleted when the wait ends) and are pruned when their waiter's process is gone or
--- their age exceeds the longest legitimate wait (#84776).
+-- their age exceeds the longest legitimate wait (measured: t_ebfd74d3).
 CREATE TABLE IF NOT EXISTS session_turn_waiters (
     conversation_id TEXT NOT NULL,
     holder TEXT NOT NULL,

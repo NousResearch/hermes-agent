@@ -282,7 +282,22 @@ def request_elicitation_consent(message: str, description: str, *,
         logger.warning("Elicitation consent: session lookup failed: %s", exc)
         return "decline"
 
-    if _ctx._is_gateway_approval_context():
+    # ``/v1/runs`` is an API-server session, normally classified as
+    # unattended for dangerous-command approval.  Unlike generic API calls,
+    # each live run registers an authenticated callback and exposes a matching
+    # approval endpoint, so MCP's per-call trust consent can safely use that
+    # request/resolve lifecycle.  Do not extend this exception to cron,
+    # webhook, or single-query workers: those paths must remain fail-closed.
+    api_run_context = (
+        _ctx._get_session_platform() == "api_server"
+        and not _ctx._is_cron_approval_context()
+        and not _ctx._is_single_query_approval_context()
+    )
+    gateway_context = (
+        _ctx._is_gateway_approval_context()
+        and not _ctx._is_single_query_approval_context()
+    )
+    if gateway_context or api_run_context:
         notify_cb = _a._gateway_notify_cb(session_key)
         if notify_cb is None:
             logger.warning("Elicitation requested in gateway session %s but no "

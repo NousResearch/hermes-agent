@@ -182,6 +182,92 @@ class TestTrustGateAtCallTime:
         assert "error" in json.loads(raw)
 
 
+class TestTrustGateApprovalRouting:
+    """MCP consent uses the API run's registered approval lifecycle only."""
+
+    def test_api_run_callback_can_resolve_mcp_trust_gate(self, monkeypatch):
+        """An API run emits and resolves the exact per-call consent request."""
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools import approval, approval_prompt
+        from tools.approval_context import (
+            reset_current_session_key,
+            set_current_session_key,
+        )
+
+        session_key = "api-run-mcp-trust"
+        seen = []
+        # If the API callback is not selected, fail fast instead of waiting for
+        # the CLI input timeout in this non-interactive test process.
+        monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval", lambda *_args, **_kwargs: "deny")
+
+        def notify(approval_data):
+            seen.append(dict(approval_data))
+            assert approval.resolve_gateway_approval(
+                session_key, "once", request_id=approval_data["request_id"]
+            ) == 1
+
+        session_tokens = set_session_vars(
+            platform="api_server", session_key=session_key, async_delivery=False
+        )
+        key_token = set_current_session_key(session_key)
+        approval.register_gateway_notify(session_key, notify)
+        try:
+            assert approval_prompt.request_elicitation_consent(
+                "MCP tool 'write' on UNTRUSTED server 'srv' wants to run.",
+                "Approve once or deny.", surface="mcp-trust/srv",
+            ) == "accept"
+        finally:
+            approval.unregister_gateway_notify(session_key)
+            reset_current_session_key(key_token)
+            clear_session_vars(session_tokens)
+
+        assert len(seen) == 1
+        assert seen[0]["pattern_key"] == "mcp_elicitation"
+        assert seen[0]["request_id"]
+
+    @pytest.mark.parametrize("platform,cron,single_query", [
+        ("webhook", "", False),
+        ("telegram", "1", False),
+        ("telegram", "", True),
+    ])
+    def test_unattended_cron_and_single_query_contexts_do_not_use_callback(
+        self, monkeypatch, platform, cron, single_query
+    ):
+        """A registered callback must not widen consent for non-API workers."""
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools import approval, approval_prompt
+        from tools.approval_context import (
+            reset_current_session_key,
+            set_current_session_key,
+        )
+
+        session_key = f"{platform}-mcp-trust"
+        notified = []
+        session_tokens = set_session_vars(
+            platform=platform, session_key=session_key, cron_session=cron
+        )
+        key_token = set_current_session_key(session_key)
+        approval.register_gateway_notify(session_key, lambda data: notified.append(data))
+        monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval", lambda *_args, **_kwargs: "deny")
+        gateway_waits = []
+        monkeypatch.setattr(
+            approval_prompt._gw,
+            "_await_gateway_decision",
+            lambda *_args, **_kwargs: gateway_waits.append(_args) or {"resolved": True, "choice": "once"},
+        )
+        if single_query:
+            monkeypatch.setattr(approval_prompt._ctx, "_is_single_query_approval_context", lambda: True)
+        try:
+            assert approval_prompt.request_elicitation_consent("write", "Approve once or deny.") == "decline"
+        finally:
+            approval.unregister_gateway_notify(session_key)
+            reset_current_session_key(key_token)
+            clear_session_vars(session_tokens)
+
+        assert notified == []
+        assert gateway_waits == []
+
+
 class TestTrustNormalization:
     def test_unknown_trust_value_treated_as_untrusted(self):
         """Garbage trust strings fail closed to untrusted."""

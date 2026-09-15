@@ -1,8 +1,6 @@
 /**
- * Titlebar board switcher — the board page projects this into `titleBar.center`
- * (where chat shows the session-title dropdown) via `<Contribute>`, so it
- * exists exactly while the page is mounted — no route sniffing. Same chrome as
- * the session title: quiet label + chevron, menu on click.
+ * Board picker in the Kanban page header, alongside its filters and actions.
+ * Quiet label + chevron, menu on click.
  */
 
 import {

@@ -265,6 +265,10 @@ class CompressionFacadeMixin:
                     idle_timeout=idle_timeout, total_ceiling=total_ceiling,
                 )
             _mirror_result_onto_live_lists(self, result, messages, direct_path=direct_path)
+            guardrails = getattr(self, "_tool_guardrails", None)
+            if (isinstance(result, tuple) and result and isinstance(result[0], list)
+                    and result[0] is not messages and guardrails is not None):
+                guardrails.reset_no_progress_after_compaction()
             _rebind_caller_session_context(self)
             return result
         finally:

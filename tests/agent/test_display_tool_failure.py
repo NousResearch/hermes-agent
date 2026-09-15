@@ -96,6 +96,16 @@ class TestDetectToolFailureStructured:
         result = json.dumps({"success": True, "data": "hello"})
         assert _detect_tool_failure("web_search", result) == (False, "")
 
+    def test_skill_view_dedup_control_result_not_flagged(self):
+        result = json.dumps({
+            "success": False,
+            "status": "deduplicated",
+            "dedup": True,
+            "content_returned": False,
+            "error": "already loaded",
+        })
+        assert _detect_tool_failure("skill_view", result) == (False, "")
+
 
 
 class TestGetCuteToolMessageFailureSuffix:

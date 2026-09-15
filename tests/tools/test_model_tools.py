@@ -76,6 +76,29 @@ class TestHandleFunctionCall:
             assert kwargs_by_hook[hook_name]["error_type"] == "tool_error"
             assert kwargs_by_hook[hook_name]["error_message"] == "exit 1"
 
+    def test_skill_view_dedup_is_reported_as_operational_success(self):
+        result = json.dumps({
+            "success": False,
+            "status": "deduplicated",
+            "dedup": True,
+            "content_returned": False,
+            "error": "already loaded",
+        })
+        with (
+            patch("model_tools.registry.dispatch", return_value=result),
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            assert handle_function_call("skill_view", {"name": "demo"}) == result
+
+        kwargs_by_hook = {
+            hook.args[0]: hook.kwargs for hook in mock_invoke_hook.call_args_list
+        }
+        for hook_name in ("post_tool_call", "transform_tool_result"):
+            assert kwargs_by_hook[hook_name]["status"] == "ok"
+            assert kwargs_by_hook[hook_name]["error_type"] is None
+            assert kwargs_by_hook[hook_name]["error_message"] is None
+
     def test_no_listener_skips_post_and_transform_emit(self):
         """When no plugin is registered for post_tool_call /
         transform_tool_result, the emit path must short-circuit on

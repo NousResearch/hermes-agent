@@ -104,22 +104,25 @@ def test_discord_handoff_key_does_not_use_parent_channel():
     assert handoff != buggy, "handoff regressed to keying on the parent channel"
 
 
-def _slack_handoff_destination(channel_id: str, thread_ts: str, team_id: str):
-    """Run the real handoff destination/key path against a Slack home channel."""
-    config = GatewayConfig(platforms={Platform.SLACK: PlatformConfig(enabled=True, token="test")})
-    config.platforms[Platform.SLACK].home_channel = HomeChannel(
-        platform=Platform.SLACK, chat_id=channel_id, name="home", scope_id=team_id)
-    adapter = MagicMock()
-    adapter.create_handoff_thread = AsyncMock(return_value=thread_ts)
+def _handoff_destination(platform: Platform, channel_id: str, thread_id: str, scope_id, adapter):
+    """Run the real handoff destination/key path against a configured home channel."""
+    config = GatewayConfig(platforms={platform: PlatformConfig(enabled=True, token="test")})
+    config.platforms[platform].home_channel = HomeChannel(
+        platform=platform, chat_id=channel_id, name="home", scope_id=scope_id)
+    adapter.create_handoff_thread = AsyncMock(return_value=thread_id)
     runner = object.__new__(GatewayRunner)
     runner.config = config
-    runner.adapters = {Platform.SLACK: adapter}
+    runner.adapters = {platform: adapter}
     runner.session_store = None
     with patch("gateway.delivery.resolve_delivery_transport",
                lambda *_a: SimpleNamespace(adapter=adapter, send=AsyncMock())):
         dest = asyncio.run(runner._handoff_resolve_destination(
-            {"id": "cli-session", "title": "work", "handoff_platform": "slack"}, profile_name=None))
+            {"id": "cli-session", "title": "work", "handoff_platform": platform.value}, profile_name=None))
     return dest, runner._handoff_session_key(dest, profile_name=None)
+
+
+def _slack_handoff_destination(channel_id: str, thread_ts: str, team_id: str):
+    return _handoff_destination(Platform.SLACK, channel_id, thread_ts, team_id, MagicMock())
 
 
 def _organic_slack_reply_key(channel_id: str, thread_ts: str, team_id: str, chat_type: str) -> str:
@@ -144,3 +147,14 @@ def test_slack_channel_handoff_key_matches_the_thread_reply_key():
     dest, handoff = _slack_handoff_destination("C0CHANNEL01", "1789474088.089709", "T0C2HL96FH6")
     assert handoff == _organic_slack_reply_key("C0CHANNEL01", "1789474088.089709", "T0C2HL96FH6", "group")
     assert dest.source.chat_id == "C0CHANNEL01"
+
+
+def test_slack_handoff_without_stored_scope_uses_the_sole_workspace_on_a_cold_channel_map():
+    """An env/legacy home has no scope_id and the adapter's channel→team map is empty right after
+    boot; a single authenticated workspace still identifies the team the reply key will carry."""
+    from plugins.platforms.slack.adapter import SlackAdapter
+
+    adapter = SlackAdapter.__new__(SlackAdapter)
+    adapter._channel_team, adapter._channel_teams, adapter._team_clients = {}, {}, {"T0C2HL96FH6": object()}
+    _dest, handoff = _handoff_destination(Platform.SLACK, "D0C1HFBMQAX", "1789474088.089709", None, adapter)
+    assert handoff == _organic_slack_reply_key("D0C1HFBMQAX", "1789474088.089709", "T0C2HL96FH6", "dm")

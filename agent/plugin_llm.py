@@ -7,6 +7,12 @@ and fallback, so the plugin never sees raw tokens or keys. Every override knob i
 gated by the per-plugin ``plugins.entries.<id>.llm.allow_*_override`` trust flags
 (fail-closed: a missing block means "no overrides"). Backed by
 :func:`agent.auxiliary_client.call_llm`.
+
+``inherit_turn_invocation=True`` (and ``PluginInvocation``, #109499) is the other
+half: instead of overriding the route, the plugin asks for the invocation the
+current turn is already bound to — same provider, model and route — which runs as
+one request through
+:func:`agent.auxiliary_client.call_llm_route_locked` with no retry or fallback.
 """
 
 from __future__ import annotations
@@ -143,6 +149,61 @@ def _resolve_trust_policy(plugin_id: str) -> _TrustPolicy:
 
 class PluginLlmTrustError(PermissionError):
     """Raised when a plugin attempts an LLM override without trust."""
+
+
+class PluginLlmInvocationError(RuntimeError):
+    """An invocation-bound plugin call could not be made on the inherited route.
+
+    Carries a short ``code`` — ``no_turn_invocation``, ``override_conflict``,
+    ``incomplete_route``, ``transport_error``, … — and never the provider's message: a
+    provider error can carry a URL, a key fragment or an echo of the request body, and
+    callers journal this.
+    """
+
+    def __init__(self, code: str) -> None:
+        super().__init__(f"plugin invocation route failed: {code}")
+        self.code = code
+
+
+@dataclass(frozen=True)
+class PluginInvocation:
+    """The LLM invocation the current turn is bound to: same provider, model and route.
+
+    A value, not a handle — a mid-turn ``/model`` switch or a provider rotation cannot
+    mutate one already handed out — and identity only: it carries no credentials, because
+    ``ctx.llm(..., inherit_turn_invocation=True)`` resolves auth host-side at call time.
+    """
+
+    provider: str
+    model: str
+    base_url: str = ""
+    api_mode: str = ""
+    session_id: str = ""
+
+    @classmethod
+    def current(cls) -> Optional["PluginInvocation"]:
+        """Snapshot of the invocation bound to this context, or ``None`` outside a turn.
+
+        Reads the binding the host publishes in the turn prologue
+        (``agent.turn_context._publish_runtime_main``) — one answer for CLI, gateway and
+        TUI. A thread or task that did not inherit the turn's context sees ``None``: an
+        honest "no invocation", never the ambient-config route.
+        """
+        try:
+            from agent.auxiliary_client import current_main_runtime
+            runtime = current_main_runtime() or {}
+        except Exception:  # pragma: no cover — defensive
+            return None
+        provider = str(runtime.get("provider") or "").strip()
+        model = str(runtime.get("model") or "").strip()
+        if not provider or provider == "auto" or not model:
+            return None  # cannot name where it goes — not an invocation to inherit
+        return cls(
+            provider=provider, model=model,
+            base_url=str(runtime.get("base_url") or "").strip(),
+            api_mode=str(runtime.get("api_mode") or "").strip(),
+            session_id=str(runtime.get("session_id") or "").strip(),
+        )
 
 
 def _denied(plugin_id: str, what: str, flag: str) -> PluginLlmTrustError:
@@ -443,18 +504,33 @@ class PluginLlm:
         self._sync_caller = sync_caller
         self._async_caller = async_caller
 
+    def current_invocation(self) -> Optional[PluginInvocation]:
+        """The invocation the current turn is bound to, or ``None`` outside a turn.
+
+        The plugin's own read of what ``inherit_turn_invocation=True`` would use — for
+        journaling, or to decide whether the out-of-band call can be made at all.
+        """
+        return PluginInvocation.current()
+
     def complete(
         self, messages: List[Dict[str, Any]], *, provider: Optional[str] = None, model: Optional[str] = None,
         temperature: Optional[float] = None, max_tokens: Optional[int] = None,
         timeout: Optional[float] = None, agent_id: Optional[str] = None, profile: Optional[str] = None,
         purpose: Optional[str] = None, task: Optional[str] = None,
+        inherit_turn_invocation: bool = False,
     ) -> PluginLlmCompleteResult:
         """Run a host-owned chat completion against the user's active model.
 
         ``provider``/``model``/``agent_id``/``profile`` are each gated by
         ``plugins.entries.<id>.llm.allow_*_override``. ``task`` routes through a
-        plugin-registered auxiliary slot (see :func:`_check_task`)."""
-        agent, kw = self._gate(provider, model, agent_id, profile, task, messages, temperature, max_tokens, timeout)
+        plugin-registered auxiliary slot (see :func:`_check_task`).
+
+        ``inherit_turn_invocation`` pins the call to the invocation the current turn is
+        bound to (see :class:`PluginInvocation`): same provider, model and route, exactly
+        one request, no fallback. It conflicts with the overrides above and raises
+        :class:`PluginLlmInvocationError` when no turn binding is live."""
+        agent, kw = self._gate(provider, model, agent_id, profile, task, messages, temperature,
+                               max_tokens, timeout, inherit_turn_invocation=inherit_turn_invocation)
         return self._finish("complete", agent, kw, self._invoke_sync(kw), purpose)
 
     def complete_structured(
@@ -463,14 +539,17 @@ class PluginLlm:
         provider: Optional[str] = None, model: Optional[str] = None, temperature: Optional[float] = None,
         max_tokens: Optional[int] = None, timeout: Optional[float] = None, agent_id: Optional[str] = None,
         profile: Optional[str] = None, purpose: Optional[str] = None, task: Optional[str] = None,
+        inherit_turn_invocation: bool = False,
     ) -> PluginLlmStructuredResult:
         """Run a bounded host-owned structured completion.
 
         ``input`` accepts text and image blocks. With ``json_mode=True`` or a
         ``json_schema`` the response is parsed (and validated when the optional
-        ``jsonschema`` package is installed) into ``result.parsed``."""
+        ``jsonschema`` package is installed) into ``result.parsed``; see
+        :meth:`complete` for ``inherit_turn_invocation``."""
         spec = _structured_spec("complete_structured", instructions, input, system_prompt, json_mode, json_schema, schema_name)
-        agent, kw = self._gate(provider, model, agent_id, profile, task, None, temperature, max_tokens, timeout, spec)
+        agent, kw = self._gate(provider, model, agent_id, profile, task, None, temperature, max_tokens,
+                               timeout, spec, inherit_turn_invocation=inherit_turn_invocation)
         return self._finish("complete_structured", agent, kw, self._invoke_sync(kw), purpose, spec)
 
     async def acomplete(
@@ -478,9 +557,11 @@ class PluginLlm:
         temperature: Optional[float] = None, max_tokens: Optional[int] = None,
         timeout: Optional[float] = None, agent_id: Optional[str] = None, profile: Optional[str] = None,
         purpose: Optional[str] = None, task: Optional[str] = None,
+        inherit_turn_invocation: bool = False,
     ) -> PluginLlmCompleteResult:
         """Async sibling of :meth:`complete`."""
-        agent, kw = self._gate(provider, model, agent_id, profile, task, messages, temperature, max_tokens, timeout)
+        agent, kw = self._gate(provider, model, agent_id, profile, task, messages, temperature,
+                               max_tokens, timeout, inherit_turn_invocation=inherit_turn_invocation)
         return self._finish("acomplete", agent, kw, await self._invoke_async(kw), purpose)
 
     async def acomplete_structured(
@@ -489,22 +570,42 @@ class PluginLlm:
         provider: Optional[str] = None, model: Optional[str] = None, temperature: Optional[float] = None,
         max_tokens: Optional[int] = None, timeout: Optional[float] = None, agent_id: Optional[str] = None,
         profile: Optional[str] = None, purpose: Optional[str] = None, task: Optional[str] = None,
+        inherit_turn_invocation: bool = False,
     ) -> PluginLlmStructuredResult:
         """Async sibling of :meth:`complete_structured`."""
         spec = _structured_spec("acomplete_structured", instructions, input, system_prompt, json_mode, json_schema, schema_name)
-        agent, kw = self._gate(provider, model, agent_id, profile, task, None, temperature, max_tokens, timeout, spec)
+        agent, kw = self._gate(provider, model, agent_id, profile, task, None, temperature, max_tokens,
+                               timeout, spec, inherit_turn_invocation=inherit_turn_invocation)
         return self._finish("acomplete_structured", agent, kw, await self._invoke_async(kw), purpose, spec)
 
     def _gate(
         self, provider: Optional[str], model: Optional[str], agent_id: Optional[str], profile: Optional[str],
         task: Optional[str], messages: Optional[List[Dict[str, Any]]], temperature: Optional[float],
         max_tokens: Optional[int], timeout: Optional[float], spec: Optional[Dict[str, Any]] = None,
+        inherit_turn_invocation: bool = False,
     ) -> tuple[Optional[str], Dict[str, Any]]:
         """Trust gate (task first, then overrides), then — for a structured ``spec`` —
         build messages/response_format (input-shape errors surface only after trust
         passes). Returns the effective agent id and the call kwargs, in the documented
         order: messages, provider_override, model_override, profile_override,
-        temperature, max_tokens, timeout, extra_body, task."""
+        temperature, max_tokens, timeout, extra_body, task, turn_invocation.
+
+        ``inherit_turn_invocation`` short-circuits the gate: the route is the host's own
+        live invocation, not a plugin-chosen override, so the per-plugin flags are not
+        the thing being enforced — refusing the overrides is."""
+        if inherit_turn_invocation:
+            if any(value is not None for value in (provider, model, agent_id, profile, task)):
+                raise PluginLlmInvocationError("override_conflict")
+            invocation = PluginInvocation.current()
+            if invocation is None:
+                raise PluginLlmInvocationError("no_turn_invocation")
+            extra_body = None
+            if spec is not None:
+                messages = _build_structured_messages(**spec)
+                extra_body = _json_response_format(json_mode=spec["json_mode"], json_schema=spec["json_schema"])
+            return None, dict(messages=messages, provider_override=None, model_override=None,
+                              profile_override=None, temperature=temperature, max_tokens=max_tokens,
+                              timeout=timeout, extra_body=extra_body, task=None, turn_invocation=invocation)
         policy = self._policy_loader(self._plugin_id)
         eff_task = _check_task(policy, plugin_id=self._plugin_id, requested_task=task)
         eff_provider, eff_model, eff_agent, eff_profile = _check_overrides(
@@ -516,7 +617,7 @@ class PluginLlm:
             extra_body = _json_response_format(json_mode=spec["json_mode"], json_schema=spec["json_schema"])
         return eff_agent, dict(messages=messages, provider_override=eff_provider, model_override=eff_model,
                                profile_override=eff_profile, temperature=temperature, max_tokens=max_tokens,
-                               timeout=timeout, extra_body=extra_body, task=eff_task)
+                               timeout=timeout, extra_body=extra_body, task=eff_task, turn_invocation=None)
 
     def _finish(
         self, name: str, agent_id: Optional[str], kw: Dict[str, Any], invoked: tuple[str, str, Any],
@@ -527,7 +628,9 @@ class PluginLlm:
         text = _extract_text(response)
         usage = _extract_usage(response)
         eff_task = kw["task"] or ""
-        audit: Dict[str, Any] = {"plugin_id": self._plugin_id, "purpose": purpose or "", "profile": kw["profile_override"] or ""}
+        audit: Dict[str, Any] = {"plugin_id": self._plugin_id, "purpose": purpose or "",
+                                 "profile": kw["profile_override"] or "",
+                                 "inherited_turn_invocation": kw["turn_invocation"] is not None}
         fields: Dict[str, Any] = dict(text=text, provider=real_provider, model=real_model, agent_id=agent_id or "default", usage=usage)
         fmt = f"plugin_llm.{name} plugin=%s provider=%s model=%s task=%s purpose=%s "
         log_args = [self._plugin_id, real_provider, real_model, eff_task, purpose or ""]
@@ -564,15 +667,56 @@ class PluginLlm:
     def _invoke_sync(self, kw: Dict[str, Any]) -> tuple[str, str, Any]:
         """Host ``call_llm`` (lazy import: circular deps at plugin discovery) →
         ``(provider, model, response)``. An injected ``sync_caller`` replaces the
-        whole path and receives the call kwargs."""
+        whole path and receives the call kwargs — except for an inherited turn
+        invocation, which is a host guarantee rather than a routing choice and goes
+        through :meth:`_invoke_turn_bound` instead."""
+        if kw["turn_invocation"] is not None:
+            return self._invoke_turn_bound(kw)
         if self._sync_caller is not None:
             return self._sync_caller(**kw)
         from agent.auxiliary_client import call_llm
         call_kw, route_info = self._host_kwargs(kw)
         return self._attributed(kw, call_llm(**call_kw), route_info)
 
+    @staticmethod
+    def _turn_bound_kwargs(kw: Dict[str, Any]) -> Dict[str, Any]:
+        """Route-locked call kwargs. No task, no override, no route_info: the inherited
+        route already names the provider, model and endpoint, and auth is resolved
+        host-side from the live invocation — never from the plugin."""
+        invocation = kw["turn_invocation"]
+        return dict(provider=invocation.provider, model=invocation.model, base_url=invocation.base_url,
+                    api_mode=invocation.api_mode, messages=kw["messages"], temperature=kw["temperature"],
+                    max_tokens=kw["max_tokens"], timeout=kw["timeout"],
+                    extra_body=dict(kw["extra_body"] or {}))
+
+    def _invoke_turn_bound(self, kw: Dict[str, Any]) -> tuple[str, str, Any]:
+        """One request on the inherited turn invocation.
+
+        ``call_llm`` would be wrong here: its same-provider retries and provider fallback
+        exist to move a call off a broken route, which is the one thing a caller asking
+        for the turn's own invocation must not have happen. The route-locked entry point
+        sends the request once, on the settled route, and fails instead of rerouting.
+        """
+        from agent.auxiliary_client import RouteLockedCallError, call_llm_route_locked
+        invocation = kw["turn_invocation"]
+        try:
+            response = call_llm_route_locked(**self._turn_bound_kwargs(kw))
+        except RouteLockedCallError as exc:
+            # One exception type crosses into plugin code, carrying the short code and
+            # not the provider's message.
+            raise PluginLlmInvocationError(exc.code) from exc
+        return invocation.provider, invocation.model, response
+
     async def _invoke_async(self, kw: Dict[str, Any]) -> tuple[str, str, Any]:
         """Async sibling of :meth:`_invoke_sync` (``async_call_llm`` / ``async_caller``)."""
+        if kw["turn_invocation"] is not None:
+            from agent.auxiliary_client import RouteLockedCallError, async_call_llm_route_locked
+            invocation = kw["turn_invocation"]
+            try:
+                response = await async_call_llm_route_locked(**self._turn_bound_kwargs(kw))
+            except RouteLockedCallError as exc:
+                raise PluginLlmInvocationError(exc.code) from exc
+            return invocation.provider, invocation.model, response
         if self._async_caller is not None:
             return await self._async_caller(**kw)
         from agent.auxiliary_client import async_call_llm
@@ -590,4 +734,5 @@ def make_plugin_llm_for_test(*, plugin_id: str, policy: _TrustPolicy, sync_calle
 __all__ = [
     "PluginLlm", "PluginLlmTextInput", "PluginLlmImageInput", "PluginLlmInput", "PluginLlmUsage",
     "PluginLlmCompleteResult", "PluginLlmStructuredResult", "PluginLlmTrustError", "make_plugin_llm_for_test",
+    "PluginInvocation", "PluginLlmInvocationError",
 ]

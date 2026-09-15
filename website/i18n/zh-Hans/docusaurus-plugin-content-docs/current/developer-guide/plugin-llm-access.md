@@ -70,6 +70,31 @@ if result.parsed["urgency"] > 0.8:
 * **宿主持有凭据。** OAuth token、刷新流程、凭据池、每任务辅助覆盖——Hermes 已有的所有凭据概念均适用。Plugin 永远看不到 token；宿主通过 `result.audit` 将调用归因回溯。
 * **有界。** 单次同步或异步调用。无流式输出，无工具循环，无需管理对话状态。给定输入，获取结果，返回。
 * **失败关闭信任。** 从未配置过的 plugin 无法自行选择 provider、模型、agent 或存储的凭据。默认行为是"使用用户正在使用的"。运营人员在 `config.yaml` 中按 plugin 逐一选择开启特定覆盖。
+* **可选绑定到当前回合。** `inherit_turn_invocation=True` 让调用走当前回合已经绑定的 invocation——同一 provider、同一模型、同一路由——单次请求，不重试、不做 provider 回退。`ctx.llm.current_invocation()` 让 plugin 在发起调用前先看到它是什么。
+
+## 继承当前回合的 invocation
+
+上面的调用会自行解析路由：当前激活的 provider 与模型、辅助回退链、provider 失败时宿主的常规恢复流程。对于没人等待的后台任务，这是正确的默认行为。
+
+但当调用必须落在当前回合已经绑定的 invocation 上时——用户自己的 provider、模型和端点，恰好请求一次，宁可明确拒绝也不要悄悄改道——它就不对了：
+
+```python
+invocation = ctx.llm.current_invocation()   # 回合之外为 None
+if invocation is None:
+    return "没有可借用的活动 invocation"
+
+result = ctx.llm.complete(
+    messages=[{"role": "user", "content": transcript}],
+    inherit_turn_invocation=True,
+    purpose="refine.lesson",
+)
+```
+
+* `ctx.llm.current_invocation()` 返回冻结的 `PluginInvocation`——`provider`、`model`、`base_url`、`api_mode`、`session_id`——没有任何绑定时返回 `None`。它不携带凭据；认证在调用时由宿主侧解析。
+* `inherit_turn_invocation=True` 适用于全部四种调用形态，会把请求钉在该路由上：单次请求，不重试，不做 provider 回退。
+* 它与 `provider=`、`model=`、`agent_id=`、`profile=` 和 `task=` 冲突：这些参数会把调用引离正在继承的路由，因此会直接报错，而不是被静默忽略。
+* 没有活动 invocation 时——回合之外执行的斜杠命令、未继承回合上下文的 worker 线程——会抛出 code 为 `no_turn_invocation` 的 `PluginLlmInvocationError`，而不会退回配置中的路由。
+* 失败以带简短 `code` 的 `PluginLlmInvocationError` 返回（`incomplete_route`、`transport_error`、`rate_limited` 等），永远不携带 provider 自己的报错文本——那里面可能含有 URL 或密钥片段。
 
 ## 快速开始
 
@@ -194,6 +219,7 @@ result = ctx.llm.complete(
     profile=None,          # 可选，受门控——显式指定认证 profile 名称
     purpose="optional-audit-string",
     task=None,             # 可选——plugin 注册的辅助槽位
+    inherit_turn_invocation=False,  # 可选——钉到当前回合的 invocation
 )
 # → PluginLlmCompleteResult(text, provider, model, agent_id, usage, audit)
 ```
@@ -225,6 +251,7 @@ result = ctx.llm.complete_structured(
     profile=None,
     purpose=None,
     task=None,             # 可选——plugin 注册的辅助槽位
+    inherit_turn_invocation=False,  # 可选——钉到当前回合的 invocation
 )
 # → PluginLlmStructuredResult(text, provider, model, agent_id,
 #                             usage, parsed, content_type, audit)
@@ -245,6 +272,15 @@ result = await ctx.llm.acomplete_structured(
 ```
 
 参数和结果类型与对应的同步版本相同。在 gateway 适配器、异步 hook 或任何已运行在 asyncio 事件循环上的 plugin 代码中使用。
+
+### `current_invocation()`
+
+```python
+invocation = ctx.llm.current_invocation()
+# → PluginInvocation(provider, model, base_url, api_mode, session_id) 或 None
+```
+
+当前回合绑定的 invocation——也就是 `inherit_turn_invocation=True` 会把调用钉到的那个值。回合之外返回 `None`，未继承回合上下文的线程或任务中同样返回 `None`。冻结且不含凭据：可以捕获它做记录，再决定这次回合外调用是否还能发起。
 
 ### 通过任务路由的辅助调用
 
@@ -280,7 +316,7 @@ class PluginLlmCompleteResult:
     model: str                   # provider 为本次调用返回的模型标识
     agent_id: str                # 使用了哪个 agent 的模型/认证
     usage: PluginLlmUsage        # token 数 + 缓存 + 费用估算
-    audit: Dict[str, Any]        # plugin_id、purpose、profile
+    audit: Dict[str, Any]        # plugin_id、purpose、profile、inherited_turn_invocation
 
 @dataclass
 class PluginLlmStructuredResult(PluginLlmCompleteResult):
@@ -364,7 +400,7 @@ Plugin id 对于扁平 plugin 是 manifest 中的 `name:` 字段，对于嵌套 
 * **Provider 解析。** 从用户配置中读取 `model.provider` + `model.model`（或在受信任时读取显式覆盖值）。
 * **认证。** 从 `~/.hermes/auth.json` / 环境变量中提取 API 密钥、OAuth token 或刷新 token，包括配置了凭据池时的处理。Plugin 永远看不到这些内容。
 * **视觉路由。** 当提供图像输入而用户当前激活的文本模型仅支持文本时，宿主自动回退到已配置的视觉模型。
-* **回退链。** 若用户主 provider 返回 5xx 或 429，请求在向 plugin 返回错误前会经过 Hermes 常规的聚合器感知回退流程。
+* **回退链。** 若用户主 provider 返回 5xx 或 429，请求在向 plugin 返回错误前会经过 Hermes 常规的聚合器感知回退流程。`inherit_turn_invocation=True` 会退出该流程：请求恰好一次到达绑定的路由，否则报错。
 * **超时。** 遵循你的 `timeout=` 参数，回退到 `auxiliary.<task>.timeout` 配置或全局辅助默认值。
 * **JSON 塑形。** 在你请求 JSON 时向 provider 发送 `response_format`，若 provider 返回了代码围栏格式的响应则在本地重新解析。
 * **Schema 验证。** 安装了 `jsonschema` 时对你的 `json_schema` 进行验证；否则记录一行 debug 日志并跳过严格验证。

@@ -1408,6 +1408,64 @@ def test_swap_staged_desktop_app_rolls_back_when_second_rename_fails(tmp_path, m
     assert not (live_exe.parent.parent / (live_exe.parent.name + ".previous")).exists()
 
 
+def test_swap_staged_desktop_app_stops_live_renderer_before_rename(tmp_path):
+    """#109643: a renderer alive through the promotion rename keeps fetching its
+    old hashed chunks from disk and dies on the next lazy import — the swap must
+    ask for running desktop processes to stop on EVERY platform."""
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    live_exe = desktop_dir / "release" / _packaged_exe_rel()
+    live_exe.parent.mkdir(parents=True)
+    live_exe.write_text("old", encoding="utf-8")
+    staging = main_desktop._desktop_staging_dir(desktop_dir)
+    staged_exe = staging / _packaged_exe_rel()
+    staged_exe.parent.mkdir(parents=True)
+    staged_exe.write_text("new", encoding="utf-8")
+
+    with patch("hermes_cli.main_desktop._stop_desktop_processes_locking_build",
+               return_value=[4321]) as stop:
+        promoted = main_desktop._swap_staged_desktop_app(desktop_dir, staging)
+
+    assert promoted == live_exe
+    stop.assert_called_once_with(desktop_dir, also_posix=True)
+
+
+def test_stop_desktop_processes_locking_build_posix_swap_bypasses_early_return(tmp_path, monkeypatch):
+    """#109643: also_posix=True must run the scan on POSIX (the default pack-time
+    call stays Windows-only — the staging pack never touches the live tree)."""
+    monkeypatch.setattr(main_desktop.sys, "platform", "darwin")
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    live_exe = desktop_dir / "release" / _packaged_exe_rel()
+    live_exe.parent.mkdir(parents=True)
+    live_exe.write_text("old", encoding="utf-8")
+
+    class _FakeProc:
+        def __init__(self, pid, exe):
+            self.info = {"pid": pid, "exe": exe}
+            self.pid = pid
+
+        def terminate(self):
+            return None
+
+    target = _FakeProc(100, str(live_exe))
+    outsider = _FakeProc(200, "/usr/bin/unrelated")
+
+    class _FakePsutil:
+        @staticmethod
+        def process_iter(attrs):
+            return [target, outsider]
+
+        @staticmethod
+        def wait_procs(victims, timeout=5):
+            return [], []
+
+    monkeypatch.setitem(sys.modules, "psutil", _FakePsutil)
+
+    assert main_desktop._stop_desktop_processes_locking_build(desktop_dir) == []
+    assert main_desktop._stop_desktop_processes_locking_build(desktop_dir, also_posix=True) == [100]
+
+
 def test_gui_failed_pack_leaves_previous_app_untouched(tmp_path, monkeypatch, capsys):
     """Every pack attempt fails → the pre-existing app is exactly as it was,
     no staging dir remains, exit is non-zero."""

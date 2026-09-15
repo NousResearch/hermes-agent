@@ -29,7 +29,7 @@ interface SkillsViewProps {
 
 const mocks = vi.hoisted(() => ({
   connections: vi.fn(async () => [] as { id: string; label: string }[]),
-  createCanonicalChat: vi.fn(async () => 'session-1'),
+  createCanonicalChat: vi.fn<() => Promise<null | string>>(async () => 'session-1'),
   deleteBot: vi.fn(async () => undefined),
   /** Flipped off to model a desktop build that predates the live surface. */
   hasSkillsView: { value: true },
@@ -175,8 +175,55 @@ describe('materializing the draft profile', () => {
     // Create Bot goes through the same helper — no duplicate profiles.create.
     fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
 
-    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
+    await waitFor(() =>
+      expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', {
+        kickoff: true,
+        newAgentBirth: true
+      })
+    )
     expect(createCalls()).toHaveLength(1)
+  })
+
+  it('fails closed with an honest error when roster admission/resolution rejects — never falls through to host.newChat (Architect corrective, 2026-09-02, third pass)', async () => {
+    mocks.createCanonicalChat.mockRejectedValueOnce(
+      new Error('inbox-triage is not present in the current authorized agent roster — refusing to open')
+    )
+
+    await renderDialog(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await waitFor(() => expect(createCalls()).toHaveLength(1))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalled())
+    // The previous behavior fell through to host.newChat(slug) here — a
+    // bare-string call into the generic session-open path with ZERO roster
+    // or canonical checks, opening a profile the admission gate had just
+    // rejected. That fallback is gone: an honest error surfaces instead.
+    await waitFor(() =>
+      expect(mocks.notify).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'error', message: expect.stringContaining('inbox-triage') })
+      )
+    )
+  })
+
+  it('fails closed with an honest error when creation resolves with no canonical identity — never falls through to host.newChat', async () => {
+    mocks.createCanonicalChat.mockResolvedValueOnce(null)
+
+    await renderDialog(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await waitFor(() => expect(createCalls()).toHaveLength(1))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalled())
+    await waitFor(() =>
+      expect(mocks.notify).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'error', message: expect.stringContaining('inbox-triage') })
+      )
+    )
   })
 
   it('pins a remote-target draft to the TARGET machine, not the active gateway', async () => {

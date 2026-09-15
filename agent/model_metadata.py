@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse
@@ -916,17 +917,26 @@ def _apply_llamacpp_props(cache: Dict[str, Dict[str, Any]], request_candidate: s
     via ``/props?model=``; unloaded children are skipped — probing could autoload them."""
     base = request_candidate.rstrip("/").replace("/v1", "")
     def _props(params=None):
-        resp = requests.get(base + "/v1/props", params=params, headers=headers, timeout=5, verify=verify)
-        if not resp.ok:
-            resp = requests.get(base + "/props", params=params, headers=headers, timeout=5, verify=verify)
-        return resp
-    def _n_ctx(props: Dict[str, Any]) -> Any:
-        return (props.get("default_generation_settings") or {}).get("n_ctx")
+        for path in ("/v1/props", "/props"):
+            try:
+                resp = requests.get(base + path, params=params, headers=headers, timeout=5, verify=verify)
+                payload = resp.json() if resp.ok else None
+            except Exception:
+                continue
+            if not isinstance(payload, Mapping):
+                continue
+            settings = payload.get("default_generation_settings")
+            if not isinstance(settings, Mapping):
+                continue
+            n_ctx = settings.get("n_ctx")
+            if isinstance(n_ctx, int) and not isinstance(n_ctx, bool) and n_ctx > 0:
+                return payload, n_ctx
+        return None
     props_resp = _props()
-    if props_resp.ok:
-        props = props_resp.json()
-        n_ctx, model_alias = _n_ctx(props), props.get("model_alias", "")
-        if n_ctx and model_alias and model_alias in cache:
+    if props_resp is not None:
+        props, n_ctx = props_resp
+        model_alias = props.get("model_alias", "")
+        if model_alias and model_alias in cache:
             cache[model_alias]["context_length"] = n_ctx
         return
     native = requests.get(base + "/models", headers=headers, timeout=5, verify=verify)
@@ -936,9 +946,9 @@ def _apply_llamacpp_props(cache: Dict[str, Dict[str, Any]], request_candidate: s
         child_id = child.get("id") if isinstance(child, dict) else None
         if not child_id or child_id not in cache or (child.get("status") or {}).get("value") not in ("loaded", "ready"):
             continue
-        pr = _props({"model": child_id})
-        child_ctx = _n_ctx(pr.json()) if pr.ok else None
-        if child_ctx:
+        child_props = _props({"model": child_id})
+        if child_props is not None:
+            _, child_ctx = child_props
             cache[child_id]["context_length"] = child_ctx
 
 

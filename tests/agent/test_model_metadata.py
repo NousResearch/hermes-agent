@@ -818,6 +818,101 @@ class TestFetchEndpointModelMetadata:
         not_found.close.assert_called_once()
         success.close.assert_called_once()
 
+    @pytest.mark.parametrize(
+        "v1_json",
+        [
+            {"status": "ok"},
+            ValueError("malformed JSON"),
+        ],
+        ids=("non-props", "malformed-json"),
+    )
+    def test_llamacpp_unusable_v1_props_falls_back_to_props(self, v1_json):
+        import agent.model_metadata as mm
+
+        models = MagicMock(status_code=200)
+        models.json.return_value = {
+            "data": [
+                {
+                    "id": "test/model",
+                    "owned_by": "llamacpp",
+                    "context_length": 32768,
+                }
+            ]
+        }
+        v1_props = MagicMock(ok=True)
+        if isinstance(v1_json, Exception):
+            v1_props.json.side_effect = v1_json
+        else:
+            v1_props.json.return_value = v1_json
+        props = MagicMock(ok=True)
+        props.json.return_value = {
+            "model_alias": "test/model",
+            "default_generation_settings": {"n_ctx": 65536},
+        }
+
+        with patch(
+            "agent.model_metadata.requests.get",
+            side_effect=[models, v1_props, props],
+        ) as mock_get:
+            result = mm.fetch_endpoint_model_metadata("https://custom.example/v1")
+
+        assert result["test/model"]["context_length"] == 65536
+        assert [call.args[0] for call in mock_get.call_args_list] == [
+            "https://custom.example/v1/models",
+            "https://custom.example/v1/props",
+            "https://custom.example/props",
+        ]
+
+    def test_llamacpp_unusable_props_preserves_router_metadata(self):
+        import agent.model_metadata as mm
+
+        models = MagicMock(status_code=200)
+        models.json.return_value = {
+            "data": [
+                {
+                    "id": "router/model",
+                    "owned_by": "llamacpp",
+                    "context_length": 32768,
+                }
+            ]
+        }
+        unusable_props = MagicMock(ok=True)
+        unusable_props.json.return_value = {
+            "default_generation_settings": {"n_ctx": 0}
+        }
+        router_models = MagicMock(ok=True)
+        router_models.json.return_value = {
+            "data": [
+                {"id": "router/model", "status": {"value": "loaded"}}
+            ]
+        }
+
+        with patch(
+            "agent.model_metadata.requests.get",
+            side_effect=[
+                models,
+                RuntimeError("v1 props unavailable"),
+                unusable_props,
+                router_models,
+                RuntimeError("child v1 props unavailable"),
+                unusable_props,
+            ],
+        ) as mock_get:
+            result = mm.fetch_endpoint_model_metadata("https://custom.example/v1")
+
+        assert result["router/model"]["context_length"] == 32768
+        assert [call.args[0] for call in mock_get.call_args_list] == [
+            "https://custom.example/v1/models",
+            "https://custom.example/v1/props",
+            "https://custom.example/props",
+            "https://custom.example/models",
+            "https://custom.example/v1/props",
+            "https://custom.example/props",
+        ]
+        assert mock_get.call_args_list[-1].kwargs["params"] == {
+            "model": "router/model"
+        }
+
     def test_remote_probe_is_memoized_on_disk_across_processes(self, tmp_path, monkeypatch):
         """A fresh process (cleared in-memory cache) must answer from the disk
         memo within the TTL instead of re-probing the endpoint — the cost every

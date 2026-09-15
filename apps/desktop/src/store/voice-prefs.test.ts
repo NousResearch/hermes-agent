@@ -9,13 +9,20 @@ import { saveHermesConfig } from '@/hermes'
 
 import { $voiceStopPhrase, applyVoiceStopPhraseFromConfig } from './voice-prefs'
 
+// jsdom's Storage keeps setItem on Storage.prototype, and a spy installed on the instance
+// never intercepts the call (Node 22/24). The Node 26 shim in vitest.setup.ts defines
+// setItem on the object itself, so spy wherever the method actually lives.
+function spyOnStorageWrite() {
+  return vi.spyOn(Object.hasOwn(localStorage, 'setItem') ? localStorage : Storage.prototype, 'setItem')
+}
+
 it('keeps the desktop toggle local across config refreshes', async () => {
   for (const fails of [false, true]) {
     for (const enabled of [false, true]) {
       localStorage.clear()
       vi.resetModules()
       const prefs = await import('./voice-prefs')
-      const write = vi.spyOn(localStorage, 'setItem')
+      const write = spyOnStorageWrite()
 
       if (fails) {
         write.mockImplementation(() => {
@@ -44,7 +51,7 @@ it('migrates the legacy preference once, not on every refresh', async () => {
       localStorage.clear()
       vi.resetModules()
       const prefs = await import('./voice-prefs')
-      const write = vi.spyOn(localStorage, 'setItem')
+      const write = spyOnStorageWrite()
 
       if (fails) {
         write.mockImplementation(() => {

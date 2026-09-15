@@ -829,6 +829,14 @@ def _run_prompt_submit(
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
     turn_author: dict | None = None) -> bool:
+    # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
+    # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
+    # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
+    # the token-accounting guard as an anonymous session (#111999).
+    if _ensure_session_db_row(session) is False:
+        logger.warning(
+            "prompt dispatch: session store unavailable for %s — this turn may not persist",
+            session.get("session_key") or sid)
     admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation)
     if admitted is None:
         return False

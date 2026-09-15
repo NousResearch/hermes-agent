@@ -24,8 +24,18 @@ def _build_image_ref_message(user_text: str, image_paths: list[str]) -> str:
     auto-titles (#82339). The CLI never gates turn dispatch on vision like this, which is why the same
     message was seconds there and minutes on desktop.
     """
+    # On Windows, embedding p's native "C:\Users\..." form in this free-text hint means
+    # the model has to survive re-emitting it inside a JSON tool-call argument, and a
+    # model that doesn't double the backslashes (weaker/local models are exactly what
+    # routes through this text-mode path) corrupts or drops them, leaving vision_analyze
+    # unable to find the file (#103987). Forward slashes need no JSON escaping and
+    # pathlib/Win32 accept them natively, so nothing downstream has to change. Same fix
+    # family as _escape_native_tool_arg (07ee4a2ec8); off Windows this is a no-op.
+    def _hint_path(p: Path) -> str:
+        s = str(p)
+        return s.replace("\\", "/") if sys.platform == "win32" else s
     prefix = "\n\n".join(
-        f"[The user attached an image: {p.name}]\n[Examine it with the vision_analyze tool using image_url: {p}]"
+        f"[The user attached an image: {p.name}]\n[Examine it with the vision_analyze tool using image_url: {_hint_path(p)}]"
         for p in map(Path, image_paths) if p.exists()
     )
     text = user_text or ""

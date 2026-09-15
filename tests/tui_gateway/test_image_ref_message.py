@@ -9,6 +9,7 @@ analyzes them in-loop with ``vision_analyze`` (the same shape as the
 ``@folder:`` path, which was always fast).
 """
 
+import sys
 import time
 from unittest.mock import patch
 
@@ -76,3 +77,24 @@ def test_no_text_with_image_yields_refs_only(img):
     out = _build_image_ref_message("", [str(img)])
     assert str(img) in out
     assert out.strip().startswith("[The user attached an image")
+
+
+def test_windows_path_hint_uses_forward_slashes(tmp_path, monkeypatch):
+    """#103987: a raw "C:\\Users\\..." hint forces the model to re-emit backslashes inside
+    a JSON tool-call argument for vision_analyze; a model that doesn't double them corrupts
+    the path and the file is never found. Forward slashes need no JSON escaping."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    # A literal backslash is a legal (if unusual) POSIX filename byte, so this file really
+    # exists on disk under tmp_path -- it stands in for a Windows drive-letter path without
+    # requiring the test to actually run on Windows.
+    windows_style = tmp_path / r"C:\Users\bob\AppData\Roaming\Hermes\composer-images\img_ab12.png"
+    windows_style.write_bytes(b"\x89PNG\r\n\x1a\n fake")
+
+    out = _build_image_ref_message("what is this?", [str(windows_style)])
+
+    # Only the image_url hint (what the model must copy into a JSON tool-call argument)
+    # needs to be backslash-free; the human-readable "attached an image: <name>" label is
+    # never round-tripped through JSON and is left alone.
+    image_url_line = next(line for line in out.splitlines() if "image_url:" in line)
+    assert r"\Users\bob" not in image_url_line
+    assert "/Users/bob" in image_url_line

@@ -14,6 +14,19 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _hermetic_docker_runtime_reuse_key(monkeypatch, tmp_path):
+    """Keep Docker tests from reading or writing the operator's real Hermes root."""
+    from tools.environments import docker as module
+
+    saved_keys = dict(module._RUNTIME_REUSE_KEYS)
+    module._RUNTIME_REUSE_KEYS.clear()
+    monkeypatch.setattr(module, "get_default_hermes_root", lambda: tmp_path / "hermes-home")
+    yield
+    module._RUNTIME_REUSE_KEYS.clear()
+    module._RUNTIME_REUSE_KEYS.update(saved_keys)
+
+
+@pytest.fixture(autouse=True)
 def _no_host_browser_use_cli():
     """Keep the host's browser-use/uvx install out of tests.
 

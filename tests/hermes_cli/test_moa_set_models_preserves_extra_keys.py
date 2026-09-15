@@ -80,5 +80,3 @@ class TestSetMoaModelsPreservesUndeclaredKeys:
         assert moa.get("trace_dir") == "/custom/traces", (
             "trace_dir was dropped by set_moa_models"
         )
-
-

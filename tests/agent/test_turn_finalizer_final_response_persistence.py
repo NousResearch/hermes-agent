@@ -446,4 +446,3 @@ def test_delivery_only_reasoning_excerpt_does_not_fill_blank_assistant(monkeypat
         and "only internal reasoning" in (m.get("content") or "")
         for m in result["messages"]
     )
-

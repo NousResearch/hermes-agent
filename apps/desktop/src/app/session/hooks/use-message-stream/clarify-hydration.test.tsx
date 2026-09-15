@@ -1,3 +1,4 @@
+import type { GatewayEvent } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -41,6 +42,18 @@ const clarifyExpire = (requestId: string) =>
       type: 'request.cancel'
     })
   )
+
+// v0.21.2 backends emit clarify as plain `clarify.request` / `clarify.expire`
+// events instead of the JSON-RPC server request / `request.cancel` pair. These
+// legacy types are not in the current gateway contract, so the event is cast.
+const legacyEvent = (type: string, payload: Record<string, unknown>): GatewayEvent =>
+  ({ payload: { ...payload, session_id: SID }, session_id: SID, type }) as unknown as GatewayEvent
+
+const legacyClarifyRequest = (payload: Record<string, unknown>) =>
+  act(() => stream.handleEvent(legacyEvent('clarify.request', payload)))
+
+const legacyClarifyExpire = (requestId: string) =>
+  act(() => stream.handleEvent(legacyEvent('clarify.expire', { request_id: requestId })))
 
 function clarifyParts() {
   const messages = stream.state().messages ?? []
@@ -275,6 +288,37 @@ describe('clarify request stream hydration', () => {
 
     expect($clarifyRequests.get()[SID]).toBeUndefined()
     expect(clarifyParts()).toHaveLength(1)
+    expect(clarifyParts()[0]).toHaveProperty('result')
+    expect(stream.state().needsInput).toBe(false)
+  })
+
+  it('mounts an answerable clarify row from a legacy clarify.request plain event (v0.21.2 backend)', () => {
+    mountStream()
+
+    legacyClarifyRequest({ choices: ['yes', 'no'], question: 'Ship it?', request_id: 'legacy-1' })
+
+    const parts = clarifyParts()
+    expect(parts).toHaveLength(1)
+    expect(parts[0].type === 'tool-call' && parts[0].toolCallId).toBe('legacy-1')
+    expect(parts[0].type === 'tool-call' && parts[0].args).toMatchObject({
+      choices: ['yes', 'no'],
+      question: 'Ship it?'
+    })
+    expect($clarifyRequests.get()[SID]?.requestId).toBe('legacy-1')
+    expect(stream.state().needsInput).toBe(true)
+  })
+
+  it('settles the clarify tool call with a result on a legacy clarify.expire plain event (v0.21.2 backend)', () => {
+    mountStream()
+
+    legacyClarifyRequest({ choices: ['yes', 'no'], question: 'Ship it?', request_id: 'legacy-expire' })
+    expect(clarifyParts()[0]).not.toHaveProperty('result')
+
+    legacyClarifyExpire('legacy-expire')
+
+    expect($clarifyRequests.get()[SID]).toBeUndefined()
+    expect(clarifyParts()).toHaveLength(1)
+    // A settled result — not the "Result unavailable" a bare timeout leaves (bug 2).
     expect(clarifyParts()[0]).toHaveProperty('result')
     expect(stream.state().needsInput).toBe(false)
   })

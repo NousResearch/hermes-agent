@@ -1035,6 +1035,53 @@ async function terminateOwnedDashboardForUpdate(ssh, expected) {
   return { pid: lock.pid, terminated: true, alreadyStopped: false }
 }
 
+// A spawn whose acknowledgement never arrived can still have created its
+// detached child (setsid/nohup outlives the channel). The remote spawn shell
+// publishes the ownership record for that exact nonce before it returns the
+// pid, so a lost acknowledgement is still reapable by exact ownership. Removing
+// the uploaded token WITHOUT reaping is what leaves a live `serve --isolated`
+// whose --ssh-session-token-file is already gone: every later attempt can only
+// reach it through the EXISTING path (which deletes its own new token), with no
+// credential it can authenticate against — the token-mismatch hot loop of
+// #110970. Never touch state that is not provably this attempt's child.
+async function abandonFailedSpawn(ssh, ownershipId, spawnNonce) {
+  const tokenPath = spawnTokenPath(ownershipId, spawnNonce)
+
+  try {
+    await ssh.exec(`rm -f ${expandRemotePath(tokenPath)}`)
+  } catch {
+    void 0
+  }
+
+  let lock
+
+  try {
+    lock = await readLockfile(ssh, ownershipId)
+  } catch {
+    return false
+  }
+
+  if (!lock || isLockfileSkew(lock) || lock.spawnNonce !== spawnNonce) {
+    return false
+  }
+
+  let pidAlive = true
+
+  try {
+    pidAlive = await remotePidAlive(ssh, lock.pid)
+  } catch {
+    pidAlive = true
+  }
+
+  try {
+    await cleanupStale(ssh, ownershipId, lock, pidAlive)
+
+    return true
+  } catch {
+    return false
+  }
+}
+
 // Detach so the backend survives the SSH channel closing: setsid (Linux)
 // starts a new session; macOS has no setsid, so fall back to nohup (HUP-immune;
 // fd-detachment is already handled by </dev/null + redirect + &).
@@ -1228,11 +1275,7 @@ async function spawnRemoteDashboard(
   try {
     await ssh.exec(`python3 -c ${shq(tokenUploadPy)}`, { stdinData: token })
   } catch (error) {
-    try {
-      await ssh.exec(`rm -f ${expandRemotePath(tokenFilePath)}`)
-    } catch {
-      void 0
-    }
+    await abandonFailedSpawn(ssh, ownershipId, spawnNonce)
 
     throw error
   }
@@ -1267,11 +1310,10 @@ async function spawnRemoteDashboard(
       })
     )
   } catch (error) {
-    try {
-      await ssh.exec(`rm -f ${expandRemotePath(tokenFilePath)}`)
-    } catch {
-      void 0
-    }
+    // The launcher may already have created and detached the child before the
+    // acknowledgement was lost, so reap this exact spawn's record rather than
+    // leaving a live backend behind with its token file deleted.
+    await abandonFailedSpawn(ssh, ownershipId, spawnNonce)
 
     throw error
   }
@@ -1289,11 +1331,7 @@ async function spawnRemoteDashboard(
   const pid = parseInt(outputLines.at(-1) || '', 10)
 
   if (!Number.isInteger(pid) || pid <= 0) {
-    try {
-      await ssh.exec(`rm -f ${expandRemotePath(tokenFilePath)}`)
-    } catch {
-      void 0
-    }
+    await abandonFailedSpawn(ssh, ownershipId, spawnNonce)
 
     const err: any = new Error('Failed to launch the remote dashboard (no pid returned).')
     err.kind = 'spawn-failed'
@@ -1567,13 +1605,30 @@ async function connect(deps) {
       throw error
     }
 
+    // One recycle pass is legitimate: the spawn shell saw a live pid in the
+    // ownership record and this machine's own lock read may now satisfy the
+    // reuse predicate. A SECOND EXISTING means the live owner is not something
+    // this connection can ever adopt (foreign/undead pid, or a fingerprint that
+    // cannot match), and each pass deletes the token it just uploaded and
+    // re-spawns into the same refusal — the #110970 hot retry loop. Fail with
+    // the actionable state instead of looping forever.
+    if (deps.existingRecycleUsed) {
+      const error: any = new Error(
+        `A live backend already holds the remote ownership slot for ${ownershipId} and this connection cannot adopt it. ` +
+          'Refusing to keep respawning against it. Stop the leftover `hermes serve --isolated` (and clear the desktop-ssh ownership record) on the remote host, then reconnect.'
+      )
+
+      error.kind = 'remote-ownership-contended'
+      throw error
+    }
+
     const published = await waitForRemoteSpawnCompletion(ssh, ownershipId, readyTimeoutMs)
 
     if (!published) {
-      return connect({ ...deps, reuseToken })
+      return connect({ ...deps, reuseToken, existingRecycleUsed: true })
     }
 
-    return connect({ ...deps, reuseToken })
+    return connect({ ...deps, reuseToken, existingRecycleUsed: true })
   }
 
   const { pid, spawnNonce, logPath, tokenFilePath } = spawned

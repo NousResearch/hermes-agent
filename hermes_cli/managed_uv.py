@@ -202,6 +202,15 @@ def _run_runtime_repair(
     """Run the vulnerable-runtime repair hook; never raises (repair is non-fatal)."""
     try:
         repair = repair_vulnerable_runtime(uv_bin)
+        from hermes_cli.update_receipt import record_skip, record_step
+
+        detail = (
+            f"{repair.status}: {repair.detail} "
+            f"(sqlite {repair.sqlite_before or 'unknown'} → {repair.sqlite_after or 'unknown'})"
+        )
+        record_step("sqlite_runtime_repair", repair.status in {"safe", "repaired"}, detail)
+        if repair.status in {"skipped", "not-applicable"}:
+            record_skip("sqlite_runtime_repair", detail)
         if repair_observer is not None:
             repair_observer(repair)
         if repair.status == "failed":
@@ -562,8 +571,12 @@ def _smoke_candidate_venv(venv_dir: Path) -> tuple[bool, str, SQLiteRuntimeInfo 
     return True, "", info
 
 
+class _CandidateStageError(Exception):
+    """A rejected candidate, already cleaned up, with its diagnostic reason."""
+
+
 def _stage_candidate_venv(
-    uv_bin: str, *, project_root: Path, generation: Path, python: Path) -> Path | None:
+    uv_bin: str, *, project_root: Path, generation: Path, python: Path) -> Path:
     runtime_root = project_root / _RUNTIME_DIR_NAME
     candidate = runtime_root / f"venv-candidate-{_token()}"
     env = managed_python_env(project_root, install_dir=generation)
@@ -571,7 +584,9 @@ def _stage_candidate_venv(
         "UV_PROJECT_ENVIRONMENT": str(candidate), "UV_PYTHON": str(python),
         "UV_PYTHON_DOWNLOADS": "never", "VIRTUAL_ENV": str(candidate)})
 
-    reject = partial(_reject, candidate, runtime_root)
+    def reject(message: str, *args) -> None:
+        _reject(candidate, runtime_root, message, *args)
+        raise _CandidateStageError(message % args if args else message)
     print("  → Building a relocatable replacement environment...")
     created = subprocess.run(
         [
@@ -910,13 +925,13 @@ def _repair_under_lock(
         return _result("failed", current, "could not provision a fixed private Python runtime")
     generation, python, candidate_info = provisioned
 
-    candidate = _stage_candidate_venv(
-        uv_bin, project_root=root, generation=generation, python=python)
-    if candidate is None:
+    try:
+        candidate = _stage_candidate_venv(
+            uv_bin, project_root=root, generation=generation, python=python)
+    except _CandidateStageError as exc:
         _remove_tree(generation, boundary=managed_python_install_dir(root))
         return _result(
-            "failed", current,
-            "replacement environment did not pass dependency and import smoke tests",
+            "failed", current, str(exc),
             sqlite_after=candidate_info.sqlite_version_string)
 
     cut_over, backup, final_info, cutover_detail = _cut_over_candidate(

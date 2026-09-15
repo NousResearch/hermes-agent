@@ -565,7 +565,23 @@ Hermes Agent works in Telegram group chats with a few considerations:
 - In groups with multiple Hermes bots, `telegram.exclusive_bot_mentions` keeps routing deterministic. When a message explicitly mentions one or more Telegram bot usernames, only the mentioned bot profiles process it; other Hermes bots ignore it before reply and wake-word fallbacks run. This is enabled by default.
 - Renaming the bot's `@username` in BotFather is picked up automatically — Hermes follows the new handle for mention routing without a gateway restart. Collectible (Fragment) usernames that don't end in `bot` are supported too.
 - Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
+- Use `telegram.ignore_mentions_of_users` to keep Hermes silent when a group message addresses another person (`@username` or numeric user id) instead of the bot — useful in shared groups where the bot would otherwise answer every message
 - If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
+
+### Ignoring mentions of specific people
+
+In a group where the bot sees every message (no `require_mention`, or the chat is listed in `free_response_chats`), it also answers messages its human participants address to each other. `telegram.ignore_mentions_of_users` keeps it out of those exchanges: a group message that `@mentions` one of the configured people is dropped before it reaches the agent, unless the bot itself is addressed (`@botusername`, `/command@botusername`, or a reply to one of the bot's messages).
+
+Entries are Telegram usernames (leading `@` optional) or numeric user ids:
+
+```yaml
+telegram:
+  ignore_mentions_of_users:
+    - "@teammate_username"
+    - 123456789
+```
+
+A JSON or comma-separated string works too: `ignore_mentions_of_users: '@teammate_username,123456789'`. Only group messages are filtered — direct messages and slash commands addressed to the bot are never affected.
 
 ### Multiple Hermes bots in one group
 
@@ -655,6 +671,15 @@ telegram:
   ignored_threads:
     - 31
     - "42"
+```
+
+To stay silent when a teammate is addressed in an otherwise free-response group, add the people to `ignore_mentions_of_users`:
+
+```yaml
+telegram:
+  ignore_mentions_of_users:
+    - "@teammate_username"
+    - 123456789
 ```
 
 This example allows all the usual direct triggers plus messages that begin with `chompy`, even if they do not use an `@mention`.

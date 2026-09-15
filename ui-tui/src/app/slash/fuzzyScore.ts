@@ -1,13 +1,11 @@
-import { fuzzyScore } from '@hermes/shared/fuzzy'
-
 /** Description-aware fuzzy scoring for the slash-command menu.
  *
- *  Candidates are scored in tiers — exact match on id/label/alias (0), prefix
- *  (1), substring (2), subsequence (6) — and the DESCRIPTION text is tokenized
- *  and matched at a +3 offset (exact word 3, word prefix 4, word substring 5,
- *  subsequence 9). Typing `/summary` surfaces a command whose description
- *  mentions summaries; `/mdl` still hits `/model`. Lower score wins;
- *  `Infinity` means no match.
+ *  Ported from superagent-ai/grok-cli `src/ui/slash-menu.ts`: candidates are
+ *  scored in tiers — exact match on id/label/alias (0), prefix (1), substring
+ *  (2) — and the DESCRIPTION text is tokenized and matched at a +3 offset
+ *  (exact word 3, word prefix 4, word substring 5). Typing `/summary` thus
+ *  surfaces a command whose description mentions summaries even though no
+ *  command name starts with it. Lower score wins; `Infinity` means no match.
  */
 
 export interface SlashScoreItem {
@@ -45,12 +43,6 @@ function scoreFields(fields: string[], query: string, offset: number): number {
   for (const field of fields) {
     if (field.includes(query)) {
       return offset + 2
-    }
-  }
-
-  for (const field of fields) {
-    if (fuzzyScore(field, query)) {
-      return offset + 6
     }
   }
 

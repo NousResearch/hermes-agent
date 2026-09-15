@@ -50,42 +50,36 @@ export function buildModelHopRows(providers: ModelOptionProvider[], names: strin
 }
 
 export function hopRowSearchText(row: ModelHopRow): string {
-  return `${row.selector} ${row.name} ${row.provider.name ?? ''} ${modelSearchText(row.model)}`
+  // Rank on `provider/id` (OMP /switch). Extra display names made `son4` hit `hermes-4`.
+  return `${row.selector} ${modelSearchText(row.model)}`
 }
 
 export function filterModelHopRows(rows: ModelHopRow[], query: string): ModelHopRow[] {
   const q = query.trim()
-
   if (!q) {
     return rows
   }
 
+  // `nous/` is a provider scope (OMP /switch). The rest is `@hermes/shared/fuzzy`.
   const slash = q.indexOf('/')
   let pool = rows
   let rest = q
-
-  // `nous/` scopes to that provider (OMP /switch); fuzzy only on provider fields
-  // so `nous` cannot leak into `openrouter/.../sonnet` via a scattered subsequence.
   if (slash >= 0) {
-    const providerQuery = q.slice(0, slash).trim()
+    const providerQuery = q.slice(0, slash).trim().toLowerCase()
     rest = q.slice(slash + 1)
     if (providerQuery) {
-      pool = fuzzyRank(
-        rows,
-        providerQuery,
-        row => `${row.provider.slug} ${row.name} ${row.provider.name ?? ''}`
-      ).map(r => r.item)
+      pool = rows.filter(
+        row =>
+          row.provider.slug.toLowerCase().startsWith(providerQuery) ||
+          (row.provider.name ?? '').toLowerCase().startsWith(providerQuery)
+      )
     }
     if (!rest.trim()) {
       return pool
     }
   }
 
-  const ranked = fuzzyRank(pool, rest, hopRowSearchText)
-  const best = ranked[0]?.score ?? 0
-  const floor = Math.min(2, best * 0.25)
-
-  return ranked.filter(r => r.score >= floor).map(r => r.item)
+  return fuzzyRank(pool, rest, hopRowSearchText).map(r => r.item)
 }
 
 

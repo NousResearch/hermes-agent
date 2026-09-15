@@ -75,11 +75,6 @@ describe('rankSlashItems', () => {
     expect(ranked.map(app => app.id)).toEqual(['models', 'gallery'])
   })
 
-  it('matches command names as a subsequence', () => {
-    expect(rankSlashItems(apps, '/mdl', toScoreItem).map(app => app.id)).toEqual(['models'])
-    expect(scoreSlashMenuItem({ id: 'model' }, 'mdl')).toBe(6)
-  })
-
   it('keeps original order within a score tier', () => {
     const ranked = rankSlashItems(
       [

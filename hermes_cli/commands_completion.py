@@ -70,41 +70,25 @@ def _prefix_completions(
             yield _completion(name, partial, name, meta)
 
 
-def _is_subsequence(haystack: str, query: str) -> bool:
-    """True when ``query`` chars appear in order in ``haystack``."""
-    it = iter(haystack)
-    return all(any(ch == q for ch in it) for q in query)
-
-
-def _completion_rank(name: str, query: str) -> tuple[int, int] | None:
-    """Lower-is-better rank: exact, prefix, substring, subsequence."""
-    n, q = name.lower(), query.lower()
-    stripped = n[1:] if n.startswith("/") else n
-    if not q:
-        return (0, 0)
-    if n == q or stripped == q:
-        return (0, len(name))
-    if n.startswith(q) or stripped.startswith(q):
-        return (1, len(name))
-    if q in n:
-        return (2, len(name))
-    if _is_subsequence(n, q) or _is_subsequence(stripped, q):
-        return (4, len(name))
-    return None
-
-
 def _ranked_completions(
     rows: Iterable[tuple[str, Any]], partial: str, *, skip_exact: bool = True):
-    """Prefix/substring/subsequence completions, best-first. Empty *partial* keeps row order."""
+    """Same CLI fuzzy as curses pickers (``curses_ui._fuzzy_score``). Empty *partial* keeps row order."""
+    from hermes_cli.curses_ui import _fuzzy_score
     lowered = partial.lower()
-    scored: list[tuple[tuple[int, int], str, Any]] = []
+    scored: list[tuple[float, str, Any]] = []
     for name, meta in rows:
         if skip_exact and name.lower() == lowered:
             continue
-        rank = _completion_rank(name, lowered)
-        if rank is None:
+        if not lowered:
+            scored.append((0.0, name, meta))
             continue
-        scored.append((rank, name, meta))
+        score = _fuzzy_score(name, lowered)
+        if score is None:
+            stripped = name[1:] if name.startswith("/") else name
+            score = _fuzzy_score(stripped, lowered)
+        if score is None:
+            continue
+        scored.append((-score, name, meta))
     if lowered:
         scored.sort(key=lambda row: (row[0], row[1]))
     for _, name, meta in scored:
@@ -586,16 +570,8 @@ class SlashCommandCompleter(Completer):
                 candidates.append((cmd_name, f"🔌 {cmd_info.get('description', 'Plugin command')}"))
         except Exception:
             pass
-        scored: list[tuple[tuple[int, int], str, str]] = []
-        for name, meta in candidates:
-            rank = _completion_rank(name, word)
-            if rank is None:
-                continue
-            scored.append((rank, name, meta))
-        if word:
-            scored.sort(key=lambda row: (row[0], row[1]))
-        for _, name, meta in scored:
-            yield _cmd_completion(name, meta)
+        for completion in _ranked_completions(candidates, word, skip_exact=False):
+            yield _cmd_completion(completion.text, str(completion.display_meta or ""))
 
 
 class SlashCommandAutoSuggest(AutoSuggest):

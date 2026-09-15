@@ -1,7 +1,7 @@
-"""Description-aware fuzzy scoring for slash-menu completions (mirrored in
-``ui-tui/src/app/slash/fuzzyScore.ts``). Tiers: exact (0), prefix (1), substring
-(2), subsequence (6); DESCRIPTION matches at +3 (3/4/5/9). ``/summary`` hits a
-description; ``/mdl`` hits ``/model``. Lower wins; ``math.inf`` = miss."""
+"""Description-aware fuzzy scoring for slash-menu completions (ported from superagent-ai/grok-cli
+``src/ui/slash-menu.ts``; mirrored in ``ui-tui/src/app/slash/fuzzyScore.ts``). Tiers: exact command
+token (0), prefix (1), substring (2); the DESCRIPTION is tokenized and matched at +3 (3/4/5), so
+``/summary`` surfaces a command whose description mentions summaries. Lower wins; ``math.inf`` = miss."""
 
 from __future__ import annotations
 
@@ -11,18 +11,11 @@ from typing import Callable
 
 _TOKEN_SPLIT = re.compile(r"[^a-z0-9]+")
 
-def _is_subsequence(field: str, query: str) -> bool:
-    """True when ``query`` chars appear in order in ``field`` (``mdl`` → ``model``)."""
-    it = iter(field)
-    return all(any(ch == q for ch in it) for q in query)
-
-
-# (tier bump, field predicate) in priority order: exact, prefix, substring, subsequence.
+# (tier bump, field predicate) in priority order: exact, prefix, substring.
 _TIERS = (
     (0, lambda field, q: field == q or f"/{field}" == q),
     (1, lambda field, q: field.startswith(q) or f"/{field}".startswith(q)),
     (2, lambda field, q: q in field),
-    (6, _is_subsequence),
 )
 
 

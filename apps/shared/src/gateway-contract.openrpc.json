@@ -16239,6 +16239,597 @@
         ],
         "type": "object"
       },
+      "McpServerStatus": {
+        "additionalProperties": false,
+        "description": "``tools/mcp_tool_discovery.py:get_mcp_status`` status row.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "transport": {
+            "title": "Transport",
+            "type": "string"
+          },
+          "tools": {
+            "title": "Tools",
+            "type": "integer"
+          },
+          "connected": {
+            "title": "Connected",
+            "type": "boolean"
+          },
+          "disabled": {
+            "title": "Disabled",
+            "type": "boolean"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "sampling": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sampling"
+          }
+        },
+        "required": [
+          "name",
+          "transport",
+          "tools",
+          "connected",
+          "disabled",
+          "status"
+        ],
+        "title": "McpServerStatus",
+        "type": "object"
+      },
+      "ProjectRef": {
+        "additionalProperties": false,
+        "description": "``tui_gateway/server.py::_project_info_for_cwd``.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "primary_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Primary Path"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "name"
+        ],
+        "title": "ProjectRef",
+        "type": "object"
+      },
+      "SessionLiveInfo": {
+        "additionalProperties": false,
+        "description": "``tui_gateway/server.py::_session_info`` \u2014 the ``session.info`` event and the ``info`` field of\n``session.create`` / ``session.resume`` / ``session.activate`` results.",
+        "properties": {
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
+          "provider": {
+            "default": "",
+            "title": "Provider",
+            "type": "string"
+          },
+          "reasoning_effort": {
+            "default": "",
+            "title": "Reasoning Effort",
+            "type": "string"
+          },
+          "service_tier": {
+            "default": "",
+            "title": "Service Tier",
+            "type": "string"
+          },
+          "fast": {
+            "default": false,
+            "title": "Fast",
+            "type": "boolean"
+          },
+          "yolo": {
+            "default": false,
+            "title": "Yolo",
+            "type": "boolean"
+          },
+          "approval_mode": {
+            "default": "manual",
+            "title": "Approval Mode",
+            "type": "string"
+          },
+          "tools": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tools"
+          },
+          "skills": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Skills"
+          },
+          "cwd": {
+            "default": "",
+            "title": "Cwd",
+            "type": "string"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Branch"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "terminal_backend": {
+            "default": "",
+            "title": "Terminal Backend",
+            "type": "string"
+          },
+          "personality": {
+            "default": "",
+            "title": "Personality",
+            "type": "string"
+          },
+          "running": {
+            "default": false,
+            "title": "Running",
+            "type": "boolean"
+          },
+          "turn_started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Turn Started At"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          },
+          "stored_session_id": {
+            "default": "",
+            "title": "Stored Session Id",
+            "type": "string"
+          },
+          "desktop_contract": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Desktop Contract"
+          },
+          "version": {
+            "default": "",
+            "title": "Version",
+            "type": "string"
+          },
+          "release_date": {
+            "default": "",
+            "title": "Release Date",
+            "type": "string"
+          },
+          "update_behind": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Update Behind"
+          },
+          "update_command": {
+            "default": "",
+            "title": "Update Command",
+            "type": "string"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Usage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "profile_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile Name"
+          },
+          "mcp_servers": {
+            "items": {
+              "$ref": "#/components/schemas/McpServerStatus"
+            },
+            "title": "Mcp Servers",
+            "type": "array"
+          },
+          "system_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "System Prompt"
+          },
+          "credential_warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Credential Warning"
+          },
+          "lazy": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Lazy"
+          }
+        },
+        "title": "SessionLiveInfo",
+        "type": "object"
+      },
+      "Usage": {
+        "additionalProperties": false,
+        "description": "``tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``.",
+        "properties": {
+          "model": {
+            "default": "",
+            "title": "Model",
+            "type": "string"
+          },
+          "input": {
+            "default": 0,
+            "title": "Input",
+            "type": "integer"
+          },
+          "output": {
+            "default": 0,
+            "title": "Output",
+            "type": "integer"
+          },
+          "reasoning": {
+            "default": 0,
+            "title": "Reasoning",
+            "type": "integer"
+          },
+          "prompt": {
+            "default": 0,
+            "title": "Prompt",
+            "type": "integer"
+          },
+          "completion": {
+            "default": 0,
+            "title": "Completion",
+            "type": "integer"
+          },
+          "total": {
+            "default": 0,
+            "title": "Total",
+            "type": "integer"
+          },
+          "calls": {
+            "default": 0,
+            "title": "Calls",
+            "type": "integer"
+          },
+          "compressions": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Compressions"
+          },
+          "context_used": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context Used"
+          },
+          "context_max": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context Max"
+          },
+          "context_percent": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context Percent"
+          },
+          "context_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context Source"
+          },
+          "context_estimated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context Estimated"
+          },
+          "cache_hit_pct": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cache Hit Pct"
+          },
+          "cache_read": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cache Read"
+          },
+          "cache_write": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cache Write"
+          },
+          "avg_latency_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Avg Latency S"
+          },
+          "avg_tps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Avg Tps"
+          },
+          "active_subagents": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Active Subagents"
+          },
+          "dev_credits_spent_micros": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Dev Credits Spent Micros"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cost Usd"
+          },
+          "cost_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cost Status"
+          }
+        },
+        "title": "Usage",
+        "type": "object"
+      },
       "ConfigSetResult": {
         "additionalProperties": false,
         "description": "``{key, value}`` plus the setter's extras: model switches add ``warning`` /\n``confirm_required`` / ``confirm_message`` / ``scope`` / ``deferred``; ``focus`` adds\n``tool_progress``; ``cwd`` adds ``cwd`` / ``branch``; ``personality`` adds ``history_reset`` /\n``info``; ``yolo`` reports its ``scope``. ``value`` is a bool only for the display toggles.",
@@ -16361,7 +16952,7 @@
           "info": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/JsonValue"
+                "$ref": "#/components/schemas/SessionLiveInfo"
               },
               {
                 "type": "null"
@@ -26549,6 +27140,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Spritesheetbase64"
           },
           "spritesheetRevision": {
@@ -26571,6 +27163,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Spritesheetunchanged"
           },
           "frameW": {
@@ -26676,9 +27269,7 @@
           "slug",
           "displayName",
           "mime",
-          "spritesheetBase64",
           "spritesheetRevision",
-          "spritesheetUnchanged",
           "frameW",
           "frameH",
           "framesPerState",
@@ -32408,73 +32999,6 @@
         "title": "InflightTurn",
         "type": "object"
       },
-      "McpServerStatus": {
-        "additionalProperties": false,
-        "description": "``tools/mcp_tool_discovery.py:get_mcp_status`` status row.",
-        "properties": {
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "transport": {
-            "title": "Transport",
-            "type": "string"
-          },
-          "tools": {
-            "title": "Tools",
-            "type": "integer"
-          },
-          "connected": {
-            "title": "Connected",
-            "type": "boolean"
-          },
-          "disabled": {
-            "title": "Disabled",
-            "type": "boolean"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error"
-          },
-          "sampling": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "type": "integer"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Sampling"
-          }
-        },
-        "required": [
-          "name",
-          "transport",
-          "tools",
-          "connected",
-          "disabled",
-          "status"
-        ],
-        "title": "McpServerStatus",
-        "type": "object"
-      },
       "OpenRequestEntry": {
         "additionalProperties": false,
         "description": "One unanswered server\u2192client request (``server_requests.py:63``); shared transport\nre-delivers it at ``apps/shared/src/json-rpc-channel.ts:518``.",
@@ -32503,43 +33027,6 @@
         "title": "OpenRequestEntry",
         "type": "object"
       },
-      "ProjectRef": {
-        "additionalProperties": false,
-        "description": "``tui_gateway/server.py::_project_info_for_cwd``.",
-        "properties": {
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "slug": {
-            "title": "Slug",
-            "type": "string"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "primary_path": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Primary Path"
-          }
-        },
-        "required": [
-          "id",
-          "slug",
-          "name"
-        ],
-        "title": "ProjectRef",
-        "type": "object"
-      },
       "QueuedPrompt": {
         "additionalProperties": false,
         "properties": {
@@ -32552,265 +33039,6 @@
           "user"
         ],
         "title": "QueuedPrompt",
-        "type": "object"
-      },
-      "SessionLiveInfo": {
-        "additionalProperties": false,
-        "description": "``tui_gateway/server.py::_session_info`` \u2014 the ``session.info`` event and the ``info`` field of\n``session.create`` / ``session.resume`` / ``session.activate`` results.",
-        "properties": {
-          "model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Model"
-          },
-          "provider": {
-            "default": "",
-            "title": "Provider",
-            "type": "string"
-          },
-          "reasoning_effort": {
-            "default": "",
-            "title": "Reasoning Effort",
-            "type": "string"
-          },
-          "service_tier": {
-            "default": "",
-            "title": "Service Tier",
-            "type": "string"
-          },
-          "fast": {
-            "default": false,
-            "title": "Fast",
-            "type": "boolean"
-          },
-          "yolo": {
-            "default": false,
-            "title": "Yolo",
-            "type": "boolean"
-          },
-          "approval_mode": {
-            "default": "manual",
-            "title": "Approval Mode",
-            "type": "string"
-          },
-          "tools": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tools"
-          },
-          "skills": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Skills"
-          },
-          "cwd": {
-            "default": "",
-            "title": "Cwd",
-            "type": "string"
-          },
-          "branch": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Branch"
-          },
-          "project": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ProjectRef"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          },
-          "terminal_backend": {
-            "default": "",
-            "title": "Terminal Backend",
-            "type": "string"
-          },
-          "personality": {
-            "default": "",
-            "title": "Personality",
-            "type": "string"
-          },
-          "running": {
-            "default": false,
-            "title": "Running",
-            "type": "boolean"
-          },
-          "turn_started_at": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Turn Started At"
-          },
-          "title": {
-            "default": "",
-            "title": "Title",
-            "type": "string"
-          },
-          "stored_session_id": {
-            "default": "",
-            "title": "Stored Session Id",
-            "type": "string"
-          },
-          "desktop_contract": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Desktop Contract"
-          },
-          "version": {
-            "default": "",
-            "title": "Version",
-            "type": "string"
-          },
-          "release_date": {
-            "default": "",
-            "title": "Release Date",
-            "type": "string"
-          },
-          "update_behind": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Update Behind"
-          },
-          "update_command": {
-            "default": "",
-            "title": "Update Command",
-            "type": "string"
-          },
-          "usage": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Usage"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          },
-          "profile_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile Name"
-          },
-          "mcp_servers": {
-            "items": {
-              "$ref": "#/components/schemas/McpServerStatus"
-            },
-            "title": "Mcp Servers",
-            "type": "array"
-          },
-          "system_prompt": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "System Prompt"
-          },
-          "credential_warning": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Credential Warning"
-          },
-          "lazy": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Lazy"
-          }
-        },
-        "title": "SessionLiveInfo",
         "type": "object"
       },
       "TodoEntry": {
@@ -33050,234 +33278,6 @@
           "role"
         ],
         "title": "TranscriptMessage",
-        "type": "object"
-      },
-      "Usage": {
-        "additionalProperties": false,
-        "description": "``tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``.",
-        "properties": {
-          "model": {
-            "default": "",
-            "title": "Model",
-            "type": "string"
-          },
-          "input": {
-            "default": 0,
-            "title": "Input",
-            "type": "integer"
-          },
-          "output": {
-            "default": 0,
-            "title": "Output",
-            "type": "integer"
-          },
-          "reasoning": {
-            "default": 0,
-            "title": "Reasoning",
-            "type": "integer"
-          },
-          "prompt": {
-            "default": 0,
-            "title": "Prompt",
-            "type": "integer"
-          },
-          "completion": {
-            "default": 0,
-            "title": "Completion",
-            "type": "integer"
-          },
-          "total": {
-            "default": 0,
-            "title": "Total",
-            "type": "integer"
-          },
-          "calls": {
-            "default": 0,
-            "title": "Calls",
-            "type": "integer"
-          },
-          "compressions": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Compressions"
-          },
-          "context_used": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Context Used"
-          },
-          "context_max": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Context Max"
-          },
-          "context_percent": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Context Percent"
-          },
-          "context_source": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Context Source"
-          },
-          "context_estimated": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Context Estimated"
-          },
-          "cache_hit_pct": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Cache Hit Pct"
-          },
-          "cache_read": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Cache Read"
-          },
-          "cache_write": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Cache Write"
-          },
-          "avg_latency_s": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Avg Latency S"
-          },
-          "avg_tps": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Avg Tps"
-          },
-          "active_subagents": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Active Subagents"
-          },
-          "dev_credits_spent_micros": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Dev Credits Spent Micros"
-          },
-          "cost_usd": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Cost Usd"
-          },
-          "cost_status": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Cost Status"
-          }
-        },
-        "title": "Usage",
         "type": "object"
       },
       "SessionActivateResult": {

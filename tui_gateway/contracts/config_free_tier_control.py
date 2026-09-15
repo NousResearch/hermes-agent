@@ -14,6 +14,7 @@ from typing import Literal
 from pydantic import Field, StrictInt
 
 from .base import JsonValue, MethodParams, Params, Result, WireEnum
+from .common import SessionLiveInfo
 from .connectors_operation import ConnectionOperationStatus
 from .tools_commands import DispatchType
 from .registry import method
@@ -104,8 +105,7 @@ class ConfigSetResult(Result):
     cwd: str | None = None
     branch: str | None = None
     history_reset: bool | None = None
-    # WHY JsonValue: ``methods_config_set._set_personality`` returns the producer-owned session snapshot.
-    info: JsonValue | None = None
+    info: SessionLiveInfo | None = None  # ``/personality`` hands back the refreshed session snapshot
 
 
 method("config.set", params=ConfigSetParams, result=ConfigSetResult,

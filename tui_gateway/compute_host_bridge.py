@@ -185,7 +185,7 @@ def _lock_compute_host_clarify(rid: str, request_id: str, question_id: str, answ
                 session.pop("_compute_host_open_request", None)
             else:
                 mirrored["params"]["answers"] = {**(mirrored["params"].get("answers") or {}), question_id: answer}
-    return _ok(rid, ClarifyLockResult.model_validate(result))
+    return ClarifyLockResult.model_validate(result)
 
 
 def _apply_compute_host_metadata_mirror(session: dict, frame: dict | None) -> None:

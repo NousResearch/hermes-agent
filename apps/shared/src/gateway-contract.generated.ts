@@ -515,6 +515,82 @@ export interface ConfigSetParams {
   scope?: string | null
   confirm_expensive_model?: boolean
 }
+/** ``tools/mcp_tool_discovery.py:get_mcp_status`` status row. */
+export interface McpServerStatus {
+  name: string
+  transport: string
+  tools: number
+  connected: boolean
+  disabled: boolean
+  status: string
+  error: string | null
+  sampling: Record<string, number> | null
+}
+/** ``tui_gateway/server.py::_project_info_for_cwd``. */
+export interface ProjectRef {
+  id: string
+  slug: string
+  name: string
+  primary_path: string | null
+}
+/** ``tui_gateway/server.py::_session_info`` — the ``session.info`` event and the ``info`` field of ``session.create`` / ``session.resume`` / ``session.activate`` results. */
+export interface SessionLiveInfo {
+  model: string | null
+  provider: string
+  reasoning_effort: string
+  service_tier: string
+  fast: boolean
+  yolo: boolean
+  approval_mode: string
+  tools: Record<string, string[]> | null
+  skills: Record<string, string[]> | null
+  cwd: string
+  branch: string | null
+  project: ProjectRef | null
+  terminal_backend: string
+  personality: string
+  running: boolean
+  turn_started_at: number | null
+  title: string
+  stored_session_id: string
+  desktop_contract: number | string | null
+  version: string
+  release_date: string
+  update_behind: number | null
+  update_command: string
+  usage: Usage | null
+  profile_name: string | null
+  mcp_servers: McpServerStatus[]
+  system_prompt: string | null
+  credential_warning: string | null
+  lazy: boolean | null
+}
+/** ``tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``. */
+export interface Usage {
+  model: string
+  input: number
+  output: number
+  reasoning: number
+  prompt: number
+  completion: number
+  total: number
+  calls: number
+  compressions: number | null
+  context_used: number | null
+  context_max: number | null
+  context_percent: number | null
+  context_source: string | null
+  context_estimated: boolean | null
+  cache_hit_pct: number | null
+  cache_read: number | null
+  cache_write: number | null
+  avg_latency_s: number | null
+  avg_tps: number | null
+  active_subagents: number | null
+  dev_credits_spent_micros: number | null
+  cost_usd: number | null
+  cost_status: string | null
+}
 /** ``{key, value}`` plus the setter's extras: model switches add ``warning`` / ``confirm_required`` / ``confirm_message`` / ``scope`` / ``deferred``; ``focus`` adds ``tool_progress``; ``cwd`` adds ``cwd`` / ``branch``; ``personality`` adds ``history_reset`` / ``info``; ``yolo`` reports its ``scope``. ``value`` is a bool only for the display toggles. */
 export interface ConfigSetResult {
   key: string
@@ -528,7 +604,7 @@ export interface ConfigSetResult {
   cwd: string | null
   branch: string | null
   history_reset: boolean | null
-  info: JsonValue | null
+  info: SessionLiveInfo | null
 }
 export interface ConfigShowParams {
   profile?: string | null
@@ -2835,90 +2911,14 @@ export interface InflightTurn {
   recoverable: boolean | null
   error_surface: InflightErrorSurface | null
 }
-/** ``tools/mcp_tool_discovery.py:get_mcp_status`` status row. */
-export interface McpServerStatus {
-  name: string
-  transport: string
-  tools: number
-  connected: boolean
-  disabled: boolean
-  status: string
-  error: string | null
-  sampling: Record<string, number> | null
-}
 /** One unanswered server→client request (``server_requests.py:63``); shared transport re-delivers it at ``apps/shared/src/json-rpc-channel.ts:518``. */
 export interface OpenRequestEntry {
   id: string
   method: string
   params: Record<string, JsonValue>
 }
-/** ``tui_gateway/server.py::_project_info_for_cwd``. */
-export interface ProjectRef {
-  id: string
-  slug: string
-  name: string
-  primary_path: string | null
-}
 export interface QueuedPrompt {
   user: string
-}
-/** ``tui_gateway/server.py::_session_info`` — the ``session.info`` event and the ``info`` field of ``session.create`` / ``session.resume`` / ``session.activate`` results. */
-export interface SessionLiveInfo {
-  model: string | null
-  provider: string
-  reasoning_effort: string
-  service_tier: string
-  fast: boolean
-  yolo: boolean
-  approval_mode: string
-  tools: Record<string, string[]> | null
-  skills: Record<string, string[]> | null
-  cwd: string
-  branch: string | null
-  project: ProjectRef | null
-  terminal_backend: string
-  personality: string
-  running: boolean
-  turn_started_at: number | null
-  title: string
-  stored_session_id: string
-  desktop_contract: number | string | null
-  version: string
-  release_date: string
-  update_behind: number | null
-  update_command: string
-  usage: Usage | null
-  profile_name: string | null
-  mcp_servers: McpServerStatus[]
-  system_prompt: string | null
-  credential_warning: string | null
-  lazy: boolean | null
-}
-/** ``tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``. */
-export interface Usage {
-  model: string
-  input: number
-  output: number
-  reasoning: number
-  prompt: number
-  completion: number
-  total: number
-  calls: number
-  compressions: number | null
-  context_used: number | null
-  context_max: number | null
-  context_percent: number | null
-  context_source: string | null
-  context_estimated: boolean | null
-  cache_hit_pct: number | null
-  cache_read: number | null
-  cache_write: number | null
-  avg_latency_s: number | null
-  avg_tps: number | null
-  active_subagents: number | null
-  dev_credits_spent_micros: number | null
-  cost_usd: number | null
-  cost_status: string | null
 }
 /** ``tools/todo_tool.py:136`` normalizes every snapshot item; the Desktop consumes the same fields in ``apps/desktop/src/lib/todos.ts:3``. */
 export interface TodoEntry {

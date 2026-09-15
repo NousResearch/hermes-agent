@@ -410,6 +410,7 @@ _PYTHON_REPR_CREDENTIAL_SUFFIXES = (
     "apikey",
     "api_key",
     "token",
+    "bearer",
     "secret",
     "password",
     "passwd",

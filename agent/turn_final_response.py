@@ -20,8 +20,97 @@ logger = logging.getLogger("agent.conversation_loop")
 # Ephemeral retry scaffolding rows popped before the final answer becomes durable.
 _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_thinking_prefill", "_empty_recovery_synthetic", "_empty_terminal_sentinel",
-    "_dropped_toolcall_nudge",
+    "_dropped_toolcall_nudge", "_degenerate_final_nudge",
 )
+
+# Degenerate-final guard. A text stop whose ENTIRE answer is a fragment — a stray token, a
+# wrong-script word, or a truncated non-sentence — after the turn already ran real tool work is
+# a provider-side collapse, not an answer: the loop accepts it, the turn ends ``completed``, and
+# an unattended job silently abandons the task. Reported class on the Responses wire with
+# muse-spark (aggregated upstream); the tool work always executes correctly and only the final
+# text collapses. Re-prompt ONCE, keeping the fragment as the fallback so a second collapse
+# still ends the turn with today's behaviour.
+_DEGENERATE_FINAL_NUDGE_CONTENT = (
+    "Your previous message ended the turn with a fragment that is not a usable answer while the "
+    "task was still in progress. Resume the task and finish it, then give a complete user-facing "
+    "answer. If you believe the task IS finished, say so explicitly and summarize what was done "
+    "and verified."
+)
+
+#: Above this length a reply is treated as a real (if terse) answer, never a collapse.
+_DEGENERATE_FINAL_MAX_CHARS = 24
+#: Whitespace-token ceiling for the "short, but not a sentence" arm.
+_DEGENERATE_FINAL_MAX_TOKENS = 3
+#: Legitimate terse answers that must never trip the guard.
+_DEGENERATE_FINAL_ALLOWLIST = frozenset({
+    "done", "ok", "okay", "yes", "no", "yep", "nope", "fixed", "finished", "complete",
+    "completed", "ready", "correct", "agreed", "understood", "ack", "none", "got it",
+    # Plausible one-word legitimate answers after tool work; the allowlist is the tuning
+    # surface when a false positive shows up in the warning log.
+    "approved", "confirmed", "verified", "noted", "working", "checking", "pass", "passed",
+    "failed", "error", "cancelled", "canceled",
+})
+_DEGENERATE_FINAL_ON = {"true", "always", "yes", "on"}
+_DEGENERATE_FINAL_OFF = {"false", "never", "no", "off"}
+#: Model substrings carrying the reported collapse class, used by the ``auto`` scope.
+_DEGENERATE_FINAL_AUTO_MODELS = ("muse-spark",)
+
+
+def _looks_like_degenerate_final(text: Any) -> bool:
+    """Whether a text stop reads as a collapsed answer rather than a real one.
+
+    True only for a short fragment carrying a concrete degeneration signal: a single token, any
+    non-ASCII character (the reported collapse class is a stray wrong-script word), or a
+    sub-sentence run with no terminal punctuation. Allowlisted terse answers never match, and a
+    legitimate short answer above the char ceiling never matches.
+    """
+    t = str(text or "").strip()
+    if not t or len(t) > _DEGENERATE_FINAL_MAX_CHARS:
+        return False
+    if t.lower().strip(".!") in _DEGENERATE_FINAL_ALLOWLIST:
+        return False
+    if any(ord(ch) > 0x7F for ch in t):
+        return True
+    tokens = t.split()
+    if len(tokens) <= 1:
+        return True
+    return len(tokens) <= _DEGENERATE_FINAL_MAX_TOKENS and not t.endswith((".", "!", "?", ":"))
+
+
+def _tool_results_since_last_user(messages: Any) -> int:
+    """Tool-result rows after the most recent user row — the turn's mid-task evidence."""
+    count = 0
+    for msg in reversed(messages or ()):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "user":
+            break
+        if role == "tool":
+            count += 1
+    return count
+
+
+def _degenerate_final_guard_mode(agent: Any) -> str:
+    """``"off"``, ``"all"`` or ``"auto"`` for the degenerate-final re-prompt.
+
+    Mirrors ``agent_runtime_helpers.intent_ack_continuation_mode``: ``agent._degenerate_final_guard``
+    overrides (``True``/true-ish -> all, ``False``/false-ish -> off, a list -> all when a substring
+    matches the model), and the default ``auto`` fires only on the wire/family the collapse is
+    reported on. Deliberately config-free for now so the guard ships with no new config surface.
+    """
+    mode = getattr(agent, "_degenerate_final_guard", "auto")
+    if mode is False or (isinstance(mode, str) and mode.lower() in _DEGENERATE_FINAL_OFF):
+        return "off"
+    if mode is True or (isinstance(mode, str) and mode.lower() in _DEGENERATE_FINAL_ON):
+        return "all"
+    if isinstance(mode, list):
+        model_lower = (getattr(agent, "model", "") or "").lower()
+        return "all" if any(str(p).lower() in model_lower for p in mode if p) else "off"
+    if getattr(agent, "api_mode", "") == "codex_responses":
+        return "all"
+    model_lower = (getattr(agent, "model", "") or "").lower()
+    return "all" if any(p in model_lower for p in _DEGENERATE_FINAL_AUTO_MODELS) else "off"
 
 
 @dataclass
@@ -219,8 +308,46 @@ def finish_text_response(
         final_response = None
         return _verdict("continue")
 
+    # Degenerate-final recovery (see _DEGENERATE_FINAL_NUDGE_CONTENT above): a text stop whose
+    # whole answer is a fragment after real tool work is a provider-side collapse. Bounded to one
+    # re-prompt per turn (the counter clears on the next genuine turn end), scoped by
+    # _degenerate_final_guard_mode, and gated on the turn having actually run tool work — a terse
+    # answer from a chat-only turn is a legitimate answer, not a collapse.
+    if (
+        bool(getattr(agent, "_stall_guards", True))
+        and _degenerate_final_guard_mode(agent) != "off"
+        and not assistant_message.tool_calls
+        and getattr(agent, "_degenerate_final_nudges", 0) < 1
+        and _tool_results_since_last_user(messages) >= 2
+        and _looks_like_degenerate_final(final_response)
+    ):
+        agent._degenerate_final_nudges = getattr(agent, "_degenerate_final_nudges", 0) + 1
+        logger.warning(
+            "Degenerate final: text stop ended the turn with a %d-char fragment after %d "
+            "tool result(s) — re-prompting once (model=%s provider=%s api_mode=%s): %r",
+            len(final_response or ""), _tool_results_since_last_user(messages),
+            agent.model, agent.provider, getattr(agent, "api_mode", ""),
+            (final_response or "")[:40],
+        )
+        agent._emit_status(
+            "↻ Model ended the turn on a fragment — re-prompting once to finish"
+        )
+        # Both halves of the re-prompt pair are ephemeral scaffolding: never persisted, and the
+        # finalization pop strips an unanswered tail pair.
+        final_msg["_degenerate_final_nudge"] = True
+        append_message(messages, final_msg)
+        append_message(messages, {
+            "role": "user",
+            "content": _DEGENERATE_FINAL_NUDGE_CONTENT,
+            "_degenerate_final_nudge": True,
+        })
+        agent._session_messages = messages
+        final_response = None
+        return _verdict("continue")
+
     # Genuine turn end (no dropped-tool-call mismatch): clear stall budget.
     agent._dropped_toolcall_retries = 0
+    agent._degenerate_final_nudges = 0
 
     # Pop prefill / empty-retry scaffolding before the final response or
     # verification follow-up; it must not become durable transcript.

@@ -1,6 +1,7 @@
 import { compactNumber } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type ComponentProps, type MouseEvent, type ReactNode, useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useLocation, useNavigate } from 'react-router'
 
 import { hudTargetSessionId } from '@/app/hud/handoff'
@@ -266,7 +267,12 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // `titleBar.center` is genuinely centered — the kanban board switcher (and
   // any other page-projected chrome) used to land inside the left-anchored
   // cluster, overlapping the top-edge pane tabs (#107676, #110070).
-  const centerSlot = (
+  //
+  // It is ALSO portaled to <body>: Electron collects draggable regions in
+  // document order, so a pane-header drag strip rendered later in the tree
+  // would re-add a drag region over this chrome and swallow its clicks. A
+  // body-level portal puts this no-drag subtree last in that walk.
+  const centerSlot = createPortal(
     <div
       className={cn(titlebarToolClusterClass, 'select-none')}
       data-titlebar-cluster="center"
@@ -277,7 +283,8 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       }}
     >
       <Slot area="titleBar.center" />
-    </div>
+    </div>,
+    document.body
   )
 
   const leftClusterClass = cn(

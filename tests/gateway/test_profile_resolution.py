@@ -89,10 +89,10 @@ class TestMissingProfileWarning:
                     with patch("hermes_constants.get_hermes_home", return_value=Path("/hermes")):
                         with caplog.at_level(logging.WARNING):
                             result = mock_runner._resolve_profile_home_for_source(discord_source)
-                            
+
                             # Should fall back to global HERMES_HOME
                             assert result == Path("/hermes")
-                            
+
                             # Should have logged a warning
                             assert len(caplog.records) == 1
                             assert caplog.records[0].levelname == "WARNING"
@@ -141,9 +141,10 @@ class TestRoutingConsultation:
                 mock_get_dir.return_value = Path("/hermes/profiles/routed")
                 
                 mock_runner._profile_name_for_source = MagicMock(return_value="routed")
-                
-                mock_runner._resolve_profile_home_for_source(discord_source)
-                
+
+                with patch("hermes_cli.profiles.profile_exists", return_value=True):
+                    mock_runner._resolve_profile_home_for_source(discord_source)
+
                 # Should have called routing
                 mock_runner._profile_name_for_source.assert_called_once_with(discord_source)
     
@@ -411,6 +412,27 @@ class TestAdapterToSessionKeyIntegration:
             MessageEvent(text="discard me", source=source),
         )
         assert result is None
+
+    def test_matcher_failure_rejects_instead_of_serving_the_default_profile(self, mock_runner):
+        mock_runner.config.multiplex_profiles = True
+        mock_runner.config.profile_routes = [
+            ProfileRoute(name="r", platform="discord", profile="routed", chat_id="c")
+        ]
+        with patch("gateway.profile_routing.match_profile_route", side_effect=RuntimeError("boom")):
+            with pytest.raises(ProfileRouteRejected):
+                mock_runner._profile_name_for_source(
+                    SessionSource(platform=Platform.DISCORD, chat_id="c")
+                )
+
+    def test_plain_no_match_still_serves_the_active_profile(self, mock_runner):
+        # Only failures fail closed; an ordinary unrouted sender keeps the historical behaviour.
+        mock_runner.config.multiplex_profiles = True
+        mock_runner.config.profile_routes = [
+            ProfileRoute(name="r", platform="discord", profile="routed", chat_id="other")
+        ]
+        source = SessionSource(platform=Platform.DISCORD, chat_id="c", user_id="nobody")
+        assert mock_runner._profile_name_for_source(source) is None
+        assert mock_runner._resolve_profile_home_for_source(source) is not None
 
     @pytest.mark.asyncio
     async def test_direct_source_is_rejected_at_shared_ingress(self, mock_runner):

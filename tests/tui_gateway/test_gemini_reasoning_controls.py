@@ -51,13 +51,25 @@ def test_invalid_budget_or_effort_does_not_mutate_session(effort):
     persist.assert_not_called()
 
 
-def test_mandatory_thinking_cannot_be_disabled():
-    session = make_session("gemini-3.8-flash")
-    with patch.dict(server._sessions, {"studio-test": session}):
+@pytest.mark.parametrize("options", [
+    [{"type": "effort", "values": ["low", "high"]}],
+    [{"type": "budget_tokens", "min": 0, "max": 8192}],
+])
+def test_mandatory_thinking_cannot_be_disabled(gemini_reasoning_catalog, options):
+    model = "gemini-mandatory-fixture"
+    gemini_reasoning_catalog[model] = {"reasoning": True, "reasoning_options": options}
+    session = make_session(model)
+    with patch.dict(server._sessions, {"studio-test": session}), \
+            patch.object(server, "_write_config_key") as write, \
+            patch.object(server, "_persist_live_session_runtime") as persist:
         response = server._methods["config.set"]("r", {
             "key": "reasoning", "session_id": "studio-test", "value": "none"})
     assert response["error"]["code"] == 4002
     assert session["agent"].reasoning_config == {"enabled": True}
+    assert "create_reasoning_override" not in session
+    assert "reasoning_config" not in session["agent"]._primary_runtime
+    write.assert_not_called()
+    persist.assert_not_called()
 
 
 def test_running_turn_cannot_receive_controls_for_a_pending_different_model():

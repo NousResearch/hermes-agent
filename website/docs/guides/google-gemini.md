@@ -15,6 +15,8 @@ uses Hermes' cached [models.dev](https://models.dev) metadata to keep text-outpu
 models with function calling. A successful discovery replaces the curated list;
 on failure Hermes retains its existing fallback behavior. Models that require
 the dedicated Computer Use tool are excluded from this general chat picker.
+Malformed individual entries are skipped; a failed page still invalidates the
+discovery result, so a truncated catalog never replaces the fallback.
 Being listed does not guarantee that your project has access to a model.
 
 Desktop shows the thinking controls described for each model:
@@ -23,6 +25,12 @@ Desktop shows the thinking controls described for each model:
 - **Thinking off:** only when disabling thinking is declared.
 - **Thinking budget:** a token count within the model's bounds, with **Dynamic**
   for Google's `thinkingBudget: -1` mode.
+
+The numeric input accepts positive thinking budgets. When the source range
+starts at zero, the input starts at one: zero means **Thinking off**, available
+only when the model declares that capability. Use that control (or `none` in
+configuration) instead of `budget:0`. Dynamic remains a separate choice;
+positive model-specific minimum budgets are preserved.
 
 When no explicit level or budget is set, the picker leaves the options
 unselected rather than displaying a synthetic "Provider default" effort.

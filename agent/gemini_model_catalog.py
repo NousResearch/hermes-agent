@@ -2,7 +2,8 @@
 
 Google determines listed IDs; models.dev supplies text/tool capabilities.
 Unknown capabilities remain usable by explicit model ID, not advertised as
-verified agent models. Failures never return a partial/authoritative catalog.
+verified agent models. Failed pages never return a partial/authoritative catalog;
+malformed individual entries are skipped.
 """
 import json
 import time
@@ -36,15 +37,18 @@ def fetch_models(api_key: str | None, *, timeout: float = 8.0) -> list[str] | No
                 return None
             for entry in data["models"]:
                 if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
-                    return None
+                    continue
                 model = entry["name"].removeprefix("models/")
+                methods = entry.get("supportedGenerationMethods")
+                if not model or not isinstance(methods, list):
+                    continue
                 # Dedicated Computer Use routes require Google's built-in tool;
                 # Hermes' generic function tools cannot invoke them. The native
                 # list and models.dev's tool_call flag do not encode this prerequisite.
                 if "-computer-use-" in model:
                     continue
                 info = get_model_info("gemini", model, allow_network=False)
-                if ("generateContent" in (entry.get("supportedGenerationMethods") or [])
+                if ("generateContent" in methods
                         and info and info.tool_call and info.output_modalities == ("text",)
                         and info.status != "deprecated"):
                     result.append(model)

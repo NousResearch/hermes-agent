@@ -28,7 +28,10 @@ def describe_thinking_control(model: str) -> dict:
         elif option["type"] == "toggle":
             efforts.append("none")
         elif option["type"] == "budget_tokens":
-            # Do not invent a missing bound or expose zero as "thinking on".
+            # These bounds are for the Thinking-on numeric input, not a copy of
+            # the raw API range. Zero is Off (requires a declared toggle), and
+            # -1 is Dynamic; neither may bypass those separate controls here.
+            # Preserve positive minima and never invent a missing bound.
             if "min" in option and "max" in option and option["max"] > 0:
                 result["reasoning_budget"] = {"min": max(1, option["min"]), "max": option["max"], "dynamic": True}
                 # -1 is generateContent's dynamic sentinel, not a model effort.
@@ -49,6 +52,9 @@ def build_thinking_config(model: str, reasoning_config: dict | None) -> dict | N
     descriptor = describe_thinking_control(model)
     if descriptor["reasoning_control"] in ("unknown", "unsupported"):
         return None
+    # The resolver shares the picker's declared Off capability. Inherited Off
+    # on a mandatory-thinking model becomes an unset override before this branch;
+    # explicit selections are rejected by the same resolver at the gateway.
     config = resolve_provider_reasoning_config("gemini", model, reasoning_config)
     if not config:
         return None

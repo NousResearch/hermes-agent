@@ -1,7 +1,9 @@
 """URL safety checks — blocks requests to private/internal network addresses (SSRF).
 
 ``security.allow_private_urls: true`` disables private-IP blocking (DNS that resolves public
-names to private ranges); cloud metadata hostnames/IPs are **always** blocked. DNS rebinding
+names to private ranges); ``security.allowed_private_ips`` selectively whitelists specific
+private/internal destinations (IPs, CIDR ranges, or hostnames) while keeping the general block
+active. Cloud metadata hostnames/IPs are **always** blocked. DNS rebinding
 (TOCTOU) is closed for Hermes-owned httpx paths by ``create_ssrf_safe_[async_]client()``, which
 re-apply the policy at TCP connect and dial the validated IP while preserving Host/SNI. Redirect
 bypass is mitigated by response hooks re-validating each target (``redirect_target_from_response``).
@@ -160,6 +162,93 @@ def _reset_allow_private_cache() -> None:
     _allow_private_resolved = _cached_allow_private = False
 
 
+# ---------------------------------------------------------------------------
+# Selective private-URL whitelist (security.allowed_private_ips)
+# ---------------------------------------------------------------------------
+
+def _read_allowed_private_entries() -> list:
+    """Raw entries from ``security.allowed_private_ips`` in the active config scope.
+
+    Accepted shapes per entry: a literal IP (``"10.0.1.125"``), a CIDR range
+    (``"192.168.1.0/24"``), or a hostname (``"nas.lan"``). A leading ``@`` forces
+    hostname-only matching: the URL's hostname must equal the entry exactly, but its
+    resolved IPs are NOT auto-trusted (guards against public-DNS poisoning)."""
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        block = cfg.get("security", {})
+        if not isinstance(block, dict):
+            return []
+        raw = block.get("allowed_private_ips")
+        if not isinstance(raw, (list, tuple)):
+            return []
+        return [str(e).strip() for e in raw if str(e).strip()]
+    except Exception:
+        return []  # config unavailable (tests, early import) — no whitelist
+
+
+def _classify_allowed_entry(entry: str) -> tuple:
+    """``("host_only"|"host"|"cidr"|"ip", value)`` for one whitelist entry; ``("invalid", entry)``
+    when unparseable. ``value`` is an ``ipaddress`` object for ip/cidr, else the normalized host."""
+    host_only = entry.startswith("@")
+    body = entry[1:] if host_only else entry
+    normalized = _normalize_hostname(body)
+    if not normalized:
+        return ("invalid", entry)
+    ip = _parse_ip(normalized)
+    if ip is not None:
+        return ("host_only" if host_only else "ip", ip)
+    if "/" in normalized:
+        try:
+            net = ipaddress.ip_network(normalized, strict=False)
+        except ValueError:
+            logger.warning("security.allowed_private_ips: ignoring unparseable CIDR entry %r", entry)
+            return ("invalid", entry)
+        return ("host_only" if host_only else "cidr", net)
+    return ("host_only" if host_only else "host", normalized)
+
+
+def _ip_whitelisted_by_entries(ip: _IPAddress, entries: list) -> bool:
+    """True when a resolved IP is directly whitelisted by an ip/cidr entry. Never trusts the
+    metadata floor — always-blocked IPs stay blocked even if listed (``_resolved_ip_block_reason``
+    consults the floor first)."""
+    for entry in entries:
+        kind, value = _classify_allowed_entry(entry)
+        if kind == "ip" and ip == value:
+            return True
+        if kind == "cidr" and ip.version == value.version and ip in value:
+            return True
+    return False
+
+
+def _host_whitelisted_by_entries(hostname: str, entries: list) -> bool:
+    """True when the URL hostname matches a host/ip entry (``@``-prefixed entries match here too)."""
+    for entry in entries:
+        kind, value = _classify_allowed_entry(entry)
+        if kind == "host" and hostname == value:
+            return True
+        if kind == "host_only" and hostname == value:
+            return True
+        if kind == "ip" and hostname == str(value):
+            return True
+    return False
+
+
+def _allows_whitelisted_private_destination(hostname: str) -> bool:
+    """True when ``hostname`` is whitelisted via ``security.allowed_private_ips``. Diagnostic helper
+    used for logging — actual enforcement happens per-answer in ``_resolved_ip_block_reason`` so
+    that CIDR/IP entries work at TCP-connect time too (DNS rebinding protection)."""
+    if not hostname:
+        return False
+    entries = _read_allowed_private_entries()
+    if not entries:
+        return False
+    ip = _parse_ip(hostname)
+    if ip is not None:
+        return _ip_whitelisted_by_entries(ip, entries)
+    return _host_whitelisted_by_entries(hostname, entries)
+
+
 def _normalize_hostname(host: Optional[str]) -> str:
     return (host or "").strip().lower().rstrip(".")
 
@@ -242,14 +331,40 @@ def _allows_private_ip_resolution(hostname: str, scheme: str) -> bool:
     return scheme == "https" and hostname in _TRUSTED_PRIVATE_IP_HOSTS
 
 
-def _resolved_ip_block_reason(ip: _IPAddress, allow_private: bool) -> Optional[str]:
+def _resolved_ip_block_reason(ip: _IPAddress, allow_private: bool,
+                              hostname: Optional[str] = None) -> Optional[str]:
     """Why a resolved answer must be rejected, or None if it may be dialed. The metadata floor
-    ignores ``allow_private``; ordinary private/internal classes are blocked only when it is False."""
+    ignores ``allow_private`` and the whitelist; ordinary private/internal classes are blocked
+    unless ``allow_private`` or the answer is whitelisted via ``security.allowed_private_ips``.
+    Whitelisting can come from an ip/cidr entry matching the answer itself, or from a
+    (non-``@``) hostname entry matching ``hostname`` (trusted local DNS). ``@host`` entries
+    never whitelist an answer here — they only gate hostname matching in ``is_safe_url``."""
     if _is_always_blocked_ip(ip):
         return "cloud metadata address"
-    if not allow_private and _is_blocked_ip(ip):
-        return "private/internal address"
-    return None
+    if allow_private or not _is_blocked_ip(ip):
+        return None
+    if _ips_whitelisted(ip, hostname):
+        return None
+    return "private/internal address"
+
+
+def _ips_whitelisted(ip: _IPAddress, hostname: Optional[str]) -> bool:
+    """True when the resolved answer may pass purely because of ``security.allowed_private_ips``."""
+    entries = _read_allowed_private_entries()
+    if not entries:
+        return False
+    if _ip_whitelisted_by_entries(ip, entries):
+        return True
+    # Hostname entries (without '@') trust their DNS answers — local split-horizon DNS is the
+    # intended use case. '@host' entries are excluded here on purpose.
+    if hostname:
+        for entry in entries:
+            if entry.startswith("@"):
+                continue
+            kind, value = _classify_allowed_entry(entry)
+            if kind == "host" and _normalize_hostname(hostname) == value:
+                return True
+    return False
 
 
 def is_safe_url(url: str) -> bool:
@@ -291,7 +406,7 @@ def is_safe_url(url: str) -> bool:
             if ip is None:
                 logger.warning("Blocked request — unparseable IP address %r for hostname %s", raw, hostname)
                 return False
-            reason = _resolved_ip_block_reason(ip, allow_private)
+            reason = _resolved_ip_block_reason(ip, allow_private, hostname)
             if reason is not None:
                 logger.warning("Blocked request to %s: %s -> %s", reason, hostname, ip_str)
                 return False
@@ -299,6 +414,8 @@ def is_safe_url(url: str) -> bool:
             logger.debug("Allowing private/internal resolution (security.allow_private_urls=true): %s", hostname)
         elif allow_private_ip:
             logger.debug("Allowing trusted hostname despite private/internal resolution: %s", hostname)
+        elif _allows_whitelisted_private_destination(hostname):
+            logger.debug("Allowing whitelisted private destination (security.allowed_private_ips): %s", hostname)
         return True
     except Exception as exc:
         # Fail closed: parsing edge cases must not become SSRF bypass vectors.
@@ -335,7 +452,7 @@ def _resolved_http_connect_ips(host: str, port: int, scheme: str) -> list[str]:
             raise SSRFConnectionBlocked(
                 f"Blocked request - unparseable IP address {raw!r} for hostname {hostname}"
             ) from ValueError(f"{ip_str!r} does not appear to be an IPv4 or IPv6 address")
-        reason = _resolved_ip_block_reason(ip, allow_private)
+        reason = _resolved_ip_block_reason(ip, allow_private, hostname)
         if reason is not None:
             raise SSRFConnectionBlocked(f"Blocked request to {reason} during connect: {hostname} -> {ip_str}")
         if ip_str not in safe_ips and len(safe_ips) < _MAX_SSRF_CONNECT_IPS:

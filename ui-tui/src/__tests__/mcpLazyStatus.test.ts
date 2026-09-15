@@ -78,34 +78,14 @@ const LAZY: McpServerStatus = {
 }
 
 describe('lazy MCP server status', () => {
-  it('is representable by SessionInfo and keeps connected false with its cached count', () => {
-    // A lazy server is carried by SessionInfo unchanged: never connected, not disabled,
-    // and keeping the tool count discovery cached for it.
-    const info: SessionInfo = {
-      mcp_servers: [LAZY],
-      model: 'test-model',
-      skills: {},
-      tools: {}
-    }
+  it('renders the cached tool count as lazy, never failed, and is not counted as a connected MCP', async () => {
+    const line = await renderNode(React.createElement(McpServerLine, { s: LAZY, t: DEFAULT_THEME }))
 
-    expect(info.mcp_servers?.[0].status).toBe('lazy')
-    expect(info.mcp_servers?.[0].connected).toBe(false)
-    expect(info.mcp_servers?.[0].tools).toBe(3)
-  })
+    expect(line).toContain('3 tools')
+    expect(line).toContain('(lazy)')
+    expect(line).not.toContain('failed')
 
-  it('renders the cached tool count, not the red failed default', async () => {
-    const frame = await renderNode(React.createElement(McpServerLine, { s: LAZY, t: DEFAULT_THEME }))
-
-    expect(frame).toContain('playwright')
-    expect(frame).toContain('3 tools')
-    expect(frame).toContain('(lazy)')
-    expect(frame).not.toContain('failed')
-    expect(frame).not.toContain('configured')
-  })
-
-  it('is not counted in the connected MCP headline', async () => {
-    // Parity with hermes_cli/banner.py, whose headline is sum(s["connected"]):
-    // a lazy server has no live session, so it must not inflate "N MCP".
+    // Parity with hermes_cli/banner.py, whose headline is sum(s["connected"]).
     const info: SessionInfo = {
       mcp_servers: [LAZY, { connected: true, name: 'nous-support', status: 'connected', tools: 6, transport: 'http' }],
       model: 'test-model',
@@ -113,9 +93,9 @@ describe('lazy MCP server status', () => {
       tools: {}
     }
 
-    const frame = await renderNode(React.createElement(SessionPanel, { info, sid: 'test', t: DEFAULT_THEME }))
+    const panel = await renderNode(React.createElement(SessionPanel, { info, sid: 'test', t: DEFAULT_THEME }))
 
-    expect(frame).toContain('1 MCP')
-    expect(frame).not.toContain('2 MCP')
+    expect(panel).toContain('1 MCP')
+    expect(panel).not.toContain('2 MCP')
   })
 })

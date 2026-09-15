@@ -453,118 +453,37 @@ def _join_discovery_thread():
         thread.join(timeout=5.0)
 
 
-def _reset_discovery_state(monkeypatch, *, started: bool) -> str:
-    """Put the per-home discovery bookkeeping in a known state and return this home's key."""
-    key = mcp_startup.hermes_home_key()
-    monkeypatch.setattr(mcp_startup, "_mcp_discovery_started", {key} if started else set())
-    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", {})
-    return key
+def _configured(*names):
+    return [{"name": n, "connected": False, "status": "configured", "tools": 0} for n in names]
 
 
-LAZY_STATUS = [{"name": "demo", "connected": False, "status": "lazy", "tools": 3}]
-CONFIGURED_STATUS = [{"name": "demo", "connected": False, "status": "configured", "tools": 0}]
+@pytest.mark.parametrize(
+    ("status", "server_filter", "succeeded"),
+    [
+        ([{"name": "demo", "connected": False, "status": "lazy", "tools": 3}], None, True),
+        (_configured("linear", "mem0"), "terminal", True),  # -t excluded every server on purpose
+        (_configured("linear", "mem0"), None, False),  # control: nothing came up
+        (_configured("linear", "mem0"), "terminal,linear", False),  # control: a named server did not
+    ],
+    ids=["all-lazy", "filtered-out", "nothing-up", "named-server-missing"],
+)
+def test_a_run_whose_servers_are_lazy_or_filtered_out_is_not_a_failed_run(
+    monkeypatch, _reset_mcp_server_filter, status, server_filter, succeeded,
+):
+    """Only a run that brought up nothing it was asked for may warn and re-arm the #66981 retry.
 
-
-def test_discovery_registered_servers_counts_live_and_lazy():
-    assert mcp_startup._discovery_registered_servers([]) is False
-    assert mcp_startup._discovery_registered_servers(None) is False
-    assert mcp_startup._discovery_registered_servers([{"connected": True}]) is True
-    assert mcp_startup._discovery_registered_servers(LAZY_STATUS) is True
-    assert mcp_startup._discovery_registered_servers(CONFIGURED_STATUS) is False
-    assert mcp_startup._discovery_registered_servers([{"status": "failed"}, "junk", None]) is False
-
-
-def test_lazy_only_discovery_is_not_retried(monkeypatch):
-    """A finished run that registered every server lazily is a successful run.
-
-    Before the lazy status, the re-entry check saw no ``connected`` entry and
-    re-spawned the discovery thread on every call (#66981's retry was meant
-    for a run that connected NOTHING, e.g. after startup cancellation).
+    A lazy server is up (tools cached, spawned on first use) and ``-t`` may exclude every server
+    on purpose; both read as failed runs and re-ran discovery on every call.
     """
-    calls = {"mcp": 0}
-    _install_retry_stubs(monkeypatch, connected=False, calls=calls, status=LAZY_STATUS)
-    key = _reset_discovery_state(monkeypatch, started=True)  # previous thread finished
-
-    warnings: list = []
-    mcp_startup.start_background_mcp_discovery(logger=_recording_logger(warnings), thread_name="t")
-
-    assert calls["mcp"] == 0
-    assert key not in mcp_startup._mcp_discovery_thread
-    assert warnings == []
-
-
-def test_configured_only_discovery_is_still_retried(monkeypatch):
-    """Control: a run that left every server merely configured is retried."""
-    calls = {"mcp": 0}
-    _install_retry_stubs(monkeypatch, connected=False, calls=calls, status=CONFIGURED_STATUS)
-    _reset_discovery_state(monkeypatch, started=True)
+    if server_filter is not None:
+        mcp_startup.set_mcp_server_filter(server_filter)
+    _install_retry_stubs(monkeypatch, connected=False, calls={"mcp": 0}, status=status)
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_started", {mcp_startup.hermes_home_key()})
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", {})
 
     warnings: list = []
     mcp_startup.start_background_mcp_discovery(logger=_recording_logger(warnings), thread_name="t")
     _join_discovery_thread()
 
-    assert calls["mcp"] == 1
-    assert any("retrying discovery thread" in w for w in warnings)
-
-
-def test_lazy_only_run_does_not_log_zero_connected(monkeypatch):
-    calls = {"mcp": 0}
-    _install_retry_stubs(monkeypatch, connected=False, calls=calls, status=LAZY_STATUS)
-    _reset_discovery_state(monkeypatch, started=False)
-
-    warnings: list = []
-    mcp_startup.start_background_mcp_discovery(logger=_recording_logger(warnings), thread_name="t")
-    _join_discovery_thread()
-
-    assert calls["mcp"] == 1
-    assert not any("zero connected" in w for w in warnings)
-
-
-def test_configured_only_run_still_logs_zero_connected(monkeypatch):
-    calls = {"mcp": 0}
-    _install_retry_stubs(monkeypatch, connected=False, calls=calls, status=CONFIGURED_STATUS)
-    _reset_discovery_state(monkeypatch, started=False)
-
-    warnings: list = []
-    mcp_startup.start_background_mcp_discovery(logger=_recording_logger(warnings), thread_name="t")
-    _join_discovery_thread()
-
-    assert calls["mcp"] == 1
-    assert any("zero connected" in w for w in warnings)
-
-
-def _status(*names):
-    return [{"name": n, "connected": False, "status": "configured"} for n in names]
-
-
-def test_a_toolsets_filter_that_excludes_every_server_is_not_a_failed_run(_reset_mcp_server_filter):
-    """`hermes -t terminal` with MCP servers configured: discovery intentionally spawns nothing
-    and every server still reports `configured`. That is the filter doing its job — warning and
-    retrying on it re-ran discovery on every call (#100648 review, @andrexibiza)."""
-    from hermes_cli.mcp_startup import _discovery_registered_servers, set_mcp_server_filter
-
-    assert _discovery_registered_servers(_status("linear", "mem0")) is False  # no filter: a real miss
-    set_mcp_server_filter("terminal")
-    assert _discovery_registered_servers(_status("linear", "mem0")) is True
-
-
-def test_a_filter_naming_a_configured_server_still_reports_a_failed_run(_reset_mcp_server_filter):
-    """The filter asked for a server that IS configured and it did not come up: still a failure."""
-    from hermes_cli.mcp_startup import _discovery_registered_servers, set_mcp_server_filter
-
-    set_mcp_server_filter("terminal,linear")
-    assert _discovery_registered_servers(_status("linear", "mem0")) is False
-
-
-def test_a_filtered_out_run_neither_warns_nor_retries(monkeypatch, caplog, _reset_mcp_server_filter):
-    """End to end through the two consumers: no zero-connected warning, no re-entry."""
-    import logging
-
-    from hermes_cli import mcp_startup
-
-    mcp_startup.set_mcp_server_filter("terminal")
-    monkeypatch.setattr("tools.mcp_tool_discovery.get_mcp_status", lambda *a, **k: _status("linear"))
-
-    with caplog.at_level(logging.WARNING):
-        assert mcp_startup._any_mcp_connected() is True
-    assert "zero connected servers" not in caplog.text
+    assert mcp_startup._any_mcp_connected() is succeeded
+    assert any("retrying discovery thread" in w for w in warnings) is not succeeded

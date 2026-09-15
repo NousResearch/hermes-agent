@@ -6,7 +6,7 @@ import unicodeSpinners from 'unicode-animations'
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
-import type { McpServerStatus, PanelSection, SessionInfo } from '../types.js'
+import type { PanelSection, SessionInfo } from '../types.js'
 
 import { Accordion } from './accordion.js'
 import { ShimmerRows } from './loaders.js'
@@ -209,9 +209,10 @@ const SKELETON_ROWS: readonly (readonly [number, number])[] = [
 const SKILLS_MAX = 8
 const TOOLSETS_MAX = 8
 
-/** One MCP server row. Exported so the wire→render contract can be pinned in a test:
- *  the MCP accordion is collapsed by default, so ``SessionPanel`` never renders these rows. */
-export function McpServerLine({ s, t }: { s: McpServerStatus; t: Theme }) {
+/** One MCP server row, typed as the wire entry ``session.info`` carries. Exported so the render
+ *  can be pinned in a test: the MCP accordion is collapsed by default, so ``SessionPanel`` never
+ *  renders these rows. */
+export function McpServerLine({ s, t }: { s: NonNullable<SessionInfo['mcp_servers']>[number]; t: Theme }) {
   return (
     <Text wrap="truncate">
       <Text color={t.color.muted}>{`  ${s.name} `}</Text>
@@ -226,9 +227,7 @@ export function McpServerLine({ s, t }: { s: McpServerStatus; t: Theme }) {
       ) : s.status === 'connecting' ? (
         <Text color={t.color.warn}>connecting</Text>
       ) : s.status === 'lazy' ? (
-        // Registered from the schema cache, process not spawned yet: its tools are callable,
-        // so it shows its cached count. Without this branch it fell through to the red
-        // "failed" default — the same misreport the CLI banner fixes here.
+        // Registered from the schema cache, not spawned yet: its cached tools are callable.
         <Text color={t.color.text}>
           {s.tools} tool{s.tools === 1 ? '' : 's'} <Text color={t.color.muted}>(lazy)</Text>
         </Text>

@@ -473,10 +473,7 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
             prior_lazy = set(_core._lazy_server_configs)
         tool_names = register_mcp_servers(servers)
         if new_server_names:
-            # A lazily registered server never connected, so it must not be counted as failed
-            # (the old summary read "N failed" for a healthy all-lazy config). Reporting it
-            # separately also keeps an already-lazy server from being re-announced on a
-            # repeat discovery.
+            # A lazy server never connected: count it as lazy, not failed, and announce it once.
             with _core._lock:
                 # ``keys[n]``: lazy state is keyed by resolved server key, not by name.
                 lazy_now = [n for n in new_server_names if keys[n] in _core._lazy_server_configs]
@@ -549,11 +546,8 @@ def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
 def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runtime: bool = True) -> List[dict]:
     """Per-server status dicts for banner/TUI: name, transport, tools, connected, disabled,
     status (connected / disabled / connecting / failed / lazy / configured) and error for failed.
-    Reads cached runtime state only; never connects.
-
-    ``lazy`` is a registered-but-not-spawned server: its tools are known and callable, the
-    process starts on first use. Reporting it as ``configured`` (never registered) or
-    ``failed`` (registration broke) both misread a working setup."""
+    ``lazy`` = registered from the schema cache, tools callable, process spawned on first use.
+    Reads cached runtime state only; never connects."""
     configured = _config._load_mcp_config() if configured is None else dict(configured)
     if not configured:
         return []
@@ -568,13 +562,9 @@ def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runt
         active_servers = {_key_name(k): s for k, s in _core._servers.items() if visible(k)}
         connecting = {_key_name(k) for k in _core._server_connecting if visible(k)}
         connect_errors = {_key_name(k): e for k, e in _core._server_connect_errors.items() if visible(k)}
-        # Lazy state is keyed by resolved server key, so it is scoped like the dicts above —
-        # but it is a REGISTRATION, not a live connection, so ``_server_visible_in_scope``
-        # (which reads the adoption/teardown maps a lazy server never populates) answers False
-        # even for the scope that owns it. ``_key_visible_in_scope`` is the registration-level
-        # predicate ``_resolve_server_key`` already uses for exactly this state.
-        # A stale _lazy_server_tool_names entry with no surviving _lazy_server_configs entry
-        # is NOT lazy any more, so gate on the configs dict too.
+        # A lazy entry is a registration, not a connection: ``_server_visible_in_scope`` reads maps it
+        # never populates, so scope it with the registration-level ``_key_visible_in_scope``. Tool
+        # names whose config is gone (the first-use connect succeeded) are no longer lazy.
         lazy_tool_names = {_key_name(k): list(v) for k, v in _core._lazy_server_tool_names.items()
                            if include_runtime and _key_visible_in_scope(k, current_scope)
                            and k in _core._lazy_server_configs}
@@ -584,8 +574,7 @@ def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runt
         enabled = _enabled(cfg)  # evaluated unconditionally: malformed values warn even when connected
         server = active_servers.get(name)
         live = server is not None and server.session is not None
-        # An in-flight or failed first-use connect outranks "lazy": that server is no longer
-        # merely waiting to be spawned.
+        # An in-flight or failed first-use connect outranks "lazy".
         status = ("connected" if live else "disabled" if not enabled else "connecting" if name in connecting
                   else "failed" if name in connect_errors else "lazy" if name in lazy_tool_names
                   else "configured")

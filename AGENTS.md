@@ -2,6 +2,12 @@
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
+## Ticket Tracking
+
+Open Hermes Agent execution work is tracked in Graf Edzard Tickets under the
+`Hermes Agent` project, not in repo `TODO.md` files. If a repo TODO file
+appears, treat it as a pointer or historical context only.
+
 ## Development Environment
 
 ```bash

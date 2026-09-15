@@ -185,6 +185,26 @@ class PluginDispatchMixin:
             if name in parameters and parameters[name].kind in keyword_kinds
         }))
 
+    @staticmethod
+    async def _invoke_hook_callback_async(callback: Callable, payload: Dict[str, Any]) -> Any:
+        """Invoke a hook callback on the caller's event loop when it is awaitable."""
+        try:
+            parameters = inspect.signature(callback).parameters
+        except (TypeError, ValueError):
+            result = callback(**payload)
+        else:
+            if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+                result = callback(**payload)
+            else:
+                keyword_kinds = {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+                result = callback(**{
+                    name: value for name, value in payload.items()
+                    if name in parameters and parameters[name].kind in keyword_kinds
+                })
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
     def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """Call all callbacks for *hook_name*; return their non-``None`` results.
 
@@ -213,6 +233,25 @@ class PluginDispatchMixin:
                         continue
                 else:
                     ret = self._invoke_hook_callback(cb, kwargs)
+                if ret is not None:
+                    results.append(ret)
+            except Exception as exc:
+                logger.warning(
+                    "Hook '%s' callback %s raised: %s", hook_name, getattr(cb, "__name__", repr(cb)), exc)
+        return results
+
+    async def invoke_hook_async(self, hook_name: str, **kwargs: Any) -> List[Any]:
+        """Await hook callbacks on the current event loop.
+
+        This is for async gateway policy hooks.  ``invoke_hook`` deliberately keeps its
+        compatibility behavior for every existing synchronous caller.
+        """
+        if hook_name != "gateway_platform_event":
+            kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
+        results: List[Any] = []
+        for cb in self._hooks.get(hook_name, []):
+            try:
+                ret = await self._invoke_hook_callback_async(cb, kwargs)
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:

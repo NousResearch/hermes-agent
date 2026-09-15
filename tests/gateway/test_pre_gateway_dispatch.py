@@ -5,6 +5,8 @@ agent dispatch. It runs in _handle_message and acts on returned action
 dicts: {"action": "skip"|"rewrite"|"allow"}.
 """
 
+import asyncio
+import contextvars
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -68,14 +70,14 @@ async def test_internal_events_bypass_hook(monkeypatch):
 
     called = {"count": 0}
 
-    def _fake_hook(name, **kwargs):
+    async def _fake_hook(name, **kwargs):
         called["count"] += 1
         return [{"action": "skip"}]
 
     async def _capture(event, source, _quick_key, _run_generation):
         return "ok"
 
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook_async", _fake_hook)
 
     runner, _adapter = _make_runner(Platform.WHATSAPP)
     runner._handle_message_with_agent = _capture  # noqa: SLF001
@@ -102,13 +104,13 @@ async def test_hook_fires_without_session_store_attribute(monkeypatch):
 
     seen = {}
 
-    def _fake_hook(name, **kwargs):
+    async def _fake_hook(name, **kwargs):
         if name == "pre_gateway_dispatch":
             seen["session_store"] = kwargs.get("session_store", "MISSING")
             return [{"action": "skip", "reason": "plugin-handled"}]
         return []
 
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook_async", _fake_hook)
 
     runner, adapter = _make_runner(Platform.WHATSAPP)
     del runner.session_store
@@ -118,3 +120,50 @@ async def test_hook_fires_without_session_store_attribute(monkeypatch):
     # Hook actually fired (skip short-circuited before auth) with a None store.
     assert seen == {"session_store": None}
     adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_async_hook_yields_event_loop_and_preserves_rewrite_context(monkeypatch):
+    """Admission awaits hooks on its loop, retaining ContextVars and rewrites."""
+    from hermes_cli.plugins import PluginManager
+    import hermes_cli.plugins as plugins
+
+    scope = contextvars.ContextVar("pre_gateway_dispatch_scope", default="missing")
+    started = asyncio.Event()
+    release = asyncio.Event()
+    concurrent_task_ran = False
+    seen = {}
+    manager = PluginManager()
+
+    async def _async_hook(**kwargs):
+        seen["scope"] = scope.get()
+        started.set()
+        await release.wait()
+        return {"action": "rewrite", "text": "rewritten"}
+
+    manager._hooks["pre_gateway_dispatch"] = [_async_hook]
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+    async def _concurrent_task():
+        nonlocal concurrent_task_ran
+        await started.wait()
+        concurrent_task_ran = True
+        release.set()
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+    # The old synchronous dispatcher waits in its thread bridge. Keep that
+    # deliberate RED failure short: the sibling cannot release the hook until
+    # admission returns to this event loop.
+    monkeypatch.setattr(plugins, "_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS", 0.01)
+    scope.set("gateway-profile")
+    admitted, _ = await asyncio.gather(
+        runner._hm_admit_event(_make_event("original")),
+        _concurrent_task(),
+    )
+
+    assert concurrent_task_ran is True
+    assert seen == {"scope": "gateway-profile"}
+    assert admitted is not None
+    assert admitted[0].text == "rewritten"

@@ -1127,6 +1127,33 @@ def test_slash_exec_rejects_skill_commands(server):
     assert "skill command" in resp["error"]["message"]
 
 
+@pytest.mark.parametrize(
+    ("method", "params"),
+    [
+        ("command.dispatch", {"name": "audit", "arg": "status"}),
+        ("slash.exec", {"command": "audit status"}),
+    ],
+)
+def test_plugin_commands_receive_none_gateway_context(server, method, params):
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+    received = []
+
+    def handler(raw_args, *, command_context):
+        received.append((raw_args, command_context))
+        return "ok"
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler", return_value=handler
+    ):
+        resp = server.handle_request(
+            {"id": "r1", "method": method, "params": {**params, "session_id": sid}}
+        )
+
+    assert resp["result"]["output"] == "ok"
+    assert received == [("status", None)]
+
+
 def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
     """slash.exec must resolve get_skill_commands() against the session's own
     profile_home rather than the gateway process's ambient HERMES_HOME

@@ -2,6 +2,7 @@ import { useAuiState, useMessageRuntime } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type MouseEvent, useCallback } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
 import { QUICK_REACTIONS, toggleMessageReaction } from '@/store/reactions'
@@ -41,12 +42,13 @@ function commitReaction(
   role: ChatMessage['role'],
   rowId: number | undefined,
   reactions: MessageReaction[],
-  emoji: null | string
+  emoji: null | string,
+  sessionId: null | string
 ): void {
   // Flip the UI immediately — a tapback is direct manipulation and must never
   // wait on a round-trip. Persistence follows in the background.
   setLocalReaction(messageId, emoji)
-  void toggleMessageReaction({ id: messageId, role, rowId, reactions } as ChatMessage, emoji)
+  void toggleMessageReaction({ id: messageId, role, rowId, reactions } as ChatMessage, emoji, 'user', sessionId)
 }
 
 /**
@@ -81,12 +83,16 @@ export function useMessageReactions(
   const enabled = useStore($reactionsEnabled)
   const localAll = useStore($localReactions)
   const agentLive = useStore($agentReactions)
+  const sessionView = useSessionView()
+  const runtimeSessionId = useStore(sessionView.$runtimeId)
+  const storedSessionId = useStore(sessionView.$storedId)
+  const sessionId = runtimeSessionId ?? storedSessionId
 
   return {
     enabled,
     react: useCallback(
-      (emoji: null | string) => commitReaction(messageId, role, rowId, reactions, emoji),
-      [messageId, reactions, role, rowId]
+      (emoji: null | string) => commitReaction(messageId, role, rowId, reactions, emoji, sessionId),
+      [messageId, reactions, role, rowId, sessionId]
     ),
     reactions: mergeReactions(reactions, localAll[messageId], rowId === undefined ? undefined : agentLive[rowId])
   }
@@ -107,6 +113,10 @@ export function useTapbackDoubleClick(
 ): ((event: MouseEvent<HTMLElement>) => void) | undefined {
   const enabled = useStore($reactionsEnabled)
   const messageRuntime = useMessageRuntime()
+  const sessionView = useSessionView()
+  const runtimeSessionId = useStore(sessionView.$runtimeId)
+  const storedSessionId = useStore(sessionView.$storedId)
+  const sessionId = runtimeSessionId ?? storedSessionId
 
   const onDoubleClick = useCallback(
     (event: MouseEvent<HTMLElement>) => {
@@ -136,10 +146,11 @@ export function useTapbackDoubleClick(
         role,
         custom.rowId,
         reactions,
-        mine?.emoji === DOUBLE_CLICK_REACTION ? null : DOUBLE_CLICK_REACTION
+        mine?.emoji === DOUBLE_CLICK_REACTION ? null : DOUBLE_CLICK_REACTION,
+        sessionId
       )
     },
-    [messageId, messageRuntime, role]
+    [messageId, messageRuntime, role, sessionId]
   )
 
   return enabled ? onDoubleClick : undefined

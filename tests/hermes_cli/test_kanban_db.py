@@ -248,6 +248,86 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
         assert payload["host_local"] is True
 
 
+def test_stale_claim_reclaim_without_spawn_counts_failure(kanban_home):
+    """Automatic reclaim of a claim that was never spawned (``worker_pid``
+    NULL) must increment ``consecutive_failures`` (#111306): otherwise a
+    claim-without-spawn reclaims forever, ``consecutive_failures`` stays 0,
+    and the failure_threshold breaker can never trip."""
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="never spawned", assignee="a")
+        host = kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        # No _set_worker_pid: the claimer never spawned a worker.
+        old_expires = int(time.time()) - 3600
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (old_expires, t),
+        )
+        assert kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None) == 1
+        row = conn.execute(
+            "SELECT status, consecutive_failures FROM tasks WHERE id = ?",
+            (t,),
+        ).fetchone()
+        assert row["status"] == "ready"
+        assert row["consecutive_failures"] == 1
+
+
+def test_stale_claim_reclaim_dead_worker_counts_failure(
+    kanban_home, monkeypatch,
+):
+    """Automatic reclaim of a claim whose worker already died must increment
+    ``consecutive_failures`` (#111306): the reclaim had no live worker to
+    terminate, so it counts against the failure_threshold breaker."""
+    import hermes_cli.kanban_db as _kb
+
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="dead worker", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kbd._set_worker_pid(conn, t, 12345)
+        old_expires = int(time.time()) - 3600
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (old_expires, t),
+        )
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+        assert kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None) == 1
+        row = conn.execute(
+            "SELECT status, consecutive_failures FROM tasks WHERE id = ?",
+            (t,),
+        ).fetchone()
+        assert row["status"] == "ready"
+        assert row["consecutive_failures"] == 1
+
+
+def test_stale_claim_extend_live_worker_does_not_count_failure(
+    kanban_home, monkeypatch,
+):
+    """The live-worker extend path must NOT increment ``consecutive_failures``
+    (#111306): extending a still-alive worker's claim is not a failure."""
+    import hermes_cli.kanban_db as _kb
+
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="live worker", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kbd._set_worker_pid(conn, t, 12345)
+        old_expires = int(time.time()) - 3600
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (old_expires, t),
+        )
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+        # Nothing reclaimed — the live claim is extended instead.
+        assert kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None) == 0
+        row = conn.execute(
+            "SELECT status, consecutive_failures FROM tasks WHERE id = ?",
+            (t,),
+        ).fetchone()
+        assert row["status"] == "running"
+        assert row["consecutive_failures"] == 0
+
+
 
 
 

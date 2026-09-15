@@ -2353,8 +2353,14 @@ def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
         with write_txn(conn):
             retry_status = _retry_status_for_run(conn, row["id"])
             cur = conn.execute(
+                # The reclaim had no live worker to keep the claim for, so the
+                # run failed without a verdict — count it against the
+                # failure_threshold breaker (consecutive_failures), else a
+                # claim-without-spawn spins forever with the counter at 0
+                # (#111306).
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
+                "claim_expires = NULL, worker_pid = NULL, "
+                "consecutive_failures = consecutive_failures + 1 "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
                 "AND claim_expires IS NOT NULL AND claim_expires < ?",
                 (retry_status, row["id"], row["claim_lock"], now),

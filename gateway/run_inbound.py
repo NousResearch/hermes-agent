@@ -1093,6 +1093,9 @@ class GatewayInboundMixin:
         """Reply for a /command that is not built-in/plugin/skill; None when it is known."""
         from gateway.run import _check_unavailable_skill
         from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+        # Known commands never need an unavailable-skill hint (which can require a cold scan).
+        if command.replace("_", "-") in GATEWAY_KNOWN_COMMANDS:
+            return None
         # Known-but-disabled or uninstalled skill → actionable guidance.
         _unavail_msg = _check_unavailable_skill(command)
         if _unavail_msg:
@@ -1100,8 +1103,6 @@ class GatewayInboundMixin:
         # Genuinely unrecognized: warn instead of forwarding to the LLM as free text (it invents
         # tool calls). Normalize to hyphenated form first: the quick-command block may have set an
         # alias target, so the resolved def can be stale.
-        if command.replace("_", "-") in GATEWAY_KNOWN_COMMANDS:
-            return None
         logger.warning(
             "Unrecognized slash command /%s from %s — replying with unknown-command notice",
             command, source.platform.value if source.platform else "?",

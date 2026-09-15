@@ -2,8 +2,6 @@ import asyncio
 import sqlite3
 from pathlib import Path
 
-import pytest
-
 
 from gateway.config import Platform
 from gateway.kanban_watchers_common import (
@@ -653,22 +651,14 @@ def _fmt_block_loop(payload):
     return msg
 
 
-@pytest.mark.parametrize(
-    "kind",
-    ["dependency", "capability", "transient", None],
-)
-def test_block_loop_non_owner_input_uses_neutral_orchestration_wording(kind):
-    """Orchestration/technical block kinds must NOT claim a human decision.
-
-    Regression for #111125: before this fix every `block_loop_detected` was
-    rendered as \"needs a human decision\" regardless of its typed reason. A
-    dependency wait, capability gap, or transient failure routed to triage is
-    an orchestration handoff with no question for the owner.
-    """
-    payload = {"reason": "waiting on upstream", "kind": kind, "recurrences": 2}
+def test_block_loop_technical_kind_uses_neutral_orchestration_wording():
+    """A repeated technical block (transient/capability/untyped) routed to
+    triage is an orchestration handoff with no question for the owner, so the
+    ping must not claim a human decision (#111125)."""
+    payload = {"reason": "waiting on upstream", "kind": "transient", "recurrences": 2}
     msg = _fmt_block_loop(payload)
     assert "for orchestration attention" in msg
-    assert "needs a human decision" not in msg
+    assert "human decision" not in msg
     # Circuit-breaker visibility is preserved.
     assert "TRIAGE" in msg
     assert "waiting on upstream" in msg

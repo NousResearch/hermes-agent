@@ -9,7 +9,7 @@
  * (gateway/kanban_watchers.py): 'completed' (kanban_db.complete_task —
  * payload: summary + artifacts), 'blocked' (payload: reason), 'gave_up'
  * (payload: error), 'crashed', 'timed_out', and 'block_loop_detected'
- * (payload: reason — the routed-to-triage human handoff).
+ * (payload: reason — the routed-to-triage orchestration handoff).
  *
  * Two delivery doors, complementary by design:
  *  - `host.notify` — the in-app toast, covers the foreground case;

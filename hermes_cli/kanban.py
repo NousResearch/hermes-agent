@@ -919,7 +919,9 @@ def _cmd_block(args: argparse.Namespace) -> int:
             if where == "todo":
                 return f"{tid} → todo (dependency wait){suffix}"
             if where == "triage":
-                return f"{tid} → triage (unblock loop detected — orchestration attention needed){suffix}"
+                # Only a typed owner-input block carries a question for a human.
+                verdict = "needs a human decision" if kind == "needs_input" else "orchestration attention needed"
+                return f"{tid} → triage (unblock loop detected — {verdict}){suffix}"
             return f"Blocked {tid}{suffix}"
 
         op = _commented(conn, reason, author, "BLOCKED", lambda tid: kb.block_task(

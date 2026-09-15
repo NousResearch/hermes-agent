@@ -4052,6 +4052,36 @@ export const en: Translations = {
         disk_full: {
           title: 'Disk full',
           body: 'Your disk is full, so Hermes could not save this conversation. Free some space, then retry.'
+        },
+        // Nous free tier. The body is normally the backend's own sentence (it names the wait
+        // and the way forward); these bodies stand in for an older backend that sent none.
+        free_tier_disabled: {
+          title: 'Using Hermes without signing in is switched off right now',
+          body: "Sign in with a Nous account to keep chatting, it's free and keeps the free model."
+        },
+        free_tier_rate_limited: {
+          title: "You've used up the allowance for chatting without signing in",
+          body: "It refreshes shortly. Sign in with a Nous account for a bigger allowance, it's free."
+        },
+        free_tier_at_capacity: {
+          title: 'Chatting without signing in is really busy right now',
+          body: "Sign in to skip the queue, it's free, or try again in a little while."
+        },
+        free_tier_model_not_free: {
+          title: "That model isn't available without signing in",
+          body: "Hermes uses the free model for now. Sign in with a Nous account for more models, it's free."
+        },
+        free_tier_route: {
+          title: "Hermes couldn't reach the free model on this route",
+          body: "Sign in with a Nous account, it's free, or check the NOUS_INFERENCE_BASE_URL setting."
+        },
+        free_tier_outage: {
+          title: 'The free model is having trouble responding right now',
+          body: 'Try sending your message again in a minute.'
+        },
+        free_tier_refused: {
+          title: "Hermes couldn't send that without signing in",
+          body: 'Signing in with a Nous account is free.'
         }
       },
       errorAuthKinds: {
@@ -4076,6 +4106,7 @@ export const en: Translations = {
       errorOpenHermesFolderFailed: 'Could not open the Hermes folder',
       errorUpdateApiKey: 'Update API key',
       errorSignInAgain: provider => `Sign in to ${provider} again`,
+      errorSignInFreeTier: 'Sign in with a Nous account',
       errorOauthExpired: provider =>
         `Your ${provider} sign-in has expired or was revoked. Sign in again to keep chatting.`,
       errorOpenLogs: 'Open logs',

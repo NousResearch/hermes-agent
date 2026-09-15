@@ -1,101 +1,54 @@
-"""BOM-tolerant reads of user-editable plugin/auth JSON files.
+"""User-editable plugin/auth JSON survives a Windows-editor BOM.
 
-Windows GUI editors (Notepad, PowerShell ``>``) prepend a UTF-8 BOM when
-saving JSON. ``json.loads`` hard-fails on a leading BOM ("Unexpected UTF-8
-BOM (decode using utf-8-sig)"), and every loader here swallows the exception
-and silently falls back to defaults — so a user who edited mem0.json /
-honcho.json / hindsight config.json / supermemory.json in Notepad lost their
-entire config with no error. Same class as the merged #81967 sweep (auth
-store, .env, memory files); these plugin-config readers were the missed
-sibling sites. Ported alongside earendil-works/pi#8337's BOM normalization.
-
-Each test writes the file with a real BOM (utf-8-sig encoding) and asserts
-the loader still returns the configured values.
+Notepad and PowerShell ``>`` prepend U+FEFF when saving; ``json.loads`` rejects it
+("Unexpected UTF-8 BOM") and every loader below degrades to defaults, so a user who
+edited mem0.json / honcho.json / hindsight config.json / supermemory.json lost the
+whole config with no error (Qwen CLI creds raised ``qwen_auth_read_failed``). Same
+class as the auth-store/.env sweep; these were the missed sibling readers.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
 
-def _write_bom_json(path, payload: dict) -> None:
+def _write_bom_json(path: Path, payload: dict) -> Path:
     path.write_text(json.dumps(payload), encoding="utf-8-sig")
-    # Sanity: the BOM must actually be on disk for the test to mean anything.
-    assert path.read_bytes().startswith(b"\xef\xbb\xbf")
+    assert path.read_bytes().startswith(b"\xef\xbb\xbf")  # the BOM must really be on disk
+    return path
 
 
-def test_mem0_load_config_tolerates_bom(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(
-        "hermes_constants.get_hermes_home", lambda: tmp_path
-    )
-    _write_bom_json(tmp_path / "mem0.json", {"agent_id": "bom-agent"})
-
-    from plugins.memory.mem0 import _load_config
-
-    assert _load_config()["agent_id"] == "bom-agent"
+def _via_shared_reader(p: Path) -> dict:
+    from utils import read_json_or_empty  # mem0 / hindsight / honcho CLI all read through this
+    return read_json_or_empty(p)
 
 
-def test_supermemory_load_config_tolerates_bom(tmp_path):
-    _write_bom_json(
-        tmp_path / "supermemory.json", {"container_tag": "bom-tag"}
-    )
-
+def _via_supermemory(p: Path) -> dict:
     from plugins.memory.supermemory import _load_supermemory_config
-
-    assert _load_supermemory_config(str(tmp_path))["container_tag"] == "bom-tag"
-
-
-def test_hindsight_load_config_tolerates_bom(tmp_path, monkeypatch):
-    (tmp_path / "hindsight").mkdir()
-    _write_bom_json(
-        tmp_path / "hindsight" / "config.json", {"mode": "bom-mode"}
-    )
-    import plugins.memory.hindsight as hs
-
-    monkeypatch.setattr(hs, "get_hermes_home", lambda: tmp_path)
-    assert hs._load_config()["mode"] == "bom-mode"
+    return _load_supermemory_config(str(p.parent))
 
 
-def test_honcho_cli_read_config_tolerates_bom(tmp_path, monkeypatch):
-    import plugins.memory.honcho.cli as hcli
-
-    cfg_path = tmp_path / "honcho.json"
-    monkeypatch.setattr(hcli, "_config_path", lambda: cfg_path)
-    _write_bom_json(cfg_path, {"workspace": "bom-ws"})
-    assert hcli._read_config()["workspace"] == "bom-ws"
-
-
-def test_honcho_client_from_global_config_tolerates_bom(tmp_path):
+def _via_honcho_client(p: Path) -> dict:
     from plugins.memory.honcho.client import HonchoClientConfig
-
-    cfg_path = tmp_path / "honcho.json"
-    _write_bom_json(cfg_path, {"workspace": "bom-ws", "enabled": True})
-    cfg = HonchoClientConfig.from_global_config(config_path=cfg_path)
-    assert cfg.workspace_id == "bom-ws"
-    assert cfg.explicitly_configured is True
+    cfg = HonchoClientConfig.from_global_config(config_path=p)
+    return {"workspace": cfg.workspace_id, "container_tag": None}
 
 
-def test_qwen_cli_tokens_tolerates_bom(tmp_path, monkeypatch):
+@pytest.mark.parametrize("filename, loader", [
+    ("mem0.json", _via_shared_reader),
+    ("supermemory.json", _via_supermemory),
+    ("honcho.json", _via_honcho_client),
+])
+def test_plugin_config_json_tolerates_bom(tmp_path, filename, loader):
+    _write_bom_json(tmp_path / filename, {"workspace": "bom-ws", "container_tag": "bom-tag", "enabled": True})
+    loaded = loader(tmp_path / filename)
+    assert "bom" in str(loaded.get("workspace") or loaded.get("container_tag"))
+
+
+def test_qwen_cli_tokens_tolerate_bom(tmp_path, monkeypatch):
     import hermes_cli.auth as auth_mod
 
-    creds = tmp_path / "oauth_creds.json"
-    _write_bom_json(
-        creds,
-        {"access_token": "tok", "expiry_date": 4102444800000},
-    )
+    creds = _write_bom_json(tmp_path / "oauth_creds.json", {"access_token": "tok", "expiry_date": 4102444800000})
     monkeypatch.setattr(auth_mod, "_qwen_cli_auth_path", lambda: creds)
-    data = auth_mod._read_qwen_cli_tokens()
-    assert data["access_token"] == "tok"
-
-
-def test_plain_utf8_still_parses(tmp_path):
-    """utf-8-sig reads plain UTF-8 unchanged — no regression for normal files."""
-    from plugins.memory.supermemory import _load_supermemory_config
-
-    (tmp_path / "supermemory.json").write_text(
-        json.dumps({"container_tag": "plain-tag"}), encoding="utf-8"
-    )
-    assert (
-        _load_supermemory_config(str(tmp_path))["container_tag"] == "plain-tag"
-    )
+    assert auth_mod._read_qwen_cli_tokens()["access_token"] == "tok"

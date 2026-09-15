@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { readDesktopFileDataUrl } = vi.hoisted(() => ({ readDesktopFileDataUrl: vi.fn() }))
 
-vi.mock('@/lib/desktop-fs', () => ({
+vi.mock('@/lib/desktop-fs', async importOriginal => ({
+  ...(await (importOriginal() as Promise<Record<string, unknown>>)),
   isDesktopFsRemoteMode: () => true,
   readDesktopFileDataUrl,
   readDesktopFileText: vi.fn()

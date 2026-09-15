@@ -9,7 +9,7 @@ import { markRightPanePerf } from '@/debug/right-pane-events'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { cn } from '@/lib/utils'
 import { type RepoChangeKind, repoChangeKindForPath } from '@/store/coding-status'
-import { $renamingPath, beginInlineRename } from '@/store/file-actions'
+import { $renamingPath, beginInlineRename, isRecentOpenWithDefaultApp } from '@/store/file-actions'
 import { $revealInTreeRequest } from '@/store/layout'
 
 import { FileEntryContextMenu, InlineRenameInput, isRenameShortcut } from '../file-actions'
@@ -150,8 +150,16 @@ export function ProjectTree({
     (node: NodeApi<TreeNode>) => {
       // arborist fires onActivate on click/dblclick/Enter — independent of the
       // row's own handlers. Suppress it for the row being renamed so the
-      // context-menu "Rename" (and its fall-through) can't open the preview.
-      if (node.data && !node.data.isDirectory && $renamingPath.get() !== node.data.id) {
+      // context-menu "Rename" (and its fall-through) can't open the preview,
+      // and right after "Open with default app" whose menu close falls
+      // through to this same row (the OS app opening must not also raise the
+      // preview pane).
+      if (
+        node.data &&
+        !node.data.isDirectory &&
+        $renamingPath.get() !== node.data.id &&
+        !isRecentOpenWithDefaultApp()
+      ) {
         onPreviewFile?.(node.data.id)
       }
     },

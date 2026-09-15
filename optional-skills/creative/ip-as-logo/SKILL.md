@@ -2,14 +2,14 @@
 name: ip-as-logo
 description: "Design minimal cute IP mascot marks readable at 32px."
 version: 1.0.0
-author: s1dashu (https://github.com/s1dashu/ip-as-logo-skill), ported by Hermes Agent
+author: s1dashu (https://github.com/s1dashu, upstream s1dashu/ip-as-logo-skill), ported by Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [logo, mascot, branding, ip-character, image-generation, creative]
     category: creative
-    homepage: https://github.com/s1dashu/ip-as-logo-skill
+    upstream: https://github.com/s1dashu/ip-as-logo-skill (pinned b1bf517c)
     related_skills: [pixel-art]
 ---
 
@@ -18,7 +18,10 @@ metadata:
 Create the simplest possible cute IP character: a compact, lovable symbol that remains recognizable at `32 × 32`, not a detailed character illustration. Use when a user wants a mascot, IP character, brand character, or "cute logo" for a product, repo, app, or community.
 
 > **Hermes adaptation notes** (the rest of this document is the upstream
-> workflow, kept intact — snapshot of commit `b1bf517c`, Aug 20 2026):
+> workflow, kept intact — snapshot of
+> [s1dashu/ip-as-logo-skill](https://github.com/s1dashu/ip-as-logo-skill)
+> commit [`b1bf517c`](https://github.com/s1dashu/ip-as-logo-skill/commit/b1bf517c54a407452cfaca98a54668cd052f8e63),
+> Aug 20 2026, MIT — see `LICENSE`):
 >
 > - **Image generation path**: use the built-in `image_generate` tool with
 >   `aspect_ratio="square"`. The active backend is user-configured — do not

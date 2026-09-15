@@ -549,13 +549,13 @@ def _save_toolset_pin(cfg, enabled, save_config) -> None:
 def _save_mcp_toggles(cfg, enabled, launch_mcp, save_config) -> None:
     wanted = srv._clean_names(enabled)
     mcp_cfg = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
-    for srv in wanted:
-        if not isinstance(mcp_cfg.get(srv), dict) and isinstance(launch_mcp.get(srv), dict):
-            mcp_cfg[srv] = dict(launch_mcp[srv])
-        if isinstance(mcp_cfg.get(srv), dict):
-            mcp_cfg[srv].pop("disabled", None)
-    for srv, entry in mcp_cfg.items():
-        if srv not in wanted and isinstance(entry, dict):
+    for name in wanted:
+        if not isinstance(mcp_cfg.get(name), dict) and isinstance(launch_mcp.get(name), dict):
+            mcp_cfg[name] = dict(launch_mcp[name])
+        if isinstance(mcp_cfg.get(name), dict):
+            mcp_cfg[name].pop("disabled", None)
+    for name, entry in mcp_cfg.items():
+        if name not in wanted and isinstance(entry, dict):
             entry["disabled"] = True
     if mcp_cfg:
         cfg["mcp_servers"] = mcp_cfg

@@ -1478,7 +1478,7 @@ def _billing_view(name: str, module: str, builder: str, serializer: str, fallbac
     def _(rid, params) -> object:
         try:
             from importlib import import_module
-            return result_type.model_validate(globals()[serializer](getattr(import_module(module), builder)()))
+            return result_type.model_validate(getattr(srv, serializer)(getattr(import_module(module), builder)()))
         except Exception:
             return result_type.model_validate(fallback)
 

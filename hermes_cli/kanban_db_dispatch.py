@@ -1244,10 +1244,7 @@ def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
     return _gated
 
 
-# Env-var bridge for the per-home kanban dispatch claim allowlist (#110995).
-# Non-secret behavioral settings live in config.yaml; this is the fleet-friendly
-# runtime override (containers set env per home more easily than per-home
-# config.yaml edits), mirroring terminal.cwd -> TERMINAL_CWD.
+# HERMES_KANBAN_DISPATCH_PROFILES env bridge for the per-home claim allowlist (#110995).
 KANBAN_DISPATCH_PROFILES_ENV = "HERMES_KANBAN_DISPATCH_PROFILES"
 
 

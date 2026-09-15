@@ -754,7 +754,7 @@ def _mcp_server_line(srv: dict, *, dim: str, text: str) -> str:
         return f"[dim {dim}]{name}[/] [{text}]({transport})[/] [dim {dim}]—[/] [{text}]{srv['tools']} tool(s)[/]"
     # Needs srv['tools'], so it cannot live in the suffix dict below. A registered but unspawned
     # server has callable tools; falling through to the red "failed" line misreports a working setup.
-    if srv.get("status") == "lazy" and not srv.get("disabled"):
+    if srv.get("status") == "lazy":
         return (f"[dim {dim}]{name}[/] [{text}]({transport})[/] [dim {dim}]—[/] "
                 f"[{text}]{srv['tools']} tool(s)[/] [dim {dim}](lazy, starts on first use)[/]")
     status = "disabled" if srv.get("disabled") else srv.get("status")

@@ -5,6 +5,8 @@ import os
 import subprocess
 import sys
 import textwrap
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -610,7 +612,7 @@ class TestReapUnsupervisedGatewayOrphansMacOS:
         # _get_service_pids returns the launchd-managed gateway PID.
         # (accepts all_profiles: the reaper asks for the whole fleet, #74075)
         monkeypatch.setattr(
-            gateway, "_get_service_pids", lambda all_profiles=False: {launchd_pid}
+            gateway, "_get_service_pids", lambda all_profiles=False, **_kw: {launchd_pid}
         )
         # No pidfile-recorded gateway in this scenario.
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
@@ -645,7 +647,7 @@ class TestReapUnsupervisedGatewayOrphansMacOS:
         monkeypatch.setattr(gateway, "is_macos", lambda: True)
         monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
         monkeypatch.setattr(
-            gateway, "_get_service_pids", lambda all_profiles=False: {launchd_pid}
+            gateway, "_get_service_pids", lambda all_profiles=False, **_kw: {launchd_pid}
         )
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
 
@@ -663,6 +665,114 @@ class TestReapUnsupervisedGatewayOrphansMacOS:
 
         assert result is False  # no orphans reaped
         assert killed_pids == []  # nothing was killed
+
+    def test_macos_reap_aborts_when_launchd_lookup_times_out(self, monkeypatch):
+        """A launchctl stall must abort the sweep, not expose the supervised PID.
+
+        ``_get_service_pids(all_profiles=True)`` used to swallow ``TimeoutExpired``
+        per label, so a transient launchd stall silently dropped the root gateway
+        from the exclusion set and the reaper SIGTERM'd it as an "orphan".
+        """
+        root_pid = 52615
+
+        monkeypatch.setattr(gateway, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway, "get_launchd_label", lambda: "ai.hermes.gateway-analyst")
+        monkeypatch.setattr(
+            gateway,
+            "launchd_gateway_labels_for_install",
+            lambda: ["ai.hermes.gateway", "ai.hermes.gateway-analyst"],
+        )
+
+        def fake_locate(label):
+            if label == "ai.hermes.gateway":
+                raise subprocess.TimeoutExpired(["launchctl", "print", label], 5)
+            return (None, None)
+
+        monkeypatch.setattr(gateway, "_locate_launchd_gateway_service", fake_locate)
+        monkeypatch.setattr(
+            gateway.subprocess, "run", lambda argv, **_kwargs: SimpleNamespace(returncode=1, stdout="")
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda **_kw: None)
+        monkeypatch.setattr(
+            gateway,
+            "find_gateway_pids",
+            lambda exclude_pids=None, **_kwargs: [
+                pid for pid in [root_pid] if pid not in (exclude_pids or set())
+            ],
+        )
+
+        killed_pids = []
+        monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append(pid))
+        monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: False)
+        monkeypatch.setattr("gateway.status.write_planned_stop_marker", lambda _pid: None)
+
+        # Non-destructive callers keep the old best-effort contract ...
+        assert gateway._get_service_pids(all_profiles=True) == set()
+        # ... the reaper asks for fail-closed discovery and propagates the stall.
+        with pytest.raises(subprocess.TimeoutExpired):
+            gateway._get_service_pids(all_profiles=True, fail_closed=True)
+
+        assert gateway._reap_unsupervised_gateway_orphans() is False
+        assert killed_pids == []
+
+    def test_concurrent_profile_reapers_fail_closed_when_root_lookup_times_out(
+        self, monkeypatch
+    ):
+        """Several profile backends reaping at once must all abort on a stalled root lookup."""
+        root_pid = 52615
+        concurrent_lookups = 3
+        root_lookup_barrier = threading.Barrier(concurrent_lookups)
+
+        monkeypatch.setattr(gateway, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway, "get_launchd_label", lambda: "ai.hermes.gateway-analyst")
+        monkeypatch.setattr(
+            gateway,
+            "launchd_gateway_labels_for_install",
+            lambda: ["ai.hermes.gateway", "ai.hermes.gateway-analyst"],
+        )
+
+        def fake_locate(label):
+            if label == "ai.hermes.gateway":
+                root_lookup_barrier.wait(timeout=5)
+                raise subprocess.TimeoutExpired(["launchctl", "print", label], 5)
+            return (None, None)
+
+        monkeypatch.setattr(gateway, "_locate_launchd_gateway_service", fake_locate)
+        monkeypatch.setattr(
+            gateway.subprocess, "run", lambda argv, **_kwargs: SimpleNamespace(returncode=1, stdout="")
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda **_kw: None)
+        monkeypatch.setattr(
+            gateway,
+            "find_gateway_pids",
+            lambda exclude_pids=None, **_kwargs: [
+                pid for pid in [root_pid] if pid not in (exclude_pids or set())
+            ],
+        )
+
+        killed_pids = []
+        killed_pids_lock = threading.Lock()
+
+        def record_kill(pid, _signal):
+            with killed_pids_lock:
+                killed_pids.append(pid)
+
+        monkeypatch.setattr(gateway.os, "kill", record_kill)
+        monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: False)
+        monkeypatch.setattr("gateway.status.write_planned_stop_marker", lambda _pid: None)
+
+        with ThreadPoolExecutor(max_workers=concurrent_lookups) as executor:
+            results = list(
+                executor.map(
+                    lambda _index: gateway._reap_unsupervised_gateway_orphans(),
+                    range(concurrent_lookups),
+                )
+            )
+
+        assert results == [False] * concurrent_lookups
+        assert killed_pids == []
 
 
 class TestReapUnsupervisedGatewayOrphansWindows:

@@ -328,7 +328,8 @@ class MemoryStore:
         ops = [op or {} for op in operations]
         # Scan every add/replace content BEFORE touching disk -- one poisoned op rejects the batch.
         for i, op in enumerate(ops):
-            scan_error = op.get("action") in {"add", "replace"} and op.get("content") and _scan_memory_content(op["content"])
+            content = op.get("content") or op.get("new_text") or ""
+            scan_error = op.get("action") in {"add", "replace"} and content and _scan_memory_content(content)
             if scan_error:
                 return _error(f"Operation {i + 1}: {scan_error}")
 

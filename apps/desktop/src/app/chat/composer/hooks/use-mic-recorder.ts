@@ -33,6 +33,8 @@ interface MicRecorderHandle {
   cancel: () => void
 }
 
+const VAD_TICK_MS = 40
+
 function micError(error: unknown, copy: MicRecorderErrorCopy): Error {
   const name = error instanceof DOMException ? error.name : ''
 
@@ -80,7 +82,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
 
   const cleanup = () => {
     if (animationRef.current) {
-      window.cancelAnimationFrame(animationRef.current)
+      window.clearTimeout(animationRef.current)
       animationRef.current = null
     }
 
@@ -157,7 +159,11 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
           }
         }
 
-        animationRef.current = window.requestAnimationFrame(tick)
+        // Timer, not requestAnimationFrame: rAF stops entirely while the window is
+        // occluded or hidden, which froze the VAD loop whenever the user spoke a
+        // wake word from another app. Pages with an active mic capture are exempt
+        // from Chromium's background timer throttling, so this keeps ticking.
+        animationRef.current = window.setTimeout(tick, VAD_TICK_MS)
       }
 
       tick()

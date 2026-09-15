@@ -65,7 +65,7 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
     disposed = true
 
     if (frame !== null) {
-      window.cancelAnimationFrame(frame)
+      window.clearTimeout(frame)
       frame = null
     }
 
@@ -313,7 +313,7 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
           }
         }
 
-        frame = window.requestAnimationFrame(tick)
+        frame = window.setTimeout(tick, 40) // timer, not rAF: keeps running while occluded
       }
 
       tick()

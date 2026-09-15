@@ -11,8 +11,8 @@ const toolPanel = (): StripPane => ({ collapsePane: true, placement: 'bottom' })
 const sideChrome = (): StripPane => ({ collapsePane: false, placement: 'right' })
 
 describe('auto (no stored choice)', () => {
-  it('gives a lone workspace no strip and a stack of two a strip', () => {
-    expect(resolveTabStripVisible({ shown: [workspace()] })).toBe(false)
+  it('gives a lone workspace a strip so Close and + stay reachable', () => {
+    expect(resolveTabStripVisible({ shown: [workspace()] })).toBe(true)
     expect(resolveTabStripVisible({ shown: [workspace(), sideChrome()] })).toBe(true)
   })
 
@@ -44,11 +44,16 @@ describe('no dead zone', () => {
     expect(resolveTabStripVisible({ mode: 'never', shown: [toolPanel()] })).toBe(true)
   })
 
+  it('keeps the strip for a lone workspace even when the zone says never', () => {
+    // Workspace cannot leave the tree, but Close still empties it to a draft
+    // and + still opens a tab. Chromeless is a dead zone for those handles.
+    expect(resolveTabStripVisible({ mode: 'never', shown: [workspace()] })).toBe(true)
+  })
+
   it('still hides a zone that cannot strand anything', () => {
-    // The workspace is uncloseable, a stack is reachable by tab cycling, and
-    // hide-only chrome (sessions / Bots) keeps its panes + ⌘⌥T — the invariant
-    // protects handles, it does not veto hiding as such.
-    expect(resolveTabStripVisible({ mode: 'never', shown: [workspace()] })).toBe(false)
+    // A stack is reachable by tab cycling, and hide-only chrome (sessions /
+    // Bots) keeps its panes + ⌘⌥T — the invariant protects handles, it does
+    // not veto hiding as such.
     expect(resolveTabStripVisible({ mode: 'never', shown: [toolPanel(), toolPanel()] })).toBe(false)
     expect(resolveTabStripVisible({ mode: 'never', shown: [sideChrome()] })).toBe(false)
     expect(resolveTabStripVisible({ mode: 'never', shown: [sideChrome(), sideChrome()] })).toBe(false)
@@ -113,7 +118,7 @@ describe('tabStripVisibleForZone', () => {
   afterEach(() => setTabStripDefault('auto'))
 
   it('reads placement, uncloseable and collapse off the contributions', () => {
-    expect(visible(['workspace'])).toBe(false)
+    expect(visible(['workspace'])).toBe(true)
     expect(visible(['tile:a'], 'never')).toBe(true)
     expect(visible(['terminal'], 'never')).toBe(true)
   })
@@ -131,6 +136,6 @@ describe('tabStripVisibleForZone', () => {
     expect(visible(['workspace'], 'always')).toBe(true)
 
     setTabStripDefault('always')
-    expect(visible(['workspace'], 'never')).toBe(false)
+    expect(visible(['workspace'], 'never')).toBe(true)
   })
 })

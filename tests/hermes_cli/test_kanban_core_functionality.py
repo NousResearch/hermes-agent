@@ -1416,3 +1416,244 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
         conn.close()
 
 
+def test_protocol_violation_respects_max_retries_precedence(kanban_home):
+    """Per-task ``max_retries`` overrides the violation bound, both ways.
+
+    Same top precedence it has for every other failure kind in
+    ``_record_task_failure``: ``max_retries=1`` blocks on the FIRST violation
+    (zero retries — the pre-fix behavior, now opt-in per task);
+    ``max_retries=5`` keeps retrying past the default bound of 3 and blocks
+    on the 5th consecutive violation.
+    """
+    conn = kb.connect()
+    try:
+        strict = kb.create_task(
+            conn, title="strict", assignee="worker", max_retries=1,
+        )
+        _drive_protocol_violation(conn, strict, 992000)
+        task = kb.get_task(conn, strict)
+        assert task.status == "blocked", (
+            f"max_retries=1 must block on the first violation, got {task.status}"
+        )
+        gave_up = [e for e in kb.list_events(conn, strict) if e.kind == "gave_up"]
+        assert len(gave_up) == 1
+        payload = gave_up[0].payload or {}
+        assert payload.get("protocol_violations") == 1
+        assert payload.get("protocol_violation_limit") == 1
+
+        lenient = kb.create_task(
+            conn, title="lenient", assignee="worker", max_retries=5,
+        )
+        for i in range(4):
+            _drive_protocol_violation(conn, lenient, 992100 + i)
+            assert kb.get_task(conn, lenient).status == "ready", (
+                f"violation {i + 1}/5 should retry under max_retries=5"
+            )
+        _drive_protocol_violation(conn, lenient, 992104)
+        assert kb.get_task(conn, lenient).status == "blocked"
+    finally:
+        conn.close()
+
+
+def test_detect_crashed_workers_nonzero_exit_uses_default_limit(kanban_home):
+    """A worker that exited non-zero (real error / crash) uses the
+    normal counter path — one failure doesn't trip the breaker.
+    """
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli import kanban_db_dispatch as _kbd
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="crashy", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
+        fake_pid = 999997
+        _kbd._set_worker_pid(conn, tid, fake_pid)
+
+        # W_EXITCODE(1, 0) == 256 — WIFEXITED True, WEXITSTATUS == 1.
+        _kbd._record_worker_exit(fake_pid, 256)
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            _kbd.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready", (
+            f"single non-zero crash shouldn't auto-block, got {task.status}"
+        )
+        assert task.consecutive_failures == 1
+        events = kb.list_events(conn, tid)
+        kinds = [e.kind for e in events]
+        assert "crashed" in kinds
+        assert "protocol_violation" not in kinds
+    finally:
+        conn.close()
+
+
+def test_reclaim_task_clears_failure_counter(kanban_home):
+    """Operator reclaim wipes the counter so the next retry gets a fresh
+    budget."""
+    import secrets
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="stuck", assignee="worker")
+        lock = secrets.token_hex(4)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='running', claim_lock=?, "
+                "claim_expires=?, worker_pid=?, consecutive_failures=4, "
+                "last_failure_error='prior issue' WHERE id=?",
+                (lock, int(time.time()) + 3600, 12345, tid),
+            )
+            conn.execute(
+                "INSERT INTO task_runs (task_id, status, claim_lock, "
+                "claim_expires, worker_pid, started_at) "
+                "VALUES (?, 'running', ?, ?, ?, ?)",
+                (tid, lock, int(time.time()) + 3600, 12345, int(time.time())),
+            )
+            rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.execute(
+                "UPDATE tasks SET current_run_id=? WHERE id=?",
+                (rid, tid),
+            )
+
+        ok = kb.reclaim_task(conn, tid, reason="operator fixed config")
+        assert ok
+
+        task = kb.get_task(conn, tid)
+        assert task.consecutive_failures == 0
+        assert task.last_failure_error is None
+        assert task.status == "ready"
+    finally:
+        conn.close()
+
+
+def test_dispatch_once_integrates_stale_detection(kanban_home, monkeypatch):
+    """dispatch_once with stale_timeout_seconds reclaims stale running tasks."""
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli import kanban_db_dispatch as _kbd
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="stale-dispatch", assignee="worker")
+        kb.claim_task(conn, t)
+        _kbd._set_worker_pid(conn, t, 99999)  # fake PID — avoid killing test
+
+        five_hours_ago = int(time.time()) - (5 * 3600)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET started_at = ? WHERE id = ?", (five_hours_ago, t)
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? "
+                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                (five_hours_ago, t),
+            )
+
+        res = _kbd.dispatch_once(
+            conn,
+            spawn_fn=lambda tsk, ws: None,
+            stale_timeout_seconds=14400,
+        )
+        assert t in res.stale, "Stale task should appear in result.stale"
+        assert kb.get_task(conn, t).status == "ready"
+
+
+def test_dispatch_once_stale_disabled_when_timeout_zero(kanban_home, monkeypatch):
+    """dispatch_once with stale_timeout_seconds=0 skips stale detection."""
+    # Use os.getpid() so _pid_alive → True, preventing detect_crashed_workers
+    # from reclaiming. Only stale detection (disabled via timeout=0) is tested.
+
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli import kanban_db_dispatch as _kbd
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="skip-stale", assignee="worker")
+        kb.claim_task(conn, t)
+        # Claim sets worker_pid to 0 initially. Set it to os.getpid() so the
+        # crash detector sees a live PID and skips it.
+        _kbd._set_worker_pid(conn, t, os.getpid())
+
+        five_hours_ago = int(time.time()) - (5 * 3600)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET started_at = ? WHERE id = ?", (five_hours_ago, t)
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? "
+                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                (five_hours_ago, t),
+            )
+
+        res = _kbd.dispatch_once(
+            conn,
+            spawn_fn=lambda tsk, ws: None,
+            stale_timeout_seconds=0,
+        )
+        assert res.stale == [], "stale_timeout_seconds=0 should disable detection"
+        assert kb.get_task(conn, t).status == "running"
+
+
+# ── kanban_submit_review producer (running -> review) ────────────────────────
+
+def test_submit_review_transitions_running_task(kanban_home):
+    """submit_review_task moves running -> review and clears the claim."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="impl work", assignee="worker")
+        kb.claim_task(conn, tid)
+        assert kb.get_task(conn, tid).status == "running"
+
+        assert kb.submit_review_task(conn, tid) is True
+        task = kb.get_task(conn, tid)
+        assert task.status == "review"
+        assert task.claim_lock is None
+        assert task.claim_expires is None
+    finally:
+        conn.close()
+
+
+def test_submit_review_rejects_non_running(kanban_home):
+    """A task that is not running cannot be submitted for review."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="ready work", assignee="worker")
+        # ready, not running
+        assert kb.submit_review_task(conn, tid) is False
+        assert kb.get_task(conn, tid).status == "ready"
+    finally:
+        conn.close()
+
+
+def test_stale_run_cannot_submit_review_new_attempt(kanban_home, monkeypatch):
+    """A worker from an earlier attempt cannot move a later retry to review."""
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli import kanban_db_dispatch as _kbd
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="review retry guarded", assignee="worker")
+
+        kb.claim_task(conn, tid)
+        run1 = kb.latest_run(conn, tid)
+        _kbd._set_worker_pid(conn, tid, 98765)
+        monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
+        assert _kbd.detect_crashed_workers(conn) == [tid]
+
+        kb.claim_task(conn, tid)
+        run2 = kb.latest_run(conn, tid)
+        assert run2.id != run1.id
+
+        # Stale run1 must NOT be able to submit the task (run2 is active).
+        assert not kb.submit_review_task(conn, tid, expected_run_id=run1.id)
+        task = kb.get_task(conn, tid)
+        assert task.status == "running"
+        assert task.current_run_id == run2.id
+
+        # The current run2 can.
+        assert kb.submit_review_task(conn, tid, expected_run_id=run2.id)
+        assert kb.get_task(conn, tid).status == "review"
+    finally:
+        conn.close()

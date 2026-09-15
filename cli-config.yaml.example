@@ -1785,6 +1785,11 @@ display:
   # Play terminal bell when a blocking prompt opens and waits on you:
   # clarify questions, dangerous-command approvals, sudo password, secret
   # capture. Same mechanism as bell_on_complete (\a) — works over SSH.
+  # Also raises a desktop notification: the clarify notification carries the
+  # question text; known OSC 9 terminals raise it natively; other terminals
+  # (and sessions inside tmux/screen, which drop OSC sequences unless
+  # passthrough is configured) get an OS notification (macOS via osascript,
+  # attributed to Script Editor; Linux notify-send), skipped over SSH.
   #   true:  Ring whenever the agent is waiting for your input
   #   false: Silent (default)
   bell_on_prompt: false

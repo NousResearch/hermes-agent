@@ -1,6 +1,6 @@
 """Terminal-native desktop notifications: OSC 9 and Warp's OSC 777 CLI-agent protocol.
 
-OSC 9 (``ESC ] 9 ; <body> BEL``): Ghostty, iTerm2, Kitty and WezTerm raise an OS notification;
+OSC 9 (``ESC ] 9 ; <body> BEL``): Foot, Ghostty, iTerm2, Kitty and WezTerm raise an OS notification;
 others drop it. OSC 777 (``ESC ] 777 ; notify ; warp://cli-agent ; <json> BEL``): Warp's
 structured CLI-agent protocol (tab status + notification mailbox).
 
@@ -38,6 +38,20 @@ def _write_tty(seq: str) -> None:
         pass
 
 
+_BODY_LIMIT = 200  # matches the Warp payload's existing detail[:200] cap so both surfaces
+                   # carry the same text
+
+
+def prompt_body(kind: str, detail: str = "") -> str:
+    """Notification body for a blocking prompt: "<kind> — <detail>", detail collapsed to a
+    single line (whitespace runs, including newlines, become one space) and capped at
+    _BODY_LIMIT codepoints. Falls back to just <kind> when detail is empty/whitespace."""
+    collapsed = " ".join(detail.split())
+    if not collapsed:
+        return kind
+    return f"{kind} — {collapsed[:_BODY_LIMIT]}"
+
+
 def osc9(body: str) -> str:
     """OSC 9 sequence with C0 controls and DEL stripped from the body."""
     return f"\x1b]9;{_C0_AND_DEL.sub('', body)}\x07"
@@ -65,6 +79,27 @@ def warp_osc777(event: str, detail: str, session_id: str = "") -> str:
     return f"\x1b]777;notify;warp://cli-agent;{json.dumps(payload, separators=(',', ':'))}\x07"
 
 
+# Terminals that raise an OS notification for OSC 9. Verified against terminal-support
+# references: iTerm2, Ghostty, WezTerm, Warp (and kitty/foot, which leave TERM_PROGRAM unset and
+# are matched on TERM). xterm.js-based terminals (VS Code, Cursor) are deliberately absent —
+# xterm.js does not implement OSC 9 notifications.
+_OSC9_TERM_PROGRAMS = {"iterm.app", "ghostty", "wezterm", "warpterminal"}
+_OSC9_TERMS = ("kitty", "foot")
+
+
+def osc9_capable(env=None) -> bool:
+    """True when the terminal described by `env` raises an OS notification for OSC 9."""
+    env = os.environ if env is None else env
+    if env.get("TMUX") or env.get("STY"):
+        # tmux/screen drop unknown OSC unless passthrough is configured, so the sequence never
+        # reaches the terminal — treat the session as incapable and let the OS notifier cover it.
+        return False
+    if (env.get("TERM_PROGRAM") or "").lower() in _OSC9_TERM_PROGRAMS:
+        return True
+    term = (env.get("TERM") or "").lower()
+    return any(name in term for name in _OSC9_TERMS)
+
+
 def notify(context: str, *, prompt: bool, session_id: str = "", detail: str = "") -> None:
     """Emit OSC 9 (plus Warp OSC 777 when supported) for a blocking prompt or turn end."""
     seq = osc9(f"Hermes: {context}")
@@ -72,3 +107,10 @@ def notify(context: str, *, prompt: bool, session_id: str = "", detail: str = ""
         event = "permission_request" if prompt else "stop"
         seq += warp_osc777(event, detail or context, session_id)
     _write_tty(seq)
+    if not osc9_capable():
+        try:
+            from hermes_cli import os_notify
+
+            os_notify.notify("Hermes", context)
+        except Exception:
+            pass

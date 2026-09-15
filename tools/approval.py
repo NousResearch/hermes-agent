@@ -332,6 +332,13 @@ def is_approved(session_key: str, pattern_key: str) -> bool:
     return any(alias in approved for alias in aliases)
 
 
+def _is_permanently_approved(pattern_key: str) -> bool:
+    """Whether the active profile permanently allows this dangerous-pattern key."""
+    aliases = _approval_key_aliases(pattern_key)
+    with _lock:
+        return any(alias in _permanent_set() for alias in aliases)
+
+
 def approve_permanent(pattern_key: str):
     """Add a pattern to the permanent allowlist."""
     with _lock:
@@ -599,7 +606,7 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
             advice="Find an alternative approach that avoids this command.")}
 
     is_dangerous, _pk, description = detect_dangerous_command(command)
-    if is_dangerous:
+    if is_dangerous and not _is_permanently_approved(_pk):
         result = block(f"Command flagged as dangerous ({description})")
         if ctx.name == "single_query":
             result.update(pattern_key=_pk, description=description)

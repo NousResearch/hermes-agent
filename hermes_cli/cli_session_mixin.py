@@ -7,6 +7,7 @@ inside each method (``from cli import ...``) — never at module load time (impo
 
 from __future__ import annotations
 
+from gateway.session_context import resolve_session_source_hint
 import contextlib
 import os
 import shutil
@@ -556,7 +557,7 @@ class CLISessionMixin:
                     self.agent._session_db_created = False
                     self._session_db.create_session(
                         session_id=self.session_id,
-                        source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                        source=resolve_session_source_hint(),
                         model=self.model,
                         model_config={
                             "max_iterations": self.max_turns, "reasoning_config": self.reasoning_config,

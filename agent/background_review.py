@@ -7,6 +7,7 @@ so it hits the same prefix cache, and runs under a dispatch-side tool whitelist.
 
 from __future__ import annotations
 
+from gateway.session_context import resolve_session_source_hint
 import copy
 import json
 import logging
@@ -697,7 +698,7 @@ def build_memory_write_metadata(
         "execution_context": execution_context or getattr(agent, "_memory_write_context", "foreground"),
         "session_id": agent.session_id or "",
         "parent_session_id": agent._parent_session_id or "",
-        "platform": agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+        "platform": agent.platform or resolve_session_source_hint(),
         "tool_name": "memory",
         "task_id": task_id or None,
         "tool_call_id": tool_call_id or None,

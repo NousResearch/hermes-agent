@@ -15,6 +15,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
+from gateway.session_context import get_session_env
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
 from tools.registry import no_cache_check_fn, registry, tool_error
@@ -178,7 +179,7 @@ def _worker_run_id(task_id: str) -> Optional[int]:
 
 def _stamp_worker_session_metadata(task_id: str, metadata: Optional[dict]) -> Optional[dict]:
     """Add trusted worker session id metadata for this worker's own task."""
-    session_id = _own_task_env(task_id, "HERMES_SESSION_ID")
+    session_id = get_session_env("HERMES_SESSION_ID") if os.environ.get("HERMES_KANBAN_TASK") == task_id else None
     return {**(metadata or {}), "worker_session_id": session_id} if session_id else metadata
 
 
@@ -873,7 +874,7 @@ def _handle_create(args: dict, **kw) -> str:
         self_task = kb.get_task(conn, self_tid) if self_tid else None
         # The worker/API runtime may be transient; the owning task's origin is durable.
         session_id = (args.get("session_id") or (self_task.session_id if self_task else None)
-                      or _current_origin_session_id() or os.environ.get("HERMES_SESSION_ID"))
+                      or _current_origin_session_id() or get_session_env("HERMES_SESSION_ID") or None)
         if project_id is None and workspace_kind is None and workspace_path is None:
             if self_task is not None and self_task.project_id:
                 project_id, project_source_task_id = self_task.project_id, self_task.id

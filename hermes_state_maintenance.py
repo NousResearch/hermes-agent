@@ -398,10 +398,7 @@ class SessionMaintenanceMixin:
                 result["skipped"] = True
                 return result
             # Prune first: orphans closed below get a full retention window.
-            # Startup-watchdog leases: each long step is I/O-bound (near-zero CPU), which the
-            # watchdog's CPU fallback misreads as a parked deadlock. Leases are clamped to
-            # _MAX_LEASE_S=900 per call, so a multi-minute step renews per step rather than
-            # once at entry. No-op when the watchdog is not armed; never raises.
+            # Startup-watchdog lease per long I/O-bound step, clamped to _MAX_LEASE_S (#111092); no-op when unarmed.
             report_startup_progress(900.0, phase="state_db_auto_prune")
             result["pruned"] = pruned = self.prune_sessions(
                 older_than_days=retention_days, sessions_dir=sessions_dir, exclude_active_write_guards=True)

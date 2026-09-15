@@ -90,9 +90,14 @@ def test_bulk_fields_ride_in_extra_body_and_the_wire_bytes_are_identical():
     assert recorder.send(moved) == recorder.send(dict(body))
 
 
-def test_escape_hatch_restores_the_typed_sdk_path(monkeypatch):
-    monkeypatch.setenv(ESCAPE_HATCH_ENV, "1")
+def test_escape_hatch_and_non_sdk_facades_keep_the_typed_path(monkeypatch):
+    """Both rails hand the kwargs back untouched: the env hatch, and a chat-shaped facade
+    that is not the SDK (MoA aggregator, test stand-ins) — it never merges ``extra_body``."""
     recorder = _Recorder()
     kwargs = _wire_body()
 
+    facade = types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=lambda **kw: kw)))
+    assert bypass_chat_sdk_request_transform(kwargs, facade) is kwargs
+
+    monkeypatch.setenv(ESCAPE_HATCH_ENV, "1")
     assert bypass_chat_sdk_request_transform(kwargs, recorder.client) is kwargs

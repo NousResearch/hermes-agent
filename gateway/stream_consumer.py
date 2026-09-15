@@ -74,6 +74,9 @@ class StreamConsumerConfig:
     # (progressive editMessageText).  "off" is handled by the gateway.
     transport: str = "edit"
     chat_type: str = ""  # originating chat type; gates platform-specific drafts
+    # Keep an edit-based preview alive across tool boundaries. The gateway enables this
+    # only for Telegram with text tool-progress disabled.
+    single_message_per_turn: bool = False
 
 
 @dataclass
@@ -901,7 +904,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         "__no_edit__" (platform never returned a real id — Signal, github_comment webhook)
         must keep its sentinel or every tool boundary posts a new message; the
         continuation goes out once via _send_fallback_final."""
-        if self._cumulative_transport():
+        if self._cumulative_transport() or self.cfg.single_message_per_turn:
             return
         # If the segment-break edit didn't land (flood control / fallback mode),
         # _accumulated holds unseen pre-boundary text — flush it before the reset.

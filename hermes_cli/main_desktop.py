@@ -212,12 +212,24 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
             if stopped:
                 logger.info("stopped desktop processes before staged app promotion: %s", stopped)
             os.rename(live_root, previous)
-        try:
-            os.rename(staged_root, live_root)
-        except OSError:
-            if moved_aside:
-                os.rename(previous, live_root)  # restore; live app back as it was
-            raise
+        # Bounded retry: a transient lock (AV scan on fresh 214 MB exe) releases in ~1-2s;
+        # a real permission failure fires on all attempts. The live-app-kept safety model
+        # already handles real failures, so a retry only absorbs the transient class.
+        rename_attempts = 3
+        rename_delay_s = 1.0
+        for attempt in range(rename_attempts):
+            try:
+                os.rename(staged_root, live_root)
+                break
+            except OSError:
+                if attempt < rename_attempts - 1:
+                    import time
+                    time.sleep(rename_delay_s)
+                    continue
+                # Exhausted attempts — raise so the rollback below can restore the live app.
+                if moved_aside:
+                    os.rename(previous, live_root)  # restore; live app back as it was
+                raise
         if moved_aside:
             shutil.rmtree(previous, ignore_errors=True)
     except (OSError, ValueError) as exc:

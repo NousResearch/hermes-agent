@@ -14,8 +14,33 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
-
 from gateway.kanban_watchers_common import _board_slugs, _positive_int_setting, logger
+
+
+DEFAULT_LIFETIME_RUN_LIMIT = 8
+
+
+def _resolve_lifetime_run_limit(kanban_cfg: dict) -> int:
+    """``kanban.lifetime_run_limit``: int >= 0 (0 disables); else fall back
+    to :data:`DEFAULT_LIFETIME_RUN_LIMIT`. Surfaced to the dispatcher for the
+    per-task ``total_runs`` cap check.
+    """
+    raw = kanban_cfg.get("lifetime_run_limit", DEFAULT_LIFETIME_RUN_LIMIT)
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "kanban dispatcher: invalid kanban.lifetime_run_limit=%r; using default %d",
+            raw, DEFAULT_LIFETIME_RUN_LIMIT,
+        )
+        return DEFAULT_LIFETIME_RUN_LIMIT
+    if parsed < 0:
+        logger.warning(
+            "kanban dispatcher: kanban.lifetime_run_limit=%r is below 0; using default %d",
+            raw, DEFAULT_LIFETIME_RUN_LIMIT,
+        )
+        return DEFAULT_LIFETIME_RUN_LIMIT
+    return parsed
 
 
 def _kbc():
@@ -26,6 +51,7 @@ def _kbc():
 def _kbd():
     from hermes_cli import kanban_db_dispatch
     return kanban_db_dispatch
+
 
 _CORRUPT_DB_MARKERS = ("file is not a database", "database disk image is malformed")
 
@@ -42,6 +68,11 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+    # New field: per-task lifetime worker-spawn cap (kanban.lifetime_run_limit).
+    # Appended to the END of the dataclass so existing positional
+    # instantiations (tests + frozen pre-resolved dict unpacks) keep working
+    # — the gateway path resolves and passes it explicitly by name.
+    lifetime_run_limit: int = 8
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
@@ -107,6 +138,11 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         max_spawn=max_spawn,
         max_in_progress=effective_max_in_progress,
         failure_limit=failure_limit,
+        # 0 disables the lifetime cap (legacy behaviour). Negative or invalid
+        # values fall through to the documented default (DEFAULT_LIFETIME_RUN_LIMIT).
+        # Stored as int so the dispatcher compares ``task.total_runs >= limit``
+        # against a stable type.
+        lifetime_run_limit=_resolve_lifetime_run_limit(kanban_cfg),
         stale_timeout_seconds=stale_timeout_seconds,
         # Requeue 'running' cards with broken claim bookkeeping (zombie-card
         # reconciliation); false keeps orphans frozen for manual forensics.
@@ -126,7 +162,6 @@ class _KanbanDispatcher:
     fingerprint and retried after ``CORRUPT_BOARD_RETRY_AFTER_SECONDS``:
     transient WAL/open races can look like "malformed" for one tick.
     """
-
     CORRUPT_BOARD_RETRY_AFTER_SECONDS = 300
 
     def __init__(self, kb: Any, settings: _DispatcherSettings) -> None:

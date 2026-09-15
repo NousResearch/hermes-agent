@@ -713,6 +713,7 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    total_runs: int = 0                     # lifetime worker-spawn count (never reset)
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -730,8 +731,8 @@ class Task:
             skills=skills_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
+            total_runs=int(g("total_runs") or 0),
         )
-
 
 # Columns every schema version has (KeyError if the SELECT omitted them).
 _TASK_REQUIRED_COLUMNS = (
@@ -744,7 +745,6 @@ _TASK_OPTIONAL_COLUMNS = (
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
 )
-# Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
     "model_override", "provider_override", "reasoning_effort", "goal_max_turns", "block_kind",
 )
@@ -943,7 +943,15 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Lifetime total of worker spawns (claim -> running). Incremented exactly
+    -- once per real worker spawn in the same txn as ``_claim_and_open_run``;
+    -- preserved across unblock/reassign/reopen (resets of ``consecutive_failures``
+    -- and ``block_recurrences`` are explicit operators' concerns, NOT this
+    -- counter's). The dispatcher's lifetime cap (``kanban.lifetime_run_limit``)
+    -- moves the task to ``triage`` when ``total_runs`` reaches the limit; the
+    -- counter is intentionally NEVER reset, only archived or deleted with the row.
+    total_runs           INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1533,6 +1541,10 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
             )
         if row["assignee"] != profile:
             # The failure streak is per task/profile; a new profile starts fresh.
+            # total_runs is intentionally NOT reset: it is a lifetime worker-spawn
+            # counter that the dispatcher's ``kanban.lifetime_run_limit`` consults
+            # to move the task to triage once the cap is reached. Resetting it on
+            # reassign would defeat the cap (reassign -> fresh budget -> repeat).
             conn.execute(
                 "UPDATE tasks SET assignee = ?, consecutive_failures = 0, "
                 "last_failure_error = NULL WHERE id = ?", (profile, task_id),
@@ -2138,14 +2150,23 @@ def _claim_and_open_run(
     *, event_extra: Optional[dict] = None,
 ) -> Optional[int]:
     """CAS ``source_status -> running``, open a run row, emit ``claimed``; None
-    when the CAS lost. Caller holds the txn."""
+    when the CAS lost. Caller holds the txn.
+
+    Increments ``tasks.total_runs`` exactly once per real worker spawn — in the
+    SAME txn as the claim so the lifetime counter is consistent with the run
+    row even on a crash between commit and the next tick. Never reset (see
+    ``unblock_task`` / ``invalidate_descendants_for_parent_reopen`` /
+    ``assign_task``); the dispatcher's ``kanban.lifetime_run_limit`` moves the
+    task to ``triage`` when the counter reaches the cap.
+    """
     cur = conn.execute(
         f"""
         UPDATE tasks
            SET status        = 'running',
                claim_lock    = ?,
                claim_expires = ?,
-               started_at    = COALESCE(started_at, ?)
+               started_at    = COALESCE(started_at, ?),
+               total_runs    = total_runs + 1
          WHERE id = ?
            AND status = '{source_status}'
            AND claim_lock IS NULL
@@ -3399,6 +3420,10 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # unbounded; only complete_task clears them. ``consecutive_failures``
         # (the dispatcher's spawn/crash counter) IS reset — a deliberate unblock
         # is a fresh start for the retry budget.
+        # total_runs is intentionally NOT reset: it is a lifetime worker-spawn
+        # counter consulted by ``kanban.lifetime_run_limit`` to move the task to
+        # ``triage`` once the cap is reached. Resetting on unblock would defeat
+        # the cap (unblock -> fresh budget -> repeat).
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "
@@ -3510,6 +3535,11 @@ def invalidate_descendants_for_parent_reopen(
                 )
             # consecutive_failures = 0: deliberate operator reset — see
             # docstring for why this diverges from reopen_review_task.
+            # total_runs is intentionally NOT reset: it is a lifetime
+            # worker-spawn counter consulted by ``kanban.lifetime_run_limit`` to
+            # move the task to ``triage`` once the cap is reached. Resetting on
+            # ancestor reopen would defeat the cap (reopen -> fresh budget ->
+            # repeat until the operator manually archives the task).
             conn.execute(
                 "UPDATE tasks SET status = 'todo', completed_at = NULL, "
                 "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "

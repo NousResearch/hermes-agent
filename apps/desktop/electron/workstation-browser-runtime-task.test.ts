@@ -168,7 +168,9 @@ const electron = vi.hoisted(() => {
       return extension
     },
     getAllExtensions: () => extensions,
-    removeExtension: (id: string) => { delete extensions[id] }
+    removeExtension: (id: string) => {
+      delete extensions[id]
+    }
   }
 
   return {
@@ -196,6 +198,7 @@ vi.mock('electron', () => ({
 
 import {
   getStandardChromeUserAgent,
+  normalizeWorkstationControllerError,
   WorkstationBrowserRuntime,
   workstationBrowserSessionStatePath
 } from './workstation-browser-runtime'
@@ -210,6 +213,29 @@ afterEach(() => {
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true })
   }
+})
+
+test('controller error contract recommends a state-changing recovery instead of blind retry', () => {
+  assert.deepEqual(
+    normalizeWorkstationControllerError(new Error('no_bound_browser_tab: call browser_navigate first')),
+    {
+      error_code: 'NO_BOUND_TAB',
+      message: 'no_bound_browser_tab: call browser_navigate first',
+      retryable: true,
+      retry_after_ms: 0,
+      state_changed: true,
+      recommended_action: 'BIND_OR_NAVIGATE',
+      resource_ref: undefined,
+      details: {}
+    }
+  )
+  assert.equal(
+    normalizeWorkstationControllerError(
+      new Error('Hermes Browser is under human control. Release Control before agent actions continue.')
+    ).error_code,
+    'USER_CONTROL_ACTIVE'
+  )
+  assert.equal(normalizeWorkstationControllerError(new Error('element_unavailable')).recommended_action, 'RESNAPSHOT')
 })
 
 function runtimeHome(): string {
@@ -616,18 +642,21 @@ test('controller loads, verifies and removes only an extension from the Workstat
   runtime.ensure()
 
   const loaded = await (runtime as any).executeControlRequest({
-    action: 'browser_extension_load', arguments: { extension_id: extensionId, path: extensionPath }
+    action: 'browser_extension_load',
+    arguments: { extension_id: extensionId, path: extensionPath }
   })
   assert.equal(loaded.loaded, true)
   assert.equal(loaded.extension_id, extensionId)
 
   const verified = await (runtime as any).executeControlRequest({
-    action: 'browser_extension_verify', arguments: { extension_id: extensionId }
+    action: 'browser_extension_verify',
+    arguments: { extension_id: extensionId }
   })
   assert.equal(verified.loaded, true)
 
   const removed = await (runtime as any).executeControlRequest({
-    action: 'browser_extension_remove', arguments: { extension_id: extensionId }
+    action: 'browser_extension_remove',
+    arguments: { extension_id: extensionId }
   })
   assert.equal(removed.loaded, false)
   await runtime.destroy()
@@ -721,6 +750,93 @@ test('controller actions preserve a visible task through Take Control and Releas
   assert.equal(runtime.state().attached, true)
   assert.equal(runtime.listTasks()[0]?.status, 'visible')
   assert.equal(runtime.getWebContents(tab.id), contents)
+
+  await runtime.destroy()
+})
+
+test('human control lease blocks only its BrowserTask and leaves another task runnable', async () => {
+  runtimeHome()
+  const runtime = new WorkstationBrowserRuntime()
+  const executeControlRequest = (
+    runtime as unknown as {
+      executeControlRequest(request: Record<string, unknown>): Promise<Record<string, unknown>>
+    }
+  ).executeControlRequest.bind(runtime)
+
+  runtime.createTask({ taskId: 'task-a', sessionHost: 'session-a' })
+  runtime.createTask({ taskId: 'task-b', sessionHost: 'session-b' })
+  runtime.takeControl('task-a', 'session-a')
+  assert.equal(runtime.listTasks().find(task => task.taskId === 'task-a')?.humanControlLease?.sessionId, 'session-a')
+  assert.equal(runtime.listTasks().find(task => task.taskId === 'task-b')?.humanControlLease, undefined)
+
+  await executeControlRequest({
+    action: 'browser_navigate',
+    task_id: 'task-b',
+    session_id: 'session-b',
+    arguments: { url: 'https://session-b.test' }
+  })
+  await assert.rejects(
+    executeControlRequest({
+      action: 'browser_navigate',
+      task_id: 'task-a',
+      session_id: 'session-a',
+      arguments: { url: 'https://session-a.test' }
+    }),
+    /task-a is under human control/
+  )
+
+  runtime.renewControl('task-a')
+  runtime.releaseControl('task-a')
+  await executeControlRequest({
+    action: 'browser_navigate',
+    task_id: 'task-a',
+    session_id: 'session-a',
+    arguments: { url: 'https://session-a.test' }
+  })
+  assert.equal(
+    runtime.listTasks().every(task => !task.humanControlLease),
+    true
+  )
+  await runtime.destroy()
+})
+
+test('implicit human control follows the visible task instead of a stale chat preference', async () => {
+  runtimeHome()
+  const runtime = new WorkstationBrowserRuntime()
+  const executeControlRequest = (
+    runtime as unknown as {
+      executeControlRequest(request: Record<string, unknown>): Promise<Record<string, unknown>>
+    }
+  ).executeControlRequest.bind(runtime)
+
+  runtime.createTask({ taskId: 'task-a', sessionHost: 'session-a' })
+  runtime.createTask({ taskId: 'task-b', sessionHost: 'session-b' })
+  runtime.attach(hostWindow() as never, { x: 0, y: 0, width: 900, height: 600 }, 'host', 'task-a')
+  const taskBTab = runtime.state().tabs.find(tab => tab.ownerTaskId === 'task-b')
+  assert.ok(taskBTab)
+  runtime.activateTab(taskBTab.id)
+
+  // Browser Hub invokes Take Control without a task id. The current visible
+  // tab is therefore the only safe scope; a previous chat attachment is not.
+  runtime.takeControl()
+  assert.equal(runtime.listTasks().find(task => task.taskId === 'task-a')?.humanControlLease, undefined)
+  assert.equal(runtime.listTasks().find(task => task.taskId === 'task-b')?.humanControlLease?.taskId, 'task-b')
+
+  await executeControlRequest({
+    action: 'browser_navigate',
+    task_id: 'task-a',
+    session_id: 'session-a',
+    arguments: { url: 'https://session-a.test' }
+  })
+  await assert.rejects(
+    executeControlRequest({
+      action: 'browser_navigate',
+      task_id: 'task-b',
+      session_id: 'session-b',
+      arguments: { url: 'https://session-b.test' }
+    }),
+    /task-b is under human control/
+  )
 
   await runtime.destroy()
 })
@@ -896,7 +1012,11 @@ test('concurrent multi-task isolation: background actions do not steal active ta
   })
 
   // Active tab must still be Tab 2 (Session 2 view must NOT be stolen/swapped by Session 1 background work)
-  assert.equal(runtime.state().activeTabId, tab2.id, 'Session 1 background action must not steal active tab from Session 2')
+  assert.equal(
+    runtime.state().activeTabId,
+    tab2.id,
+    'Session 1 background action must not steal active tab from Session 2'
+  )
 
   // 4. Switching chat back to Session 1 via preferredTaskId activates Tab 1
   runtime.attach(window as never, bounds, 'chat', 'task-sess-1')

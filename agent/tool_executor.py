@@ -1815,6 +1815,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tool_use_id=tool_call_id,
             env=get_active_env(effective_task_id),
             config=_tool_budget,
+            result_scope=f"task:{effective_task_id}",
         ) if not _is_multimodal_tool_result(function_result) else function_result
         _record_persisted_path_for_stub(agent, tool_call_id, function_result)
 
@@ -2737,6 +2738,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_use_id=tool_call_id,
             env=get_active_env(effective_task_id),
             config=_tool_budget,
+            result_scope=f"task:{effective_task_id}",
         ) if not _is_multimodal_tool_result(function_result) else function_result
         _record_persisted_path_for_stub(agent, tool_call_id, function_result)
 

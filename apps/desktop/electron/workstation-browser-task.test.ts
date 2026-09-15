@@ -5,11 +5,7 @@ import path from 'node:path'
 
 import { afterEach, test } from 'vitest'
 
-import {
-  type BrowserTaskBindings,
-  BrowserTaskFilePersistence,
-  BrowserTaskLifecycle
-} from './workstation-browser-task'
+import { type BrowserTaskBindings, BrowserTaskFilePersistence, BrowserTaskLifecycle } from './workstation-browser-task'
 
 interface FakePage {
   id: number
@@ -29,7 +25,9 @@ function fakeBrowser() {
     ensurePage(taskId) {
       const existing = pages.get(taskId)
 
-      if (existing && !existing.destroyed) {return existing}
+      if (existing && !existing.destroyed) {
+        return existing
+      }
 
       const page: FakePage = {
         id: ++pageCounter,
@@ -75,7 +73,9 @@ function fakeBrowser() {
 
 const tempRoots: string[] = []
 afterEach(() => {
-  for (const root of tempRoots.splice(0)) {fs.rmSync(root, { recursive: true, force: true })}
+  for (const root of tempRoots.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })
 
 function tempStateFile(): string {
@@ -383,10 +383,7 @@ test('bindKanbanCard binds once, allows idempotent repeat, and rejects mismatch 
   const repeat = lifecycle.bindKanbanCard('task-kanban', 'card-123')
   assert.equal(repeat.kanbanCardId, 'card-123')
 
-  assert.throws(
-    () => lifecycle.bindKanbanCard('task-kanban', 'card-other'),
-    /BrowserTask kanban card mismatch/
-  )
+  assert.throws(() => lifecycle.bindKanbanCard('task-kanban', 'card-other'), /BrowserTask kanban card mismatch/)
 })
 
 test('bindRun binds once, allows idempotent repeat, and rejects mismatch fail-closed', () => {
@@ -400,10 +397,7 @@ test('bindRun binds once, allows idempotent repeat, and rejects mismatch fail-cl
   const repeat = lifecycle.bindRun('task-run', 'run-456')
   assert.equal(repeat.runId, 'run-456')
 
-  assert.throws(
-    () => lifecycle.bindRun('task-run', 'run-other'),
-    /BrowserTask run mismatch/
-  )
+  assert.throws(() => lifecycle.bindRun('task-run', 'run-other'), /BrowserTask run mismatch/)
 })
 
 test('persistence preserves kanbanCardId and runId through restart', () => {
@@ -429,3 +423,51 @@ test('persistence preserves kanbanCardId and runId through restart', () => {
   assert.equal(restored[0].runId, 'run-200')
 })
 
+test('human control lease is scoped, renewable, releasable, and expires deterministically', () => {
+  let clock = new Date('2026-09-15T12:00:00.000Z')
+  const browser = fakeBrowser()
+  const lifecycle = new BrowserTaskLifecycle(browser.bindings, null, () => new Date(clock))
+  lifecycle.createTask({ taskId: 'task-a', sessionHost: 'session-a' })
+  lifecycle.createTask({ taskId: 'task-b', sessionHost: 'session-b' })
+
+  const acquired = lifecycle.acquireHumanControl(
+    'task-a',
+    { sessionId: 'session-a', tabId: 'tab-a', pageId: 11, profileScope: 'profile-a' },
+    1_000
+  )
+  assert.equal(acquired.humanControlLease?.taskId, 'task-a')
+  assert.equal(lifecycle.hasActiveHumanControl('task-a'), true)
+  assert.equal(lifecycle.hasActiveHumanControl('task-b'), false)
+  assert.equal(lifecycle.renewHumanControl('task-a', 2_000).humanControlLease?.renewedAt, '2026-09-15T12:00:00.000Z')
+
+  clock = new Date('2026-09-15T12:00:02.001Z')
+  assert.equal(lifecycle.hasActiveHumanControl('task-a'), false)
+  assert.equal(lifecycle.task('task-a')?.humanControlLease, undefined)
+
+  lifecycle.acquireHumanControl(
+    'task-a',
+    { sessionId: 'session-a', tabId: 'tab-a', pageId: 11, profileScope: 'profile-a' },
+    60_000
+  )
+  assert.equal(lifecycle.releaseHumanControl('task-a'), true)
+  assert.equal(lifecycle.releaseHumanControl('task-a'), false)
+})
+
+test('human control lease is removed on BrowserTask restore after a process crash', () => {
+  const stateFile = tempStateFile()
+  const persistence = new BrowserTaskFilePersistence(stateFile)
+  const before = new BrowserTaskLifecycle(fakeBrowser().bindings, persistence)
+  before.createTask({ taskId: 'task-crash', sessionHost: 'session-crash' })
+  before.acquireHumanControl(
+    'task-crash',
+    { sessionId: 'session-crash', tabId: 'tab-crash', pageId: 22, profileScope: 'profile' },
+    60_000
+  )
+  assert.ok(JSON.parse(fs.readFileSync(stateFile, 'utf-8')).tasks[0].humanControlLease)
+
+  const after = new BrowserTaskLifecycle(fakeBrowser().bindings, persistence)
+  const restored = after.restore()
+  assert.equal(restored[0].humanControlLease, undefined)
+  assert.equal(after.hasActiveHumanControl('task-crash'), false)
+  assert.equal(JSON.parse(fs.readFileSync(stateFile, 'utf-8')).tasks[0].humanControlLease, undefined)
+})

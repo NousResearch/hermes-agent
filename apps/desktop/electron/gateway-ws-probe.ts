@@ -178,7 +178,6 @@ function probeGatewayWebSocket<T>(
     }
   })
 }
-
 function addListener(socket, type, handler) {
   if (typeof socket.addEventListener === 'function') {
     socket.addEventListener(type, handler)
@@ -288,4 +287,3 @@ export {
   probeGatewayWebSocket,
   probeGatewayWebSocketWithRetry
 }
-

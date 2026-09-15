@@ -135,3 +135,159 @@ def test_hybrid_deletion_lifecycle_and_activity_audit(conn):
     with pytest.raises(hybrid.HybridKanbanError):
         hybrid.get_board(conn, board["id"])
 
+
+def _delegation_fixture(conn):
+    board = hybrid.create_board(conn, name="Delegation Board")
+    column = hybrid.create_column(conn, board_id=board["id"], name="Inbox")
+    card = hybrid.create_card(
+        conn,
+        board_id=board["id"],
+        column_id=column["id"],
+        title="Prepare launch brief",
+        description="Collect the source facts and draft the brief.",
+        metadata={"project": "launch", "priority_note": "customer-facing"},
+    )
+    return board, column, card
+
+
+def test_human_card_delegation_is_durable_idempotent_and_contextual(conn, tmp_path):
+    board, column, card = _delegation_fixture(conn)
+
+    delegated = hybrid.delegate_card(
+        conn,
+        card_id=card["id"],
+        actor_id="kevyn",
+        session_id="human-session",
+        assignee="worker",
+    )
+    link = delegated["delegation"]
+    assert link["state"] == "queued"
+    task_id = link["agent_task_id"]
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.title == card["title"]
+    assert card["description"] in task.body
+    assert card["id"] in task.body
+    assert "customer-facing" in task.body
+
+    # A duplicate click returns the same attempt, including after a fresh
+    # connection has reconstructed the canonical stores.
+    duplicate = hybrid.delegate_card(conn, card_id=card["id"], actor_id="kevyn", session_id="human-session")
+    assert duplicate["delegation"]["agent_task_id"] == task_id
+    path = tmp_path / "kanban.db"
+    conn.close()
+    reopened = kb.connect(db_path=path)
+    try:
+        restored = hybrid.delegate_card(reopened, card_id=card["id"], actor_id="kevyn", session_id="human-session")
+        assert restored["delegation"]["agent_task_id"] == task_id
+        assert len(restored["delegations"]) == 1
+    finally:
+        reopened.close()
+
+
+def test_agent_completion_projects_result_ref_and_evidence_without_payload_copy(conn):
+    _, _, card = _delegation_fixture(conn)
+    delegated = hybrid.delegate_card(conn, card_id=card["id"], session_id="s-1")
+    task_id = delegated["delegation"]["agent_task_id"]
+    assert kb.complete_task(
+        conn,
+        task_id,
+        result="A very large canonical result remains owned by the task.",
+        summary="Launch brief is ready.",
+        metadata={"result_ref": "sha256:result-1", "evidence_refs": ["sha256:evidence-1"]},
+    ) is True
+
+    projected = hybrid.sync_card_delegations(conn, card_id=card["id"])
+    assert projected["delegation"]["state"] == "completed"
+    assert projected["delegation"]["summary"] == "Launch brief is ready."
+    assert projected["delegation"]["result_ref"] == "sha256:result-1"
+    assert projected["delegation"]["evidence_refs"] == ["sha256:evidence-1"]
+    assert projected["delegation"]["agent_task_id"] == task_id
+    assert projected["delegation"]["summary"] != "A very large canonical result remains owned by the task."
+    assert any(item["kind"] == "delegation_completed" for item in projected["activity"])
+
+
+def test_human_and_agent_lifecycles_move_independently_and_retry_same_task(conn):
+    _, column, card = _delegation_fixture(conn)
+    other = hybrid.create_column(conn, board_id=card["board_id"], name="Doing")
+    delegated = hybrid.delegate_card(conn, card_id=card["id"], session_id="s-1")
+    task_id = delegated["delegation"]["agent_task_id"]
+
+    assert kb.block_task(conn, task_id, reason="needs human input", kind="needs_input") is True
+    waiting = hybrid.get_card(conn, card["id"])
+    assert waiting["delegation"]["state"] == "waiting"
+    moved = hybrid.move_card(conn, card_id=card["id"], target_column_id=other["id"], expected_revision=card["revision"])
+    assert moved["column_id"] == other["id"]
+    assert kb.get_task(conn, task_id).status == "blocked"
+
+    retried = hybrid.retry_card_delegation(conn, card_id=card["id"], session_id="s-1")
+    assert retried["delegation"]["agent_task_id"] == task_id
+    assert retried["delegation"]["state"] == "queued"
+    assert hybrid.get_card(conn, card["id"])["column_id"] == other["id"]
+
+
+def test_canonical_task_event_projection_emits_durable_hybrid_progress(conn):
+    _, _, card = _delegation_fixture(conn)
+    delegated = hybrid.delegate_card(conn, card_id=card["id"], session_id="s-1")
+    task_id = delegated["delegation"]["agent_task_id"]
+
+    assert hybrid.sync_delegations_for_agent_task(conn, agent_task_id=task_id) is True
+    assert kb.block_task(conn, task_id, reason="awaiting approval", kind="needs_input") is True
+    assert hybrid.sync_delegations_for_agent_task(conn, agent_task_id=task_id) is True
+
+    projected = hybrid.get_card(conn, card["id"])
+    assert projected["delegation"]["state"] == "waiting"
+    progress = [item for item in projected["activity"] if item["kind"] == "delegation_progressed"]
+    waiting_transition = next(item for item in progress if item["payload"]["state"] == "waiting")
+    assert waiting_transition["payload"]["agent_task_id"] == task_id
+    assert waiting_transition["payload"]["previous_state"] == "queued"
+
+
+def test_failed_cancelled_and_redelegated_attempts_are_explicit(conn):
+    _, _, failed_card = _delegation_fixture(conn)
+    failed = hybrid.delegate_card(conn, card_id=failed_card["id"], session_id="s-1")
+    failed_id = failed["delegation"]["agent_task_id"]
+    failed_result = hybrid.fail_card_delegation(conn, card_id=failed_card["id"], summary="Browser capability was unavailable.")
+    assert failed_result["delegation"]["state"] == "failed"
+    assert failed_result["delegation"]["agent_task_id"] == failed_id
+    assert kb.get_task(conn, failed_id).status == "archived"
+
+    redelegated = hybrid.delegate_card(conn, card_id=failed_card["id"], new_attempt=True, session_id="s-2")
+    assert redelegated["delegation"]["attempt"] == 2
+    assert redelegated["delegation"]["agent_task_id"] != failed_id
+    assert len(redelegated["delegations"]) == 2
+
+    _, _, cancelled_card = _delegation_fixture(conn)
+    cancelled = hybrid.delegate_card(conn, card_id=cancelled_card["id"], session_id="s-3")
+    cancelled_result = hybrid.cancel_card_delegation(conn, card_id=cancelled_card["id"], session_id="s-3")
+    assert cancelled_result["delegation"]["state"] == "cancelled"
+    assert kb.get_task(conn, cancelled["delegation"]["agent_task_id"]).status == "archived"
+    assert any(item["kind"] == "delegation_cancelled" for item in cancelled_result["activity"])
+
+
+def test_hybrid_archive_restore_is_normal_and_hard_delete_remains_explicit(conn):
+    board, column, card = _delegation_fixture(conn)
+    second = hybrid.create_column(conn, board_id=board["id"], name="Second")
+    second_card = hybrid.create_card(conn, board_id=board["id"], column_id=second["id"], title="Second card")
+
+    assert hybrid.archive_card(conn, card_id=card["id"]) is True
+    assert hybrid.get_board(conn, board["id"])["columns"][0]["cards"] == []
+    archived_card = hybrid.get_card(conn, card["id"], include_archived=True)
+    assert archived_card["archived"] == 1
+    assert hybrid.restore_card(conn, card_id=card["id"]) is True
+    assert hybrid.get_card(conn, card["id"])["archived"] == 0
+
+    assert hybrid.archive_column(conn, column_id=column["id"]) is True
+    assert [item["id"] for item in hybrid.get_board(conn, board["id"])["columns"]] == [second["id"]]
+    assert hybrid.restore_column(conn, column_id=column["id"]) is True
+    assert [item["id"] for item in hybrid.get_board(conn, board["id"])["columns"]] == [second["id"], column["id"]]
+
+    assert hybrid.archive_board(conn, board_id=board["id"]) is True
+    assert hybrid.list_boards(conn) == []
+    assert hybrid.restore_board(conn, board_id=board["id"]) is True
+    assert hybrid.list_boards(conn)[0]["id"] == board["id"]
+
+    # Hard deletion is still available as a separate, irreversible operation.
+    assert hybrid.delete_card(conn, card_id=second_card["id"]) is True
+    with pytest.raises(hybrid.HybridKanbanError):
+        hybrid.get_card(conn, second_card["id"])

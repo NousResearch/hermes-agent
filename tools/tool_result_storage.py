@@ -159,6 +159,50 @@ def _write_to_spillover(content: str, filename: str):
     return str(path)
 
 
+def _content_addressed_spillover_filename(content: str, result_scope: str) -> tuple[str, str, str]:
+    """Return a scope-isolated filename plus stable result identifiers.
+
+    Content addressability is intentionally scoped: identical content from a
+    different task/session must not make a result reference reusable across an
+    account or tenant boundary.  The caller supplies a task/session scope;
+    callers without one keep the historical per-invocation filename behavior.
+    """
+    content_hash = hashlib.sha256(content.encode("utf-8", errors="surrogatepass")).hexdigest()
+    scope_hash = hashlib.sha256(result_scope.encode("utf-8", errors="surrogatepass")).hexdigest()[:16]
+    return f"result-{scope_hash}-{content_hash}.txt", f"sha256:{content_hash}", f"result://{scope_hash}/{content_hash}"
+
+
+def _write_content_addressed_spillover(content: str, filename: str) -> tuple[str | None, str]:
+    """Persist one immutable result once and report whether it was reused."""
+    try:
+        spill_dir = get_spillover_dir()
+        spill_dir.mkdir(parents=True, exist_ok=True)
+        path = spill_dir / filename
+        if path.is_file():
+            _prune_spillover_once()
+            return str(path), "hit"
+        temp = spill_dir / f".{filename}.{uuid.uuid4().hex}.tmp"
+        try:
+            temp.write_text(content, encoding="utf-8", errors="replace")
+            temp.replace(path)
+        except FileExistsError:
+            # Another identical result won the race. Its content hash is the
+            # authority, so reusing the completed immutable blob is safe.
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if path.is_file():
+                _prune_spillover_once()
+                return str(path), "hit"
+            raise
+    except OSError as exc:
+        logger.warning("Content-addressed spillover write failed for %s: %s", filename, exc)
+        return None, "miss"
+    _prune_spillover_once()
+    return str(path), "miss"
+
+
 def _sandbox_visible_spillover_path(host_path: str, env) -> str | None:
     """Return the path where a remote backend can read *host_path*, or None.
 
@@ -270,6 +314,11 @@ def _build_persisted_message(
     has_more: bool,
     original_size: int,
     file_path: str,
+    *,
+    original_bytes: int | None = None,
+    content_hash: str | None = None,
+    result_ref: str | None = None,
+    cache_status: str = "miss",
 ) -> str:
     """Build the <persisted-output> replacement block."""
     size_kb = original_size / 1024
@@ -281,6 +330,15 @@ def _build_persisted_message(
     msg = f"{PERSISTED_OUTPUT_TAG}\n"
     msg += f"This tool result was too large ({original_size:,} characters, {size_str}).\n"
     msg += f"Full output saved to: {file_path}\n"
+    if result_ref and content_hash:
+        msg += "Reference-first result metadata:\n"
+        msg += f"status: {'unchanged' if cache_status == 'hit' else 'ok'}\n"
+        msg += f"result_ref: {result_ref}\n"
+        msg += f"artifact_ref: {file_path}\n"
+        msg += f"content_hash: {content_hash}\n"
+        msg += f"bytes: {original_bytes if original_bytes is not None else original_size}\n"
+        msg += f"cache_status: {cache_status}\n"
+        msg += "inline_truncated: true\n"
     msg += "Use the read_file tool with offset and limit to access specific sections of this output.\n"
     msg += (
         "Recovery: page through the saved file with read_file (offset/limit) or "
@@ -318,6 +376,7 @@ def maybe_persist_tool_result(
     env=None,
     config: BudgetConfig = DEFAULT_BUDGET,
     threshold: int | float | None = None,
+    result_scope: str | None = None,
 ) -> str:
     """Layer 2: persist oversized result into the sandbox, return preview + path.
 
@@ -345,12 +404,20 @@ def maybe_persist_tool_result(
         return content
 
     filename = _safe_result_filename(tool_use_id)
+    content_hash = None
+    result_ref = None
+    cache_status = "miss"
+    if result_scope:
+        filename, content_hash, result_ref = _content_addressed_spillover_filename(content, result_scope)
     preview, has_more = generate_preview(content, max_chars=config.preview_size)
 
     # Always persist host-side first: $HERMES_HOME/cache/spillover is the
     # single canonical home for spilled results (with the other Hermes-owned
     # caches, pruned by gateway housekeeping) regardless of backend.
-    host_path = _write_to_spillover(content, filename)
+    if result_scope:
+        host_path, cache_status = _write_content_addressed_spillover(content, filename)
+    else:
+        host_path = _write_to_spillover(content, filename)
 
     if _is_host_side_env(env):
         if host_path is not None:
@@ -358,7 +425,11 @@ def maybe_persist_tool_result(
                 "Persisted large tool result: %s (%s, %d chars -> %s)",
                 tool_name, tool_use_id, len(content), host_path,
             )
-            return _build_persisted_message(preview, has_more, len(content), host_path)
+            return _build_persisted_message(
+                preview, has_more, len(content), host_path,
+                original_bytes=len(content.encode("utf-8", errors="replace")),
+                content_hash=content_hash, result_ref=result_ref, cache_status=cache_status,
+            )
     elif env is not None:
         # Remote backend: the spillover dir is auto-mounted (docker) or
         # file-synced (modal/ssh/daytona) into the sandbox, so reference the
@@ -370,7 +441,11 @@ def maybe_persist_tool_result(
                     "Persisted large tool result: %s (%s, %d chars -> %s [host: %s])",
                     tool_name, tool_use_id, len(content), visible, host_path,
                 )
-                return _build_persisted_message(preview, has_more, len(content), visible)
+                return _build_persisted_message(
+                    preview, has_more, len(content), visible,
+                    original_bytes=len(content.encode("utf-8", errors="replace")),
+                    content_hash=content_hash, result_ref=result_ref, cache_status=cache_status,
+                )
         # Fallback: write into the sandbox temp dir (pre-existing containers
         # without the spillover mount, translation/probe failures).
         storage_dir = _resolve_storage_dir(env)
@@ -381,7 +456,11 @@ def maybe_persist_tool_result(
                     "Persisted large tool result: %s (%s, %d chars -> %s)",
                     tool_name, tool_use_id, len(content), remote_path,
                 )
-                return _build_persisted_message(preview, has_more, len(content), remote_path)
+                return _build_persisted_message(
+                    preview, has_more, len(content), remote_path,
+                    original_bytes=len(content.encode("utf-8", errors="replace")),
+                    content_hash=content_hash, result_ref=result_ref, cache_status=cache_status,
+                )
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
 

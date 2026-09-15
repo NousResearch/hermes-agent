@@ -256,5 +256,3 @@ def test_browser_extract_items_dispatches_with_selector_and_limit(controller):
 
 def test_workstation_schema_tools_includes_extract_items():
     assert "browser_extract_items" in bw._WORKSTATION_SCHEMA_TOOLS
-
-

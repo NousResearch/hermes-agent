@@ -9,6 +9,7 @@ second browser or extension store.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from tools.registry import registry
@@ -19,6 +20,7 @@ from workstation.policy import ActionScope, PolicyDecision, ScopedPolicyEngine
 
 
 _TOOLSET = "desktop_ui"
+_log = logging.getLogger(__name__)
 
 
 def _desktop_session() -> bool:
@@ -61,6 +63,7 @@ def _install(args: dict[str, Any], *, task_id: str | None, session_id: str | Non
     journal = _journal(task_id, session_id)
     try:
         extension_id = manager.extract_extension_id(identifier)
+        pending_update = False
         journal.record(ExecutionEventKind.LIFECYCLE, "Extension download started", metadata={"event": "EXTENSION_DOWNLOAD_STARTED", "extension_id": extension_id})
         crx = manager.download_crx(extension_id)
         manifest, assessment = manager.inspect_crx(extension_id, crx)
@@ -87,16 +90,36 @@ def _install(args: dict[str, Any], *, task_id: str | None, session_id: str | Non
             journal.record(ExecutionEventKind.APPROVAL_RESOLVED, "Extension approval resolved", risk=evaluation.risk_level, metadata={"event": "EXTENSION_APPROVED" if approved else "EXTENSION_APPROVAL_DENIED", "extension_id": extension_id})
             if not approved:
                 return _error(message, code="approval_denied")
-        installed = manager.install_from_bytes(extension_id, crx)
+        # A real ChromeExtensionManager keeps the previous version until the
+        # Electron load/verification boundary succeeds.  Keep the fallback
+        # for narrow test doubles and older external integrations.
+        transactional = callable(getattr(manager, "prepare_install_from_bytes", None))
+        if transactional:
+            installed = manager.prepare_install_from_bytes(extension_id, crx)
+            pending_update = True
+        else:
+            installed = manager.install_from_bytes(extension_id, crx)
         journal.record(ExecutionEventKind.LIFECYCLE, "Extension installed to Workstation store", risk=risk, metadata={"event": "EXTENSION_INSTALLED", "extension_id": extension_id, "version": installed["version"]})
         loaded = _controller("browser_extension_load", {"extension_id": extension_id, "path": installed["path"]}, task_id=task_id, session_id=session_id)
         if not loaded.get("loaded"):
-            manager.uninstall_extension(extension_id)
+            if transactional:
+                manager.rollback_update(extension_id)
+                pending_update = False
+            else:
+                manager.uninstall_extension(extension_id)
             journal.record(ExecutionEventKind.ERROR, "Extension failed verification and was rolled back", risk=risk, metadata={"event": "EXTENSION_LOAD_FAILED", "extension_id": extension_id})
             return _error("Electron did not verify the extension as loaded; the local installation was rolled back.", code="extension_load_failed")
+        if transactional:
+            manager.commit_update(extension_id)
+            pending_update = False
         journal.record(ExecutionEventKind.LIFECYCLE, "Extension loaded and verified in Chromium", risk=risk, metadata={"event": "EXTENSION_VERIFIED", "extension_id": extension_id, "version": loaded.get("version", installed["version"])})
         return json.dumps({"success": True, "extension": installed, "runtime": loaded}, ensure_ascii=False)
     except Exception as exc:
+        if pending_update:
+            try:
+                manager.rollback_update(extension_id)
+            except Exception as rollback_exc:
+                _log.error("Extension rollback failed for %s: %s", extension_id, rollback_exc)
         journal.record(ExecutionEventKind.ERROR, "Extension installation failed", metadata={"event": "EXTENSION_INSTALL_FAILED", "error": str(exc)[:500]})
         return _error(str(exc), code="extension_install_failed")
 

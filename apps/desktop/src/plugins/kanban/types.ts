@@ -190,6 +190,22 @@ export interface HybridCard {
   metadata: Record<string, unknown>
   updated_at: number
   activity?: HybridActivityItem[]
+  archived?: boolean
+  delegation?: HybridDelegation | null
+  delegations?: HybridDelegation[]
+}
+
+export interface HybridDelegation {
+  human_card_id: string
+  agent_task_id: string
+  attempt: number
+  state: 'delegated' | 'queued' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled'
+  result_ref?: string | null
+  evidence_refs: string[]
+  summary?: string | null
+  created_at: number
+  updated_at: number
+  completed_at?: number | null
 }
 
 export interface HybridColumn {
@@ -199,6 +215,7 @@ export interface HybridColumn {
   position: number
   revision: number
   cards: HybridCard[]
+  archived?: boolean
 }
 
 export interface HybridBoard {
@@ -207,6 +224,7 @@ export interface HybridBoard {
   description: string
   revision: number
   columns: HybridColumn[]
+  archived?: boolean
 }
 
 /** GET /tasks/:id/log — the worker's stdout/stderr tail. */

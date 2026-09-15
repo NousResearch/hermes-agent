@@ -27,8 +27,8 @@ from hermes_cli import kanban_db as kb
 # ---------------------------------------------------------------------------
 
 
-def _load_plugin_router():
-    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
+def _load_plugin_module():
+    """Dynamically load the dashboard plugin in its bare-FastAPI test context."""
     repo_root = Path(__file__).resolve().parents[2]
     plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
@@ -40,7 +40,11 @@ def _load_plugin_router():
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
-    return mod.router
+    return mod
+
+
+def _load_plugin_router():
+    return _load_plugin_module().router
 
 
 @pytest.fixture
@@ -591,6 +595,42 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     # is flaky. The assertion that matters is: no CancelledError escaped.
 
 
+def test_ws_task_event_projects_linked_human_card_without_waiting_for_poll(kanban_home, monkeypatch):
+    """The established task-event socket is also the Hybrid invalidation path."""
+    module = _load_plugin_module()
+    monkeypatch.setattr(module, "_EVENT_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(module, "_ws_upgrade_authorized", lambda ws: True)
+    app = FastAPI()
+    app.include_router(module.router, prefix="/api/plugins/kanban")
+    event_client = TestClient(app)
+
+    conn = kb.connect()
+    try:
+        from hermes_cli import hybrid_kanban as hybrid
+
+        board = hybrid.create_board(conn, name="Realtime bridge")
+        column = hybrid.create_column(conn, board_id=board["id"], name="Inbox")
+        card = hybrid.create_card(conn, board_id=board["id"], column_id=column["id"], title="Follow task state")
+        delegated = hybrid.delegate_card(conn, card_id=card["id"])
+        task_id = delegated["delegation"]["agent_task_id"]
+        task_cursor = conn.execute("SELECT COALESCE(MAX(id), 0) AS value FROM task_events").fetchone()["value"]
+        hybrid_cursor = conn.execute("SELECT COALESCE(MAX(id), 0) AS value FROM hybrid_activity").fetchone()["value"]
+
+        with event_client.websocket_connect(
+            f"/api/plugins/kanban/events?since={task_cursor}&hybrid_since={hybrid_cursor}"
+        ) as ws:
+            assert kb.block_task(conn, task_id, reason="approval needed", kind="needs_input") is True
+            frame = ws.receive_json()
+    finally:
+        conn.close()
+
+    assert any(event["task_id"] == task_id for event in frame["events"])
+    assert "hybrid_events" in frame, frame
+    progress = next(event for event in frame["hybrid_events"] if event["kind"] == "delegation_progressed")
+    assert progress["card_id"] == card["id"]
+    assert progress["payload"]["state"] == "waiting"
+
+
 # ---------------------------------------------------------------------------
 # Bulk actions
 # ---------------------------------------------------------------------------
@@ -736,7 +776,7 @@ def test_dashboard_done_actions_prompt_for_completion_summary():
     """
 
     repo_root = Path(__file__).resolve().parents[2]
-    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text(encoding="utf-8")
 
     import re
 
@@ -831,7 +871,7 @@ def test_dashboard_surfaces_ready_blocked_error_inline():
     repo_root = Path(__file__).resolve().parents[2]
     bundle = (
         repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
-    ).read_text()
+    ).read_text(encoding="utf-8")
 
     # Helper that strips ``"409: {\"detail\":\"…\"}"`` down to the
     # human-readable message before it lands in any banner.
@@ -859,7 +899,7 @@ def test_dashboard_dependency_selects_use_value_change_handler():
     repo_root = Path(__file__).resolve().parents[2]
     bundle = (
         repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
-    ).read_text()
+    ).read_text(encoding="utf-8")
 
     parent_select = (
         'value: newParent,\n'
@@ -1228,5 +1268,3 @@ def test_specify_happy_path(client, monkeypatch):
 # ---------------------------------------------------------------------------
 # Final result visibility for Done cards
 # ---------------------------------------------------------------------------
-
-

@@ -3,8 +3,10 @@
 import io
 import json
 import zipfile
+from pathlib import Path
 import pytest
 
+import workstation.extensions as extension_module
 from workstation.extensions import ChromeExtensionManager, assess_extension_risk
 
 
@@ -108,3 +110,171 @@ def test_reinstall_updates_the_durable_registry_entry(tmp_path):
     updated = mgr.install_from_bytes(ext_id, create_mock_crx({"name": "Fixture", "version": "2.0.0"}))
     assert updated["version"] == "2.0.0"
     assert mgr.list_installed_extensions() == [updated]
+
+
+def test_update_rollback_preserves_last_known_good_after_candidate_verification_failure(tmp_path):
+    ext_id = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
+    mgr = ChromeExtensionManager(storage_dir=tmp_path)
+    v1 = mgr.install_from_bytes(ext_id, create_mock_crx({"name": "Fixture", "version": "1.0.0"}))
+
+    candidate = mgr.prepare_install_from_bytes(ext_id, create_mock_crx({"name": "Fixture", "version": "2.0.0"}))
+    assert candidate["version"] == "2.0.0"
+    assert json.loads((tmp_path / ext_id / "manifest.json").read_text())["version"] == "2.0.0"
+    mgr.rollback_update(ext_id)
+
+    restored = ChromeExtensionManager(storage_dir=tmp_path).list_installed_extensions()
+    assert restored == [v1]
+    assert json.loads((tmp_path / ext_id / "manifest.json").read_text())["version"] == "1.0.0"
+
+
+def test_update_replace_failure_restores_last_known_good(tmp_path, monkeypatch):
+    ext_id = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
+    mgr = ChromeExtensionManager(storage_dir=tmp_path)
+    v1 = mgr.install_from_bytes(ext_id, create_mock_crx({"name": "Fixture", "version": "1.0.0"}))
+    real_replace = extension_module.os.replace
+    failed = False
+
+    def fail_candidate_promotion(source, destination):
+        nonlocal failed
+        if Path(source).name == "extension" and Path(destination).name == ext_id and not failed:
+            failed = True
+            raise OSError("simulated candidate replace failure")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(extension_module.os, "replace", fail_candidate_promotion)
+    with pytest.raises(OSError, match="candidate replace"):
+        mgr.install_from_bytes(ext_id, create_mock_crx({"name": "Fixture", "version": "2.0.0"}))
+
+    assert failed is True
+    assert ChromeExtensionManager(storage_dir=tmp_path).list_installed_extensions() == [v1]
+    assert json.loads((tmp_path / ext_id / "manifest.json").read_text())["version"] == "1.0.0"
+
+
+def test_update_staging_failure_keeps_last_known_good(tmp_path):
+    ext_id = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
+    mgr = ChromeExtensionManager(storage_dir=tmp_path)
+    v1 = mgr.install_from_bytes(ext_id, create_mock_crx({"name": "Fixture", "version": "1.0.0"}))
+
+    with pytest.raises(ValueError, match="manifest"):
+        mgr.install_from_bytes(ext_id, create_mock_crx({"name": "Invalid"}))
+
+    assert mgr.list_installed_extensions() == [v1]
+    assert json.loads((tmp_path / ext_id / "manifest.json").read_text())["version"] == "1.0.0"
+
+
+def test_update_registry_interruption_recovers_last_known_good_on_restart(tmp_path, monkeypatch):
+    ext_id = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
+    mgr = ChromeExtensionManager(storage_dir=tmp_path)
+    v1 = mgr.install_from_bytes(ext_id, create_mock_crx({"name": "Fixture", "version": "1.0.0"}))
+    real_save = mgr._save_registry
+    save_count = 0
+
+    def interrupt_registry_promotion(data):
+        nonlocal save_count
+        save_count += 1
+        # The journal write succeeds; the post-promotion registry write and
+        # same-process cleanup are interrupted, leaving startup recovery to
+        # reconcile the durable journal and filesystem.
+        if save_count in {2, 3}:
+            raise OSError("simulated registry interruption")
+        return real_save(data)
+
+    monkeypatch.setattr(mgr, "_save_registry", interrupt_registry_promotion)
+    with pytest.raises(OSError, match="registry interruption"):
+        mgr.install_from_bytes(ext_id, create_mock_crx({"name": "Fixture", "version": "2.0.0"}))
+
+    recovered = ChromeExtensionManager(storage_dir=tmp_path)
+    assert recovered.list_installed_extensions() == [v1]
+    assert json.loads((tmp_path / ext_id / "manifest.json").read_text())["version"] == "1.0.0"
+    assert "_update" not in json.loads((tmp_path / "extensions.json").read_text())
+
+
+def test_update_transaction_recovers_last_known_good_after_restart(tmp_path):
+    ext_id = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
+    mgr = ChromeExtensionManager(storage_dir=tmp_path)
+    v1 = mgr.install_from_bytes(ext_id, create_mock_crx({"name": "Fixture", "version": "1.0.0"}))
+    mgr.prepare_install_from_bytes(ext_id, create_mock_crx({"name": "Fixture", "version": "2.0.0"}))
+
+    recovered = ChromeExtensionManager(storage_dir=tmp_path)
+    assert recovered.list_installed_extensions() == [v1]
+    assert json.loads((tmp_path / ext_id / "manifest.json").read_text())["version"] == "1.0.0"
+    assert "_update" not in json.loads((tmp_path / "extensions.json").read_text())
+
+
+def test_verified_update_commits_and_survives_restart(tmp_path):
+    ext_id = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
+    mgr = ChromeExtensionManager(storage_dir=tmp_path)
+    mgr.install_from_bytes(ext_id, create_mock_crx({"name": "Fixture", "version": "1.0.0"}))
+    v2 = mgr.prepare_install_from_bytes(ext_id, create_mock_crx({"name": "Fixture", "version": "2.0.0"}))
+    mgr.commit_update(ext_id)
+
+    assert ChromeExtensionManager(storage_dir=tmp_path).list_installed_extensions() == [v2]
+    assert json.loads((tmp_path / ext_id / "manifest.json").read_text())["version"] == "2.0.0"
+
+
+def test_committed_update_cleanup_interruption_never_repoints_registry_to_v1(tmp_path, monkeypatch):
+    ext_id = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
+    mgr = ChromeExtensionManager(storage_dir=tmp_path)
+    mgr.install_from_bytes(ext_id, create_mock_crx({"name": "Fixture", "version": "1.0.0"}))
+    v2 = mgr.prepare_install_from_bytes(ext_id, create_mock_crx({"name": "Fixture", "version": "2.0.0"}))
+    real_save = mgr._save_registry
+    save_count = 0
+
+    def fail_final_cleanup(data):
+        nonlocal save_count
+        save_count += 1
+        if save_count == 2:
+            raise OSError("simulated committed cleanup interruption")
+        return real_save(data)
+
+    monkeypatch.setattr(mgr, "_save_registry", fail_final_cleanup)
+    with pytest.raises(OSError, match="committed cleanup"):
+        mgr.commit_update(ext_id)
+
+    # The caller may safely run its normal rollback handler after an exception
+    # from commit cleanup.  A committed journal is terminal and must finish
+    # cleanup instead of restoring v1 under a v2 directory.
+    mgr.rollback_update(ext_id)
+    recovered = ChromeExtensionManager(storage_dir=tmp_path)
+    assert recovered.list_installed_extensions() == [v2]
+    assert json.loads((tmp_path / ext_id / "manifest.json").read_text())["version"] == "2.0.0"
+    assert "_update" not in json.loads((tmp_path / "extensions.json").read_text())
+
+
+def test_agent_load_failure_rolls_back_real_manager_update(tmp_path, monkeypatch):
+    """The Electron verification boundary must preserve the v1 install."""
+    from tools import workstation_extensions as extension_tools
+
+    ext_id = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
+    manager = ChromeExtensionManager(storage_dir=tmp_path)
+    v1 = manager.install_from_bytes(ext_id, create_mock_crx({"name": "Fixture", "version": "1.0.0"}))
+    v2_crx = create_mock_crx({"name": "Fixture", "version": "2.0.0"})
+
+    class Journal:
+        task_id = "extension-update-task"
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def record(self, *_args, **_kwargs):
+            pass
+
+    monkeypatch.setattr(extension_tools, "ChromeExtensionManager", lambda: manager)
+    monkeypatch.setattr(extension_tools, "ExecutionJournal", Journal)
+    monkeypatch.setattr(extension_tools, "_desktop_session", lambda: True)
+    monkeypatch.setattr(manager, "download_crx", lambda _extension_id: v2_crx)
+    monkeypatch.setattr(extension_tools, "_controller", lambda *_args, **_kwargs: {"loaded": False})
+
+    result = json.loads(
+        extension_tools._install(
+            {"extension": ext_id},
+            task_id="extension-update-task",
+            session_id="extension-update-session",
+        )
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "extension_load_failed"
+    assert manager.list_installed_extensions() == [v1]
+    assert json.loads((tmp_path / ext_id / "manifest.json").read_text())["version"] == "1.0.0"
+    assert "_update" not in json.loads((tmp_path / "extensions.json").read_text())

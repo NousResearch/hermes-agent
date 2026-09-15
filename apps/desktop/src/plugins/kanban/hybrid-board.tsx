@@ -1,19 +1,22 @@
 /** Human + agent shared Kanban projection. The server remains authoritative. */
-import { Button, Codicon, Input, Loader, Textarea, useQuery, useQueryClient } from '@hermes/plugin-sdk'
+import { Button, Codicon, host, Input, Loader, Textarea, useQuery, useQueryClient } from '@hermes/plugin-sdk'
 import { type DragEvent, useEffect, useState } from 'react'
 
 import {
+  archiveHybridBoard,
+  archiveHybridCard,
+  archiveHybridColumn,
+  cancelHybridCardDelegation,
   createHybridBoard,
   createHybridCard,
   createHybridColumn,
-  deleteHybridBoard,
-  deleteHybridCard,
-  deleteHybridColumn,
+  delegateHybridCard,
   fetchHybridBoard,
   fetchHybridBoards,
   fetchHybridCard,
   moveHybridCard,
   moveHybridColumn,
+  retryHybridCardDelegation,
   updateHybridCard
 } from './api'
 import type { HybridActivityItem, HybridBoard, HybridCard, HybridColumn } from './types'
@@ -26,7 +29,9 @@ function Add({ label, onAdd }: { label: string; onAdd: (name: string) => Promise
   const [value, setValue] = useState('')
   const [busy, setBusy] = useState(false)
   const submit = async () => {
-    if (!value.trim()) return
+    if (!value.trim()) {
+      return
+    }
     setBusy(true)
     try {
       await onAdd(value.trim())
@@ -44,7 +49,6 @@ function Add({ label, onAdd }: { label: string; onAdd: (name: string) => Promise
     </div>
   )
 }
-
 function Card({ card, onOpen }: { card: HybridCard; onOpen: (card: HybridCard) => void }) {
   const dragStart = (event: DragEvent<HTMLButtonElement>) => {
     event.dataTransfer.setData('text/hermes-hybrid-card', card.id)
@@ -59,6 +63,13 @@ function Card({ card, onOpen }: { card: HybridCard; onOpen: (card: HybridCard) =
     >
       <div className="font-medium">{card.title}</div>
       {card.description && <div className="mt-1 line-clamp-2 text-(--ui-text-tertiary)">{card.description}</div>}
+      {card.delegation && (
+        <div className="mt-1.5 flex items-center gap-1 text-[0.65rem] text-(--ui-text-tertiary)">
+          <Codicon name="hubot" size="0.7rem" />
+          <span className="capitalize">{card.delegation.state}</span>
+          <span className="font-mono">{card.delegation.agent_task_id.slice(0, 10)}</span>
+        </div>
+      )}
     </button>
   )
 }
@@ -97,9 +108,13 @@ function Column({
     }
 
     const card = event.dataTransfer.getData('text/hermes-hybrid-card')
-    if (!card) return
+    if (!card) {
+      return
+    }
     const source = board.columns.flatMap(item => item.cards).find(item => item.id === card)
-    if (!source) return
+    if (!source) {
+      return
+    }
     try {
       await moveHybridCard(card, column.id, source.revision)
       refresh()
@@ -110,13 +125,13 @@ function Column({
 
   const handleDelete = async () => {
     if (column.cards.length > 0) {
-      if (!window.confirm(`Delete column "${column.name}" and all its ${column.cards.length} card(s)?`)) {
+      if (!window.confirm(`Archive column "${column.name}" and hide its ${column.cards.length} card(s)?`)) {
         return
       }
     }
     setDeleting(true)
     try {
-      await deleteHybridColumn(column.id)
+      await archiveHybridColumn(column.id)
       refresh()
     } finally {
       setDeleting(false)
@@ -142,7 +157,7 @@ function Column({
           </span>
         </div>
         <Button
-          aria-label="Delete column"
+          aria-label="Archive column"
           className="text-(--ui-text-tertiary) hover:text-destructive"
           disabled={deleting}
           onClick={() => void handleDelete()}
@@ -185,6 +200,7 @@ function CardActivityDrawer({
   const [columnId, setColumnId] = useState('')
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [delegating, setDelegating] = useState(false)
 
   useEffect(() => {
     if (card) {
@@ -205,7 +221,9 @@ function CardActivityDrawer({
   }
 
   const handleSave = async () => {
-    if (!title.trim()) return
+    if (!title.trim()) {
+      return
+    }
     setSaving(true)
     try {
       let currentRevision = card.revision
@@ -228,14 +246,43 @@ function CardActivityDrawer({
   }
 
   const handleDelete = async () => {
-    if (!window.confirm(`Delete card "${card.title}"?`)) return
+    if (!window.confirm(`Archive card "${card.title}"?`)) {
+      return
+    }
     setDeleting(true)
     try {
-      await deleteHybridCard(card.id)
+      await archiveHybridCard(card.id)
       onRefresh()
       onClose()
     } finally {
       setDeleting(false)
+    }
+  }
+
+  const delegation = card.delegation
+  const terminalDelegation =
+    delegation?.state === 'completed' || delegation?.state === 'failed' || delegation?.state === 'cancelled'
+  const handleDelegate = async () => {
+    setDelegating(true)
+    try {
+      if (delegation?.state === 'waiting') {
+        await retryHybridCardDelegation(card.id)
+      } else {
+        await delegateHybridCard(card.id, Boolean(terminalDelegation))
+      }
+      onRefresh()
+    } finally {
+      setDelegating(false)
+    }
+  }
+
+  const handleCancelDelegation = async () => {
+    setDelegating(true)
+    try {
+      await cancelHybridCardDelegation(card.id)
+      onRefresh()
+    } finally {
+      setDelegating(false)
     }
   }
 
@@ -250,6 +297,27 @@ function CardActivityDrawer({
           <span className="font-mono text-[0.7rem] text-(--ui-text-tertiary)">{card.id}</span>
         </div>
         <div className="flex items-center gap-1">
+          {!delegation || terminalDelegation || delegation.state === 'waiting' ? (
+            <Button disabled={delegating} onClick={() => void handleDelegate()} size="xs">
+              {delegating
+                ? 'Working…'
+                : delegation?.state === 'waiting'
+                  ? 'Retry Agent Task'
+                  : terminalDelegation
+                    ? 'New Agent Attempt'
+                    : 'Entregar isto ao Hermes'}
+            </Button>
+          ) : (
+            <Button disabled={delegating} onClick={() => void handleCancelDelegation()} size="xs" variant="ghost">
+              {delegating ? 'Working…' : 'Cancel delegation'}
+            </Button>
+          )}
+          {delegation && (
+            <Button onClick={() => host.navigate('/kanban')} size="xs" variant="ghost">
+              <Codicon name="link-external" size="0.8rem" />
+              Agent Task {delegation.agent_task_id.slice(0, 8)}
+            </Button>
+          )}
           <Button disabled={saving || !title.trim()} onClick={() => void handleSave()} size="xs">
             {saving ? 'Saving…' : 'Save'}
           </Button>
@@ -334,8 +402,8 @@ function CardActivityDrawer({
                             isAgent
                               ? 'bg-purple-500/10 text-purple-400'
                               : isHuman
-                              ? 'bg-sky-500/10 text-sky-400'
-                              : 'bg-zinc-500/10 text-zinc-400'
+                                ? 'bg-sky-500/10 text-sky-400'
+                                : 'bg-zinc-500/10 text-zinc-400'
                           }`}
                         >
                           {actorLabel}
@@ -390,10 +458,14 @@ export function HybridBoardPage() {
   }
 
   const handleDeleteBoard = async () => {
-    if (!board) return
-    if (!window.confirm(`Delete board "${board.name}" and all its contents?`)) return
+    if (!board) {
+      return
+    }
+    if (!window.confirm(`Archive board "${board.name}" and all its contents?`)) {
+      return
+    }
     try {
-      await deleteHybridBoard(board.id)
+      await archiveHybridBoard(board.id)
       setSelectedId('')
       refresh()
     } catch {
@@ -430,7 +502,7 @@ export function HybridBoardPage() {
               <Codicon name="refresh" size="0.8rem" />
             </Button>
             <Button
-              aria-label="Delete board"
+              aria-label="Archive board"
               className="text-(--ui-text-tertiary) hover:text-destructive"
               onClick={() => void handleDeleteBoard()}
               size="xs"
@@ -490,4 +562,3 @@ export function HybridBoardPage() {
     </main>
   )
 }
-

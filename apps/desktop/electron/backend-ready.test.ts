@@ -54,7 +54,6 @@ test('default is cold-start tolerant (> the historical 45s floor)', () => {
     'cold-start default must exceed the warm-start floor'
   )
 })
-
 test('honors a valid HERMES_DESKTOP_PORT_ANNOUNCE_TIMEOUT_MS override', () => {
   const env = { HERMES_DESKTOP_PORT_ANNOUNCE_TIMEOUT_MS: '120000' }
   assert.equal(resolvePortAnnounceTimeoutMs(env), 120_000)
@@ -237,4 +236,3 @@ test('waitForDashboardPortAnnouncement resolves if stdout arrives before ready f
     tmp.cleanup()
   }
 })
-

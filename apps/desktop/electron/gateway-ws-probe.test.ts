@@ -56,7 +56,6 @@ test('probe resolves ok when the socket opens and stays open', async () => {
   assert.deepEqual(result, { ok: true })
   assert.equal(instances[0].closed, true)
 })
-
 test('probe resolves ok immediately when a frame arrives', async () => {
   const { FakeWs, instances } = makeFakeWs()
 
@@ -233,4 +232,3 @@ test('probeGatewayWebSocketWithRetry fast-fails on auth 4401 rejection without r
   assert.equal(instances.length, 1) // Did not retry
   assert.ok(Date.now() - start < 300) // Fast failed
 })
-

@@ -23,6 +23,9 @@ import { bindCompletionNotify, type CompletionEvent, onKanbanEventsFrame } from 
 import type {
   BoardMeta,
   BoardsResponse,
+  HybridBoard,
+  HybridCard,
+  HybridColumn,
   KanbanBoard,
   KanbanProfile,
   KanbanProject,
@@ -30,10 +33,7 @@ import type {
   KanbanTaskDetail,
   OrchestrationSettings,
   TaskEstimate,
-  WorkerLog,
-  HybridBoard,
-  HybridCard,
-  HybridColumn
+  WorkerLog
 } from './types'
 
 type Rest = <T>(path: string, opts?: PluginRestOptions) => Promise<T>
@@ -290,11 +290,35 @@ export const createHybridBoard = (name: string, description = '') =>
 export const createHybridColumn = (boardId: string, name: string) =>
   call<{ column: HybridColumn }>(withBoard(`/hybrid/boards/${boardId}/columns`), { method: 'POST', body: { name } })
 export const createHybridCard = (boardId: string, columnId: string, title: string, description = '') =>
-  call<{ card: HybridCard }>(withBoard(`/hybrid/boards/${boardId}/cards`), { method: 'POST', body: { column_id: columnId, title, description } })
+  call<{ card: HybridCard }>(withBoard(`/hybrid/boards/${boardId}/cards`), {
+    method: 'POST',
+    body: { column_id: columnId, title, description }
+  })
+export const delegateHybridCard = (cardId: string, newAttempt = false, sessionId?: string) =>
+  call<{ card: HybridCard }>(withBoard(`/hybrid/cards/${cardId}/delegate`), {
+    method: 'POST',
+    body: { new_attempt: newAttempt, session_id: sessionId }
+  })
+export const retryHybridCardDelegation = (cardId: string, sessionId?: string) =>
+  call<{ card: HybridCard }>(withBoard(`/hybrid/cards/${cardId}/retry-delegation`), {
+    method: 'POST',
+    body: { session_id: sessionId }
+  })
+export const cancelHybridCardDelegation = (cardId: string, sessionId?: string) =>
+  call<{ card: HybridCard }>(withBoard(`/hybrid/cards/${cardId}/cancel-delegation`), {
+    method: 'POST',
+    body: { session_id: sessionId }
+  })
 export const moveHybridCard = (cardId: string, targetColumnId: string, expectedRevision: number) =>
-  call<{ card: HybridCard }>(withBoard(`/hybrid/cards/${cardId}/move`), { method: 'POST', body: { target_column_id: targetColumnId, expected_revision: expectedRevision } })
+  call<{ card: HybridCard }>(withBoard(`/hybrid/cards/${cardId}/move`), {
+    method: 'POST',
+    body: { target_column_id: targetColumnId, expected_revision: expectedRevision }
+  })
 export const updateHybridCard = (cardId: string, patch: Pick<HybridCard, 'title' | 'description' | 'revision'>) =>
-  call<{ card: HybridCard }>(withBoard(`/hybrid/cards/${cardId}`), { method: 'PATCH', body: { title: patch.title, description: patch.description, expected_revision: patch.revision } })
+  call<{ card: HybridCard }>(withBoard(`/hybrid/cards/${cardId}`), {
+    method: 'PATCH',
+    body: { title: patch.title, description: patch.description, expected_revision: patch.revision }
+  })
 export const moveHybridColumn = (columnId: string, beforeId?: string, afterId?: string, expectedRevision?: number) =>
   call<{ column: HybridColumn }>(withBoard(`/hybrid/columns/${columnId}/move`), {
     method: 'POST',
@@ -302,12 +326,22 @@ export const moveHybridColumn = (columnId: string, beforeId?: string, afterId?: 
   })
 export const deleteHybridCard = (cardId: string) =>
   call<{ ok: boolean }>(withBoard(`/hybrid/cards/${cardId}`), { method: 'DELETE' })
+export const archiveHybridCard = (cardId: string) =>
+  call<{ ok: boolean }>(withBoard(`/hybrid/cards/${cardId}/archive`), { method: 'POST' })
+export const restoreHybridCard = (cardId: string) =>
+  call<{ ok: boolean }>(withBoard(`/hybrid/cards/${cardId}/restore`), { method: 'POST' })
 export const deleteHybridColumn = (columnId: string) =>
   call<{ ok: boolean }>(withBoard(`/hybrid/columns/${columnId}`), { method: 'DELETE' })
+export const archiveHybridColumn = (columnId: string) =>
+  call<{ ok: boolean }>(withBoard(`/hybrid/columns/${columnId}/archive`), { method: 'POST' })
+export const restoreHybridColumn = (columnId: string) =>
+  call<{ ok: boolean }>(withBoard(`/hybrid/columns/${columnId}/restore`), { method: 'POST' })
 export const deleteHybridBoard = (boardId: string) =>
   call<{ ok: boolean }>(withBoard(`/hybrid/boards/${boardId}`), { method: 'DELETE' })
-export const fetchHybridCard = (cardId: string) =>
-  call<{ card: HybridCard }>(withBoard(`/hybrid/cards/${cardId}`))
+export const archiveHybridBoard = (boardId: string) =>
+  call<{ ok: boolean }>(withBoard(`/hybrid/boards/${boardId}/archive`), { method: 'POST' })
+export const restoreHybridBoard = (boardId: string) =>
+  call<{ ok: boolean }>(withBoard(`/hybrid/boards/${boardId}/restore`), { method: 'POST' })
+export const fetchHybridCard = (cardId: string) => call<{ card: HybridCard }>(withBoard(`/hybrid/cards/${cardId}`))
 export const fetchHybridBoardActivity = (boardId: string) =>
   call<{ activity: Array<Record<string, unknown>> }>(withBoard(`/hybrid/boards/${boardId}/activity`))
-

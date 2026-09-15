@@ -1,6 +1,6 @@
 # CURRENT — Workstation Engineering Journal
 
-Last updated: 2026-09-14
+Last updated: 2026-09-15
 Active track: Workstation Knowledge Subsystem (Hermes Vault) & V3 Hardening
 Repository: `kevynlucasprofissional-stack/hermes-agent`
 Active feature branch: `main` plus current Workstation working tree
@@ -8,7 +8,7 @@ Journal entries:
 - `v1-1-5-integrated-dogfood-mvp.md` (V1 #1.5 MVP verification)
 - `v2-roadmap-completion.md` (Full roadmap completion: V1.1 and V2)
 - `v3-runtime-hardening-closure.md` (V3.1–V3.4 contract-layer closure)
-Status: 175/175 Workstation Pytest passing, Desktop typecheck passing.
+Status: 247/247 Workstation Pytest passing, Desktop typecheck passing; current-main audit closure appended below.
 
 ## H-049 — Workstation Browser Automation Ergonomics: Input Hygiene, Proactive Human Handoff, Canvas Awareness, and Batch Extraction
 
@@ -120,6 +120,91 @@ A personal AI agent's effectiveness multiplies when user and agent share a singl
    - `vault_read(note)`: Read note content and metadata.
    - `vault_write(note, content)`: Create or update notes with frontmatter.
    - `vault_backlinks(note)`: Query references and connected notes.
+
+## H-054 — Corpus hardening audit: retain only gaps reproducible on current `main`
+
+Status: ACTIVE — evidence and focused reproductions in progress
+Origin: real Hermes conversation corpus supplied for the Workstation hardening
+audit
+Audit base: `main@1ca169ca15626071c21122f3ea6801065de8d407` (2026-09-14)
+
+### Scope and evidence boundary
+
+The supplied corpus describes 50 conversations with repeated tool payloads,
+long polling waits, compactions and tool-call limits. It is workload evidence,
+not proof that an historical implementation still has the same defect. The
+named corpus Markdown/CSV attachments were not present in this checkout during
+the initial audit, so their stated aggregate figures are retained as the task
+input but no per-conversation causal claim is made without the attachments or a
+current reproduction.
+
+### Initial gap matrix on the audit base
+
+| Area | Classification | Current evidence / disposition |
+| --- | --- | --- |
+| Large tool-result spillover | PARTIAL | `tools.tool_result_storage` persists only oversized results and gives a text/path preview; it has no content-addressed reference, scope-safe stable-result reuse, or `unchanged` contract. `read_file` is deliberately exempted from spillover. |
+| Inline budget / large outputs | PARTIAL | Per-result and per-turn character budgets exist, but no normalized `verbosity`/`inline_budget`/artifact contract governs all results. |
+| Persistent-worker result durability | CONFIRMED_GAP | `workstation/workers.py` persists worker records and pending messages, while `WorkerResultEnvelope`s live only in `PersistentWorker._results`; reconstructed workers start with an empty result list. |
+| WorkItems / exception-driven execution | PARTIAL | Persistent workers, journal and events exist; no durable WorkItem lifecycle or generic validator-to-anomaly escalation was found. |
+| Structured operational errors | CONFIRMED_GAP | The Electron controller serializes action exceptions as `{ success: false, error: message }`, rather than a stable remediation contract. |
+| BrowserTask lifecycle/restart | ALREADY_SOLVED | BrowserTask/BrowserSessionState single-page and lazy restart contracts are implemented and covered by focused/runtime/native evidence. |
+| Controller descriptor reconciliation | PARTIAL | Controller startup writes a descriptor with the Electron PID, but the audited route still needs a current lifecycle/reconciliation proof before any extraction or rewrite is considered. |
+| Human takeover | PARTIAL | Browser actions are blocked while `controlOwner === 'human'`; the present owner is runtime-global, so cross-host/task scoping needs focused validation before changing semantics. |
+| Process ownership guardrails | ALREADY_SOLVED | `tools.process_registry` only tree-kills tracked spawned PIDs and verifies recorded process start time before signalling; no wildcard Chrome-kill path was found in that owner. |
+| Event-driven waits | PARTIAL | `RuntimeEventBus` and worker blocking waits exist, but reusable condition-specific await projections have not yet been established. |
+| Context compaction | PARTIAL | Workstation session lifecycle records compaction markers and bounded memory compaction exists, but the core conversation compactor still needs a separate trace before a non-recursive operational-reference change can be justified. |
+| Session `null` / KI-007 | NOT_REPRODUCED | KI-007 remains causally unproven; no SessionDB/Gateway change is authorized without the documented reproduction gate. |
+| Session forensic manifest | PARTIAL | Session/worker/resource identities are individually projected; no single redacted manifest export was established in this audit. |
+| Capability preflight | PARTIAL | Worker/host/toolset capability sources exist, but no single WorkPlan projection has yet been found. |
+| Toolset/schema handles | PARTIAL | Tool-definition caching/fingerprinting exists, but repeated discovery results have no consumer-visible delta handle. |
+| Skill identity / collisions | ALREADY_SOLVED | Skill hashes and explicit ambiguous-name rejection are present; no silent collision reproduction was found. |
+| Skill preflight | PARTIAL | Existing guard and install validation cover substantial input validation; model-visible preflight constraints require a separate skill-manager trace. |
+| Effective configuration semantics | NOT_REPRODUCED | The historical unknown-key symptom was not reproduced in the audit window; no config-owner change is justified yet. |
+| Typed host/process operations | PARTIAL | The tracked ProcessRegistry and host adapters cover high-value operations; shell-wide command paths still need a focused safety/capability audit before adding API surface. |
+| Provenance/validators | PARTIAL | Perception, journal and evidence metadata exist, but no generic WorkItem validator escalation was found. |
+| Experience promotion | PARTIAL | Procedure promotion is explicit; the requested skill/guardrail/regression triage needs a separately scoped evidence lifecycle. |
+| Observability projection | ALREADY_SOLVED | EvidenceState, RuntimeEventBus, resources and Desktop projections already expose the canonical operational plane. |
+| Corpus benchmark | CONFIRMED_GAP | No versioned baseline-vs-hardened benchmark for the supplied workload shape was found. |
+
+### First focused experiments
+
+1. Reconstruct a completed persistent worker and prove whether an unread result
+   survives exactly once.
+2. Exercise the existing result-persistence boundary twice with stable content,
+   then verify whether the second delivery can be represented by a safe handle
+   instead of reinjecting the raw body.
+3. Exercise controller error normalization at the authenticated action boundary
+   without changing BrowserTask ownership or fallback routing.
+
+No new SessionDB, Kanban, Memory store, BrowserTask store, browser runtime,
+agent core, scheduler or event bus is permitted by this investigation.
+
+### Observed result — 2026-09-15
+
+- Confirmed the worker-result gap with the pre-change implementation: a
+  reconstructed `PersistentWorker` had an empty `_results` list even when the
+  previous executor had completed.
+- `WorkerMessage.work_item_id`, a durable result envelope, explicit consumer
+  ACK and durable in-flight claim now extend the existing worker record. The
+  result is persisted before journal/event publication; persistence failure
+  leaves recovery work and never publishes `COMPLETED`.
+- Large results already selected for spillover now receive scope-isolated
+  content-addressed `result_ref`, `content_hash`, `artifact_ref`, byte count,
+  cache status and `inline_truncated` metadata. Repeated content in the same
+  task scope reuses the immutable artifact; a distinct scope receives a
+  distinct reference. This is a representation cache, not an unsafe
+  argument-only execution cache.
+- The Electron controller keeps the compatible `error` string and now adds a
+  structured recovery contract for stale refs, unbound tabs, human control,
+  timeout, invalid arguments and controller loss. BrowserTask ownership and
+  fail-closed routing remain unchanged.
+- Focused validation: `43 passed` across
+  `tests/tools/test_tool_result_storage.py` and
+  `workstation/tests/test_persistent_workers.py`; Python compile check passed.
+  Electron typecheck/runtime validation remains blocked locally because the
+  existing shared `node_modules` cannot materialize its locked dev dependencies
+  (`ENOTEMPTY` during npm install). No dependency directory was removed or
+  repaired by this investigation.
 
 ## H-046 — Chrome Web Store support is not yet an agentic capability boundary
 
@@ -2843,3 +2928,48 @@ Immediately after:
 - promote stable product truth into canonical docs instead of leaving it only here.
 
 No experiment is complete until this file is updated. A checkpoint is never permission to stop; it is memory for the next action.
+
+## 2026-09-15 — Current-main Workstation gap audit closure
+
+Status: VALIDATED — focused contracts green; clean-candidate release evidence remains external
+
+Audit base: started at `main@b6ac2d273a43e287122db377bcfa702af6e7553c`, then
+rebased and revalidated on `origin/main@80d4ffce3cfba3ed03474a5b8ebcede4a7fc1770`
+after its docs-only advancement. The audit found and closed the confirmed
+host-independent path-policy failures, the Human Card → Agent Task delegation
+gap, the unscoped human browser-control boundary, extension update last-known-
+good handling, operational-reference loss risk in compaction, and the missing
+provider-free workload baseline.
+
+Evidence and ownership decisions:
+
+- `workstation/path_utils.py` classifies Windows drive/UNC, POSIX absolute and
+  relative syntax without applying the host OS's `abspath`; ReleaseQualification
+  and ScopedPolicyEngine now remain fail-closed across host/target OSes.
+- `hybrid_card_delegations` extends the canonical `hermes_cli.kanban_db`; it is
+  not a second task database. Attempts, restart/idempotency, independent
+  lifecycles, terminal writeback and compact evidence references are covered by
+  `tests/hermes_cli/test_hybrid_kanban.py`.
+- `BrowserHumanControlLease` is owned by `BrowserTask` and scoped by task,
+  session, tab/page/profile and expiry. Restore clears process-local human
+  authority; unrelated tasks remain runnable. Focused Electron lease contracts
+  passed.
+- `ChromeExtensionManager` journals promotion and retains the previous content
+  until load/verification commit. Staging, replace, load, verification and
+  restart recovery tests preserve v1 as last-known-good.
+- The compactor emits a bounded operational-reference envelope beside the
+  narrative summary. `workstation/benchmarks/workload_baseline.json` contains
+  deterministic structural counters for refs, deduplication, worker ACK/restart,
+  compaction, policy errors and event invalidation; no private `.db` is committed.
+- KI-007 was not reproduced by the deterministic session/export/reconnect and
+  concurrent close/export test, so SessionDB was deliberately not rewritten.
+
+Validation on this working tree: `python -m pytest -q workstation/tests` passed
+247 tests; the focused Hybrid/worker/policy/plugin contracts passed 78 tests;
+extension/KI-007/benchmark/compaction contracts passed 17 tests; compaction
+regressions passed 148 tests; Desktop typecheck passed; the Electron platform
+suite passed 1,778 tests with 5 pre-existing skips; and strict doctor, lock,
+license and integration-anchor checks passed. The full Desktop UI suite passed
+591 files / 5,669 tests with `--maxWorkers=4`; the integrated Workstation
+Browser E2E passed 2/2. Release promotion still requires the existing
+clean-machine candidate workflow and branch-protection governance.

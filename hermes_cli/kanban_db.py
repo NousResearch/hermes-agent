@@ -1585,6 +1585,28 @@ CREATE INDEX IF NOT EXISTS idx_hybrid_columns_board_position ON hybrid_columns(b
 CREATE INDEX IF NOT EXISTS idx_hybrid_cards_column_position ON hybrid_cards(column_id, position);
 CREATE INDEX IF NOT EXISTS idx_hybrid_cards_board ON hybrid_cards(board_id);
 CREATE INDEX IF NOT EXISTS idx_hybrid_activity_board ON hybrid_activity(board_id, id);
+
+-- Explicit bridge between human-owned Hybrid cards and canonical agent tasks.
+-- This is a link/projection table, not a second task store: execution state,
+-- runs and durable results remain owned by ``tasks``/``task_runs``.
+CREATE TABLE IF NOT EXISTS hybrid_card_delegations (
+    human_card_id  TEXT NOT NULL,
+    agent_task_id  TEXT NOT NULL UNIQUE,
+    attempt        INTEGER NOT NULL,
+    state          TEXT NOT NULL,
+    result_ref     TEXT,
+    evidence_refs  TEXT,
+    result_summary TEXT,
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL,
+    completed_at   INTEGER,
+    PRIMARY KEY (human_card_id, attempt)
+);
+
+CREATE INDEX IF NOT EXISTS idx_hybrid_delegations_card
+    ON hybrid_card_delegations(human_card_id, attempt);
+CREATE INDEX IF NOT EXISTS idx_hybrid_delegations_task
+    ON hybrid_card_delegations(agent_task_id);
 """
 
 

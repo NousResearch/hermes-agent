@@ -85,6 +85,10 @@ class WorkerMessage:
     message_id: str = field(default_factory=lambda: f"msg-{uuid4().hex}")
     created_at: str = field(default_factory=_utc_now)
     kind: str = "message"
+    # Stable across a reconstruction. Executors that cause an external side
+    # effect can use this as their idempotency key; the registry itself never
+    # pretends it can make an arbitrary third-party executor exactly-once.
+    work_item_id: str = field(default_factory=lambda: f"work-{uuid4().hex}")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -98,6 +102,7 @@ class WorkerMessage:
             message_id=str(data.get("message_id", f"msg-{uuid4().hex}")),
             created_at=str(data.get("created_at", _utc_now())),
             kind=str(data.get("kind", "message")),
+            work_item_id=str(data.get("work_item_id") or f"work-{data.get('message_id', uuid4().hex)}"),
         )
 
 
@@ -118,6 +123,33 @@ class WorkerResultEnvelope:
     evidence: list[dict[str, Any]] = field(default_factory=list)
     error: str | None = None
     created_at: str = field(default_factory=_utc_now)
+    result_id: str = field(default_factory=lambda: f"worker-result-{uuid4().hex}")
+    work_item_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "WorkerResultEnvelope":
+        return cls(
+            worker_id=str(data["worker_id"]),
+            parent_task_id=str(data["parent_task_id"]),
+            session_id=str(data["session_id"]),
+            sequence=int(data["sequence"]),
+            status=str(data["status"]),
+            deliverables=[str(item) for item in data.get("deliverables", [])],
+            semantic_status=str(data.get("semantic_status", "completed")),
+            model=data.get("model"),
+            provider=data.get("provider"),
+            duration_seconds=float(data.get("duration_seconds", 0.0)),
+            usage=dict(data.get("usage", {})),
+            cost_usd=data.get("cost_usd"),
+            evidence=list(data.get("evidence", [])),
+            error=data.get("error"),
+            created_at=str(data.get("created_at", _utc_now())),
+            result_id=str(data.get("result_id") or f"worker-result-{data['worker_id']}-{data['sequence']}"),
+            work_item_id=data.get("work_item_id"),
+        )
 
 
 @dataclass(slots=True)
@@ -142,6 +174,14 @@ class _PersistentWorkerRecord:
     last_sequence: int = 0
     created_at: str = field(default_factory=_utc_now)
     pending_messages: list[dict[str, Any]] = field(default_factory=list)
+    # A result stays durable until the consuming owner explicitly ACKs it.
+    # This is operational metadata over the worker/journal lineage, not a
+    # second task database.
+    pending_results: list[dict[str, Any]] = field(default_factory=list)
+    # A crash after claim but before durable result persistence must never be
+    # represented as completion. Recovery keeps the work item visible for an
+    # explicit idempotent retry/reconciliation.
+    in_flight_message: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -174,7 +214,16 @@ class PersistentWorker:
             for item in record.pending_messages
             if isinstance(item, dict)
         )
-        self._results: list[WorkerResultEnvelope] = []
+        self._results = [
+            WorkerResultEnvelope.from_dict(item)
+            for item in record.pending_results
+            if isinstance(item, dict)
+        ]
+        self._in_flight = (
+            WorkerMessage.from_dict(record.in_flight_message)
+            if isinstance(record.in_flight_message, dict)
+            else None
+        )
         self._condition = threading.Condition()
         self._stop = False
         self._thread: threading.Thread | None = None
@@ -272,6 +321,41 @@ class PersistentWorker:
                     return None
                 self._condition.wait(timeout=remaining)
 
+    def acknowledge_result(self, result_id: str) -> bool:
+        """Durably ACK a delivered result.
+
+        ``wait`` deliberately remains backwards-compatible and non-destructive.
+        A consumer that has persisted/merged the envelope calls this method to
+        complete the delivery leg exactly once.  An unacknowledged result is
+        available after a registry reconstruction instead of disappearing with
+        the worker process.
+        """
+        with self._condition:
+            original_results = self._results
+            original = len(original_results)
+            self._results = [result for result in self._results if result.result_id != result_id]
+            changed = len(self._results) != original
+        if changed:
+            try:
+                self._notify_update()
+            except Exception:
+                # The durable envelope remains authoritative until ACK itself
+                # commits; do not drop it only from this process on failure.
+                with self._condition:
+                    self._results = original_results
+                    self._condition.notify_all()
+                raise
+        return changed
+
+    def recovery_work_item(self) -> WorkerMessage | None:
+        """Return an interrupted item without replaying it implicitly.
+
+        The executor may have crossed a side-effect boundary before a process
+        died.  It must be reconciled or retried with ``work_item_id`` as its
+        idempotency key; silently re-running it would violate that boundary.
+        """
+        return self._in_flight
+
     def _run(self) -> None:
         while True:
             with self._condition:
@@ -281,7 +365,19 @@ class PersistentWorker:
                     return
                 message = self._messages.popleft()
                 self.status = PersistentWorkerStatus.RUNNING
-            self._notify_update()
+                self._in_flight = message
+            # Claim is durable before invoking an arbitrary executor. If the
+            # process disappears afterwards, reconstruction surfaces the item
+            # for explicit reconciliation rather than claiming completion.
+            try:
+                self._notify_update()
+            except Exception:
+                with self._condition:
+                    self.status = PersistentWorkerStatus.FAILED
+                    self._messages.appendleft(message)
+                    self._in_flight = None
+                    self._condition.notify_all()
+                return
 
             started = time.monotonic()
             try:
@@ -315,22 +411,8 @@ class PersistentWorker:
                     usage=execution.usage,
                     cost_usd=execution.cost_usd,
                     evidence=execution.evidence,
+                    work_item_id=message.work_item_id,
                 )
-                if self._journal:
-                    self._journal.record(
-                        ExecutionEventKind.DELIVERABLE,
-                        f"Persistent worker '{self.worker_id}' delivered a result",
-                        metadata={
-                            "worker_id": self.worker_id,
-                            "sequence": result.sequence,
-                            "semantic_status": result.semantic_status,
-                            "model": result.model,
-                            "provider": result.provider,
-                            "usage": result.usage,
-                            "cost_usd": result.cost_usd,
-                            "evidence": result.evidence,
-                        },
-                    )
             except Exception as exc:
                 result = WorkerResultEnvelope(
                     worker_id=self.worker_id,
@@ -341,19 +423,48 @@ class PersistentWorker:
                     semantic_status="failed",
                     duration_seconds=time.monotonic() - started,
                     error=str(exc),
+                    work_item_id=message.work_item_id,
                 )
-                if self._journal:
-                    self._journal.record(
-                        ExecutionEventKind.ERROR,
-                        f"Persistent worker '{self.worker_id}' failed",
-                        metadata={"worker_id": self.worker_id, "sequence": result.sequence},
-                    )
             with self._condition:
                 self._sequence = result.sequence
                 self._results.append(result)
+                self._in_flight = None
                 self.status = PersistentWorkerStatus.READY if not self._stop else PersistentWorkerStatus.STOPPING
                 self._condition.notify_all()
-            self._notify_update()
+            # Do not publish a completed result until its durable envelope is
+            # committed. A persistence error is a failed work state, never a
+            # false COMPLETED transition.
+            try:
+                self._notify_update()
+            except Exception:
+                with self._condition:
+                    self._results.pop()
+                    self._sequence -= 1
+                    self._in_flight = message
+                    self.status = PersistentWorkerStatus.FAILED
+                    self._condition.notify_all()
+                return
+            if self._journal:
+                self._journal.record(
+                    ExecutionEventKind.DELIVERABLE if result.status == "completed" else ExecutionEventKind.ERROR,
+                    (
+                        f"Persistent worker '{self.worker_id}' delivered a durable result"
+                        if result.status == "completed"
+                        else f"Persistent worker '{self.worker_id}' failed"
+                    ),
+                    metadata={
+                        "worker_id": self.worker_id,
+                        "sequence": result.sequence,
+                        "result_id": result.result_id,
+                        "work_item_id": result.work_item_id,
+                        "semantic_status": result.semantic_status,
+                        "model": result.model,
+                        "provider": result.provider,
+                        "usage": result.usage,
+                        "cost_usd": result.cost_usd,
+                        "evidence": result.evidence,
+                    },
+                )
             if self._event_bus:
                 self._event_bus.publish(
                     RuntimeEvent(
@@ -363,6 +474,8 @@ class PersistentWorker:
                         payload={
                             "worker_id": self.worker_id,
                             "sequence": result.sequence,
+                            "result_id": result.result_id,
+                            "work_item_id": result.work_item_id,
                             "status": result.status,
                             "semantic_status": result.semantic_status,
                             "deliverables": result.deliverables,
@@ -419,6 +532,16 @@ class WorkerRegistry:
                         for message in item.get("pending_messages", [])
                         if isinstance(message, dict)
                     ],
+                    pending_results=[
+                        dict(result)
+                        for result in item.get("pending_results", [])
+                        if isinstance(result, dict)
+                    ],
+                    in_flight_message=(
+                        dict(item["in_flight_message"])
+                        if isinstance(item.get("in_flight_message"), dict)
+                        else None
+                    ),
                 )
             except (KeyError, TypeError, ValueError):
                 continue
@@ -451,11 +574,30 @@ class WorkerRegistry:
         if record is None:
             record = _PersistentWorkerRecord(worker.worker_id, worker.parent_task_id, worker.session_id)
             self._persistent_records[worker.worker_id] = record
+        previous = (
+            record.status,
+            record.last_sequence,
+            record.pending_messages,
+            record.pending_results,
+            record.in_flight_message,
+        )
         record.status = worker.status
         record.last_sequence = worker._sequence
         with worker._condition:
             record.pending_messages = [message.to_dict() for message in worker._messages]
-        self._persist_persistent_records()
+            record.pending_results = [result.to_dict() for result in worker._results]
+            record.in_flight_message = worker._in_flight.to_dict() if worker._in_flight else None
+        try:
+            self._persist_persistent_records()
+        except Exception:
+            (
+                record.status,
+                record.last_sequence,
+                record.pending_messages,
+                record.pending_results,
+                record.in_flight_message,
+            ) = previous
+            raise
 
     def start_persistent_worker(
         self,
@@ -523,6 +665,12 @@ class WorkerRegistry:
 
     def wait(self, worker_id: str, timeout: float | None = None, *, after_sequence: int = 0) -> WorkerResultEnvelope | None:
         return self.get_persistent_worker(worker_id).wait(timeout, after_sequence=after_sequence)
+
+    def acknowledge_result(self, worker_id: str, result_id: str) -> bool:
+        return self.get_persistent_worker(worker_id).acknowledge_result(result_id)
+
+    def recovery_work_item(self, worker_id: str) -> WorkerMessage | None:
+        return self.get_persistent_worker(worker_id).recovery_work_item()
 
     def pause_worker(self, worker_id: str) -> None:
         self.get_persistent_worker(worker_id).pause()

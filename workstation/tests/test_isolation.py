@@ -203,3 +203,35 @@ def test_clean_install_evidence_rejects_home_inside_candidate(tmp_path):
 
     assert result.passed is False
     assert "outside the candidate checkout" in result.details
+
+
+@pytest.mark.parametrize("workstation_home", [r"C:\clean", "C:/clean", r"\\server\share\clean", "/opt/hermes-clean"])
+def test_clean_install_evidence_accepts_absolute_home_from_either_host(tmp_path, workstation_home):
+    from workstation.release_qualification import ReleaseQualificationRunner
+
+    evidence = tmp_path / "clean-install.json"
+    evidence.write_text(
+        '{"accepted": true, "candidate_revision": "candidate", '
+        f'"workstation_home": "{workstation_home.replace(chr(92), chr(92) * 2)}", '
+        '"stages": ["clean_install"]}',
+        encoding="utf-8",
+    )
+    result = ReleaseQualificationRunner(tmp_path)._check_clean_install(evidence, "candidate")
+
+    assert result.passed is True
+
+
+def test_clean_install_evidence_rejects_posix_home_inside_candidate_without_host_resolution(tmp_path):
+    from workstation.release_qualification import ReleaseQualificationRunner
+
+    evidence = tmp_path / "clean-install.json"
+    inside = tmp_path / "candidate-home"
+    evidence.write_text(
+        '{"accepted": true, "candidate_revision": "candidate", '
+        f'"workstation_home": "{inside.as_posix()}", "stages": ["clean_install"]}}',
+        encoding="utf-8",
+    )
+    result = ReleaseQualificationRunner(tmp_path)._check_clean_install(evidence, "candidate")
+
+    assert result.passed is False
+    assert "outside the candidate checkout" in result.details

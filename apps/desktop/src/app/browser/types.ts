@@ -36,6 +36,19 @@ export interface BrowserTask {
   leaseState: string | null
   parked: boolean
   recoveryState: BrowserTaskRecoveryState
+  humanControlLease?: BrowserHumanControlLease
+}
+
+export interface BrowserHumanControlLease {
+  owner: 'human'
+  taskId: string
+  sessionId: string | null
+  tabId: string | null
+  pageId: number | null
+  profileScope: string | null
+  acquiredAt: string
+  expiresAt: string
+  renewedAt: string | null
 }
 
 export interface WorkstationDownloadItem {
@@ -56,6 +69,7 @@ export interface WorkstationBrowserState {
   backgroundCapable: true
   paused: boolean
   controlOwner: WorkstationBrowserControlOwner
+  humanControlLease?: BrowserHumanControlLease | null
   controlReady: boolean
   profilePath: string
   cacheBytes: number | null
@@ -134,8 +148,10 @@ export interface WorkstationBrowserBridge {
   clearParkedTasks: () => Promise<number>
   pause: () => Promise<WorkstationBrowserState>
   resume: () => Promise<WorkstationBrowserState>
-  takeControl: () => Promise<WorkstationBrowserState>
-  releaseControl: () => Promise<WorkstationBrowserState>
+  takeControl: (taskId?: string, sessionId?: string) => Promise<WorkstationBrowserState>
+  releaseControl: (taskId?: string) => Promise<WorkstationBrowserState>
+  renewControl: (taskId?: string) => Promise<WorkstationBrowserState>
+  expireHumanControl: (taskId?: string) => Promise<WorkstationBrowserState>
   cleanupCache: (force?: boolean) => Promise<WorkstationBrowserState>
   getTaskJournal: (taskId: string) => Promise<TaskTimelineEvent[]>
   onState: (callback: (state: WorkstationBrowserState) => void) => () => void

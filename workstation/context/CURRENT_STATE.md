@@ -1,9 +1,10 @@
 # Current State
 
-Snapshot date: 2026-09-12. The current working tree is based on
-`main@d77901a6857cf90f9401a90377de3b6ee5254bef`, after promotion of
-BrowserSessionState through PR #11 and the dogfood sequencing/launcher through
-PR #12.
+Snapshot date: 2026-09-15. The audit started at
+`main@b6ac2d273a43e287122db377bcfa702af6e7553c`; after `origin/main` advanced
+with a docs-only commit, the working tree was rebased and revalidated on
+`main@80d4ffce3cfba3ed03474a5b8ebcede4a7fc1770`. The changes described below
+are in the current working tree and have not yet been committed.
 
 This file describes **observed implementation state**, not target architecture.
 When it disagrees with code on current `main`, inspect the code and update this
@@ -63,6 +64,13 @@ On `main` plus the current Workstation V3 hardening working tree:
   - Versioned routine promotion/replay, persistent WorkerRegistry queue/control,
     temporal memory/snapshots, session ownership/migration/compaction,
     portable replay/fork, protocol adapters, isolation and evaluation gates.
+  - Persistent worker results use a durable envelope/ACK handoff over the
+    existing worker record: an executor result is persisted before it is
+    journaled or published, unread results survive reconstruction, and claimed
+    work remains explicit recovery work when persistence cannot be confirmed.
+    Large spillover results are content-addressed within task scope and expose
+    a reference-first metadata contract without becoming an argument-only
+    execution cache.
   - Shared resource/event client boundary: Electron BrowserTask/page ownership
     publishes versioned `/resources` and bounded `/events` projections; Desktop
     IPC, Dashboard REST and TUI JSON-RPC consume the same read-only contracts,
@@ -77,10 +85,25 @@ On `main` plus the current Workstation V3 hardening working tree:
   - Canonical domain functions `delete_card`, `delete_column`, `delete_board`, and `get_board_activity` in `hermes_cli/hybrid_kanban.py` with dense reindexing.
   - Realtime WebSocket invalidation over `/events`: emits `hybrid_events` and `hybrid_cursor` on mutation, prompting instant query invalidation in Desktop UI and eliminating the 8-second polling latency.
   - Desktop UI: horizontal column drag-and-drop reordering (`moveHybridColumn`), rich card activity drawer with human vs. agent provenance badges, and complete deletion lifecycle.
-- Automated contract coverage: **191/191 Workstation Pytests passing** on the
-  current working tree; Desktop typecheck is clean. The broad Desktop UI and
-  platform/Electron suites are also green after the HW-018 Windows portability
-  closure.
+- **Human card → Agent Task delegation**: `delegate_card` creates a separate
+  canonical Agentic task in the same Kanban database, persists the
+  `human_card_id` ↔ `agent_task_id` link, projects compact status/result/evidence
+  metadata, and keeps both lifecycles independent across restart and retry.
+- **Scoped human browser control**: `BrowserHumanControlLease` is owned by the
+  bound `BrowserTask` and carries task/session/tab/page/profile scope, timestamps,
+  renewal and expiry; stale leases are cleared during restore and never block an
+  unrelated task.
+- **Extension update safety**: `ChromeExtensionManager` stages updates behind a
+  promotion journal and retains last-known-good content until Electron load and
+  verification commit.
+- **Operational compaction envelope and workload benchmark**: compaction retains
+  bounded task/session/worker/browser/result/approval/evidence identifiers, and
+  `workstation/benchmarks/workload_baseline.json` records deterministic structural
+  counters without private databases or wall-clock thresholds.
+- Automated contract coverage: **247/247 Workstation Pytests passing** on the
+  current working tree; Desktop typecheck is clean. The focused Electron browser
+  lease tests and the full Electron/platform suite are green. The full Desktop
+  UI suite is also green with bounded concurrency.
 
 ### BrowserSessionState — promoted V1 #1
 
@@ -162,7 +185,7 @@ See `KNOWN_ISSUES.md`.
 
 Branch `main` plus the current Workstation V3 hardening working tree:
 
-- **175/175 Pytest tests passed** across all Workstation contracts, LAN/Tailscale,
+- **247/247 Pytest tests passed** across all Workstation contracts, LAN/Tailscale,
   Kanban/Journal, Procedural Memory, Perception Engine, Drift Governance,
   Lightpanda Runtime, Multi-Task Scheduler, Chrome Extensions, Worker Registry,
   Host Capabilities, System Events Pipeline, Scoped Policy, Cross-Platform/Omarchy
@@ -180,8 +203,10 @@ Branch `main` plus the current Workstation V3 hardening working tree:
   3 sessions, 0 failures, 36 journal events, 9 memory snapshots and 6 worker
   reconstructions, 6 model changes and 6 cold reloads; long-duration
   Desktop/Browser soak remains open.
-- **Desktop UI suite:** 591 files / 5,669 tests passed.
-- **Desktop platform/Electron suite:** 126 files / 1,761 tests passed, 5 skipped.
+- **Desktop UI suite:** 591 files / 5,669 tests passed with Vitest bounded to
+  `--maxWorkers=4` on the current Windows audit host. The targeted messaging
+  file also passed 8/8.
+- **Desktop platform/Electron suite:** 126 files / 1,778 tests passed, 5 skipped.
 - **KI-006 closure:** Windows path/permission/SSH/WSL/staging/locale contracts
   pass without disabling the broad suites.
 - **Client parity boundary:** Dashboard REST and TUI JSON-RPC each read the

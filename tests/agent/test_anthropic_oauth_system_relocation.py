@@ -126,6 +126,14 @@ class TestOAuthSystemRelocation:
         else:
             assert "<system_context>" not in content
 
+    def test_oauth_relocation_keeps_current_main_prose_aliases(self):
+        """Later main aliased ``session_search`` in system prose; relocation must keep that."""
+        kw = self._kwargs("Use session_search to find prior chats.")
+        first_user = next(m for m in kw["messages"] if m["role"] == "user")
+        preamble = first_user["content"][0]["text"]
+        assert "session_search" not in preamble
+        assert "chat_history_lookup" in preamble
+
 
 def _count_cache_markers(obj) -> int:
     """Count cache_control markers anywhere in a nested message/system structure."""

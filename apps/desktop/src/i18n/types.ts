@@ -446,6 +446,7 @@ export interface Translations {
       keybinds: string
       keysTools: string
       keysSettings: string
+      keysCustom: string
       mcp: string
       archivedChats: string
       about: string
@@ -1069,6 +1070,14 @@ export interface Translations {
       loading: string
       failedLoad: string
       empty: string
+      customTitle: string
+      customHint: string
+      addCustomKey: string
+      customKeyName: string
+      customKeyNamePlaceholder: string
+      customKeyExists: string
+      invalidKeyName: string
+      add: string
     }
     search: {
       placeholder: string

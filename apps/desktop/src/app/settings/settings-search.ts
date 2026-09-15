@@ -8,7 +8,7 @@ import { fieldCopyForSchemaKey } from './field-copy'
 import { prettyName, sectionFieldEntries, voiceFieldVisible } from './helpers'
 import type { DesktopConfigSection, SettingsView } from './types'
 
-export type CredentialSettingsView = 'settings' | 'tools'
+export type CredentialSettingsView = 'custom' | 'settings' | 'tools'
 
 export const APPEARANCE_SETTING_IDS = {
   appActions: 'appearance.app-actions',
@@ -49,6 +49,7 @@ interface ConfigSearchCopy {
 }
 
 interface CredentialSearchCopy {
+  custom: string
   settings: string
   tools: string
 }
@@ -64,6 +65,10 @@ export function credentialSettingsView(info: EnvVarInfo): CredentialSettingsView
 
   if (info.category === 'setting' || info.category === 'messaging') {
     return 'settings'
+  }
+
+  if (info.category === 'custom') {
+    return 'custom'
   }
 
   return null
@@ -133,7 +138,7 @@ export function buildCredentialSearchEntries(
 
       return [
         {
-          context: view === 'tools' ? copy.tools : copy.settings,
+          context: copy[view],
           description: info.description || undefined,
           icon: icons[view],
           id: `credential:${key}`,

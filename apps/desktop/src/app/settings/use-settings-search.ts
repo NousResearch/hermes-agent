@@ -6,7 +6,7 @@ import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { $pluginRecords } from '@/contrib/plugins-store'
 import { getEnvVars, getHermesConfigSchema } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { type IconComponent, Monitor, Package, Palette, Settings2, Wrench } from '@/lib/icons'
+import { type IconComponent, Monitor, Package, Palette, Settings2, SlidersHorizontal, Wrench } from '@/lib/icons'
 import { $agentPlugins, isDesktopRelevantPlugin, loadAgentPlugins } from '@/store/agent-plugins'
 import { $gatewayState } from '@/store/session'
 import { TRANSLUCENCY_SUPPORTED } from '@/store/translucency'
@@ -222,9 +222,10 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     envVarsFetching || envVarsError ? null : envVars,
     {
       settings: t.settings.nav.keysSettings,
-      tools: t.settings.nav.keysTools
+      tools: t.settings.nav.keysTools,
+      custom: t.settings.nav.keysCustom
     },
-    { settings: Settings2, tools: Wrench }
+    { settings: Settings2, tools: Wrench, custom: SlidersHorizontal }
   )
 
   return {

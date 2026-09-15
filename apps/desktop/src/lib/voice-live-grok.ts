@@ -165,6 +165,21 @@ export class GrokVoiceSession {
     this.sessionId = `grok-live-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   }
 
+  /**
+   * Adopt the real Hermes chat session id. The backend routes every
+   * `voice.grok.*` event by `params.session_id` through the owning session's
+   * transport (server.write_json), and the delegation seam looks the same id
+   * up in `_sessions` — a synthetic id never reaches the app and never
+   * becomes a Hermes turn. The composer knows the open chat's id; call this
+   * before `start()` (gpt-live gets the same guarantee server-side because
+   * its session is created by the backend with the real sid).
+   */
+  useSessionId(sessionId: string | null | undefined): void {
+    if (sessionId && sessionId !== this.sessionId) {
+      this.sessionId = sessionId
+    }
+  }
+
   async start(): Promise<void> {
     const gateway = activeGateway()
 

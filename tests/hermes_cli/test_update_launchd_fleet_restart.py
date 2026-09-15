@@ -39,10 +39,13 @@ from hermes_cli.update_cmd import (
 )
 
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="launchd fleet restart is macOS-only; helpers use POSIX os.getuid",
-)
+pytestmark = [
+    pytest.mark.macos_only,
+    pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="launchd fleet restart is macOS-only; helpers use POSIX os.getuid",
+    ),
+]
 
 UID = 501
 

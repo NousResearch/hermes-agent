@@ -134,3 +134,11 @@ def test_real_tree_selects_files_for_every_marker():
         assert listed, f"{marker} selected no files"
         for rel in listed:
             assert (REPO_ROOT / rel).is_file(), f"{marker} listed missing {rel}"
+
+
+def test_macos_marker_selects_launchd_fleet_restart_coverage():
+    """The macOS lane must import the launchd-specific update regression."""
+    result = _run("macos_only")
+
+    assert result.returncode == 0, result.stderr
+    assert "tests/hermes_cli/test_update_launchd_fleet_restart.py" in result.stdout.split()

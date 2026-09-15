@@ -247,7 +247,8 @@ def file_ops(mock_env):
     return ShellFileOperations(mock_env)
 
 
-def make_real_subprocess_env(cwd: str, include_stderr: bool = False) -> MagicMock:
+def make_real_subprocess_env(cwd: str, include_stderr: bool = False,
+                             process_env: dict | None = None) -> MagicMock:
     """Mock env whose execute() runs the command in a real subprocess.
 
     For tests that need the generated shell scripts to actually run
@@ -255,9 +256,12 @@ def make_real_subprocess_env(cwd: str, include_stderr: bool = False) -> MagicMoc
     intercepted by a bare MagicMock.  ``include_stderr`` folds stderr
     into ``output`` for tests that surface shell error text; leave it
     off for tests that parse structured stdout (e.g. find results).
+    ``process_env`` merges over ``os.environ`` for the child, so a test
+    can put a shim ahead on ``PATH`` (e.g. an always-failing ``mv``).
     """
     env = MagicMock()
     env.cwd = cwd
+    run_env = os.environ | (process_env or {})
 
     def execute(command, **kwargs):
         stdin_data = kwargs.get("stdin_data")
@@ -273,6 +277,7 @@ def make_real_subprocess_env(cwd: str, include_stderr: bool = False) -> MagicMoc
             capture_output=True,
             input=(stdin_data.encode("utf-8", "surrogateescape")
                    if is_windows and stdin_data is not None else stdin_data),
+            env=run_env,
         )
         output = (
             completed.stdout.decode("utf-8", "replace")
@@ -628,6 +633,51 @@ class _DeletedTestGitBaselineCheck:
     helper is restored or replaced.
     """
     pass
+
+
+# =========================================================================
+# Atomic write: a failed swap must not leave its temp sibling behind
+# =========================================================================
+
+class TestAtomicWriteFailedSwapCleanup:
+    """A failed atomic swap must not leave its sibling temp file behind.
+
+    The EXIT trap is the only cleanup on that path, so this covers
+    ``patch_replace`` -- the second entry point into the same writer.
+    """
+
+    @pytest.fixture
+    def failing_mv_ops(self, tmp_path: Path):
+        shim_dir = tmp_path / "shim"
+        shim_dir.mkdir()
+        shim = shim_dir / "mv"
+        shim.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        shim.chmod(0o755)
+        env = make_real_subprocess_env(
+            str(tmp_path),
+            process_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"},
+        )
+        return ShellFileOperations(env, cwd=str(tmp_path))
+
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason=(
+            "PATH shim needs a POSIX shell child: MSYS prepends its own PATH entries, "
+            "so the shim 'mv' cannot take precedence over the real one on Windows. "
+            "This case runs on POSIX (CI)."
+        ),
+    )
+    def test_patch_replace_leaves_no_temp_when_swap_fails(
+        self, failing_mv_ops, tmp_path: Path
+    ):
+        target = tmp_path / "patch.txt"
+        target.write_text("original\n", encoding="utf-8")
+
+        res = failing_mv_ops.patch_replace(str(target), "original", "replacement")
+
+        assert res.success is False
+        assert target.read_text(encoding="utf-8") == "original\n"
+        assert [p for p in os.listdir(tmp_path) if ".hermes-tmp" in p] == []
 
 
 # =========================================================================

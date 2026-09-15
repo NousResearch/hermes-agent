@@ -291,6 +291,18 @@ class TestAtomicWrite:
         assert [p for p in os.listdir(tmp_path) if ".hermes-tmp" in p] == []
 
 
+    def test_no_temp_file_leaked_when_rename_fails(self, ops, tmp_path: Path):
+        # Failure AFTER the temp file exists: an over-long target name lets mktemp
+        # succeed and fails only the final `mv` (ENAMETOOLONG). The cleanup trap
+        # must remove the temp file here -- it used to run `rm -f \"$tmp\"`, whose
+        # literal quotes matched nothing, so every failed write leaked a
+        # .hermes-tmp.* file next to the target.
+        target = tmp_path / ("a" * 300 + ".txt")
+        res = ops.write_file(str(target), "hello\n")
+        assert res.error is not None, res.error
+        assert [p for p in os.listdir(tmp_path) if ".hermes-tmp" in p] == []
+
+
     def test_patch_routes_through_atomic_write(self, ops, tmp_path: Path):
         target = tmp_path / "edit.py"
         target.write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")

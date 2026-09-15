@@ -401,18 +401,51 @@ def _refuse_symlink(path: Path) -> None:
         )
 
 
+def _is_skill_root(path: Path) -> bool:
+    # Same marker the skill loaders use: a directory is a skill iff it holds SKILL.md directly.
+    return (path / "SKILL.md").is_file()
+
+
+def _dest_dirs(src: Path, rel_parts: Tuple[str, ...]):
+    """Yield every destination directory the copy of *src* walks into or replaces.
+
+    Mirrors ``_merge_container``: a file needs its parent chain; a directory is itself
+    touched, and a container (any directory that is not a skill root) is descended."""
+    if not src.is_dir():
+        yield rel_parts[:-1]
+        return
+    yield rel_parts
+    if not _is_skill_root(src):
+        for child in src.iterdir():
+            if child.is_dir():
+                yield from _dest_dirs(child, rel_parts + (child.name,))
+
+
 def _refuse_symlinked_targets(target: Path, entries) -> None:
     """Refuse before the first write. The per-entry check in ``_real_dir`` fires mid-loop,
     after earlier entries were already replaced and before the manifest is rewritten,
     leaving a half-updated profile that fails identically on every retry."""
     for src, rel_parts in entries:
-        # Directories are walked as containers, so the whole chain must be real;
-        # a file only needs a real parent chain (a symlinked file is unlinked, not followed).
-        depth = len(rel_parts) if src.is_dir() else len(rel_parts) - 1
-        path = target
-        for part in rel_parts[:depth]:
-            path = path / part
-            _refuse_symlink(path)
+        for parts in _dest_dirs(src, rel_parts):
+            path = target
+            for part in parts:
+                path = path / part
+                _refuse_symlink(path)
+
+
+def _merge_container(src: Path, rel_parts: Tuple[str, ...], target: Path) -> None:
+    """Merge the container *src* into ``target/rel_parts``.
+
+    Category layouts (``skills/coding/<skill>/``) put user skills next to bundled ones
+    inside a directory the payload also ships, so replacing at the child level would
+    delete them. Descend through containers and replace only skill roots and files
+    wholesale — stale files retired inside a shipped skill still disappear."""
+    container = _real_dir(target, rel_parts)
+    for child in src.iterdir():
+        if child.is_dir() and not _is_skill_root(child):
+            _merge_container(child, rel_parts + (child.name,), target)
+        else:
+            _replace_entry(child, container / child.name)
 
 
 def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifest, preserve_config: bool) -> None:
@@ -424,7 +457,9 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
 
     A top-level owned directory (``skills/``, ``cron/``, ...) is a container of roots: only
     the roots the payload ships are replaced, so roots the user added (or that an older
-    version shipped) survive an update or forced reinstall."""
+    version shipped) survive an update or forced reinstall. Containers nest (category
+    layouts such as ``skills/coding/``); a skill root (``SKILL.md`` inside) or a file is
+    the unit that is replaced whole."""
     target.mkdir(parents=True, exist_ok=True)
     entries = list(_owned_entries(staged, manifest))
     _refuse_symlinked_targets(target, entries)
@@ -438,11 +473,9 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
                 continue
             if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
                 continue
-            if src.is_dir():
-                container = _real_dir(target, rel_parts)
-                for child in src.iterdir():
-                    _replace_entry(child, container / child.name)
-                continue
+        if src.is_dir() and not _is_skill_root(src):
+            _merge_container(src, rel_parts, target)
+            continue
         parent = _real_dir(target, rel_parts[:-1])
         _replace_entry(src, parent / rel_parts[-1])
 

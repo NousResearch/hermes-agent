@@ -413,6 +413,28 @@ class TestUpdate:
         assert (plan.target_dir / "skills" / "user-created" / "SKILL.md").read_text() == "keep this skill\n"
         assert (plan.target_dir / "skills" / "demo" / "SKILL.md").read_text() == "updated demo\n"
 
+    @pytest.mark.parametrize("apply", ["update", "force"])
+    def test_category_layout_keeps_user_skill_beside_bundled_one(self, profile_env, apply):
+        staged = _make_staging_dir(profile_env, f"category_{apply}")
+        (staged / "skills" / "coding" / "bundled").mkdir(parents=True)
+        (staged / "skills" / "coding" / "bundled" / "SKILL.md").write_text("bundled v1\n")
+        plan = install_distribution(str(staged), name=f"category_{apply}")
+
+        mine = plan.target_dir / "skills" / "coding" / "user-procedure"
+        mine.mkdir()
+        (mine / "SKILL.md").write_text("my procedure\n")
+        (plan.target_dir / "skills" / "coding" / "bundled" / "stale.txt").write_text("retired\n")
+        (staged / "skills" / "coding" / "bundled" / "SKILL.md").write_text("bundled v2\n")
+
+        if apply == "update":
+            update_distribution(f"category_{apply}")
+        else:
+            install_distribution(str(staged), name=f"category_{apply}", force=True)
+
+        assert (mine / "SKILL.md").read_text() == "my procedure\n"
+        assert (plan.target_dir / "skills" / "coding" / "bundled" / "SKILL.md").read_text() == "bundled v2\n"
+        assert not (plan.target_dir / "skills" / "coding" / "bundled" / "stale.txt").exists()
+
     def test_update_keeps_user_added_cron_root(self, profile_env):
         staged = _make_staging_dir(profile_env, "src")
         plan = install_distribution(str(staged), name="cron_safe")

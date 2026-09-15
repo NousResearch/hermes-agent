@@ -43,7 +43,7 @@ from hermes_cli.plugins_manifest import (  # noqa: F401 — re-exported
 )
 from hermes_cli.plugins_discovery import (  # noqa: F401 — re-exported
     ENTRY_POINTS_GROUP, _get_disabled_plugins, _get_enabled_plugins, collect_directory_manifests,
-    discover_entrypoint_manifests, gate_manifest, scan_directory,
+    discover_entrypoint_manifests, gate_manifest, resolve_key_collisions, scan_directory,
 )
 from hermes_cli.plugins_loader import (
     PluginLoaderMixin, _BARE_MODULE_SCOPE, _MODULE_NAMESPACE_LOCK, _NS_PARENT, _evict_modules,
@@ -1314,9 +1314,17 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             logger.warning("Removed Hermes plugin %s is still listed in plugins.enabled; "
                            "remove it and configure native Relay plugins with %s",
                            ", ".join(stale_relay_keys), RELAY_PLUGINS_CONFIG_ENV)
-        # Later sources win on key collision (project > user > bundled); gate the winners, then
-        # load survivors in requires_plugins order (see resolve_plugin_load_order).
-        winners = {manifest_key(m): m for m in manifests}
+        # One winner per registry key: later sources beat earlier (project > user > bundled), and
+        # within a source the canonical install directory beats same-key backup trees, so a stale
+        # sibling (e.g. ``<name>.old-<ts>``) can never shadow the active plugin. Gate the winners,
+        # then load survivors in requires_plugins order (see resolve_plugin_load_order).
+        winners, collisions = resolve_key_collisions(manifests)
+        for key, group, winner in collisions:
+            logger.warning(
+                "Plugin key '%s' claimed by %d manifests; loading %s (version %s) and ignoring: %s",
+                key, len(group), winner.path, winner.version or "?",
+                ", ".join(str(m.path) for m in group if m is not winner),
+            )
         to_load = {k: m for k, m in winners.items() if self._gate_manifest(m, disabled, enabled)}
         for lookup_key in resolve_plugin_load_order(to_load):
             manifest = to_load[lookup_key]
@@ -1407,7 +1415,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         disabled = _names(plugins_config.get("disabled", []))
         if not enabled:
             return False
-        for lookup_key, manifest in {manifest_key(m): m for m in self._collect_directory_manifests()}.items():
+        for lookup_key, manifest in resolve_key_collisions(self._collect_directory_manifests())[0].items():
             names = {lookup_key, manifest.name}
             if not manifest.portable or names & disabled or not names & enabled:
                 continue

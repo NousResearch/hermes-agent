@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import json
 import logging
 import shutil
+import stat
 import tempfile
 import threading
 import time
@@ -416,6 +417,52 @@ def _job_output_dir(job_id: str) -> Path:
     ):
         raise ValueError(f"Invalid cron job id for output path: {job_id!r}")
     return _current_cron_store().output_dir / text
+
+
+def _remove_job_output_dir(job_id: str) -> bool:
+    """Remove one job's output without traversing a symlinked deletion root.
+
+    ``remove_job`` must leave the job record intact when its output cannot be
+    safely removed.  In particular, a job output directory (or the shared
+    output root) may not be a symlink.  Nested symlinks are unlinked by
+    ``shutil.rmtree`` only on runtimes that provide its fd-based, symlink-safe
+    implementation; fail closed on runtimes without that guarantee.
+    """
+    output_root = _current_cron_store().output_dir
+    job_output_dir = _job_output_dir(job_id)
+    try:
+        if output_root.is_symlink():
+            logger.warning("Refusing to remove cron output through symlinked root: %s", output_root)
+            return False
+        if not output_root.exists():
+            return True
+        if not getattr(shutil.rmtree, "avoids_symlink_attacks", False):
+            logger.warning("Refusing cron output removal without symlink-safe rmtree support")
+            return False
+        nofollow = getattr(os, "O_NOFOLLOW", None)
+        if nofollow is None:
+            logger.warning("Refusing cron output removal without O_NOFOLLOW support")
+            return False
+        root_before = os.lstat(output_root)
+        root_fd = os.open(output_root, os.O_RDONLY | os.O_DIRECTORY | nofollow)
+        try:
+            if not os.path.samestat(root_before, os.fstat(root_fd)):
+                logger.warning("Cron output root changed during safe removal: %s", output_root)
+                return False
+            try:
+                entry = os.stat(job_id, dir_fd=root_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return True
+            if stat.S_ISLNK(entry.st_mode) or not stat.S_ISDIR(entry.st_mode):
+                logger.warning("Refusing to remove unsafe cron output entry: %s", job_output_dir)
+                return False
+            shutil.rmtree(job_id, dir_fd=root_fd)
+        finally:
+            os.close(root_fd)
+    except OSError as exc:
+        logger.warning("Could not safely remove cron output %s: %s", job_output_dir, exc)
+        return False
+    return True
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -2292,13 +2339,12 @@ def remove_job(job_id: str) -> bool:
         if len(jobs) == original_len:
             return False
         # Resolve BEFORE saving so a legacy unsafe ID fails closed without a half-applied removal.
-        job_output_dir = _job_output_dir(canonical_id)
+        if not _remove_job_output_dir(canonical_id):
+            return False
         save_jobs(jobs, removed_ids={canonical_id})
         marker = _self_removal_delivery.get()
         if marker is not None and marker.job_id == canonical_id:
             marker.removed = True
-        if job_output_dir.exists():
-            shutil.rmtree(job_output_dir)
         try:
             from cron.notepad import clear_notepad
             clear_notepad(canonical_id)

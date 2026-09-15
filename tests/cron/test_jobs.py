@@ -390,6 +390,45 @@ class TestJobCRUD:
         assert remove_job(job["id"]) is True
         assert get_job(job["id"]) is None
 
+    def test_remove_job_rejects_symlinked_output_directory(self, tmp_cron_dir):
+        job = create_job(prompt="Temp job", schedule="30m")
+        external_dir = tmp_cron_dir / "external"
+        external_dir.mkdir()
+        protected_file = external_dir / "keep.txt"
+        protected_file.write_text("keep", encoding="utf-8")
+        output_dir = tmp_cron_dir / "cron" / "output" / job["id"]
+        output_dir.parent.mkdir(parents=True, exist_ok=True)
+        output_dir.symlink_to(external_dir, target_is_directory=True)
+
+        assert remove_job(job["id"]) is False
+        assert get_job(job["id"]) is not None
+        assert output_dir.is_symlink()
+        assert protected_file.read_text(encoding="utf-8") == "keep"
+
+    def test_remove_job_unlinks_nested_symlinks_without_following_them(self, tmp_cron_dir):
+        job = create_job(prompt="Temp job", schedule="30m")
+        output_dir = tmp_cron_dir / "cron" / "output" / job["id"]
+        output_dir.mkdir(parents=True)
+        external_dir = tmp_cron_dir / "external"
+        external_dir.mkdir()
+        protected_file = external_dir / "keep.txt"
+        protected_file.write_text("keep", encoding="utf-8")
+        (output_dir / "linked-output").symlink_to(external_dir, target_is_directory=True)
+
+        assert remove_job(job["id"]) is True
+        assert not output_dir.exists()
+        assert protected_file.read_text(encoding="utf-8") == "keep"
+
+    def test_remove_job_cleans_regular_output_directory(self, tmp_cron_dir):
+        job = create_job(prompt="Temp job", schedule="30m")
+        output_dir = tmp_cron_dir / "cron" / "output" / job["id"]
+        output_dir.mkdir(parents=True)
+        (output_dir / "result.md").write_text("result", encoding="utf-8")
+
+        assert remove_job(job["id"]) is True
+        assert get_job(job["id"]) is None
+        assert not output_dir.exists()
+
 
     def test_auto_repeat_for_once(self, tmp_cron_dir):
         job = create_job(prompt="One-shot", schedule="in 1h")

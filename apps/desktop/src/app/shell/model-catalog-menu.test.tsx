@@ -12,6 +12,7 @@ import {
   setModelVisibilityOpen,
   setVisibleModels
 } from '@/store/model-visibility'
+import { $pickerStyle, DEFAULT_PICKER_STYLE } from '@/store/picker-style'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
 import { ModelCatalogMenu, type ModelMenuController } from './model-catalog-menu'
@@ -40,6 +41,7 @@ vi.mock('@/hermes', () => ({
 }))
 
 beforeEach(() => {
+  $pickerStyle.set(DEFAULT_PICKER_STYLE)
   $visibleModels.set(null)
   $localRuntimeJobs.set([])
   // These suites exercise the local-models rows, which ship behind --local.
@@ -60,7 +62,7 @@ afterEach(() => {
 
 // A minimal controller — these tests are about the CATALOG's own behaviour
 // (what it lists, what it offers), not about what any host does with a pick.
-function renderMenu() {
+function renderMenu(overrides: Partial<ModelMenuController> = {}) {
   const select = vi.fn()
 
   const controller: ModelMenuController = {
@@ -68,7 +70,8 @@ function renderMenu() {
     current: { effort: '', fast: false, model: '', provider: '' },
     presetFor: () => ({}),
     select,
-    setOptions: vi.fn()
+    setOptions: vi.fn(),
+    ...overrides
   }
 
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -205,5 +208,44 @@ describe('in-flight local downloads', () => {
     expect(screen.queryByText(/Qwen3\.6 27B/i)).toBeNull()
     expect(screen.queryByText('Qwen3.8 Flash Next (UD-Q4_K_XL)')).toBeNull()
     expect(screen.queryByText('Local')).toBeNull()
+  })
+})
+
+describe('picker style', () => {
+  it('separated keeps plain model rows selectable without a submenu', async () => {
+    $pickerStyle.set('separated')
+    const select = renderMenu()
+    const row = (await screen.findByText(/Gemini 3\.1 Pro/i)).closest('[role="menuitem"]')!
+    expect(row.hasAttribute('aria-haspopup')).toBe(false)
+    fireEvent.keyDown(row, { key: 'ArrowRight' })
+    expect(screen.queryByRole('menuitemradio')).toBeNull()
+    fireEvent.click(row)
+    await waitFor(() => expect(select).toHaveBeenCalledWith('gemini-3.1-pro', 'google'))
+  })
+
+  it.each([true, false])('unified applies effort only after model selection succeeds (accepted=%s)', async accepted => {
+    $pickerStyle.set('unified')
+    const select = vi.fn().mockResolvedValue(accepted)
+    const applyPreset = vi.fn()
+    const setOptions = vi.fn()
+    renderMenu({ select, applyPreset, setOptions })
+    const row = (await screen.findByText(/Gemini 3\.1 Pro/i)).closest('[role="menuitem"]')!
+    fireEvent.keyDown(row, { key: 'ArrowRight' })
+    const high = await screen.findByRole('menuitemradio', { name: /^High$/ })
+    fireEvent.click(high)
+    await waitFor(() => expect(select).toHaveBeenCalledWith('gemini-3.1-pro', 'google'))
+
+    if (accepted) {
+      await waitFor(() =>
+        expect(applyPreset).toHaveBeenCalledWith(
+          expect.objectContaining({ effort: 'high' }),
+          expect.objectContaining({ model: 'gemini-3.1-pro', provider: 'google' })
+        )
+      )
+    } else {
+      expect(applyPreset).not.toHaveBeenCalled()
+    }
+
+    expect(setOptions).not.toHaveBeenCalled()
   })
 })

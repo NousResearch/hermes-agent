@@ -103,6 +103,7 @@ class _Request:
     base_url: Optional[str]
     api_mode: Optional[str]
     headers: Optional[dict[str, str]]
+    catalog: Optional[list[str]] = None
 
 
 # ── Provider branches (None = not decided here) ─────────────────────────
@@ -229,7 +230,8 @@ def _validate_custom(req: _Request) -> dict[str, Any]:
     # Probe with the auth shape the api_mode expects.
     anthropic_style = req.api_mode == "anthropic_messages"
     probe_kwargs = {"api_mode": req.api_mode} if anthropic_style else {}
-    probe = _m.probe_api_models(req.api_key, req.base_url, request_headers=req.headers, **probe_kwargs)
+    probe = ({"models": req.catalog, "probed_url": req.base_url} if req.catalog is not None else
+             _m.probe_api_models(req.api_key, req.base_url, request_headers=req.headers, **probe_kwargs))
     api_models = probe.get("models")
     if api_models is not None:
         match = _match_in_catalog(req.lookup, api_models, suggest_query=req.requested)
@@ -286,7 +288,7 @@ _STATIC_LABELS = {"openai-codex": "OpenAI Codex", "xai-oauth": "xAI Grok OAuth (
 def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
     """openai-codex / xai-oauth: no /v1/models probing — validate against the curated catalog.
     Returns None (fall through) when the catalog is empty."""
-    catalog = _static_catalog(req.normalized)
+    catalog = req.catalog if req.catalog is not None else _static_catalog(req.normalized)
     if req.normalized == "openai-codex":
         from agent.model_metadata import CODEX_CONTEXT_VARIANT_SUFFIX, is_codex_context_variant
 
@@ -332,7 +334,7 @@ def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
 def _validate_minimax(req: _Request) -> Optional[dict[str, Any]]:
     """MiniMax has no /models endpoint — static catalog, case-insensitive (ids like MiniMax-M2.7).
     Returns None when the catalog is empty."""
-    catalog = _static_catalog(req.normalized)
+    catalog = req.catalog if req.catalog is not None else _static_catalog(req.normalized)
     if not catalog:
         return None
     match = _match_in_catalog(req.lookup, catalog, case_insensitive=True)
@@ -350,7 +352,8 @@ def _validate_anthropic(req: _Request) -> Optional[dict[str, Any]]:
     resolvable or the network failed."""
     from hermes_cli import models as _m
 
-    models = _m._fetch_anthropic_models(base_url=req.base_url or None, api_key=req.api_key or None)
+    models = (req.catalog if req.catalog is not None else
+              _m._fetch_anthropic_models(base_url=req.base_url or None, api_key=req.api_key or None))
     if models is None:
         return None
     match = _match_in_catalog(req.lookup, models, suggest_query=req.requested)
@@ -368,7 +371,8 @@ def _validate_anthropic_messages(req: _Request) -> dict[str, Any]:
     with a warning when the probe fails or the model isn't listed."""
     from hermes_cli import models as _m
 
-    models = _m.fetch_api_models(req.api_key, req.base_url, api_mode=req.api_mode)
+    models = (req.catalog if req.catalog is not None else
+              _m.fetch_api_models(req.api_key, req.base_url, api_mode=req.api_mode))
     verdict = _match_in_catalog(req.lookup, models).verdict(req) if models is not None else None
     return verdict or _soft_accept(
         f"Note: could not verify `{req.requested}` against this endpoint's model listing.  Many "
@@ -398,7 +402,8 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     tries Bedrock discovery / the curated catalog)."""
     from hermes_cli import models as _m
 
-    api_models = _m.fetch_api_models(req.api_key, req.base_url)
+    api_models = (req.catalog if req.catalog is not None else
+                  _m.fetch_api_models(req.api_key, req.base_url))
     if api_models is None:
         return None
     if req.normalized == "gemini":
@@ -467,7 +472,7 @@ def _validate_catalog_fallback(req: _Request) -> dict[str, Any]:
     from hermes_cli import models as _m
 
     label = _m._PROVIDER_LABELS.get(req.normalized, req.normalized)
-    catalog = _static_catalog(req.normalized)
+    catalog = req.catalog if req.catalog is not None else _static_catalog(req.normalized)
     if not catalog:
         return _soft_accept(f"Note: could not reach the {label} API to validate `{req.requested}`. "
                             "If the service isn't down, this model may not be valid.")
@@ -544,6 +549,13 @@ def validate_requested_model(
     if not requested:
         return _reject("Model name cannot be empty.")
     req = _Request(requested, lookup, provider, normalized, api_key, base_url, api_mode, headers)
+    from hermes_cli.models_cache_policy import catalog_refresh_is_manual
+    if (catalog_refresh_is_manual() and normalized not in ('moa', 'ollama', 'lmstudio')
+            and not normalized.startswith('custom')):
+        req.catalog = _m.cached_provider_model_ids(normalized)
+    elif catalog_refresh_is_manual() and _is_custom(req):
+        req.catalog = _m.cached_fetch_api_models(api_key, base_url, api_mode=api_mode, headers=headers)
+
     for gate, branch in _LADDER:
         if gate(req):
             verdict = branch(req)

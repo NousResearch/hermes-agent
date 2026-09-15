@@ -1072,6 +1072,36 @@ class TestMaybeAutoPruneCheckpoints:
         assert second["skipped"] is True
         assert (base / ("2222" * 4)).exists()
 
+    def test_prune_renews_the_armed_startup_watchdog_lease(self, tmp_path, work_dir):
+        """Regression (#111092 sibling gap): the checkpoint auto-prune block runs
+        construction-time from GatewayRunner._init_session_db alongside the
+        state.db maintenance block, which already renews a startup-watchdog
+        lease before its own long, I/O-bound steps. Before this fix, the
+        checkpoint block (dir-size walks + `git gc --prune=now`, also I/O-bound
+        with ~zero CPU) took no lease at all, so a large checkpoint store could
+        still trigger the same false "parked deadlock" kill the state.db fix
+        eliminated."""
+        import hermes_startup_watchdog as sw
+
+        base = tmp_path / "checkpoints"
+        with patch("tools.checkpoint_manager.CHECKPOINT_BASE", base):
+            m = CheckpointManager(enabled=True)
+            m.ensure_checkpoint(str(work_dir), "initial")
+
+        sw._reset_for_tests()
+        handle = sw.arm_startup_watchdog(timeout_s=300.0)
+        try:
+            before = handle._lease_count
+            out = maybe_auto_prune_checkpoints(checkpoint_base=base, min_interval_hours=0)
+            assert out["skipped"] is False
+            # One renewal before the prune walk, one more before git gc — the
+            # git gc renewal is last so a multi-minute gc never outlives the clamp.
+            assert handle._lease_count - before == 2
+            assert handle._lease_phase == "checkpoint_auto_gc"
+            assert handle._lease_until > time.monotonic()
+        finally:
+            sw._reset_for_tests()
+
 
 # =========================================================================
 # store_status / clear_all / clear_legacy

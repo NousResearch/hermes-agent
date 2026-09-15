@@ -26,6 +26,7 @@ from typing import Dict, Iterator, List, NamedTuple, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_startup_watchdog import report_startup_progress
 from utils import env_int
 
 logger = logging.getLogger(__name__)
@@ -1075,6 +1076,13 @@ def prune_checkpoints(retention_days: int = 7, delete_orphans: bool = True, chec
     result = _empty_prune_result()
     if not base.exists():
         return result
+    # Startup-watchdog lease: this can run construction-time from GatewayRunner
+    # ._init_session_db while the watchdog is armed (#111092's sibling gap — the
+    # state.db maintenance block right above this one already renews its lease).
+    # A large checkpoint store walk / git gc is I/O-bound with near-zero CPU, which
+    # the watchdog's CPU fallback misreads as a parked deadlock. No-op when the
+    # watchdog is not armed; never raises.
+    report_startup_progress(900.0, phase="checkpoint_auto_prune")
     size_before = _dir_size_bytes(base)
     cutoff = time.time() - retention_days * 86400 if retention_days > 0 else 0.0
     _prune_legacy_archives(base, cutoff, result)
@@ -1082,9 +1090,13 @@ def prune_checkpoints(retention_days: int = 7, delete_orphans: bool = True, chec
     store = _store_path(base)
     if _store_has_head(store):
         _prune_v2_projects(store, cutoff, delete_orphans, orphan_allowlist, result)
+        # git gc rewrites the whole object store with ~zero CPU: renew the lease
+        # here too so a multi-minute gc on a large store never outlives the clamp.
+        report_startup_progress(900.0, phase="checkpoint_auto_gc")
         _gc_store(store, str(base))
         if max_total_size_mb > 0:
             _shrink_store_to_cap(store, str(base), max_total_size_mb * _MB)
+            report_startup_progress(900.0, phase="checkpoint_auto_gc")
             _gc_store(store, str(base))
 
     result["bytes_freed"] = max(result["bytes_freed"], size_before - _dir_size_bytes(base))

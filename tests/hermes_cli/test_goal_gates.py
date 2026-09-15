@@ -198,7 +198,8 @@ def test_gate_failure_persists_runtime_receipt_without_looking_replaced():
     """Gate output/attempts are runtime receipts, not a concurrent user definition edit."""
     mgr = _mgr_with_goal("gate-runtime-receipt-sid")
     mgr.add_gate("exit 1")
-    with patch("hermes_cli.goals.run_gate", return_value=(False, 1, "red")),          patch("hermes_cli.goals.judge_goal") as mock_judge:
+    with patch("hermes_cli.goals.run_gate", return_value=(False, 1, "red")), \
+         patch("hermes_cli.goals.judge_goal") as mock_judge:
         decision = mgr.evaluate_after_turn("gate failed")
 
     mock_judge.assert_not_called()

@@ -463,6 +463,9 @@ describe('Session control mouse actions — criteria', () => {
 
     renderStack()
 
+    // Structured goals start collapsed; expand the section before touching criteria controls.
+    fireEvent.click(screen.getByRole('button', { name: /goal active/i }))
+
     const removeBtn = screen.getByRole('button', { name: /remove criterion 2/i })
     fireEvent.click(removeBtn)
 
@@ -492,6 +495,9 @@ describe('Session control mouse actions — criteria', () => {
 
     renderStack()
 
+    // Structured goals start collapsed; expand the section before touching criteria controls.
+    fireEvent.click(screen.getByRole('button', { name: /goal active/i }))
+
     fireEvent.click(screen.getByRole('button', { name: /remove criterion 1/i }))
     const dialog = await screen.findByRole('dialog')
     expect(mockRunSessionControlAction).not.toHaveBeenCalled()
@@ -516,6 +522,9 @@ describe('Session control mouse actions — criteria', () => {
     })
 
     renderStack()
+
+    // Structured goals start collapsed; expand the section before touching criteria controls.
+    fireEvent.click(screen.getByRole('button', { name: /goal active/i }))
 
     fireEvent.click(screen.getByRole('button', { name: /clear all criteria/i }))
 
@@ -545,6 +554,9 @@ describe('Session control mouse actions — criteria', () => {
 
     renderStack()
 
+    // Structured goals start collapsed; expand the section before touching criteria controls.
+    fireEvent.click(screen.getByRole('button', { name: /goal active/i }))
+
     fireEvent.click(screen.getByRole('button', { name: /clear all criteria/i }))
     const dialog = await screen.findByRole('dialog')
     expect(mockRunSessionControlAction).not.toHaveBeenCalled()
@@ -569,6 +581,9 @@ describe('Session control mouse actions — criteria', () => {
     })
 
     renderStack()
+
+    // Structured goals start collapsed; expand the section before touching criteria controls.
+    fireEvent.click(screen.getByRole('button', { name: /goal active/i }))
 
     fireEvent.click(screen.getByRole('button', { name: /add criterion/i }))
 
@@ -598,6 +613,9 @@ describe('Session control mouse actions — criteria', () => {
     })
 
     renderStack()
+
+    // Structured goals start collapsed; expand the section before touching criteria controls.
+    fireEvent.click(screen.getByRole('button', { name: /goal active/i }))
 
     fireEvent.click(screen.getByRole('button', { name: /add criterion/i }))
 

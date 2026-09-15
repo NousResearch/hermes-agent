@@ -86,7 +86,6 @@ class TestGoalManagerUpdate:
         gate = GoalGate(
             command="echo ok", timeout_seconds=30, max_retries=3,
             attempts=2, last_exit_code=1, last_output_tail="still red",
-            last_failed_fingerprint="abc123",
         )
         save_goal("s6", GoalState(
             goal="original", status="paused", turns_used=9, max_turns=20,
@@ -108,7 +107,6 @@ class TestGoalManagerUpdate:
         assert state.gates[0].attempts == 2
         assert state.gates[0].last_exit_code == 1
         assert state.gates[0].last_output_tail == "still red"
-        assert state.gates[0].last_failed_fingerprint == "abc123"
         assert state.status == "paused"
         assert state.turns_used == 9
         assert state.created_at == 100.0

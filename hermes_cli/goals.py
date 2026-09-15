@@ -54,7 +54,7 @@ _JUDGE_EVIDENCE_ARGS_MAX_CHARS = 700
 _JUDGE_EVIDENCE_RESULT_MAX_CHARS = 400
 
 JUDGE_EVIDENCE_BLOCK_TEMPLATE = (
-    "Concrete evidence from the agent's recent work (tool results, file " 
+    "Concrete evidence from the agent's recent work (tool results, file "
     "excerpts, output lines). Use this to VERIFY completion instead of relying "
     "only on the response's assertions:\n{evidence_lines}\n\n"
 )
@@ -1454,7 +1454,6 @@ class GoalManager:
                 fresh_gate.attempts = stale_gate.attempts
                 fresh_gate.last_exit_code = stale_gate.last_exit_code
                 fresh_gate.last_output_tail = stale_gate.last_output_tail
-                fresh_gate.last_failed_fingerprint = stale_gate.last_failed_fingerprint
         return _apply
 
     @_goal_mutation

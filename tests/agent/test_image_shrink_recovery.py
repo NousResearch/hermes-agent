@@ -106,6 +106,211 @@ class TestImageTooLargeClassification:
         result = classify_api_error(err, provider="minimax", model="MiniMax-M3")
         assert result.reason != FailoverReason.image_too_large
 
+    def test_nvidia_400_payload_below_bytes_message(self):
+        """NVIDIA NIM caps the whole payload at 26214400 bytes and reports it as a 400.
+
+        The wording carries no image vocabulary ("payload is below 26214400 bytes in
+        size", code invalid_image_format), so the oversize turn fell through to
+        _REQUEST_VALIDATION_PATTERNS and classified as format_error / non-retryable:
+        the shrink pass never ran and failover re-sent the same oversized body.
+        """
+        message = (
+            "Please make sure your payload is below 26214400 bytes in size. "
+            "If larger assets are required please refer to our Assets API."
+        )
+        err = _FakeApiError(
+            status_code=400,
+            message=message,
+            body={
+                "error": {
+                    "message": message,
+                    "type": "invalid_request_error",
+                    "param": None,
+                    "code": "invalid_image_format",
+                }
+            },
+        )
+        result = classify_api_error(err, provider="nvidia", model="meta/llama-3.2-11b-vision-instruct")
+        assert result.reason == FailoverReason.image_too_large
+        assert result.retryable is True
+
+    def test_alibaba_400_jackson_string_length_message(self):
+        """DashScope caps the base64 image string via Jackson and reports it as a 400.
+
+        The wording names a character ceiling, not an image ("String value length
+        (28049408) exceeds the maximum allowed (28000000, from
+        `StreamReadConstraints.getMaxStringLength()`)"), so it classified as
+        format_error / non-retryable and skipped the shrink pass.
+        """
+        message = (
+            "String value length (28049408) exceeds the maximum allowed "
+            "(28000000, from `StreamReadConstraints.getMaxStringLength()`)"
+        )
+        err = _FakeApiError(
+            status_code=400,
+            message=message,
+            body={
+                "error": {
+                    "message": message,
+                    "type": "invalid_request_error",
+                    "param": None,
+                    "code": None,
+                },
+                "request_id": "313ec7",
+            },
+        )
+        result = classify_api_error(err, provider="alibaba", model="qwen-vl-max")
+        assert result.reason == FailoverReason.image_too_large
+        assert result.retryable is True
+
+    def test_jackson_token_length_cap_is_not_image_too_large(self):
+        """Only the string-length method is an image condition, not every Jackson cap."""
+        err = _FakeApiError(
+            status_code=400,
+            message=(
+                "String value length (900000) exceeds the maximum allowed "
+                "(, from `StreamReadConstraints.getMaxTokenLength()`)"
+            ),
+        )
+        result = classify_api_error(err, provider="alibaba", model="qwen-vl-max")
+        assert result.reason == FailoverReason.format_error
+        assert result.reason != FailoverReason.image_too_large
+
+    def test_nebius_400_string_type_on_message_content_with_image(self):
+        """Nebius caps one image at 10 MiB and reports it through the field that failed to coerce.
+
+        The body is a pydantic-v2 validation error naming no size vocabulary at all, so
+        "input should be a valid string" matched the multimodal *tool*-content rule
+        (#104731) first: the one multimodal retry stripped tool images that were never
+        there, then the 400 surfaced unshrunk. Requests carrying a small image succeed
+        with the same list-type content shape, so the bytes are the trigger.
+        """
+        image = "data:image/jpeg;base64," + "A" * (5 * 1024 * 1024)
+        err = _FakeApiError(
+            status_code=400,
+            message=(
+                "Error code: 400 - {'detail': [{'type': 'string_type', 'loc': "
+                "['body', 'messages', 0, 'content', 'str'], 'msg': "
+                "'Input should be a valid string'}]}"
+            ),
+            body={
+                "detail": [{
+                    "type": "string_type",
+                    "loc": ["body", "messages", 0, "content", "str"],
+                    "msg": "Input should be a valid string",
+                    "input": [
+                        {"type": "text", "text": "Reply with the single word ok."},
+                        {"type": "image_url", "image_url": {"url": image}},
+                    ],
+                }]
+            },
+        )
+        result = classify_api_error(err, provider="nebius-token-factory", model="google/gemma-3-27b-it")
+        assert result.reason == FailoverReason.image_too_large
+        assert result.retryable is True
+
+    def test_nebius_string_type_without_inline_image_stays_multimodal(self):
+        """A small image keeps the #104731 multimodal verdict: no shrink retry to burn."""
+        err = _FakeApiError(
+            status_code=400,
+            message="Error code: 400 - {'detail': [{'msg': 'Input should be a valid string'}]}",
+            body={
+                "detail": [{
+                    "type": "string_type",
+                    "loc": ["body", "messages", 0, "content", "str"],
+                    "msg": "Input should be a valid string",
+                    "input": [
+                        {"type": "text", "text": "hi"},
+                        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/4AAQ"}},
+                    ],
+                }]
+            },
+        )
+        result = classify_api_error(err, provider="nebius-token-factory", model="google/gemma-3-27b-it")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+
+    def test_tool_scoped_string_type_loc_stays_multimodal(self):
+        """A tool-scoped loc belongs to #104731 even when it carries a large image."""
+        image = "data:image/png;base64," + "A" * (5 * 1024 * 1024)
+        err = _FakeApiError(
+            status_code=400,
+            message="Error code: 400 - {'detail': [{'msg': 'Input should be a valid string'}]}",
+            body={
+                "detail": [{
+                    "type": "string_type",
+                    "loc": ["body", "messages", 4, "tool", "content", "str"],
+                    "msg": "Input should be a valid string",
+                    "input": [{"type": "image_url", "image_url": {"url": image}}],
+                }]
+            },
+        )
+        result = classify_api_error(err, provider="nebius-token-factory", model="google/gemma-3-27b-it")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+
+    def test_non_image_part_type_is_not_routed_to_shrink(self):
+        """Only part types the shrink pass rewrites may route it: a 5 MB ``type: text``
+        part carrying an ``image_url`` key is not something the shrink pass would touch."""
+        image = "data:image/png;base64," + "A" * (5 * 1024 * 1024)
+        err = _FakeApiError(
+            status_code=400,
+            message="Error code: 400 - {'detail': [{'msg': 'Input should be a valid string'}]}",
+            body={
+                "detail": [{
+                    "type": "string_type",
+                    "loc": ["body", "messages", 0, "content", "str"],
+                    "msg": "Input should be a valid string",
+                    "input": [{"type": "text", "image_url": {"url": image}}],
+                }]
+            },
+        )
+        result = classify_api_error(err, provider="nebius-token-factory", model="google/gemma-3-27b-it")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+
+    def test_structured_code_outranks_the_oversized_content_rule(self):
+        """A code-named cause keeps its 400 even alongside a large inlined image."""
+        image = "data:image/png;base64," + "A" * (5 * 1024 * 1024)
+        err = _FakeApiError(
+            status_code=400,
+            message="Error code: 400 - {'detail': [{'msg': 'Input should be a valid string'}]}",
+            body={
+                "error": {"code": "invalid_encrypted_content", "message": "encrypted content could not be verified"},
+                "detail": [{
+                    "type": "string_type",
+                    "loc": ["body", "messages", 0, "content", "str"],
+                    "msg": "Input should be a valid string",
+                    "input": [{"type": "image_url", "image_url": {"url": image}}],
+                }],
+            },
+        )
+        result = classify_api_error(err, provider="openai", model="gpt-5")
+        assert result.reason != FailoverReason.image_too_large
+
+    def test_scalar_detail_loc_does_not_raise(self):
+        """JSON permits a scalar loc; the rule must skip it rather than raise."""
+        image = "data:image/png;base64," + "A" * (5 * 1024 * 1024)
+        for loc in (5, "content", None, {"a": 1}):
+            err = _FakeApiError(
+                status_code=400,
+                message="Error code: 400 - {'detail': [{'msg': 'Input should be a valid string'}]}",
+                body={
+                    "detail": [{
+                        "type": "string_type",
+                        "loc": loc,
+                        "msg": "Input should be a valid string",
+                        "input": [{"type": "image_url", "image_url": {"url": image}}],
+                    }]
+                },
+            )
+            result = classify_api_error(err, provider="nebius-token-factory", model="google/gemma-3-27b-it")
+            assert result.reason != FailoverReason.image_too_large
+
+    def test_shrink_hint_matches_compression_target(self):
+        """The classifier's inline-image threshold must track the shrink pass's own."""
+        from agent.conversation_compression import _IMAGE_SHRINK_TARGET_BYTES
+        from agent.error_classifier import _INLINED_IMAGE_SHRINK_HINT_BYTES
+
+        assert _INLINED_IMAGE_SHRINK_HINT_BYTES == _IMAGE_SHRINK_TARGET_BYTES
+
 
 class TestImagePatchBudgetShrink:
     def test_codex_patch_budget_shrinks_responses_image_under_budget(self):

@@ -64,6 +64,7 @@ class TestFailoverReason:
             "image_corrupt",
             "model_not_found", "format_error",
             "invalid_encrypted_content",
+            "encrypted_content_too_large",
             "multimodal_tool_content_unsupported",
             "reasoning_mandatory",
             "provider_policy_blocked",

@@ -256,10 +256,12 @@ def export_current_turn_boundary(agent: Any, result: Any, user_message: Any) -> 
     exports the coordinate, computed on the final list, only when the addressed row is this
     turn's user message verbatim. Otherwise the keys are omitted and hosts fail closed.
 
-    A preflight-timeout envelope carries the prior history without this turn's row (#7100), so a
-    repeated prompt would resolve to its historical copy: nothing is exported there.
+    Preflight-timeout and pre-turn encrypted-cap envelopes carry prior history without
+    this turn's row, so a repeated prompt must not resolve to its historical copy.
     """
-    if not isinstance(result, dict) or result.get("turn_exit_reason") == "context_compression_timeout":
+    if not isinstance(result, dict) or result.get("turn_exit_reason") in {
+        "context_compression_timeout", "encrypted_content_limit_before_turn",
+    }:
         return result
     messages = result.get("messages")
     turn_id = str(getattr(agent, "_current_turn_id", "") or "")

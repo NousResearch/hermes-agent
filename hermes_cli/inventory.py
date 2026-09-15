@@ -23,6 +23,7 @@ class ConfigContext:
     user_providers: dict
     custom_providers: list
     excluded_providers: list = None
+    allowed_models: list = None
 
     def with_overrides(
         self, *, current_provider: Optional[str] = None, current_model: Optional[str] = None,
@@ -52,11 +53,13 @@ def load_picker_context() -> ConfigContext:
     else:  # config.model can be a bare string in older configs
         current_model, current_provider, current_base_url = (str(model_cfg) if model_cfg else ""), "", ""
     excluded = cfg.get("model_catalog", {}).get("excluded_providers") or []
+    allowed = cfg.get("model_catalog", {}).get("allowed_models") or []
     return ConfigContext(
         current_provider=current_provider, current_model=current_model, current_base_url=current_base_url,
         user_providers=stringify_provider_map(cfg.get("providers")),
         custom_providers=get_compatible_custom_providers(cfg),
         excluded_providers=excluded if isinstance(excluded, list) else [],
+        allowed_models=allowed if isinstance(allowed, list) else [],
     )
 
 
@@ -147,6 +150,8 @@ def build_models_payload(
     if featured:
         _apply_featured(rows)
     _apply_custom_aliases(rows)
+    from hermes_cli.model_allowlist import filter_allowed_model_rows
+    rows = filter_allowed_model_rows(rows, ctx.allowed_models)
 
     return {"providers": rows, "model": ctx.current_model, "provider": ctx.current_provider}
 

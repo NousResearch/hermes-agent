@@ -169,14 +169,14 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
 
 
 def _switch_model_from(
-    cli, raw_input, *, is_global, explicit_provider, user_providers, custom_providers):
+    cli, raw_input, *, is_global, explicit_provider, user_providers, custom_providers, allowed_models):
     """``switch_model`` seeded with this CLI's live route."""
     from hermes_cli.model_switch import switch_model
     return switch_model(
         raw_input=raw_input, current_provider=cli.provider or "", current_model=cli.model or "",
         current_base_url=cli.base_url or "", current_api_key=cli.api_key or "", is_global=is_global,
         explicit_provider=explicit_provider, user_providers=user_providers,
-        custom_providers=custom_providers)
+        custom_providers=custom_providers, allowed_models=allowed_models)
 
 
 def _run_confirm_and_apply(cli, target, *args) -> None:
@@ -838,7 +838,8 @@ class CLIModelSwitchMixin:
         result = _switch_model_from(
             self, request.target, is_global=persist_global,
             explicit_provider=request.explicit_provider,
-            user_providers=user_provs, custom_providers=custom_provs)
+            user_providers=user_provs, custom_providers=custom_provs,
+            allowed_models=ctx.allowed_models if ctx is not None else None)
         if not result.success:
             _cprint(f"  ✗ {result.error_message}")
             return

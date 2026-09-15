@@ -1173,7 +1173,7 @@ def list_authenticated_providers(
     max_models: int | None = None, current_model: str = "", refresh: bool = False,
     probe_custom_providers: bool = True, probe_current_custom_provider: bool = False,
     for_picker: bool = False, excluded_providers: list | None = None,
-    non_blocking_catalogs: bool = False) -> List[dict]:
+    non_blocking_catalogs: bool = False, allowed_models: list | None = None) -> List[dict]:
     """Detect which providers have credentials and list their curated (not full models.dev) models.
 
     Returns dicts with ``slug`` (the --provider value), ``name``, ``is_current``,
@@ -1244,11 +1244,10 @@ def list_authenticated_providers(
     _lap_bare_custom_row(b, custom_providers)
     if custom_providers and isinstance(custom_providers, list):
         _lap_custom_provider_rows(b, custom_providers)
+    return _finalize_picker_rows(b.results, user_providers, current_model, allowed_models)
 
-    return _finalize_picker_rows(b.results, user_providers, current_model)
 
-
-def _finalize_picker_rows(results: list, user_providers, current_model: str) -> list:
+def _finalize_picker_rows(results: list, user_providers, current_model: str, allowed_models=None) -> list:
     """Post-passes: drop ``providers.<name>.enabled: false`` rows, inject the current model, sort."""
     # The enabled post-filter covers built-in rows (sections 1-2) that bypass the per-section
     # gate; matched by slug and ``provider_id``.
@@ -1285,7 +1284,8 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
 
     # Current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
-    return results
+    from hermes_cli.model_allowlist import filter_allowed_model_rows
+    return filter_allowed_model_rows(results, allowed_models)
 
 
 def _prepend_moa_picker_provider(providers: List[dict], current_provider: str = "") -> List[dict]:
@@ -1309,7 +1309,7 @@ def list_picker_providers(
     custom_providers: list | None = None, max_models: int | None = None, current_model: str = "",
     include_moa: bool = False, excluded_providers: list | None = None,
     non_blocking_catalogs: bool = False, probe_custom_providers: bool = True,
-    probe_current_custom_provider: bool = False) -> List[dict]:
+    probe_current_custom_provider: bool = False, allowed_models: list | None = None) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
     OpenRouter's list is replaced with :func:`hermes_cli.models.fetch_openrouter_models` (curated
@@ -1324,7 +1324,7 @@ def list_picker_providers(
         user_providers=user_providers, custom_providers=custom_providers, max_models=max_models,
         current_model=current_model, for_picker=True, excluded_providers=excluded_providers,
         non_blocking_catalogs=non_blocking_catalogs, probe_custom_providers=probe_custom_providers,
-        probe_current_custom_provider=probe_current_custom_provider)
+        probe_current_custom_provider=probe_current_custom_provider, allowed_models=allowed_models)
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)
 
@@ -1342,4 +1342,5 @@ def list_picker_providers(
         is_custom_endpoint = bool(p.get("is_user_defined")) and bool(p.get("api_url"))
         if p.get("models") or is_custom_endpoint:
             filtered.append(p)
-    return filtered
+    from hermes_cli.model_allowlist import filter_allowed_model_rows
+    return filter_allowed_model_rows(filtered, allowed_models)

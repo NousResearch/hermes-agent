@@ -474,7 +474,8 @@ def _validated_main_model_selection(
         current_base_url=base_url if is_bare_custom else str(model_cfg.get("base_url") or ""),
         current_api_key=api_key if is_bare_custom else "",
         user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {},
-        custom_providers=get_compatible_custom_providers(cfg))
+        custom_providers=get_compatible_custom_providers(cfg),
+        allowed_models=(cfg.get("model_catalog", {}) or {}).get("allowed_models"))
     if not result.success:
         raise HTTPException(status_code=400, detail=result.error_message or "model switch rejected")
     if is_bare_custom and base_url.strip():

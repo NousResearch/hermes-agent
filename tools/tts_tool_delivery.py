@@ -9,6 +9,7 @@ helpers ``_origin`` / ``_section`` / ``_remove_quietly``.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import shlex
@@ -222,6 +223,69 @@ def _remove_quietly(path: Optional[str]) -> None:
             os.remove(path)
         except OSError:
             pass
+
+
+def _build_atempo_filter(speed: float) -> str:
+    """Build an ffmpeg ``atempo`` chain for any positive finite multiplier.
+
+    A single ``atempo`` stage is kept within the portable 0.5-2.0 range. This
+    matters for the full OpenAI TTS speed range (0.25-4.0), whose endpoints
+    require two stages when speed is applied locally.
+    """
+    if not math.isfinite(speed) or speed <= 0:
+        raise ValueError("TTS speed must be a positive finite number")
+    factors: List[float] = []
+    remaining = float(speed)
+    while remaining < 0.5:
+        factors.append(0.5)
+        remaining /= 0.5
+    while remaining > 2.0:
+        factors.append(2.0)
+        remaining /= 2.0
+    if not math.isclose(remaining, 1.0, rel_tol=1e-9, abs_tol=1e-9) or not factors:
+        factors.append(remaining)
+    return ",".join(f"atempo={factor:.8g}" for factor in factors)
+
+
+def _apply_local_tempo(input_path: str, speed: float) -> str:
+    """Apply pitch-preserving local tempo to *input_path*, replacing it atomically.
+
+    The original provider audio remains untouched when ffmpeg is unavailable or
+    processing fails. Local mode is explicit, so those failures are surfaced to
+    the caller instead of silently falling back to endpoint-side speed.
+    """
+    if math.isclose(speed, 1.0, rel_tol=1e-9, abs_tol=1e-9):
+        return input_path
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError(
+            "tts.openai.speed_mode 'local' requires ffmpeg on PATH; "
+            "install ffmpeg or use speed_mode: forward")
+
+    source = Path(input_path)
+    output_suffix = source.suffix or ".mp3"
+    temp_output = source.with_name(
+        f".{source.stem}.{uuid.uuid4().hex}.atempo{output_suffix}")
+    codec_args = _OPUS_VOICE_ARGS if output_suffix.lower() in {".ogg", ".opus"} else []
+    try:
+        result = _ffmpeg_run(
+            ffmpeg,
+            ["-y", "-loglevel", "error", "-i", str(source), "-vn", "-filter:a",
+             _build_atempo_filter(speed), *codec_args, str(temp_output)],
+            timeout=120,
+        )
+        if result.returncode != 0 or not temp_output.exists() or temp_output.stat().st_size == 0:
+            stderr = result.stderr.decode("utf-8", errors="ignore")[:300] if result.stderr else ""
+            detail = f": {stderr}" if stderr else ""
+            raise RuntimeError(f"ffmpeg local TTS speed processing failed{detail}")
+        os.replace(temp_output, source)
+        return input_path
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("ffmpeg local TTS speed processing timed out after 120s") from exc
+    except OSError as exc:
+        raise RuntimeError(f"ffmpeg local TTS speed processing failed: {exc}") from exc
+    finally:
+        _remove_quietly(str(temp_output))
 
 
 def _wav_sidecar_path(output_path: str) -> str:

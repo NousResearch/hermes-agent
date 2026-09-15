@@ -727,7 +727,7 @@ export const en: Translations = {
       terminalFontReset: 'Use default',
       chatFontTitle: 'Chat Font',
       chatFontDesc:
-        'Choose an installed font for chat and the rest of the app. Handy for readability faces such as OpenDyslexic; leave blank to use the theme\'s font.',
+        "Choose an installed font for chat and the rest of the app. Handy for readability faces such as OpenDyslexic; leave blank to use the theme's font.",
       chatFontPlaceholder: 'OpenDyslexic or a CSS font stack',
       chatFontPreview: 'Preview',
       chatFontSample: 'The quick brown fox jumps over the lazy dog. 0123456789',

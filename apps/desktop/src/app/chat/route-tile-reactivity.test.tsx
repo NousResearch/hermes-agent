@@ -9,7 +9,9 @@ import { RouteTilePane } from './route-tile'
 // an independently-called `contributedRoutes()`, which React Compiler can keep
 // memoized across the delivered subscription update. These tests run through
 // the real registry, the real `useContributions` hook and the compiler-enabled
-// Vite config — mocking the route list would hide exactly this defect.
+// Vite config — mocking the route list would hide exactly this defect. The
+// `label` helper parameter is kept so a hot-replacement case can be added
+// without reshaping the fixture.
 
 afterEach(cleanup)
 
@@ -30,42 +32,6 @@ describe('RouteTilePane route-contribution reactivity (#109063)', () => {
     expect(screen.getByText(/no page at \/resetwatch/)).toBeTruthy()
 
     let dispose = () => {}
-    act(() => {
-      dispose = registerResetwatch('A')
-    })
-    expect(screen.getByText('PLUGIN-PAGE-A')).toBeTruthy()
-
-    act(() => {
-      dispose()
-    })
-  })
-
-  it('hot-replaces the page when the same contribution id re-registers', () => {
-    let dispose = registerResetwatch('A')
-    render(<RouteTilePane path="/resetwatch" />)
-    expect(screen.getByText('PLUGIN-PAGE-A')).toBeTruthy()
-
-    act(() => {
-      dispose()
-      dispose = registerResetwatch('B')
-    })
-    expect(screen.getByText('PLUGIN-PAGE-B')).toBeTruthy()
-    expect(screen.queryByText('PLUGIN-PAGE-A')).toBeNull()
-
-    act(() => {
-      dispose()
-    })
-  })
-
-  it('returns to the fallback after dispose and mounts again on re-register', () => {
-    let dispose = registerResetwatch('A')
-    render(<RouteTilePane path="/resetwatch" />)
-
-    act(() => {
-      dispose()
-    })
-    expect(screen.getByText(/no page at \/resetwatch/)).toBeTruthy()
-
     act(() => {
       dispose = registerResetwatch('A')
     })

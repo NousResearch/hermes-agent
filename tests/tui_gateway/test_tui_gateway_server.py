@@ -17311,7 +17311,7 @@ def test_verification_status_outside_workspace_is_not_applicable(monkeypatch, tm
 
 
 def _stub_urlopen(monkeypatch, *, ok: bool):
-    """Patch urllib.request.urlopen used by browser.manage to short-circuit probes."""
+    """Patch the loopback-aware opener browser.manage probes through (#110565) to short-circuit probes."""
 
     class _Resp:
         status = 200 if ok else 503
@@ -17329,7 +17329,7 @@ def _stub_urlopen(monkeypatch, *, ok: bool):
 
     import urllib.request
 
-    monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", lambda _self, url, *a, timeout=2.0, **k: _opener(url, timeout=timeout))
 
 
 def _stub_urlopen_capture(monkeypatch, *, ok: bool):
@@ -17352,7 +17352,7 @@ def _stub_urlopen_capture(monkeypatch, *, ok: bool):
 
     import urllib.request
 
-    monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", lambda _self, url, *a, timeout=2.0, **k: _opener(url, timeout=timeout))
     return urls
 
 
@@ -17628,7 +17628,7 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
 
     import urllib.request
 
-    monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", lambda _self, url, *a, timeout=2.0, **k: _opener(url, timeout=timeout))
     launched = ChromeDebugLaunch(launched=True)
     with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
         with (
@@ -17677,7 +17677,7 @@ def test_browser_manage_connect_finds_ipv6_only_browser(monkeypatch):
 
     import urllib.request
 
-    monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", lambda _self, url, *a, timeout=2.0, **k: _opener(url, timeout=timeout))
     with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
         resp = server.handle_request(
             {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
@@ -17715,7 +17715,7 @@ def test_browser_manage_connect_squatted_port_launches_on_alternate(monkeypatch)
 
     import urllib.request
 
-    monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", lambda _self, url, *a, timeout=2.0, **k: _opener(url, timeout=timeout))
     launch_ports: list[int] = []
 
     def _launch(port, _system):

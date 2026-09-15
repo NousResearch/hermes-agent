@@ -452,6 +452,29 @@ class TestStaticPrefixReconstructionOnRestore:
         assert agent._cached_system_prompt == stored
         assert agent._cached_system_prompt_static is None
 
+    def test_restore_falls_back_to_stable_boundary_when_context_changes(self):
+        """A changed context bundle keeps the safe stable-only cache marker."""
+        from agent.system_prompt import _ContextTier, reconstruct_static_prefix
+        from unittest.mock import patch as _patch
+
+        stable = "STATIC IDENTITY AND GUIDANCE"
+        stored = stable + "\n\nold project context\n\nvolatile tail"
+        agent = _make_agent()
+        agent._use_prompt_caching = True
+        agent._cached_system_prompt = stored
+        agent._cached_system_prompt_static = None
+        with _patch(
+            "agent.system_prompt.build_system_prompt_parts",
+            return_value={
+                "stable": stable,
+                "context": _ContextTier("new project context", "new project context"),
+                "volatile": "",
+            },
+        ):
+            reconstruct_static_prefix(agent)
+
+        assert agent._cached_system_prompt_static == stable
+
     def test_restore_survives_parts_builder_exception(self):
         """Prefix reconstruction is fail-open: a parts-builder crash must not
         break the byte-identical restore."""

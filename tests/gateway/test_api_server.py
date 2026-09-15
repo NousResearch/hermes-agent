@@ -13,10 +13,12 @@ Tests cover:
 """
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import stat
 import sys
+import threading
 import time
 import types
 import uuid
@@ -115,6 +117,33 @@ class TestResponseStore:
         assert store.get_conversation("chat-a") == "resp_1"
         store.delete("resp_1")
         assert store.get_conversation("chat-a") is None
+
+    def test_concurrent_operations_preserve_bounded_lru(self, tmp_path):
+        """A shared connection must serialize the full write-and-evict transaction."""
+        store = ResponseStore(max_size=8, db_path=str(tmp_path / "responses.db"))
+        workers = 12
+        barrier = threading.Barrier(workers)
+
+        def write_responses(worker: int) -> list[Exception]:
+            errors = []
+            try:
+                barrier.wait()
+                for sequence in range(20):
+                    response_id = f"response-{worker}-{sequence}"
+                    conversation = f"conversation-{worker}"
+                    store.put(response_id, {"worker": worker, "sequence": sequence})
+                    store.set_conversation(conversation, response_id)
+                    store.get_conversation(conversation)
+                    store.get(response_id)
+            except Exception as exc:
+                errors.append(exc)
+            return errors
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            errors = [error for result in executor.map(write_responses, range(workers)) for error in result]
+
+        assert errors == []
+        assert len(store) == 8
 
 
 # ---------------------------------------------------------------------------

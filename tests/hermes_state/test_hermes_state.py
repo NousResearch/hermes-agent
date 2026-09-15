@@ -2944,6 +2944,31 @@ class TestListSessionsRich:
         assert child is not None
         assert child["model_config"] is None
 
+    def test_reopen_backfills_legacy_reset_child_of_cycled_parent(self, db):
+        """A markerless reset child from an earlier boundary is still frozen after the parent was
+        reopened and re-ended later (its started_at precedes the parent's current ended_at)."""
+        lane_key = "agent:main:telegram:dm:cycled"
+        db.create_session("cycled_parent", "telegram", session_key=lane_key)
+        db.end_session("cycled_parent", "session_reset")
+        db.create_session(
+            "cycled_reset_child", "telegram", session_key=lane_key, parent_session_id="cycled_parent"
+        )
+        db._conn.execute(
+            "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", ("cycled_parent",)
+        )
+        db._conn.commit()
+        db.end_session("cycled_parent", "session_switch")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at = ended_at + 100 WHERE id = ?", ("cycled_parent",)
+        )
+        db._conn.commit()
+
+        db.reopen_session("cycled_parent")
+
+        child = db.get_session("cycled_reset_child")
+        assert json.loads(child["model_config"]) == {"_reset_from": "cycled_parent"}
+        assert "cycled_reset_child" in [row["id"] for row in db.list_sessions_rich(source="telegram")]
+
     def test_reset_parent_does_not_surface_unrelated_child(self, db):
         db.create_session(
             "reset_parent",

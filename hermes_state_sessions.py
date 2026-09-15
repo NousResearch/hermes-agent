@@ -447,9 +447,10 @@ class SessionSessionsMixin:
         return changed
 
     def reopen_session(self, session_id: str) -> None:
-        """Clear ended_at/end_reason so a session can be resumed; first freeze only legacy reset children
-        whose creation order proves they followed the reset. The shared legacy predicate keeps list-time
-        compatibility broad, while this durable backfill must not overwrite explicit fork provenance."""
+        """Clear ended_at/end_reason so a session can be resumed; first freeze markerless legacy reset
+        children, skipping explicit fork/delegate provenance and children that predate the parent itself.
+        The guard compares against the parent's started_at, not its current ended_at: a parent that was
+        reopened and re-ended later still owns reset children from its earlier boundaries."""
         def _do(conn):
             conn.execute(
                 "UPDATE sessions AS child SET model_config = json_set("
@@ -458,7 +459,7 @@ class SessionSessionsMixin:
                 f"AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL "
                 f"AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL "
                 "AND COALESCE(child.source, '') != 'tool' "
-                "AND child.started_at >= (SELECT p.ended_at FROM sessions p WHERE p.id = child.parent_session_id) "
+                "AND child.started_at >= (SELECT p.started_at FROM sessions p WHERE p.id = child.parent_session_id) "
                 f"AND {_legacy_reset_child_sql('child', _session_ids_placeholders(_RESET_END_REASONS))}",
                 (session_id, *_RESET_END_REASONS),
             )

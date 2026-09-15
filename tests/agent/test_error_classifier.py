@@ -819,6 +819,18 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_fallback is False
 
+    def test_opencode_zen_wrapped_replay_rejection_reaches_replay_strip(self):
+        """OpenCode Zen wraps the rejected encrypted replay in a generic 400."""
+        e = MockAPIError(
+            "HTTP 400: Error from provider (Console): Upstream request failed: "
+            "[invalid_request_error] reasoning `encrypted_content` was not issued to this caller",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="opencode-zen", model="muse-spark-1.3-contributor-free")
+        assert result.reason == FailoverReason.invalid_encrypted_content
+        assert result.retryable is True
+        assert result.should_fallback is False
+
     # ── Codex masked encrypted-reasoning replay rejection (#92353) ──
 
     _CODEX_MASKED = {"message": "Request blocked.", "type": "invalid_request_error", "param": None, "code": "invalid_prompt"}

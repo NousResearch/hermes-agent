@@ -115,6 +115,7 @@ import { resetProjectTreeState } from '../right-sidebar/files/use-project-tree'
 import { PersistentTerminal } from '../right-sidebar/terminal/persistent'
 import { closeAllTerminals } from '../right-sidebar/terminal/terminals'
 import {
+  bindWorkspaceNavigate,
   CRON_ROUTE,
   navigateToWorkspacePage,
   routeSessionId,
@@ -192,6 +193,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   const location = useLocation()
   const navigate = useNavigate()
+
+  useEffect(() => {
+    bindWorkspaceNavigate(navigate)
+
+    return () => bindWorkspaceNavigate(null)
+  }, [navigate])
 
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)

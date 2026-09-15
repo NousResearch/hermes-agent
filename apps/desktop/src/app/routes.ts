@@ -276,3 +276,31 @@ export function navigateToWorkspacePage(navigate: NavigateLike, to: string, opti
     revealWorkspacePane()
   }
 }
+
+// Plugin `host.navigate` has no `useNavigate` of its own. The shell binds the
+// live router here so a palette/statusbar click uses the same door as the
+// sidebar (HashRouter `navigate` + workspace reveal), not a raw hash write
+// that can light the nav row while the board stays behind a chat tile.
+let workspaceNavigate: NavigateLike | null = null
+
+export function bindWorkspaceNavigate(navigate: NavigateLike | null): void {
+  workspaceNavigate = navigate
+}
+
+/** Plugin-host navigation: bound router when the shell is up, else hash + reveal. */
+export function navigateHostPath(path: string): void {
+  const stripped = path.startsWith('#') ? path.slice(1) : path
+  const to = stripped.startsWith('/') ? stripped : `/${stripped}`
+
+  if (workspaceNavigate) {
+    navigateToWorkspacePage(workspaceNavigate, to)
+
+    return
+  }
+
+  if (typeof window !== 'undefined') {
+    window.location.hash = path.startsWith('#') ? path : `#${path}`
+  }
+
+  syncWorkspaceRoute(to)
+}

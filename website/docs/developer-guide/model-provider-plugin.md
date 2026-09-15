@@ -100,6 +100,7 @@ Full definition in `providers/base.py`. The most useful ones:
 | `base_url` | str | Default inference endpoint |
 | `models_url` | str | Explicit catalog URL (falls back to `{base_url}/models`) |
 | `auth_type` | str | `api_key` \| `oauth_device_code` \| `oauth_external` \| `copilot` \| `aws_sdk` \| `external_process` |
+| `auth_handler` | `Callable \| None` | Optional provider-owned interactive auth for `hermes auth add/status/logout/refresh <name>` — see [Provider-owned interactive auth](#provider-owned-interactive-auth-auth_handler) |
 | `fallback_models` | `tuple[str, ...]` | Curated list shown when live catalog fetch fails |
 | `default_headers` | `dict[str, str]` | Sent on every request (e.g. Copilot's `Editor-Version`) |
 | `fixed_temperature` | Any | `None` = use caller's value; `OMIT_TEMPERATURE` sentinel = don't send temperature at all (Kimi) |
@@ -225,6 +226,53 @@ Set `profile.api_mode` to match the default your provider ships — it acts as a
 | `external_process` | Auth handled by a subprocess the agent spawns (see [External-process providers](#external-process-acp-providers)) | `copilot-acp` plugin, out-of-tree ACP plugins |
 
 `auth_type` gates which codepaths treat your provider as a "simple api-key provider" — if it's not `api_key`, the PluginManager still records the manifest but Hermes' CLI-level automation (doctor checks, `--provider` flag, setup wizard delegation) may skip over it.
+
+## Provider-owned interactive auth (`auth_handler`)
+
+`auth_type` describes *what kind* of credential a provider needs; `auth_handler` is how the
+plugin **acquires** it — its own device-code / OIDC / IdC flow inside the existing `hermes auth`
+command family, with no second standalone command plugin (model-provider manifests are skipped by
+the generic command-plugin loader, so `register(ctx)` is not the way to add commands).
+
+```python
+from providers import register_provider
+from providers.base import ProviderProfile
+
+
+def kiro_auth(action: str, args) -> bool:
+    """action: "add" | "status" | "logout" | "refresh"; args: parsed CLI namespace."""
+    if action == "add":
+        start_url = input("IdC start URL: ").strip()   # provider-specific inputs
+        creds = run_device_code_flow(start_url)
+        save_my_credentials(creds)                     # the plugin owns its own storage
+        print("Signed in to Kiro.")
+        return True
+    if action == "status":
+        print("kiro: " + ("logged in" if load_my_credentials() else "logged out"))
+        return True
+    return False   # decline → this action stays with the built-in credential-pool handling
+
+
+register_provider(ProviderProfile(
+    name="kiro", auth_type="oauth_device_code", auth_handler=kiro_auth))
+```
+
+| Contract | |
+|---|---|
+| Signature | `auth_handler(action, args)` — `args` is the parsed `hermes auth` namespace |
+| Return | truthy = handled (Hermes prints nothing more, exit 0); falsy = fall back to the built-in path **for that action** |
+| Async | a returned awaitable is awaited, so `async def` handlers work |
+| Failure | an exception becomes `SystemExit("<provider> auth handler failed for `<action>`: ValueError: …")` |
+| No handler | `hermes auth <action> <provider>` behaves exactly as it did before the seam |
+
+`hermes auth add|status|logout|refresh <provider>` consults the handler **first** — before the
+known-provider gate and before the credential pool — so a provider Hermes does not otherwise
+recognize (`oauth_device_code`, `oauth_external`) is fully drivable. Registering the same name
+twice is last-writer-wins, so a user plugin can replace a bundled provider's flow.
+
+Hermes passes the parsed namespace, not provider-declared flags: ask for provider-specific values
+interactively (or read your own config/env). Credentials stay provider-owned — Hermes hands your
+handler no secrets and reads none back.
 
 ## Discovery timing
 

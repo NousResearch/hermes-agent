@@ -12,7 +12,7 @@ from typing import Annotated, Literal, Union
 
 from pydantic import Field
 
-from .base import JsonValue, Params, Result, WireEnum
+from .base import JsonValue, MethodParams, Params, Result, WireEnum
 from .common import MessageReaction, SessionParams, SubagentStatus
 from .registry import method
 
@@ -73,7 +73,7 @@ class UsageModel(Result):
     topup_bar: UsageBar | None = None
 
 
-method("usage.bars", params=Params, result=UsageModel,
+method("usage.bars", params=MethodParams, result=UsageModel,
        doc="Two-bar dollar usage view shared by /usage, /topup and /subscription; fail-open to unavailable.")
 
 
@@ -188,7 +188,7 @@ class BillingStateResult(Result):
     usage: UsageModel | None = None
 
 
-method("billing.state", params=Params, result=BillingStateResult,
+method("billing.state", params=MethodParams, result=BillingStateResult,
        doc="Read-only billing view (no scope); the Nous free tier is answered locally without a portal call.")
 
 
@@ -242,11 +242,11 @@ class SubscriptionStateResult(Result):
     usage: UsageModel | None = None
 
 
-method("subscription.state", params=Params, result=SubscriptionStateResult,
+method("subscription.state", params=MethodParams, result=SubscriptionStateResult,
        doc="Current plan, tier catalog and usage for the picker; fail-open when logged out.")
 
 
-class SubscriptionPreviewParams(Params):
+class SubscriptionPreviewParams(MethodParams):
     subscription_type_id: str | None = None
 
 
@@ -275,7 +275,7 @@ method("subscription.preview", params=SubscriptionPreviewParams, result=Subscrip
        doc="Chargeless quote of what a plan change would do (billing:manage).")
 
 
-class SubscriptionChangeParams(Params):
+class SubscriptionChangeParams(MethodParams):
     """Either a target tier (downgrade / same-price change) or ``cancel`` (period-end cancellation)."""
 
     subscription_type_id: str | None = None
@@ -296,11 +296,11 @@ class SubscriptionResumeResult(BillingPendingChangeResult):
 
 method("subscription.change", params=SubscriptionChangeParams, result=SubscriptionChangeResult,
        doc="Schedule a downgrade / same-price change or a period-end cancellation.")
-method("subscription.resume", params=Params, result=SubscriptionResumeResult,
+method("subscription.resume", params=MethodParams, result=SubscriptionResumeResult,
        doc="Clear a scheduled downgrade / cancellation (re-enables recurring spend).")
 
 
-class SubscriptionUpgradeParams(Params):
+class SubscriptionUpgradeParams(MethodParams):
     subscription_type_id: str | None = None
     idempotency_key: str | None = None
 
@@ -324,7 +324,7 @@ method("subscription.upgrade", params=SubscriptionUpgradeParams, result=Subscrip
 # ── billing.charge / charge_status / auto_reload / step_up ───────────────────────────────────
 
 
-class BillingChargeParams(Params):
+class BillingChargeParams(MethodParams):
     amount_usd: float | str | None = None
     idempotency_key: str | None = None
 
@@ -340,7 +340,7 @@ method("billing.charge", params=BillingChargeParams, result=BillingChargeResult,
        doc="Start a one-off top-up charge (billing:manage, idempotent).")
 
 
-class BillingChargeStatusParams(Params):
+class BillingChargeStatusParams(MethodParams):
     charge_id: str | None = None
 
 
@@ -357,7 +357,7 @@ method("billing.charge_status", params=BillingChargeStatusParams, result=Billing
        doc="Poll one charge by id.")
 
 
-class BillingAutoReloadParams(Params):
+class BillingAutoReloadParams(MethodParams):
     enabled: bool | None = None
     threshold: float | str | None = None
     top_up_amount: float | str | None = None
@@ -371,7 +371,7 @@ method("billing.auto_reload", params=BillingAutoReloadParams, result=BillingMuta
        doc="Enable/disable auto top-up with its threshold and reload amount (billing:manage).")
 
 
-class BillingStepUpParams(Params):
+class BillingStepUpParams(MethodParams):
     session_id: str | None = None
 
 
@@ -411,11 +411,11 @@ class DelegationStatusResult(Result):
     max_concurrent_children: int
 
 
-method("delegation.status", params=Params, result=DelegationStatusResult,
+method("delegation.status", params=MethodParams, result=DelegationStatusResult,
        doc="Running subagent tree plus the spawn pause flag and limits.")
 
 
-class DelegationPauseParams(Params):
+class DelegationPauseParams(MethodParams):
     paused: bool = True
 
 
@@ -524,7 +524,7 @@ method("message.react", params=MessageReactParams, result=MessageReactResult,
 # ── pets: generate / hatch / cancel / status ──────────────────────────────────────────────────
 
 
-class PetCancelParams(Params):
+class PetCancelParams(MethodParams):
     token: str | None = None
 
 
@@ -549,11 +549,11 @@ class PetGenerateStatusResult(Result):
     providers: list[PetGenProvider]
 
 
-method("pet.generate.status", params=Params, result=PetGenerateStatusResult,
+method("pet.generate.status", params=MethodParams, result=PetGenerateStatusResult,
        doc="Whether pet generation is possible (a reference-capable image backend) and which providers.")
 
 
-class PetGenerateParams(Params):
+class PetGenerateParams(MethodParams):
     """``prompt`` or a ``referenceImage`` data URL is required (the handler answers 4004 without one)."""
 
     prompt: str | None = None
@@ -578,7 +578,7 @@ method("pet.generate", params=PetGenerateParams, result=PetGenerateResult,
        doc="Candidate base looks for a new pet (draft step); drafts also stream via pet.generate.progress.")
 
 
-class PetHatchParams(Params):
+class PetHatchParams(MethodParams):
     token: str
     name: str
     cancelToken: str | None = None  # noqa: N815 - wire key
@@ -624,7 +624,7 @@ method("pet.hatch", params=PetHatchParams, result=PetHatchResult,
 # ── project.facts ─────────────────────────────────────────────────────────────────────────────
 
 
-class ProjectFactsParams(Params):
+class ProjectFactsParams(MethodParams):
     cwd: str | None = None
 
 

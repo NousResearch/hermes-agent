@@ -10,12 +10,12 @@ from __future__ import annotations
 
 from pydantic import Field
 
-from .base import JsonValue, Params, Result, WireEnum
+from .base import JsonValue, MethodParams, Params, Result, WireEnum
 from .common import SessionLiveInfo
 from .registry import method
 
 
-class _SessionScoped(Params):
+class _SessionScoped(MethodParams):
     """Handlers that look a live session up with ``_sessions.get(params.get("session_id"))``: an
     absent / unknown id falls back to the launch profile's config, so it is never required."""
 
@@ -71,7 +71,7 @@ class ToolsAction(WireEnum):
     disable = "disable"
 
 
-class ToolsConfigureParams(Params):
+class ToolsConfigureParams(MethodParams):
     """``names`` are toolset keys or ``server:tool`` MCP targets; with ``session_id`` the live session's
     profile is authoritative and its agent is rebuilt."""
 
@@ -96,7 +96,7 @@ method("tools.configure", params=ToolsConfigureParams, result=ToolsConfigureResu
 # ── reload ────────────────────────────────────────────────────────────────────────────────────
 
 
-class ReloadEnvParams(Params):
+class ReloadEnvParams(MethodParams):
     pass
 
 
@@ -108,7 +108,7 @@ method("reload.env", params=ReloadEnvParams, result=ReloadEnvResult,
        doc="Re-read ~/.hermes/.env (CLI /reload parity); built agents keep their pool until /new.")
 
 
-class ReloadMcpParams(Params):
+class ReloadMcpParams(MethodParams):
     """Without ``confirm`` the handler may answer ``confirm_required`` (per ``approvals.mcp_reload_confirm``);
     ``always`` persists the opt-out; ``rev`` is the config revision the caller wants loaded (coalescing)."""
 
@@ -148,7 +148,7 @@ class SkillsAction(WireEnum):
     inspect = "inspect"
 
 
-class SkillsManageParams(Params):
+class SkillsManageParams(MethodParams):
     """``query`` is the search text / hub identifier / browse page (digits); ``page`` / ``page_size``
     apply to ``browse``."""
 
@@ -203,7 +203,7 @@ method("skills.manage", params=SkillsManageParams, result=SkillsManageResult,
        doc="Skills hub backend: list the profile's skills or search / browse / inspect / install from the hub.")
 
 
-class SkillsReloadParams(Params):
+class SkillsReloadParams(MethodParams):
     pass
 
 
@@ -245,7 +245,7 @@ method("skills.reload", params=SkillsReloadParams, result=SkillsReloadResult,
 # ── learning graph (/journey) ─────────────────────────────────────────────────────────────────
 
 
-class LearningFramesParams(Params):
+class LearningFramesParams(MethodParams):
     cols: int | None = None
     rows: int | None = None
     frames: int | None = None
@@ -313,7 +313,7 @@ method("learning.frames", params=LearningFramesParams, result=LearningFramesResu
        doc="Pre-render the /journey timeline (frames + legend/summary) so the TUI walks it locally.")
 
 
-class LearningNodeParams(Params):
+class LearningNodeParams(MethodParams):
     id: str | None = None
 
 
@@ -361,7 +361,7 @@ class McpCatalogResult(Result):
     servers: list[McpCatalogEntry]
 
 
-method("mcp.catalog", params=Params, result=McpCatalogResult,
+method("mcp.catalog", params=MethodParams, result=McpCatalogResult,
        doc="Curated MCP presets with per-profile installed/enabled state and the env keys each needs.")
 
 
@@ -482,7 +482,7 @@ class McpServersListResult(Result):
     servers: list[McpServerSummary]
 
 
-method("mcp.servers.list", params=Params, result=McpServersListResult,
+method("mcp.servers.list", params=MethodParams, result=McpServersListResult,
        doc="Configured MCP servers for the (scoped) profile, secrets redacted to env-key names.")
 
 
@@ -510,11 +510,11 @@ class McpServersStatusResult(Result):
     checked_at: int
 
 
-method("mcp.servers.status", params=Params, result=McpServersStatusResult,
+method("mcp.servers.status", params=MethodParams, result=McpServersStatusResult,
        doc="Cached runtime state per configured server; never connects, probes, or starts auth.")
 
 
-class McpServerNameParams(Params):
+class McpServerNameParams(MethodParams):
     name: str
 
 
@@ -656,7 +656,7 @@ method("mcp.servers.oauth.callback", params=McpOauthCallbackParams, result=McpOa
 # ── plugins ───────────────────────────────────────────────────────────────────────────────────
 
 
-class PluginsListParams(Params):
+class PluginsListParams(MethodParams):
     pass
 
 
@@ -681,7 +681,7 @@ class PluginsAction(WireEnum):
     update = "update"
 
 
-class PluginsManageParams(Params):
+class PluginsManageParams(MethodParams):
     """``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``
     (+ ``force``, ``enable``, ``ref``); ``update``: ``name``."""
 

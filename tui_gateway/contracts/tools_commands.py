@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pydantic import Field
 
-from .base import Params, Result, WireEnum
+from .base import MethodParams, Params, Result, WireEnum
 from .registry import method
 
 
@@ -22,7 +22,7 @@ class BatteryCategory(WireEnum):
     dim = "dim"
 
 
-class SystemBatteryParams(Params):
+class SystemBatteryParams(MethodParams):
     pass
 
 
@@ -40,7 +40,7 @@ method("system.battery", params=SystemBatteryParams, result=SystemBatteryResult,
 # ── process.* / agents.list ───────────────────────────────────────────────────────────────────
 
 
-class ProcessStopParams(Params):
+class ProcessStopParams(MethodParams):
     session_id: str | None = None
 
 
@@ -52,7 +52,7 @@ method("process.stop", params=ProcessStopParams, result=ProcessStopResult,
        doc="Kill every background process in the registry (``/stop``), answering the count killed.")
 
 
-class AgentsListParams(Params):
+class AgentsListParams(MethodParams):
     pass
 
 
@@ -71,7 +71,7 @@ method("agents.list", params=AgentsListParams, result=AgentsListResult,
        doc="Registry-wide background process summary for ``/agents``.")
 
 
-class ProcessListParams(Params):
+class ProcessListParams(MethodParams):
     session_id: str
 
 
@@ -104,7 +104,7 @@ method("process.list", params=ProcessListParams, result=ProcessListResult,
        doc="Background processes owned by the caller's session (desktop status stack poll).")
 
 
-class ProcessKillParams(Params):
+class ProcessKillParams(MethodParams):
     session_id: str
     process_id: str
 
@@ -136,7 +136,7 @@ method("process.kill", params=ProcessKillParams, result=ProcessKillResult,
 # ── shell.exec / cli.exec ─────────────────────────────────────────────────────────────────────
 
 
-class ShellExecParams(Params):
+class ShellExecParams(MethodParams):
     command: str = ""
 
 
@@ -150,7 +150,7 @@ method("shell.exec", params=ShellExecParams, result=ShellExecResult,
        doc="Run a safe (non-dangerous) shell command captured for ``!cmd`` / inline substitution.")
 
 
-class CliExecParams(Params):
+class CliExecParams(MethodParams):
     argv: list[str] = Field(default_factory=list)
     timeout: int = 240
 
@@ -169,7 +169,7 @@ method("cli.exec", params=CliExecParams, result=CliExecResult,
 # ── command catalog / resolve / dispatch / slash.exec ─────────────────────────────────────────
 
 
-class CommandsCatalogParams(Params):
+class CommandsCatalogParams(MethodParams):
     session_id: str | None = None
 
 
@@ -209,7 +209,7 @@ method("commands.catalog", params=CommandsCatalogParams, result=CommandsCatalogR
        doc="Categorized slash metadata (registry, quick, plugin, skill) for completion menus.")
 
 
-class CommandResolveParams(Params):
+class CommandResolveParams(MethodParams):
     name: str | None = None
 
 
@@ -234,7 +234,7 @@ class DispatchType(WireEnum):
     prefill = "prefill"
 
 
-class CommandDispatchParams(Params):
+class CommandDispatchParams(MethodParams):
     name: str
     arg: str | None = None
     session_id: str | None = None
@@ -258,7 +258,7 @@ method("command.dispatch", params=CommandDispatchParams, result=CommandDispatchR
        doc="Run a quick/plugin/bundle/skill/built-in slash command and answer a structured directive.")
 
 
-class SlashExecParams(Params):
+class SlashExecParams(MethodParams):
     session_id: str
     command: str
 
@@ -285,7 +285,7 @@ method("slash.exec", params=SlashExecParams, result=SlashExecResult,
 # ── insights.get / config.show ────────────────────────────────────────────────────────────────
 
 
-class InsightsGetParams(Params):
+class InsightsGetParams(MethodParams):
     days: int | None = None
 
 
@@ -299,7 +299,7 @@ method("insights.get", params=InsightsGetParams, result=InsightsGetResult,
        doc="Session/message counts over the last ``days`` for the (optionally scoped) profile store.")
 
 
-class ConfigShowParams(Params):
+class ConfigShowParams(MethodParams):
     pass
 
 
@@ -319,7 +319,7 @@ method("config.show", params=ConfigShowParams, result=ConfigShowResult,
 # ── rollback.* ────────────────────────────────────────────────────────────────────────────────
 
 
-class RollbackListParams(Params):
+class RollbackListParams(MethodParams):
     session_id: str
 
 
@@ -338,7 +338,7 @@ method("rollback.list", params=RollbackListParams, result=RollbackListResult,
        doc="Checkpoints for the session's cwd; ``enabled: false`` when checkpointing is off.")
 
 
-class RollbackRestoreParams(Params):
+class RollbackRestoreParams(MethodParams):
     session_id: str
     hash: str
     file_path: str | None = None
@@ -365,7 +365,7 @@ method("rollback.restore", params=RollbackRestoreParams, result=RollbackRestoreR
        doc="Restore the working tree (or one file) to a checkpoint by hash or 1-based index.")
 
 
-class RollbackDiffParams(Params):
+class RollbackDiffParams(MethodParams):
     session_id: str
     hash: str
 
@@ -391,7 +391,7 @@ class CronAction(WireEnum):
     resume = "resume"
 
 
-class CronManageParams(Params):
+class CronManageParams(MethodParams):
     action: CronAction = CronAction.list
     name: str | None = None
     include_disabled: bool | str | None = None
@@ -490,7 +490,7 @@ class BrowserAction(WireEnum):
     disconnect = "disconnect"
 
 
-class BrowserManageParams(Params):
+class BrowserManageParams(MethodParams):
     action: BrowserAction = BrowserAction.status
     url: str | None = None
     session_id: str | None = None

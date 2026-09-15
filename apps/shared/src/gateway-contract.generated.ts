@@ -112,7 +112,7 @@ export interface BillingChargeStatusResult {
   settled_at: string | null
   reason: string | null
 }
-/** Inbound client→server method params / outbound server-request params; unknown keys reject. */
+/** Top-level params of a client→server method (``registry.method`` requires this base). */
 export interface BillingStateParams {
   profile?: string | null
 }
@@ -279,7 +279,6 @@ export interface BotRelayReplyResult {
 }
 /** One Desktop roster row normalized by ``tools/bot_relay.py::_normalize_roster_row``. */
 export interface RelayAgentRow {
-  profile: string | null
   handle: string | null
   connection_id: string | null
   connection_label: string | null
@@ -542,13 +541,11 @@ export interface ConfigShowResult {
 }
 /** The card's answer: per-target outcomes and an optional Continue (``settled_by: "continue"``). Settlement is derived from target states afterwards. */
 export interface ConnectionAnswer {
-  profile: string | null
   targets: ConnectionAnswerTarget[]
   settled_by: ConnectionSettleReason | null
 }
 /** One row's answer from the card. ``status`` is what the card observed for that row (``tools/connectors/mcp.py::_OUTCOME_STATES`` maps it onto a target state); ``state`` is the older spelling of the same field and one of the two is present. */
 export interface ConnectionAnswerTarget {
-  profile: string | null
   name: string
   status: string | null
   state: string | null
@@ -719,7 +716,7 @@ export interface DelegationPauseParams {
 export interface DelegationPauseResult {
   paused: boolean
 }
-/** Inbound client→server method params / outbound server-request params; unknown keys reject. */
+/** Top-level params of a client→server method (``registry.method`` requires this base). */
 export interface DelegationStatusParams {
   profile?: string | null
 }
@@ -775,14 +772,14 @@ export interface FileAttachResult {
   ref_text: string
   uploaded: boolean
 }
-/** Inbound client→server method params / outbound server-request params; unknown keys reject. */
+/** Top-level params of a client→server method (``registry.method`` requires this base). */
 export interface FreeTierAckNoticeParams {
   profile?: string | null
 }
 export interface FreeTierAckNoticeResult {
   acked: boolean
 }
-/** Inbound client→server method params / outbound server-request params; unknown keys reject. */
+/** Top-level params of a client→server method (``registry.method`` requires this base). */
 export interface FreeTierProvisionParams {
   profile?: string | null
 }
@@ -794,7 +791,7 @@ export interface FreeTierProvisionResult {
   retryable: boolean | null
   retry_after: number | null
 }
-/** Inbound client→server method params / outbound server-request params; unknown keys reject. */
+/** Top-level params of a client→server method (``registry.method`` requires this base). */
 export interface FreeTierStatusParams {
   profile?: string | null
 }
@@ -889,21 +886,21 @@ export interface GroupsCapabilitiesResult {
 }
 /** A roster row as the client proposes it; ``validate_roster`` owns the exact rules. */
 export interface RoomMemberInput {
-  profile: string
   member_id: string
+  profile: string
   handle: string
   display_name: string | null
   target: RoomMemberInputTargetLocal | RoomMemberInputTargetPeer | null
 }
 export interface RoomMemberInputTargetLocal {
-  profile: string
   kind: 'local'
+  profile: string
 }
 export interface RoomMemberInputTargetPeer {
-  profile: string
   kind: 'peer'
   peer_id: string
   installation_id: string
+  profile: string
   capability_digest: string
 }
 export interface GroupsCreateParams {
@@ -1047,7 +1044,6 @@ export interface GroupsPeerInviteResult {
 }
 /** Inbound RoomLink catalog; it becomes a gateway peer catalog before probing. */
 export interface RoomLinkCatalogInput {
-  profile: string | null
   installation_id: string
   protocol_versions: number[]
   link_modes: string[]
@@ -1124,7 +1120,6 @@ export interface GroupsReplicaStateResult {
 }
 /** Inbound replay page from a peer before replica persistence. */
 export interface GroupsLogInput {
-  profile: string | null
   events: RoomEventInput[]
   cursor: number
   latest_seq: number
@@ -1132,7 +1127,6 @@ export interface GroupsLogInput {
   authority: RoomAuthority
 }
 export interface RoomEventInput {
-  profile: string | null
   room_id: string
   seq: number
   event_id: string
@@ -1144,7 +1138,6 @@ export interface RoomEventInput {
   idempotent: boolean
 }
 export interface RoomActorInput {
-  profile: string | null
   kind: 'user' | 'member' | 'gateway' | 'system'
   id: string
   display_name: string | null
@@ -1184,7 +1177,6 @@ export interface GroupsRetryResult {
 }
 /** ``HostedRoomService.send`` accepts exactly the Discussion ``message.user`` payload. */
 export interface GroupsSendPayload {
-  profile: string | null
   text: string
   thread_id: string
 }
@@ -1479,7 +1471,7 @@ export interface LlmOneshotParams {
 export interface LlmOneshotResult {
   text: string
 }
-/** Inbound client→server method params / outbound server-request params; unknown keys reject. */
+/** Top-level params of a client→server method (``registry.method`` requires this base). */
 export interface McpCatalogParams {
   profile?: string | null
 }
@@ -1496,26 +1488,22 @@ export interface McpCatalogResult {
 }
 /** ``tools.mcp_tool_sampling.ElicitationHandler`` accepts this approval policy. */
 export interface McpElicitationConfig {
-  profile: string | null
   enabled: boolean | null
   timeout: number | null
 }
 /** ``tools.mcp_tool_errors._resolve_identity_header`` accepts these fields. */
 export interface McpIdentityHeaderConfig {
-  profile: string | null
   name: string
   value_from: string | null
   value: string | null
 }
 /** ``tools.mcp_tool_common._get_lifecycle_seconds`` reads these stdio recycle limits. */
 export interface McpLifecycleConfig {
-  profile: string | null
   idle_timeout_seconds: number | null
   max_lifetime_seconds: number | null
 }
 /** ``tools.mcp_oauth*`` reads this OAuth client configuration. */
 export interface McpOauthConfig {
-  profile: string | null
   client_id: string | null
   client_secret: string | null
   client_metadata_url: string | null
@@ -1533,7 +1521,6 @@ export interface McpOauthConfig {
 }
 /** ``tools.mcp_tool_sampling.SamplingHandler`` accepts these server-request limits. */
 export interface McpSamplingConfig {
-  profile: string | null
   enabled: boolean | null
   max_rpm: number | null
   timeout: number | null
@@ -1545,7 +1532,6 @@ export interface McpSamplingConfig {
 }
 /** Closed configuration accepted by ``tools.mcp_tool_config`` and transport helpers. */
 export interface McpServerConfig {
-  profile: string | null
   command: string | null
   args: string[] | null
   env: Record<string, string> | null
@@ -1578,7 +1564,6 @@ export interface McpServerConfig {
 }
 /** ``tools.mcp_tool_registration`` accepts this tool-filter and utility policy. */
 export interface McpToolsConfig {
-  profile: string | null
   include: string[] | null
   exclude: string[] | null
   resources: boolean | null
@@ -1610,7 +1595,7 @@ export interface McpServersAddResult {
   name: string
   server: McpServerSummary
 }
-/** Inbound client→server method params / outbound server-request params; unknown keys reject. */
+/** Top-level params of a client→server method (``registry.method`` requires this base). */
 export interface McpServersListParams {
   profile?: string | null
 }
@@ -1693,7 +1678,7 @@ export interface McpServersSetApiKeyResult {
   env_var: string
   server: McpServerSummary
 }
-/** Inbound client→server method params / outbound server-request params; unknown keys reject. */
+/** Top-level params of a client→server method (``registry.method`` requires this base). */
 export interface McpServersStatusParams {
   profile?: string | null
 }
@@ -1907,7 +1892,7 @@ export interface PetCellsResult {
   rows: number | null
   placeholder: string[] | null
 }
-/** Inbound client→server method params / outbound server-request params; unknown keys reject. */
+/** Top-level params of a client→server method (``registry.method`` requires this base). */
 export interface PetDisableParams {
   profile?: string | null
 }
@@ -1958,7 +1943,7 @@ export interface PetGenerateResult {
   token: string
   drafts: PetDraft[]
 }
-/** Inbound client→server method params / outbound server-request params; unknown keys reject. */
+/** Top-level params of a client→server method (``registry.method`` requires this base). */
 export interface PetGenerateStatusParams {
   profile?: string | null
 }
@@ -2030,7 +2015,7 @@ export interface PetInfoResult {
   scale: number | null
   stateRows: string[] | null
 }
-/** Inbound client→server method params / outbound server-request params; unknown keys reject. */
+/** Top-level params of a client→server method (``registry.method`` requires this base). */
 export interface PetInfoMetaParams {
   profile?: string | null
 }
@@ -2385,7 +2370,6 @@ export interface ProfilesListResult {
 }
 /** ``tui_gateway/onboarding_personalization.py`` — the facts agreed during onboarding. */
 export interface OnboardingAnswers {
-  profile: string | null
   name: string | null
   context: string | null
   theme: string | null
@@ -2540,7 +2524,7 @@ export interface ProjectsGetParams {
 export interface ProjectsGetResult {
   project: ProjectInfo
 }
-/** Inbound client→server method params / outbound server-request params; unknown keys reject. */
+/** Top-level params of a client→server method (``registry.method`` requires this base). */
 export interface ProjectsListParams {
   profile?: string | null
 }
@@ -2620,13 +2604,11 @@ export interface ProjectsProjectSessionsResult {
   project: ProjectTreeNode | null
 }
 export interface RecordRepoItem {
-  profile: string | null
   root: string
   label: string | null
 }
 /** The policy the desktop scanned under (short or ``repo_scan_*`` long keys both accepted). */
 export interface RepoDiscoveryPolicyParams {
-  profile: string | null
   enabled: boolean | null
   roots: string[] | null
   exclude_paths: string[] | null
@@ -3098,7 +3080,6 @@ export interface SessionContextBreakdownResult {
 }
 /** ``subgoal.add`` reads ``text``; ``subgoal.remove`` reads the 1-based ``index``. Strict: a string or float index is a client bug, not a value to coerce. */
 export interface SessionControlArgs {
-  profile: string | null
   text: string | null
   index: number | null
 }
@@ -3220,7 +3201,6 @@ export interface SessionControlReadResult {
 }
 /** One create-time transcript row (``session_history.py:246``); ``text`` is the legacy alias of ``content`` and only ``display_kind: "hidden"`` is accepted. */
 export interface SeedMessage {
-  profile: string | null
   role: string
   content: string | null
   text: string | null
@@ -3573,7 +3553,7 @@ export interface SetupRuntimeCheckResult {
   free_tier: boolean | null
   profile: string | null
 }
-/** Inbound client→server method params / outbound server-request params; unknown keys reject. */
+/** Top-level params of a client→server method (``registry.method`` requires this base). */
 export interface SetupStatusParams {
   profile?: string | null
 }
@@ -3833,7 +3813,7 @@ export interface SubscriptionPreviewResult {
   amount_due_now_cents: number | null
   effective_at: string | null
 }
-/** Inbound client→server method params / outbound server-request params; unknown keys reject. */
+/** Top-level params of a client→server method (``registry.method`` requires this base). */
 export interface SubscriptionResumeParams {
   profile?: string | null
 }
@@ -3848,7 +3828,7 @@ export interface SubscriptionResumeResult {
   code: string | null
   recovery: string | null
 }
-/** Inbound client→server method params / outbound server-request params; unknown keys reject. */
+/** Top-level params of a client→server method (``registry.method`` requires this base). */
 export interface SubscriptionStateParams {
   profile?: string | null
 }
@@ -3989,7 +3969,7 @@ export interface ToolsetsListParams {
 export interface ToolsetsListResult {
   toolsets: ToolsetRow[]
 }
-/** Inbound client→server method params / outbound server-request params; unknown keys reject. */
+/** Top-level params of a client→server method (``registry.method`` requires this base). */
 export interface UsageBarsParams {
   profile?: string | null
 }
@@ -4020,7 +4000,7 @@ export interface VaultAddParams {
 export interface VaultAddResult {
   id: string
 }
-/** Inbound client→server method params / outbound server-request params; unknown keys reject. */
+/** Top-level params of a client→server method (``registry.method`` requires this base). */
 export interface VaultListParams {
   profile?: string | null
 }
@@ -4062,7 +4042,7 @@ export interface VaultSourceSetResult {
   name: string
   enabled: boolean
 }
-/** Inbound client→server method params / outbound server-request params; unknown keys reject. */
+/** Top-level params of a client→server method (``registry.method`` requires this base). */
 export interface VaultSourcesParams {
   profile?: string | null
 }
@@ -4248,7 +4228,6 @@ export interface WakeStopResult {
 }
 /** Closed payload from ``tools.approval`` after ``_approval_request_payload`` redacts the command and derives ``choices``. */
 export interface ApprovalParams {
-  profile: string | null
   session_id: string
   request_id: string
   command: string
@@ -4266,14 +4245,12 @@ export interface ApprovalResult {
 }
 /** Multiple questions. ``answers`` is ``None`` when first sent and carries locked answers only on a reconnect replay. */
 export interface ClarifyBatch {
-  profile: string | null
   session_id: string
   kind: 'batch'
   questions: ClarifyQuestion[]
   answers: Record<string, string> | null
 }
 export interface ClarifyQuestion {
-  profile: string | null
   qid: string
   question: string
   choices: string[] | null
@@ -4281,7 +4258,6 @@ export interface ClarifyQuestion {
 }
 /** One clarify question; ``answer: ''`` is the client's explicit skip. */
 export interface ClarifySingle {
-  profile: string | null
   session_id: string
   kind: 'single'
   question: string
@@ -4316,7 +4292,6 @@ export type PreviewActAction =
 export type PreviewScrollTo = 'top' | 'bottom'
 /** Closed DOM-operation shape from ``tools.drive_preview_tool`` and ``tools.annotate_preview_tool``. */
 export interface PreviewActParams {
-  profile: string | null
   session_id: string
   action: PreviewActAction
   ref: string | null
@@ -4334,7 +4309,6 @@ export interface PreviewActResult {
   value: string
 }
 export interface PreviewReadParams {
-  profile: string | null
   session_id: string
   start: number | null
   count: number | null
@@ -4345,13 +4319,11 @@ export interface PreviewReadResult {
 }
 /** ``tools.skills_tool_setup._capture_required_environment_variables`` supplies these keys. */
 export interface SecretMetadata {
-  profile: string | null
   skill_name: string
   help: string | null
   required_for: string | null
 }
 export interface SecretParams {
-  profile: string | null
   session_id: string
   env_var: string
   prompt: string
@@ -4363,7 +4335,6 @@ export interface SecretResult {
 }
 /** Original command, redacted server-side before any password-injection rewrite. */
 export interface SudoParams {
-  profile: string | null
   session_id: string
   command: string
 }
@@ -4372,7 +4343,6 @@ export interface SudoResult {
   value: string
 }
 export interface TerminalReadParams {
-  profile: string | null
   session_id: string
   start: number | null
   count: number | null
@@ -4385,7 +4355,6 @@ export type TourAction = 'targets' | 'show' | 'start' | 'next' | 'prev' | 'stop'
 export type TourSide = 'top' | 'right' | 'bottom' | 'left'
 /** Closed DOM step from ``tools.tour_tool``'s ``_STEP_SCHEMA``. */
 export interface TourStep {
-  profile: string | null
   selector: string | null
   title: string | null
   text: string | null
@@ -4394,7 +4363,6 @@ export interface TourStep {
 export type TourSurface = 'app' | 'preview'
 /** Closed guided-tour DOM operation from ``tools.tour_tool``. */
 export interface TourParams {
-  profile: string | null
   session_id: string
   action: TourAction
   surface: TourSurface | null
@@ -4410,7 +4378,6 @@ export interface TourResult {
   value: string
 }
 export interface VaultCodeParams {
-  profile: string | null
   session_id: string
   site: string | null
   hint: string | null
@@ -4420,7 +4387,6 @@ export interface VaultCodeResult {
   value: string
 }
 export interface VaultSaveLoginParams {
-  profile: string | null
   session_id: string
   origin: string
   site: string
@@ -4430,7 +4396,6 @@ export interface VaultSaveLoginResult {
   value: string
 }
 export interface VaultUnlockPromptParams {
-  profile: string | null
   session_id: string
   backend: string
   display_name: string
@@ -4440,7 +4405,6 @@ export interface VaultUnlockPromptResult {
   value: string
 }
 export interface WindowReadParams {
-  profile: string | null
   session_id: string
 }
 /** The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges): ``''`` means skipped / declined. */

@@ -13,7 +13,7 @@ from typing import Literal
 
 from pydantic import Field, JsonValue
 
-from .base import Params, Result, WireEnum
+from .base import MethodParams, Params, Result, WireEnum
 from .common import SessionParams
 from .registry import method
 
@@ -91,7 +91,7 @@ class CompletionItemsResult(Result):
     items: list[CompletionItem]
 
 
-class CompletePathParams(Params):
+class CompletePathParams(MethodParams):
     """``word`` is the token under the cursor (``@`` prefix = context reference); ``cwd`` /
     ``session_id`` pick the directory the listing resolves against."""
 
@@ -104,7 +104,7 @@ method("complete.path", params=CompletePathParams, result=CompletionItemsResult,
        doc="Path / @-reference completions for the composer (files, folders, profiles, plugin providers).")
 
 
-class CompleteSlashParams(Params):
+class CompleteSlashParams(MethodParams):
     text: str = ""
 
 
@@ -119,7 +119,7 @@ method("complete.slash", params=CompleteSlashParams, result=CompleteSlashResult,
        doc="Ranked slash-command / skill completions for a ``/`` token.")
 
 
-class PasteCollapseParams(Params):
+class PasteCollapseParams(MethodParams):
     text: str = ""
 
 
@@ -133,7 +133,7 @@ method("paste.collapse", params=PasteCollapseParams, result=PasteCollapseResult,
        doc="Spill a large paste to a file and hand back the inline placeholder.")
 
 
-class ModelSaveKeyParams(Params):
+class ModelSaveKeyParams(MethodParams):
     slug: str
     api_key: str
     session_id: str = ""
@@ -147,7 +147,7 @@ method("model.save_key", params=ModelSaveKeyParams, result=ModelSaveKeyResult,
        doc="Save an API key for a provider and return its refreshed inventory row.")
 
 
-class ModelDisconnectParams(Params):
+class ModelDisconnectParams(MethodParams):
     slug: str
 
 
@@ -217,7 +217,7 @@ class ProfileRow(Result):
     has_avatar: bool
 
 
-class ProfilesListParams(Params):
+class ProfilesListParams(MethodParams):
     include_sessions: bool | str = True
 
 
@@ -232,7 +232,7 @@ method("profiles.list", params=ProfilesListParams, result=ProfilesListResult,
        doc="Roster of profiles with previews so a client paints without N follow-up calls.")
 
 
-class ProfilesCreateParams(Params):
+class ProfilesCreateParams(MethodParams):
     """``clone_from`` omitted = fresh profile + bundled skills; ``mirror_credentials`` defaults on
     so a headless bot has a provider."""
 
@@ -272,7 +272,7 @@ method("profiles.create", params=ProfilesCreateParams, result=ProfilesCreateResu
        doc="Create a profile (ws twin of POST /api/profiles), mirroring launch credentials by default.")
 
 
-class ProfileNameParams(Params):
+class ProfileNameParams(MethodParams):
     name: str
 
 
@@ -313,7 +313,7 @@ method("profiles.describe", params=ProfileNameParams, result=ProfilesDescribeRes
        doc="Everything the profile editor shows: soul, model pin, skills, toolsets, MCP servers.")
 
 
-class ProfilesConfigureParams(Params):
+class ProfilesConfigureParams(MethodParams):
     """Sections are independent; ``ui_meta_expected_revisions`` is a per-key compare-and-swap."""
 
     name: str | None = None
@@ -363,7 +363,7 @@ method("profiles.configure", params=ProfilesConfigureParams, result=ProfilesConf
        doc="Editor Save: apply any subset of a profile's sections and report each one.")
 
 
-class ProfilesSetAssetParams(Params):
+class ProfilesSetAssetParams(MethodParams):
     """``data`` is a data URL or bare base64 (PNG/JPEG/WebP, sniffed); ``clear`` deletes instead."""
 
     name: str
@@ -372,7 +372,7 @@ class ProfilesSetAssetParams(Params):
     clear: bool | str = False
 
 
-class ProfilesGetAssetParams(Params):
+class ProfilesGetAssetParams(MethodParams):
     name: str
     asset: str = "avatar"
 
@@ -413,7 +413,7 @@ class OnboardingAnswers(Params):
     connectors: list[str] = Field(default_factory=list)
 
 
-class ProfilesRememberOnboardingParams(Params):
+class ProfilesRememberOnboardingParams(MethodParams):
     answers: OnboardingAnswers
 
 
@@ -455,7 +455,7 @@ class VaultListResult(Result):
     items: list[VaultItem]
 
 
-method("vault.list", params=Params, result=VaultListResult,
+method("vault.list", params=MethodParams, result=VaultListResult,
        doc="Metadata-only listing across the local vault and every unlocked password manager.")
 
 
@@ -472,11 +472,11 @@ class VaultSourcesResult(Result):
     sources: list[VaultSource]
 
 
-method("vault.sources", params=Params, result=VaultSourcesResult,
+method("vault.sources", params=MethodParams, result=VaultSourcesResult,
        doc="Status of every login source (local vault + detected password managers).")
 
 
-class VaultSourceSetParams(Params):
+class VaultSourceSetParams(MethodParams):
     name: str
     enabled: bool
 
@@ -490,7 +490,7 @@ method("vault.source.set", params=VaultSourceSetParams, result=VaultSourceSetRes
        doc="Enable or disable an external password manager (disabling also locks it).")
 
 
-class VaultUnlockParams(Params):
+class VaultUnlockParams(MethodParams):
     """The master password is consumed by the manager CLI and never stored or logged."""
 
     name: str
@@ -506,7 +506,7 @@ method("vault.unlock", params=VaultUnlockParams, result=VaultUnlockResult,
        doc="Unlock a password manager for this session with its master password.")
 
 
-class VaultLockParams(Params):
+class VaultLockParams(MethodParams):
     name: str | None = None
 
 
@@ -518,7 +518,7 @@ method("vault.lock", params=VaultLockParams, result=VaultLockResult,
        doc="Forget a manager's session token (every manager when no name is given).")
 
 
-class VaultAddParams(Params):
+class VaultAddParams(MethodParams):
     """``secret`` goes straight into the encrypted store; the result carries only the new id."""
 
     kind: VaultKind
@@ -535,7 +535,7 @@ method("vault.add", params=VaultAddParams, result=VaultAddResult,
        doc="Add a login / payment / address item to the local vault.")
 
 
-class VaultRemoveParams(Params):
+class VaultRemoveParams(MethodParams):
     id: str
 
 
@@ -569,7 +569,7 @@ class ForeignSessionRow(Result):
     excerpt: str
 
 
-class SessionForeignListParams(Params):
+class SessionForeignListParams(MethodParams):
     source: ForeignSource | None = None
     offset: int = 0
     limit: int = 25
@@ -593,7 +593,7 @@ class ForeignTurn(Result):
     content: str
 
 
-class SessionForeignIdParams(Params):
+class SessionForeignIdParams(MethodParams):
     id: str
 
 

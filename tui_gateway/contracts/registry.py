@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from types import UnionType
 from typing import TypeAlias
 
-from .base import Params, Payload, Result
+from .base import MethodParams, Params, Payload, Result
 
 
 ResultType: TypeAlias = type[Result] | UnionType
@@ -54,7 +54,9 @@ def _declare(table: dict, entry) -> None:
     table[entry.name] = entry
 
 
-def method(name: str, *, params: type[Params], result: ResultType, doc: str = "") -> MethodContract:
+def method(name: str, *, params: type[MethodParams], result: ResultType, doc: str = "") -> MethodContract:
+    if not issubclass(params, MethodParams):
+        raise TypeError(f"{name}: method params must subclass MethodParams (carries the transport ``profile`` key)")
     entry = MethodContract(name, params, result, doc)
     _declare(METHODS, entry)
     return entry

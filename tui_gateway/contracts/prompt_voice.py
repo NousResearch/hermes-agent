@@ -7,7 +7,7 @@ and voice / wake-word control (``methods_voice.py``).
 
 from __future__ import annotations
 
-from .base import JsonValue, Params, Result, WireEnum
+from .base import JsonValue, MethodParams, Params, Result, WireEnum
 from .common import PendingApproval, SessionParams
 from .registry import method
 
@@ -237,7 +237,7 @@ method("preview.restart", params=PreviewRestartParams, result=TaskIdResult,
 # ── batch clarify locks / proxied request answers ───────────────────────────
 
 
-class ClarifyLockParams(Params):
+class ClarifyLockParams(MethodParams):
     request_id: str
     question_id: str
     # A client may select a structured choice; the handler serializes it for the lock store.
@@ -261,7 +261,7 @@ method("clarify.lock", params=ClarifyLockParams, result=ClarifyLockResult,
        doc="Lock one answer of a batch clarify request (editable until every question is locked).")
 
 
-class RequestAnswerParams(Params):
+class RequestAnswerParams(MethodParams):
     id: str  # the open server→client request id
     # JsonValue: methods_prompt.py:1133 relays arbitrary server-request results; desktop's
     # group-turns.ts:638 supplies the concrete clarify {answer} shape.
@@ -330,7 +330,7 @@ class VoiceToggleAction(WireEnum):
     tts = "tts"
 
 
-class VoiceToggleParams(Params):
+class VoiceToggleParams(MethodParams):
     action: VoiceToggleAction = VoiceToggleAction.status
 
 
@@ -357,7 +357,7 @@ class VoiceRecordAction(WireEnum):
     stop = "stop"
 
 
-class VoiceRecordParams(Params):
+class VoiceRecordParams(MethodParams):
     action: VoiceRecordAction = VoiceRecordAction.start
     session_id: str | None = None  # methods_voice.py:720 retains the prior event target when omitted
 
@@ -377,7 +377,7 @@ method("voice.record", params=VoiceRecordParams, result=VoiceRecordResult,
        doc="VAD-bounded push-to-talk; the transcript arrives as a voice.transcript event.")
 
 
-class VoiceTtsParams(Params):
+class VoiceTtsParams(MethodParams):
     text: str = ""  # methods_voice.py:767 defaults a missing text before rejecting it
 
 
@@ -392,7 +392,7 @@ method("voice.tts", params=VoiceTtsParams, result=VoiceTtsResult,
 # ── wake word ───────────────────────────────────────────────────────────────
 
 
-class WakeStartParams(Params):
+class WakeStartParams(MethodParams):
     """``surface`` names the caller ("tui" | "gui"); ``persist`` is the explicit gesture that also
     flips ``wake_word.enabled`` on; ``client_capture`` asks for PCM streamed via wake.feed."""
 
@@ -422,7 +422,7 @@ method("wake.start", params=WakeStartParams, result=WakeStartResult,
        doc="Arm the wake-word listener for the calling surface; refusals explain why.")
 
 
-class WakeStopParams(Params):
+class WakeStopParams(MethodParams):
     persist: bool | None = None
 
 
@@ -442,7 +442,7 @@ method("wake.stop", params=WakeStopParams, result=WakeStopResult,
        doc="Stop this surface's listener; persist also writes wake_word.enabled: false.")
 
 
-class WakeControlParams(Params):
+class WakeControlParams(MethodParams):
     pass
 
 
@@ -462,7 +462,7 @@ method("wake.resume", params=WakeControlParams, result=WakeResumeResult,
        doc="Reclaim the mic after a pause; no-op if the listener isn't armed.")
 
 
-class WakeStatusParams(Params):
+class WakeStatusParams(MethodParams):
     surface: str | None = None
     client_capture: bool | None = None
 
@@ -505,7 +505,7 @@ method("wake.status", params=WakeStatusParams, result=WakeStatusResult,
        doc="Everything a client needs to draw the wake-word state and decide whether to (re)arm.")
 
 
-class WakeFeedParams(Params):
+class WakeFeedParams(MethodParams):
     """``pcm`` carries base64 PCM; legacy ``pcm_b64`` is an optional alias (methods_voice.py:589)."""
 
     pcm: str | None = None

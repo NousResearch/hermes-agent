@@ -13301,7 +13301,7 @@
       },
       "BillingStateParams": {
         "additionalProperties": false,
-        "description": "Inbound client\u2192server method params / outbound server-request params; unknown keys reject.",
+        "description": "Top-level params of a client\u2192server method (``registry.method`` requires this base).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -14587,18 +14587,6 @@
         "additionalProperties": false,
         "description": "One Desktop roster row normalized by ``tools/bot_relay.py::_normalize_roster_row``.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "handle": {
             "anyOf": [
               {
@@ -16439,18 +16427,6 @@
         "additionalProperties": false,
         "description": "The card's answer: per-target outcomes and an optional Continue\n(``settled_by: \"continue\"``). Settlement is derived from target states afterwards.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "targets": {
             "items": {
               "$ref": "#/components/schemas/ConnectionAnswerTarget"
@@ -16477,18 +16453,6 @@
         "additionalProperties": false,
         "description": "One row's answer from the card. ``status`` is what the card observed for that row\n(``tools/connectors/mcp.py::_OUTCOME_STATES`` maps it onto a target state); ``state`` is the\nolder spelling of the same field and one of the two is present.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -17878,7 +17842,7 @@
       },
       "DelegationStatusParams": {
         "additionalProperties": false,
-        "description": "Inbound client\u2192server method params / outbound server-request params; unknown keys reject.",
+        "description": "Top-level params of a client\u2192server method (``registry.method`` requires this base).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -18239,7 +18203,7 @@
       },
       "FreeTierAckNoticeParams": {
         "additionalProperties": false,
-        "description": "Inbound client\u2192server method params / outbound server-request params; unknown keys reject.",
+        "description": "Top-level params of a client\u2192server method (``registry.method`` requires this base).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -18271,7 +18235,7 @@
       },
       "FreeTierProvisionParams": {
         "additionalProperties": false,
-        "description": "Inbound client\u2192server method params / outbound server-request params; unknown keys reject.",
+        "description": "Top-level params of a client\u2192server method (``registry.method`` requires this base).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -18356,7 +18320,7 @@
       },
       "FreeTierStatusParams": {
         "additionalProperties": false,
-        "description": "Inbound client\u2192server method params / outbound server-request params; unknown keys reject.",
+        "description": "Top-level params of a client\u2192server method (``registry.method`` requires this base).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -18877,12 +18841,12 @@
         "additionalProperties": false,
         "description": "A roster row as the client proposes it; ``validate_roster`` owns the exact rules.",
         "properties": {
-          "profile": {
-            "title": "Profile",
-            "type": "string"
-          },
           "member_id": {
             "title": "Member Id",
+            "type": "string"
+          },
+          "profile": {
+            "title": "Profile",
             "type": "string"
           },
           "handle": {
@@ -18918,8 +18882,8 @@
           }
         },
         "required": [
-          "profile",
           "member_id",
+          "profile",
           "handle"
         ],
         "title": "RoomMemberInput",
@@ -18928,19 +18892,19 @@
       "RoomMemberInputTargetLocal": {
         "additionalProperties": false,
         "properties": {
-          "profile": {
-            "title": "Profile",
-            "type": "string"
-          },
           "kind": {
             "const": "local",
             "title": "Kind",
             "type": "string"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
           }
         },
         "required": [
-          "profile",
-          "kind"
+          "kind",
+          "profile"
         ],
         "title": "RoomMemberInputTargetLocal",
         "type": "object"
@@ -18948,10 +18912,6 @@
       "RoomMemberInputTargetPeer": {
         "additionalProperties": false,
         "properties": {
-          "profile": {
-            "title": "Profile",
-            "type": "string"
-          },
           "kind": {
             "const": "peer",
             "title": "Kind",
@@ -18965,16 +18925,20 @@
             "title": "Installation Id",
             "type": "string"
           },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
           "capability_digest": {
             "title": "Capability Digest",
             "type": "string"
           }
         },
         "required": [
-          "profile",
           "kind",
           "peer_id",
           "installation_id",
+          "profile",
           "capability_digest"
         ],
         "title": "RoomMemberInputTargetPeer",
@@ -19895,18 +19859,6 @@
         "additionalProperties": false,
         "description": "Inbound RoomLink catalog; it becomes a gateway peer catalog before probing.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "installation_id": {
             "title": "Installation Id",
             "type": "string"
@@ -20340,18 +20292,6 @@
         "additionalProperties": false,
         "description": "Inbound replay page from a peer before replica persistence.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "events": {
             "items": {
               "$ref": "#/components/schemas/RoomEventInput"
@@ -20388,18 +20328,6 @@
       "RoomActorInput": {
         "additionalProperties": false,
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "kind": {
             "enum": [
               "user",
@@ -20449,18 +20377,6 @@
       "RoomEventInput": {
         "additionalProperties": false,
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "room_id": {
             "title": "Room Id",
             "type": "string"
@@ -20686,18 +20602,6 @@
         "additionalProperties": false,
         "description": "``HostedRoomService.send`` accepts exactly the Discussion ``message.user`` payload.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "text": {
             "title": "Text",
             "type": "string"
@@ -22701,7 +22605,7 @@
       },
       "McpCatalogParams": {
         "additionalProperties": false,
-        "description": "Inbound client\u2192server method params / outbound server-request params; unknown keys reject.",
+        "description": "Top-level params of a client\u2192server method (``registry.method`` requires this base).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -22780,18 +22684,6 @@
         "additionalProperties": false,
         "description": "``tools.mcp_tool_sampling.ElicitationHandler`` accepts this approval policy.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "enabled": {
             "anyOf": [
               {
@@ -22824,18 +22716,6 @@
         "additionalProperties": false,
         "description": "``tools.mcp_tool_errors._resolve_identity_header`` accepts these fields.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -22875,18 +22755,6 @@
         "additionalProperties": false,
         "description": "``tools.mcp_tool_common._get_lifecycle_seconds`` reads these stdio recycle limits.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "idle_timeout_seconds": {
             "anyOf": [
               {
@@ -22919,18 +22787,6 @@
         "additionalProperties": false,
         "description": "``tools.mcp_oauth*`` reads this OAuth client configuration.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "client_id": {
             "anyOf": [
               {
@@ -23107,18 +22963,6 @@
         "additionalProperties": false,
         "description": "``tools.mcp_tool_sampling.SamplingHandler`` accepts these server-request limits.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "enabled": {
             "anyOf": [
               {
@@ -23226,18 +23070,6 @@
         "additionalProperties": false,
         "description": "Closed configuration accepted by ``tools.mcp_tool_config`` and transport helpers.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "command": {
             "anyOf": [
               {
@@ -23606,18 +23438,6 @@
         "additionalProperties": false,
         "description": "``tools.mcp_tool_registration`` accepts this tool-filter and utility policy.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "include": {
             "anyOf": [
               {
@@ -23861,7 +23681,7 @@
       },
       "McpServersListParams": {
         "additionalProperties": false,
-        "description": "Inbound client\u2192server method params / outbound server-request params; unknown keys reject.",
+        "description": "Top-level params of a client\u2192server method (``registry.method`` requires this base).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -24384,7 +24204,7 @@
       },
       "McpServersStatusParams": {
         "additionalProperties": false,
-        "description": "Inbound client\u2192server method params / outbound server-request params; unknown keys reject.",
+        "description": "Top-level params of a client\u2192server method (``registry.method`` requires this base).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -25993,7 +25813,7 @@
       },
       "PetDisableParams": {
         "additionalProperties": false,
-        "description": "Inbound client\u2192server method params / outbound server-request params; unknown keys reject.",
+        "description": "Top-level params of a client\u2192server method (``registry.method`` requires this base).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -26276,7 +26096,7 @@
       },
       "PetGenerateStatusParams": {
         "additionalProperties": false,
-        "description": "Inbound client\u2192server method params / outbound server-request params; unknown keys reject.",
+        "description": "Top-level params of a client\u2192server method (``registry.method`` requires this base).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -26860,7 +26680,7 @@
       },
       "PetInfoMetaParams": {
         "additionalProperties": false,
-        "description": "Inbound client\u2192server method params / outbound server-request params; unknown keys reject.",
+        "description": "Top-level params of a client\u2192server method (``registry.method`` requires this base).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -29336,18 +29156,6 @@
         "additionalProperties": false,
         "description": "``tui_gateway/onboarding_personalization.py`` \u2014 the facts agreed during onboarding.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "name": {
             "anyOf": [
               {
@@ -30317,7 +30125,7 @@
       },
       "ProjectsListParams": {
         "additionalProperties": false,
-        "description": "Inbound client\u2192server method params / outbound server-request params; unknown keys reject.",
+        "description": "Top-level params of a client\u2192server method (``registry.method`` requires this base).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -30913,18 +30721,6 @@
       "RecordRepoItem": {
         "additionalProperties": false,
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "root": {
             "title": "Root",
             "type": "string"
@@ -30952,18 +30748,6 @@
         "additionalProperties": false,
         "description": "The policy the desktop scanned under (short or ``repo_scan_*`` long keys both accepted).",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "enabled": {
             "anyOf": [
               {
@@ -34385,18 +34169,6 @@
         "additionalProperties": false,
         "description": "``subgoal.add`` reads ``text``; ``subgoal.remove`` reads the 1-based ``index``. Strict: a\nstring or float index is a client bug, not a value to coerce.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "text": {
             "anyOf": [
               {
@@ -35122,18 +34894,6 @@
         "additionalProperties": false,
         "description": "One create-time transcript row (``session_history.py:246``); ``text`` is the legacy alias\nof ``content`` and only ``display_kind: \"hidden\"`` is accepted.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "role": {
             "title": "Role",
             "type": "string"
@@ -37565,7 +37325,7 @@
       },
       "SetupStatusParams": {
         "additionalProperties": false,
-        "description": "Inbound client\u2192server method params / outbound server-request params; unknown keys reject.",
+        "description": "Top-level params of a client\u2192server method (``registry.method`` requires this base).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -39428,7 +39188,7 @@
       },
       "SubscriptionResumeParams": {
         "additionalProperties": false,
-        "description": "Inbound client\u2192server method params / outbound server-request params; unknown keys reject.",
+        "description": "Top-level params of a client\u2192server method (``registry.method`` requires this base).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -39558,7 +39318,7 @@
       },
       "SubscriptionStateParams": {
         "additionalProperties": false,
-        "description": "Inbound client\u2192server method params / outbound server-request params; unknown keys reject.",
+        "description": "Top-level params of a client\u2192server method (``registry.method`` requires this base).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -40597,7 +40357,7 @@
       },
       "UsageBarsParams": {
         "additionalProperties": false,
-        "description": "Inbound client\u2192server method params / outbound server-request params; unknown keys reject.",
+        "description": "Top-level params of a client\u2192server method (``registry.method`` requires this base).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -40832,7 +40592,7 @@
       },
       "VaultListParams": {
         "additionalProperties": false,
-        "description": "Inbound client\u2192server method params / outbound server-request params; unknown keys reject.",
+        "description": "Top-level params of a client\u2192server method (``registry.method`` requires this base).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -41079,7 +40839,7 @@
       },
       "VaultSourcesParams": {
         "additionalProperties": false,
-        "description": "Inbound client\u2192server method params / outbound server-request params; unknown keys reject.",
+        "description": "Top-level params of a client\u2192server method (``registry.method`` requires this base).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -42313,18 +42073,6 @@
         "additionalProperties": false,
         "description": "Closed payload from ``tools.approval`` after ``_approval_request_payload`` redacts the\ncommand and derives ``choices``.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "session_id": {
             "title": "Session Id",
             "type": "string"
@@ -42442,18 +42190,6 @@
         "additionalProperties": false,
         "description": "Multiple questions. ``answers`` is ``None`` when first sent and carries locked answers only\non a reconnect replay.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "session_id": {
             "title": "Session Id",
             "type": "string"
@@ -42497,18 +42233,6 @@
       "ClarifyQuestion": {
         "additionalProperties": false,
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "qid": {
             "title": "Qid",
             "type": "string"
@@ -42549,18 +42273,6 @@
         "additionalProperties": false,
         "description": "One clarify question; ``answer: ''`` is the client's explicit skip.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "session_id": {
             "title": "Session Id",
             "type": "string"
@@ -42699,18 +42411,6 @@
         "additionalProperties": false,
         "description": "Closed DOM-operation shape from ``tools.drive_preview_tool`` and\n``tools.annotate_preview_tool``.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "session_id": {
             "title": "Session Id",
             "type": "string"
@@ -42849,18 +42549,6 @@
       "PreviewReadParams": {
         "additionalProperties": false,
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "session_id": {
             "title": "Session Id",
             "type": "string"
@@ -42913,18 +42601,6 @@
         "additionalProperties": false,
         "description": "``tools.skills_tool_setup._capture_required_environment_variables`` supplies these keys.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "skill_name": {
             "title": "Skill Name",
             "type": "string"
@@ -42963,18 +42639,6 @@
       "SecretParams": {
         "additionalProperties": false,
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "session_id": {
             "title": "Session Id",
             "type": "string"
@@ -43024,18 +42688,6 @@
         "additionalProperties": false,
         "description": "Original command, redacted server-side before any password-injection rewrite.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "session_id": {
             "title": "Session Id",
             "type": "string"
@@ -43068,18 +42720,6 @@
       "TerminalReadParams": {
         "additionalProperties": false,
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "session_id": {
             "title": "Session Id",
             "type": "string"
@@ -43154,18 +42794,6 @@
         "additionalProperties": false,
         "description": "Closed DOM step from ``tools.tour_tool``'s ``_STEP_SCHEMA``.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "selector": {
             "anyOf": [
               {
@@ -43231,18 +42859,6 @@
         "additionalProperties": false,
         "description": "Closed guided-tour DOM operation from ``tools.tour_tool``.",
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "session_id": {
             "title": "Session Id",
             "type": "string"
@@ -43258,7 +42874,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "default": null
           },
           "selector": {
             "anyOf": [
@@ -43269,6 +42886,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Selector"
           },
           "title": {
@@ -43280,6 +42898,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Title"
           },
           "text": {
@@ -43291,6 +42910,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Text"
           },
           "side": {
@@ -43301,7 +42921,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "default": null
           },
           "steps": {
             "anyOf": [
@@ -43315,6 +42936,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Steps"
           },
           "step_index": {
@@ -43326,19 +42948,13 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Step Index"
           }
         },
         "required": [
           "session_id",
-          "action",
-          "surface",
-          "selector",
-          "title",
-          "text",
-          "side",
-          "steps",
-          "step_index"
+          "action"
         ],
         "type": "object"
       },
@@ -43359,18 +42975,6 @@
       "VaultCodeParams": {
         "additionalProperties": false,
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "session_id": {
             "title": "Session Id",
             "type": "string"
@@ -43422,18 +43026,6 @@
       "VaultSaveLoginParams": {
         "additionalProperties": false,
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "session_id": {
             "title": "Session Id",
             "type": "string"
@@ -43471,18 +43063,6 @@
       "VaultUnlockPromptParams": {
         "additionalProperties": false,
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "session_id": {
             "title": "Session Id",
             "type": "string"
@@ -43520,18 +43100,6 @@
       "WindowReadParams": {
         "additionalProperties": false,
         "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
           "session_id": {
             "title": "Session Id",
             "type": "string"
@@ -48029,22 +47597,6 @@
       "paramStructure": "by-name",
       "params": [
         {
-          "name": "profile",
-          "required": false,
-          "schema": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          }
-        },
-        {
           "name": "session_id",
           "required": true,
           "schema": {
@@ -48198,22 +47750,6 @@
       "summary": "Click, type, scroll, or annotate inside the in-app browser preview.",
       "paramStructure": "by-name",
       "params": [
-        {
-          "name": "profile",
-          "required": false,
-          "schema": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          }
-        },
         {
           "name": "session_id",
           "required": true,
@@ -48377,22 +47913,6 @@
       "paramStructure": "by-name",
       "params": [
         {
-          "name": "profile",
-          "required": false,
-          "schema": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          }
-        },
-        {
           "name": "session_id",
           "required": true,
           "schema": {
@@ -48443,22 +47963,6 @@
       "summary": "Masked value for a named env var in a skill setup flow.",
       "paramStructure": "by-name",
       "params": [
-        {
-          "name": "profile",
-          "required": false,
-          "schema": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          }
-        },
         {
           "name": "session_id",
           "required": true,
@@ -48511,22 +48015,6 @@
       "paramStructure": "by-name",
       "params": [
         {
-          "name": "profile",
-          "required": false,
-          "schema": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          }
-        },
-        {
           "name": "session_id",
           "required": true,
           "schema": {
@@ -48556,22 +48044,6 @@
       "summary": "Read the visible in-app terminal buffer (JSON text answer).",
       "paramStructure": "by-name",
       "params": [
-        {
-          "name": "profile",
-          "required": false,
-          "schema": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          }
-        },
         {
           "name": "session_id",
           "required": true,
@@ -48624,22 +48096,6 @@
       "paramStructure": "by-name",
       "params": [
         {
-          "name": "profile",
-          "required": false,
-          "schema": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          }
-        },
-        {
           "name": "session_id",
           "required": true,
           "schema": {
@@ -48656,7 +48112,7 @@
         },
         {
           "name": "surface",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -48665,12 +48121,13 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "default": null
           }
         },
         {
           "name": "selector",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -48680,12 +48137,13 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Selector"
           }
         },
         {
           "name": "title",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -48695,12 +48153,13 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Title"
           }
         },
         {
           "name": "text",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -48710,12 +48169,13 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Text"
           }
         },
         {
           "name": "side",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -48724,12 +48184,13 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "default": null
           }
         },
         {
           "name": "steps",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -48742,12 +48203,13 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Steps"
           }
         },
         {
           "name": "step_index",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -48757,6 +48219,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Step Index"
           }
         }
@@ -48773,22 +48236,6 @@
       "summary": "A one-time / 2FA code the user reads from their device.",
       "paramStructure": "by-name",
       "params": [
-        {
-          "name": "profile",
-          "required": false,
-          "schema": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          }
-        },
         {
           "name": "session_id",
           "required": true,
@@ -48841,22 +48288,6 @@
       "paramStructure": "by-name",
       "params": [
         {
-          "name": "profile",
-          "required": false,
-          "schema": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          }
-        },
-        {
           "name": "session_id",
           "required": true,
           "schema": {
@@ -48894,22 +48325,6 @@
       "paramStructure": "by-name",
       "params": [
         {
-          "name": "profile",
-          "required": false,
-          "schema": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          }
-        },
-        {
           "name": "session_id",
           "required": true,
           "schema": {
@@ -48946,22 +48361,6 @@
       "summary": "Enumerate the native window below the app (JSON text answer).",
       "paramStructure": "by-name",
       "params": [
-        {
-          "name": "profile",
-          "required": false,
-          "schema": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          }
-        },
         {
           "name": "session_id",
           "required": true,

@@ -199,6 +199,12 @@ class TurnRunner:
         except Exception as err:
             logger.debug("live status update failed: %s", err)
 
+    @staticmethod
+    def _redact_terminal_command(command: str) -> str:
+        """Scrub a terminal command before the full form can leave the gateway."""
+        from gateway.run import _redact_gateway_user_facing_secrets
+        return _redact_gateway_user_facing_secrets(command)
+
     def _progress_onboarding_hint(self, kwargs: dict) -> None:
         """First-touch onboarding: the first time a tool exceeds _LONG_TOOL_THRESHOLD_S while
         streaming every tool (progress_mode == "all"), append a one-time /verbose hint."""
@@ -223,19 +229,25 @@ class TurnRunner:
         pl = get_tool_preview_max_len()
         return pl if pl > 0 else 40
 
-    def _progress_terminal_blocks(self, adapter, tool_name, args, emoji):
+    def _progress_terminal_blocks(self, adapter, tool_name, args, emoji, preview=None):
         """(full, short) fenced blocks for a terminal command on markdown platforms, else (None, None).
 
         No language tag: Slack mrkdwn renders it as a literal first code line. Verbose shows the FULL
         command; "all"/"new" truncate to one line capped at ``tool_preview_length``. Consecutive
         terminal calls drop the repeated header so back-to-back commands render as adjacent blocks.
         """
-        if not (
-            getattr(adapter, "supports_code_blocks", False) and tool_name == "terminal" and isinstance(args, dict)
-            and isinstance(args.get("command"), str) and args["command"].strip()
-        ):
+        if not (getattr(adapter, "supports_code_blocks", False) and tool_name == "terminal"):
             return None, None
-        cmd_full = args["command"].rstrip()
+        command = args.get("command") if isinstance(args, dict) else None
+        if not isinstance(command, str) or not command.strip():
+            # The normal tool callback includes args. Keep the preview as a best-effort fallback for
+            # lightweight integrations that only provide the callback's preview string.
+            if not (getattr(self._ctx, "full_tool_commands", False) or self._ctx.progress_mode == "verbose"):
+                return None, None
+            command = preview
+        if not isinstance(command, str) or not command.strip():
+            return None, None
+        cmd_full = self._redact_terminal_command(command.rstrip())
         header = "" if self._ctx.last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
         cap = self._preview_cap()
         lines = cmd_full.splitlines()
@@ -255,18 +267,32 @@ class TurnRunner:
             adapter = self._runner._adapter_for_source(ctx.source)
         except Exception:
             adapter = None
-        code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji)
+        code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji, preview)
         verbose = ctx.progress_mode == "verbose"
-        code = code_full if verbose else code_short
+        terminal_command = args.get("command") if tool_name == "terminal" and isinstance(args, dict) else None
+        if not isinstance(terminal_command, str) or not terminal_command.strip():
+            terminal_command = preview if tool_name == "terminal" and isinstance(preview, str) else None
+        full_terminal_command = (
+            isinstance(terminal_command, str)
+            and bool(terminal_command.strip())
+            and (getattr(ctx, "full_tool_commands", False) or verbose)
+        )
+        code = code_full if full_terminal_command else (code_full if verbose else code_short)
         ctx.last_was_terminal_block[0] = code is not None
+        if full_terminal_command and code is None:
+            command = self._redact_terminal_command(terminal_command.rstrip())
+            return f"{emoji} Running command:\n{command}"
         if verbose:
             if code is None and args:
                 from agent.display import get_tool_preview_max_len
                 pl = get_tool_preview_max_len()
-                args_str = json.dumps(args, ensure_ascii=False, default=str)
+                display_args = dict(args)
+                if tool_name == "terminal" and isinstance(display_args.get("command"), str):
+                    display_args["command"] = self._redact_terminal_command(display_args["command"])
+                args_str = json.dumps(display_args, ensure_ascii=False, default=str)
                 # tool_preview_length 0 (default) = no truncation in verbose mode; the user asked
                 # for full detail and platform message-length limits handle the rest.
-                if pl > 0 and len(args_str) > pl:
+                if pl > 0 and len(args_str) > pl and not (getattr(ctx, "full_tool_commands", False) and tool_name == "terminal"):
                     args_str = args_str[:pl - 3] + "..."
                 code = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
             elif code is None:
@@ -312,6 +338,7 @@ class TurnRunner:
     class _TaskCardState:
         """Task-card rail state for ``_send_native_task_card_progress``."""
         adapter: Any
+        full_tool_commands: bool = False
         tasks: Dict[str, Dict[str, str]] = dataclasses.field(default_factory=dict)
         task_order: List[str] = dataclasses.field(default_factory=list)
         fallback_msg_id: Optional[str] = None
@@ -328,6 +355,8 @@ class TurnRunner:
         @staticmethod
         def _compact(value: Any, limit: int = 120) -> str:
             text = re.sub(r"\s+", " ", str(value or "")).strip()
+            if limit <= 0:
+                return text
             return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
 
         def visible_tasks(self) -> List[Dict[str, str]]:
@@ -338,10 +367,11 @@ class TurnRunner:
             lines = [f"- {t['title']} - {labels.get(t['status'], t['status'])}" for t in self.visible_tasks()]
             return "Hermes is working\n" + "\n".join(lines)
 
-        def _upsert(self, call_id: str, title: str) -> Dict[str, str]:
+        def _upsert(self, call_id: str, title: str, *, preserve_title: bool = False) -> Dict[str, str]:
             if call_id not in self.tasks:
                 self.task_order.append(call_id)
-            self.tasks[call_id] = {"id": call_id, "title": self._compact(title), "status": "in_progress"}
+            shown_title = title if preserve_title else self._compact(title)
+            self.tasks[call_id] = {"id": call_id, "title": shown_title, "status": "in_progress"}
             return self.tasks[call_id]
 
         def apply_event(self, raw: Any) -> bool:
@@ -354,8 +384,10 @@ class TurnRunner:
                 call_id = f"anonymous_{self.anonymous_seq}"
             tool_name = str(raw.get("tool_name") or "tool")
             if event_type == "tool.started":
-                preview = self._compact(raw.get("preview"), 64)
-                self._upsert(call_id, f"{tool_name} - {preview}" if preview else tool_name)
+                preserve_command = self.full_tool_commands and tool_name == "terminal"
+                preview = self._compact(raw.get("preview"), 0 if preserve_command else 64)
+                title = f"{tool_name} - {preview}" if preview else tool_name
+                self._upsert(call_id, title, preserve_title=preserve_command)
                 return True
             # Completion-only events are rare but valid on some runtimes; keep their real ID instead
             # of guessing a same-name pending call.
@@ -488,7 +520,10 @@ class TurnRunner:
         See #29483.
         """
         ctx = self._ctx
-        st = self._TaskCardState(adapter)
+        st = self._TaskCardState(
+            adapter=adapter,
+            full_tool_commands=bool(getattr(ctx, "full_tool_commands", False)),
+        )
         try:
             while ctx._run_still_current():
                 try:
@@ -569,19 +604,36 @@ class TurnRunner:
         groups: list[list] = []
         current: list = []
         for line in lines:
-            candidate = current + [line]
-            if current and st._progress_len_fn(self._progress_text(candidate)) > st._PROGRESS_TEXT_LIMIT:
-                groups.append(current)
-                candidate = [line]
-            current = candidate
+            # A single command can be longer than the platform limit. Split it before grouping so
+            # the first (and every later) bubble is valid even when there is no previous line to
+            # trigger the normal rollover branch. BasePlatformAdapter also preserves code fences.
+            line_parts = BasePlatformAdapter.truncate_message(
+                str(line), max_length=st._PROGRESS_TEXT_LIMIT, len_fn=st._progress_len_fn,
+            )
+            for line_part in line_parts:
+                candidate = current + [line_part]
+                if current and st._progress_len_fn(self._progress_text(candidate)) > st._PROGRESS_TEXT_LIMIT:
+                    groups.append(current)
+                    candidate = [line_part]
+                current = candidate
         return groups + ([current] if current else [])
 
     async def _send_progress_text(self, st, text: str):
         ctx = self._ctx
-        result = await st.adapter.send(
-            chat_id=ctx.source.chat_id, content=text, reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata,
-        )
-        self._track_progress_result(result)
+        chunks = [text]
+        if hasattr(st, "_PROGRESS_TEXT_LIMIT"):
+            chunks = BasePlatformAdapter.truncate_message(
+                str(text), max_length=st._PROGRESS_TEXT_LIMIT, len_fn=st._progress_len_fn,
+            )
+        result = None
+        for chunk in chunks:
+            result = await st.adapter.send(
+                chat_id=ctx.source.chat_id, content=chunk,
+                reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata,
+            )
+            self._track_progress_result(result)
+            if not result.success:
+                break
         return result
 
     async def _roll_progress_overflow_if_needed(self, st) -> bool:
@@ -782,9 +834,19 @@ class TurnRunner:
             return
         from agent.display import build_tool_preview
         name = str(tool_name or "tool")
+        if (
+            name == "terminal"
+            and getattr(self._ctx, "full_tool_commands", False)
+            and isinstance(args, dict)
+            and isinstance(args.get("command"), str)
+            and args["command"].strip()
+        ):
+            preview = self._redact_terminal_command(args["command"].rstrip())
+        else:
+            preview = build_tool_preview(name, args or {}, max_len=64) or ""
         self._ctx.progress_queue.put({
             "type": "tool.started", "tool_call_id": str(call_id or ""), "tool_name": name,
-            "preview": build_tool_preview(name, args or {}, max_len=64) or "",
+            "preview": preview,
         })
 
     def native_tool_complete_callback(self, call_id, tool_name, args, result):

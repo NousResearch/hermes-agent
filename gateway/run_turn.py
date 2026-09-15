@@ -2720,6 +2720,13 @@ class GatewayTurnMixin:
                 _val = resolve_display_setting(user_config, platform_key, _setting, _default)
                 getattr(_agent_display, _setter)(_cast(_val))
 
+        # Optional gateway-only detail: show complete terminal commands without switching every
+        # tool preview to verbose mode. It follows the same global/per-platform resolution as the
+        # other display settings.
+        full_tool_commands = bool(
+            resolve_display_setting(user_config, platform_key, "full_tool_commands", False)
+        )
+
         # Resolve the mode and its provenance together: null inherits, tier off is not intent.
         progress_mode, _tool_progress_explicit = resolve_tool_progress(
             user_config, platform_key, os.getenv("HERMES_TOOL_PROGRESS_MODE"),
@@ -2799,6 +2806,7 @@ class GatewayTurnMixin:
             user_config=user_config, platform_key=platform_key, enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets, resolve_display_setting=resolve_display_setting,
             progress_mode=progress_mode, progress_grouping=progress_grouping,
+            full_tool_commands=full_tool_commands,
             _display_surface_mode=_display_surface_mode,
             tool_progress_enabled=tool_progress_enabled, _live_status_mode=_live_status_mode,
             _live_status_adapter=_live_status_adapter, log_mode_enabled=log_mode_enabled,
@@ -2812,7 +2820,7 @@ class GatewayTurnMixin:
     # _RunAgentDisplay fields copied verbatim onto the TurnContext.
     _DISPLAY_TO_TURN_CTX = (
         "_live_status_adapter", "_live_status_mode", "_thinking_enabled", "progress_mode",
-        "progress_grouping", "tool_progress_enabled", "log_queue", "resolve_display_setting",
+        "progress_grouping", "full_tool_commands", "tool_progress_enabled", "log_queue", "resolve_display_setting",
         "user_config", "enabled_toolsets", "disabled_toolsets", "log_mode_enabled",
         "interim_assistant_messages_enabled", "needs_progress_queue", "_native_slack_task_cards",
     )

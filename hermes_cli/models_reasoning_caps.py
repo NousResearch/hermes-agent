@@ -290,9 +290,15 @@ def openrouter_model_reasoning_capabilities(
 
 def nous_model_reasoning_capabilities(
     model_id: Optional[str], *, timeout: float = 6.0, allow_fetch: bool = False,
+    memory_only: bool = False,
 ) -> Optional[dict[str, Any]]:
     """Nous Portal counterpart of :func:`openrouter_model_reasoning_capabilities`; warm the cache
-    with :func:`warm_nous_reasoning_caps_async` from hot paths."""
+    with :func:`warm_nous_reasoning_caps_async` from hot paths. ``memory_only`` is
+    the UI's no-auth peek: unknown on a cold cache, without disk hydration, URL
+    resolution or warming (even if ``allow_fetch`` is also set)."""
+    if memory_only:
+        caps = _NOUS_CAPS.get("cache")
+        return caps.get(str(model_id or "").strip()) if caps is not None else None
     return _model_caps(_NOUS_CAPS, model_id, timeout=timeout, allow_fetch=allow_fetch)
 
 

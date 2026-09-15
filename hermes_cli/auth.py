@@ -889,6 +889,7 @@ _POOL_STATUS_FIELDS = (
 
 def _merge_disk_cooldown_state(
     entry: Dict[str, Any], disk_entry: Optional[Dict[str, Any]], provider_id: str,
+    *, failure_event: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Keep a newer on-disk cooldown/quarantine over a stale in-memory one.
 
@@ -897,6 +898,11 @@ def _merge_disk_cooldown_state(
     rate-limited key as healthy and both processes resume hammering it."""
     if not isinstance(disk_entry, dict):
         return entry
+    if provider_id == "openai-codex":
+        from agent.codex_pool_recovery import fence_snapshot
+        fenced = fence_snapshot(entry, disk_entry, failure_event=failure_event)
+        if fenced is not None:
+            return fenced
     try:
         from agent.credential_pool import (
             PooledCredential, STATUS_DEAD, STATUS_EXHAUSTED, _exhausted_until, _parse_absolute_timestamp,
@@ -932,6 +938,7 @@ def write_credential_pool(
     provider_id: str, entries: List[Dict[str, Any]], *,
     removed_ids: Optional[Iterable[str]] = None,
     status_cleared_ids: Optional[Iterable[str]] = None,
+    failure_events: Optional[Dict[str, str]] = None,
 ) -> Path:
     """Persist one provider's credential pool under auth.json.
 
@@ -956,6 +963,7 @@ def write_credential_pool(
         merged: List[Dict[str, Any]] = [
             _merge_disk_cooldown_state(
                 e, None if e.get("id") in status_cleared else existing_by_id.get(e.get("id")), provider_id,
+                failure_event=(failure_events or {}).get(e.get("id")),
             )
             if isinstance(e, dict) else e
             for e in sanitized]

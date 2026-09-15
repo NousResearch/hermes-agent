@@ -175,6 +175,8 @@ _EXTRA_KEYS = frozenset({
     # raw status cannot size a cooldown; persisted so a restart doesn't downgrade
     # a billing bench to a 60s transient cooldown.
     "failure_reason",
+    # Durable automatic-recovery fence and exact failure event (Codex only).
+    "_codex_recovery_epoch", "_codex_failure_id", "quota_scope",
 })
 
 # Nous singleton metadata mirrored between auth.json state and ``entry.extra``.
@@ -770,6 +772,7 @@ def _borrowed_single_use_pool_root() -> Optional[Path]:
 def _update_root_pool_rows(
     provider: str, payloads: List[Dict[str, Any]], global_path: Path,
     *, status_cleared_ids: Optional[Iterable[str]] = None,
+    failure_events: Optional[Dict[str, str]] = None,
 ) -> None:
     """UPDATE-ONLY merge of *payloads* into the root store's rows for *provider*.
 
@@ -799,6 +802,7 @@ def _update_root_pool_rows(
             # A deliberately cleared entry has no disk cooldown worth keeping.
             updated = auth_mod._merge_disk_cooldown_state(
                 incoming, None if did in cleared else disk_entry, provider,
+                failure_event=(failure_events or {}).get(did),
             )
             if updated != disk_entry:
                 changed = True
@@ -814,6 +818,7 @@ def persist_pool_entries(
     *,
     removed_ids: Optional[Iterable[str]] = None,
     status_cleared_ids: Optional[Iterable[str]] = None,
+    failure_events: Optional[Dict[str, str]] = None,
 ) -> None:
     """Persist a provider's pool rows to the store that OWNS them.
 
@@ -832,8 +837,13 @@ def persist_pool_entries(
                 _update_root_pool_rows(
                     provider, payloads, global_path,
                     status_cleared_ids=status_cleared_ids,
+                    **({"failure_events": failure_events} if failure_events else {}),
                 )
             except Exception as exc:
+                if provider == "openai-codex" and failure_events:
+                    # Do not acknowledge an event that never reached its owner.
+                    # _persist retains the pending intent for an explicit retry.
+                    raise
                 # Fail closed on the FORK, not on the save: never fall back to
                 # writing a local copy (that IS the bug). The in-memory pool
                 # still holds the rotated pair for this process.
@@ -845,6 +855,7 @@ def persist_pool_entries(
             return
     write_credential_pool(
         provider, payloads, removed_ids=removed_ids, status_cleared_ids=status_cleared_ids,
+        **({"failure_events": failure_events} if failure_events else {}),
     )
 
 
@@ -905,6 +916,7 @@ class CredentialPool(CredentialPoolAdminMixin):
         # re-acquire reentrantly.
         self._lock = threading.RLock()
         self._active_leases: Dict[str, int] = {}
+        self._pending_codex_failures: Dict[str, str] = {}
         self._max_concurrent = DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL
         # Monotonic timestamp of the last "no available entries" log (see
         # NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS). Re-armed to None on every
@@ -1024,7 +1036,10 @@ class CredentialPool(CredentialPoolAdminMixin):
                 [entry.to_dict() for entry in self._entries],
                 removed_ids=removed_ids,
                 status_cleared_ids=status_cleared_ids,
+                **({"failure_events": dict(self._pending_codex_failures)}
+                   if self._pending_codex_failures else {}),
             )
+            self._pending_codex_failures.clear()
 
     def _adopt(self, entry: PooledCredential, *, persist: bool = True, **updates: Any) -> PooledCredential:
         """``replace(entry, **updates)``, swap it into the pool, optionally persist."""
@@ -1087,21 +1102,28 @@ class CredentialPool(CredentialPoolAdminMixin):
         # actually failed (a billing 403 must not get the sole-credential
         # transient cooldown); absent a classification, clear a stale one.
         updated_extra = dict(entry.extra)
+        if self.provider == "openai-codex":
+            from agent.codex_pool_recovery import FAILURE
+            updated_extra[FAILURE] = uuid.uuid4().hex
         if failure_reason:
             updated_extra["failure_reason"] = failure_reason
         else:
             updated_extra.pop("failure_reason", None)
-        return self._adopt(
-            entry,
-            persist=persist,
-            last_status=STATUS_DEAD if terminal else STATUS_EXHAUSTED,
-            last_status_at=time.time(),
-            last_error_code=status_code,
-            last_error_reason=normalized_error.get("reason"),
-            last_error_message=normalized_error.get("message"),
-            last_error_reset_at=normalized_error.get("reset_at"),
-            extra=updated_extra,
-        )
+        with self._lock:
+            if self.provider == "openai-codex":
+                from agent.codex_pool_recovery import FAILURE
+                self._pending_codex_failures[entry.id] = updated_extra[FAILURE]
+            return self._adopt(
+                entry,
+                persist=persist,
+                last_status=STATUS_DEAD if terminal else STATUS_EXHAUSTED,
+                last_status_at=time.time(),
+                last_error_code=status_code,
+                last_error_reason=normalized_error.get("reason"),
+                last_error_message=normalized_error.get("message"),
+                last_error_reset_at=normalized_error.get("reset_at"),
+                extra=updated_extra,
+            )
 
     # ---- cross-process token resync ---------------------------------------
     #
@@ -1239,7 +1261,8 @@ class CredentialPool(CredentialPoolAdminMixin):
                 field_updates: Dict[str, Any] = {
                     "access_token": store_access or entry.access_token,
                     "refresh_token": store_refresh or entry.refresh_token,
-                    **_CLEAR_STATUS,
+                    # Material adoption alone is not a Codex quota/auth proof.
+                    **({} if is_codex else _CLEAR_STATUS),
                 }
                 if state.get("last_refresh"):
                     field_updates["last_refresh"] = state["last_refresh"]
@@ -1730,7 +1753,9 @@ class CredentialPool(CredentialPoolAdminMixin):
         if not token:
             return False
         try:
-            return bool(auth_mod._probe_codex_quota_restored(token, base_url=entry.base_url))
+            return auth_mod._probe_codex_quota_restored(
+                token, base_url=entry.base_url, reuse_positive=False,
+            ) is True
         except Exception:
             logger.debug("Codex quota-restored probe failed", exc_info=True)
             return False
@@ -1813,6 +1838,27 @@ class CredentialPool(CredentialPoolAdminMixin):
         pending_refresh: List[PooledCredential] = []
         sole_credential = self._is_sole_credential()
         for entry in self._entries:
+            if self.provider == "openai-codex" and (
+                entry.last_status in {STATUS_EXHAUSTED, STATUS_DEAD}
+                or entry.extra.get("_codex_recovery_epoch")
+            ):
+                # Reconciliation is not quota proof and never writes a snapshot.
+                # An uncommitted failure must not be erased by an older disk row.
+                if entry.id in self._pending_codex_failures:
+                    continue
+                from agent.codex_pool_recovery import reconcile
+                try:
+                    authoritative = reconcile(entry)
+                except (OSError, TimeoutError):
+                    logger.warning("Codex owner reconciliation unavailable")
+                    continue
+                if authoritative is None:
+                    # Drop only in memory: later round-robin/status persistence
+                    # must not reinsert a row that its owner already removed.
+                    entries_to_prune.append(entry.id)
+                    continue
+                self._replace_entry(entry, authoritative)
+                entry = authoritative
             # Borrowed credentials persist as metadata-only references and are
             # hydrated from their live source on load; never lease an
             # unhydrated duplicate as an empty key.
@@ -1845,15 +1891,35 @@ class CredentialPool(CredentialPoolAdminMixin):
                 exhausted_until = _exhausted_until(entry, sole_credential=sole_credential)
                 # Codex quota windows can reopen EARLY; a throttled live probe
                 # lifts a stale cooldown (issue #43747).
-                if (
-                    exhausted_until is not None
-                    and now < exhausted_until
-                    and not (clear_expired and self._codex_quota_restored_upstream(entry))
-                ):
+                observed = None
+                if clear_expired and self.provider == "openai-codex":
+                    from agent.codex_pool_recovery import observe
+                    try:
+                        observed = observe(entry)
+                    except (OSError, TimeoutError):
+                        logger.warning("Codex recovery observation unavailable")
+                    if observed is None:
+                        continue
+                waiting = exhausted_until is not None and now < exhausted_until
+                if waiting and not (clear_expired and self._codex_quota_restored_upstream(entry)):
                     continue
                 if clear_expired:
-                    entry = self._adopt(entry, persist=False, **_MARK_OK)
-                    cleared_any = True
+                    if self.provider == "openai-codex":
+                        from agent.codex_pool_recovery import recover
+                        assert observed is not None
+                        try:
+                            recovered = recover(observed, proof="quota" if waiting else "elapsed")
+                        except (OSError, TimeoutError):
+                            logger.warning("Codex recovery not persisted; keeping cooldown")
+                            continue
+                        if recovered is None:
+                            continue
+                        updated = PooledCredential.from_dict(self.provider, recovered)
+                        self._replace_entry(entry, updated)
+                        entry = updated
+                    else:
+                        entry = self._adopt(entry, persist=False, **_MARK_OK)
+                        cleared_any = True
             if refresh and self._entry_needs_refresh(entry):
                 if self.provider in _TOKENS_SINGLETON_PROVIDERS:
                     pending_refresh.append(entry)

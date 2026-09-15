@@ -1,4 +1,4 @@
-import { Box, Text, useInput, useStdout } from '@hermes/ink'
+import { Box, Text, useInput, useStdout, wrapAnsi } from '@hermes/ink'
 import { fuzzyRank } from '@hermes/shared/fuzzy'
 import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared/gateway-events'
 import { modelSearchText } from '@hermes/shared/model-search-text'
@@ -162,6 +162,11 @@ export function ModelPicker({
   }, [providerRows, filter, stage])
 
   const provider = filteredProviderRows[providerIdx]?.provider
+  const warningText = provider?.warning ? `warning: ${provider.warning}` : ' '
+  const warningLines = wrapAnsi(warningText, Math.max(1, width), { hard: true }).split('\n').length
+  // Reserve the full warning plus headers/footer (and parent-overlay margin).
+  // Shrink the scrolling list, never the recorded reset/disclaimer.
+  const visible = Math.max(1, Math.min(VISIBLE, (stdout?.rows ?? 40) - warningLines - 10))
   const allModels = useMemo(() => provider?.models ?? [], [provider])
 
   const filteredModels = useMemo(() => {
@@ -652,7 +657,7 @@ export function ModelPicker({
       return `${authMark} ${name} · ${suffix}`
     })
 
-    const { items, offset } = windowItems(rows, providerIdx, VISIBLE)
+    const { items, offset } = windowItems(rows, providerIdx, visible)
     const noMatches = !!filter.trim() && rows.length === 0
 
     return (
@@ -671,8 +676,8 @@ export function ModelPicker({
         <Text color={filter ? t.color.accent : t.color.muted} wrap="truncate-end">
           {filter ? `filter: ${filter}▎` : 'type to filter · ↑/↓ select'}
         </Text>
-        <Text color={t.color.label} wrap="truncate-end">
-          {provider?.warning ? `warning: ${provider.warning}` : ' '}
+        <Text color={t.color.label} wrap="wrap">
+          {warningText}
         </Text>
         <Text color={t.color.muted} wrap="truncate-end">
           {offset > 0 ? ` ↑ ${offset} more` : ' '}
@@ -683,7 +688,7 @@ export function ModelPicker({
             no providers match
           </Text>
         ) : (
-          Array.from({ length: VISIBLE }, (_, i) => {
+          Array.from({ length: visible }, (_, i) => {
             const row = items[i]
             const idx = offset + i
             const p = filteredProviderRows[idx]?.provider
@@ -708,7 +713,7 @@ export function ModelPicker({
         )}
 
         <Text color={t.color.muted} wrap="truncate-end">
-          {offset + VISIBLE < rows.length ? ` ↓ ${rows.length - offset - VISIBLE} more` : ' '}
+          {offset + visible < rows.length ? ` ↓ ${rows.length - offset - visible} more` : ' '}
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
@@ -754,7 +759,7 @@ export function ModelPicker({
   }
 
   // ── Model selection stage ────────────────────────────────────────────
-  const { items, offset } = windowItems(models, modelIdx, VISIBLE)
+  const { items, offset } = windowItems(models, modelIdx, visible)
   const noModelMatches = !!filter.trim() && models.length === 0
 
   return (
@@ -769,14 +774,14 @@ export function ModelPicker({
       <Text color={filter ? t.color.accent : t.color.muted} wrap="truncate-end">
         {filter ? `filter: ${filter}▎` : 'type to filter · ↑/↓ select'}
       </Text>
-      <Text color={t.color.label} wrap="truncate-end">
-        {provider?.warning ? `warning: ${provider.warning}` : ' '}
+      <Text color={t.color.label} wrap="wrap">
+        {warningText}
       </Text>
       <Text color={t.color.muted} wrap="truncate-end">
         {offset > 0 ? ` ↑ ${offset} more` : ' '}
       </Text>
 
-      {Array.from({ length: VISIBLE }, (_, i) => {
+      {Array.from({ length: visible }, (_, i) => {
         const row = items[i]
         const idx = offset + i
 
@@ -808,7 +813,7 @@ export function ModelPicker({
       })}
 
       <Text color={t.color.muted} wrap="truncate-end">
-        {offset + VISIBLE < models.length ? ` ↓ ${models.length - offset - VISIBLE} more` : ' '}
+        {offset + visible < models.length ? ` ↓ ${models.length - offset - visible} more` : ' '}
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">

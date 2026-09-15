@@ -25,7 +25,8 @@ from typing import Any, Dict, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
-from agent.error_classifier import (FailoverReason, PROVIDER_STREAM_NON_JSON_ERROR_CODE)
+from agent.error_classifier import (
+    FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE)
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.fast_mode import effective_request_overrides
@@ -224,9 +225,28 @@ def _provider_stream_error_from_json_decode_error(error: json.JSONDecodeError, *
     response: Any = None) -> ProviderStreamError:
     """Preserve plain-text SSE data rejected inside the OpenAI SDK: on a non-JSON
     ``event: error`` the SDK raises from ``sse.json()`` before yielding a chunk,
-    but ``JSONDecodeError.doc`` still carries the provider's original message."""
+    but ``JSONDecodeError.doc`` still carries the provider's original message.
+
+    An EMPTY ``doc`` is the other case: the frame carried no payload at all
+    (``data:`` / ``event: ping`` / ``id:`` alone — legal SSE keepalives and no-ops),
+    which the SDK's ``json.loads`` rejects the same way. A gateway that is degrading
+    answers EVERY streaming request with such frames, so this is not the provider's
+    malformed payload and must not be reported as one: it gets its own code and
+    the stream helper recovers by retrying without streaming."""
     from agent.redact import redact_sensitive_text
     raw_text = str(getattr(error, "doc", "") or "").strip()
+    headers = getattr(response, "headers", None) if response is not None else None
+    if not raw_text:
+        return ProviderStreamError(
+            status_code=None,
+            body=_provider_error_body(
+                {"code": PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE,
+                    "message": "Provider stream returned an empty SSE data frame (keepalive with no payload)."},
+                None,
+            ),
+            raw_text="",
+            headers=headers,
+        )
     safe_text = redact_sensitive_text(_sanitize_surrogates(raw_text), force=True)
     safe_text = safe_text[:_PROVIDER_STREAM_ERROR_TEXT_LIMIT]
     return ProviderStreamError(
@@ -237,8 +257,22 @@ def _provider_stream_error_from_json_decode_error(error: json.JSONDecodeError, *
             None,
         ),
         raw_text=safe_text,
-        headers=getattr(response, "headers", None) if response is not None else None,
+        headers=headers,
     )
+
+
+def _is_provider_stream_empty_frame_error(exc: BaseException) -> bool:
+    """True for a contentless SSE frame: either the translated ``ProviderStreamError`` carrying
+    the empty-frame code, or the SDK's raw ``JSONDecodeError`` with an empty ``doc`` (belt for
+    iteration sites that surface it without translation — ``json.loads`` only ever sees an
+    empty document when the frame carried no payload). A malformed payload is neither: its
+    ``doc`` holds the offending text. Re-streaming cannot help either way — a degraded gateway
+    answers every stream that way — so the caller must change channel."""
+    body = getattr(exc, "body", None)
+    error_obj = body.get("error") if isinstance(body, dict) else None
+    if isinstance(error_obj, dict) and error_obj.get("code") == PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE:
+        return True
+    return isinstance(exc, json.JSONDecodeError) and not str(getattr(exc, "doc", "") or "").strip()
 
 
 def _iter_provider_stream_chunks(stream, *, response: Any = None):
@@ -3082,8 +3116,24 @@ class _StreamingCall(StreamingWaitMonitor):
         self.clients.close_once(reason)
 
     def _maybe_disable_streaming(self, e) -> None:
-        """Flip to non-streaming when the provider rejects streaming outright or
-        AnthropicBedrock IAM lacks InvokeModelWithResponseStream."""
+        """Flip to non-streaming for failures streaming itself cannot survive, or that
+        re-streaming can only repeat: the provider rejecting streams outright,
+        AnthropicBedrock IAM lacking InvokeModelWithResponseStream, or a gateway answering
+        with contentless SSE keepalive frames (a degraded gateway answers every
+        streaming request that way, so the retry must change channel to make progress)."""
+        if _is_provider_stream_empty_frame_error(e):
+            self.agent._disable_streaming = True
+            logger.warning(
+                "Provider stream returned an empty SSE frame (keepalive, no payload) before any "
+                "delta — switching %s/%s to non-streaming for this session.",
+                self.agent.provider or "unknown", self.agent.model or "unknown")
+            # Durable channel, not _buffer_status: this recovery is expected to SUCCEED, and
+            # buffered retry chatter is dropped on successful recovery. Fires at most once per
+            # session (streaming is off from here on).
+            self.agent._emit_warning(
+                "⚠️ Provider stream returned an empty keepalive frame — retrying this turn "
+                "without streaming (streaming stays off for this session).")
+            return
         _err_lower = str(e).lower()
         _is_stream_unsupported = "stream" in _err_lower and "not supported" in _err_lower
         _is_bedrock_stream_denied = False

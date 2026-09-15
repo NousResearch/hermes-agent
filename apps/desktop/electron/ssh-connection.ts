@@ -351,9 +351,13 @@ function withRemoteTimeout(remoteCommand, timeoutSecs = REMOTE_PROBE_TIMEOUT_SEC
   // Job control (`set -m`) puts the probe in its own process group so the
   // watchdog can also reach a grandchild left behind by a launcher that runs
   // the CLI without exec. Shells that cannot enable it without a tty fall
-  // back to killing the direct child.
+  // back to killing the direct child. Skipped entirely under zsh (detected
+  // via $ZSH_VERSION, set even in non-interactive/non-login shells): zsh's
+  // `set -m` prints its own job-control notifications for the backgrounded
+  // probe, which corrupts captured stdout (e.g. `hermes --version`).
   return (
-    `set -m 2>/dev/null; (${remoteCommand}) </dev/null & __htp=$!; set +m 2>/dev/null; ` +
+    `[ -n "$ZSH_VERSION" ] || set -m 2>/dev/null; (${remoteCommand}) </dev/null & __htp=$!; ` +
+    `[ -n "$ZSH_VERSION" ] || set +m 2>/dev/null; ` +
     `(sleep ${secs} </dev/null >/dev/null 2>&1; kill -9 -- -$__htp 2>/dev/null; kill -9 $__htp 2>/dev/null) & __htw=$!; ` +
     `wait $__htp; __htrc=$?; ` +
     `kill $__htw 2>/dev/null; wait $__htw 2>/dev/null; ` +

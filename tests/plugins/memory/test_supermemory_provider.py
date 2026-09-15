@@ -98,6 +98,41 @@ def test_is_available_false_without_api_key(monkeypatch):
     assert p.is_available() is False
 
 
+@pytest.mark.parametrize("agent_context", ["subagent", "kanban", "cron", "flush"])
+def test_non_primary_context_disables_writes(monkeypatch, tmp_path, agent_context):
+    """All non-primary worker contexts keep Supermemory read-only."""
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+
+    scoped_provider = SupermemoryMemoryProvider()
+    scoped_provider.initialize(
+        "worker-session",
+        hermes_home=str(tmp_path),
+        platform="cli",
+        agent_context=agent_context,
+    )
+
+    assert scoped_provider._active is True
+    assert scoped_provider._write_enabled is False
+
+
+def test_primary_context_keeps_writes_enabled(monkeypatch, tmp_path):
+    """Primary agents retain the historical Supermemory write behavior."""
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+
+    primary_provider = SupermemoryMemoryProvider()
+    primary_provider.initialize(
+        "primary-session",
+        hermes_home=str(tmp_path),
+        platform="cli",
+        agent_context="primary",
+    )
+
+    assert primary_provider._active is True
+    assert primary_provider._write_enabled is True
+
+
 def test_load_and_save_config_round_trip(tmp_path):
     _save_supermemory_config({"container_tag": "demo-tag", "auto_capture": False}, str(tmp_path))
     cfg = _load_supermemory_config(str(tmp_path))

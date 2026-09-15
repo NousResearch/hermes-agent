@@ -86,6 +86,16 @@ class MemoryProvider(ABC):
 
     # -- Core lifecycle (implement these) ------------------------------------
 
+    def pre_admit(self, platform: str, agent_context: str) -> bool:
+        """Cheap execution-context gate run before :meth:`is_available`.
+
+        This hook must not load provider configuration, import optional dependencies,
+        perform network requests, or otherwise initialize provider state. Providers
+        may override it to reject contexts that must not activate. The default admits
+        every context for backward compatibility.
+        """
+        return True
+
     @abstractmethod
     def is_available(self) -> bool:
         """Configured, credentialed and ready? Gates activation; check config/deps only, no network."""
@@ -96,7 +106,7 @@ class MemoryProvider(ABC):
 
         kwargs always include ``hermes_home`` (profile-scoped storage; never hardcode
         ``~/.hermes``) and ``platform``; may include ``agent_context`` ("primary" |
-        "subagent" | "cron" | "flush" — skip writes for non-primary contexts),
+        "kanban" | "subagent" | "cron" | "flush" — skip writes for non-primary contexts),
         ``agent_identity``, ``agent_workspace``, ``parent_session_id``, ``user_id``, ``user_id_alt``.
         """
 
@@ -139,6 +149,13 @@ class MemoryProvider(ABC):
 
     def shutdown(self) -> None:
         """Clean shutdown — flush queues, close connections."""
+
+    def shutdown_read_only(self) -> None:
+        """Release a read-only context without invoking a provider's write-flushing shutdown.
+
+        Providers may override this when they can close resources without persisting
+        memory. The default intentionally does nothing for legacy compatibility.
+        """
 
     # -- Optional hooks (override to opt in) ---------------------------------
 

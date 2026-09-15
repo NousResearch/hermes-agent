@@ -76,11 +76,13 @@ class MemoryStore:
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375, *,
-                 memory_enabled: bool = True, user_profile_enabled: bool = True):
+                 memory_enabled: bool = True, user_profile_enabled: bool = True,
+                 writes_enabled: bool = True):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit, self.user_char_limit = memory_char_limit, user_char_limit
         self.memory_enabled, self.user_profile_enabled = memory_enabled, user_profile_enabled
+        self.writes_enabled = bool(writes_enabled)
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
         self._consolidation_failures = 0  # per turn; reset by reset_consolidation_failures()
 
@@ -88,6 +90,15 @@ class MemoryStore:
     # reset_consolidation_failures() (#42405).
     def target_enabled(self, target: str) -> bool:
         return self.user_profile_enabled if target == "user" else self.memory_enabled
+
+    def _writes_disabled_error(self, target: str) -> Optional[Dict[str, Any]]:
+        """Return a stable denial for stores loaded in non-primary execution contexts."""
+        if self.writes_enabled:
+            return None
+        return _error(
+            "Built-in memory writes are disabled in this non-primary execution context.",
+            target=target,
+        )
 
     def reset_consolidation_failures(self) -> None:
         """Call at turn start."""
@@ -236,6 +247,8 @@ class MemoryStore:
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
+        if disabled := self._writes_disabled_error(target):
+            return disabled
         content = content.strip()
         if not content:
             return _error("Content cannot be empty.")
@@ -258,6 +271,8 @@ class MemoryStore:
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
+        if disabled := self._writes_disabled_error(target):
+            return disabled
         new_content = new_content.strip()
         if not old_text.strip():
             return _error("old_text cannot be empty.")
@@ -269,6 +284,8 @@ class MemoryStore:
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
+        if disabled := self._writes_disabled_error(target):
+            return disabled
         if not old_text.strip():
             return _error("old_text cannot be empty.")
         return self._edit(target, old_text.strip(), None)
@@ -323,6 +340,8 @@ class MemoryStore:
         """Apply add/replace/remove ops atomically against the FINAL budget, so one call
         can free space and add entries. All-or-nothing: any malformed / unmatched op or
         an over-limit result writes NOTHING and returns the first failure plus live state."""
+        if disabled := self._writes_disabled_error(target):
+            return disabled
         if not operations:
             return _error("operations list is empty.")
         ops = [op or {} for op in operations]

@@ -539,6 +539,13 @@ DEFAULT_CONFIG = {
         "threshold_tokens": None,
         # "progress_notices": False,    # opt-in (#52995): when True, routine compression
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
+        # defer_while_aux_inflight: opt-in — postpone auto-compression while other auxiliary LLM
+        # calls are in flight (single-accelerator contention). Bounded by defer_hard_ceiling and
+        # by at most 3 consecutively deferred checks; manual /compress is never deferred.
+        "defer_while_aux_inflight": False,
+        # defer_hard_ceiling: fraction of context_length past which a deferred compression fires
+        # anyway (running out of context is worse than contention).
+        "defer_hard_ceiling": 0.95,
         # tail_mode: "lean" = clamped 2.5%-of-window tail (10K floor / 25K cap) plus chunked
         # digests, anchor index, verbatim user messages and session_search pointers in the summary
         # (~3x fewer retained tokens; a few extra summarizer calls at the boundary). "legacy" =

@@ -1496,6 +1496,10 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         codex_responses_native=responses_native,
         codex_responses_compact_threshold=compact_threshold,
         idle_compact_after_seconds=idle_compact_after_seconds,
+        # Opt-in: hold compression while auxiliary calls are in flight, up to the hard
+        # ceiling (fraction of the window) past which compression proceeds regardless.
+        defer_while_aux_inflight=_cfg_flag(cfg, "defer_while_aux_inflight", False),
+        defer_hard_ceiling=float(cfg.get("defer_hard_ceiling", 0.95)),
     )
 
 
@@ -1846,6 +1850,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
             custom_providers=_custom_providers,
+            defer_while_aux_inflight=cs.defer_while_aux_inflight, defer_hard_ceiling=cs.defer_hard_ceiling,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

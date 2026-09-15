@@ -558,7 +558,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     # gateway's whole-response filter runs too late for a streamed
                     # preview, so retract it here instead of finalizing.
                     _clean_accumulated = self._clean_for_display(self._accumulated)
-                    _invisible_only = _is_invisible_only_response(_clean_accumulated)
+                    # On overflow, the active buffer is only a tail; substantive sealed
+                    # chunks still belong to this segment and must not be retracted.
+                    _invisible_only = _is_invisible_only_response(_clean_accumulated) and (
+                        not self._turn_split_delivery
+                        or _is_invisible_only_response(self._clean_for_display(self._stream_ledger))
+                    )
                     if _is_intentional_silence_response(_clean_accumulated) or _invisible_only:
                         await self._suppress_silence_marker(segment_only=_invisible_only)
                         return

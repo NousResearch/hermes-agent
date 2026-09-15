@@ -351,6 +351,56 @@ async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_enabled,nested", [(True, False), (False, False), (True, True), (False, True)])
+async def test_queued_terminal_profile_owns_the_silence_opt_in(
+    monkeypatch, tmp_path, terminal_enabled, nested,
+):
+    from hermes_cli.config import set_config_value
+
+    homes = {}
+    for profile, enabled in (("opener", not terminal_enabled), ("terminal", terminal_enabled)):
+        homes[profile] = tmp_path / profile
+        homes[profile].mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(homes[profile]))
+        set_config_value("gateway.allow_human_silence_markers", str(enabled).lower())
+
+    runner = _runner(monkeypatch, tmp_path)
+    runner.config.multiplex_profiles = True
+    runner._resolve_profile_home_for_source = lambda source: homes[source.profile]
+    runner._MAX_INTERRUPT_DEPTH = 8
+    runner._is_goal_continuation_event = MagicMock(return_value=False)
+    runner._session_key_for_source = MagicMock(return_value="key")
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="follow-up")
+    runner._adapter_for_source = MagicMock(return_value=None)
+    runner._refresh_agent_cache_message_count = AsyncMock()
+    opener, terminal = _source(), _source()
+    opener.profile, terminal.profile = "opener", "terminal"
+    turn_ctx = SimpleNamespace(
+        source=opener, session_id="sid", session_key="key", run_generation=1,
+        _interrupt_depth=0, history=[], _status_thread_metadata=None,
+        context_prompt=None, result_holder=[None],
+    )
+    result = {"final_response": "[SILENT]", "messages": []}
+    # First produce the terminal result through the real queue handoff. If nested,
+    # unwind it through another handoff whose profile has the opposite setting.
+    for next_source in ([terminal, opener] if nested else [terminal]):
+        runner._run_agent = AsyncMock(return_value=result)
+        pending_event = SimpleNamespace(
+            source=next_source, message_id="43", channel_prompt=None,
+            message_type=None, internal=False,
+        )
+        result = await runner._run_agent_queued_followup(
+            turn_ctx, adapter=None, pending="follow-up", pending_event=pending_event,
+            response="", result={"interrupted": True, "messages": []}, stream_task=None,
+        )
+    _, silent, _ = await runner._hmwa_shape_agent_response(
+        result, opener, [], SimpleNamespace(session_id="sid"), None,
+        None, 1, "sid", "telegram", 0,
+    )
+    assert silent is terminal_enabled
+
+
+@pytest.mark.asyncio
 async def test_empty_success_still_gets_empty_response_warning(monkeypatch, tmp_path):
     runner = _runner(monkeypatch, tmp_path)
     runner._run_agent = AsyncMock(return_value={

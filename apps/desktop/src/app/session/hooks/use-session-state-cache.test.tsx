@@ -2,6 +2,8 @@ import { act, cleanup, render } from '@testing-library/react'
 import { type MutableRefObject, useLayoutEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { group } from '@/components/pane-shell/tree/model'
+import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import type { ChatMessage } from '@/lib/chat-messages'
 import {
   $activeSessionStoredIdRotation,
@@ -19,10 +21,14 @@ import {
   setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
+  setSelectedStoredSessionId,
+  setSessions,
   setTurnStartedAt
 } from '@/store/session'
 import {
+  $focusedStoredSessionId,
   $sessionStates,
+  $sessionTiles,
   clearAllSessionStates,
   reconcileBusyStatesOnReconnect,
   type SessionTileDelegate,
@@ -44,12 +50,18 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     cleanup()
     setActiveSessionId(null)
     setActiveSessionStoredIdRotation(null)
+    setSelectedStoredSessionId(null)
+    setSessions([])
+    $sessionTiles.set([])
+    $layoutTree.set(null)
+    noteActiveTreeGroup(null)
+    window.history.pushState({}, '', '/')
   })
-
   it('emits the previous, next, and runtime ids and removes the stale reverse mapping', () => {
     let cache!: Cache
 
     setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId('stored-A')
     render(
       <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-A" />
     )
@@ -84,6 +96,145 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     expect($activeSessionStoredIdRotation.get()).toBeNull()
     expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
     expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
+  })
+
+  it('does not steal the foreground route when a fast A -> B switch beats A\'s rotation (#86106)', () => {
+    let cache!: Cache
+
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId('stored-B')
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-B" />
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+      cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+    })
+
+    expect($activeSessionStoredIdRotation.get()).toBeNull()
+    expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
+    expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
+  })
+
+  it('does not steal the foreground when the primary route is another session', () => {
+    let cache!: Cache
+
+    // Desktop mounts HashRouter: the app route lives in location.hash.
+    window.history.pushState({}, '', '/#/stored-B')
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId(null)
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId={null} />
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+      cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+    })
+
+    expect($activeSessionStoredIdRotation.get()).toBeNull()
+  })
+
+  it('follows A -> A-next when the primary route is that same session', () => {
+    let cache!: Cache
+
+    window.history.pushState({}, '', '/#/stored-A')
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId(null)
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId={null} />
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+      cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+    })
+
+    expect($activeSessionStoredIdRotation.get()).toEqual({
+      nextStoredSessionId: 'stored-A-next',
+      previousStoredSessionId: 'stored-A',
+      runtimeSessionId: 'runtime-A'
+    })
+  })
+
+  it('follows A -> A-next when there is no route and no store selection', () => {
+    let cache!: Cache
+
+    window.history.pushState({}, '', '/')
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId(null)
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId={null} />
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+      cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+    })
+
+    expect($activeSessionStoredIdRotation.get()).toEqual({
+      nextStoredSessionId: 'stored-A-next',
+      previousStoredSessionId: 'stored-A',
+      runtimeSessionId: 'runtime-A'
+    })
+  })
+
+  it('does not steal the focused session tile when primary A rotates (#86106)', () => {
+    let cache!: Cache
+
+    // Route and selection still name A while tile B holds the layout focus —
+    // the shape the review called out: A's rotation must not run
+    // setSelectedStoredSessionId(A-next) and reveal the workspace over B. The
+    // selection is armed BEFORE the layout: its listener homes focus to the
+    // workspace, so the tile focus must be noted last.
+    setSessions([{ id: 'stored-A' }, { id: 'stored-B' }] as never)
+    $sessionTiles.set([{ storedSessionId: 'stored-B' }])
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId('stored-A')
+    window.history.pushState({}, '', '/#/stored-A')
+    $layoutTree.set(group(['workspace', 'session-tile:stored-B'], { active: 'session-tile:stored-B', id: 'grp-main' }))
+    noteActiveTreeGroup('grp-main')
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId="stored-A" />
+    )
+
+    expect($focusedStoredSessionId.get()).toBe('stored-B')
+
+    act(() => {
+      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+      cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+    })
+
+    expect($activeSessionStoredIdRotation.get()).toBeNull()
+    expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
+  })
+
+  it('follows A -> A-next when the focused tile belongs to the same lineage', () => {
+    let cache!: Cache
+
+    // A tile keyed by an OLDER segment id of the same conversation still counts
+    // as the foreground: the rotation carries the surface to the new tip.
+    setSessions([{ _lineage_ids: ['stored-A', 'stored-A-next'], _lineage_root_id: 'stored-A', id: 'stored-A-next' }] as never)
+    $sessionTiles.set([{ storedSessionId: 'stored-A' }])
+    setActiveSessionId('runtime-A')
+    setSelectedStoredSessionId(null)
+    $layoutTree.set(group(['workspace', 'session-tile:stored-A'], { active: 'session-tile:stored-A', id: 'grp-main' }))
+    noteActiveTreeGroup('grp-main')
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId={null} />
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-A', state => state, 'stored-A')
+      cache.updateSessionState('runtime-A', state => state, 'stored-A-next')
+    })
+
+    expect($activeSessionStoredIdRotation.get()).toEqual({
+      nextStoredSessionId: 'stored-A-next',
+      previousStoredSessionId: 'stored-A',
+      runtimeSessionId: 'runtime-A'
+    })
   })
 })
 

@@ -224,25 +224,26 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
     }
 
     const partition = dependencies.resolvePartition(baseUrl)
-    const scopes = [partitionScope(partition), baseUrlScope(baseUrl)]
     const ownerPrefix = `${baseUrl}\n`
+    // Each scope is revoked and released INDEPENDENTLY. Tying them together
+    // would let one scope stay publishable at an epoch an in-window read had
+    // already captured, just because its sibling was still busy -- reachable
+    // whenever the live registry moves a gateway between partitions mid-logout.
+    const scopes = [
+      { key: partitionScope(partition), matches: (entry: GatewayWsCookieEntry) => entry.partition === partition },
+      { key: baseUrlScope(baseUrl), matches: (entry: GatewayWsCookieEntry) => entry.owner.startsWith(ownerPrefix) }
+    ]
 
-    // Bump each scope's epoch as well as dropping the live entries: a jar read
-    // already in flight must not publish the signed-out cookie. Entries are
-    // matched by partition OR by base url, so a registry edit that moved this
-    // url to another partition since it registered cannot strand its cookie.
-    const revoke = () => {
-      for (const scope of scopes) {
-        epochs.set(scope, (epochs.get(scope) ?? 0) + 1)
-      }
-
-      dropWhere(entry => entry.partition === partition || entry.owner.startsWith(ownerPrefix))
+    // Bump the scope's epoch as well as dropping its live entries: a jar read
+    // already in flight must not publish the signed-out cookie.
+    const revokeScope = (scope: (typeof scopes)[number]) => {
+      epochs.set(scope.key, (epochs.get(scope.key) ?? 0) + 1)
+      dropWhere(scope.matches)
     }
 
-    revoke()
-
     for (const scope of scopes) {
-      signOuts.set(scope, (signOuts.get(scope) ?? 0) + 1)
+      revokeScope(scope)
+      signOuts.set(scope.key, (signOuts.get(scope.key) ?? 0) + 1)
     }
 
     let closed = false
@@ -255,19 +256,18 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
       closed = true
 
       for (const scope of scopes) {
-        const remaining = (signOuts.get(scope) ?? 1) - 1
+        const remaining = (signOuts.get(scope.key) ?? 1) - 1
 
         if (remaining > 0) {
-          signOuts.set(scope, remaining)
-        } else {
-          signOuts.delete(scope)
-        }
-      }
+          signOuts.set(scope.key, remaining)
 
-      // A read that began during the window resolves against the pre-logout
-      // jar, so retire that generation too rather than let it land late.
-      if (scopes.every(scope => !signOuts.get(scope))) {
-        revoke()
+          continue
+        }
+
+        signOuts.delete(scope.key)
+        // A read that began during this scope's window resolves against the
+        // pre-logout jar, so retire that generation rather than let it land.
+        revokeScope(scope)
       }
     }
   }

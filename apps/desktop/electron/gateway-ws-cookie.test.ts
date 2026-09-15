@@ -227,6 +227,54 @@ describe('gateway WebSocket cookie forwarding', () => {
     expect(cookieOn(store, WS_URL)).toBeUndefined()
   })
 
+  // Overlapping logouts release their scopes independently. When the registry
+  // moves a gateway between partitions mid-logout, the partition scope can go
+  // idle while the base-url scope is still busy; the partition must still be
+  // fenced, or a read taken in its window republishes after both finish.
+  it('fences each logout scope independently across a partition move', async () => {
+    const a = 'https://a.example'
+    const b = 'https://b.example'
+    const url = 'wss://b.example/api/ws?ticket=old'
+    const read = deferred<GatewayCookie[]>()
+    let partitionA = 'persist:shared'
+
+    const store = createGatewayWsCookieStore({
+      readCookies: () => read.promise,
+      resolvePartition: baseUrl => (baseUrl === a ? partitionA : 'persist:shared')
+    })
+
+    const firstDone = store.forget(a)
+
+    partitionA = 'persist:dedicated-a'
+
+    const secondDone = store.forget(a)
+    const pending = store.register(url, b)
+
+    firstDone()
+    secondDone()
+    read.resolve(proxyJar)
+    await pending
+
+    expect(cookieOn(store, url)).toBeUndefined()
+  })
+
+  it('still releases a scope only once its own overlapping logouts finish', async () => {
+    const { store } = createStore()
+
+    const first = store.forget(GATEWAY)
+    const second = store.forget(GATEWAY)
+
+    first()
+    await store.register(WS_URL, GATEWAY)
+
+    expect(cookieOn(store, WS_URL)).toBeUndefined()
+
+    second()
+    await store.register(WS_URL, GATEWAY)
+
+    expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
+  })
+
   it('keeps two gateways on separate partitions independent', async () => {
     const one = 'https://one.example'
     const two = 'https://two.example'

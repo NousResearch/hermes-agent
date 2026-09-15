@@ -98,17 +98,20 @@ export function applyRemoteRequestHeaders(
 export function createRegistryGatewayWsUrlHandler(dependencies: RegistryGatewayWsUrlDependencies) {
   return async (payload: unknown): Promise<string> => {
     const { connectionId, profile } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
-    const connection = await dependencies.ensureBackend(connectionId, profile)
+    // Pin the source id BEFORE selecting the backend, and select with the
+    // pinned id. Resolving it afterwards read the registry's primary a second
+    // time: if the primary changed across the await, one request got the old
+    // backend under the NEW id, so its next mint no longer recognized -- and
+    // so no longer retired -- the url it had just authorized.
+    const pinnedId = String(connectionId ?? '').trim() || (dependencies.resolveConnectionId?.(connectionId) ?? '')
+    const connection = await dependencies.ensureBackend(pinnedId || connectionId, profile)
 
-    // Stable across this pair's reconnects, distinct from every other pair and
-    // from the non-registry mint paths. Normalized exactly as the backend
-    // resolution normalizes them -- an omitted connectionId means the primary
-    // and an omitted profile means 'default', so the same socket re-minting
-    // must not land under a second key and leave its stale ticket url live.
-    const resolvedId =
-      dependencies.resolveConnectionId?.(connectionId) ||
-      String(connection.connectionId ?? connectionId ?? '').trim() ||
-      'primary'
+    // Distinct from every other pair and from the non-registry mint paths, and
+    // normalized as the backend resolution normalizes it: an omitted
+    // connectionId means the primary and an omitted profile means 'default',
+    // so the same socket re-minting cannot land under a second key and leave
+    // its stale ticket url live.
+    const resolvedId = pinnedId || String(connection.connectionId ?? '').trim() || 'primary'
 
     const consumer = `registry:${resolvedId}:${String(profile ?? '').trim() || 'default'}`
     let wsUrl = connection.wsUrl

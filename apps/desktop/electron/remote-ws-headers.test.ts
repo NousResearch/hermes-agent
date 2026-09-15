@@ -147,6 +147,49 @@ describe('registry gateway WebSocket headers', () => {
     expectNoHeadersForNearbyUrls(store, result)
   })
 
+  // The primary can change while the backend promise is in flight. The id is
+  // pinned before that await and used to select the backend, so one request
+  // cannot end up with the old backend under the new primary's identity --
+  // which would stop its next mint from retiring the url it just authorized.
+  it('pins the source id before resolving the backend', async () => {
+    let primary = 'conn-a'
+    const selected: Array<unknown> = []
+    const consumers: Array<string | undefined> = []
+
+    const handler = createRegistryGatewayWsUrlHandler({
+      ensureBackend: async (connectionId, profile) => {
+        selected.push(connectionId)
+        // The primary flips while this backend is being resolved.
+        primary = 'conn-b'
+
+        return {
+          authMode: 'oauth',
+          baseUrl: 'https://gateway.example',
+          wsUrl: 'wss://gateway.example/api/ws?ticket=stale',
+          headers: accessHeaders,
+          profile: profile as string
+        }
+      },
+      mintTicket: vi.fn(async () => 'fresh-ticket'),
+      buildTicketUrl: (baseUrl, ticket) => `${baseUrl.replace(/^https:/, 'wss:')}/api/ws?ticket=${ticket}`,
+      rememberHeaders: (_wsUrl, _headers, _connection, consumer) => {
+        consumers.push(consumer)
+      },
+      resolveConnectionId: id => String(id || '').trim() || primary
+    })
+
+    await handler({ profile: 'work' })
+
+    // Selected with the pinned id, and identified by the same one.
+    expect(selected).toEqual(['conn-a'])
+    expect(consumers).toEqual(['registry:conn-a:work'])
+
+    // The later explicit mint for that same source retires its own url.
+    await handler({ connectionId: 'conn-a', profile: 'work' })
+
+    expect(consumers).toEqual(['registry:conn-a:work', 'registry:conn-a:work'])
+  })
+
   // A shared remote backs one socket per (connectionId, profile) at a single
   // baseUrl, so the cookie owner cannot be the gateway: pin that each pair
   // reaches rememberHeaders under its own stable consumer key.

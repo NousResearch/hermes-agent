@@ -8,6 +8,8 @@ import { toolPresentVerb } from '@/components/assistant-ui/tool/run-summary'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { SCAFFOLD_LABEL_CLASS } from '@/components/chat/scaffold-row'
+import { OrbView, useOrbThinking } from '@/components/orb/OrbView'
+import { useOrbState } from '@/components/orb/use-orb-state'
 import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
 import { StatusPulse } from '@/components/ui/status-pulse'
@@ -219,8 +221,62 @@ function useStatusHint(compacting: boolean, drafting: DraftingTool | null, provi
   return revealed && name ? toolPresentVerb(name) : ''
 }
 
+// Thinking dot for the status rows: the liquid-glass orb when the user opted
+// into the orb animation (Settings → Appearance), otherwise the standard
+// pulse dot. The orb degrades to a Loader on its own when WebGPU is missing.
+// The orb renders the thread's live OrbState — thinking, streaming,
+// tool-running, waiting-input, … — not just a generic spinner.
+const ThinkingDot: FC = () => {
+  const { enabled, params } = useOrbThinking()
+  const orbState = useOrbState()
+
+  if (!enabled) {
+    return (
+      <StatusPulse
+        aria-hidden="true"
+        className="dither inline-block size-3 rounded-[2px] text-midground/80"
+        kind="opacity"
+      />
+    )
+  }
+
+  return (
+    <OrbView
+      aria-hidden="true"
+      className="inline-block size-4"
+      fallbackType="original-thinking"
+      params={params}
+      state={orbState}
+    />
+  )
+}
+
+/**
+ * Error-state orb for the failed-turn error row. A leaf so the error header
+ * doesn't subscribe to orb state itself — it renders nothing when the user
+ * hasn't opted into the orb.
+ */
+export const ErrorStateOrb: FC = () => {
+  const { enabled, params } = useOrbThinking()
+
+  if (!enabled) {
+    return null
+  }
+
+  return (
+    <OrbView
+      aria-hidden="true"
+      className="mt-0.5 size-4 shrink-0"
+      fallbackType="original-thinking"
+      params={params}
+      state="error"
+    />
+  )
+}
+
 export const CenteredThreadSpinner: FC = () => {
   const { t } = useI18n()
+  const { enabled: orbEnabled, params: orbParams } = useOrbThinking()
 
   return (
     <div
@@ -228,14 +284,18 @@ export const CenteredThreadSpinner: FC = () => {
       className="pointer-events-none absolute inset-0 z-1 grid place-items-center"
       role="status"
     >
-      <Loader
-        aria-hidden="true"
-        className="size-12 text-midground/70"
-        pathSteps={220}
-        role="presentation"
-        strokeScale={0.72}
-        type="rose-curve"
-      />
+      {orbEnabled ? (
+        <OrbView aria-hidden="true" className="size-16" fallbackType="rose-curve" params={orbParams} />
+      ) : (
+        <Loader
+          aria-hidden="true"
+          className="size-12 text-midground/70"
+          pathSteps={220}
+          role="presentation"
+          strokeScale={0.72}
+          type="rose-curve"
+        />
+      )}
     </div>
   )
 }
@@ -252,11 +312,7 @@ export const ResponseLoadingIndicator: FC = () => {
 
   return (
     <StatusRow data-slot="aui_response-loading" label={hint || t.assistant.thread.loadingResponse}>
-      <StatusPulse
-        aria-hidden="true"
-        className="dither inline-block size-3 rounded-[2px] text-midground/80"
-        kind="opacity"
-      />
+      <ThinkingDot />
       {hint ? (
         <WaitHint hint={hint} />
       ) : localLoad ? (
@@ -371,11 +427,7 @@ export const TurnActivityIndicator: FC = () => {
 
   return (
     <StatusRow data-slot="aui_turn-activity" label={hint || 'Hermes is working'}>
-      <StatusPulse
-        aria-hidden="true"
-        className="dither inline-block size-3 rounded-[2px] text-midground/80"
-        kind="opacity"
-      />
+      <ThinkingDot />
       {hint ? (
         <WaitHint hint={hint} />
       ) : localLoad ? (

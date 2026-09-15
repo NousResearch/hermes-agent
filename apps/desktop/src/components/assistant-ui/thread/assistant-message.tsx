@@ -21,7 +21,7 @@ import {
 } from '@/components/assistant-ui/thread/content'
 import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/message-parts'
 import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
-import { ResponseLoadingIndicator, TurnActivityIndicator } from '@/components/assistant-ui/thread/status'
+import { ErrorStateOrb, ResponseLoadingIndicator, TurnActivityIndicator } from '@/components/assistant-ui/thread/status'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { useMessageReactions, useTapbackDoubleClick } from '@/components/assistant-ui/thread/use-message-reactions'
 import { AGENT_MESSAGE_RE } from '@/components/assistant-ui/thread/user-message'
@@ -250,6 +250,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
                 role="alert"
               >
                 <div className="flex items-start gap-1.5">
+                  <ErrorStateOrb />
                   <div className="min-w-0 flex-1">
                     <ErrorCardHeadline />
                   </div>

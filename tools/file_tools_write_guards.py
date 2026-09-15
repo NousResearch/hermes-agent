@@ -273,22 +273,24 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
     def _within(candidate_key: str, home_key: str) -> bool:
         return candidate_key == home_key or candidate_key.startswith(home_key + os.sep)
 
-    resolved_key = os.path.normcase(os.path.abspath(resolved))
-    if any(
-        _within(resolved_key, exempt_home_key)
-        and not (real_home_key and _within(resolved_key, real_home_key))
-        for exempt_home_key in exempt_home_keys
-    ):
-        return None
-
     for candidate in (normalized, resolved):
+        candidate_key = os.path.normcase(os.path.abspath(candidate))
+        candidate_in_active_home = bool(
+            real_home_key and _within(candidate_key, real_home_key)
+        )
+        candidate_in_parent_root = any(
+            _within(candidate_key, exempt_home_key)
+            and not candidate_in_active_home
+            for exempt_home_key in exempt_home_keys
+        )
+        if candidate_in_parent_root:
+            continue
         base = os.path.basename(candidate)
         base_lower = base.lower()
         if base_lower in _PROTECTED_INSTRUCTION_BASENAMES or any(
                 fnmatch.fnmatch(base_lower, pattern.lower()) for pattern in extra_patterns):
             return base
-        candidate_key = os.path.normcase(os.path.abspath(candidate))
-        if any(_within(candidate_key, home_key) for home_key in exempt_home_keys):
+        if candidate_in_active_home:
             continue
         # Project-local .hermes config dirs (<repo>/.hermes/config.yaml) steer
         # behavior too. Only the IMMEDIATE parent counts — matching any ancestor

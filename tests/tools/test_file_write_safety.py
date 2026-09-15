@@ -925,6 +925,50 @@ class TestProfileHomeExemptsHermesRoot:
         assert (root / "LEDGER.md").read_text(encoding="utf-8") == "caliber fixed"
         assert approvals["calls"] == []
 
+    def test_active_profile_instruction_alias_into_root_stays_gated(
+        self, tmp_path, monkeypatch, approvals
+    ):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        root, profile = self._profile_layout(tmp_path)
+        target = root / "shared.txt"
+        target.write_text("original", encoding="utf-8")
+        alias = profile / "AGENTS.md"
+        alias.symlink_to(target)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        token = set_hermes_home_override(str(profile))
+        try:
+            res = self._write(alias, "changed")
+        finally:
+            reset_hermes_home_override(token)
+
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert target.read_text(encoding="utf-8") == "original"
+        assert len(approvals["calls"]) == 1
+
+    def test_project_hermes_alias_into_root_stays_gated(
+        self, tmp_path, monkeypatch, approvals
+    ):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        root, profile = self._profile_layout(tmp_path)
+        target = root / "shared.txt"
+        target.write_text("original", encoding="utf-8")
+        project_home = tmp_path / "repo" / ".hermes"
+        project_home.mkdir(parents=True)
+        alias = project_home / "config.yaml"
+        alias.symlink_to(target)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        token = set_hermes_home_override(str(profile))
+        try:
+            res = self._write(alias, "changed")
+        finally:
+            reset_hermes_home_override(token)
+
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert target.read_text(encoding="utf-8") == "original"
+        assert len(approvals["calls"]) == 1
+
     def test_only_a_real_hermes_root_is_exempt(self, tmp_path, monkeypatch, approvals):
         """Negatives hold with a named profile active: a checkout's ``.hermes/config.yaml`` and
         protected basenames stay gated (fail-closed, unwritten), and a coincidental

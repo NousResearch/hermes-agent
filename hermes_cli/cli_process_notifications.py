@@ -58,6 +58,9 @@ class CLIProcessNotificationsMixin:
         if is_voice_input:
             user_input = user_input.text
         is_seeded_query = isinstance(user_input, _SeededQueryMessage)
+        # Stashed rather than returned: this helper's 3-tuple has other callers, and the flag is
+        # read once, immediately, by the slash-dispatch gate (#109971).
+        self._seeded_runs_command = is_seeded_query and bool(getattr(user_input, "run_command", False))
         if is_seeded_query:
             user_input = (user_input.text, user_input.images) if user_input.images else user_input.text
         return user_input, is_voice_input, is_seeded_query

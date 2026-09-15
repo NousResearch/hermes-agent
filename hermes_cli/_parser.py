@@ -195,6 +195,12 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "Query to run. On a real TTY the prompt seeds an interactive "
         "session (submitted literally as the first turn); combined with "
         "--oneshot or -Q, or on a non-TTY, it answers and exits."))
+    _query_group.add_argument("--run-command", metavar="COMMAND", help=(
+        "Invoke a registered slash command non-interactively and exit, e.g. "
+        "--run-command '/mycommand args'. Unlike -q, the text is dispatched "
+        "to the command handler instead of being sent to the model, which is "
+        "what lets a plugin author drive a register_command handler from a "
+        "script or from CI. `!` shell escapes and file drops stay literal."))
     _query_group.add_argument("--query-file", metavar="PATH", help=(
         "Read the single query from a file instead of the command line "
         "('-' reads stdin). Safe for arbitrary text: nothing is shell-"

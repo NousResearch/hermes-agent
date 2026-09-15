@@ -1737,6 +1737,7 @@ def cmd_chat(args):
         "reasoning": getattr(args, "reasoning", None),
         "toolsets": args.toolsets,
         "query": args.query,
+        "run_command": getattr(args, "run_command", None),
         "oneshot": bool(getattr(args, "oneshot_exit", False)),
         "run_budget": getattr(args, "run_budget", None),
         "ignore_rules": getattr(args, "ignore_rules", False) or safe_mode,

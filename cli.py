@@ -2465,13 +2465,22 @@ class _VoiceInputMessage:
 
 
 class _SeededQueryMessage:
-    """Sentinel for a ``-q`` prompt seeded into an interactive session; treated LITERALLY (no slash/!/file-drop)."""
+    """Sentinel for a ``-q`` prompt seeded into an interactive session; treated LITERALLY (no slash/!/file-drop).
 
-    __slots__ = ("text", "images")
+    ``run_command`` is the one opt-out, set only by ``--run-command`` (#109971): the text is
+    dispatched as a slash command instead of being sent to the model, so a plugin author can
+    drive a ``register_command`` handler from a script or CI. It does NOT relax the other two:
+    ``!`` still never reaches a shell and a path still never becomes a file drop, because the
+    literal treatment of those is a security property (`test_seeded_interactive_query`), not an
+    artefact of the same branch.
+    """
 
-    def __init__(self, text: str, images=None):
+    __slots__ = ("text", "images", "run_command")
+
+    def __init__(self, text: str, images=None, *, run_command: bool = False):
         self.text = text or ""
         self.images = list(images or [])
+        self.run_command = bool(run_command)
 
     def __str__(self) -> str:
         return self.text
@@ -3498,8 +3507,11 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             if self._pending_resume_sessions and self._consume_pending_resume_selection(user_input):
                 return
             if not is_seeded_query:
+                # `!` stays literal for every seeded prompt, --run-command included: a seeded
+                # shell escape is the injection this sentinel exists to prevent.
                 if self.handle_bang_shell(user_input):
                     return
+            if not is_seeded_query or getattr(self, "_seeded_runs_command", False):
                 if _looks_like_slash_command(user_input):
                     user_input = self._tui_run_slash_input(user_input)
                     if user_input is None:
@@ -4435,15 +4447,16 @@ def _configure_quiet_agent(agent) -> None:
     agent.tool_progress_mode = "off"
 
 
-def _run_single_query_mode(cli, query, image, quiet, oneshot):
+def _run_single_query_mode(cli, query, image, quiet, oneshot, run_command=False):
     """``-q``/``--image`` entry: seed an interactive session on a TTY, else run the one-shot turn and exit."""
-    if _should_seed_interactive(query, image, quiet, oneshot):
+    if run_command or _should_seed_interactive(query, image, quiet, oneshot):
         seeded_query, seeded_images = _collect_query_images(query, image)
         logger.info(
-            "Seeding interactive session with -q prompt (%d chars, %d images)",
-            len(seeded_query or ""), len(seeded_images),
+            "Seeding interactive session with -q prompt (%d chars, %d images, run_command=%s)",
+            len(seeded_query or ""), len(seeded_images), run_command,
         )
-        cli._seeded_first_message = _SeededQueryMessage(seeded_query, seeded_images)
+        cli._seeded_first_message = _SeededQueryMessage(
+            seeded_query, seeded_images, run_command=run_command)
         return cli.run()
     cli._single_query_mode = True  # agent waits the full MCP cold-start before its only tool snapshot
     # No user can answer approval prompts: the approval gate takes the deterministic path.
@@ -4494,6 +4507,7 @@ def main(
     query: str = None,
     q: str = None,
     oneshot: bool = False,
+    run_command: str = None,
     image: str = None,
     toolsets: str = None,
     skills: str | list[str] | tuple[str, ...] = None,
@@ -4601,6 +4615,11 @@ def main(
     atexit.register(_run_cleanup)  # interactive mode registers again in run() (idempotent)
     _install_single_query_signal_handlers(cli)
 
+    if run_command:
+        # Dispatched as a slash command, not sent to the model, and never on the one-shot
+        # path: a command handler runs inside the session it is registered against (#109971).
+        _run_single_query_mode(cli, run_command, None, quiet, False, run_command=True)
+        return
     if query or image:
         _run_single_query_mode(cli, query, image, quiet, oneshot)
         return

@@ -9,6 +9,9 @@ _DIAGNOSTIC_PREFIXES = (
     "⚠", "❌", "🚫", "↻", "Content filter terminated stream",
     "🔌 Detected stale connections", "✅ Primary model restored",
     "⏳ Retrying", "⏱️ Rate limited", "⏱️ Provider overloaded",
+    "🔐 Authentication failed", "⏳ Your Nous account",
+    "ℹ️ Estimated cost of these empty attempts",
+    "📐 Compression could not reduce the request further",
 )
 
 

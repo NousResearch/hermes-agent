@@ -40,6 +40,9 @@ class Emitter(StatusOutputMixin):
     ('display: {warning_notifications: "false"}', False),
     ("display: {warning_notifications: typo}", True),
     ("display: {warning_notifications: []}", True),
+    ("display: broken", True),
+    ("display: [broken]", True),
+    ("display: {platforms: broken}", True),
     ("display: {warning_notifications: false, platforms: {slack: {warning_notifications: true}}}", True),
 ])
 def test_warning_opt_out_preserves_other_delivery(tmp_path, monkeypatch, platform, thread_id, configured, enabled):
@@ -48,7 +51,7 @@ def test_warning_opt_out_preserves_other_delivery(tmp_path, monkeypatch, platfor
     (tmp_path / "config.yaml").write_text(configured)
     monkeypatch.setattr(run, "_hermes_home", tmp_path)
     config = _load_gateway_config()
-    if "platforms" in configured and platform != Platform.SLACK:
+    if "platforms: {slack" in configured and platform != Platform.SLACK:
         enabled = False
     enabled = enabled or platform == Platform.LOCAL
     adapter = RecordingAdapter()
@@ -72,6 +75,10 @@ def test_warning_opt_out_preserves_other_delivery(tmp_path, monkeypatch, platfor
         ("lifecycle", "⚠ Compression aborted: summary failed; history preserved"),
         ("lifecycle", "↻ Switched to fallback: secondary (provider)"),
         ("lifecycle", "Content filter terminated stream; switching to fallback..."),
+        ("lifecycle", "🔐 Authentication failed and could not be refreshed — switching to fallback provider..."),
+        ("lifecycle", "ℹ️ Estimated cost of these empty attempts: ~$1.25"),
+        ("lifecycle", "⏳ Your Nous account has hit its rate limit; it resets in 1m."),
+        ("lifecycle", "📐 Compression could not reduce the request further — removed retained vision payloads and retrying..."),
     ]
     for kind, text in diagnostics:
         emitter._emit_status_kind(kind, text, origin="test")

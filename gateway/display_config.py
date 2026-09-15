@@ -96,8 +96,11 @@ def resolve_display_setting(user_config: dict, platform_key: str, setting: str, 
 
 def _configured_display_value(user_config: dict, platform_key: str, setting: str) -> Any:
     """First non-None operator value, without introducing tier defaults."""
-    display_cfg = user_config.get("display") or {}
-    plat_overrides = (display_cfg.get("platforms") or {}).get(platform_key)
+    display_cfg = user_config.get("display")
+    if not isinstance(display_cfg, dict):
+        return None
+    platforms = display_cfg.get("platforms")
+    plat_overrides = platforms.get(platform_key) if isinstance(platforms, dict) else None
     if isinstance(plat_overrides, dict) and plat_overrides.get(setting) is not None:
         return plat_overrides[setting]
     if setting == "tool_progress":

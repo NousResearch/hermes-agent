@@ -883,8 +883,6 @@ class TurnRunner:
         ctx = self._ctx
         if not self._status_live():
             return
-        if is_warning_status(event_type, message) and not warning_notifications_enabled(ctx.source.platform, ctx.user_config):
-            return
         prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message)
         if prepared is None:
             logger.debug(
@@ -892,6 +890,8 @@ class TurnRunner:
                 ctx.source.platform.value if ctx.source.platform else "unknown", event_type,
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
+            return
+        if is_warning_status(event_type, message) and not warning_notifications_enabled(ctx.source.platform, ctx.user_config):
             return
         fut = self._schedule(
             _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),

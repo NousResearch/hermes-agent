@@ -70,6 +70,7 @@
     "check:test:ui": "npm run test:ui",
     "check:test:desktop:platforms": "npm run test:desktop:platforms",
     "check:test:desktop:all": "npm run test:desktop:all",
+    "check:design-tokens": "node scripts/check-design-tokens.mjs",
     "check:lint": "npm run typecheck && npm run lint",
     "check": "npm run check:lint && npm run test:ui && npm run test:desktop:platforms && npm run test:desktop:all",
     "test:e2e": "npm run build && playwright test e2e/",

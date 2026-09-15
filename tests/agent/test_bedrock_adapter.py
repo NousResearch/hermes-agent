@@ -1012,6 +1012,85 @@ class TestBedrockContextProbe:
         client.converse.side_effect = Exception(message)
         return client
 
+    def _client_with(self, *outcomes):
+        """Client whose successive converse() calls yield *outcomes* (a response dict or an Exception)."""
+        client = MagicMock()
+        client.converse.side_effect = list(outcomes)
+        return client
+
+    def test_throttle_at_a_tier_does_not_escalate(self):
+        # Measured against Converse: a 12.2 MB tier-2 payload came back as
+        # "ThrottlingException ... Too many tokens, please wait before trying
+        # again." after boto3 had already burned its four internal retries.
+        # Uploading a still larger prompt is the one reaction that cannot help.
+        from agent.bedrock_adapter import probe_bedrock_context_length
+        client = self._client_raising(
+            "An error occurred (ThrottlingException) when calling the Converse operation "
+            "(reached max retries: 4): Too many tokens, please wait before trying again.")
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
+            assert probe_bedrock_context_length("some.unlisted-model", "us-east-1") is None
+        assert client.converse.call_count == 1
+
+    def test_numberless_overflow_does_not_escalate(self):
+        # The other shape an over-padded prompt gets back, with no window in it.
+        # A bigger payload returns the identical sentence.
+        from agent.bedrock_adapter import probe_bedrock_context_length
+        client = self._client_raising(
+            "An error occurred (ValidationException) when calling the Converse "
+            "operation: Input is too long for requested model.")
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
+            assert probe_bedrock_context_length("some.unlisted-model", "us-east-1") is None
+        assert client.converse.call_count == 1
+
+    def test_opaque_server_error_still_escalates(self):
+        # The ladder exists for this case, so it has to keep working: an
+        # InternalServerException says nothing about length, and the next tier is
+        # what turns it into a parseable answer.
+        from agent.bedrock_adapter import probe_bedrock_context_length
+        client = self._client_with(
+            Exception("An error occurred (InternalServerException) when calling the "
+                      "Converse operation: Internal server error"),
+            Exception("This model\'s maximum context length is 200000 tokens. "
+                      "Please reduce the length of the prompt"))
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
+            assert probe_bedrock_context_length("some.unlisted-model", "us-east-1") == 200_000
+        assert client.converse.call_count == 2
+
+    def test_accepted_tier_escalates_to_read_the_real_window(self):
+        # A tier that fits only proves "at least this much". The next tier is what
+        # makes Bedrock quote the number, so a 2M model must resolve to 2M and not
+        # to the 1,300,000 the first tier would have reported.
+        from agent.bedrock_adapter import probe_bedrock_context_length
+        client = self._client_with(
+            {"usage": {"inputTokens": 1_444_444}},
+            Exception("This model\'s maximum context length is 2000000 tokens. "
+                      "Please reduce the length of the prompt"))
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
+            assert probe_bedrock_context_length("some.unlisted-model", "us-east-1") == 2_000_000
+        assert client.converse.call_count == 2
+
+    def test_accepted_floor_does_not_mask_a_larger_table_value(self):
+        # Both tiers fit, so the probe knows only ">= 2.2M". Measured on Llama 4
+        # Scout, which accepts 2,222,258 tokens against a real 3,500,000 window:
+        # answering with the floor would cap it at two thirds, and a caller that
+        # persists probe results (agent/model_metadata.py) would keep that.
+        from agent.bedrock_adapter import BEDROCK_CONTEXT_LENGTHS, probe_bedrock_context_length
+        client = self._client_with(
+            {"usage": {"inputTokens": 1_444_444}}, {"usage": {"inputTokens": 2_444_444}})
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client), \
+                patch.dict(BEDROCK_CONTEXT_LENGTHS, {"test.wide-window": 5_000_000}):
+            assert probe_bedrock_context_length("test.wide-window-v1:0", "us-east-1") is None
+
+    def test_accepted_floor_answers_when_the_table_knows_less(self):
+        # For a model the table has never heard of, the floor is still the best
+        # thing available -- without it the caller falls to the 128K default.
+        from agent.bedrock_adapter import probe_bedrock_context_length
+        client = self._client_with(
+            {"usage": {"inputTokens": 1_444_444}}, {"usage": {"inputTokens": 2_444_444}})
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
+            assert probe_bedrock_context_length("some.unlisted-model", "us-east-1") == 2_200_000
+        assert client.converse.call_count == 2
+
 
     def test_probe_returns_none_when_client_unavailable(self):
         from agent.bedrock_adapter import probe_bedrock_context_length

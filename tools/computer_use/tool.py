@@ -433,6 +433,92 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any], se
     if spec is None:
         return json.dumps({"error": f"unknown action {action!r}" + (f" — did you mean {hint!r}? See the action enum in the tool schema."
                                                                  if (hint := _ACTION_SUGGESTIONS.get(str(action))) else "")})
+    # Validate strategy parameter (default: "auto")
+    strategy = args.get("strategy")
+    if strategy is None or strategy == "":
+        strategy = "auto"
+    if strategy not in ("auto", "a11y", "event"):
+        return json.dumps({
+            "ok": False,
+            "action": action,
+            "code": "invalid_strategy",
+            "error": f"invalid strategy {strategy!r}; must be one of 'auto', 'a11y', 'event'",
+        })
+
+    # Enforce strategy constraints
+    if strategy == "a11y":
+        if action in ("click", "double_click", "right_click", "middle_click", "set_value"):
+            if args.get("element") is None and args.get("element_token") is None:
+                return json.dumps({
+                    "ok": False,
+                    "action": action,
+                    "code": "strategy_a11y_required",
+                    "error": (
+                        f"strategy='a11y' requires targeting by `element`, but no element was provided "
+                        f"for {action}."
+                    ),
+                })
+            args = dict(args)
+            args.pop("coordinate", None)
+        elif action == "drag":
+            if args.get("from_element") is None or args.get("to_element") is None:
+                return json.dumps({
+                    "ok": False,
+                    "action": action,
+                    "code": "strategy_a11y_required",
+                    "error": "strategy='a11y' requires `from_element` and `to_element` for drag.",
+                })
+            args = dict(args)
+            args.pop("from_coordinate", None)
+            args.pop("to_coordinate", None)
+        elif action == "scroll":
+            if args.get("coordinate") is not None and args.get("element") is None:
+                return json.dumps({
+                    "ok": False,
+                    "action": action,
+                    "code": "strategy_a11y_required",
+                    "error": "strategy='a11y' does not allow coordinate targeting for scroll; use element or omit coordinates to scroll the window.",
+                })
+            if args.get("element") is not None:
+                args = dict(args)
+                args.pop("coordinate", None)
+    elif strategy == "event":
+        if action in ("click", "double_click", "right_click", "middle_click"):
+            coord = args.get("coordinate")
+            if not coord or not isinstance(coord, (list, tuple)) or len(coord) < 2 or coord[0] is None or coord[1] is None:
+                return json.dumps({
+                    "ok": False,
+                    "action": action,
+                    "code": "strategy_event_required",
+                    "error": f"strategy='event' requires `coordinate=[x, y]` for {action}.",
+                })
+            args = dict(args)
+            args.pop("element", None)
+            args.pop("element_token", None)
+        elif action == "drag":
+            src, dst = args.get("from_coordinate"), args.get("to_coordinate")
+            if not src or not dst or not isinstance(src, (list, tuple)) or not isinstance(dst, (list, tuple)) or len(src) < 2 or len(dst) < 2:
+                return json.dumps({
+                    "ok": False,
+                    "action": action,
+                    "code": "strategy_event_required",
+                    "error": "strategy='event' requires `from_coordinate` and `to_coordinate` for drag.",
+                })
+            args = dict(args)
+            args.pop("from_element", None)
+            args.pop("to_element", None)
+        elif action == "scroll":
+            if args.get("element") is not None:
+                args = dict(args)
+                args.pop("element", None)
+        elif action == "set_value":
+            return json.dumps({
+                "ok": False,
+                "action": action,
+                "code": "strategy_event_unsupported",
+                "error": "strategy='event' is not supported for set_value; set_value is strictly an accessibility action (use strategy='a11y' or 'auto').",
+            })
+
     # app= guard: input goes to the sticky target from the last capture/focus_app and the backend drops app=
     # silently — refuse a clear mismatch rather than type into the wrong window while reporting ok:true.
     if (spec.input and isinstance(requested_app := args.get("app"), str) and requested_app.strip()

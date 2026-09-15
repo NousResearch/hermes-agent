@@ -35,6 +35,7 @@ import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
+import { clearAllComputerUseStates, clearComputerUseState } from './computer-use'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
 import {
@@ -616,6 +617,7 @@ export function dropSessionState(runtimeId: string) {
   // cached runtime is dropped in the meantime.
   clearWatchdog(runtimeId)
   clearSessionProviderWait(runtimeId)
+  clearComputerUseState(runtimeId)
   sessionScopeByRuntimeId.delete(runtimeId)
   sessionOwnerByRuntimeId.delete(runtimeId)
 
@@ -644,6 +646,7 @@ export function clearAllSessionStates() {
   settledExpiry.clear()
   unconfirmedReconnectSettles.clear()
   clearAllProviderWaits()
+  clearAllComputerUseStates()
   sessionScopeByRuntimeId.clear()
   sessionOwnerByRuntimeId.clear()
   $stalledSessionIds.set([])

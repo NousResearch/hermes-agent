@@ -1,6 +1,16 @@
 import { reportFirstBuildToolComplete } from '@/components/onboarding-chat/first-build'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
+import {
+  $computerUseBySession,
+  clearComputerUseState,
+  extractComputerUseArgs,
+  extractToolErrorMessage,
+  setComputerUseCompleted,
+  setComputerUseDrafting,
+  setComputerUseError,
+  setComputerUseRunning
+} from '@/store/computer-use'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
@@ -43,6 +53,10 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
 
     setSessionDraftingTool(sessionId, typeof payload?.name === 'string' ? payload.name : '')
 
+    if (payload?.name === 'computer_use') {
+      setComputerUseDrafting(sessionId)
+    }
+
     if (isActiveEvent) {
       setPetActivity({ reasoning: false, toolRunning: true })
     }
@@ -50,13 +64,36 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
-  if (event.type === 'tool.start') {
+  if (event.type === 'tool.start' || event.type === 'tool.progress') {
     if (!sessionId) {
       return true
     }
 
     flushQueuedDeltas(sessionId)
     upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type, occurredAt)
+
+    const currentCU = $computerUseBySession.get()[sessionId]
+    const toolId =
+      typeof payload?.tool_id === 'string'
+        ? payload.tool_id
+        : typeof payload?.id === 'string'
+          ? payload.id
+          : undefined
+
+    if (payload?.name && payload.name !== 'computer_use' && currentCU?.phase === 'drafting') {
+      clearComputerUseState(sessionId)
+    }
+
+    const isComputerUseEvent =
+      payload?.name === 'computer_use' ||
+      (event.type === 'tool.progress' &&
+        (currentCU?.phase === 'running' || currentCU?.phase === 'drafting') &&
+        (!payload?.name || payload?.name === 'computer_use') &&
+        (!toolId || !currentCU?.toolId || toolId === currentCU.toolId))
+
+    if (isComputerUseEvent) {
+      setComputerUseRunning(sessionId, extractComputerUseArgs(payload), event.type === 'tool.progress')
+    }
 
     if (isActiveEvent) {
       setPetActivity({ reasoning: false, toolRunning: true })
@@ -69,6 +106,33 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
     if (sessionId) {
       flushQueuedDeltas(sessionId)
       upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type, occurredAt)
+
+      const currentCU = $computerUseBySession.get()[sessionId]
+      const toolId =
+        typeof payload?.tool_id === 'string'
+          ? payload.tool_id
+          : typeof payload?.id === 'string'
+            ? payload.id
+            : undefined
+
+      const isComputerUseComplete =
+        payload?.name === 'computer_use' ||
+        (!payload?.name &&
+          currentCU?.phase === 'running' &&
+          (!toolId || !currentCU?.toolId || toolId === currentCU.toolId))
+
+      if (isComputerUseComplete) {
+        const errorMessage = extractToolErrorMessage(payload)
+
+        if (errorMessage) {
+          setComputerUseError(sessionId, errorMessage)
+        } else {
+          setComputerUseCompleted(sessionId, {
+            durationSeconds: typeof payload?.duration_s === 'number' ? payload.duration_s : undefined
+          })
+        }
+      }
+
       // Onboarding's first build paces its check-ins off real work done
       // (no-op in every other session).
       reportFirstBuildToolComplete(sessionId)

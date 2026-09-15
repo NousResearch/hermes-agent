@@ -44,6 +44,66 @@ def _pgroup_alive(pgid: Optional[int]) -> bool:
         return False
 
 
+class _MetaStrippingWriteStream:
+    """Write-stream wrapper that drops an EMPTY ``params._meta`` from outbound frames (#105637).
+
+    The pinned ``mcp==2.0.0`` dispatcher attaches ``params["_meta"] = {}`` to every request —
+    even with no progress token and a no-op tracer (SEP-414 keeps the key on the wire for
+    trace-context injection). Strict servers reject the empty object: Meta's hosted Ads MCP
+    server answers HTTP 400 ``-32602 "_meta for Request must be a dict or null"``, making such
+    servers unreachable natively (``_meta: null`` is rejected too — the field must be absent).
+
+    Populated ``_meta`` (progressToken, W3C traceparent) still flows: only a dict that is empty
+    AFTER the SDK finished building it is dropped, right before the frame reaches the wire.
+    Response frames (``result``/``error``, no ``params``) and notifications are handled by the
+    same params check; anything without a ``message.params`` dict passes through untouched.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    async def send(self, frame):
+        message = getattr(frame, "message", None)
+        if message is None:
+            await self._inner.send(frame)
+            return
+        params = getattr(message, "params", None)
+        if isinstance(params, dict):
+            meta = params.get("_meta")
+            if isinstance(meta, dict) and not meta:
+                # Copy-on-write: the SDK's dispatcher reuses the params dict across
+                # retries; mutate only the frame we are about to serialize.
+                stripped = {k: v for k, v in params.items() if k != "_meta"}
+                try:
+                    message.params = stripped
+                except Exception:  # pydantic frozen/validated models: send as-is
+                    pass
+        await self._inner.send(frame)
+
+    async def __aenter__(self):
+        enter = getattr(self._inner, "__aenter__", None)
+        if enter is not None:
+            await enter()
+        return self
+
+    async def __aexit__(self, *exc):
+        exit_ = getattr(self._inner, "__aexit__", None)
+        if exit_ is not None:
+            return await exit_(*exc)
+        return False
+
+
+def _strip_empty_meta_write_stream(write_stream):
+    """Wrap *write_stream* so outbound frames drop an empty ``params._meta`` (#105637).
+
+    No-op for streams that already strip (idempotent wrap guard), and a pass-through
+    for anything that doesn't look like a SessionMessage stream.
+    """
+    if isinstance(write_stream, _MetaStrippingWriteStream):
+        return write_stream
+    return _MetaStrippingWriteStream(write_stream)
+
+
 class MCPServerTransportMixin:
     """Methods of :class:`tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
 
@@ -143,7 +203,11 @@ class MCPServerTransportMixin:
         not unpacked (mcp 1.x yields a 3-tuple, 2.x a pair); a TaskGroup drop maps to ``"reconnect"``."""
         try:
             async with transport_cm as _streams:
-                async with _core.ClientSession(_streams[0], _streams[1], **self._session_kwargs()) as session:
+                # Strip the SDK's unconditional empty ``_meta:{}`` before frames reach the
+                # wire (#105637): strict servers reject it and become unreachable.
+                async with _core.ClientSession(
+                        _streams[0], _strip_empty_meta_write_stream(_streams[1]),
+                        **self._session_kwargs()) as session:
                     return await self._serve_session(session, connect_timeout, label)
         except BaseExceptionGroup as _eg:
             return self._reconnect_or_reraise_group(_eg)
@@ -243,7 +307,11 @@ class MCPServerTransportMixin:
                 if new_pids:
                     self._track_spawned_children(new_pids)
                 self._stdio_child_pids = set(new_pids)  # so in-flight calls fail fast when the child dies
-                async with _core.ClientSession(read_stream, write_stream, **self._session_kwargs()) as session:
+                # Strip the SDK's unconditional empty ``_meta:{}`` (#105637) — same guard as the
+                # HTTP/SSE path in _serve_transport; strict servers reject the empty object.
+                async with _core.ClientSession(
+                        read_stream, _strip_empty_meta_write_stream(write_stream),
+                        **self._session_kwargs()) as session:
                     # Bound the handshake here (``connect_timeout`` only bounds the caller's ``.result()``):
                     # a server that never answers ``initialize`` would leak child + pipes per retry until EMFILE.
                     connect_timeout = float(config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT))

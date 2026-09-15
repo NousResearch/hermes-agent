@@ -95,8 +95,15 @@ def test_run_http_accepts_the_arity_each_sdk_generation_yields(sdk, streams):
 
 
 def test_the_session_streams_are_the_first_two_yielded():
-    """Positional, not named: 1.x's third element is not a stream."""
+    """Positional, not named: 1.x's third element is not a stream.
+
+    Since #105637 the write stream is wrapped (empty ``_meta:{}`` strip), so the
+    second positional is a ``_MetaStrippingWriteStream`` AROUND the yielded
+    write stream — still the second element, never the 1.x third (session-id
+    getter).
+    """
     from tools.mcp_tool import MCPServerTask
+    from tools.mcp_tool_transport import _MetaStrippingWriteStream
 
     server = MCPServerTask("remote")
     read, write = MagicMock(), MagicMock()
@@ -122,7 +129,9 @@ def test_the_session_streams_are_the_first_two_yielded():
 
     asyncio.run(_drive())
 
-    assert passed["args"][:2] == (read, write)
+    assert passed["args"][0] is read
+    assert isinstance(passed["args"][1], _MetaStrippingWriteStream)
+    assert passed["args"][1]._inner is write
 
 
 def test_the_seeded_protocol_header_matches_the_handshake_the_client_sends():

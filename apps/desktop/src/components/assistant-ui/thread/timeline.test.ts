@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { ownViewport } from './timeline'
+import { jumpScroll, ownViewport } from './timeline'
 
 /**
  * Several chat surfaces are mounted at once — side by side in a split, and
@@ -9,6 +9,21 @@ import { ownViewport } from './timeline'
 
 afterEach(() => {
   document.body.innerHTML = ''
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+})
+
+describe('jumpScroll', () => {
+  it('sets the destination immediately when reduced motion is requested', () => {
+    const viewport = document.createElement('div')
+    const frame = vi.spyOn(window, 'requestAnimationFrame')
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }))
+
+    jumpScroll(viewport, 120)
+
+    expect(viewport.scrollTop).toBe(120)
+    expect(frame).not.toHaveBeenCalled()
+  })
 })
 
 const surface = (id: string, hidden = false) => `

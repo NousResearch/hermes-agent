@@ -4302,12 +4302,13 @@ class GatewayRunner(
             matched = match_profile_route(
                 routes, platform=source.platform.value, guild_id=getattr(source, "guild_id", None),
                 chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
-                parent_chat_id=getattr(source, "parent_chat_id", None), adapter_profile=adapter_profile)
-        except Exception:
+                parent_chat_id=getattr(source, "parent_chat_id", None),
+                adapter_profile=adapter_profile, user_id=getattr(source, "user_id", None))
+        except Exception as exc:
             logger.warning(
-                "Profile route matching failed for %s/%s, falling back to default",
+                "Rejecting %s/%s: profile route matching failed",
                 source.platform, source.chat_id, exc_info=True)
-            return None
+            raise ProfileRouteRejected("matcher") from exc
         if matched:
             try:
                 served = {name for name, _home in _multiplex_profile_homes(config)}
@@ -4316,9 +4317,10 @@ class GatewayRunner(
                     "Rejecting profile route %r because the served-profile set could not be resolved",
                     matched.name, exc_info=True)
                 raise ProfileRouteRejected(matched.name) from exc
-            if matched.profile not in served:
+            from hermes_cli.profiles import profile_exists
+            if matched.profile not in served or not profile_exists(matched.profile):
                 logger.warning(
-                    "Rejecting profile route %r: target profile %r is not served",
+                    "Rejecting profile route %r: target profile %r is not served or has no directory",
                     matched.name, matched.profile)
                 raise ProfileRouteRejected(matched.name)
             return matched.profile

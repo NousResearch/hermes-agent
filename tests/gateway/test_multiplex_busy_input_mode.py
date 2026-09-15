@@ -416,7 +416,7 @@ def test_profile_route_and_nonmultiplexed_resolution_preserve_boundaries(
     # machine that does not happen to have it — and the route is rejected
     # before the busy-mode snapshot is consulted. Sibling coverage in
     # tests/gateway/test_profile_resolution.py patches the same seam.
-    with patch(
+    with patch("hermes_cli.profiles.profile_exists", return_value=True), patch(
         "hermes_cli.profiles.profiles_to_serve",
         return_value=[
             ("default", Path("/profiles/default")),

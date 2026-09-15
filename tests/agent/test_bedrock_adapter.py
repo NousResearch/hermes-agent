@@ -255,6 +255,163 @@ class TestConvertMessagesToConverse:
         # Empty string should get a space placeholder
         assert msgs[0]["content"][0]["text"].strip() != "" or msgs[0]["content"][0]["text"] == " "
 
+    # Bedrock's real ConverseStream wire shape: text deltas carry contentBlockIndex but get NO
+    # contentBlockStart (only toolUse does). The running-counter parser then shreds the text one fragment
+    # per delta and the first toolUse start (index 1) overwrites the second fragment and sorts into the
+    # middle of the text — the sidecar Claude 5 rejects on replay as assistant message prefill (#108200).
+    @staticmethod
+    def _streamed_turn(text_deltas, tool_names):
+        from agent.bedrock_adapter import normalize_converse_stream_events
+        events = [{"messageStart": {"role": "assistant"}}]
+        events += [{"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": t}}} for t in text_deltas]
+        events.append({"contentBlockStop": {"contentBlockIndex": 0}})
+        for index, name in enumerate(tool_names, start=1):
+            events += [
+                {"contentBlockStart": {"contentBlockIndex": index,
+                                       "start": {"toolUse": {"toolUseId": f"tu_{index}", "name": name}}}},
+                {"contentBlockDelta": {"contentBlockIndex": index, "delta": {"toolUse": {"input": '{"n": 1}'}}}},
+                {"contentBlockStop": {"contentBlockIndex": index}},
+            ]
+        events += [{"messageStop": {"stopReason": "tool_use"}},
+                   {"metadata": {"usage": {"inputTokens": 10, "outputTokens": 8}}}]
+        msg = normalize_converse_stream_events({"stream": events}).choices[0].message
+        # The history dict build_assistant_message() produces for this response.
+        return msg, {
+            "role": "assistant", "content": msg.content, "bedrock_content_blocks": msg.bedrock_content_blocks,
+            "tool_calls": [{"id": tc.id, "type": "function",
+                            "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                           for tc in msg.tool_calls],
+        }
+
+    def test_streamed_turn_replays_its_full_text_before_the_tool_use(self):
+        """Invariant: a replayed assistant turn carries the text the model produced, then its toolUse
+        blocks, never text after a toolUse. Through the real stream parser the sidecar is
+        ``[text 'Running ', toolUse, text 'tools.']`` while ``message.content`` holds the full text; the
+        request builder must notice the sidecar is not the turn Bedrock produced and build the turn from
+        content + tool_calls instead of replaying the rejected shape."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+
+        msg, history_msg = self._streamed_turn(["Running ", "two ", "tools."], ["one"])
+        assert msg.content == "Running two tools."
+        _system, msgs = convert_messages_to_converse([
+            {"role": "user", "content": "go"}, history_msg,
+            {"role": "tool", "tool_call_id": "tu_1", "content": "ok"},
+        ])
+        assert msgs[1]["content"] == [
+            {"text": "Running two tools."},
+            {"toolUse": {"toolUseId": "tu_1", "name": "one", "input": {"n": 1}}},
+        ]
+
+    def test_streamed_turn_with_silently_truncated_sidecar_replays_content(self):
+        """Same parser bug, quieter symptom: with two tool calls the overwritten fragment leaves
+        ``[text 'Running ', toolUse, toolUse]`` — a shape Bedrock accepts, so the model would silently
+        see truncated text on every later turn. Disagreement between sidecar text and ``content`` must
+        route the turn through the content + tool_calls builder too."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+
+        msg, history_msg = self._streamed_turn(["Running ", "two tools."], ["one", "two"])
+        assert msg.content == "Running two tools."
+        _system, msgs = convert_messages_to_converse([
+            {"role": "user", "content": "go"}, history_msg,
+            {"role": "tool", "tool_call_id": "tu_1", "content": "ok"},
+            {"role": "tool", "tool_call_id": "tu_2", "content": "ok"},
+        ])
+        assert msgs[1]["content"] == [
+            {"text": "Running two tools."},
+            {"toolUse": {"toolUseId": "tu_1", "name": "one", "input": {"n": 1}}},
+            {"toolUse": {"toolUseId": "tu_2", "name": "two", "input": {"n": 1}}},
+        ]
+
+
+def _tool_use(tool_use_id, name="f"):
+    return {"toolUse": {"toolUseId": tool_use_id, "name": name, "input": {}}}
+
+
+def _tool_call(tool_call_id, name="f"):
+    return {"id": tool_call_id, "type": "function", "function": {"name": name, "arguments": "{}"}}
+
+
+class TestSidecarReplayGuard:
+    """``_sidecar_is_replayable`` on hand-built sidecars. The stream-parser tests above stop exercising the
+    rejection branch once the parser keys blocks by contentBlockIndex (#107472), so each damage fingerprint
+    is pinned here directly."""
+
+    def _replayable(self, blocks, content, tool_calls):
+        from agent.bedrock_adapter import _sidecar_is_replayable
+        return _sidecar_is_replayable(blocks, content, tool_calls)
+
+    def test_well_formed_sidecars_replay(self):
+        redacted = {"reasoningContent": {"redactedContentBase64": "AA=="}}
+        assert self._replayable([{"text": "Hi"}, _tool_use("a")], "Hi", [_tool_call("a")])
+        assert self._replayable([{"reasoningContent": {"text": "hmm"}}, {"text": "Hi"}, _tool_use("a")], "Hi", [_tool_call("a")])
+        assert self._replayable([redacted, _tool_use("a"), redacted, _tool_use("b")], None, [_tool_call("a"), _tool_call("b")])
+        # Storage trims content; whitespace never decides.
+        assert self._replayable([{"text": "Hi\n\n"}], "Hi", [])
+        # Multimodal content has no single text to compare against.
+        assert self._replayable([{"text": "Hi"}], [{"type": "text", "text": "Hi"}], [])
+
+    def test_text_after_tool_use_is_rejected(self):
+        assert not self._replayable([{"text": "Run "}, _tool_use("a"), {"text": "it."}], "Run it.", [_tool_call("a")])
+
+    def test_text_bolted_onto_tool_use_is_rejected(self):
+        bolted = {**_tool_use("a"), "text": " it."}
+        assert not self._replayable([{"text": "Run"}, bolted], "Run it.", [_tool_call("a")])
+
+    def test_adjacent_or_blank_text_blocks_are_rejected(self):
+        assert not self._replayable([{"text": "Run "}, {"text": "it."}], "Run it.", [])
+        assert not self._replayable([{"text": "  "}, _tool_use("a")], None, [_tool_call("a")])
+
+    def test_truncated_text_is_rejected(self):
+        # The two-tool shape Bedrock accepts silently: structurally fine, text lost.
+        assert not self._replayable([{"text": "Running "}, _tool_use("a"), _tool_use("b")], "Running two tools.", [_tool_call("a"), _tool_call("b")])
+
+    def test_tool_id_set_must_match_tool_calls(self):
+        # Post-call dedup dropped tool b from tool_calls (#108584) — the sidecar must not resurrect it.
+        assert not self._replayable([{"text": "Hi"}, _tool_use("a"), _tool_use("b")], "Hi", [_tool_call("a")])
+        assert not self._replayable([{"text": "Hi"}, _tool_use("a")], "Hi", [_tool_call("a"), _tool_call("b")])
+
+    def test_storage_transforms_disqualify_the_sidecar(self):
+        # content is think-stripped and secret-redacted at storage; the raw sidecar text no longer matches,
+        # so the redacted content is what gets replayed (the sidecar was a redaction bypass before).
+        assert not self._replayable([{"text": "<think>x</think>Hi"}, _tool_use("a")], "Hi", [_tool_call("a")])
+        assert not self._replayable([{"text": "token AKIAABCDEFGHIJKLMNOP"}], "token ***", [])
+
+
+class TestAssistantBlocksFallback:
+    """When the sidecar is disqualified, the turn is built from content + tool_calls but keeps the sidecar's
+    reasoning blocks (in order, ahead of the text) so a text-only disagreement never drops thinking."""
+
+    def test_rejected_sidecar_keeps_reasoning_blocks_ahead_of_redacted_text(self):
+        from agent.bedrock_adapter import _assistant_blocks
+        msg = {
+            "role": "assistant", "content": "token ***", "tool_calls": [_tool_call("a")],
+            "reasoning_details": [{"type": "redacted_thinking", "data": "AA=="}],
+            "bedrock_content_blocks": [
+                {"reasoningContent": {"redactedContentBase64": "AA=="}},
+                {"reasoningContent": {"text": "plan"}},
+                {"text": "token AKIAABCDEFGHIJKLMNOP"},
+                _tool_use("a"),
+            ],
+        }
+        assert _assistant_blocks(msg, msg["content"]) == [
+            {"reasoningContent": {"redactedContent": b"\x00"}},
+            {"reasoningContent": {"text": "plan"}},
+            {"text": "token ***"},
+            _tool_use("a"),
+        ]
+
+    def test_rejected_sidecar_without_reasoning_matches_the_no_sidecar_build(self):
+        from agent.bedrock_adapter import _assistant_blocks
+        base = {"role": "assistant", "content": "Run it.", "tool_calls": [_tool_call("a")]}
+        damaged = {**base, "bedrock_content_blocks": [{"text": "Run "}, _tool_use("a"), {"text": "it."}]}
+        assert _assistant_blocks(damaged, "Run it.") == _assistant_blocks(base, "Run it.")
+        assert _assistant_blocks(damaged, "Run it.") == [{"text": "Run it."}, _tool_use("a")]
+
+    def test_no_sidecar_still_replays_redacted_reasoning_details(self):
+        from agent.bedrock_adapter import _assistant_blocks
+        msg = {"role": "assistant", "content": "Hi", "reasoning_details": [{"type": "redacted_thinking", "data": "AA=="}]}
+        assert _assistant_blocks(msg, "Hi") == [{"reasoningContent": {"redactedContent": b"\x00"}}, {"text": "Hi"}]
+
 
 # ---------------------------------------------------------------------------
 # Response normalization: Converse → OpenAI

@@ -20,13 +20,15 @@ afterEach(() => {
 })
 
 function Harness({
+  gatewayState = 'open',
   profile = 'default',
   requestGateway
 }: {
+  gatewayState?: string
   profile?: string
   requestGateway: (method: string, params?: Record<string, unknown>) => Promise<unknown>
 }) {
-  const item = useApprovalModeStatusbarItem(profile, requestGateway)
+  const item = useApprovalModeStatusbarItem(profile, requestGateway, gatewayState)
 
   return (
     <MemoryRouter>
@@ -77,5 +79,28 @@ describe('approval mode statusbar item', () => {
 
     expect(await screen.findByText('必要な場合にのみ確認します')).toBeTruthy()
     expect(screen.getByText('承認プロンプトなしで実行します')).toBeTruthy()
+  })
+
+  it('syncs once the gateway opens instead of sitting on the pre-sync default', async () => {
+    // Boot order: the shell (and this chip) mount while the socket is still
+    // connecting, so the sync must wait for 'open' — and then actually run.
+    // A sync attempted while connecting rejects ("Hermes gateway
+    // unavailable") and, swallowed, would leave the chip on its optimistic
+    // 'smart' default for the whole session even though the configured mode
+    // is 'off'.
+    const requestGateway = vi.fn(async () => ({ value: 'off' }))
+    const { rerender } = render(
+      <Harness gatewayState="connecting" profile="boot" requestGateway={requestGateway} />
+    )
+
+    expect(requestGateway).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: /smart/i })).toBeTruthy()
+
+    rerender(<Harness gatewayState="open" profile="boot" requestGateway={requestGateway} />)
+
+    await waitFor(() => {
+      expect(requestGateway).toHaveBeenCalledWith('config.get', { key: 'approvals.mode' })
+      expect(screen.getByRole('button', { name: /off/i })).toBeTruthy()
+    })
   })
 })

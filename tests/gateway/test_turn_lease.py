@@ -494,3 +494,93 @@ def test_runner_release_turn_lease_is_token_scoped_and_bare_safe():
     _run(scenario())
 
 
+def _interrupt_runner_with_held_lease():
+    """Build the smallest runner that can exercise /stop lease cleanup."""
+    from gateway.run import GatewayRunner
+    from gateway.session_state import SessionState
+
+    class _Agent:
+        def interrupt(self, reason=None):
+            pass
+
+    runner = object.__new__(GatewayRunner)
+    runner._sessions = {}
+    runner._turn_leases = SessionTurnLeaseRegistry()
+    runner._persist_active_agents = lambda: None
+    runner._evict_cached_agent = lambda session_key: None
+    runner._sessions["key-a"] = SessionState()
+    runner._sessions["key-a"].persistent.run_generation = 1
+    runner._sessions["key-a"].turn.agent = _Agent()
+    return runner
+
+
+def test_stop_releases_displaced_turn_lease():
+    """A normal /stop releases the interrupted turn's session lease."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+
+    async def scenario():
+        runner = _interrupt_runner_with_held_lease()
+        token = await runner._turn_leases.acquire(
+            "session-a", owner_key="key-a", generation=1, timeout=1
+        )
+        runner._sessions["key-a"].turn.lease_tokens[1] = token
+        runner.adapters = {}
+
+        await runner._interrupt_and_clear_session(
+            "key-a", SessionSource(platform=Platform.TELEGRAM, chat_id="chat-a"),
+            interrupt_reason="stop", invalidation_reason="stop_command",
+        )
+
+        successor = await runner._turn_leases.acquire(
+            "session-a", owner_key="key-a", generation=3, timeout=0.02
+        )
+        assert successor is not None
+        assert runner._turn_leases.release(successor) is True
+
+    _run(scenario())
+
+
+def test_stop_releases_lease_before_stalled_adapter_cleanup():
+    """A stalled adapter cleanup cannot wedge the successor behind /stop's old lease."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+
+    class _StalledAdapter:
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.unblock = asyncio.Event()
+
+        async def interrupt_session_activity(self, session_key, chat_id, *, metadata=None):
+            self.started.set()
+            await self.unblock.wait()
+
+    async def scenario():
+        runner = _interrupt_runner_with_held_lease()
+        token = await runner._turn_leases.acquire(
+            "session-a", owner_key="key-a", generation=1, timeout=1
+        )
+        runner._sessions["key-a"].turn.lease_tokens[1] = token
+        adapter = _StalledAdapter()
+        runner.adapters = {Platform.TELEGRAM: adapter}
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat-a")
+
+        stop_task = asyncio.create_task(runner._interrupt_and_clear_session(
+            "key-a", source, interrupt_reason="stop", invalidation_reason="stop_command",
+        ))
+        await asyncio.wait_for(adapter.started.wait(), timeout=1)
+
+        successor = await runner._turn_leases.acquire(
+            "session-a", owner_key="key-a", generation=3, timeout=0.02
+        )
+        assert successor is not None
+        # A late finalizer for the interrupted turn cannot release the successor's lease.
+        assert runner._release_turn_lease("key-a", 1) is False
+        assert runner._turn_leases._leases["session-a"].holder is successor
+
+        adapter.unblock.set()
+        await stop_task
+        assert runner._turn_leases.release(successor) is True
+
+    _run(scenario())
+

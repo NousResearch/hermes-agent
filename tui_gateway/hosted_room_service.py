@@ -371,6 +371,8 @@ class HostedRoomService:
         return acquire_turn_lock(self.root, profile)
 
     def start(self) -> None:
+        self.attachments.reconcile_room_events()
+        self.attachments.prune()
         self.runtime.start()
 
     def stop(self, *, timeout: float = 5.0) -> bool:

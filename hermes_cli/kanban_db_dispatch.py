@@ -110,6 +110,12 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    skipped_bad_pin: list[tuple[str, str, str]] = field(default_factory=list)
+    """``(task_id, model, message)`` refused before a worker was spawned because
+    the card's ``model_override`` is not served by its ``provider_override``
+    (``HTTP 400 No provider available for model``). Operator-actionable: the
+    card is blocked with the refusal as its reason and surfaced by
+    ``kanban_diagnostics`` — fix the pin (or clear it) to dispatch it again."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -1487,6 +1493,64 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _assignee_hermes_home(assignee: str) -> Optional[str]:
+    """The worker's ``HERMES_HOME`` — the assignee profile's home, or None.
+
+    Best-effort: a profile that cannot be resolved (isolated test fixtures,
+    default profile) resolves the pin against the launching config instead.
+    """
+    if not assignee:
+        return None
+    try:
+        from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+
+        return resolve_profile_env(normalize_profile_name(assignee))
+    except Exception:
+        return None
+
+
+def _bad_pin_refusal(row: sqlite3.Row):
+    """``(model, provider, verdict)`` when this card's pin is provably unserved.
+
+    Returns None — i.e. spawn proceeds — for an unpinned card, for a card with
+    no ``provider_override`` to check against (the profile resolves the model
+    there), and for every verdict that is not the route's own hard
+    ``400 No provider available for model``. A probe that could not reach the
+    route must never refuse a spawn: an auth/transport hiccup is not a bad pin.
+    """
+    model = str(_kb._row_get(row, "model_override") or "").strip()
+    provider = str(_kb._row_get(row, "provider_override") or "").strip()
+    if not model or not provider:
+        return None
+    hermes_home = _assignee_hermes_home(str(_kb._row_get(row, "assignee") or ""))
+    verdict = _krp.check_model_pin(model, provider, hermes_home=hermes_home)
+    if not verdict.bad_pin:
+        return None
+    return model, provider, verdict
+
+
+def _refuse_bad_pin(
+    conn: sqlite3.Connection, task_id: str, model: str, provider: str, message: str, verdict,
+) -> None:
+    """Record the refusal as an event and block the card so it shows on the board.
+
+    The card is NOT completed and no run is opened: the pin is unfixable by any
+    worker, so the operator has to correct it. ``model_pin_rejected`` is what
+    ``kanban_diagnostics`` renders (severity error) and what clears on a later
+    ``model_override_set`` — i.e. exactly when the pin is fixed.
+    """
+    payload = {"model": model, "provider": provider, "reason": message, **verdict.to_payload()}
+    with _kb.write_txn(conn):
+        _kb._append_event(conn, task_id, "model_pin_rejected", payload)
+    # ``block_task`` only flips running/ready rows: a review-lane card keeps its
+    # status and is refused again on the next tick (its event is what surfaces
+    # it). Either way the spawn is refused, which is the guarantee that matters.
+    try:
+        _kb.block_task(conn, task_id, reason=message, kind="capability")
+    except Exception as exc:
+        _kb._log.debug("kanban dispatch: could not block bad pin on %s (%s)", task_id, exc)
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -1536,6 +1600,21 @@ def _dispatch_lane_task(
             with _kb.write_txn(conn):
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
         return False
+
+    # Route-pin guard: a card whose model pin the route cannot serve must not
+    # spawn at all — the worker would die on its first API call under an error
+    # shaped like a provider outage, burning a run and reading as an outage
+    # instead of a bad pin. Refuse before the claim, block the card and let
+    # ``kanban_diagnostics`` surface it. Deliberately skipped in ``dry_run``:
+    # a dry run performs no external calls and no writes.
+    if not dry_run:
+        refusal = _bad_pin_refusal(row)
+        if refusal is not None:
+            model, provider, verdict = refusal
+            message = _krp.refusal_message(model, provider, verdict)
+            _refuse_bad_pin(conn, task_id, model, provider, message, verdict)
+            result.skipped_bad_pin.append((task_id, model, message))
+            return False
 
     def _count_spawn(name: str) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent
@@ -1709,9 +1788,14 @@ def _tick_spawn_budget(
 
 
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
-    """Unclaimed rows of one lane in dispatch order."""
+    """Unclaimed rows of one lane in dispatch order.
+
+    Carries the pin columns because the route-pin guard runs before the claim:
+    probing after ``claim_task`` would burn a claim (and a run) on a card that
+    can never start.
+    """
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, model_override, provider_override FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -2384,3 +2468,4 @@ def run_daemon(
 from hermes_cli import kanban_db as _kb  # noqa: E402
 from hermes_cli import kanban_db_connect as _kbc  # noqa: E402
 from hermes_cli import kanban_db_workspace as _kbw  # noqa: E402
+from hermes_cli import kanban_route_pin as _krp  # noqa: E402

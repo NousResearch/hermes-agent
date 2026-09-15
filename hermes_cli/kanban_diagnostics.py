@@ -141,6 +141,25 @@ def _active_hallucination_events(events: Iterable[Any], kind: str) -> list[Any]:
     return active
 
 
+def _active_pin_rejections(events: Iterable[Any]) -> list[Any]:
+    """``model_pin_rejected`` events with no later pin fix or terminal transition.
+
+    The dispatcher's route-pin guard refuses to spawn a card whose model pin the
+    route does not serve, and records why. A later ``model_override_set`` (the
+    operator fixed or cleared the pin), ``completed`` or ``edited`` event means
+    the refusal is history. Requires id-sorted (arrival-order) input, which the
+    DB provides.
+    """
+    active: list[Any] = []
+    for ev in events:
+        k = _event_kind(ev)
+        if k in {"model_override_set", "completed", "edited"}:
+            active.clear()
+        elif k == "model_pin_rejected":
+            active.append(ev)
+    return active
+
+
 def _unique_payload_ids(hits: list[Any], key: str) -> list[str]:
     """Ordered, de-duplicated ``payload[key]`` entries across ``hits``."""
     out: list[str] = []
@@ -260,6 +279,62 @@ def _rule_hallucinated_cards(task, events, runs, now, cfg) -> list[Diagnostic]:
         actions=actions,
         first_seen_at=_event_ts(hits[0]), last_seen_at=_event_ts(hits[-1]), count=len(hits),
         data={"phantom_ids": _unique_payload_ids(hits, "phantom_cards")},
+    )]
+
+
+def _rule_bad_model_pin(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """The dispatcher refused to spawn this card: its route does not serve its pin.
+
+    Fires while the refusal is current — a later ``model_override_set`` (the pin
+    was fixed or cleared), ``completed`` or ``edited`` event clears it. This is
+    the operator's signal that the failure was a bad pin, not a provider outage:
+    the worker never started, so no worker log explains it.
+    """
+    if _task_field(task, "status") == "archived":
+        return []
+    hits = _active_pin_rejections(events)
+    if not hits:
+        return []
+    latest = hits[-1]
+    payload = _parse_payload(latest)
+    model = str(payload.get("model") or _task_field(task, "model_override") or "").strip()
+    provider = str(payload.get("provider") or _task_field(task, "provider_override") or "").strip()
+    task_id = _task_field(task, "id")
+    router_error = str(payload.get("router_error") or "").strip()
+    http_status = payload.get("http_status")
+
+    actions: list[DiagnosticAction] = []
+    if task_id:
+        clear_cmd = f"hermes kanban set-model {task_id} none"
+        actions.append(_cli_hint(f"Clear the pin: {clear_cmd}", clear_cmd, suggested=True))
+        fix_cmd = (
+            f"hermes kanban set-model {task_id} '<served-model>' --provider '{provider}'"
+            if provider else f"hermes kanban set-model {task_id} '<served-model>'"
+        )
+        actions.append(_cli_hint(f"Pin a served model: {fix_cmd}", fix_cmd))
+        actions.append(_log_hint_action(task_id))
+    actions.extend(_generic_recovery_actions(task, running=_is_running(task)))
+
+    refusals = f" Refused {len(hits)}x." if len(hits) > 1 else ""
+    detail = (
+        f"The dispatcher refused to spawn a worker for '{model}' on route '{provider}': the route "
+        f"does not serve that model id, so every attempt would die on its first API call under a "
+        f"provider-shaped error.{refusals} Fix the card's model_override, or clear it to fall back "
+        f"to the profile/contract binding, then unblock the card."
+    )
+    if router_error:
+        detail = f"{detail}\n\nroute said: {router_error[:300]}"
+    return [Diagnostic(
+        kind="bad_model_pin", severity="error",
+        title=f"Model pin not served by route: {model or '?'} (bad pin)",
+        detail=detail, actions=actions,
+        first_seen_at=_event_ts(hits[0]), last_seen_at=_event_ts(latest), count=len(hits),
+        data={
+            "model": model or None,
+            "provider": provider or None,
+            "http_status": http_status,
+            "router_error": router_error or None,
+        },
     )]
 
 
@@ -680,6 +755,7 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
 
 # Order matters: earlier rules render first on severity ties.
 _RULES: list[RuleFn] = [
+    _rule_bad_model_pin,
     _rule_hallucinated_cards,
     _rule_triage_aux_unavailable,
     _rule_prose_phantom_refs,
@@ -781,6 +857,7 @@ def compute_task_diagnostics(
 # The whole block is removed by reverting the commit that added it.
 
 DIAGNOSTIC_KINDS = (
+    "bad_model_pin",
     "hallucinated_cards",
     "triage_aux_unavailable",
     "prose_phantom_refs",

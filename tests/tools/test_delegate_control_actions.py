@@ -216,6 +216,10 @@ def test_stop_interrupts_owned_child(monkeypatch):
         )
         assert out["status"] == "interrupt_requested"
         assert interrupted == [child]
+        note = out["note"].lower()
+        assert "cancel" in note
+        assert "not guaranteed" in note
+        assert "steer" in note
     finally:
         _unregister_subagent("sid-ctl-stop-1")
 

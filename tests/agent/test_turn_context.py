@@ -260,6 +260,24 @@ def test_user_message_preserves_platform_event_timestamp():
     assert ctx.messages[-1]["timestamp"] == 123.5
 
 
+def test_interrupted_admission_input_is_flushed_before_turn_compaction():
+    agent = _FakeAgent()
+    agent._flush_messages_to_session_db = MagicMock()
+    deferred = {
+        "role": "user",
+        "content": "original",
+        "_persist_after_admission_interrupt": True,
+    }
+    history = [{"role": "assistant", "content": "old reply"}, deferred]
+
+    _build(agent, conversation_history=history, user_message="follow-up")
+
+    agent._flush_messages_to_session_db.assert_called_once()
+    flushed, known_history = agent._flush_messages_to_session_db.call_args.args
+    assert flushed == history
+    assert known_history is history
+
+
 # ── Trivial-prompt prefetch gate (PR #25350 salvage) ─────────────────────────
 #
 # The prologue is the ONLY place the per-turn synchronous

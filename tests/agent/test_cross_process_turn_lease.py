@@ -6,6 +6,7 @@ import sqlite3
 import threading
 import time
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from agent import relay_runtime
 from hermes_state import SessionDB
@@ -252,8 +253,13 @@ def test_run_conversation_lease_wait_honors_interrupt(monkeypatch):
     monkeypatch.setattr("agent.conversation_loop.run_conversation", boom)
     result = AIAgent.run_conversation(
         agent,
-        "new message",
+        "[Monday 12:00] new message",
         conversation_history=[{"role": "user", "content": "stale"}],
+        persist_user_message="new message",
+        persist_user_timestamp=123.0,
+        persist_user_display_kind="internal_notification",
+        persist_user_display_metadata={"kind": "test"},
+        persist_user_platform_id="platform-1",
     )
 
     assert result.get("interrupted") is True
@@ -261,10 +267,84 @@ def test_run_conversation_lease_wait_honors_interrupt(monkeypatch):
     assert result.get("final_response")
     assert "not processed" in result["final_response"]
     assert result.get("interrupt_message") == "follow-up while waiting"
+    assert result["messages"][-1] == {
+        "role": "user",
+        "content": "new message",
+        "api_content": "[Monday 12:00] new message",
+        "timestamp": 123.0,
+        "display_kind": "internal_notification",
+        "display_metadata": {"kind": "test"},
+        "platform_message_id": "platform-1",
+        "_persist_after_admission_interrupt": True,
+    }
     assert "session_turn_lease_timeout" not in str(result.get("error", ""))
     assert [event[0] for event in db.events] == ["acquire"]
     assert agent._interrupt_requested is False
     assert agent._interrupt_message is None
+
+
+def test_pre_admission_hard_stop_does_not_requeue_original(monkeypatch):
+    db = _DB()
+    agent = _agent_with_db(db)
+    agent._hard_interrupt_requested = threading.Event()
+
+    def acquire_with_hard_stop(session_id, holder, **kwargs):
+        db.events.append(("acquire", session_id, holder))
+        agent._interrupt_requested = True
+        agent._interrupt_message = "Stop requested"
+        agent._hard_interrupt_requested.set()
+        assert kwargs["should_abort"]()
+        return False
+
+    db.acquire_session_turn_lease = acquire_with_hard_stop
+    monkeypatch.setattr(
+        "agent.conversation_loop.run_conversation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("hard-stopped turn must not start")
+        ),
+    )
+
+    history = [{"role": "user", "content": "stale"}]
+    result = AIAgent.run_conversation(agent, "cancel me", conversation_history=history)
+
+    assert result["interrupted"] is True
+    assert result["messages"] == history
+
+
+def test_pre_admission_user_row_in_history_is_flushed_once():
+    db = MagicMock()
+    db.append_messages_batch.return_value = [1, 2]
+    agent = AIAgent.__new__(AIAgent)
+    agent._session_db = db
+    agent._session_db_created = True
+    agent._persist_disabled = False
+    agent._persist_user_message_idx = 2
+    agent._persist_user_message_override = None
+    agent._persist_user_message_timestamp = None
+    agent._persist_user_message_platform_id = None
+    agent._flushed_db_message_ids = set()
+    agent._last_flushed_db_idx = 0
+    agent.session_id = "session"
+
+    persisted = {"role": "assistant", "content": "old reply"}
+    interrupted = {
+        "role": "user",
+        "content": "original",
+        "_persist_after_admission_interrupt": True,
+    }
+    current = {"role": "user", "content": "follow-up"}
+    history = [persisted, interrupted]
+    messages = [*history, current]
+
+    agent._flush_messages_to_session_db(messages, conversation_history=history)
+    agent._flush_messages_to_session_db(messages, conversation_history=history)
+
+    rows = db.append_messages_batch.call_args.kwargs["messages"]
+    assert [(row["role"], row["content"]) for row in rows] == [
+        ("user", "original"),
+        ("user", "follow-up"),
+    ]
+    assert db.append_messages_batch.call_count == 1
 
 
 def test_run_conversation_second_turn_after_lease_wait_abort(monkeypatch):

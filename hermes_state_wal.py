@@ -188,6 +188,17 @@ _cross_vm_warned_lock = threading.Lock()
 _cross_vm_existing_wal_warned_paths: set[str] = set()
 _cross_vm_existing_wal_warned_lock = threading.Lock()
 
+# Network filesystems (#110848 remainder): WAL shared-memory (the -shm mmap plus fcntl locks) is unsafe across
+# them for concurrent writers, but single-writer homes on NFS/CIFS are a legitimate working shape, so the
+# fresh-DB WAL refusal deliberately does NOT extend here. An on-disk WAL database on one is warned about, once,
+# with the offline remedy; a fresh database keeps today's behaviour (WAL enabled). Generic FUSE stays out because
+# it can be local (ntfs3g, loopback): only the network instance (sshfs) is listed.
+_NETWORK_FS_FSTYPES = frozenset({"nfs", "nfs4", "cifs", "smb", "smb2", "sshfs", "fuse.sshfs"})
+_network_fs_cache: Dict[str, bool] = {}
+_network_fs_cache_lock = threading.Lock()
+_network_fs_warned_paths: set[str] = set()
+_network_fs_warned_lock = threading.Lock()
+
 
 def _mountinfo_fstype(directory: str, mountinfo_path: str = "/proc/self/mountinfo") -> str:
     """fstype of the longest mount point that is a prefix of ``directory`` (``""`` if unreadable / no match)."""
@@ -231,6 +242,28 @@ def _path_on_cross_vm_fs(path: str) -> bool:
         cached = _detect_cross_vm_fs(directory)
         with _cross_vm_fs_cache_lock:
             _cross_vm_fs_cache[directory] = cached
+    return cached
+
+
+def _detect_network_fs(directory: str, mountinfo_path: str = "/proc/self/mountinfo") -> bool:
+    """True only when ``directory`` sits on an nfs/cifs/smb/sshfs mount per ``mountinfo_path``."""
+    if sys.platform != "linux":
+        return False
+    return _mountinfo_fstype(directory, mountinfo_path) in _NETWORK_FS_FSTYPES
+
+
+def _path_on_network_fs(path: str) -> bool:
+    """True when ``path`` resides on a network filesystem; cached per resolved directory."""
+    try:
+        directory = os.path.dirname(os.path.realpath(path)) or "/"
+    except (OSError, ValueError):
+        return False
+    with _network_fs_cache_lock:
+        cached = _network_fs_cache.get(directory)
+    if cached is None:
+        cached = _detect_network_fs(directory)
+        with _network_fs_cache_lock:
+            _network_fs_cache[directory] = cached
     return cached
 
 
@@ -286,6 +319,7 @@ def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.
             # Never-live-downgrade keeps WAL; tell the operator their delete did not apply.
             _log_configured_delete_overridden_once(db_label)
         _warn_existing_wal_on_cross_vm_fs(conn)
+        _warn_existing_wal_on_network_fs(conn)
         _apply_wal_companions(conn)
         return "wal"
 
@@ -424,6 +458,15 @@ def _warn_existing_wal_on_cross_vm_fs(conn: sqlite3.Connection) -> None:
         _log_once("cross_vm_fs_existing_wal", db_file)
 
 
+def _warn_existing_wal_on_network_fs(conn: sqlite3.Connection) -> None:
+    """#110848 remainder: network filesystems never refuse WAL (single-writer NFS homes are legitimate), so an
+    on-disk WAL database there gets a once-per-path WARNING instead of silence. Same call sites as the cross-VM
+    warn: both already-WAL early-return paths must fire it."""
+    db_file = _connection_db_file(conn)
+    if db_file and _path_on_network_fs(db_file):
+        _log_once("network_fs_existing_wal", db_file)
+
+
 def _apply_delete_for_wal_reset_bug(conn: sqlite3.Connection, *, db_label: str, require_delete: bool = False) -> str:
     """Avoid enabling WAL when the linked SQLite has the WAL-reset bug.
 
@@ -438,6 +481,7 @@ def _apply_delete_for_wal_reset_bug(conn: sqlite3.Connection, *, db_label: str, 
             # Upgrading SQLite doesn't help here; emit the actionable message last.
             _log_configured_delete_overridden_once(db_label)
         _warn_existing_wal_on_cross_vm_fs(conn)
+        _warn_existing_wal_on_network_fs(conn)
         _apply_wal_companions(conn)
         return "wal"
     if current is None:
@@ -544,6 +588,15 @@ _ONCE_LOGS = {
         "'PRAGMA journal_mode=DELETE' on the file (set `database.journal_mode: delete` in config.yaml to keep it), "
         "or move the database onto a native volume (e.g. a named Docker volume). This message fires once per process "
         "per database."),
+    "network_fs_existing_wal": (_network_fs_warned_lock, "_network_fs_warned_paths", logging.WARNING,
+        # WARNING, one step below cross-VM: single-writer WAL on NFS/CIFS is a common working shape, so this is a
+        # risk signal for concurrent writers, not an active-corruption alarm. Never live-downgrade here either.
+        "%s: existing WAL-mode database is on a network filesystem (nfs/cifs/smb/sshfs). SQLite WAL shared-memory "
+        "is unsafe across network filesystems once writers are concurrent, and Hermes does not live-downgrade an "
+        "on-disk WAL database. If more than one process will write this database: stop every Hermes process using "
+        "it and run a one-time offline 'PRAGMA journal_mode=DELETE' on the file (set `database.journal_mode: delete` "
+        "in config.yaml to keep it), or move the database onto local disk. This message fires once per process per "
+        "database."),
 }
 
 

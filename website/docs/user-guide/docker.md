@@ -206,7 +206,7 @@ What Hermes does about it (since v2026.9.14):
   1. Stop every Hermes process that uses the database, then run a one-time offline conversion with the Python that ships in the image (it has no `sqlite3` shell): `docker exec hermes python3 -c "import sqlite3; print(sqlite3.connect('/opt/data/state.db').execute('PRAGMA journal_mode=DELETE').fetchone()[0])"`. Set `database.journal_mode: delete` in `config.yaml` so a later open does not switch it back to WAL.
   2. Move the data directory onto a native volume — a named Docker volume (`-v hermes-data:/opt/data`) lives on the VM's own ext4 filesystem and supports WAL normally.
 
-Detection reads `/proc/self/mountinfo` inside the container, so it works regardless of the host operating system. It does not classify NFS, SMB, or generic FUSE mounts; on those, set `database.journal_mode: delete` explicitly. Hermes does not offer SQLite's `locking_mode=EXCLUSIVE` as an alternative because the gateway, cron, and worker processes open the database concurrently.
+Detection reads `/proc/self/mountinfo` inside the container, so it works regardless of the host operating system. NFS, CIFS/SMB and sshfs mounts are detected separately: a fresh database there still gets WAL (single-writer homes on NFS are a legitimate shape), but an existing WAL database on one logs a one-time warning at startup and is flagged by `hermes doctor`, because concurrent writers across a network filesystem corrupt WAL silently. Generic FUSE mounts are not classified; on those, set `database.journal_mode: delete` explicitly. Hermes does not offer SQLite's `locking_mode=EXCLUSIVE` as an alternative because the gateway, cron, and worker processes open the database concurrently.
 
 ### Immutable install tree
 

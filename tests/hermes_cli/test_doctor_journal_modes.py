@@ -333,6 +333,19 @@ class TestReportDatabaseJournalModes:
         assert "state.db is in WAL mode on a cross-VM filesystem" in out
         assert "PRAGMA journal_mode=DELETE" in out
 
+    def test_wal_db_on_network_fs_is_flagged_with_concurrent_writer_remedy(self, tmp_path, capsys, monkeypatch):
+        # #110848 remainder: network filesystems never refuse WAL for fresh databases (single-writer NFS homes are
+        # legitimate), so doctor is the surface that must flag an existing WAL file there, with the offline remedy.
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+        monkeypatch.setattr("hermes_state_wal._path_on_cross_vm_fs", lambda p: False)
+        monkeypatch.setattr("hermes_state_wal._path_on_network_fs", lambda p: True)
+
+        doctor_platform._report_database_journal_modes(tmp_path, (3, 51, 3))
+
+        out = capsys.readouterr().out
+        assert "state.db is in WAL mode on a network filesystem" in out
+        assert "PRAGMA journal_mode=DELETE" in out
+
     def test_vulnerable_runtime_wal_db_is_exposed(self, tmp_path, capsys):
         _make_db(tmp_path / "state.db", journal_mode="WAL")
 

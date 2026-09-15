@@ -893,6 +893,24 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
         "message": _redact_api_error_text(message), "type": err_type, "param": param, "code": code}}
 
 
+# Session-stream tool completion previews: the executor hands the full result in kwargs; the wire
+# carries a capped string so a large file read never rides the SSE stream (the transcript keeps it).
+_TOOL_RESULT_PREVIEW_CHARS = 2000
+
+
+def _stringify_tool_result(result) -> str:
+    if isinstance(result, str):
+        return result
+    try:
+        return json.dumps(result, ensure_ascii=False, default=str)
+    except Exception:
+        return str(result)
+
+
+def _cap_tool_result_preview(text: str, limit: int = _TOOL_RESULT_PREVIEW_CHARS) -> str:
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
 def _error_response(
     message: str, status: int, *, err_type: str = "invalid_request_error",
     param: str = None, code: str = None, headers: Optional[Dict[str, str]] = None,
@@ -3173,7 +3191,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if event_type == "reasoning.available":
                 events.enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
             elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
-                events.enqueue(event_type, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
+                payload = {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args}
+                if event_type != "tool.started" and not preview and kwargs.get("result") is not None:
+                    # The executor hands the tool result in kwargs (tool_executor: result=function_result)
+                    # but left `preview` None for completion events, so every client saw `preview: null`
+                    # and had to re-read the transcript. Forward a capped preview; the full result stays
+                    # in the session messages (GET /api/sessions/{id}/messages).
+                    full = _stringify_tool_result(kwargs["result"])
+                    payload["preview"] = _cap_tool_result_preview(full)
+                    payload["preview_truncated"] = len(full) > _TOOL_RESULT_PREVIEW_CHARS
+                events.enqueue(event_type, payload)
 
         async def _run_and_signal() -> None:
             try:

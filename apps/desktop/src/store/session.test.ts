@@ -32,6 +32,7 @@ import {
   applyConfiguredDefaultProjectDir,
   carryForwardFailedProfileSessions,
   commitWorkspaceCwdForSelectedSession,
+  composerSelectionScopeToken,
   ensureDefaultWorkspaceCwd,
   forgetSessionOwnerHintsForConnection,
   forgetSessionOwnerHintsForSession,
@@ -127,6 +128,45 @@ describe('composer model persistence scope', () => {
     setCurrentModel('next-model')
     expect(window.localStorage.getItem('hermes.desktop.composer.model')).toBe('next-model')
     expect(window.localStorage.getItem('hermes.desktop.composer.model.registry.local.default')).toBeNull()
+  })
+
+  // The discriminator the #100518 gateway-scope effect depends on. Dropping the
+  // forced reseed is only safe for scope changes where the activation seam
+  // actually rescoped the composer; a local profile switch is NOT one of those,
+  // because composerScopeForConnection() collapses every local descriptor onto
+  // the bare legacy namespace. The effect reads this token to tell them apart,
+  // so the two cases must remain distinguishable here.
+  it('reports an unchanged scope token across a local profile switch', () => {
+    const localProfile = (profile: string) =>
+      ({ baseUrl: '', connectionId: 'local', mode: 'local', profile }) as never
+
+    setConnection(localProfile('default'))
+    const beforeSwitch = composerSelectionScopeToken()
+
+    setCurrentModel('grok-4')
+    setCurrentProvider('xai-oauth')
+    setCurrentModelSource('manual')
+
+    setConnection(localProfile('work'))
+
+    // Same namespace → the previous profile's pick is still loaded, so the
+    // scope effect must still force a reseed for this shape of change.
+    expect(composerSelectionScopeToken()).toBe(beforeSwitch)
+    expect($currentModel.get()).toBe('grok-4')
+  })
+
+  it('reports a changed scope token across a registry-scoped profile switch', () => {
+    const remote = (profile: string) =>
+      ({ baseUrl: 'https://aibox.example', connectionId: 'aibox', mode: 'remote', profile }) as never
+
+    setConnection(remote('fred'))
+    const beforeSwitch = composerSelectionScopeToken()
+
+    setConnection(remote('fred-work'))
+
+    // Different namespace → this owner's own pick was restored by the seam and
+    // must be preserved, so the scope effect must NOT force a reseed.
+    expect(composerSelectionScopeToken()).not.toBe(beforeSwitch)
   })
 
   it('uses the live registry owner when the connection descriptor is stale', () => {

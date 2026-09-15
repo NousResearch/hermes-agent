@@ -25,6 +25,10 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
 
+# A standalone adapter may wait forever on a disconnected transport. Bound the
+# coroutine itself so it releases the cron fire fence and cannot wedge shutdown.
+_STANDALONE_SEND_TIMEOUT_SECONDS = 30.0
+
 
 # Validates user-supplied delivery platform names, preventing env-var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
@@ -1486,16 +1490,25 @@ def _standalone_send(
     job = t.job
     shutdown_msg = f"delivery to {t.where} skipped — interpreter is shutting down"
 
-    def _send():
-        return _send_to_platform(
-            t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
-            media_files=media_files)
+    send_timeout = (
+        _script._get_media_send_timeout() if media_files else _STANDALONE_SEND_TIMEOUT_SECONDS
+    )
+
+    async def _send():
+        return await asyncio.wait_for(
+            _send_to_platform(
+                t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
+                media_files=media_files),
+            timeout=send_timeout)
 
     def _warned(msg: str) -> tuple[None, str]:
         logger.warning("Job '%s': %s", job["id"], msg)
         return None, msg
 
     def _failed(e) -> tuple[None, str]:
+        if isinstance(e, TimeoutError):
+            e = (f"timed out after {send_timeout:g}s; "
+                 "delivery outcome unconfirmed")
         msg = f"delivery to {t.where} failed: {e}"
         logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
         return None, msg
@@ -1523,7 +1536,7 @@ def _standalone_send(
                 # A fresh thread does NOT inherit the profile ContextVars (home override + secret
                 # scope); run in the active context or the sender reads the default bot token.
                 return pool.submit(contextvars.copy_context().run, asyncio.run, _send()).result(
-                    timeout=30), None
+                    timeout=send_timeout + 5), None
             finally:
                 pool.shutdown(wait=False)
         except Exception as e:

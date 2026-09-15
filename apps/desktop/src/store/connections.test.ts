@@ -315,6 +315,27 @@ describe('selectConnection', () => {
     expect(ensureGatewayAgent).toHaveBeenCalledWith('local', 'research', expect.anything())
   })
 
+  it('activates the primary local source when its descriptor omits the remembered named profile', async () => {
+    setConnectionsRegistry(registry)
+    $activeGatewayProfile.set('research')
+    $connection.set({ connectionId: 'local', mode: 'local', profile: 'research', registryScoped: true })
+    $activeGatewayProfile.set('default')
+    $connection.set({ connectionId: 'homelab', mode: 'remote', profile: 'default', registryScoped: true })
+    ensureGatewayAgent.mockImplementationOnce(async (connectionId, profile, options) => {
+      if (options?.beforeActivate && !options.beforeActivate()) {
+        return
+      }
+
+      $activeGatewayProfile.set(profile)
+      $connection.set({ connectionId: connectionId ?? undefined, mode: 'local', registryScoped: true })
+    })
+
+    await expect(selectConnection('local')).resolves.toBeUndefined()
+
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('local', 'research', expect.anything())
+    expect($connection.get()).toEqual({ connectionId: 'local', mode: 'local', registryScoped: true })
+  })
+
   it('does not remember a migrated v1 routing alias as a backend profile', async () => {
     setConnectionsRegistry(registry)
     $connection.set({ connectionId: 'homelab', mode: 'remote' })

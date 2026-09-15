@@ -10,6 +10,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
 import { clearClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
+import { clearComputerUseState } from '@/store/computer-use'
 import { notify } from '@/store/notifications'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { clearAllPrompts } from '@/store/prompts'
@@ -328,6 +329,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     // list so "Tasks N/M" doesn't stay pinned above the composer with the
     // last item stuck pending/in_progress. Finished lists keep their linger.
     clearActiveSessionTodos(sessionId)
+    clearComputerUseState(sessionId, true)
     setSessionCompacting(sessionId, false)
 
     flushQueuedDeltas(sessionId)

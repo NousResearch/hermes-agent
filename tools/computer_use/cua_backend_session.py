@@ -11,6 +11,8 @@ import contextlib
 import json
 import logging
 import os
+import subprocess as _subprocess_module
+import sys
 import threading
 from typing import Any, Dict, List, Optional
 
@@ -19,6 +21,14 @@ from tools.computer_use import cua_backend_driver as _driver
 from tools.computer_use.cua_backend_parse import _extract_tool_result, _mcp_field, _tool_envelope
 
 logger = logging.getLogger("tools.computer_use.cua_backend")
+
+_orig_subprocess_run = _subprocess_module.run
+
+
+def _is_unpatched_subprocess_run() -> bool:
+    """True when subprocess.run has not been mocked by a test (allowing conftest safety wrapper)."""
+    current = _subprocess_module.run
+    return (current is _orig_subprocess_run) or (getattr(current, "__name__", "") == "_guarded_run")
 
 
 class _AsyncBridge:
@@ -109,9 +119,9 @@ def _cli_run_json(cmd: List[str], env: Dict[str, str], name: str, timeout: float
             raise RuntimeError(f"cua-driver CLI fallback for {name} failed to spawn: {e}") from e
         out, err = (proc.stdout or "").strip(), proc.stderr or ""
         last_err = out[:200] or err[:200]
-        if "daemon is not running" in out or "daemon is not running" in err:
+        if any(msg in out or msg in err for msg in ("daemon is not running", "incompatible daemon")):
             raise RuntimeError(f"cua-driver CLI fallback for {name} unavailable: the "
-                               "machine-wide cua-driver daemon is not running (the "
+                               "machine-wide cua-driver daemon is not running or is incompatible (the "
                                "CLI transport requires it; the MCP runtime does not).")
         start = min((i for i in (out.find("{"), out.find("[")) if i != -1), default=-1)
         with contextlib.suppress(json.JSONDecodeError):
@@ -179,7 +189,7 @@ class _CuaDriverSession:
     # Idempotent reads, safe to replay after a broken transport. Mutations stay out: a lost response does not
     # prove they failed.
     _TRANSPORT_REPLAY_SAFE_TOOLS = frozenset({"get_cursor_position", "get_displays", "get_screen_size",
-                                              "get_window_state", "list_apps", "list_windows"})
+                                              "get_window_state", "list_apps", "list_windows", "screenshot"})
     # A timed-out MCP session is wedged for later calls, so it is recreated before the next non-lifecycle
     # call_tool. Class-level default: tests that bypass __init__ see healthy.
     # See #74799.
@@ -206,6 +216,7 @@ class _CuaDriverSession:
         # rejection without recursive call_tool re-entry or backend-owned state (#71166).
         self._declared_session_id: Optional[str] = None
         self._transport_generation, self._transport_reset_callback = 0, None
+        self._pipe_transport: Optional[Any] = None
 
     async def _lifecycle_coro(self) -> None:
         """Owns the stdio MCP contexts: open, signal ready, block on shutdown, clean up — all in one task."""
@@ -332,6 +343,10 @@ class _CuaDriverSession:
             logger.debug("cua-driver transport reset callback failed: %s", exc)
 
     def _stop_lifecycle_locked(self) -> None:
+        if self._pipe_transport is not None:
+            with contextlib.suppress(Exception):
+                self._pipe_transport.close()
+            self._pipe_transport = None
         self._signal_shutdown_locked()
         fut, self._lifecycle_future = self._lifecycle_future, None
         try:
@@ -341,6 +356,25 @@ class _CuaDriverSession:
             logger.warning("cua-driver session shutdown timed out (5s)")
         except Exception as e:
             logger.warning("cua-driver shutdown error: %s", e)
+
+    def _get_pipe_transport(self) -> Optional[Any]:
+        if sys.platform != "win32":
+            return None
+        if os.environ.get("HERMES_CUA_DISABLE_PIPE", "").lower() in ("1", "true"):
+            return None
+        if self._pipe_transport is None:
+            try:
+                from tools.computer_use.cua_backend_pipe import NativePipeComputerUseTransport
+                pipe_path = getattr(self._embedded_daemon, "socket_path", None)
+                if NativePipeComputerUseTransport.is_available(pipe_path):
+                    self._pipe_transport = NativePipeComputerUseTransport.create(
+                        pipe_path=pipe_path,
+                        session_id=self._declared_session_id,
+                    )
+            except Exception as e:
+                logger.debug("Failed initializing NativePipeComputerUseTransport: %s", e)
+                self._pipe_transport = None
+        return self._pipe_transport
 
     def _signal_shutdown_locked(self) -> None:
         """Set the asyncio shutdown event from the caller's thread."""
@@ -435,11 +469,12 @@ class _CuaDriverSession:
             self._redeclare_session(timeout, "cua-driver public session label %s could not be restored: %s")
 
     def _call_tool_via_cli(self, name: str, args: Dict[str, Any], timeout: float) -> Dict[str, Any]:
-        """Fallback transport: ``cua-driver call <tool> <json>`` subprocess. The MCP stdio bridge can persistently
-        fail heavy calls (``get_window_state``) with EAGAIN while the plain CLI, on its own daemon socket, keeps
-        working. Output is remapped to the ``_extract_tool_result`` shape. ``get_window_state`` routes its
-        screenshot to a temp file (``screenshot_out_file``) so the daemon returns a tiny JSON body, not the
-        multi-megabyte base64 blob that congests the socket; ``_cli_result`` reads it back."""
+        """Fallback transport: Windows direct Named Pipe IPC (or ``cua-driver call <tool> <json>`` subprocess).
+        The MCP stdio bridge can persistently fail heavy calls (``get_window_state``) with EAGAIN while the
+        pipe transport or plain CLI, on its own daemon socket, keeps working. Output is remapped to the
+        ``_extract_tool_result`` shape. ``get_window_state`` routes its screenshot to a temp file
+        (``screenshot_out_file``) so the daemon returns a tiny JSON body, not the multi-megabyte base64 blob
+        that congests the socket; ``_cli_result`` reads it back."""
         import tempfile as _tempfile
         from tools.computer_use import cua_backend as _cb
         from tools.environments.local import _sanitize_subprocess_env
@@ -449,17 +484,46 @@ class _CuaDriverSession:
             fd, shot_file = _tempfile.mkstemp(prefix="cua_shot_", suffix=".png")
             os.close(fd)
             call_args["screenshot_out_file"] = shot_file
-        driver_command = _driver.resolve_cua_driver_cmd()
-        if not driver_command:
-            raise RuntimeError(_driver.cua_driver_install_hint())
-        child_env, socket_args = _cb.cua_driver_child_env(), []
-        daemon = getattr(self, "_embedded_daemon", None)
-        if daemon is not None:
-            driver_command, child_env = daemon.proxy_invocation()[0], daemon.child_env()
-            socket_args = ["--socket", daemon.socket_path]
-        cmd = [driver_command, "call", name, json.dumps(call_args), *socket_args]
         try:
+            if (
+                sys.platform == "win32"
+                and _is_unpatched_subprocess_run()
+                and os.environ.get("HERMES_CUA_DISABLE_PIPE", "").lower() not in ("1", "true")
+            ):
+                try:
+                    pipe = self._get_pipe_transport()
+                    if pipe is not None:
+                        return pipe.call_tool(name, call_args, timeout=timeout)
+                except Exception as exc:
+                    logger.debug("Native pipe transport failed for %s, falling back to CLI subprocess: %s", name, exc)
+                    self._pipe_transport = None
+
+            driver_command = _driver.resolve_cua_driver_cmd()
+            if not driver_command:
+                raise RuntimeError(_driver.cua_driver_install_hint())
+            child_env, socket_args = _cb.cua_driver_child_env(), []
+            daemon = getattr(self, "_embedded_daemon", None)
+            if daemon is not None:
+                driver_command, child_env = daemon.proxy_invocation()[0], daemon.child_env()
+                socket_args = ["--socket", daemon.socket_path]
+            cmd = [driver_command, "call", name, json.dumps(call_args), *socket_args]
             return _cli_result(_cli_run_json(cmd, _sanitize_subprocess_env(child_env), name, timeout), shot_file)
+        finally:
+            if shot_file and os.path.exists(shot_file):
+                with contextlib.suppress(OSError):
+                    os.remove(shot_file)
+
+    def _call_tool_via_pipe(self, pipe: Any, name: str, args: Dict[str, Any], timeout: float) -> Dict[str, Any]:
+        """Invoke named pipe transport for tool *name* with temporary file routing for screenshots."""
+        import tempfile as _tempfile
+
+        call_args, shot_file = dict(args), None
+        if name == "get_window_state" and "screenshot_out_file" not in call_args:
+            fd, shot_file = _tempfile.mkstemp(prefix="cua_shot_", suffix=".png")
+            os.close(fd)
+            call_args["screenshot_out_file"] = shot_file
+        try:
+            return pipe.call_tool(name, call_args, timeout=timeout)
         finally:
             if shot_file and os.path.exists(shot_file):
                 with contextlib.suppress(OSError):
@@ -479,35 +543,79 @@ class _CuaDriverSession:
                     name, timeout, "cua-driver session not active on %s; (re)starting before call", restart=False)
         if not self._started:
             raise RuntimeError("cua-driver session not started")
-        try:
-            result = self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
-        except concurrent.futures.TimeoutError as e:
-            # Fail closed: the action may have landed, so never replay it.
-            # MCP deadline hit (#74799): the session is suspect and must be recreated before the next call.
-            # Fail closed — the action may have taken effect on the remote screen, so never replay it here;
-            # surface the uncertainty instead (#74799).
-            self._timeout_suspect = True
-            logger.warning("cua-driver MCP timed out on %s; marking session suspect "
-                           "for recreation before the next call", name)
-            return _outcome_unknown(name, e, "timeout_outcome_unknown")
-        except Exception as e:
-            if self._is_transient_daemon_error(e):
+
+        pipe_result = None
+        if (
+            sys.platform == "win32"
+            and name not in self._LIFECYCLE_CALLS
+            and os.environ.get("HERMES_CUA_DISABLE_PIPE", "").lower() not in ("1", "true")
+        ):
+            try:
+                pipe = self._get_pipe_transport()
+            except Exception as exc:
+                logger.debug("Failed acquiring named pipe transport for %s: %s", name, exc)
+                self._pipe_transport = None
+                pipe = None
+
+            if pipe is not None:
+                from tools.computer_use.cua_backend_pipe import PipePreDispatchError
+
+                try:
+                    pipe_result = self._call_tool_via_pipe(pipe, name, args, timeout)
+                except Exception as exc:
+                    self._pipe_transport = None
+                    is_pre_dispatch = isinstance(exc, PipePreDispatchError)
+                    is_replay_safe = name in self._TRANSPORT_REPLAY_SAFE_TOOLS
+                    if not is_pre_dispatch and not is_replay_safe:
+                        if isinstance(exc, (concurrent.futures.TimeoutError, TimeoutError)):
+                            self._timeout_suspect = True
+                            logger.warning(
+                                "cua-driver pipe transport timed out during mutating tool %s; "
+                                "action outcome unknown, not replaying", name)
+                            return _outcome_unknown(name, exc, "timeout_outcome_unknown")
+                        self._notify_transport_reset()
+                        logger.warning(
+                            "cua-driver pipe transport failed during mutating tool %s (%s); "
+                            "action outcome unknown, not replaying", name, exc)
+                        return _outcome_unknown(name, exc, "transport_outcome_unknown")
+                    logger.warning(
+                        "cua-driver pipe transport failed before dispatch or on replay-safe tool %s (%s); "
+                        "falling back to MCP", name, exc)
+
+        if pipe_result is not None:
+            result = pipe_result
+        else:
+            try:
+                result = self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+            except concurrent.futures.TimeoutError as e:
+                # Fail closed: the action may have landed, so never replay it.
+                # MCP deadline hit (#74799): the session is suspect and must be recreated before the next call.
+                # Fail closed — the action may have taken effect on the remote screen, so never replay it here;
+                # surface the uncertainty instead (#74799).
+                self._timeout_suspect = True
+                logger.warning("cua-driver MCP timed out on %s; marking session suspect "
+                               "for recreation before the next call", name)
+                return _outcome_unknown(name, e, "timeout_outcome_unknown")
+            except Exception as e:
+                if self._is_transient_daemon_error(e):
+                    if name not in self._TRANSPORT_REPLAY_SAFE_TOOLS:
+                        self._notify_transport_reset()
+                        return _outcome_unknown(name, e, "transport_outcome_unknown")
+                    logger.warning("cua-driver MCP transport failed on %s (%s); "
+                                   "falling back to CLI transport", name, e)
+                    return self._call_tool_via_cli(name, args, timeout)
+                if not self._is_closed_session_error(e):
+                    raise
+                self._recreate_session(name, timeout, "cua-driver MCP session closed during %s; reconnecting once")
                 if name not in self._TRANSPORT_REPLAY_SAFE_TOOLS:
-                    self._notify_transport_reset()
                     return _outcome_unknown(name, e, "transport_outcome_unknown")
-                logger.warning("cua-driver MCP transport failed on %s (%s); "
-                               "falling back to CLI transport", name, e)
-                return self._call_tool_via_cli(name, args, timeout)
-            if not self._is_closed_session_error(e):
-                raise
-            self._recreate_session(name, timeout, "cua-driver MCP session closed during %s; reconnecting once")
-            if name not in self._TRANSPORT_REPLAY_SAFE_TOOLS:
-                return _outcome_unknown(name, e, "transport_outcome_unknown")
-            result = self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+                result = self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
         # Remember only a SUCCESSFULLY declared identity: no stale recovery state.
         declared_id, ok = args.get("session"), result.get("isError") is not True
         if name == "start_session" and ok and isinstance(declared_id, str) and declared_id:
             self._declared_session_id = declared_id
+            if self._pipe_transport is not None:
+                self._pipe_transport.session_id = declared_id
         if _is_ended_session_result(result):
             # Revive the stable session and replay the rejected call once; a 2nd rejection surfaces as-is.
             # Never re-runs lifecycle calls -> an end_session result is final.
@@ -518,4 +626,6 @@ class _CuaDriverSession:
                     result = self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
         elif name == "end_session" and ok and declared_id == self._declared_session_id:
             self._declared_session_id = None
+            if self._pipe_transport is not None:
+                self._pipe_transport.session_id = None
         return result

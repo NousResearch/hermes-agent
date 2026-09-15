@@ -383,6 +383,7 @@ class LoopManager:
     def __init__(self, session_id: str):
         self.session_id = session_id
         self._state: Optional[LoopState] = load_loop(session_id)
+        self._persisted_state_json = self._state.to_json() if self._state is not None else None
 
     @property
     def state(self) -> Optional[LoopState]:
@@ -391,6 +392,7 @@ class LoopManager:
     def refresh(self) -> None:
         """Re-read state from the DB (cross-process safety for the gateway)."""
         self._state = load_loop(self.session_id)
+        self._persisted_state_json = self._state.to_json() if self._state is not None else None
 
     def is_active(self) -> bool:
         return self._state is not None and self._state.status == "active"
@@ -400,7 +402,70 @@ class LoopManager:
 
     def _save(self) -> LoopState:
         save_loop(self.session_id, self._state)
+        self._persisted_state_json = self._state.to_json()
         return self._state
+
+    def _local_state_changes(self) -> Dict[str, Any]:
+        """Return fields explicitly changed since this manager last persisted its state."""
+        if self._state is None or self._persisted_state_json is None:
+            return {}
+        baseline = LoopState.from_json(self._persisted_state_json)
+        return {
+            name: getattr(self._state, name)
+            for name in self._state.__dataclass_fields__
+            if getattr(self._state, name) != getattr(baseline, name)
+        }
+
+    @staticmethod
+    def _tick_identity(state: LoopState) -> Tuple[float, int, float]:
+        """Identity of the claimed tick, stable across its in-flight turn."""
+        return state.created_at, state.ticks_fired, state.last_fired_at
+
+    def _reconcile_tick(self, expected: Tuple[float, int, float], mutate) -> bool:
+        """Apply a completion mutation only to the same active, in-flight tick.
+
+        Controls can persist while a stop-condition judge is running. Reading the row and applying
+        the result in one transaction makes those controls win; a missing or malformed row also
+        refuses to write the stale local state.
+        """
+        db = _get_session_db()
+        if db is None:
+            self.refresh()
+            return False
+        applied = False
+
+        def _mutator(current_json):
+            nonlocal applied
+            applied = False
+            if not current_json:
+                return current_json
+            try:
+                current = LoopState.from_json(current_json)
+            except Exception:
+                return current_json
+            if (
+                current.status != "active"
+                or not current.awaiting_response
+                or self._tick_identity(current) != expected
+            ):
+                return current_json
+            mutate(current)
+            applied = True
+            return current.to_json()
+
+        try:
+            persisted = db.mutate_meta(_meta_key(self.session_id), _mutator)
+            current = _parse_state(persisted, self.session_id) if persisted else None
+            if persisted and current is None:
+                self.refresh()
+                return False
+            self._state = current
+            self._persisted_state_json = persisted
+            return applied
+        except Exception as exc:
+            logger.debug("LoopManager: tick reconciliation failed: %s", exc)
+            self.refresh()
+            return False
 
     def status_line(self) -> str:
         s = self._state
@@ -483,6 +548,57 @@ class LoopManager:
         self._state = None
         return True
 
+    def update(
+        self,
+        prompt: str,
+        *,
+        interval_seconds: int,
+        times: Optional[int] = None,
+        until: Optional[str] = None,
+    ) -> LoopState:
+        """Edit prompt/interval/times/until on the active loop, preserving all runtime state."""
+        s = self._state
+        if s is None or s.status not in {"active", "paused"}:
+            status = s.status if s else "missing"
+            raise RuntimeError(f"loop is not editable (status={status})")
+        if s.awaiting_response:
+            raise RuntimeError("loop is awaiting a response; wait for the current tick to finish")
+        prompt = (prompt or "").strip()
+        if not prompt:
+            raise ValueError("loop prompt is empty")
+        interval = float(max(int(interval_seconds), min_interval_seconds()))
+        if times is not None and int(times) > 0 and int(times) < s.ticks_fired:
+            raise RuntimeError(f"run cap ({times}) is below ticks already fired ({s.ticks_fired})")
+
+        def _mutate(current_json):
+            if not current_json:
+                raise RuntimeError("loop is not editable (status=missing)")
+            st = LoopState.from_json(current_json)
+            if st.status not in {"active", "paused"}:
+                raise RuntimeError(f"loop is not editable (status={st.status})")
+            if st.awaiting_response:
+                raise RuntimeError("loop is awaiting a response; wait for the current tick to finish")
+            if times is not None and int(times) > 0 and int(times) < st.ticks_fired:
+                raise RuntimeError(f"run cap ({times}) is below ticks already fired ({st.ticks_fired})")
+            st.prompt = prompt
+            st.interval_seconds = interval
+            st.current_delay = interval
+            now = time.time()
+            st.next_due_at = now + interval
+            if times is not None:
+                st.times = int(times)
+            if until is not None:
+                st.until = (until or "").strip()
+            return st.to_json()
+
+        db = _get_session_db()
+        if db is None:
+            raise RuntimeError("session DB unavailable")
+        persisted = db.mutate_meta(_meta_key(self.session_id), _mutate)
+        self._state = LoopState.from_json(persisted)
+        self._persisted_state_json = persisted
+        return self._state
+
     def is_due(self, now: Optional[float] = None) -> bool:
         """Cheap check: active, not mid-wakeup, and the clock has passed."""
         s = self._state
@@ -498,16 +614,48 @@ class LoopManager:
         itself a slash command (``/loop 10m /recap``). Marks ``awaiting_response`` so the tick
         can't double-fire; drivers MUST follow up with ``complete_tick`` (or ``abandon_tick``).
         """
-        s = self._state
-        if s is None or not self.is_due():
+        if self._state is None:
             return None
-        s.ticks_fired += 1
-        s.last_fired_at = time.time()
-        s.awaiting_response = True
-        # Provisional schedule from NOW: complete_tick reschedules from turn end, but if the
-        # process dies mid-turn this keeps the persisted loop from being 'due' in a tight loop.
-        s.next_due_at = s.last_fired_at + (s.current_delay or s.interval_seconds or self_paced_floor_seconds())
-        self._save()
+        db = _get_session_db()
+        if db is None:
+            return None
+        fired_at = time.time()
+        local_changes = self._local_state_changes()
+        claimed = False
+
+        def _claim(current_json):
+            nonlocal claimed
+            # A SessionDB write may retry this callback after lock contention. Recompute the
+            # marker on every attempt so a claim from a rolled-back attempt cannot leak out.
+            claimed = False
+            if not current_json:
+                return None
+            current = LoopState.from_json(current_json)
+            for name, value in local_changes.items():
+                setattr(current, name, value)
+            if (
+                current.status != "active"
+                or current.awaiting_response
+                or fired_at < current.next_due_at
+            ):
+                return current_json
+            current.ticks_fired += 1
+            current.last_fired_at = fired_at
+            current.awaiting_response = True
+            claimed = True
+            # Provisional schedule from NOW: complete_tick reschedules from turn end, but if the
+            # process dies mid-turn this keeps the persisted loop from being 'due' in a tight loop.
+            current.next_due_at = fired_at + (
+                current.current_delay or current.interval_seconds or self_paced_floor_seconds()
+            )
+            return current.to_json()
+
+        persisted = db.mutate_meta(_meta_key(self.session_id), _claim)
+        self._state = LoopState.from_json(persisted) if persisted else None
+        self._persisted_state_json = persisted
+        s = self._state
+        if not claimed or s is None or not s.awaiting_response:
+            return None
 
         if s.prompt.lstrip().startswith("/"):
             return s.prompt.strip()
@@ -520,19 +668,34 @@ class LoopManager:
         s = self._state
         if s is None or not s.awaiting_response:
             return
-        s.awaiting_response = False
-        s.ticks_fired = max(0, s.ticks_fired - 1)
-        self._save()
+        expected = self._tick_identity(s)
 
-    def _stop(self, status: str, reason: str, message: str) -> Dict[str, Any]:
+        def _rewind(current):
+            current.awaiting_response = False
+            current.ticks_fired = max(0, current.ticks_fired - 1)
+
+        self._reconcile_tick(expected, _rewind)
+
+    def _stop(
+        self, status: str, reason: str, message: str, expected: Tuple[float, int, float],
+    ) -> Dict[str, Any]:
         """Persist a terminal (``done``) or recoverable (``paused``) stop and build the result."""
-        s = self._state
-        s.status = status
-        if status == "done":
-            s.last_stop_reason = reason
-        else:
-            s.paused_reason = reason
-        self._save()
+        def _finish(current):
+            current.awaiting_response = False
+            current.status = status
+            if status == "done":
+                current.last_stop_reason = reason
+            else:
+                current.paused_reason = reason
+
+        if not self._reconcile_tick(expected, _finish):
+            current = self._state
+            return {
+                "status": current.status if current else None,
+                "stopped": False,
+                "reason": "tick state changed",
+                "message": "",
+            }
         return {"status": status, "stopped": True, "reason": reason, "message": message}
 
     def complete_tick(self, last_response: str) -> Dict[str, Any]:
@@ -544,14 +707,14 @@ class LoopManager:
         s = self._state
         if s is None or not s.awaiting_response:
             return {"status": s.status if s else None, "stopped": False, "reason": "no tick in flight", "message": ""}
-        s.awaiting_response = False
+        expected = self._tick_identity(s)
         now = time.time()
         ticks = _ticks_label(s.ticks_fired)
 
         # 1. Agent self-stop marker.
         if response_signals_complete(last_response):
             return self._stop("done", "agent signaled the task is complete",
-                              f"✓ Loop finished after {ticks} — task complete.")
+                              f"✓ Loop finished after {ticks} — task complete.", expected)
 
         # 2. Evidence-based --until judge (reuses the /goal judge; fail-open).
         if s.until and (last_response or "").strip():
@@ -563,39 +726,49 @@ class LoopManager:
                 verdict, reason = "continue", f"judge unavailable: {type(exc).__name__}"
             if verdict == "done":
                 return self._stop("done", f"stop condition met: {reason}",
-                                  f"✓ Loop finished after {ticks} — {reason}")
+                                  f"✓ Loop finished after {ticks} — {reason}", expected)
             if verdict == "blocked":
                 # Unachievable stop condition: pause so the user can re-scope, don't spin.
                 why = f"stop condition judged unachievable: {reason}"
                 return self._stop("paused", why,
-                                  f"⏸ Loop paused — {why}. /loop resume to keep going, /loop stop to end it.")
+                                  f"⏸ Loop paused — {why}. /loop resume to keep going, /loop stop to end it.", expected)
 
         # 3. --times user cap.
         if s.times and s.ticks_fired >= s.times:
             return self._stop("done", f"completed the requested {s.times} runs",
-                              f"✓ Loop finished — ran {s.times}/{s.times} times.")
+                              f"✓ Loop finished — ran {s.times}/{s.times} times.", expected)
 
         # 4. Config backstop budget → pause (recoverable), not done.
         if s.max_ticks and s.ticks_fired >= s.max_ticks:
             return self._stop(
                 "paused", f"tick budget exhausted ({s.ticks_fired}/{s.max_ticks})",
                 f"⏸ Loop paused — {s.ticks_fired}/{s.max_ticks} ticks used "
-                "(loops.max_ticks). /loop resume to keep going, /loop stop to end it.",
+                "(loops.max_ticks). /loop resume to keep going, /loop stop to end it.", expected,
             )
 
         # 5. Still looping — schedule the next tick from turn end.
-        if s.mode == "self_paced":
-            digest = _digest_response(last_response)
-            floor = self_paced_floor_seconds()
-            if digest and digest == s.last_response_digest:
-                s.current_delay = min(max(s.current_delay, floor) * 2, self_paced_ceiling_seconds())
+        def _schedule(current):
+            current.awaiting_response = False
+            if current.mode == "self_paced":
+                digest = _digest_response(last_response)
+                floor = self_paced_floor_seconds()
+                if digest and digest == current.last_response_digest:
+                    current.current_delay = min(max(current.current_delay, floor) * 2, self_paced_ceiling_seconds())
+                else:
+                    current.current_delay = float(floor)
+                current.last_response_digest = digest
             else:
-                s.current_delay = float(floor)
-            s.last_response_digest = digest
-        else:
-            s.current_delay = s.interval_seconds
-        s.next_due_at = now + s.current_delay
-        self._save()
+                current.current_delay = current.interval_seconds
+            current.next_due_at = now + current.current_delay
+
+        if not self._reconcile_tick(expected, _schedule):
+            current = self._state
+            return {
+                "status": current.status if current else None,
+                "stopped": False,
+                "reason": "tick state changed",
+                "message": "",
+            }
         return {"status": "active", "stopped": False, "reason": "loop continues", "message": ""}
 
 

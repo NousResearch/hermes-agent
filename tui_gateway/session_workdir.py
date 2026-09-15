@@ -223,6 +223,11 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
             logger.debug("custom provider identity recovery failed (db row)", exc_info=True)
     if (reasoning := session.get("create_reasoning_override")) is not None:
         model_config["reasoning_config"] = reasoning
+        from hermes_constants import parse_reasoning_effort
+        intent = session.get("reasoning_user_override")
+        model_config["reasoning_user_override"] = (
+            intent if intent is not None else _explicit_reasoning_override(
+                reasoning, parse_reasoning_effort((_load_cfg().get("agent") or {}).get("reasoning_effort"))))
     if (service_tier := session.get("create_service_tier_override")) is not None:
         # "" is the in-memory sentinel for an explicit normal tier (bypasses _make_agent's profile fallback); persist a
         # durable marker so resume can tell it from an inherited tier.

@@ -56,6 +56,17 @@ hermes profile create work --clone
 
 Copies your current profile's `config.yaml`, `.env`, `SOUL.md`, skills, and the curated memory files `memories/MEMORY.md` and `memories/USER.md` into the new profile — memory is treated as part of the agent's identity, like `SOUL.md`. Sessions, `state.db`, cron jobs and everything else start empty. For a blank memory as well, create the profile without `--clone` or delete the two files afterwards; the agent never falls back to another profile's memory when they are absent. Edit `~/.hermes/profiles/work/.env` for different API keys, or `~/.hermes/profiles/work/SOUL.md` for a different personality.
 
+#### Keep a clone's imported agent setups synced (`--sync-imports`)
+
+If the source profile has run [`hermes import-agent`](./import-from-other-agents.md), its `import-sync.json` records which external Claude Code / Codex trees it imported. `--clone` leaves that manifest behind, so the clone gets a one-off copy of those skills and memories and stops there. Add `--sync-imports` to carry the manifest over:
+
+```bash
+hermes profile create work --clone --sync-imports
+hermes -p work import-agent --sync        # pulls changes from the same ~/.claude / ~/.codex
+```
+
+This is explicit, opt-in and one-directional, and it links the clone to the **external agent trees only** — never to the source profile. Both profiles stay independent islands: editing the source's `config.yaml`, `SOUL.md` or skills afterwards never reaches the clone. `--clone-all` copies the manifest as part of the full copy.
+
 ### Clone everything (`--clone-all`)
 
 ```bash

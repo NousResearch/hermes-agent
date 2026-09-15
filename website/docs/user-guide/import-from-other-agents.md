@@ -70,3 +70,5 @@ Sync is prompt-free and cheap: sources whose files are unchanged are skipped by 
 - **Credential files never trigger a sync** — token refreshes in `~/.claude/.credentials.json` or `~/.codex/auth.json` are ignored by the digest, and secrets are still stripped from anything imported.
 
 This mirrors ChatGPT Work's *Settings > Import* automatic updates, adapted to an explicit, inspectable command instead of a background service.
+
+The manifest is per profile. A profile created with `hermes profile create <name> --clone --sync-imports` carries it over, so `hermes -p <name> import-agent --sync` keeps pulling from the same external trees (see [Profiles](./profiles.md#keep-a-clones-imported-agent-setups-synced---sync-imports)).

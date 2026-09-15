@@ -1807,6 +1807,7 @@ Examples:
 ```bash
 hermes profile list
 hermes profile create work --clone
+hermes profile create work --clone --sync-imports   # also carry over the import-agent sync manifest
 hermes profile use work
 hermes profile alias work --name h-work
 hermes profile export work -o work-backup.tar.gz

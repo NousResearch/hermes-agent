@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 
 type BrowserAudioContext = typeof AudioContext
 
+const METER_BUFFER_SIZE = 2048
+
 export interface MicRecorderOptions {
   onLevel?: (level: number) => void
   onError?: (error: Error) => void
@@ -72,6 +74,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
   const chunksRef = useRef<Blob[]>([])
   const audioContextRef = useRef<AudioContext | null>(null)
   const animationRef = useRef<number | null>(null)
+  const meterNodeRef = useRef<ScriptProcessorNode | null>(null)
   const startedAtRef = useRef(0)
   const heardSpeechRef = useRef(false)
   const silenceTriggeredRef = useRef(false)
@@ -82,6 +85,12 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     if (animationRef.current) {
       window.cancelAnimationFrame(animationRef.current)
       animationRef.current = null
+    }
+
+    if (meterNodeRef.current) {
+      meterNodeRef.current.onaudioprocess = null
+      meterNodeRef.current.disconnect()
+      meterNodeRef.current = null
     }
 
     void audioContextRef.current?.close()
@@ -106,27 +115,12 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
 
     try {
       const audioContext = new AudioContextCtor()
-      const analyser = audioContext.createAnalyser()
       const source = audioContext.createMediaStreamSource(stream)
 
-      analyser.fftSize = 256
-      const data = new Uint8Array(analyser.fftSize)
-
-      source.connect(analyser)
       audioContextRef.current = audioContext
 
-      const tick = () => {
-        analyser.getByteTimeDomainData(data)
-
-        let sum = 0
-
-        for (const value of data) {
-          const centered = value - 128
-          sum += centered * centered
-        }
-
-        const rms = Math.sqrt(sum / data.length)
-        const normalized = Math.min(1, rms / 42)
+      // Returns true once the meter has done its job and should stop.
+      const measure = (normalized: number): boolean => {
         const now = Date.now()
 
         setLevel(normalized)
@@ -147,14 +141,74 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
               silenceTriggeredRef.current = true
               options.onSilence()
 
-              return
+              return true
             }
           } else if (!heardSpeechRef.current && idleSilenceMs > 0 && now - startedAtRef.current >= idleSilenceMs) {
             silenceTriggeredRef.current = true
             options.onSilence()
 
-            return
+            return true
           }
+        }
+
+        return false
+      }
+
+      // Drive the meter from the audio graph: Chromium never runs rAF callbacks in a
+      // minimized or occluded window and throttles timers there, so end of speech was
+      // never detected while the app sat in the background.
+      if (typeof audioContext.createScriptProcessor === 'function') {
+        const processor = audioContext.createScriptProcessor(METER_BUFFER_SIZE, 1, 1)
+        const sink = audioContext.createGain()
+
+        sink.gain.value = 0
+
+        processor.onaudioprocess = event => {
+          const samples = event.inputBuffer.getChannelData(0)
+          let sum = 0
+
+          for (let index = 0; index < samples.length; index++) {
+            sum += samples[index] * samples[index]
+          }
+
+          // x128 maps float samples onto the byte time-domain scale the old analyser meter
+          // used, so silenceLevel thresholds keep their meaning.
+          if (measure(Math.min(1, (Math.sqrt(sum / samples.length) * 128) / 42))) {
+            processor.onaudioprocess = null
+          }
+        }
+
+        source.connect(processor)
+        processor.connect(sink)
+        sink.connect(audioContext.destination)
+        meterNodeRef.current = processor
+
+        if (audioContext.state === 'suspended') {
+          void audioContext.resume().catch(() => undefined)
+        }
+
+        return
+      }
+
+      const analyser = audioContext.createAnalyser()
+
+      analyser.fftSize = 256
+      const data = new Uint8Array(analyser.fftSize)
+
+      source.connect(analyser)
+
+      const tick = () => {
+        analyser.getByteTimeDomainData(data)
+
+        let sum = 0
+
+        for (const value of data) {
+          const centered = value - 128
+          sum += centered * centered
+        }
+
+        if (measure(Math.min(1, Math.sqrt(sum / data.length) / 42))) {
+          return
         }
 
         animationRef.current = window.requestAnimationFrame(tick)

@@ -107,6 +107,10 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
         profile, decision, mtp_capable=is_mtp, uma=budget.uma, mtp_prefill=plan.mtp_prefill,
         mtp_draft_depth=entry.mtp_draft_depth if entry is not None else 3))
     keys["model"] = str(gguf)
+    if budget.tensor_split:
+        # Per-model INI (not router extra_args): a later single-GPU model must
+        # not inherit a machine-wide split.
+        keys["tensor-split"] = ",".join(f"{ratio:.4f}" for ratio in budget.tensor_split)
     if entry is not None and is_mtp:
         # Integrated-MTP targets sample on the backend, and so does the draft (pairing validated
         # against the vendor's published llama.cpp recipes).

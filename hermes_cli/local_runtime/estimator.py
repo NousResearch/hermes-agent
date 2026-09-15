@@ -71,6 +71,9 @@ class HardwareBudget:
     total_device_bytes: int
     ram_available_bytes: int
     uma: bool = False
+    # Per-card usable / sum(usable) for llama.cpp --tensor-split. None when
+    # there is not more than one discrete card with positive usable VRAM.
+    tensor_split: tuple[float, ...] | None = None
 
 
 def profile_from_gguf(header: GGUFHeader) -> ModelProfile:

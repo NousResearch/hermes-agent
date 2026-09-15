@@ -2617,6 +2617,60 @@
       }
     },
     {
+      "name": "schedule.message.cancel",
+      "summary": "Cancel a still-pending scheduled message; a fired one is history and is refused.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ScheduledMessageCancelParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ScheduledMessageCancelResult"
+        }
+      }
+    },
+    {
+      "name": "schedule.message.create",
+      "summary": "Persist a pending message for this session. Never sends it: it fires when it comes due.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ScheduledMessageCreateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ScheduledMessageCreateResult"
+        }
+      }
+    },
+    {
+      "name": "schedule.message.list",
+      "summary": "Pending scheduled messages for this session (soonest due first).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ScheduledMessageListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ScheduledMessageListResult"
+        }
+      }
+    },
+    {
       "name": "session.activate",
       "summary": "Attach the frontend to a live session without closing the previously focused one.",
       "params": [
@@ -23634,6 +23688,212 @@
           "idempotent"
         ],
         "title": "RoomTombstone",
+        "type": "object"
+      },
+      "ScheduledMessageCancelParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "message_id"
+        ],
+        "title": "ScheduledMessageCancelParams",
+        "type": "object"
+      },
+      "ScheduledMessageCancelResult": {
+        "additionalProperties": false,
+        "properties": {
+          "cancelled": {
+            "title": "Cancelled",
+            "type": "boolean"
+          },
+          "messages": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ScheduledMessageView"
+            },
+            "title": "Messages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "cancelled"
+        ],
+        "title": "ScheduledMessageCancelResult",
+        "type": "object"
+      },
+      "ScheduledMessageCreateParams": {
+        "additionalProperties": false,
+        "description": "``due_at`` is epoch seconds, a millisecond epoch (above 1e11, i.e. JS ``Date.now()``), or an\nISO 8601 timestamp; a naive timestamp is read as the user's local wall clock, which is what a\n``datetime-local`` input means. No other field exists: scheduling a message configures nothing.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Due At"
+          }
+        },
+        "required": [
+          "session_id",
+          "text",
+          "due_at"
+        ],
+        "title": "ScheduledMessageCreateParams",
+        "type": "object"
+      },
+      "ScheduledMessageCreateResult": {
+        "additionalProperties": false,
+        "description": "The list the client should render, plus the item that was just persisted.",
+        "properties": {
+          "message": {
+            "$ref": "#/components/schemas/ScheduledMessageView"
+          },
+          "messages": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ScheduledMessageView"
+            },
+            "title": "Messages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "ScheduledMessageCreateResult",
+        "type": "object"
+      },
+      "ScheduledMessageListParams": {
+        "additionalProperties": false,
+        "description": "Every pending message bound to ``session_id``, soonest first.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "ScheduledMessageListParams",
+        "type": "object"
+      },
+      "ScheduledMessageListResult": {
+        "additionalProperties": false,
+        "properties": {
+          "messages": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ScheduledMessageView"
+            },
+            "title": "Messages",
+            "type": "array"
+          }
+        },
+        "title": "ScheduledMessageListResult",
+        "type": "object"
+      },
+      "ScheduledMessageView": {
+        "additionalProperties": false,
+        "description": "One pending item as the composer panel renders it.\n\n``due_at`` / ``created_at`` are epoch SECONDS (the backend's unit); the client converts to\nmilliseconds and formats in the user's own timezone, so nothing stored can go stale across a\nDST shift or a machine move. ``display_text`` is the server-truncated preview.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "display_text": {
+            "title": "Display Text",
+            "type": "string"
+          },
+          "due_at": {
+            "title": "Due At",
+            "type": "number"
+          },
+          "created_at": {
+            "default": 0.0,
+            "title": "Created At",
+            "type": "number"
+          },
+          "status": {
+            "default": "pending",
+            "title": "Status",
+            "type": "string"
+          },
+          "overdue": {
+            "default": false,
+            "title": "Overdue",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "text",
+          "display_text",
+          "due_at"
+        ],
+        "title": "ScheduledMessageView",
         "type": "object"
       },
       "SecretRequestParams": {

@@ -81,6 +81,7 @@ import {
   RICH_INPUT_SLOT
 } from './rich-editor'
 import { useComposerScope, useComposerSurfaceId } from './scope'
+import { ScheduledMessagesPanel, ScheduleMessageControl } from './schedule-message'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { SuggestionPills } from './suggestion-pills'
@@ -1077,6 +1078,25 @@ export function ChatBar({
     />
   )
 
+  // "Schedule" beside Send (#111873): defers the current draft as a future user
+  // turn in THIS chat. The draft is read at click time from the DOM-truth helper
+  // submitDraft uses, so a fast keystroke isn't dropped, and it is cleared only
+  // after the backend confirms the item was persisted.
+  const scheduleControl = useMemo(
+    () =>
+      statusSessionId ? (
+        <ScheduleMessageControl
+          getText={() => liveComposerDraft(editorRef.current, draftRef.current).trim()}
+          onScheduled={() => {
+            clearDraft()
+            focusInput()
+          }}
+          sessionId={statusSessionId}
+        />
+      ) : null,
+    [clearDraft, focusInput, statusSessionId]
+  )
+
   const controls = (
     <ComposerControls
       autoSpeak={autoSpeak}
@@ -1102,6 +1122,7 @@ export function ChatBar({
       onDictate={dictate}
       onQueue={queueDraft}
       onToggleAutoSpeak={handleToggleAutoSpeak}
+      scheduleControl={scheduleControl}
       state={state}
       voiceStatus={voiceStatus}
     />
@@ -1297,6 +1318,7 @@ export function ChatBar({
                 />
               ) : null
             }
+            scheduled={<ScheduledMessagesPanel sessionId={statusSessionId} />}
             sessionId={statusSessionId}
           />
           <ComposerPrimitive.Root

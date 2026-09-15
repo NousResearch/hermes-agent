@@ -12,6 +12,7 @@ from . import (  # noqa: F401
     profiles_vault_complete_foreign_subagents,
     projects_pets,
     prompt_voice,
+    scheduled_messages,
     server_requests,
     sessions,
     tools_commands,

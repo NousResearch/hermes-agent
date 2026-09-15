@@ -44,6 +44,14 @@ export type ChatMessage = {
   attachmentRefs?: string[]
   /** Durable backend `messages.id`. Absent until the row is persisted. */
   rowId?: number
+  /** Render identity for this transcript row, minted where the row is born and
+   *  carried when the turn-end refresh swaps a live row's id for its durable one
+   *  (`graftRefreshedTailOntoBackfill`). The thread keys each row element on it
+   *  (see `messageGroupKey`), so it must not change for as long as the row is
+   *  alive — neither when the id is rewritten nor when the transcript window
+   *  re-cuts under it. Absent for rows that predate the field; those key on
+   *  their id. */
+  rowKey?: string
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
 }

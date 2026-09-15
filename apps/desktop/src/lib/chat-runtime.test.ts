@@ -185,6 +185,20 @@ describe('toRuntimeMessage timeline metadata', () => {
 
     expect((runtime.metadata?.custom as { timelineTimestamp?: number }).timelineTimestamp).toBeUndefined()
   })
+
+  it('carries the row’s render identity into runtime custom metadata', () => {
+    const runtime = toRuntimeMessage({
+      id: '1789333950.13104-0-user',
+      parts: [{ text: 'hello', type: 'text' }],
+      role: 'user',
+      rowKey: 'user-1700000000000-abc123'
+    })
+
+    // `thread/list.tsx` keys the row element on this value (see ChatMessage.rowKey),
+    // so it has to reach the runtime. Without it the row falls back to its message
+    // id — the very rewrite the identity exists to survive.
+    expect((runtime.metadata?.custom as { rowKey?: string }).rowKey).toBe('user-1700000000000-abc123')
+  })
 })
 
 describe('coalesceToolOnlyAssistants toolCallId uniqueness', () => {

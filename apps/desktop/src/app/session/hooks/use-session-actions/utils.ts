@@ -147,6 +147,9 @@ function preserveStructuralParts(message: ChatMessage, previous: ChatMessage): C
 //   timestamp  — presentation-only (sort/age display), never affects transcript equality
 //   attachmentRefs — composer-side metadata; already reconciled in reconcileResumeMessages
 //   rowId — durable backend identity; stable for a given row, never changes what's painted
+//   rowKey — render identity for the row element (thread/list.tsx): minted where the
+//            row is born and carried across the id swap that follows a committed turn,
+//            so it never changes what's painted either
 //
 // If your new field affects what the user sees in the transcript, add it to
 // COMPARED. If it's metadata that shouldn't trigger a re-render, add it to
@@ -175,7 +178,7 @@ const COMPARED_FIELDS = [
   'durationS'
 ] as const
 
-const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'rowId'] as const
+const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'rowId', 'rowKey'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
 // chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.
@@ -630,6 +633,7 @@ export function preserveLocalPendingTurnMessages(
       textWithoutReferenceLines(chatMessageText(latestAuthoritativeUser)) ===
         textWithoutReferenceLines(chatMessageText(message))
     ) {
+      // The committed twin takes this row's place in the list.
       continue
     }
 

@@ -3,6 +3,9 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { useEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import type { ChatMessage } from '@/lib/chat-messages'
+import { toRuntimeMessage } from '@/lib/chat-runtime'
 import { $reasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 
 import { stubThreadEnvironment, stubThreadViewportSize, ThreadRuntime } from '../test-utils'
@@ -424,6 +427,144 @@ function renderSettlingReasoning() {
   return { container, settle: () => act(() => setRunning?.(false)) }
 }
 
+// The same turn as `renderSettlingReasoning`, but settled the way production
+// settles it: `hydrateFromStoredSession` re-reads the stored tail, converts it
+// with `toChatMessages` — committed `<epoch>.<rand>-N-user` ids in place of the
+// live `user-*` / `assistant-stream-*` ones — and grafts it onto the local array
+// through `graftRefreshedTailOntoBackfill`. The refreshed rows carry the render
+// identity they were born with, so the swap does not re-key the row element.
+function renderSettlingReasoningWithIdSwap() {
+  const OPTIMISTIC_USER_ID = 'user-1700000000000-abc123'
+  const COMMITTED_USER_ID = '1789325036.467869-2-user'
+  const COMMITTED_ASSISTANT_ID = '1789325036.467869-2-assistant'
+  const prompt = 'Stream a response'
+  const answer = 'Here is the answer.'
+  const thought = 'The user asked a question.'
+
+  // Live state: the optimistic user bubble plus the still-streaming assistant
+  // tail whose reasoning part is the live preview.
+  const streamingMessages: ChatMessage[] = [
+    { id: OPTIMISTIC_USER_ID, role: 'user', parts: [{ type: 'text', text: prompt }] },
+    {
+      id: 'assistant-stream-live-1',
+      role: 'assistant',
+      parts: [{ type: 'reasoning', text: thought }],
+      pending: true
+    }
+  ]
+
+  // What the session refresh hands back the instant the turn commits: the
+  // gateway's durable rows — same content, committed-shaped ids.
+  const committedMessages: ChatMessage[] = [
+    { id: COMMITTED_USER_ID, role: 'user', parts: [{ type: 'text', text: prompt }], rowId: 42 },
+    {
+      id: COMMITTED_ASSISTANT_ID,
+      role: 'assistant',
+      parts: [
+        { type: 'reasoning', text: thought },
+        { type: 'text', text: answer }
+      ],
+      rowId: 43,
+      pending: false
+    }
+  ]
+
+  let settle: (() => string[]) | undefined
+
+  function SettlingIdSwapHarness() {
+    const [messages, setMessages] = useState<ChatMessage[]>(streamingMessages)
+    const [isRunning, setIsRunning] = useState(true)
+
+    settle = () => {
+      // Production path: the turn-end stored-tail refresh grafts the
+      // authoritative rows onto the local live tail.
+      const reconciled = graftRefreshedTailOntoBackfill(committedMessages, messages)
+
+      act(() => {
+        setMessages(reconciled)
+        setIsRunning(false)
+      })
+
+      return reconciled.map(message => message.id)
+    }
+
+    const runtime = useExternalStoreRuntime<ThreadMessage>({
+      messages: messages.map(toRuntimeMessage),
+      isRunning,
+      onNew: async () => {}
+    })
+
+    return (
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread />
+      </AssistantRuntimeProvider>
+    )
+  }
+
+  const { container } = render(<SettlingIdSwapHarness />)
+
+  return {
+    container,
+    settle: () => settle?.(),
+    committedIds: [COMMITTED_USER_ID, COMMITTED_ASSISTANT_ID],
+    optimisticIds: [OPTIMISTIC_USER_ID, 'assistant-stream-live-1']
+  }
+}
+
+// A turn that is live while the transcript window re-cuts underneath it.
+// `advanceSessionTranscriptWindow` (app/chat/transcript-window.ts) holds its cut
+// until the tail passes TRANSCRIPT_WINDOW_BUDGET + TRANSCRIPT_WINDOW_SLACK, then
+// re-cuts — "a re-cut once per ~half page of content" while streaming — and hands
+// the runtime a slice that no longer contains the older messages. The live row's
+// position in that slice moves, so anything keyed on position remounts it.
+function renderWindowRerolledReasoning() {
+  const prompt = 'Stream a response'
+  const thought = 'The user asked a question.'
+
+  const olderRows: ChatMessage[] = [
+    { id: 'older-1-user', role: 'user', parts: [{ type: 'text', text: 'an earlier prompt' }] },
+    { id: 'older-2-assistant', role: 'assistant', parts: [{ type: 'text', text: 'an earlier answer' }] }
+  ]
+
+  const liveRows: ChatMessage[] = [
+    { id: 'user-1700000000000-trimme', role: 'user', parts: [{ type: 'text', text: prompt }] },
+    {
+      id: 'assistant-stream-live-trim',
+      role: 'assistant',
+      parts: [{ type: 'reasoning', text: thought }],
+      pending: true
+    }
+  ]
+
+  let reroll: (() => void) | undefined
+
+  function WindowRerollHarness() {
+    const [messages, setMessages] = useState<ChatMessage[]>([...olderRows, ...liveRows])
+
+    reroll = () => {
+      // Exactly what a re-cut hands the runtime: the same live tail, an older
+      // prefix gone.
+      act(() => setMessages(liveRows))
+    }
+
+    const runtime = useExternalStoreRuntime<ThreadMessage>({
+      messages: messages.map(toRuntimeMessage),
+      isRunning: true,
+      onNew: async () => {}
+    })
+
+    return (
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread />
+      </AssistantRuntimeProvider>
+    )
+  }
+
+  const { container } = render(<WindowRerollHarness />)
+
+  return { container, reroll: () => reroll?.() }
+}
+
 function GroupedReasoningHarness() {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [assistantMultiReasoningMessage([' First thought.', ' Second thought.'])],
@@ -660,6 +801,126 @@ describe('assistant-ui streaming renderer', () => {
       ).toBe('true')
     })
     expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeTruthy()
+  })
+
+  it('keeps the live thinking preview open across the settle id swap (optimistic -> committed user row)', async () => {
+    const { container, settle, committedIds, optimisticIds } = renderSettlingReasoningWithIdSwap()
+
+    // Live: the block previews itself as it streams.
+    const liveToggle = within(container).getByRole('button', { name: /thinking/i })
+    expect(liveToggle.getAttribute('aria-expanded')).toBe('true')
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeTruthy()
+
+    const reconciledIds = settle() ?? []
+
+    // The reconcile must actually perform the id swap the live app performs:
+    // the optimistic rows are dropped once the committed rows with the same
+    // text arrive, so the turn row's React key changes under the list.
+    expect(reconciledIds).toEqual(committedIds)
+
+    for (const optimisticId of optimisticIds) {
+      expect(reconciledIds).not.toContain(optimisticId)
+    }
+
+    // The preview latch lives in component state; the row remount caused by
+    // the key change discards it and the block comes back collapsed. It must
+    // stay open — the live preview the user was watching cannot disappear.
+    await waitFor(() => {
+      expect(
+        within(container)
+          .getByRole('button', { name: /thought/i })
+          .getAttribute('aria-expanded')
+      ).toBe('true')
+    })
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeTruthy()
+  })
+
+  it('keeps a thinking block the reader closed closed across the settle id swap', async () => {
+    const { container, settle } = renderSettlingReasoningWithIdSwap()
+    const toggle = within(container).getByRole('button', { name: /thinking/i })
+
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+
+    // The reader closes the preview they were watching.
+    fireEvent.click(toggle)
+
+    await waitFor(() => {
+      expect(
+        within(container)
+          .getByRole('button', { name: /thinking/i })
+          .getAttribute('aria-expanded')
+      ).toBe('false')
+    })
+
+    settle()
+
+    await waitFor(() => {
+      expect(
+        within(container)
+          .getByRole('button', { name: /thought/i })
+          .getAttribute('aria-expanded')
+      ).toBe('false')
+    })
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
+  })
+
+  it('stays collapsed across the settle id swap when the collapsed-by-default preference is enabled', async () => {
+    $reasoningCollapsedByDefault.set(true)
+
+    const { container, settle } = renderSettlingReasoningWithIdSwap()
+
+    expect(
+      within(container)
+        .getByRole('button', { name: /thinking/i })
+        .getAttribute('aria-expanded')
+    ).toBe('false')
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
+
+    settle()
+
+    await waitFor(() => {
+      expect(
+        within(container)
+          .getByRole('button', { name: /thought/i })
+          .getAttribute('aria-expanded')
+      ).toBe('false')
+    })
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
+  })
+
+  it('keeps a thinking block the reader closed closed when the transcript window re-cuts under it', async () => {
+    const { container, reroll } = renderWindowRerolledReasoning()
+    const toggle = within(container).getByRole('button', { name: /thinking/i })
+
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+
+    // The reader closes the preview while the turn is still streaming.
+    fireEvent.click(toggle)
+
+    await waitFor(() => {
+      expect(
+        within(container)
+          .getByRole('button', { name: /thinking/i })
+          .getAttribute('aria-expanded')
+      ).toBe('false')
+    })
+
+    reroll()
+
+    await waitFor(() => {
+      // The trimmed rows are gone, so the re-cut has landed.
+      expect(container.textContent).not.toContain('an earlier answer')
+    })
+
+    // Re-cutting the window moves every surviving row's position in the array
+    // the runtime holds. Keyed on that position, the row is remounted and comes
+    // back with a fresh toggle — reopening a block the reader had closed.
+    expect(
+      within(container)
+        .getByRole('button', { name: /thinking/i })
+        .getAttribute('aria-expanded')
+    ).toBe('false')
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
   })
 
   it('leaves a settling turn collapsed when the collapsed-by-default preference is enabled', async () => {

@@ -155,7 +155,122 @@ describe('graftRefreshedTailOntoBackfill', () => {
     const previous = [chat('a', 1)]
     const refreshed = [chat('a', 1), chat('b', 2)]
 
+    // Both rows already carry their durable id, so there is no identity to carry
+    // and the tail is adopted untouched — same array, same objects.
     expect(graftRefreshedTailOntoBackfill(refreshed, previous)).toBe(refreshed)
+  })
+
+  it('carries a live row’s render identity onto its refreshed twin', () => {
+    const previous: ChatMessage[] = [
+      { id: 'user-1700000000000-abc123', role: 'user', parts: [{ type: 'text', text: 'hello' }], pending: true },
+      {
+        id: 'assistant-stream-live-1',
+        role: 'assistant',
+        parts: [{ type: 'reasoning', text: 'thinking about it' }],
+        pending: true
+      }
+    ]
+
+    // What the turn-end refresh hands back: the same turn, committed ids.
+    const refreshed: ChatMessage[] = [
+      { id: '1789333950.13104-0-user', role: 'user', parts: [{ type: 'text', text: 'hello' }], rowId: 42 },
+      {
+        id: '1789333950.13104-1-assistant',
+        role: 'assistant',
+        parts: [
+          { type: 'reasoning', text: 'thinking about it' },
+          { type: 'text', text: 'the answer' }
+        ],
+        rowId: 43
+      }
+    ]
+
+    const grafted = graftRefreshedTailOntoBackfill(refreshed, previous)
+
+    // The committed rows win on id, but the identity the live rows were rendering
+    // under rides along — including the reasoning-only row, which pairs on its
+    // reasoning text because it has no answer text yet.
+    expect(grafted.map(message => message.id)).toEqual(['1789333950.13104-0-user', '1789333950.13104-1-assistant'])
+    expect(grafted.map(message => message.rowKey)).toEqual(['user-1700000000000-abc123', 'assistant-stream-live-1'])
+  })
+
+  it('carries a tool-only row’s identity, which has no text to pair on', () => {
+    const toolPart = [{ type: 'tool-call', toolName: 'read_file', toolCallId: 'call-1' }] as ChatMessage['parts']
+
+    const previous: ChatMessage[] = [
+      { id: 'assistant-stream-tool-1', role: 'assistant', parts: toolPart, pending: true }
+    ]
+
+    const refreshed: ChatMessage[] = [
+      { id: '1789333950.13104-1-assistant', role: 'assistant', parts: toolPart, rowId: 51 }
+    ]
+
+    // A tool-only row is a live row like any other: its tool disclosure must survive
+    // the refresh, so it pairs on its tool signature.
+    expect(graftRefreshedTailOntoBackfill(refreshed, previous)[0].rowKey).toBe('assistant-stream-tool-1')
+  })
+
+  it('pairs on the durable row id even when the reply was rewritten', () => {
+    const previous: ChatMessage[] = [
+      {
+        id: 'assistant-stream-9',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'an interim reply' }],
+        rowId: 77,
+        pending: true
+      }
+    ]
+
+    const refreshed: ChatMessage[] = [
+      {
+        id: '1789333950.13104-1-assistant',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'the rewritten reply' }],
+        rowId: 77
+      }
+    ]
+
+    // Same row id is the same row, however far the text moved — a verify-on-stop
+    // reply shares no prefix with the interim it replaces.
+    expect(graftRefreshedTailOntoBackfill(refreshed, previous)[0].rowKey).toBe('assistant-stream-9')
+  })
+
+  it('does not let a short live prompt claim a longer older row', () => {
+    const previous: ChatMessage[] = [
+      { id: 'user-old', role: 'user', parts: [{ type: 'text', text: 'help me write an essay about rivers' }] }
+    ]
+
+    const refreshed: ChatMessage[] = [
+      { id: '1789333950.13104-0-user', role: 'user', parts: [{ type: 'text', text: 'help' }], rowId: 40 }
+    ]
+
+    expect(graftRefreshedTailOntoBackfill(refreshed, previous)[0].rowKey).toBeUndefined()
+  })
+
+  it('never hands a refreshed row an identity the graft keeps in the array', () => {
+    const previous: ChatMessage[] = [
+      // Unpersisted and about to be KEPT by the graft: nothing may inherit its identity.
+      { id: 'user-unpersisted-old', role: 'user', parts: [{ type: 'text', text: 'hello' }] },
+      { id: 'prev-committed', role: 'user', parts: [{ type: 'text', text: 'other' }], rowId: 2 }
+    ]
+
+    const refreshed: ChatMessage[] = [
+      { id: '1789333950.13104-1-user', role: 'user', parts: [{ type: 'text', text: 'other' }], rowId: 2 },
+      { id: '1789333950.13104-2-user', role: 'user', parts: [{ type: 'text', text: 'hello' }], rowId: 3 }
+    ]
+
+    const grafted = graftRefreshedTailOntoBackfill(refreshed, previous)
+    const identities = grafted.map(message => message.rowKey ?? message.id)
+
+    // Two rows sharing one identity is worse than a remount: it is a duplicate key.
+    expect(new Set(identities).size).toBe(identities.length)
+
+    // The replaced row keeps the identity it was rendering under — same durable row
+    // id, so the refresh must not re-key it...
+    expect(identities[1]).toBe('prev-committed')
+
+    // ...while 'hello' must NOT inherit the identity of the row the graft KEEPS.
+    expect(grafted[2].rowKey).toBeUndefined()
   })
 })
 

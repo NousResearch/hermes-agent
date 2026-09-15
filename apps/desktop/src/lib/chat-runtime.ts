@@ -383,10 +383,16 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
   const createdAt = messageCreatedAt(message)
 
   // Reactions and the durable row id ride metadata.custom for every role — the
-  // established channel for per-message extras (attachmentRefs below).
-  const reactionMeta = {
+  // established channel for per-message extras (attachmentRefs below). The row's
+  // render identity rides it too: `thread/list.tsx` keys the row element on this
+  // value, so it has to survive the settle reconcile that rewrites a live row's
+  // id (see ChatMessage.rowKey).
+  const rowKeyMeta = message.rowKey !== undefined ? { rowKey: message.rowKey } : {}
+
+  const customMeta = {
     ...(message.rowId !== undefined ? { rowId: message.rowId } : {}),
-    ...(message.reactions?.length ? { reactions: message.reactions } : {})
+    ...(message.reactions?.length ? { reactions: message.reactions } : {}),
+    ...rowKeyMeta
   }
 
   const timelineMeta =
@@ -401,7 +407,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       content: message.parts.filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text'),
       attachments: [],
       createdAt,
-      metadata: { custom: { attachmentRefs: message.attachmentRefs ?? [], ...reactionMeta, ...timelineMeta } }
+      metadata: { custom: { attachmentRefs: message.attachmentRefs ?? [], ...customMeta, ...timelineMeta } }
     } as ThreadMessage
   }
 
@@ -440,7 +446,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
         ...(message.durationS !== undefined ? { durationS: message.durationS } : {}),
         // Structured failure layer for the error card (see lib/error-surface).
         ...(message.errorSurface ? { errorSurface: message.errorSurface } : {}),
-        ...reactionMeta
+        ...customMeta
       }
     }
   } as ThreadMessage

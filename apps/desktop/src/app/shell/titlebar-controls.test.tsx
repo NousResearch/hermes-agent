@@ -3,6 +3,7 @@ import { act, cleanup, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { PaneTabStrip } from '@/components/ui/pane-tab'
 import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
 import { setTitlebarAppActionsSide } from '@/store/titlebar-app-actions'
@@ -130,6 +131,37 @@ describe('TitlebarControls fixed clusters', () => {
       renderControls('/settings')
 
       expect(pluginChrome()).toBeNull()
+    })
+
+    it('places titleBar.center outside the left-anchored cluster on extension', () => {
+      renderControls('/kanban')
+      const chrome = screen.getByText('plugin-chrome')
+      expect(chrome.closest('[class*="left-(--titlebar-controls-left)"]')).toBeNull()
+      expect(windowControls()).toBeNull()
+      expect(appControls()).toBeNull()
+    })
+
+    it('places titleBar.center beside a top-edge PaneTabStrip, not inside it', () => {
+      render(
+        <MemoryRouter initialEntries={['/kanban']}>
+          <I18nProvider configClient={null} initialLocale="en">
+            <TitlebarControls onOpenSettings={() => {}} />
+            <PaneTabStrip titlebar>
+              <span>SESSIONS</span>
+            </PaneTabStrip>
+          </I18nProvider>
+        </MemoryRouter>
+      )
+
+      const chrome = screen.getByText('plugin-chrome')
+      expect(chrome.closest('[role="tablist"]')).toBeNull()
+      expect(screen.getByText('SESSIONS').closest('[role="tablist"]')).not.toBeNull()
+
+      const center = chrome.closest('[data-titlebar-slot="center"]')
+      expect(center).not.toBeNull()
+      expect(center?.className).toMatch(/left-1\/2/)
+      expect(windowControls()).toBeNull()
+      expect(appControls()).toBeNull()
     })
   })
 })

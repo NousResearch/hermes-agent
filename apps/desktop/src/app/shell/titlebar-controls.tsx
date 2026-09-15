@@ -256,17 +256,19 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     return null
   }
 
-  const titlebarSlots = (
-    <>
-      <Slot area="titleBar.left" />
-      <Slot area="titleBar.center" />
-      <Slot area="titleBar.right" />
-    </>
-  )
-
   const leftClusterClass = cn(
     titlebarToolClusterClass,
     'left-(--titlebar-controls-left) top-(--titlebar-controls-top) translate-y-(--titlebar-controls-y-nudge)'
+  )
+
+  const centerClusterClass = cn(
+    titlebarToolClusterClass,
+    'left-1/2 -translate-x-1/2 top-(--titlebar-controls-top) translate-y-(--titlebar-controls-y-nudge)'
+  )
+
+  const rightSlotClusterClass = cn(
+    titlebarToolClusterClass,
+    'right-(--titlebar-tools-right) top-(--titlebar-controls-top)'
   )
 
   // A contributed full page (`extension`) yields the fixed clusters only while
@@ -275,16 +277,26 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // the app's controls; an empty claim would leave a bare strip on every plugin
   // route. Contributed `titleBar.tools` items keep rendering here too, so a
   // chrome-owning page never silently drops a registered item.
+  // Split titleBar slots into left / center / right clusters so `titleBar.center`
+  // is not left-anchored over the top-edge pane tabs.
   if (hidesFixedTitlebarClusters(view) && pageOwnsTitlebar) {
     const pageTools = [...leftTools, ...tools].filter(tool => !tool.hidden)
 
     return (
-      <div className={leftClusterClass}>
-        {pageTools.map(tool => (
-          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
-        ))}
-        {titlebarSlots}
-      </div>
+      <>
+        <div className={leftClusterClass} data-titlebar-slot="left">
+          {pageTools.map(tool => (
+            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+          ))}
+          <Slot area="titleBar.left" />
+        </div>
+        <div className={centerClusterClass} data-titlebar-slot="center">
+          <Slot area="titleBar.center" />
+        </div>
+        <div className={rightSlotClusterClass} data-titlebar-slot="right">
+          <Slot area="titleBar.right" />
+        </div>
+      </>
     )
   }
 

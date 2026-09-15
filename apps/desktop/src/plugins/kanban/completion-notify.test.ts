@@ -428,14 +428,18 @@ describe('terminal kinds beyond completed', () => {
     })
   })
 
-  it('block_loop_detected notifies (routed-to-triage handoff)', async () => {
+  it('block_loop_detected notifies that orchestration attention is needed', async () => {
     const m = await loadModule()
     m.bindCompletionNotify(makeRest(() => 100) as never)
 
     const fired = await m.onKanbanEventsFrame('smoke', [ev(101, 'block_loop_detected', { reason: 'same cause 3x' })])
 
     expect(fired).toBe(true)
-    expect(lastNotify()).toMatchObject({ kind: 'warning', message: 'same cause 3x' })
+    expect(lastNotify()).toMatchObject({
+      kind: 'warning',
+      title: 'Task routed to triage — orchestration attention needed',
+      message: 'same cause 3x'
+    })
   })
 
   it('gave_up carries the payload error; crashed and timed_out fall back to the task id', async () => {

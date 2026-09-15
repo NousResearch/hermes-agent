@@ -585,8 +585,8 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
     to `triage` after BLOCK_RECURRENCE_LIMIT re-blocks for the same cause and
     emits ONLY a `block_loop_detected` event — no `blocked`/`status` event.
     Before `block_loop_detected` joined TERMINAL_KINDS with its own message
-    branch, that one transition (the whole point of which is to force human
-    attention) produced zero notification and the task stalled in triage
+    branch, that one transition (the whole point of which is to surface
+    orchestration attention) produced zero notification and the task stalled in triage
     silently.
     """
     db_path = tmp_path / "block-loop.db"
@@ -615,6 +615,8 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
     assert "TRIAGE" in text
     assert tid in text
     assert "needs credentials" in text
+    assert "orchestration attention needed" in text
+    assert "human decision" not in text
     # Cursor advanced: the event is claimed and not re-delivered.
     conn = kbc.connect()
     try:
@@ -628,8 +630,9 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
 
 
 # ---------------------------------------------------------------------------
-# Handoffs that hand a decision back to the origin must wake it, not only ping
-# it: `review_requested` (implementation done, waiting for a reviewer) and
+# Handoffs that return a task outcome or require orchestration attention must
+# wake the origin, not only ping it: `review_requested` (implementation done,
+# waiting for a reviewer) and
 # `block_loop_detected` (routed to triage) are terminal kinds just like
 # `blocked`.
 # ---------------------------------------------------------------------------

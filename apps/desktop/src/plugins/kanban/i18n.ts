@@ -414,7 +414,7 @@ export const en: KanbanMessages = {
   notify: {
     completedTitle: 'Task completed',
     blockedTitle: 'Task blocked — needs your input',
-    blockLoopTitle: 'Task routed to triage — needs a decision',
+    blockLoopTitle: 'Task routed to triage — orchestration attention needed',
     gaveUpTitle: 'Task gave up',
     crashedTitle: 'Worker crashed — will retry',
     timedOutTitle: 'Task timed out — will retry',
@@ -625,7 +625,7 @@ const ja: KanbanMessages = {
   notify: {
     completedTitle: 'タスク完了',
     blockedTitle: 'タスクがブロック中 — 入力が必要です',
-    blockLoopTitle: 'タスクをトリアージへ移動 — 判断が必要です',
+    blockLoopTitle: 'タスクをトリアージへ移動 — オーケストレーションの確認が必要です',
     gaveUpTitle: 'タスクを断念しました',
     crashedTitle: 'ワーカーがクラッシュ — 再試行します',
     timedOutTitle: 'タスクがタイムアウト — 再試行します',
@@ -833,7 +833,7 @@ const zh: KanbanMessages = {
   notify: {
     completedTitle: '任务已完成',
     blockedTitle: '任务受阻 — 需要你的输入',
-    blockLoopTitle: '任务已转入分类 — 需要人工决定',
+    blockLoopTitle: '任务已转入分类 — 需要编排关注',
     gaveUpTitle: '任务已放弃',
     crashedTitle: '工作单元崩溃 — 将重试',
     timedOutTitle: '任务超时 — 将重试',
@@ -1041,7 +1041,7 @@ const zhHant: KanbanMessages = {
   notify: {
     completedTitle: '任務已完成',
     blockedTitle: '任務受阻 — 需要你的輸入',
-    blockLoopTitle: '任務已轉入分類 — 需要人工決定',
+    blockLoopTitle: '任務已轉入分類 — 需要編排關注',
     gaveUpTitle: '任務已放棄',
     crashedTitle: '工作單元當機 — 將重試',
     timedOutTitle: '任務逾時 — 將重試',

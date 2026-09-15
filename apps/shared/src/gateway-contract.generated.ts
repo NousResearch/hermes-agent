@@ -641,7 +641,7 @@ export interface CronManageParams {
   continuity?: boolean | string | null
   deliver?: string | null
 }
-/** Closed row from ``tools/cronjob_job_args.py:346-394``. */
+/** Closed row from ``tools/cronjob_job_args.py::_format_job``; the ``_FORMAT_JOB_OPTIONAL_KEYS`` / continuity / context_from / attach_to_session keys are only present when set. */
 export interface CronJobRow {
   job_id: string
   name: string
@@ -687,7 +687,7 @@ export interface CronRemovedJob {
   name: string
   schedule: string | null
 }
-/** ``methods_tools.py:1059-1083`` adapts the listed ``cronjob`` action outcomes. */
+/** ``methods_tools.py:1059-1083`` adapts the listed ``cronjob`` action outcomes; each action fills its own subset, so every optional key defaults. */
 export interface CronManageResult {
   success: boolean
   error: string | null

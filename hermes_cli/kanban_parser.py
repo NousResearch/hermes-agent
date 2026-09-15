@@ -174,6 +174,10 @@ _SPECS = [
              help="Skill to force-load into the worker (repeatable). The kanban "
                   "lifecycle is already injected automatically. Example: --skill "
                   "translation --skill github-code-review"),
+        _arg("--tag", action="append", default=[], dest="tags",
+             help="Classification tag (repeatable). Tags cut across boards — "
+                  "group cards by the nature of the work (e.g. --tag writing) "
+                  "and resurface a parked batch later with `kanban list --tag`."),
         _arg("--max-retries", type=int, metavar="N",
              help="Per-task override for the consecutive-failure "
                   f"circuit breaker. Trip on the Nth failure — e.g. --max-retries 1 blocks on the "
@@ -222,6 +226,7 @@ _SPECS = [
         _arg("--tenant"),
         _arg("--session",
              help="Filter by originating chat/agent session id (set on tasks created from inside an ACP loop)"),
+        _arg("--tag", help="Only tasks carrying this tag (exact match, cross-board; single tag only, multi-tag AND/OR not supported)"),
         _arg("--archived", action="store_true", help="Include archived tasks"),
         _json_flag(),
         _arg("--sort", choices=sorted(kb.VALID_SORT_ORDERS.keys()),

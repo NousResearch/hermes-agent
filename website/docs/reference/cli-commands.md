@@ -1227,7 +1227,7 @@ Subcommands:
 |------------|-------------|
 | `show` | Show current config values. |
 | `edit` | Open `config.yaml` in your editor. |
-| `get <key> [--json]` | Print a single config value by dotted key (e.g. `hermes config get model.default`). `--json` emits machine-readable output. |
+| `get <key> [--json] [--raw]` | Print a single config value by dotted key (e.g. `hermes config get model.default`). `--json` emits machine-readable output. Credential-shaped values (`api_key`, `*_TOKEN`, `*_SECRET`, `password`, …) are masked (`sk-o...7890`) because the agent runs this from sessions whose transcripts persist; `--raw` prints the real value (or set `security.redact_secrets: false`). |
 | `set <key> <value>` | Set a config value. |
 | `unset <key>` | Remove a config key, reverting it to the built-in default. |
 | `path` | Print the config file path. |

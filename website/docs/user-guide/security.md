@@ -267,6 +267,14 @@ command_allowlist:
 
 These patterns are loaded at startup and silently approved in all future sessions.
 
+Entries can be exact command text, a shell-style glob (`podman *`), or a
+dangerous-pattern rule key such as `script execution via heredoc` (the key shown
+in the approval prompt). Rule keys are honored on every surface, including
+unattended ones: a cron job, `hermes chat -q` run or webhook session under
+`cron_mode`/`single_query_mode`/`unattended_mode: deny` still runs a command whose
+detected rule key is in `command_allowlist`, while Tirith content-security
+findings on the same command continue to block it.
+
 The setting must be a list of strings. Legacy installs that stored a list as a
 quoted YAML/JSON string recover that list at load time and log a warning to
 re-save it with `hermes config edit`. Other malformed values are ignored with
@@ -339,9 +347,10 @@ These categories are always denied, even when `HERMES_WRITE_SAFE_ROOT` is unset:
 | Category | Examples |
 |----------|----------|
 | OS credential stores | `~/.ssh/` (keys, `authorized_keys`), `~/.aws/`, `~/.kube/`, `/etc/sudoers`, `~/.netrc` |
-| Hermes credential stores | `auth.json`, `.env`, `.anthropic_oauth.json`, `mcp-tokens/`, `pairing/` under HERMES_HOME (active profile and global root) |
-| Project secret files | `.env`, `.env.local`, `.env.production`, `.envrc` anywhere on disk |
+| Hermes secret stores | `.env`, `.anthropic_oauth.json`, `auth/google_oauth.json`, Bitwarden cache (`cache/bws_cache.json`, `cache/bws_cache.enc.json`), `vault/`, `browser-profile/`, `mcp-tokens/`, `pairing/` under HERMES_HOME (active profile and global root). Control files (`auth.json`, `config.yaml`, `webhook_subscriptions.json`) are read-denied but stay writable. |
 | Windows NT/device-namespace paths | `\??\...`, `\\.\...`, `\\?\UNC\...`, `\\?\GLOBALROOT...` — rejected for both reads and writes on every platform. On Windows, merely *resolving* such a path (e.g. `\??\UNC\host\share`) triggers outbound SMB authentication and can leak the user's NTLM hash; the prefixes also bypass normal path normalization. Ordinary extended-length local paths (`\\?\C:\...`) and plain UNC shares (`\\server\share`) are unaffected. |
+
+Project-local `.env`, `.env.local`, `.env.production` and `.envrc` files are **read-denied** anywhere on disk (the file tools refuse to read them) but remain writable: the agent can create or edit them for you, it just cannot read the values back.
 
 Sensitive paths inside the safe root are still blocked — pointing `HERMES_WRITE_SAFE_ROOT` at `$HOME` does not allow writing `~/.ssh/id_rsa`.
 

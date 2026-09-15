@@ -43,6 +43,8 @@ def _build_browser_env() -> dict:
     from agent.secret_scope import UnscopedSecretError, get_secret
     from tools.environments.local import served_profile_child_env
 
+    from agent.proxy_bypass import add_loopback_no_proxy
+
     env = served_profile_child_env(inherit_credentials=False)
     for key in _BROWSER_PASSTHROUGH_KEYS:
         try:
@@ -51,7 +53,9 @@ def _build_browser_env() -> dict:
             value = None  # multiplex, no scope bound: no key rather than a sibling profile's
         if value is not None:
             env[key] = value
-    return env
+    # The Browser Use harness dials the resolved local CDP URL over ``websockets``; without a
+    # loopback NO_PROXY a macOS system proxy captures that dial (#110565).
+    return add_loopback_no_proxy(env)
 
 
 try:

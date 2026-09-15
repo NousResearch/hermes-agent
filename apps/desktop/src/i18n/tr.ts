@@ -792,6 +792,7 @@ export const tr = defineLocale({
       compression: {
         enabled: 'Otomatik Sıkıştırma',
         threshold: 'Sıkıştırma Eşiği',
+        codexGpt55Autoraise: 'Codex Sıkıştırma Eşiğini Otomatik Yükselt',
         targetRatio: 'Sıkıştırma Hedefi',
         protectLastN: 'Korunan Son Mesajlar'
       },
@@ -860,7 +861,8 @@ export const tr = defineLocale({
         engine: 'Bağlam sınırına yaklaşan uzun sohbetleri yönetme stratejisi.'
       },
       compression: {
-        enabled: 'Sohbetler büyüdüğünde eski bağlamı özetle.'
+        enabled: 'Sohbetler büyüdüğünde eski bağlamı özetle.',
+        codexGpt55Autoraise: 'Desteklenen ChatGPT Codex OAuth modellerinde sıkıştırma eşiğini %85’e yükselt.'
       },
       voice: {
         autoTts: 'Asistan yanıtlarını otomatik olarak seslendir.'

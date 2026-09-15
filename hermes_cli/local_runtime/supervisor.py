@@ -177,7 +177,7 @@ class LlamaServerSupervisor:
             "--models-autoload",
             "--metrics",          # opt-in flag; supervisor telemetry needs it
             "--slots",            # /slots endpoint is also opt-in; is_idle reads it
-            "--no-webui",
+            "--no-ui",
             "--jinja",
             # Direct I/O on model load bypasses the page cache so a multi-GB load doesn't evict
             # half the OS cache — measured faster on NVMe, and our router bounces reload often.
@@ -375,7 +375,9 @@ class LlamaServerSupervisor:
 
     def sweep_idle(self, now: float | None = None) -> list[str]:
         """Unload models idle past IDLE_UNLOAD_S; returns their ids. Idle = no busy slots and no
-        queued work, tracked per model across calls; a model seen busy resets its clock."""
+        queued work, tracked per model across calls; a model seen busy resets its clock. A
+        failed telemetry probe is neither idle nor busy: the clock is kept, so a flaky probe
+        cannot pin a resident model (and its VRAM) indefinitely."""
         now = time.monotonic() if now is None else now
         unloaded: list[str] = []
         try:
@@ -383,7 +385,15 @@ class LlamaServerSupervisor:
         except Exception:  # noqa: BLE001
             return unloaded
         for model_id, status in statuses.items():
-            if status not in _RESIDENT or not self.is_idle(model_id):
+            if status not in _RESIDENT:
+                self._idle_since.pop(model_id, None)
+                continue
+            probe = self._probe_idle(model_id)
+            if probe is None:
+                logger.info("idle probe for %s failed; keeping idle clock (idle %ds)", model_id,
+                            int(now - self._idle_since.get(model_id, now)))
+                continue
+            if probe is False:
                 self._idle_since.pop(model_id, None)
                 continue
             first_idle = self._idle_since.setdefault(model_id, now)
@@ -427,6 +437,12 @@ class LlamaServerSupervisor:
         """No processing requests and no busy slots. Router quirk: /slots and /metrics are
         per-child and require ?model= (bare calls 400). With ``model_id`` checks that one child;
         without, every loaded child."""
+        return self._probe_idle(model_id) is True
+
+    def _probe_idle(self, model_id: str | None = None) -> bool | None:
+        """Tri-state idle probe for the sweeper: True = confirmed idle, False = confirmed
+        busy, None = the probe itself failed. The sweeper must never mistake a dead probe
+        for activity — that resets the idle clock and pins the model's VRAM."""
         try:
             loaded = ([model_id] if model_id is not None
                       else [m for m, status in self.models().items() if status in _RESIDENT])
@@ -442,4 +458,4 @@ class LlamaServerSupervisor:
                         return False
             return True
         except Exception:  # noqa: BLE001
-            return False
+            return None

@@ -30,7 +30,7 @@ from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 from hermes_cli.secret_prompt import masked_secret_prompt
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F401
-from utils import atomic_replace, atomic_yaml_write, fast_safe_load
+from utils import atomic_replace, atomic_yaml_write, fast_safe_load, file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -93,10 +93,11 @@ def _warn_config_parse_failure(
     """
     try:
         st = config_path.stat()
-        key = (str(config_path), st.st_mtime_ns, st.st_size)
-        _CONFIG_PARSE_FAILURES[str(config_path)] = (st.st_mtime_ns, st.st_size, str(exc))
+        sig = file_signature(st)
+        key = (str(config_path), *sig)
+        _CONFIG_PARSE_FAILURES[str(config_path)] = (*sig, str(exc))
     except OSError:
-        key = (str(config_path), 0, 0)
+        key = (str(config_path), 0, 0, 0, 0)
     if key in _CONFIG_PARSE_WARNED:
         return
     _CONFIG_PARSE_WARNED.add(key)
@@ -115,12 +116,11 @@ def _warn_config_parse_failure(
 
 def get_active_config_parse_failure() -> Optional[str]:
     """Return the recorded parse error while the ACTIVE config.yaml is still byte-identical
-    (mtime_ns + size) to the file that failed to parse; else None."""
+    (mtime_ns + size + ino + ctime_ns) to the file that failed to parse; else None."""
     try:
-        path = get_config_path()
-        mtime_ns, size, err = _CONFIG_PARSE_FAILURES[str(path)]
+        record = _CONFIG_PARSE_FAILURES[str(path := get_config_path())]
         st = path.stat()
-        return err if (st.st_mtime_ns, st.st_size) == (mtime_ns, size) else None
+        return record[4] if file_signature(st) == record[:4] else None
     except Exception:
         return None
 
@@ -201,11 +201,11 @@ _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # (path, mtime_ns, size) -> cached expanded config dict. load_config() returns a deepcopy of the cached
 # value when the file hasn't changed since the last load, skipping yaml.safe_load + _deep_merge +
 # _normalize_* + _expand_env_vars (~13 ms/call). save_config() + migrate_config() write via
-# atomic_yaml_write which produces a fresh inode, so stat() sees a new mtime_ns and the next load
+# atomic_yaml_write which produces a fresh inode, so stat() sees a new signature and the next load
 # repopulates automatically — no explicit invalidation hook. See #58514.
-_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, int, int, Dict[str, Any], Dict[str, Optional[str]]]] = {}
-# path -> (mtime_ns, size, raw yaml dict) for read_raw_config() (no defaults merged in).
-_RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
+_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, ...]] = {}
+# path -> (mtime_ns, size, ino, ctime_ns, raw yaml dict) for read_raw_config() (no defaults merged in).
+_RAW_CONFIG_CACHE: Dict[str, Tuple[int, ...]] = {}
 
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS (managed by setup/provider
 # flows directly). Also the set reload_env() may remove from os.environ.
@@ -1901,14 +1901,14 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         try:
             config_path = get_config_path()
             st = config_path.stat()
-            cache_key = (st.st_mtime_ns, st.st_size)
+            cache_key = file_signature(st)
         except (FileNotFoundError, OSError):
             return {}
 
         path_key = str(config_path)
         cached = _RAW_CONFIG_CACHE.get(path_key)
-        if cached is not None and cached[:2] == cache_key:
-            return copy.deepcopy(cached[2]) if want_deepcopy else cached[2]
+        if cached is not None and cached[:len(cache_key)] == cache_key:
+            return copy.deepcopy(cached[len(cache_key)]) if want_deepcopy else cached[len(cache_key)]
 
         try:
             with open(config_path, encoding="utf-8") as f:
@@ -1922,13 +1922,13 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         # The cache stores its own deepcopy. The readonly path returns THAT object (identity
         # invariant: later cache hits return the same dict); the mutable path returns the parse.
         cached_copy = copy.deepcopy(data)
-        _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], cached_copy)
+        _RAW_CONFIG_CACHE[path_key] = (*cache_key, cached_copy)
         return data if want_deepcopy else cached_copy
 
 
 def read_raw_config() -> Dict[str, Any]:
     """Read config.yaml as-is (no defaults merged, no migration); ``{}`` if missing/unparseable.
-    Cached on (mtime_ns, size); returns a deepcopy since callers mutate before ``save_config()``."""
+    Cached on the file signature (mtime_ns, size, ino, ctime_ns); returns a deepcopy since callers mutate before ``save_config()``."""
     return _read_raw_config_impl(want_deepcopy=True)
 
 
@@ -2139,24 +2139,24 @@ def apply_terminal_config_to_env(
     return target
 
 
-def _load_config_cache_sig(config_path: Path) -> Tuple[Optional[Tuple[int, int]], Optional[Tuple[int, int, int, int]]]:
+def _load_config_cache_sig(config_path: Path) -> Tuple[Optional[Tuple[int, int, int, int]], Optional[Tuple[int, ...]]]:
     """Return ``(user_sig, cache_sig)`` for ``_LOAD_CONFIG_CACHE``.
-    The managed config file's (mtime, size) is folded in ((0, 0) = none) so editing it invalidates
+    The managed config file's signature is folded in ((0, 0, 0, 0) = none) so editing it invalidates
     the merged result. ``cache_sig`` is None only when neither file exists (nothing to cache on)."""
     try:
         st = config_path.stat()
-        user_sig: Optional[Tuple[int, int]] = (st.st_mtime_ns, st.st_size)
+        user_sig: Optional[Tuple[int, int, int, int]] = file_signature(st)
     except FileNotFoundError:
         user_sig = None
     managed_dir = managed_scope.get_managed_dir()
     try:
         mst = (managed_dir / "config.yaml").stat() if managed_dir else None
-        managed_sig = (mst.st_mtime_ns, mst.st_size) if mst else (0, 0)
+        managed_sig = file_signature(mst) if mst else (0, 0, 0, 0)
     except OSError:
-        managed_sig = (0, 0)
-    if user_sig is None and managed_sig == (0, 0):
+        managed_sig = (0, 0, 0, 0)
+    if user_sig is None and managed_sig == (0, 0, 0, 0):
         return None, None
-    return user_sig, (*(user_sig or (0, 0)), *managed_sig)
+    return user_sig, (*(user_sig or (0, 0, 0, 0)), *managed_sig)
 
 
 def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: Exception) -> Optional[Dict[str, Any]]:
@@ -2223,15 +2223,15 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         user_sig, cache_sig = _load_config_cache_sig(config_path)
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:4] == cache_sig:
+        if cached is not None and cache_sig is not None and cached[:8] == cache_sig:
             # Signatures match, but the cached expansion is only valid if every ${VAR} it was
             # expanded against still has the same value — otherwise a load before
             # load_hermes_dotenv() pins unexpanded literals for the process lifetime.
             # Without this, a load_config() that ran before load_hermes_dotenv() pins unexpanded literals
             # (e.g. auxiliary.<task>.api_key) for the life of the process (#58514).
-            env_snapshot = cached[5] if len(cached) > 5 else {}
+            env_snapshot = cached[9] if len(cached) > 9 else {}
             if all(_env_ref_lookup(k) == v for k, v in env_snapshot.items()):
-                return copy.deepcopy(cached[4]) if want_deepcopy else cached[4]
+                return copy.deepcopy(cached[8]) if want_deepcopy else cached[8]
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
@@ -2390,9 +2390,9 @@ def save_config(
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
 
 
-# load_env() memo keyed on (path, mtime, size). Editing .env bumps mtime -> rebuild;
+# load_env() memo keyed on (path, *file_signature). Editing .env bumps mtime/inode -> rebuild;
 # invalidate_env_cache() is the explicit knob for writers on coarse-mtime filesystems.
-_env_cache: Optional[Tuple[Tuple[str, Optional[float], Optional[int]], Dict[str, str]]] = None
+_env_cache: Optional[Tuple[Tuple[str, Optional[Tuple[int, int, int, int]]], Dict[str, str]]] = None
 
 
 def load_env() -> Dict[str, str]:
@@ -2403,9 +2403,9 @@ def load_env() -> Dict[str, str]:
 
     try:
         st = env_path.stat()
-        cache_key = (str(env_path), st.st_mtime, st.st_size)
+        cache_key = (str(env_path), file_signature(st))
     except FileNotFoundError:
-        cache_key = (str(env_path), None, None)
+        cache_key = (str(env_path), None)
     except Exception:
         cache_key = None
     if cache_key is not None and _env_cache is not None and _env_cache[0] == cache_key:
@@ -2749,10 +2749,27 @@ def redact_key(key: str) -> str:
 
 # Key names (case-insensitive, exact match) whose VALUE is a credential and must be masked
 # before printing any config dict. Exact-match so ``token_count`` / ``secret_santa`` stay visible.
+# Bare ``auth`` is deliberately absent: ``mcp_servers.<s>.auth: oauth`` is a documented mode enum.
 _SECRET_CONFIG_KEYS = frozenset({
     "api_key", "apikey", "key", "token", "access_token", "refresh_token", "id_token",
-    "secret", "client_secret", "password", "passwd", "auth", "authorization",
+    "secret", "client_secret", "password", "passwd", "authorization",
     "private_key", "bearer", "jwt"})
+# Env-map shapes (``mcp_servers.<s>.env.FOO_API_KEY``, ``FAL_KEY``, ``AWS_SECRET_ACCESS_KEY``) and
+# the suffixes ``_is_env_config_key`` routes to .env. Suffix-only so ``token_count`` stays visible.
+_SECRET_CONFIG_KEY_SUFFIXES = ("_api_key", "_token", "_secret", "_password", "_key", "_access_key")
+# .env-routed keys are credentials by default; these suffixes name the non-secret exceptions
+# (``TERMINAL_SSH_HOST``, ``TOOL_GATEWAY_URL``, ``BROWSERBASE_PROJECT_ID``).
+_NON_SECRET_KEY_SUFFIXES = ("_url", "_host", "_user", "_id", "_domain", "_scheme")
+_ENV_PLACEHOLDER_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
+
+
+def _is_secret_config_key(key: str) -> bool:
+    """Whether the LAST segment of a config key names a credential value. Header names
+    (``mcp_servers.<s>.headers.X-API-Key``) are folded to snake_case before matching."""
+    leaf = key.rsplit(".", 1)[-1].lower().replace("-", "_")
+    if _is_env_config_key(key):
+        return not leaf.endswith(_NON_SECRET_KEY_SUFFIXES)
+    return leaf in _SECRET_CONFIG_KEYS or leaf.endswith(_SECRET_CONFIG_KEY_SUFFIXES)
 
 
 def redact_config_value(value: Any, _depth: int = 0) -> Any:
@@ -2765,7 +2782,8 @@ def redact_config_value(value: Any, _depth: int = 0) -> Any:
     if isinstance(value, dict):
         return {
             k: mask_secret(v)
-            if isinstance(k, str) and k.lower() in _SECRET_CONFIG_KEYS and isinstance(v, str) and v
+            if isinstance(k, str) and _is_secret_config_key(k) and isinstance(v, str) and v
+            and not _ENV_PLACEHOLDER_RE.match(v)
             else redact_config_value(v, _depth + 1)
             for k, v in value.items()}
     if isinstance(value, list):
@@ -3521,7 +3539,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     # Mask the echoed value when the (possibly nested) key is credential-shaped, e.g.
     # ``model.api_key`` (lowercase, so it misses the .env routing above).
     _display_value = value
-    if key.rsplit(".", 1)[-1].lower() in _SECRET_CONFIG_KEYS and isinstance(value, str) and value:
+    if _is_secret_config_key(key) and isinstance(value, str) and value:
         from agent.redact import mask_secret
         _display_value = mask_secret(value)
     print(f"✓ Set {key} = {_display_value} in {config_path}")
@@ -3533,8 +3551,10 @@ def set_config_value(key: str, value: str, force: bool = False):
         _print_unknown_key_notice(key, suggestion)
 
 
-def get_config_value(key: str, *, as_json: bool = False):
-    """Print a resolved configuration value."""
+def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
+    """Print a resolved configuration value. Credentials are masked unless ``--raw`` or
+    ``security.redact_secrets: false``: ``print`` bypasses the log redactor, and the agent runs
+    this command from sessions whose transcripts persist (#84106, #110758)."""
     if _is_env_config_key(key):
         env_value = get_env_value(key.upper())
         value = _MISSING if env_value is None else env_value
@@ -3546,6 +3566,14 @@ def get_config_value(key: str, *, as_json: bool = False):
 
     if value is _MISSING:
         _exit_invalid(f"Config key not set: {key}")
+
+    from agent.redact import _redact_enabled, mask_secret
+    if not raw and _redact_enabled():
+        if isinstance(value, str):
+            if _is_secret_config_key(key) and not _ENV_PLACEHOLDER_RE.match(value):
+                value = mask_secret(value)
+        else:
+            value = redact_config_value(value)
 
     print(_format_config_get_value(value, as_json=as_json))
 
@@ -3610,7 +3638,7 @@ def _run_write_command(fn, *args) -> None:
         _exit_invalid(f"✗ {exc}")
 
 
-_USAGE_GET = ("Usage: hermes config get <key> [--json]", [
+_USAGE_GET = ("Usage: hermes config get <key> [--json] [--raw]", [
     "hermes config get model", "hermes config get terminal.backend",
     "hermes config get skills.config --json"], None)
 _USAGE_SET = ("Usage: hermes config set [--force] <key> <value>", [
@@ -3627,7 +3655,7 @@ def _cmd_config_get(args):
     key = getattr(args, 'key', None)
     if not key:
         _usage_exit(*_USAGE_GET)
-    get_config_value(key, as_json=getattr(args, 'json', False))
+    get_config_value(key, as_json=getattr(args, 'json', False), raw=bool(getattr(args, 'raw', False)))
 
 
 def _cmd_config_set(args):

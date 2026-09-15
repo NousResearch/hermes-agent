@@ -292,10 +292,21 @@ export async function selectConnection(connectionId: string, options: SelectConn
 
   const targetKey = `${connectionId}::${targetProfile}`
 
+  // The primary local descriptor (startHermes) historically publishes without
+  // a profile of its own; a profile-less descriptor on the source we are
+  // landing must not strand the switch — the activation already published the
+  // route we asked for, so trust it for the same source instead of comparing
+  // against a "default" it never meant.
   const targetIsActive = () => {
     const active = $connection.get()
 
-    return active?.connectionId === connectionId && normalizeProfileKey(active.profile) === targetProfile
+    if (active?.connectionId !== connectionId) {
+      return false
+    }
+
+    const activeProfile = active.profile === undefined ? null : normalizeProfileKey(active.profile)
+
+    return activeProfile === null || activeProfile === targetProfile
   }
 
   if (pendingTarget === targetKey) {

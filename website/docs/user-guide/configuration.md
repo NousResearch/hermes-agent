@@ -1123,9 +1123,9 @@ agent:
     protect_recent: 8
 ```
 
-`max_size` and `idle_ttl_secs` bound the cache by count and by time. Neither knows how many bytes it holds, so `memory_high_mb` adds a third bound: once the gateway's own anonymous resident memory crosses the budget, it sheds least-recently-used transcripts, which reload from the stored session on the next turn. Lower it if the gateway is competing for memory with other services; raise it (or set `0` to switch the pass off) if you would rather keep every prefix warm.
+`max_size` and `idle_ttl_secs` bound the cache by count and by time. Neither knows how many bytes it holds, so `memory_high_mb` adds a third bound: once anonymous memory crosses the budget, it sheds least-recently-used transcripts, which reload from the stored session on the next turn. Lower it if the gateway is competing for memory with other services; raise it (or set `0` to switch the pass off) if you would rather keep every prefix warm.
 
-`auto` derives the budget from the memory limit the gateway actually runs under — the cgroup limit for a container or systemd unit, total RAM otherwise — so a `MemoryMax`/`MemoryHigh` on the unit is respected without a second number to keep in sync.
+`auto` derives the budget from the memory limit the gateway actually runs under — the cgroup limit for a container or systemd unit, total RAM otherwise — so a `MemoryMax`/`MemoryHigh` on the unit is respected without a second number to keep in sync. Under such a limit the measurement is scoped the same way: the cgroup's own anonymous charge (`memory.stat` `anon`), which includes child processes such as `execute_code` kernels and terminal commands that count against the unit's limit. Uncapped, the gateway's own anonymous RSS is measured.
 
 Sessions that are mid-turn, the `protect_recent` most recently used ones, and any session whose transcript has not finished being written to disk are never shed. Eviction is logged at WARNING with the measured RSS and the sessions dropped:
 
@@ -2624,7 +2624,7 @@ security:
     shared_files: []
 ```
 
-- `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **On by default**. Set to `false` explicitly only when you need raw credential-like strings for debugging or redactor development.
+- `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **On by default**. Set to `false` explicitly only when you need raw credential-like strings for debugging or redactor development. Reading a secret-bearing file (`.env`-style files, shell rc/profile files, the Hermes `config.yaml` under `HERMES_HOME` and its `backups/config/` copies) with `read_file`, `search_files` or a terminal `cat`/`grep` also masks credential-shaped assignments (`SOME_API_TOKEN: …`) with a non-reusable `«redacted-secret»` marker, whatever the value looks like; ordinary source and project config files keep only the vendor-prefix patterns so fixtures such as `MAX_TOKENS: 100` are never mangled.
 - `tirith_enabled` — when `true`, terminal commands are scanned by [Tirith](https://github.com/sheeki03/tirith) before execution to detect potentially dangerous operations.
 - `tirith_path` — path to the tirith binary. Set this if tirith is installed in a non-standard location.
 - `tirith_timeout` — maximum seconds to wait for a tirith scan. Commands proceed if the scan times out.

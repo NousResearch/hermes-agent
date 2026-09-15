@@ -183,11 +183,16 @@ _IMAGE_CORRUPT_PATTERNS = (
 # 400s rejecting list-type ``content`` in tool messages (Xiaomi MiMo "text is
 # not set", Alibaba, OpenAI-compat long tail). Recovery: strip image parts from
 # tool messages, remember (provider, model), retry. (#27344)
+# NVIDIA NIM's Rust gateway never names the field: its serde rejection says the
+# body "did not match any variant of untagged enum
+# ChatCompletionRequestToolMessageContent", which is the same list-type tool
+# content that every other wording here describes (#111231).
 _MULTIMODAL_TOOL_CONTENT_PATTERNS = (
     "text is not set", "tool message content must be a string", "tool content must be a string",
     "tool message must be a string", "expected string, got list", "expected string, got array",
     # Console Go / pydantic-v2 relays behind opencode-go (422, param ``messages.N.tool.content.str``, #104731).
     "tool_call.content must be string", "tool.content.str", "input should be a valid string",
+    "chatcompletionrequesttoolmessagecontent",
 )
 
 # Local-inference memory/resource-ceiling rejections (oMLX/MLX memory guard,
@@ -792,6 +797,9 @@ def _classify_400(c: _Ctx) -> Verdict:
     ) or "could not decrypt the provided encrypted_content" in msg or (
         # Custom Responses endpoints wrap a replay rejection in a generic bad_request (#95834).
         "encrypted content could not be decrypted or parsed" in msg
+    ) or (
+        # OpenCode Zen wraps this OpenAI replay rejection in ``invalid_request_error`` (#111309).
+        "encrypted_content" in msg and "was not issued to this caller" in msg
     ) or (
         # Azure Foundry (gpt-6-astra) rejects replayed reasoning from several prior responses this way (#105369).
         "conflicting authenticated continuation identities" in msg

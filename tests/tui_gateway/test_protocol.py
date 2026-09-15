@@ -1357,7 +1357,7 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
     monkeypatch.setattr(skin_engine, "get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     monkeypatch.setattr(server, "_last_skin_sig", None, raising=False)
-    server._cfg_cache = server._cfg_mtime = server._cfg_path = None
+    server._cfg_cache = server._cfg_sig = server._cfg_path = None
 
     emitted = []
     monkeypatch.setattr(server, "_emit", lambda ev, sid, payload=None: emitted.append((ev, payload)))

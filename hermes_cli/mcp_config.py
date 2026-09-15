@@ -341,6 +341,26 @@ def _save_bearer_auth_token(name: str, token: str) -> Dict[str, str]:
     return _bearer_auth_headers(name)
 
 
+def _oauth_env_keys(name: str) -> tuple:
+    """Env-var keys holding a pre-registered OAuth client's credentials (client id, client secret)."""
+    suffix = re.sub(r"[^A-Za-z0-9_]", "_", name.upper()).strip("_")
+    return f"MCP_{suffix}_CLIENT_ID", f"MCP_{suffix}_CLIENT_SECRET"
+
+
+def _preregistered_oauth_block(name: str, redirect_port: int) -> Dict[str, object]:
+    """Config-side ``oauth`` block for a pre-registered client.
+
+    Secrets stay out of config.yaml, exactly like the Bearer header template: the block holds
+    ``${...}`` references and the real values live in the profile's .env.
+    """
+    client_id_key, client_secret_key = _oauth_env_keys(name)
+    return {
+        "client_id": f"${{{client_id_key}}}",
+        "client_secret": f"${{{client_secret_key}}}",
+        "redirect_port": redirect_port,
+    }
+
+
 def _parse_env_assignments(raw_env: Optional[List[str]]) -> Dict[str, str]:
     """Parse ``KEY=VALUE`` strings from CLI args into an env dict."""
     parsed: Dict[str, str] = {}

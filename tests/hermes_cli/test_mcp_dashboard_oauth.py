@@ -141,3 +141,47 @@ def test_flow_status_does_not_expose_authorization_code():
     assert body["status"] == "approved"
     assert "secret-code" not in response.text
     assert "secret-state" not in response.text
+
+
+def test_preregistered_client_is_not_reachable_from_the_dashboard_flow():
+    """A pre-registered client (provider has no DCR) is bound to the redirect URIs registered
+    against it, so the dashboard's own callback cannot satisfy it — the route must send the
+    user to the CLI flow instead of starting a handshake the provider will reject."""
+    from hermes_cli import mcp_config
+
+    servers = {
+        "prereg": {
+            "url": "https://mcp.hubspot.com",
+            "auth": "oauth",
+            "oauth": {"client_id": "cid", "client_secret": "sec", "redirect_port": 8123},
+        }
+    }
+    with patch.object(mcp_config, "_get_mcp_servers", return_value=servers):
+        response = _client().post("/api/mcp/servers/prereg/auth")
+
+    assert response.status_code == 400
+    assert "hermes mcp login prereg" in response.json()["detail"]
+
+
+def test_preregistered_client_with_redirect_uri_uses_the_dashboard_flow():
+    """Registering the dashboard callback as oauth.redirect_uri opts back in to this route."""
+    from hermes_cli import mcp_config
+
+    servers = {
+        "prereg": {
+            "url": "https://mcp.hubspot.com",
+            "auth": "oauth",
+            "oauth": {"client_id": "cid", "redirect_uri": "https://agent.example/cb"},
+        }
+    }
+
+    def fake_worker(flow, cfg):
+        import asyncio
+
+        asyncio.run(flow.publish_authorization_url("https://idp.example/authorize"))
+
+    with patch.object(mcp_config, "_get_mcp_servers", return_value=servers), \
+         patch.object(_web_server_mcp, "_run_dashboard_mcp_oauth", fake_worker):
+        response = _client().post("/api/mcp/servers/prereg/auth")
+
+    assert response.status_code == 200

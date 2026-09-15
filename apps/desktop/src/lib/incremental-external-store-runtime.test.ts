@@ -1,8 +1,8 @@
 import { fromThreadMessageLike, getAutoStatus, MessageRepository } from '@assistant-ui/core/internal'
-import type { ExportedMessageRepository, ThreadMessage } from '@assistant-ui/react'
+import type { AssistantRuntime, ExportedMessageRepository, ThreadMessage } from '@assistant-ui/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { syncRepositoryIncrementally } from './incremental-external-store-runtime'
+import { stabilizeThreadListSnapshot, syncRepositoryIncrementally } from './incremental-external-store-runtime'
 
 const STATUS = getAutoStatus(false, false, false, false, undefined)
 
@@ -140,5 +140,33 @@ describe('syncRepositoryIncrementally', () => {
     })
 
     expect(result.map(item => item.id)).toEqual(['a'])
+  })
+})
+
+describe('stabilizeThreadListSnapshot', () => {
+  it('preserves identity when the thread-list state is unchanged', () => {
+    let state = {
+      mainThreadId: 'DEFAULT_THREAD_ID',
+      threadIds: ['DEFAULT_THREAD_ID'],
+      archivedThreadIds: [],
+      isLoading: false,
+      isLoadingMore: false,
+      hasMore: false,
+      threadItems: { DEFAULT_THREAD_ID: { id: 'DEFAULT_THREAD_ID' } }
+    }
+
+    const runtime = {
+      threads: {
+        getState: () => ({ ...state })
+      }
+    } as unknown as AssistantRuntime
+
+    stabilizeThreadListSnapshot(runtime)
+
+    expect(runtime.threads.getState()).toBe(runtime.threads.getState())
+
+    state = { ...state, mainThreadId: 'next-thread' }
+
+    expect(runtime.threads.getState().mainThreadId).toBe('next-thread')
   })
 })

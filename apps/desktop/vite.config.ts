@@ -234,7 +234,18 @@ export default defineConfig(({ command }) => ({
       'react/jsx-dev-runtime': path.join(reactDir, 'jsx-dev-runtime.js'),
       'react/jsx-runtime': path.join(reactDir, 'jsx-runtime.js')
     },
-    dedupe: ['react', 'react-dom', 'react-router', '@tanstack/react-query']
+    // Keep the assistant-ui React context and tap runtime singletons resolved
+    // from one physical package copy in workspace installs.
+    dedupe: [
+      'react',
+      'react-dom',
+      'react-router',
+      '@tanstack/react-query',
+      '@assistant-ui/react',
+      '@assistant-ui/core',
+      '@assistant-ui/store',
+      '@assistant-ui/tap'
+    ]
   },
   server: {
     host: '127.0.0.1',

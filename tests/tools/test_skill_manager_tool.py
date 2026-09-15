@@ -1,6 +1,7 @@
 """Tests for tools/skill_manager_tool.py — skill creation, editing, and deletion."""
 
 import json
+import threading
 from contextlib import contextmanager
 from contextvars import copy_context
 from pathlib import Path
@@ -309,6 +310,54 @@ word word
         assert result["success"] is False
         assert "escapes" in result["error"].lower()
         assert outside_file.read_text() == "old text here"
+
+
+class TestSkillMutationLock:
+    def test_concurrent_patches_keep_both_updates(self, tmp_path):
+        """Two writers patching the same SKILL.md serialize on the per-skill lock (#111578):
+        the second cannot read stale content while the first is between read and write."""
+        first_entered = threading.Event()
+        second_entered = threading.Event()
+        release_first = threading.Event()
+        call_lock = threading.Lock()
+        calls = 0
+        results = []
+
+        from tools.fuzzy_match import fuzzy_find_and_replace as real_replace
+
+        def delayed_replace(*args, **kwargs):
+            nonlocal calls
+            with call_lock:
+                calls += 1
+                call = calls
+            if call == 1:
+                first_entered.set()
+                assert release_first.wait(timeout=2)
+            else:
+                second_entered.set()
+            return real_replace(*args, **kwargs)
+
+        def run_patch(old, new):
+            results.append(json.loads(skill_manage(
+                action="patch", name="my-skill", old_string=old, new_string=new)))
+
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            with patch("tools.fuzzy_match.fuzzy_find_and_replace", side_effect=delayed_replace):
+                first = threading.Thread(target=run_patch, args=("# Test Skill", "# Test Skill Updated"))
+                second = threading.Thread(target=run_patch, args=("Step 1:", "Step 1 Updated:"))
+                first.start()
+                assert first_entered.wait(timeout=2)
+                second.start()
+                assert not second_entered.wait(timeout=0.15), "second writer entered before first committed"
+                release_first.set()
+                first.join(timeout=2)
+                second.join(timeout=2)
+            content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+
+        assert all(result["success"] for result in results)
+        assert "# Test Skill Updated" in content
+        assert "Step 1 Updated:" in content
 
 
 class TestDeleteSkill:

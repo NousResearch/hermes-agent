@@ -277,6 +277,8 @@ export function HudShell() {
 
   const rootRef = useRef<HTMLDivElement | null>(null)
 
+  const rootRef = useRef<HTMLDivElement | null>(null)
+
   // Whether bar + band actually cover the window. Gates the frost, which is
   // native vibrancy and therefore the WINDOW's content view — it fills the whole
   // rectangle and nothing in the page can clip it to the sheet. Whenever the

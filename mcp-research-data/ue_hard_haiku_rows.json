@@ -1,0 +1,1642 @@
+[
+ {
+  "scenario_id": "V1_static_material",
+  "mode": "listing",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 11.19,
+  "api_calls": 3,
+  "prompt_tokens_total": 119904,
+  "first_tool": [
+   "set",
+   "material"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_static_mesh_StaticMeshTools_set_material"
+  ],
+  "bridge_calls": [
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_static_mesh_StaticMeshTools_set_material"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_static_mesh_StaticMeshTools_set_material"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. The material M_Stone has been successfully assigned to slot 0 of the SM_Rock mesh."
+ },
+ {
+  "scenario_id": "V1_static_material",
+  "mode": "listing",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 10.89,
+  "api_calls": 3,
+  "prompt_tokens_total": 119922,
+  "first_tool": [
+   "set",
+   "material"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_static_mesh_StaticMeshTools_set_material"
+  ],
+  "bridge_calls": [
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_static_mesh_StaticMeshTools_set_material"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_static_mesh_StaticMeshTools_set_material"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. Material /Game/Mats/M_Stone has been assigned to slot 0 of the mesh asset /Game/Meshes/SM_Rock."
+ },
+ {
+  "scenario_id": "V1_static_material",
+  "mode": "bridge",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 15.01,
+  "api_calls": 5,
+  "prompt_tokens_total": 111559,
+  "first_tool": [
+   "material",
+   "slots"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_static_mesh_StaticMeshTools_get_material_slots",
+   "editor_toolset_toolsets_static_mesh_StaticMeshTools_set_material"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "assign material mesh slot unreal"
+   ],
+   [
+    "tool_search",
+    "static mesh material slots get names"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_static_mesh_StaticMeshTools_get_material_slots"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_static_mesh_StaticMeshTools_set_material"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done."
+ },
+ {
+  "scenario_id": "V1_static_material",
+  "mode": "bridge",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 9.92,
+  "api_calls": 3,
+  "prompt_tokens_total": 65150,
+  "first_tool": [
+   "set",
+   "material"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_static_mesh_StaticMeshTools_set_material"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "unreal assign material mesh slot"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_static_mesh_StaticMeshTools_set_material"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done."
+ },
+ {
+  "scenario_id": "V2_skeletal_material",
+  "mode": "listing",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 13.95,
+  "api_calls": 4,
+  "prompt_tokens_total": 160299,
+  "first_tool": [
+   "material",
+   "slots"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "or_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material_slots",
+   "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_set_material"
+  ],
+  "bridge_calls": [
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_set_material"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material_slots"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_set_material"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. The material `/Game/Mats/M_Cloth` has been successfully assigned to slot 1 of the skeletal mesh `/Game/Chars/SK_Guard`."
+ },
+ {
+  "scenario_id": "V2_skeletal_material",
+  "mode": "listing",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 14.39,
+  "api_calls": 4,
+  "prompt_tokens_total": 160307,
+  "first_tool": [
+   "material",
+   "slots"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "or_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material_slots",
+   "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_set_material"
+  ],
+  "bridge_calls": [
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_set_material"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material_slots"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_set_material"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done."
+ },
+ {
+  "scenario_id": "V2_skeletal_material",
+  "mode": "bridge",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 18.18,
+  "api_calls": 5,
+  "prompt_tokens_total": 111698,
+  "first_tool": [
+   "material",
+   "slots"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "or_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material_slots",
+   "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_set_material"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "Unreal Engine assign material slot skeletal mesh"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_set_material"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material_slots"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material_slots"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_set_material"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done."
+ },
+ {
+  "scenario_id": "V2_skeletal_material",
+  "mode": "bridge",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 17.81,
+  "api_calls": 5,
+  "prompt_tokens_total": 111344,
+  "first_tool": [
+   "material",
+   "slots"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "or_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material_slots",
+   "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_set_material"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "set material skeletal mesh slot"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material_slots"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_set_material"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_get_material_slots"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_skeletal_mesh_SkeletalMeshTools_set_material"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done."
+ },
+ {
+  "scenario_id": "V3_curvetable_row",
+  "mode": "listing",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 15.46,
+  "api_calls": 3,
+  "prompt_tokens_total": 120710,
+  "first_tool": [
+   "add",
+   "row"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_curve_table_CurveTableTools_add_row",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_add_key"
+  ],
+  "bridge_calls": [
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_row"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_key"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_row"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_key"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. Added row 'Heavy' to /Game/Data/CT_Damage with value 42 at time 0."
+ },
+ {
+  "scenario_id": "V3_curvetable_row",
+  "mode": "listing",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 14.85,
+  "api_calls": 4,
+  "prompt_tokens_total": 159929,
+  "first_tool": [
+   "add",
+   "row"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_curve_table_CurveTableTools_add_row",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_add_key"
+  ],
+  "bridge_calls": [
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_row"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_row"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_key"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done."
+ },
+ {
+  "scenario_id": "V3_curvetable_row",
+  "mode": "bridge",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 15.27,
+  "api_calls": 4,
+  "prompt_tokens_total": 89922,
+  "first_tool": [
+   "add",
+   "row"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_curve_table_CurveTableTools_add_row",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_add_key"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "Unreal data table add row"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_row"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_key"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_row"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_key"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. Row 'Heavy' has been added to /Game/Data/CT_Damage with value 42 at time 0."
+ },
+ {
+  "scenario_id": "V3_curvetable_row",
+  "mode": "bridge",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 41.17,
+  "api_calls": 14,
+  "prompt_tokens_total": 336628,
+  "first_tool": [
+   "add",
+   "rows"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 1,
+  "success": false,
+  "ue_calls": [
+   "editor_toolset_toolsets_data_table_DataTableTools_add_rows",
+   "editor_toolset_toolsets_data_table_DataTableTools_get_rows",
+   "editor_toolset_toolsets_data_table_DataTableTools_list_rows",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_add_row",
+   "editor_toolset_toolsets_curve_table_CurveTableTools_add_key"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "Unreal data table add row"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_data_table_DataTableTools_add_rows"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_data_table_DataTableTools_get_rows"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_data_table_DataTableTools_add_rows"
+   ],
+   [
+    "tool_search",
+    "Unreal data table set row value"
+   ],
+   [
+    "tool_search",
+    "Unreal data table set cell property"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_data_table_DataTableTools_set_rows"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_data_table_DataTableTools_get_rows"
+   ],
+   [
+    "tool_search",
+    "Unreal list data table rows"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_data_table_DataTableTools_list_rows"
+   ],
+   [
+    "tool_search",
+    "Unreal curve table add row"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_row"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_key"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_row"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_curve_table_CurveTableTools_add_key"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. Row \"Heavy\" has been added to /Game/Data/CT_Damage with value 42 at time 0."
+ },
+ {
+  "scenario_id": "V4_project_tag",
+  "mode": "listing",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 11.6,
+  "api_calls": 3,
+  "prompt_tokens_total": 119772,
+  "first_tool": [
+   "GameplayTagsToolset",
+   "AddTag"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "GameplayTagsToolset_GameplayTagsToolset_AddTag"
+  ],
+  "bridge_calls": [
+   [
+    "tool_describe",
+    "GameplayTagsToolset_GameplayTagsToolset_AddTag"
+   ],
+   [
+    "tool_call",
+    "GameplayTagsToolset_GameplayTagsToolset_AddTag"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. The 'Combat.Stun' gameplay tag has been registered in the project's tag registry. Designers can now use it in the Unreal Editor."
+ },
+ {
+  "scenario_id": "V4_project_tag",
+  "mode": "listing",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 12.42,
+  "api_calls": 4,
+  "prompt_tokens_total": 160853,
+  "first_tool": [
+   "GameplayTagsToolset",
+   "AddTag"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "GameplayTagsToolset_GameplayTagsToolset_AddTag"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "gameplay tags add register"
+   ],
+   [
+    "tool_describe",
+    "GameplayTagsToolset_GameplayTagsToolset_AddTag"
+   ],
+   [
+    "tool_call",
+    "GameplayTagsToolset_GameplayTagsToolset_AddTag"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. The gameplay tag 'Combat.Stun' has been registered in the project's tag registry. Designers can now use it in their gameplay systems and effects."
+ },
+ {
+  "scenario_id": "V4_project_tag",
+  "mode": "bridge",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 19.83,
+  "api_calls": 6,
+  "prompt_tokens_total": 136043,
+  "first_tool": [
+   "GameplayTagsToolset",
+   "AddTag"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "GameplayTagsToolset_GameplayTagsToolset_AddTag"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "unreal gameplay tag register create"
+   ],
+   [
+    "tool_search",
+    "unreal add gameplay tag"
+   ],
+   [
+    "tool_search",
+    "GameplayTagsToolset AddTag"
+   ],
+   [
+    "tool_describe",
+    "GameplayTagsToolset_GameplayTagsToolset_AddTag"
+   ],
+   [
+    "tool_call",
+    "GameplayTagsToolset_GameplayTagsToolset_AddTag"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. The gameplay tag 'Combat.Stun' has been successfully registered in your project's tag registry. Designers can now use it throughout the project."
+ },
+ {
+  "scenario_id": "V4_project_tag",
+  "mode": "bridge",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 21.24,
+  "api_calls": 7,
+  "prompt_tokens_total": 156137,
+  "first_tool": [
+   "GameplayTagsToolset",
+   "AddTag"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "GameplayTagsToolset_GameplayTagsToolset_AddTag"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "Unreal gameplay tag register"
+   ],
+   [
+    "tool_search",
+    "Unreal add gameplay tag registry"
+   ],
+   [
+    "tool_describe",
+    "GameplayTagsToolset_GameplayTagsToolset_GetTagInfo"
+   ],
+   [
+    "tool_search",
+    "GameplayTagsToolset add"
+   ],
+   [
+    "tool_describe",
+    "GameplayTagsToolset_GameplayTagsToolset_AddTag"
+   ],
+   [
+    "tool_call",
+    "GameplayTagsToolset_GameplayTagsToolset_AddTag"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. The gameplay tag 'Combat.Stun' has been successfully registered in the project's tag registry. Designers can now use this tag in their gameplay logic, abilities, effects, and other systems."
+ },
+ {
+  "scenario_id": "V5_actor_tag",
+  "mode": "listing",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 15.35,
+  "api_calls": 4,
+  "prompt_tokens_total": 163213,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors",
+   "editor_toolset_toolsets_actor_ActorTools_add_tag"
+  ],
+  "bridge_calls": [
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_actor_ActorTools_add_tag"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_add_tag"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. Crate_2 is now tagged with 'loot' and your spawner script can find it."
+ },
+ {
+  "scenario_id": "V5_actor_tag",
+  "mode": "listing",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 10.64,
+  "api_calls": 3,
+  "prompt_tokens_total": 119525,
+  "first_tool": [
+   "add",
+   "tag"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_actor_ActorTools_add_tag"
+  ],
+  "bridge_calls": [
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_actor_ActorTools_add_tag"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_add_tag"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. The 'loot' tag has been added to Crate_2."
+ },
+ {
+  "scenario_id": "V5_actor_tag",
+  "mode": "bridge",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 9.75,
+  "api_calls": 3,
+  "prompt_tokens_total": 64815,
+  "first_tool": [
+   "add",
+   "tag"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_actor_ActorTools_add_tag"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "unreal engine add tag actor"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_add_tag"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. Crate_2 is now tagged with 'loot' and your spawner script can find it."
+ },
+ {
+  "scenario_id": "V5_actor_tag",
+  "mode": "bridge",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 10.79,
+  "api_calls": 3,
+  "prompt_tokens_total": 64750,
+  "first_tool": [
+   "add",
+   "tag"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_actor_ActorTools_add_tag"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "Unreal actor tag"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_add_tag"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. The actor Crate_2 now has the 'loot' tag and your spawner script can find it."
+ },
+ {
+  "scenario_id": "V6_niagara_component",
+  "mode": "listing",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 14.51,
+  "api_calls": 3,
+  "prompt_tokens_total": 119497,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors",
+   "NiagaraToolsets_NiagaraToolset_Component_SetVariable"
+  ],
+  "bridge_calls": [
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_SetVariable"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. Set Torch_3's FX_Flame Niagara component Brightness user parameter to 5.0."
+ },
+ {
+  "scenario_id": "V6_niagara_component",
+  "mode": "listing",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 25.28,
+  "api_calls": 6,
+  "prompt_tokens_total": 252049,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors",
+   "editor_toolset_toolsets_actor_ActorTools_get_components",
+   "NiagaraToolsets_NiagaraToolset_Component_SetVariable"
+  ],
+  "bridge_calls": [
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_actor_ActorTools_get_components"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_actor_ActorTools_get_components"
+   ],
+   [
+    "tool_describe",
+    "NiagaraToolsets_NiagaraToolset_Component_SetVariable"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_Component_SetVariable"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. The Brightness user parameter on the Torch_3 actor's FX_Flame Niagara component has been set to 5.0."
+ },
+ {
+  "scenario_id": "V6_niagara_component",
+  "mode": "bridge",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 40.63,
+  "api_calls": 11,
+  "prompt_tokens_total": 299524,
+  "first_tool": [
+   "execution",
+   "environment"
+  ],
+  "first_correct": false,
+  "final_correct": false,
+  "wrong_calls": 0,
+  "success": false,
+  "ue_calls": [
+   "et_toolsets_programmatic_ProgrammaticToolset_get_execution_environment"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "unreal actor parameter component"
+   ],
+   [
+    "tool_search",
+    "get actor by name unreal"
+   ],
+   [
+    "tool_describe",
+    "animation_toolset_toolsets_sequencer_SequencerTools_add_actors_by_name"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_actor_ActorTools_get_components"
+   ],
+   [
+    "tool_describe",
+    "NiagaraToolsets_NiagaraToolset_Component_SetVariable"
+   ],
+   [
+    "tool_search",
+    "get selected actor unreal editor"
+   ],
+   [
+    "tool_search",
+    "find actor reference world"
+   ],
+   [
+    "tool_search",
+    "actor by label name get world"
+   ],
+   [
+    "tool_search",
+    "unreal scene tools spawn actor"
+   ],
+   [
+    "tool_search",
+    "EditorLevelLibrary find actor"
+   ],
+   [
+    "tool_search",
+    "unreal python execute command"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_programmatic_ProgrammaticToolset_execute_tool_script"
+   ],
+   [
+    "tool_search",
+    "get execution environment"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_programmatic_ProgrammaticToolset_get_execution_environment"
+   ]
+  ],
+  "error": null,
+  "final_response": "Response truncated due to output length limit"
+ },
+ {
+  "scenario_id": "V6_niagara_component",
+  "mode": "bridge",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 56.88,
+  "api_calls": 15,
+  "prompt_tokens_total": 403694,
+  "first_tool": [
+   "computer",
+   "use"
+  ],
+  "first_correct": false,
+  "final_correct": false,
+  "wrong_calls": 0,
+  "success": false,
+  "ue_calls": [
+   "computer_use",
+   "computer_use"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "Unreal actor component parameter property set"
+   ],
+   [
+    "tool_search",
+    "Unreal find actor user parameter Niagara"
+   ],
+   [
+    "tool_describe",
+    "NiagaraToolsets_NiagaraToolset_Component_SetVariable"
+   ],
+   [
+    "tool_search",
+    "Unreal find actor by name instance"
+   ],
+   [
+    "tool_search",
+    "Unreal get selected actor level"
+   ],
+   [
+    "tool_search",
+    "Unreal actor path reference object by name"
+   ],
+   [
+    "tool_search",
+    "Unreal get actor components Niagara component"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_actor_ActorTools_get_components"
+   ],
+   [
+    "tool_search",
+    "Unreal get actor by label name object path soft reference"
+   ],
+   [
+    "tool_search",
+    "Unreal construct soft object reference path"
+   ],
+   [
+    "tool_describe",
+    "animation_toolset_toolsets_sequencer_SequencerTools_add_actors_by_name"
+   ],
+   [
+    "tool_search",
+    "Unreal world editor command console execute"
+   ],
+   [
+    "tool_search",
+    "Niagara component"
+   ],
+   [
+    "tool_search",
+    "Unreal Property refPath soft path string"
+   ],
+   [
+    "tool_search",
+    "EditorAppToolset"
+   ]
+  ],
+  "error": null,
+  "final_response": "I've identified the tools needed to complete this task but haven't yet executed it due to tool-call limits. Here's what I found:\n\n**The Solution:**\n1. Tool `NiagaraToolsets_NiagaraToolset_Component_SetVariable` is exactly what I need \u2014 it sets user variables on a Niagara component.\n2. Tool `editor_t"
+ },
+ {
+  "scenario_id": "V7_niagara_system_asset",
+  "mode": "listing",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 14.53,
+  "api_calls": 3,
+  "prompt_tokens_total": 124430,
+  "first_tool": [
+   "System",
+   "AddUserVariables"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+  ],
+  "bridge_calls": [
+   [
+    "tool_describe",
+    "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. Added a user-exposed float called 'WindStrength' to /Game/FX/NS_Sparks with a default value of 1.0. Every instance of this effect can now override it."
+ },
+ {
+  "scenario_id": "V7_niagara_system_asset",
+  "mode": "listing",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 12.51,
+  "api_calls": 3,
+  "prompt_tokens_total": 124434,
+  "first_tool": [
+   "System",
+   "AddUserVariables"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+  ],
+  "bridge_calls": [
+   [
+    "tool_describe",
+    "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. Added a user-exposed float parameter 'WindStrength' with default value 1.0 to /Game/FX/NS_Sparks. Every instance can now override it."
+ },
+ {
+  "scenario_id": "V7_niagara_system_asset",
+  "mode": "bridge",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 22.77,
+  "api_calls": 6,
+  "prompt_tokens_total": 139716,
+  "first_tool": [
+   "System",
+   "AddUserVariables"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "unreal engine niagara parameter expose"
+   ],
+   [
+    "tool_search",
+    "niagara system add parameter user exposed"
+   ],
+   [
+    "tool_describe",
+    "NiagaraToolsets_NiagaraToolset_System_GetUserVariables"
+   ],
+   [
+    "tool_search",
+    "niagara system add user variable parameter"
+   ],
+   [
+    "tool_describe",
+    "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. Added user-exposed 'WindStrength' float parameter (default value: 1.0) to /Game/FX/NS_Sparks. Every instance of this effect can now override it."
+ },
+ {
+  "scenario_id": "V7_niagara_system_asset",
+  "mode": "bridge",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 19.01,
+  "api_calls": 6,
+  "prompt_tokens_total": 144235,
+  "first_tool": [
+   "System",
+   "AddUserVariables"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "niagara parameter add expose unreal"
+   ],
+   [
+    "tool_search",
+    "Niagara parameter add user exposed"
+   ],
+   [
+    "tool_search",
+    "NiagaraToolset System AddUserVariable"
+   ],
+   [
+    "tool_describe",
+    "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+   ],
+   [
+    "tool_call",
+    "NiagaraToolsets_NiagaraToolset_System_AddUserVariables"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. Added the user-exposed float parameter 'WindStrength' to `/Game/FX/NS_Sparks` with a default value of 1.0. Every instance can now override it."
+ },
+ {
+  "scenario_id": "V8_widget_screenshot",
+  "mode": "listing",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 52.08,
+  "api_calls": 15,
+  "prompt_tokens_total": 618273,
+  "first_tool": [
+   "computer",
+   "use"
+  ],
+  "first_correct": false,
+  "final_correct": true,
+  "wrong_calls": 1,
+  "success": false,
+  "ue_calls": [
+   "computer_use",
+   "computer_use",
+   "computer_use",
+   "EditorToolset_EditorAppToolset_CaptureEditorImage",
+   "vision_analyze",
+   "terminal",
+   "terminal",
+   "terminal",
+   "SlateInspectorToolset_SlateInspectorToolset_Snapshot",
+   "SlateInspectorToolset_SlateInspectorToolset_Screenshot",
+   "terminal"
+  ],
+  "bridge_calls": [
+   [
+    "tool_describe",
+    "EditorToolset_EditorAppToolset_CaptureEditorImage"
+   ],
+   [
+    "tool_call",
+    "EditorToolset_EditorAppToolset_CaptureEditorImage"
+   ],
+   [
+    "tool_describe",
+    "SlateInspectorToolset_SlateInspectorToolset_Screenshot"
+   ],
+   [
+    "tool_describe",
+    "SlateInspectorToolset_SlateInspectorToolset_Snapshot"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Snapshot"
+   ],
+   [
+    "tool_describe",
+    "SlateInspectorToolset_SlateInspectorToolset_Observe"
+   ],
+   [
+    "tool_call",
+    "SlateInspectorToolset_SlateInspectorToolset_Screenshot"
+   ]
+  ],
+  "error": null,
+  "final_response": "I've encountered a blocker that prevents completing your request.\n\n**What I attempted:**\n1. Used `CaptureEditorImage` to capture the full Unreal Editor \u2014 it returned a path `/tmp/ue_capture_0001.png`\n2. Discovered the `SlateInspectorToolset_SlateInspectorToolset_Screenshot` tool, which is designed s"
+ },
+ {
+  "scenario_id": "V8_widget_screenshot",
+  "mode": "listing",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 16.29,
+  "api_calls": 5,
+  "prompt_tokens_total": 199656,
+  "first_tool": [
+   "computer",
+   "use"
+  ],
+  "first_correct": false,
+  "final_correct": false,
+  "wrong_calls": 0,
+  "success": false,
+  "ue_calls": [
+   "computer_use",
+   "computer_use",
+   "terminal",
+   "computer_use"
+  ],
+  "bridge_calls": [],
+  "error": null,
+  "final_response": "The Unreal Editor window is not currently accessible or active. It appears there are no open windows available. Could you verify that the Unreal Engine 5.8 editor is running and visible on your display, then I can capture the Details panel for you."
+ },
+ {
+  "scenario_id": "V8_widget_screenshot",
+  "mode": "bridge",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 12.8,
+  "api_calls": 4,
+  "prompt_tokens_total": 85393,
+  "first_tool": [
+   "computer",
+   "use"
+  ],
+  "first_correct": false,
+  "final_correct": false,
+  "wrong_calls": 0,
+  "success": false,
+  "ue_calls": [
+   "computer_use",
+   "computer_use",
+   "computer_use"
+  ],
+  "bridge_calls": [],
+  "error": null,
+  "final_response": "It appears the Unreal Editor is not currently running or accessible. According to the initial context, the editor should be running and connected through the MCP tools. Can you confirm the Unreal Editor is open? If it is, I may need to focus it first or there may be a display/connection issue."
+ },
+ {
+  "scenario_id": "V8_widget_screenshot",
+  "mode": "bridge",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 16.43,
+  "api_calls": 5,
+  "prompt_tokens_total": 108314,
+  "first_tool": [
+   "computer",
+   "use"
+  ],
+  "first_correct": false,
+  "final_correct": false,
+  "wrong_calls": 0,
+  "success": false,
+  "ue_calls": [
+   "computer_use",
+   "computer_use",
+   "computer_use",
+   "computer_use"
+  ],
+  "bridge_calls": [],
+  "error": null,
+  "final_response": "I'm unable to capture the Unreal Editor window. The computer_use tool isn't finding any windows at 0x0 resolution. This suggests either the editor isn't active/visible or there's a display setup issue.\n\nCan you verify that the Unreal Editor window is currently visible and active on screen? If it is,"
+ },
+ {
+  "scenario_id": "V9_save_actor",
+  "mode": "listing",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 10.31,
+  "api_calls": 3,
+  "prompt_tokens_total": 119477,
+  "first_tool": [
+   "save",
+   "actor"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_save_actor"
+  ],
+  "bridge_calls": [
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_scene_SceneTools_save_actor"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_save_actor"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done."
+ },
+ {
+  "scenario_id": "V9_save_actor",
+  "mode": "listing",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 11.63,
+  "api_calls": 3,
+  "prompt_tokens_total": 119525,
+  "first_tool": [
+   "save",
+   "actor"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_save_actor"
+  ],
+  "bridge_calls": [
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_scene_SceneTools_save_actor"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_save_actor"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. Crate_2's changes have been persisted to disk."
+ },
+ {
+  "scenario_id": "V9_save_actor",
+  "mode": "bridge",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 13.8,
+  "api_calls": 3,
+  "prompt_tokens_total": 64771,
+  "first_tool": [
+   "save",
+   "actor"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_save_actor"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "unreal save actor persist changes disk"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_save_actor"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done. Crate_2's changes have been saved to disk."
+ },
+ {
+  "scenario_id": "V9_save_actor",
+  "mode": "bridge",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 11.4,
+  "api_calls": 3,
+  "prompt_tokens_total": 64759,
+  "first_tool": [
+   "save",
+   "actor"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_save_actor"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "Unreal save actor persist changes"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_save_actor"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done."
+ },
+ {
+  "scenario_id": "V10_zero_keyword",
+  "mode": "listing",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 12.09,
+  "api_calls": 3,
+  "prompt_tokens_total": 119404,
+  "first_tool": [
+   "EditorAppToolset",
+   "GetVisibleActors"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "EditorToolset_EditorAppToolset_GetVisibleActors"
+  ],
+  "bridge_calls": [
+   [
+    "tool_describe",
+    "EditorToolset_EditorAppToolset_GetVisibleActors"
+   ],
+   [
+    "tool_call",
+    "EditorToolset_EditorAppToolset_GetVisibleActors"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done.\n\nCurrent level panel contents:\n- Torch_3 (Actor) with NiagaraComponent 'FX_Flame'\n- Crate_2 (StaticMeshActor)"
+ },
+ {
+  "scenario_id": "V10_zero_keyword",
+  "mode": "listing",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 15.61,
+  "api_calls": 3,
+  "prompt_tokens_total": 119381,
+  "first_tool": [
+   "EditorAppToolset",
+   "GetVisibleActors"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "EditorToolset_EditorAppToolset_GetVisibleActors"
+  ],
+  "bridge_calls": [
+   [
+    "tool_describe",
+    "EditorToolset_EditorAppToolset_GetVisibleActors"
+   ],
+   [
+    "tool_call",
+    "EditorToolset_EditorAppToolset_GetVisibleActors"
+   ]
+  ],
+  "error": null,
+  "final_response": "Here's what's in your level right now:\n\n1. Torch_3 (Actor) \u2014 has an NiagaraComponent called 'FX_Flame'\n2. Crate_2 (StaticMeshActor)\n\nDone."
+ },
+ {
+  "scenario_id": "V10_zero_keyword",
+  "mode": "bridge",
+  "rep": 1,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 20.88,
+  "api_calls": 7,
+  "prompt_tokens_total": 161728,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "Unreal level outliner actors world contents list"
+   ],
+   [
+    "tool_search",
+    "Unreal get all actors level outliner contents"
+   ],
+   [
+    "tool_search",
+    "Unreal level GetAllActorsOfClass world actors list"
+   ],
+   [
+    "tool_search",
+    "Unreal scene toolset get all actors world hierarchy"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done.\n\nHere's your level list panel contents:\n\n- Torch_3 (Actor)\n  Path: /Game/Map:PersistentLevel.Torch_3\n  Components: NiagaraComponent 'FX_Flame'\n\n- Crate_2 (StaticMeshActor)\n  Path: /Game/Map:PersistentLevel.Crate_2"
+ },
+ {
+  "scenario_id": "V10_zero_keyword",
+  "mode": "bridge",
+  "rep": 2,
+  "n_tools_registered": 830,
+  "elapsed_seconds": 22.27,
+  "api_calls": 7,
+  "prompt_tokens_total": 162995,
+  "first_tool": [
+   "find",
+   "actors"
+  ],
+  "first_correct": true,
+  "final_correct": true,
+  "wrong_calls": 0,
+  "success": true,
+  "ue_calls": [
+   "editor_toolset_toolsets_scene_SceneTools_find_actors"
+  ],
+  "bridge_calls": [
+   [
+    "tool_search",
+    "unreal engine actor list level contents"
+   ],
+   [
+    "tool_search",
+    "get outliner hierarchy actors level panel"
+   ],
+   [
+    "tool_search",
+    "get all actors in level scene world"
+   ],
+   [
+    "tool_search",
+    "find actors filter class type"
+   ],
+   [
+    "tool_describe",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ],
+   [
+    "tool_call",
+    "editor_toolset_toolsets_scene_SceneTools_find_actors"
+   ]
+  ],
+  "error": null,
+  "final_response": "Done.\n\nLevel panel contents:\n- Torch_3 (Actor with NiagaraComponent 'FX_Flame')\n- Crate_2 (StaticMeshActor)"
+ }
+]

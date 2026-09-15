@@ -448,6 +448,8 @@ class TestSecretRedactionInDisplay:
 # ---------------------------------------------------------------------------
 # #34067: Schema validation for unknown keys
 # ---------------------------------------------------------------------------
+# `config get` redacts resolved credentials (issue #84106)
+# ---------------------------------------------------------------------------
 
 class TestSchemaValidation:
     """#34067: ``hermes config set`` must not report bare success for

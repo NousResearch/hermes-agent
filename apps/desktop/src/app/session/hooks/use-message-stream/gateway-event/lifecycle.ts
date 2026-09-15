@@ -12,6 +12,8 @@ import {
   setChangeEventsAvailable
 } from '@/store/live-sync'
 import { markRuntimeGone } from '@/store/runtime-gone'
+import { beginScopedRpcEpoch, idsFromSessionReclaimed } from '@/store/scoped-rpc-resume'
+import { $selectedStoredSessionId, requestSessionResume } from '@/store/session'
 import { dropSessionState, unbindTileRuntime } from '@/store/session-states'
 // Leaf import (not the `@/themes` barrel) to avoid pulling the ThemeProvider
 // module graph into the gateway event hot path.
@@ -95,11 +97,15 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     // session vanishing rather than being reclaimed. Drop the cached state
     // now — the stored row is untouched, so the sidebar keeps the
     // conversation and reopening it resumes from the DB.
-    const reclaimedRuntimeId = String((payload as { session_id?: string } | undefined)?.session_id ?? '')
+    const reclaimed = idsFromSessionReclaimed(
+      payload as { session_id?: string; stored_session_id?: string } | undefined,
+      event.session_id
+    )
+    const reclaimedRuntimeId = reclaimed.runtimeId
 
     if (reclaimedRuntimeId) {
       // Heal while the cached stored-id mapping is still intact, then drop.
-      markRuntimeGone(reclaimedRuntimeId)
+      markRuntimeGone(reclaimedRuntimeId, reclaimed.storedSessionId || undefined)
       dropSessionState(reclaimedRuntimeId)
       // A tile bound to the reclaimed runtime would otherwise render an
       // empty transcript forever: its view reads $sessionStates[runtime]
@@ -110,6 +116,8 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
       // runtime straight back instead of cold-resuming a live one.
       unbindTileRuntime(reclaimedRuntimeId)
       deps.sessionStateByRuntimeIdRef.current.delete(reclaimedRuntimeId)
+    } else if (reclaimed.storedSessionId && $selectedStoredSessionId.get() === reclaimed.storedSessionId) {
+      requestSessionResume(reclaimed.storedSessionId)
     }
 
     // The row's ended_at moved, so refresh the lists that render it.

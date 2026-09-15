@@ -1,0 +1,557 @@
+"""Tests for the WAL→DELETE journal-mode fallback on NFS / SMB / FUSE.
+
+When ``PRAGMA journal_mode=WAL`` raises ``OperationalError("locking protocol")``
+(SQLITE_PROTOCOL — typical on NFS/SMB), Hermes must fall back to
+``journal_mode=DELETE`` so ``state.db`` / ``kanban.db`` remain usable.
+
+Without this fallback, users on NFS-mounted ``HERMES_HOME`` silently lose
+``/resume``, ``/title``, ``/history``, ``/branch``, session search, and the
+kanban dispatcher — because ``SessionDB()`` init propagates the error and
+every caller swallows it, leaving ``_session_db = None``.
+
+See: https://www.sqlite.org/wal.html — "WAL does not work over a network
+filesystem".
+"""
+
+import sqlite3
+from unittest.mock import patch
+
+import pytest
+
+import hermes_state
+from hermes_state import (
+    SessionDB,
+    WalUnsupportedError,
+    apply_wal_with_fallback,
+    format_session_db_unavailable,
+    get_last_init_error,
+)
+
+
+# ``sqlite3.Connection.execute`` is a C-level slot and can't be monkeypatched
+# directly (``'sqlite3.Connection' object attribute 'execute' is read-only``).
+# A factory-built subclass lets us intercept journal_mode=WAL per-test with
+# its own mutable counter, avoiding the xdist-parallel class-state race.
+def _make_blocking_factory(reason: str, attempt_counter: list):
+    """Return a sqlite3.Connection subclass that raises on PRAGMA journal_mode=WAL."""
+
+    class _WalBlockingConnection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+            if "journal_mode=wal" in sql.lower().replace(" ", ""):
+                attempt_counter[0] += 1
+                raise sqlite3.OperationalError(reason)
+            return super().execute(sql, *args, **kwargs)
+
+    return _WalBlockingConnection
+
+
+def _open_blocking(path, reason="locking protocol", **kwargs):
+    """Open a connection whose WAL pragma raises ``reason``.
+
+    Returns ``(conn, attempt_counter_list)`` so callers can assert how many
+    times WAL was attempted.
+    """
+    attempts = [0]
+    factory = _make_blocking_factory(reason, attempts)
+    return sqlite3.connect(str(path), factory=factory, **kwargs), attempts
+
+
+def _make_silent_noop_factory(returned_mode: str = "delete"):
+    """Return a ``sqlite3.Connection`` subclass whose ``PRAGMA journal_mode=WAL``
+    silently NO-OPs: it returns the still-effective journal mode (e.g.
+    ``delete``) WITHOUT raising — the way macOS NFS / SMB / the AgentFS NFS
+    overlay behave. NFS that *raises* SQLITE_PROTOCOL is covered by
+    :func:`_make_blocking_factory`; this is the other, quieter failure shape.
+    """
+
+    class _WalSilentNoOpConnection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+            if "journal_mode=wal" in sql.lower().replace(" ", ""):
+                # Refuse the WAL switch but DON'T raise; report the mode that is
+                # actually still in force, exactly as the NFS client does.
+                return super().execute(
+                    f"PRAGMA journal_mode={returned_mode}", *args, **kwargs
+                )
+            return super().execute(sql, *args, **kwargs)
+
+    return _WalSilentNoOpConnection
+
+
+@pytest.fixture(autouse=True)
+def _reset_last_init_error():
+    """Reset the module-global last-error before and after each test."""
+    hermes_state._set_last_init_error(None)
+    yield
+    hermes_state._set_last_init_error(None)
+
+
+@pytest.fixture(autouse=True)
+def _reset_wal_fallback_warned_paths():
+    """Reset the WAL-fallback warned-paths set so dedup doesn't leak between tests."""
+    hermes_state._wal_fallback_warned_paths.clear()
+    yield
+    hermes_state._wal_fallback_warned_paths.clear()
+
+
+@pytest.fixture(autouse=True)
+def _assume_fixed_sqlite(monkeypatch):
+    """NFS-fallback tests assume a SQLite build without the WAL-reset bug."""
+    monkeypatch.setattr(
+        hermes_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
+    )
+    hermes_state._wal_reset_bug_warned_paths.clear()
+    yield
+    hermes_state._wal_reset_bug_warned_paths.clear()
+
+
+class TestApplyWalWithFallback:
+    def test_succeeds_on_local_fs(self, tmp_path):
+        """Happy path: WAL works on a normal filesystem."""
+        conn = sqlite3.connect(str(tmp_path / "ok.db"), isolation_level=None)
+        mode = apply_wal_with_fallback(conn)
+        assert mode == "wal"
+        cur = conn.execute("PRAGMA journal_mode")
+        assert cur.fetchone()[0].lower() == "wal"
+        conn.close()
+
+    def test_falls_back_to_delete_on_locking_protocol(self, tmp_path, caplog):
+        """NFS-style ``locking protocol`` error → DELETE mode + one ERROR."""
+        conn, _ = _open_blocking(tmp_path / "nfs.db", isolation_level=None)
+        with caplog.at_level("ERROR", logger="hermes_state"):
+            mode = apply_wal_with_fallback(conn, db_label="test.db")
+
+        assert mode == "delete"
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(errors) == 1
+        msg = errors[0].getMessage()
+        assert "test.db" in msg
+        assert "journal_mode=DELETE" in msg
+        assert "locking protocol" in msg
+
+        # Post-fallback the DB is still usable for real writes
+        conn.execute("CREATE TABLE t (x INTEGER)")
+        conn.execute("INSERT INTO t VALUES (1)")
+        assert list(conn.execute("SELECT x FROM t"))[0][0] == 1
+        conn.close()
+
+    def test_falls_back_on_not_authorized(self, tmp_path):
+        """Some FUSE mounts block WAL pragma outright ('not authorized')."""
+        conn, _ = _open_blocking(
+            tmp_path / "fuse.db", reason="not authorized", isolation_level=None
+        )
+        mode = apply_wal_with_fallback(conn)
+        assert mode == "delete"
+        conn.close()
+
+    def test_falls_back_when_wal_silently_refused(self, tmp_path, caplog):
+        """macOS NFS / SMB / AgentFS-NFS can REFUSE the WAL switch WITHOUT
+        raising: ``PRAGMA journal_mode=WAL`` returns the still-effective mode
+        ('delete') and no exception. The marker-exception path never fires, so
+        the function must detect the silent no-op from the PRAGMA's RETURN
+        value — otherwise it returns a false 'wal' and skips the WARNING.
+
+        Reproduced on a real AgentFS NFS overlay, where
+        ``PRAGMA journal_mode=WAL`` returned ('delete',) with no
+        OperationalError.
+        """
+        factory = _make_silent_noop_factory("delete")
+        conn = sqlite3.connect(
+            str(tmp_path / "macnfs.db"), factory=factory, isolation_level=None
+        )
+        with caplog.at_level("ERROR", logger="hermes_state"):
+            mode = apply_wal_with_fallback(conn, db_label="kanban.db")
+
+        assert mode == "delete", "must report the true mode, not a false 'wal'"
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(errors) == 1, "silent no-op must still emit exactly one ERROR"
+        assert "kanban.db" in errors[0].getMessage()
+        conn.close()
+
+    def test_transient_disk_io_error_recovers_to_wal(self, tmp_path):
+        """Transient EIO from ``PRAGMA journal_mode=WAL`` must NOT silently
+        downgrade to DELETE.
+
+        Regression for "Bug D": treating transient EIO as a permanent
+        WAL-incompat marker produced the mixed-journal-mode-across-processes
+        corruption pattern (process A downgrades to DELETE, sibling
+        processes successfully set WAL, SQLite corrupts the file because
+        the two locking protocols are documented as incompatible). EIO is
+        often transient (page-cache pressure, lock contention, brief
+        storage hiccups); the fallback retries the pragma, and a transient
+        EIO clears — returning "wal", never walking the DB into a
+        permanently downgraded state.
+        """
+        attempts = [0]
+
+        class _TransientEIOConnection(sqlite3.Connection):
+            def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+                if "journal_mode=wal" in sql.lower().replace(" ", ""):
+                    attempts[0] += 1
+                    if attempts[0] == 1:
+                        raise sqlite3.OperationalError("disk I/O error")
+                return super().execute(sql, *args, **kwargs)
+
+        conn = sqlite3.connect(
+            str(tmp_path / "flaky.db"),
+            factory=_TransientEIOConnection,
+            isolation_level=None,
+        )
+        assert apply_wal_with_fallback(conn) == "wal"
+        assert attempts[0] == 2, "the retry must have re-attempted the pragma"
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        conn.close()
+
+    def test_persistent_disk_io_error_falls_back_to_delete(self, tmp_path, caplog):
+        """Deterministic EIO (ZFS / APFS-CoW SHM corruption — #55305, #71498)
+        keeps failing across retries → guarded fallback to DELETE with one
+        ERROR, instead of wedging the session DB entirely.
+        """
+        conn, attempts = _open_blocking(
+            tmp_path / "zfs.db", reason="disk I/O error", isolation_level=None
+        )
+        with caplog.at_level("ERROR", logger="hermes_state"):
+            mode = apply_wal_with_fallback(conn, db_label="zfs.db")
+        assert mode == "delete"
+        assert attempts[0] >= 3, "must retry before concluding EIO is persistent"
+        errors = [
+            r
+            for r in caplog.records
+            if r.levelname == "ERROR" and "zfs.db" in r.getMessage()
+        ]
+        assert len(errors) == 1
+        # Post-fallback the DB is still usable for real writes
+        conn.execute("CREATE TABLE t (x INTEGER)")
+        conn.execute("INSERT INTO t VALUES (1)")
+        assert list(conn.execute("SELECT x FROM t"))[0][0] == 1
+        conn.close()
+
+    def test_persistent_disk_io_error_never_downgrades_wal_disk(self, tmp_path):
+        """Persistent EIO on a DB whose on-disk header already says WAL must
+        re-raise (Bug D guard) — never flip a WAL file to DELETE under
+        possible concurrent openers.
+        """
+        primer = sqlite3.connect(str(tmp_path / "waldisk.db"), isolation_level=None)
+        try:
+            primer.execute("PRAGMA journal_mode=WAL")
+            primer.execute("CREATE TABLE t (x INTEGER)")
+        finally:
+            primer.close()
+
+        class _EIOWalOnlyConnection(sqlite3.Connection):
+            def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+                normalized = sql.lower().replace(" ", "")
+                if "journal_mode=wal" in normalized:
+                    raise sqlite3.OperationalError("disk I/O error")
+                return super().execute(sql, *args, **kwargs)
+
+        conn = sqlite3.connect(
+            str(tmp_path / "waldisk.db"),
+            factory=_EIOWalOnlyConnection,
+            isolation_level=None,
+        )
+        # The read-only probe sees WAL and returns early on this shape; force
+        # the set-pragma path by making the probe report a non-WAL mode.
+        # (On-disk header still says WAL, which is what the guard checks.)
+        try:
+            result = apply_wal_with_fallback(conn)
+            # Probe short-circuit: acceptable, DB stays WAL.
+            assert result == "wal"
+        except sqlite3.OperationalError:
+            pass  # re-raise path: equally acceptable — no downgrade happened
+        finally:
+            conn.close()
+
+        check = sqlite3.connect(str(tmp_path / "waldisk.db"))
+        try:
+            assert check.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        finally:
+            check.close()
+
+    def test_does_not_downgrade_when_disk_says_wal(self, tmp_path):
+        """Refuse to downgrade an already-WAL DB even if the set-pragma path
+        would have raised a downgrade-eligible marker.
+
+        With the WAL-skip patch, the read-only probe short-circuits before
+        ``PRAGMA journal_mode=WAL`` ever runs on an already-WAL connection,
+        so the set-pragma path is unreachable here and ``attempts`` stays 0.
+        Either outcome (skip-via-probe OR re-raise-on-disk-check) preserves
+        the property this test guards: we never silently DELETE-downgrade
+        a WAL-mode file. The on-disk guard remains in place as
+        belt-and-suspenders for any future code path that bypasses the
+        probe.
+        """
+        # Prime the file in WAL mode using a normal connection
+        primer = sqlite3.connect(str(tmp_path / "already-wal.db"), isolation_level=None)
+        try:
+            primer.execute("PRAGMA journal_mode=WAL")
+            primer.execute("CREATE TABLE t (x INTEGER)")
+            primer.execute("INSERT INTO t VALUES (1)")
+            assert primer.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        finally:
+            primer.close()
+
+        # New connection whose set-WAL pragma would raise "locking protocol"
+        # if it were ever called. With the WAL-skip patch the probe sees
+        # journal_mode=wal and returns early, so set-WAL is never attempted.
+        conn, attempts = _open_blocking(
+            tmp_path / "already-wal.db",
+            reason="locking protocol",
+            isolation_level=None,
+        )
+        result = apply_wal_with_fallback(conn)
+        assert result == "wal", (
+            "must report wal mode (either skipped via probe or refused downgrade)"
+        )
+        assert attempts[0] == 0, (
+            "set-WAL pragma must not run when the on-disk header already says wal"
+        )
+        conn.close()
+
+        # And the file is STILL WAL on disk — nothing got rewritten
+        check = sqlite3.connect(str(tmp_path / "already-wal.db"))
+        try:
+            assert check.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        finally:
+            check.close()
+
+    def test_reraises_unrelated_operational_error(self, tmp_path):
+        """Non-WAL-compat errors must NOT be silently swallowed by the fallback."""
+        conn, _ = _open_blocking(
+            tmp_path / "other.db",
+            reason="no such table: nope",
+            isolation_level=None,
+        )
+        with pytest.raises(sqlite3.OperationalError, match="no such table"):
+            apply_wal_with_fallback(conn)
+        conn.close()
+
+    def test_error_deduplicated_per_db_label(self, tmp_path, caplog):
+        """Repeated calls with the same db_label log exactly ONE error.
+
+        Prevents log spam when NFS users run kanban (which opens a fresh
+        connection on every operation — see hermes_cli/kanban_db.py).
+        Regression guard: the fix for #22032 ran apply_wal_with_fallback()
+        on every kb.connect() call; without dedup, errors.log fills with
+        hundreds of identical errors per hour.
+        """
+        with caplog.at_level("ERROR", logger="hermes_state"):
+            # Three separate connections to "the same DB" via the same label
+            for i in range(3):
+                conn, _ = _open_blocking(tmp_path / f"dup-{i}.db", isolation_level=None)
+                mode = apply_wal_with_fallback(conn, db_label="shared.db")
+                assert mode == "delete"
+                conn.close()
+
+        # Exactly one error across all three calls
+        errors = [
+            r
+            for r in caplog.records
+            if r.levelname == "ERROR" and "shared.db" in r.getMessage()
+        ]
+        assert len(errors) == 1, (
+            f"Expected 1 deduplicated error, got {len(errors)}: "
+            f"{[r.getMessage() for r in errors]}"
+        )
+
+    def test_error_fires_independently_per_db_label(self, tmp_path, caplog):
+        """Different db_labels each get their own one error (not globally dedup'd)."""
+        with caplog.at_level("ERROR", logger="hermes_state"):
+            conn1, _ = _open_blocking(tmp_path / "a.db", isolation_level=None)
+            apply_wal_with_fallback(conn1, db_label="state.db")
+            conn1.close()
+
+            conn2, _ = _open_blocking(tmp_path / "b.db", isolation_level=None)
+            apply_wal_with_fallback(conn2, db_label="kanban.db")
+            conn2.close()
+
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        labels_logged = {
+            lbl
+            for r in errors
+            for lbl in ("state.db", "kanban.db")
+            if lbl in r.getMessage()
+        }
+        assert labels_logged == {"state.db", "kanban.db"}, (
+            f"Each db_label should log once; got {labels_logged}"
+        )
+
+
+class TestRequireWal:
+    """``require_wal=True`` turns either WAL-refusal shape into a hard
+    ``WalUnsupportedError`` for callers that mandate WAL concurrency, instead
+    of silently degrading to DELETE. The default callers (SessionDB /
+    kanban_db.connect) keep ``require_wal=False`` so NFS-homed installs work.
+    """
+
+    def test_happy_path_unaffected_by_require_wal(self, tmp_path):
+        """On a WAL-capable FS, require_wal=True still simply returns 'wal'."""
+        conn = sqlite3.connect(str(tmp_path / "ok.db"), isolation_level=None)
+        try:
+            assert apply_wal_with_fallback(conn, require_wal=True) == "wal"
+        finally:
+            conn.close()
+
+    def test_raises_on_raising_marker(self, tmp_path):
+        """NFS-style raising refusal + require_wal=True → WalUnsupportedError."""
+        conn, _ = _open_blocking(tmp_path / "nfs.db", isolation_level=None)
+        try:
+            with pytest.raises(WalUnsupportedError, match="locking protocol"):
+                apply_wal_with_fallback(conn, db_label="state.db", require_wal=True)
+        finally:
+            conn.close()
+
+    def test_raises_on_silent_refusal(self, tmp_path):
+        """macOS-NFS silent no-op + require_wal=True → WalUnsupportedError,
+        not a false 'delete' return."""
+        factory = _make_silent_noop_factory("delete")
+        conn = sqlite3.connect(
+            str(tmp_path / "macnfs.db"), factory=factory, isolation_level=None
+        )
+        try:
+            with pytest.raises(WalUnsupportedError, match="refused without raising"):
+                apply_wal_with_fallback(conn, db_label="kanban.db", require_wal=True)
+        finally:
+            conn.close()
+
+    def test_error_is_operationalerror_subclass(self, tmp_path):
+        """WalUnsupportedError must stay catchable as sqlite3.OperationalError
+        so existing DB-init handlers (e.g. SessionDB.__init__) still catch it."""
+        conn, _ = _open_blocking(tmp_path / "nfs.db", isolation_level=None)
+        try:
+            with pytest.raises(sqlite3.OperationalError):
+                apply_wal_with_fallback(conn, require_wal=True)
+        finally:
+            conn.close()
+
+
+class TestGetLastInitError:
+
+
+    def test_captures_cause_on_failed_init(self, tmp_path):
+        """When SessionDB() raises, the cause is preserved for slash commands.
+
+        Simulates a filesystem where BOTH WAL and DELETE journal modes fail —
+        e.g. a read-only mount where no ``PRAGMA journal_mode=X`` works.  The
+        fallback tries DELETE and also gets rejected; the exception bubbles
+        out of ``SessionDB.__init__`` and the cause is captured.
+        """
+        target = tmp_path / "broken.db"
+        real_connect = sqlite3.connect
+
+        class _BothPragmasFailConnection(sqlite3.Connection):
+            def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+                if "journal_mode" in sql.lower():
+                    raise sqlite3.OperationalError(
+                        "locking protocol: read-only filesystem"
+                    )
+                return super().execute(sql, *args, **kwargs)
+
+        def gated_connect(*args, **kwargs):
+            # connect_tracked passes a tracking-augmented factory; drop it and
+            # substitute the double, which connect_tracked will re-augment.
+            kwargs.pop("factory", None)
+            return real_connect(str(target), factory=_BothPragmasFailConnection, **kwargs)
+
+        with patch("hermes_state.sqlite3.connect", side_effect=gated_connect):
+            with pytest.raises(sqlite3.OperationalError):
+                SessionDB(db_path=target)
+
+        cause = get_last_init_error()
+        assert cause is not None
+        assert "OperationalError" in cause
+        assert "locking protocol" in cause
+
+
+class TestFormatSessionDbUnavailable:
+    def test_bare_message_when_no_cause(self):
+        """No init error recorded → generic message."""
+        hermes_state._set_last_init_error(None)
+        assert format_session_db_unavailable() == "Session database not available."
+
+
+    def test_adds_nfs_hint_for_locking_protocol(self):
+        """Locking-protocol cause gets an NFS/SMB pointer for the user."""
+        hermes_state._set_last_init_error("OperationalError: locking protocol")
+        msg = format_session_db_unavailable()
+        assert "locking protocol" in msg
+        assert "NFS/SMB" in msg
+        assert "sqlite.org/wal.html" in msg
+
+    def test_custom_prefix(self):
+        """Callers can customize the prefix for context-specific messages."""
+        hermes_state._set_last_init_error("OperationalError: locking protocol")
+        msg = format_session_db_unavailable(prefix="Cannot /resume")
+        assert msg.startswith("Cannot /resume:")
+
+
+class TestSessionDbUsesWalFallback:
+    def test_sessiondb_works_when_wal_unavailable(self, tmp_path):
+        """E2E: SessionDB initializes and performs a write on a WAL-blocked FS."""
+        target = tmp_path / "nfs_style.db"
+
+        real_connect = sqlite3.connect
+        attempts = [0]
+        factory = _make_blocking_factory("locking protocol", attempts)
+
+        def gated_connect(*args, **kwargs):
+            # connect_tracked passes a tracking-augmented factory; drop it and
+            # substitute the double, which connect_tracked re-applies to the
+            # returned instance.
+            kwargs.pop("factory", None)
+            return real_connect(str(target), factory=factory, **kwargs)
+
+        with patch("hermes_state.sqlite3.connect", side_effect=gated_connect):
+            db = SessionDB(db_path=target)
+
+        try:
+            # WAL was attempted and rejected — fallback kicked in
+            assert attempts[0] >= 1, (
+                "WAL pragma was never executed — check the patch target"
+            )
+            # SessionDB is usable end-to-end: create a session, read it back
+            db.create_session(session_id="s1", source="cli", model="test")
+            sess = db.get_session("s1")
+            assert sess is not None
+            assert sess["source"] == "cli"
+            # No init error was recorded since init succeeded via the fallback
+            assert get_last_init_error() is None
+        finally:
+            db.close()
+
+    def test_sessiondb_works_when_wal_is_silently_refused(self, tmp_path, caplog):
+        """E2E: SessionDB stays usable when WAL silently no-ops to DELETE."""
+        target = tmp_path / "macnfs_style.db"
+
+        real_connect = sqlite3.connect
+        factory = _make_silent_noop_factory("delete")
+
+        def gated_connect(*args, **kwargs):
+            # connect_tracked passes a tracking-augmented factory; drop it and
+            # substitute the double, which connect_tracked re-applies to the
+            # returned instance.
+            kwargs.pop("factory", None)
+            return real_connect(str(target), factory=factory, **kwargs)
+
+        with patch("hermes_state.sqlite3.connect", side_effect=gated_connect):
+            with caplog.at_level("ERROR", logger="hermes_state"):
+                db = SessionDB(db_path=target)
+
+        try:
+            assert db._conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
+            db.create_session(session_id="s2", source="cli", model="test")
+            sess = db.get_session("s2")
+            assert sess is not None
+            assert sess["source"] == "cli"
+            assert get_last_init_error() is None
+        finally:
+            db.close()
+
+        errors = [
+            r
+            for r in caplog.records
+            if r.levelname == "ERROR" and "state.db" in r.getMessage()
+        ]
+        assert len(errors) == 1, (
+            "silent WAL refusal should emit exactly one state.db error"
+        )

@@ -1,0 +1,5 @@
+{"prompt": "Go to https://news.ycombinator.com and find the top 5 posts on the front page. For each post, get the title, URL, points, and number of comments. Return the results as a formatted summary."}
+{"prompt": "Navigate to https://en.wikipedia.org/wiki/Hermes and extract the first paragraph of the article, the image caption, and the list of items in the infobox. Summarize what you find."}
+{"prompt": "Go to https://github.com/trending and find the top 3 trending repositories today. For each repo, get the name, description, language, and star count. Write the results to a file called trending_repos.md."}
+{"prompt": "Visit https://httpbin.org/forms/post and fill out the form with sample data (customer name: Jane Doe, size: Medium, topping: Bacon, delivery time: 12:00). Submit the form and report what the response page shows."}
+{"prompt": "Navigate to https://books.toscrape.com, browse to the Travel category, find the highest-rated book, and extract its title, price, availability, and description."}

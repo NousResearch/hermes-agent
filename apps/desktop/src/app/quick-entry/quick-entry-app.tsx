@@ -7,7 +7,8 @@ import {
   QUICK_TARGET_NEW,
   type QuickComposerEvent,
   quickComposerReducer,
-  type QuickComposerState
+  type QuickComposerState,
+  quickEntryResultEvent
 } from '@/store/quick-entry'
 
 /**
@@ -28,6 +29,7 @@ import {
  */
 export function QuickEntryApp() {
   const inputRef = useRef<HTMLInputElement>(null)
+  const submitIdRef = useRef(0)
 
   // The reducer returns { send, state }; this wrapper performs the side effect
   // (hand the payload to the shell, ask to hide) and stores the next state, so
@@ -37,7 +39,13 @@ export function QuickEntryApp() {
     const api = window.hermesDesktop?.quickEntry
 
     if (send) {
-      api?.submit(send)
+      const submitId = submitIdRef.current
+      void api?.submit(send).then(result => {
+        dispatch(quickEntryResultEvent(result, submitId))
+        if (!result.ok) {
+          requestAnimationFrame(() => inputRef.current?.focus())
+        }
+      })
     } else if (!next.visible && current.visible) {
       api?.dismiss()
     }
@@ -64,11 +72,20 @@ export function QuickEntryApp() {
       })
     })
 
+    const offLateResult = api?.onLateResult(payload => {
+      dispatch({
+        message: payload?.result?.message ?? 'Hermes could not deliver the prompt.',
+        ok: payload?.result?.ok === true,
+        type: 'late-result'
+      })
+    })
+
     inputRef.current?.focus()
 
     return () => {
       offShown?.()
       offState?.()
+      offLateResult?.()
     }
   }, [])
 
@@ -126,7 +143,7 @@ export function QuickEntryApp() {
             onKeyDown={event => {
               if (isSubmitEnter(event) && !event.shiftKey) {
                 event.preventDefault()
-                dispatch({ type: 'submit' })
+                dispatch({ submitId: ++submitIdRef.current, type: 'submit' })
               } else if (event.key === 'Escape') {
                 event.preventDefault()
                 dispatch({ type: 'dismiss' })
@@ -192,6 +209,11 @@ export function QuickEntryApp() {
             ))}
           </select>
         </div>
+        {state.error ? (
+          <div role="alert" style={{ color: 'var(--destructive, #ef4444)', fontSize: 11 }}>
+            {state.error}
+          </div>
+        ) : null}
       </div>
     </div>
   )

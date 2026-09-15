@@ -179,7 +179,11 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   quickEntry: {
     getSettings: () => ipcRenderer.invoke('hermes:quick-entry:settings:get'),
     setSettings: patch => ipcRenderer.invoke('hermes:quick-entry:settings:set', patch),
-    submit: payload => ipcRenderer.send('hermes:quick-entry:submit', payload),
+    // Invoke returns the delivery result so the draft is not lost (#85590).
+    submit: payload => ipcRenderer.invoke('hermes:quick-entry:submit', payload),
+    // Main cannot invoke the primary renderer, so it receives this ack (#85590).
+    ackSubmit: (correlationId, result) =>
+      ipcRenderer.send('hermes:quick-entry:ack', { correlationId, result }),
     dismiss: () => ipcRenderer.send('hermes:quick-entry:dismiss'),
     // Primary renderer → main → quick window: gateway connection state + the
     // recent-session options the target picker offers. Main caches the latest
@@ -205,6 +209,15 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       ipcRenderer.on('hermes:quick-entry:shown', listener)
 
       return () => ipcRenderer.removeListener('hermes:quick-entry:shown', listener)
+    },
+    // Main → quick window: the outcome of a submit whose relay already timed
+    // out. Delivery is now KNOWN — reconcile the unknown state instead of
+    // leaving the user to resend a prompt that may already be delivered.
+    onLateResult: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:quick-entry:late-result', listener)
+
+      return () => ipcRenderer.removeListener('hermes:quick-entry:late-result', listener)
     }
   },
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),

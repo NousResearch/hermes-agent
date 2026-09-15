@@ -783,11 +783,15 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // other session-scoped RPC (attach, /compress, rewind, interrupt) goes
         // through the same helper so one policy covers the whole bug class.
         let submitErr: unknown = null
+        // The identity the backend actually accepted: the live runtime id,
+        // replaced below when a stale binding was recovered.
+        let acceptedRuntimeSessionId = liveSessionId
+        // Hoisted out of the recovery call so the acceptance report can name
+        // the durable session even when no recovery was needed.
+        const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
 
         try {
-          const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
-
-          await withSessionNotFoundResume(
+          const accepted = await withSessionNotFoundResume(
             sessionId,
             recoverStoredSessionId,
             liveId =>
@@ -821,6 +825,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // instead of erroring out and losing the session binding.
             { alsoTimeout: true }
           )
+
+          acceptedRuntimeSessionId = accepted.sessionId
         } catch (firstErr) {
           if (firstErr instanceof SessionRecoveryAborted) {
             console.warn('[submit-drift-abort]', firstErr.reason, { phase: 'post-resume-retry' })
@@ -834,6 +840,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         if (submitErr !== null) {
           throw submitErr
         }
+
+        // The prompt is now accepted. Report the EXACT identity it landed on
+        // (recovered id included) so a caller that must prove delivery — the
+        // Quick Entry bridge — never guesses the foreground session. Fires
+        // before the local cleanup below: acceptance is already true even if a
+        // later local step throws.
+        options?.onAccepted?.({
+          runtimeSessionId: acceptedRuntimeSessionId,
+          storedSessionId: recoverStoredSessionId ?? null
+        })
 
         if (usingComposerAttachments) {
           // A submit owns only the occurrences that actually reached the

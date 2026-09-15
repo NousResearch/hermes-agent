@@ -28,6 +28,7 @@ import {
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
+import { useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
@@ -220,6 +221,38 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   const sections = useValue($botSections)
   const dragging = useValue($draggingBot) === rosterKey
   const currentSectionId = botSectionId(bot, allMeta)
+  const [reconnecting, setReconnecting] = useState(false)
+
+  // Per-bot reconnect (#104074): tears down the pooled local backend for this
+  // bot's profile and lets the next dial re-spawn it — no full app restart.
+  // Remote/ghost rows have no local process to recycle, so the item is disabled.
+  const canReconnect = !bot.ghost && !bot.remoteSource
+  const reconnectProfile =
+    (bot.route?.targetProfile || bot.route?.profile || bot.targetProfile || bot.name || '').trim() || 'default'
+
+  const handleReconnect = async () => {
+    if (reconnecting || !canReconnect) return
+    const desktop = (window as unknown as { hermesDesktop?: { recycleBackend?: (p: string) => Promise<unknown> } })
+      ?.hermesDesktop
+    if (typeof desktop?.recycleBackend !== 'function') {
+      host.notifyError?.(new Error('Reconnect unavailable — update Desktop'), b.bot.reconnectFailed)
+      return
+    }
+    setReconnecting(true)
+    try {
+      await desktop.recycleBackend(reconnectProfile)
+      // Roster is cached by React Query — invalidate so the next poll shows live.
+      await queryClient.invalidateQueries({ queryKey: ROSTER_KEY })
+      host.notify?.({
+        kind: 'success',
+        message: b.bot.reconnected(displayName(bot, meta) || reconnectProfile)
+      })
+    } catch (error) {
+      host.notifyError?.(error, b.bot.reconnectFailed)
+    } finally {
+      setReconnecting(false)
+    }
+  }
 
   const row = (
     <RowButton
@@ -310,6 +343,13 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => void openRosterBot(bot)}>{b.bot.openBotChat}</ContextMenuItem>
+        <ContextMenuItem
+          disabled={!canReconnect || reconnecting}
+          onSelect={() => void handleReconnect()}
+        >
+          <Codicon className="mr-1.5" name="refresh" />
+          {reconnecting ? b.bot.reconnecting : b.bot.reconnect}
+        </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
           onSelect={() => {

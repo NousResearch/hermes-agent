@@ -1056,17 +1056,6 @@ def _run_prompt_submit(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
             _emit("message.complete", sid, payload)
-            # Session-scoped, server-set-only reply sink (never a wire param): today the
-            # grok-live delegation seam (tools/voice_live_grok_bridge.py::speak_reply) uses this
-            # to read the finished turn back to the voice layer — same shape as the hosted-room
-            # terminal_callback above, but keyed on the session dict since a client_surface
-            # "voice-live" turn has no hosted-task proof. Popped so it never leaks to the next
-            # (non-delegated) turn on this session.
-            if (reply_sink := session.pop("_voice_reply_sink", None)) is not None:
-                try:
-                    reply_sink(raw if isinstance(raw, str) else str(raw), status)
-                except Exception:
-                    logger.debug("voice reply sink failed", exc_info=True)
             goal_followup = _goal_followup_after_turn(sid, session, st.result, status, raw)
             if status == "complete":
                 _after_complete_turn(sid, session, st, raw)

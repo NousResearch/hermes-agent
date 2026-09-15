@@ -2807,6 +2807,26 @@ export interface VoiceGrokMuteParams {
 export interface VoiceGrokMuteResult {
   muted: boolean
 }
+/** Renderer-submits design (SPEC §5, revised): the renderer is the sole ``prompt.submit`` caller, so once its own turn settles it asks the bridge to speak the finished reply — the bridge itself never touches ``prompt.submit`` (single-submitter invariant). */
+export interface VoiceGrokSpeakParams {
+  session_id: string
+  text: string
+  profile?: string | null
+}
+export interface VoiceGrokSpeakResult {
+  spoken: boolean
+  reason?: string | null
+}
+/** Fresh-draft completion: the renderer's submit minted the chat session, so it re-keys the bridge from the synthetic start id onto the real Hermes session id — events and delegation route by session from then on. Idempotent. */
+export interface VoiceGrokRekeyParams {
+  from_session_id: string
+  to_session_id: string
+  profile?: string | null
+}
+export interface VoiceGrokRekeyResult {
+  rekeyed: boolean
+  reason?: string | null
+}
 export interface SessionCreateParams {
   profile?: string | null
   cols?: number | null
@@ -4736,10 +4756,11 @@ export interface VoiceGrokStatePayload {
   reason?: string | null
 }
 export type VoiceGrokState = 'connecting' | 'listening' | 'speaking' | 'thinking' | 'reconnecting' | 'degraded' | 'error' | 'idle'
-/** ``voice_live_grok_bridge._flush_delegation`` — a settled spoken utterance that is a real request (SPEC §5). The renderer renders it like gpt-live's delegation; the Hermes turn it becomes rides ``prompt.submit`` (surface ``voice-live``). */
+/** ``voice_live_grok_bridge._flush_delegation`` — a settled spoken utterance that is a real request (SPEC §5, renderer-submits revision). ``prompt`` is the user's last words (the turn text the renderer submits — the persisted user row); ``context`` is the recent spoken exchange riding the model input only (``voice_context``). The renderer's ``onDelegation`` is the SINGLE ``prompt.submit`` caller — the backend never submits on its behalf. */
 export interface VoiceGrokDelegationPayload {
   session_id: string
   delegation_id: string
+  prompt: string
   context: string
 }
 export type ConnectorErrorReason = 'INVALID_PARAMS' | 'NOT_OWNER' | 'UNSUPPORTED_RUNTIME' | 'CONNECTOR_REQUEST_FAILED' | 'INVALID_CONNECTOR_RESPONSE' | 'UNKNOWN_TARGET' | 'LINK_STILL_VALID' | 'REISSUE_REFUSED' | 'UNKNOWN_OPERATION' | 'INVALID_ANSWER' | 'NEEDS_NOUS_AUTH' | 'CONNECTOR_NOT_FOUND' | 'TOOLS_UNAVAILABLE' | 'CONNECTORS_UNAVAILABLE' | 'CATALOG_UNAVAILABLE' | 'ACCOUNTS_UNAVAILABLE' | 'CONNECTION_NOT_FOUND' | 'POLICY_UNAVAILABLE' | 'POLICY_CONFLICT' | 'FORBIDDEN_SCOPE' | 'ORG_REQUIRED' | 'ORG_ACCESS_DENIED' | 'INVALID_POLICY'
@@ -5206,6 +5227,10 @@ export interface RpcMethods {
   'voice.grok.audio': { params: VoiceGrokAudioParams; result: VoiceGrokAudioResult }
   /** Explicit mic mute, independent of the server-side AEC half-duplex gate (SPEC §7). */
   'voice.grok.mute': { params: VoiceGrokMuteParams; result: VoiceGrokMuteResult }
+  /** Re-key the voice bridge onto the chat's real Hermes session id (fresh-draft start). */
+  'voice.grok.rekey': { params: VoiceGrokRekeyParams; result: VoiceGrokRekeyResult }
+  /** Make the bridge speak Hermes' finished reply verbatim (xAI force_message, SPEC §5 step 5). */
+  'voice.grok.speak': { params: VoiceGrokSpeakParams; result: VoiceGrokSpeakResult }
   /** Open (or reuse) the backend xAI realtime session; pauses the wake-word mic lease. */
   'voice.grok.start': { params: VoiceGrokStartParams; result: VoiceGrokStartResult }
   /** Grok-Live availability verdict (mirrors GET /api/audio/voice-live-grok/status). */
@@ -5463,6 +5488,8 @@ export const RPC_METHODS = [
   'verification.status',
   'voice.grok.audio',
   'voice.grok.mute',
+  'voice.grok.rekey',
+  'voice.grok.speak',
   'voice.grok.start',
   'voice.grok.status',
   'voice.grok.stop',

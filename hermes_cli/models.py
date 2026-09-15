@@ -606,6 +606,23 @@ def fetch_openrouter_models(
     return list(curated)
 
 
+def fetch_live_openrouter_free_models(timeout: float = 8.0) -> Optional[list[str]]:
+    """Return live, tool-capable OpenRouter free model IDs, or ``None`` if unavailable.
+
+    This deliberately has no static or disk-cache fallback: callers recovering from a terminal
+    model-not-found response must not retry another stale catalog entry.
+    """
+    live = _fetch_live_catalog_index(_OPENROUTER_CATALOG_URL, timeout, _urlopen_model_catalog_request)
+    if live is None:
+        return None
+    _items, by_id = live
+    return [
+        model_id for model_id, item in by_id.items()
+        if _openrouter_model_supports_tools(item)
+        and _openrouter_model_is_free(item.get("pricing"))
+    ]
+
+
 def model_ids(*, force_refresh: bool = False) -> list[str]:
     """Return just the OpenRouter model-id strings."""
     return [mid for mid, _ in fetch_openrouter_models(force_refresh=force_refresh)]

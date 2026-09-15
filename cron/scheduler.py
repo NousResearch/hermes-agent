@@ -1415,6 +1415,40 @@ def _load_prefill_messages(cfg: dict, job_id: str) -> Optional[list]:
         return None
 
 
+def _live_openrouter_free_replacement(failed_model: str) -> Optional[str]:
+    """Choose a different live free OpenRouter model, never a stale catalog fallback."""
+    try:
+        from hermes_cli.models import fetch_live_openrouter_free_models
+
+        failed = failed_model.strip().lower()
+        for candidate in fetch_live_openrouter_free_models() or []:
+            if candidate.strip() and candidate.strip().lower() != failed:
+                return candidate.strip()
+    except Exception:
+        logger.debug("Could not fetch a live OpenRouter free-model replacement", exc_info=True)
+    return None
+
+
+def _stale_openrouter_free_model_failure(exc: Exception, model: str, runtime: dict) -> bool:
+    """Recognize a model-bearing 404 only for an explicit OpenRouter ``:free`` executor."""
+    if not model.strip().lower().endswith(":free"):
+        return False
+    if str((runtime or {}).get("provider") or "").strip().lower() != "openrouter":
+        return False
+    detail = str(exc).lower()
+    return "404" in detail and ("model" in detail or model.strip().lower() in detail)
+
+
+def _resolve_openrouter_free_retry_runtime(job: dict, model: str) -> dict:
+    """Resolve the replacement's model-specific runtime for the one recovery retry."""
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    kwargs = {"requested": "openrouter", "target_model": model}
+    if job.get("base_url"):
+        kwargs["explicit_base_url"] = job["base_url"]
+    return resolve_runtime_provider(**kwargs)
+
+
 def _preflight_or_block(job: dict, job_id: str, job_name: str, cfg: dict) -> Optional[tuple]:
     """Pre-dispatch config validation: refuse unrunnable jobs (missing key, unready skill,
     unconfigured delivery) BEFORE AIAgent is built. run_one_job keys off BLOCKED_CONFIG_MARKER to
@@ -2273,9 +2307,37 @@ def run_job(
             session_db=_session_db)
         _audit = _FireAudit(job, job_id, model)
 
-        result = _run_agent_with_watchdog(
-            agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
-            worker_state=_worker_state)
+        try:
+            result = _run_agent_with_watchdog(
+                agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
+                worker_state=_worker_state)
+        except Exception as first_exc:
+            replacement = (
+                _live_openrouter_free_replacement(model)
+                if _stale_openrouter_free_model_failure(first_exc, model, setup.runtime)
+                else None
+            )
+            if not replacement:
+                raise
+            logger.warning(
+                "Job '%s': OpenRouter free model %r returned model-not-found; retrying once with live "
+                "free model %r", job_id, model, replacement)
+            _teardown_cron_agent(agent, job_id)
+            agent = None
+            model = replacement
+            setup.model = replacement
+            setup.runtime = _resolve_openrouter_free_retry_runtime(job, replacement)
+            setup.reasoning_config = _resolve_job_reasoning_config(
+                job, _cfg if isinstance(_cfg, dict) else {}, replacement)
+            setup.credential_pool = _load_credential_pool(setup.runtime, job_id)
+            agent = _construct_cron_agent(
+                AIAgent, job, _cfg, setup, workdir=scope.workdir, session_id=_cron_session_id,
+                session_db=_session_db)
+            if _audit is not None:
+                _audit.model = replacement
+            result = _run_agent_with_watchdog(
+                agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
+                worker_state=_worker_state)
         final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
         # Keep final_response clean for delivery logic (empty = no delivery).
         logged_response = final_response if final_response else "(No response generated)"

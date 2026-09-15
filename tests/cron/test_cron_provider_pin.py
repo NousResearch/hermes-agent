@@ -222,6 +222,73 @@ class TestRuntimeResolutionTargetModel:
         assert resolve_kwargs["requested"] == "openrouter"
 
 
+class TestStaleFreeModelRecovery:
+    """A dead OpenRouter ``:free`` executor may retry once with a live free slug."""
+
+    def _run_after_model_404(self, monkeypatch, tmp_path, *, model, replacement):
+        (tmp_path / "config.yaml").write_text(
+            "model:\n  default: ignored\n  provider: openrouter\n"
+        )
+        monkeypatch.setattr(
+            "cron.scheduler._live_openrouter_free_replacement",
+            lambda failed_model: replacement,
+            raising=False,
+        )
+        first, second = MagicMock(), MagicMock()
+        first.run_conversation.side_effect = RuntimeError(
+            f"HTTP 404: model {model} not found"
+        )
+        second.run_conversation.return_value = {"final_response": "recovered"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._get_hermes_home", return_value=tmp_path), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state_registry.acquire", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={
+                 "api_key": "test-key", "base_url": "https://example.invalid/v1",
+                 "provider": "openrouter", "api_mode": "chat_completions",
+             }), \
+             patch("run_agent.AIAgent", side_effect=[first, second]) as agent_cls:
+            success, _output, final, error = run_job(
+                _base_job(model=model, provider="openrouter")
+            )
+        return success, final, error, agent_cls
+
+    def test_retries_a_dead_free_executor_with_a_live_free_model(self, monkeypatch, tmp_path):
+        success, final, error, agent_cls = self._run_after_model_404(
+            monkeypatch, tmp_path,
+            model="minimax/minimax-m3:free", replacement="qwen/qwen3-coder:free",
+        )
+
+        assert success is True, error
+        assert final == "recovered"
+        assert agent_cls.call_count == 2
+        assert agent_cls.call_args_list[1].kwargs["model"] == "qwen/qwen3-coder:free"
+
+    def test_does_not_switch_an_ordinary_paid_pin_after_a_404(self, monkeypatch, tmp_path):
+        success, _final, error, agent_cls = self._run_after_model_404(
+            monkeypatch, tmp_path,
+            model="vendor/paid-model", replacement="qwen/qwen3-coder:free",
+        )
+
+        assert success is False
+        assert "404" in error
+        assert agent_cls.call_count == 1
+
+    def test_keeps_the_original_failure_when_live_catalog_has_no_replacement(self, monkeypatch, tmp_path):
+        success, _final, error, agent_cls = self._run_after_model_404(
+            monkeypatch, tmp_path,
+            model="minimax/minimax-m3:free", replacement=None,
+        )
+
+        assert success is False
+        assert "404" in error
+        assert agent_cls.call_count == 1
+
+
 class TestResnapshot:
     """resnapshot_job / resnapshot_all_unpinned — 'adopt the current global
     default without pinning' (#44585 companion). These refresh an unpinned
@@ -350,4 +417,3 @@ class TestResnapshot:
         assert by_id["j2"]["model_snapshot"] == "old"
         # pinned job keeps None.
         assert by_id["j3"]["model_snapshot"] is None
-

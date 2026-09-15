@@ -110,6 +110,17 @@ def _get_worktree_isolation() -> bool:
     working copy. Git-only and local-backend-only; otherwise silently ignored."""
     return bool(_cfg().get("worktree_isolation", False))
 
+def _get_load_soul_identity() -> bool:
+    """delegation.load_soul_identity (bool, default False): when True, delegated subagents load the
+    parent's SOUL.md identity on top of the ephemeral "focused subagent" prompt, so children inherit the
+    operator's operating loop, host routing, and conventions. Opt-in because loading SOUL adds fixed prompt
+    tokens to every child and changes subagent behavior. ``DELEGATE_WITH_SOUL`` env var is a fallback so
+    operators can flip the flag without editing config.yaml (config.yaml wins when both are set)."""
+    val = _cfg().get("load_soul_identity")
+    if val is not None:
+        return is_truthy_value(val)
+    return is_truthy_value(os.getenv("DELEGATE_WITH_SOUL", ""), default=False)
+
 def _get_max_async_children() -> int:
     """Concurrency cap for background delegations == delegation.max_concurrent_children. At capacity a new async
     dispatch is REJECTED (not queued) so a runaway model can't pile up unbounded background work; the caller then

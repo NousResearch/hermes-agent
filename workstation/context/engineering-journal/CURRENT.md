@@ -42,8 +42,19 @@ current reproduction.
 | Human takeover | PARTIAL | Browser actions are blocked while `controlOwner === 'human'`; the present owner is runtime-global, so cross-host/task scoping needs focused validation before changing semantics. |
 | Process ownership guardrails | ALREADY_SOLVED | `tools.process_registry` only tree-kills tracked spawned PIDs and verifies recorded process start time before signalling; no wildcard Chrome-kill path was found in that owner. |
 | Event-driven waits | PARTIAL | `RuntimeEventBus` and worker blocking waits exist, but reusable condition-specific await projections have not yet been established. |
+| Context compaction | PARTIAL | Workstation session lifecycle records compaction markers and bounded memory compaction exists, but the core conversation compactor still needs a separate trace before a non-recursive operational-reference change can be justified. |
 | Session `null` / KI-007 | NOT_REPRODUCED | KI-007 remains causally unproven; no SessionDB/Gateway change is authorized without the documented reproduction gate. |
+| Session forensic manifest | PARTIAL | Session/worker/resource identities are individually projected; no single redacted manifest export was established in this audit. |
+| Capability preflight | PARTIAL | Worker/host/toolset capability sources exist, but no single WorkPlan projection has yet been found. |
+| Toolset/schema handles | PARTIAL | Tool-definition caching/fingerprinting exists, but repeated discovery results have no consumer-visible delta handle. |
 | Skill identity / collisions | ALREADY_SOLVED | Skill hashes and explicit ambiguous-name rejection are present; no silent collision reproduction was found. |
+| Skill preflight | PARTIAL | Existing guard and install validation cover substantial input validation; model-visible preflight constraints require a separate skill-manager trace. |
+| Effective configuration semantics | NOT_REPRODUCED | The historical unknown-key symptom was not reproduced in the audit window; no config-owner change is justified yet. |
+| Typed host/process operations | PARTIAL | The tracked ProcessRegistry and host adapters cover high-value operations; shell-wide command paths still need a focused safety/capability audit before adding API surface. |
+| Provenance/validators | PARTIAL | Perception, journal and evidence metadata exist, but no generic WorkItem validator escalation was found. |
+| Experience promotion | PARTIAL | Procedure promotion is explicit; the requested skill/guardrail/regression triage needs a separately scoped evidence lifecycle. |
+| Observability projection | ALREADY_SOLVED | EvidenceState, RuntimeEventBus, resources and Desktop projections already expose the canonical operational plane. |
+| Corpus benchmark | CONFIRMED_GAP | No versioned baseline-vs-hardened benchmark for the supplied workload shape was found. |
 
 ### First focused experiments
 

@@ -71,6 +71,17 @@ export interface BotMeta {
   /** Legacy single-group scalar, projected alongside `groups`. */
   group?: null | string
   pinned?: boolean
+  /** OUT of the agent-to-agent mesh: not advertised to other agents and not addressable by
+   *  them. Distinct from `hidden`, which is a roster-DISPLAY concern for this desktop only —
+   *  a private bot keeps running and stays fully reachable by the human, it just stops being
+   *  a teammate other agents can see or message. Read by the gateway (bot_mode_probe) and by
+   *  the relay publisher (relay.ts), so it crosses the wire in profile.yaml like every other
+   *  bot setting. */
+  private?: boolean
+  /** Mesh circle: this bot sees and can message only bots in the same circle, locally and
+   *  across the relay. Empty/unset = the shared default circle (today's behaviour). Ordering:
+   *  force_private > private (a circle of one) > circle > shared. Trimmed, max 64 chars. */
+  circle?: string
   shape?: string
   title?: string
   /** Creation timestamp in ms. Deliberately not copied when duplicating a bot. */

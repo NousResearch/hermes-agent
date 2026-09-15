@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { MarkdownPreview } from './preview-file'
+import { friendlyPreviewError, MarkdownPreview } from './preview-file'
 
 // Behavior tests for the .md file preview renderer: input markdown goes
 // through normalizeFilePreviewMath -> Streamdown (+ KaTeX math plugin) and must
@@ -49,5 +49,40 @@ describe('MarkdownPreview', () => {
     expect(anchor?.getAttribute('href')).toBe('https://example.com/docs')
     expect(anchor?.getAttribute('target')).toBe('_blank')
     expect(anchor?.getAttribute('rel')).toBe('noopener noreferrer')
+  })
+})
+
+// Guards #105750: a deleted/moved file surfaced Electron's "Error invoking
+// remote method 'hermes:readFileDataUrl'" wrapper verbatim in the pane.
+describe('friendlyPreviewError', () => {
+  const fileGoneBody = 'This file may have been moved, renamed, or deleted.'
+
+  it('turns the wrapped IPC missing-file failure into friendly copy', () => {
+    const message = friendlyPreviewError(
+      new Error("Error invoking remote method 'hermes:readFileDataUrl': Error: File preview failed: file does not exist."),
+      fileGoneBody
+    )
+
+    expect(message).toBe(fileGoneBody)
+  })
+
+  it('recognizes raw ENOENT from a file deleted between stat and read', () => {
+    expect(friendlyPreviewError(new Error("ENOENT: no such file or directory, open '/tmp/gone.png'"), fileGoneBody)).toBe(
+      fileGoneBody
+    )
+  })
+
+  it('strips the invoke wrapper but keeps readable causes', () => {
+    const message = friendlyPreviewError(
+      new Error("Error invoking remote method 'hermes:readFileDataUrl': Error: File preview failed: file is too large (20971520 bytes; limit 16777216 bytes)."),
+      fileGoneBody
+    )
+
+    expect(message).toBe('File preview failed: file is too large (20971520 bytes; limit 16777216 bytes).')
+  })
+
+  it('passes plain errors and non-Error values through', () => {
+    expect(friendlyPreviewError(new Error('Timed out'), fileGoneBody)).toBe('Timed out')
+    expect(friendlyPreviewError('boom', fileGoneBody)).toBe('boom')
   })
 })

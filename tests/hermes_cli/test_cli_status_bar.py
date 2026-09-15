@@ -615,9 +615,10 @@ class TestCacheHitRate:
 
 
 class TestRollingLatencyVelocity:
-    def _with_history(self, cli_obj, latencies, outputs):
+    def _with_history(self, cli_obj, latencies, outputs, decodes=None):
         from collections import deque
         cli_obj.agent._api_latency_history = deque(latencies, maxlen=10)
+        cli_obj.agent._api_decode_history = deque(latencies if decodes is None else decodes, maxlen=10)
         cli_obj.agent._api_output_history = deque(outputs, maxlen=10)
         return cli_obj
 
@@ -633,6 +634,20 @@ class TestRollingLatencyVelocity:
 
         assert "\u25f7 3.0s" in text           # mean latency (2+4)/2
         assert "\u2191 50 t/s" in text          # true throughput 300/6.0
+
+    def test_tps_counts_decode_time_not_prefill(self):
+        """Two long-prompt calls to a local model: 30 s each, but only 3 s each generating."""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=200_000, completion_tokens=300, total_tokens=200_300,
+            api_calls=2, context_tokens=100_000, context_length=262_144,
+        )
+        self._with_history(cli_obj, [30.0, 30.0], [150, 150], decodes=[3.0, 3.0])
+
+        text = cli_obj._build_status_bar_text(width=140)
+
+        assert "\u25f7 30.0s" in text          # latency still reports the whole call
+        assert "\u2191 50 t/s" in text          # 300 tokens over 6 s of decode, not 60 s
 
     def test_latency_hidden_without_history(self):
         cli_obj = _attach_agent(

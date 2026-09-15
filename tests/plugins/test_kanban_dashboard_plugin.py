@@ -1232,3 +1232,37 @@ def test_specify_happy_path(client, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+
+
+def test_plain_card_click_anchors_selection_for_shift_range():
+    """A plain card click must record the selection anchor.
+
+    Regression: ``toggleRange`` anchors on ``lastSelectedId``, which was only
+    ever set by ctrl/meta-click (``toggleSelected``) and by "Select all
+    visible". A plain click went straight to ``setSelectedTaskId``, so the
+    gesture users reach for first — click the first card, scroll, shift-click
+    the last — found no anchor and ``toggleRange`` fell through to its
+    single-card branch, leaving the shipped range selection unreachable.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    # The opener records the anchor before opening the drawer.
+    assert (
+        "const openTask = useCallback(function (id) {\n"
+        "      setLastSelectedId(id);\n"
+        "      setSelectedTaskId(id);\n"
+        "    }, []);"
+    ) in bundle
+
+    # Board cards route plain clicks through the anchoring opener, so a
+    # follow-up shift-click has a range origin.
+    assert (
+        "          onDeleteSelected: deleteSelected,\n"
+        "          onOpen: openTask,\n"
+    ) in bundle
+
+    # toggleRange still reads the anchor it is now reliably given.
+    assert "const anchor = lastSelectedId;" in bundle

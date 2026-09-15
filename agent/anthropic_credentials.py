@@ -442,17 +442,37 @@ def _resolve_anthropic_pool_token(*, skip_borrowed: bool = False) -> Optional[st
     return None
 
 
-def resolve_anthropic_token() -> Optional[str]:
+def _available_anthropic_token(token: Optional[str], model: Optional[str]) -> Optional[str]:
+    """Return a token unless the pool records an active cooldown for it."""
+    if not token:
+        return None
+    try:
+        from agent.credential_pool import load_pool
+        if load_pool("anthropic").token_is_blocked(token, model=model):
+            return None
+    except Exception:
+        # Credential discovery must remain available when the pool store is
+        # unavailable or malformed.
+        logger.debug("Failed to check Anthropic model cooldown", exc_info=True)
+    return token
+
+
+def resolve_anthropic_token(*, model: Optional[str] = None) -> Optional[str]:
     """Resolve an Anthropic token from all sources in priority order (see module docstring)."""
     _read_creds = functools.cache(read_claude_code_credentials)  # read the file at most once per resolve
     token = _first_env("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
     if token:
-        return _prefer_refreshable_claude_code_token(token, _read_creds()) or token
+        return _available_anthropic_token(
+            _prefer_refreshable_claude_code_token(token, _read_creds()) or token, model,
+        )
     api_key = _first_env("ANTHROPIC_API_KEY")  # an explicit API key must not be shadowed by discovered OAuth creds
     if api_key:
-        return api_key
+        return _available_anthropic_token(api_key, model)
     # The pool's claude_code row mirrors the same externally owned refresh grant.
-    return _resolve_anthropic_pool_token(skip_borrowed=True) or _resolve_claude_code_token_from_credentials(_read_creds())
+    return _available_anthropic_token(
+        _resolve_anthropic_pool_token(skip_borrowed=True) or _resolve_claude_code_token_from_credentials(_read_creds()),
+        model,
+    )
 
 
 def run_oauth_setup_token() -> Optional[str]:

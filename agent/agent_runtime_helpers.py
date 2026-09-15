@@ -843,6 +843,9 @@ def recover_with_credential_pool(
                 from agent.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED
                 failure_reason = FAILURE_REASON_BILLING_UNVERIFIED
             kwargs["failure_reason"] = failure_reason
+        model = getattr(agent, "model", None)
+        if isinstance(model, str) and model.strip():
+            kwargs["model"] = model
         next_entry = pool.mark_exhausted_and_rotate(**kwargs)
         if next_entry is None:
             return False
@@ -1039,7 +1042,10 @@ def _primary_reset_gate_blocks(agent, rt, primary_provider, primary_runtime_base
         if not matches_primary(pool):
             prefetched_pool = pool = load_primary_pool()
             prefetched = True
-        next_at = getattr(pool, "next_available_at", lambda: None)()
+        primary_model = rt.get("model")
+        next_at = getattr(pool, "next_available_at", lambda **_kwargs: None)(
+            model=primary_model if isinstance(primary_model, str) and primary_model else None
+        )
         if next_at is not None and next_at > time.time():
             if not getattr(agent, "_restore_wait_logged", False):
                 agent._restore_wait_logged = True
@@ -1083,7 +1089,9 @@ def _rebind_primary_credential_pool(agent, primary_provider, matches_primary, lo
             )
     agent._credential_pool_entry_id = None
     pool = getattr(agent, "_credential_pool", None)
-    entry = pool.select() if pool is not None and pool.has_available() else None
+    primary_model = rt.get("model")
+    model_kwargs = {"model": primary_model} if isinstance(primary_model, str) and primary_model else {}
+    entry = pool.select(**model_kwargs) if pool is not None and pool.has_available(**model_kwargs) else None
     if entry is None or not (getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")):
         return
     if matches_primary(entry):
@@ -1911,7 +1919,10 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
         # Only fall back to ANTHROPIC_TOKEN for native Anthropic; other anthropic_messages providers
         # must never receive Anthropic credentials.
         is_native_anthropic = new_provider == "anthropic"
-        effective_key = api_key or agent.api_key or (resolve_anthropic_token() if is_native_anthropic else "") or ""
+        resolved_model = getattr(agent, "model", None)
+        effective_key = api_key or agent.api_key or (
+            resolve_anthropic_token(model=resolved_model) if is_native_anthropic else ""
+        ) or ""
         # MiniMax OAuth: per-request callable token provider survives 15-min expiry (rationale in
         # agent_init.py).
         if new_provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:

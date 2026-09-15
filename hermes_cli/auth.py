@@ -902,9 +902,22 @@ def _merge_disk_cooldown_state(
             PooledCredential, STATUS_DEAD, STATUS_EXHAUSTED, _exhausted_until, _parse_absolute_timestamp,
         )
 
+        # Model cooldowns are independent observations.  Merge their latest
+        # reset for every model so a writer that just cooled Sonnet cannot
+        # erase another process's Haiku cooldown.
+        memory_cooldowns = entry.get("model_cooldowns")
+        disk_cooldowns = disk_entry.get("model_cooldowns")
+        merged_cooldowns = dict(disk_cooldowns) if isinstance(disk_cooldowns, dict) else {}
+        if isinstance(memory_cooldowns, dict):
+            for model, until in memory_cooldowns.items():
+                if isinstance(until, (int, float)):
+                    previous = merged_cooldowns.get(model)
+                    merged_cooldowns[model] = max(float(until), float(previous or 0))
+        merged = {**entry, "model_cooldowns": merged_cooldowns} if merged_cooldowns else entry
+
         disk_status = disk_entry.get("last_status")
         if disk_status not in (STATUS_DEAD, STATUS_EXHAUSTED):
-            return entry
+            return merged
         # A token change means the caller re-authed this entry and intentionally cleared its status:
         # never resurrect the old cooldown onto fresh credentials.
         mem_access = entry.get("access_token") or ""
@@ -914,12 +927,12 @@ def _merge_disk_cooldown_state(
         disk_ts = _parse_absolute_timestamp(disk_entry.get("last_status_at")) or 0.0
         mem_ts = _parse_absolute_timestamp(entry.get("last_status_at")) or 0.0
         if disk_ts <= mem_ts:
-            return entry
+            return merged
         if disk_status == STATUS_EXHAUSTED:
             until = _exhausted_until(PooledCredential.from_dict(provider_id, disk_entry))
             if until is None or until <= time.time():
-                return entry
-        return {**entry, **{f: disk_entry.get(f) for f in _POOL_STATUS_FIELDS}}
+                return merged
+        return {**merged, **{f: disk_entry.get(f) for f in _POOL_STATUS_FIELDS}}
     except Exception:  # pragma: no cover - best-effort merge
         return entry
 

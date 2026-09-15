@@ -227,6 +227,10 @@ class PooledCredential:
     agent_key: Optional[str] = None
     agent_key_expires_at: Optional[str] = None
     request_count: int = 0
+    # A provider may rate-limit one model while the same credential remains
+    # usable for its sibling models.  Keep that observation separate from the
+    # credential-wide status used for auth and billing failures.
+    model_cooldowns: Optional[Dict[str, float]] = None
     extra: Dict[str, Any] = None  # type: ignore[assignment]
 
     def __post_init__(self):
@@ -923,7 +927,7 @@ class CredentialPool(CredentialPoolAdminMixin):
         with self._lock:
             return bool(self._entries)
 
-    def has_available(self) -> bool:
+    def has_available(self, *, model: Optional[str] = None) -> bool:
         """True if at least one entry is not currently in exhaustion cooldown.
 
         ``_available_entries`` is not read-only (it prunes aged-out DEAD
@@ -931,10 +935,10 @@ class CredentialPool(CredentialPoolAdminMixin):
         like every other caller or a probe can race a concurrent rotation.
         """
         with self._lock:
-            available, _pending = self._available_entries()
+            available, _pending = self._available_entries(model=model)
             return bool(available)
 
-    def next_available_at(self) -> Optional[float]:
+    def next_available_at(self, *, model: Optional[str] = None) -> Optional[float]:
         """Earliest epoch time (seconds) any entry re-enters rotation.
 
         ``None`` when an entry is available now, or when no exhausted entry
@@ -943,7 +947,7 @@ class CredentialPool(CredentialPoolAdminMixin):
         Runs under ``self._lock`` for the same reason as ``has_available``.
         """
         with self._lock:
-            available, _pending = self._available_entries()
+            available, _pending = self._available_entries(model=model)
             if available:
                 return None
             # Mirror _available_entries: a sole credential's transient throttle
@@ -959,6 +963,14 @@ class CredentialPool(CredentialPoolAdminMixin):
                 )
                 if until is not None
             ]
+            now = time.time()
+            candidates.extend(
+                until
+                for entry in self._entries
+                if entry.last_status != STATUS_DEAD
+                for until in (self._model_cooldown_until(entry, model),)
+                if until is not None and until > now
+            )
             return min(candidates) if candidates else None
 
     def entries(self) -> List[PooledCredential]:
@@ -968,6 +980,18 @@ class CredentialPool(CredentialPoolAdminMixin):
     def _is_sole_credential(self) -> bool:
         """DEAD entries never re-enter rotation, so <=1 non-DEAD entry means nothing to rotate to."""
         return sum(1 for e in self._entries if e.last_status != STATUS_DEAD) <= 1
+
+    @staticmethod
+    def _model_cooldown_until(entry: PooledCredential, model: Optional[str]) -> Optional[float]:
+        """Return the active model cooldown relevant to this selection.
+
+        Callers without a model remain conservative: a known model cooldown
+        prevents them from reusing the credential through an unscoped route.
+        """
+        cooldowns = entry.model_cooldowns or {}
+        values = cooldowns.values() if not model else (cooldowns.get(model),)
+        active = [float(until) for until in values if isinstance(until, (int, float)) and until > time.time()]
+        return max(active) if active else None
 
     def _find(self, predicate: Callable[[PooledCredential], bool]) -> Optional[PooledCredential]:
         return next((e for e in self._entries if predicate(e)), None)
@@ -995,6 +1019,20 @@ class CredentialPool(CredentialPoolAdminMixin):
                 return None
             matches = [e for e in self._entries if e.runtime_api_key == api_key_hint]
             return matches[0].id if len(matches) == 1 else None
+
+    def token_is_blocked(self, token: str, *, model: Optional[str] = None) -> bool:
+        """Whether a known cooldown blocks *token* for this model.
+
+        This closes paths that resolve a native Anthropic token directly rather
+        than selecting it from the pool.  Unknown tokens fail open because no
+        pool row can safely attribute their cooldown.
+        """
+        with self._lock:
+            return any(
+                entry.runtime_api_key == token
+                and self._model_cooldown_until(entry, model) is not None
+                for entry in self._entries
+            )
 
     # ---- mutation primitives (self-locking) --------------------------------
 
@@ -1754,20 +1792,20 @@ class CredentialPool(CredentialPoolAdminMixin):
 
     # ---- selection ---------------------------------------------------------
 
-    def select(self) -> Optional[PooledCredential]:
-        entry, pending_refresh = self._select_under_lock()
+    def select(self, *, model: Optional[str] = None) -> Optional[PooledCredential]:
+        entry, pending_refresh = self._select_under_lock(model=model)
         if pending_refresh:
             self._refresh_pending_entries(pending_refresh)
             # Re-select now that the refreshed entries are back in the pool.
             if entry is None:
-                entry, _ = self._select_under_lock()
+                entry, _ = self._select_under_lock(model=model)
         if entry is not None:
             self._unmatched_rotation_streak = 0
         return entry
 
-    def _select_under_lock(self) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
+    def _select_under_lock(self, *, model: Optional[str] = None) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
         with self._lock:
-            return self._select_unlocked()
+            return self._select_unlocked(model=model)
 
     def _refresh_pending_entries(self, pending: List[PooledCredential]) -> None:
         """Refresh deferred single-use-token entries OUTSIDE the pool lock.
@@ -1795,7 +1833,7 @@ class CredentialPool(CredentialPoolAdminMixin):
         return self._sync_entry_from_auth_store(entry)
 
     def _available_entries(
-        self, *, clear_expired: bool = False, refresh: bool = False,
+        self, *, clear_expired: bool = False, refresh: bool = False, model: Optional[str] = None,
     ) -> Tuple[List[PooledCredential], List[PooledCredential]]:
         """Return (available, pending_refresh) for entries not in cooldown.
 
@@ -1841,6 +1879,8 @@ class CredentialPool(CredentialPoolAdminMixin):
                         entries_to_prune.append(entry.id)  # can't mutate while iterating
                         cleared_any = True
                 continue
+            if self._model_cooldown_until(entry, model) is not None:
+                continue
             if entry.last_status == STATUS_EXHAUSTED:
                 exhausted_until = _exhausted_until(entry, sole_credential=sole_credential)
                 # Codex quota windows can reopen EARLY; a throttled live probe
@@ -1885,14 +1925,14 @@ class CredentialPool(CredentialPoolAdminMixin):
         logger.info("credential pool: no available entries (all exhausted or empty)")
 
     def _select_unlocked(
-        self, *, refresh: bool = True, count: bool = True,
+        self, *, refresh: bool = True, count: bool = True, model: Optional[str] = None,
     ) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
         """Select the best available entry; returns ``(entry, pending_refresh)``.
 
         ``count=False`` skips the ``request_count`` bump for selections that are
         not going to serve a request (a forced-refresh target lookup).
         """
-        available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh)
+        available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh, model=model)
         if not available:
             self._current_id = None
             self._log_no_available_entries()
@@ -2010,6 +2050,7 @@ class CredentialPool(CredentialPoolAdminMixin):
         api_key_hint: Optional[str] = None,
         credential_id: Optional[str] = None,
         failure_reason: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
             identity_supplied = bool(credential_id or api_key_hint)
@@ -2023,6 +2064,31 @@ class CredentialPool(CredentialPoolAdminMixin):
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
+            # Anthropic's generic 429 does not establish account-wide quota
+            # exhaustion. Record it against the requested model only; explicit
+            # account scope, billing, auth, and payment failures remain global.
+            if (
+                self.provider == "anthropic" and status_code == 429 and model
+                and failure_reason != FAILURE_REASON_BILLING
+                and (error_context or {}).get("quota_scope") != "account"
+            ):
+                normalized = _normalize_error_context(error_context)
+                until = normalized.get("reset_at") or time.time() + EXHAUSTED_TTL_429_SECONDS
+                failed_key = entry.runtime_api_key
+                scoped_entries = [entry]
+                if failed_key:
+                    scoped_entries.extend(
+                        sibling for sibling in self._entries
+                        if sibling.id != entry.id and sibling.runtime_api_key == failed_key
+                    )
+                for scoped in scoped_entries:
+                    cooldowns = dict(scoped.model_cooldowns or {})
+                    cooldowns[model] = max(float(until), float(cooldowns.get(model, 0) or 0))
+                    self._adopt(scoped, persist=False, model_cooldowns=cooldowns)
+                self._persist()
+                self._current_id = None
+                next_entry, _pending = self._select_unlocked(refresh=False, model=model)
+                return next_entry
             self._mark_exhausted(entry, status_code, error_context, failure_reason=failure_reason)
             # A 402/429/401 is a key-level failure, and the same key can back
             # several entries (an explicit entry plus a ``model_config`` row

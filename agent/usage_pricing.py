@@ -418,24 +418,43 @@ def _pricing_entry_from_metadata(
         return None
     pricing = metadata[model_id].get("pricing") or {}
 
-    def per_million(key: str, *aliases: str) -> Optional[Decimal]:
-        raw = pricing.get(key)
+    def per_million(table: Dict[str, Any], key: str, *aliases: str) -> Optional[Decimal]:
+        raw = table.get(key)
         for alias in aliases:  # alias chain is truthiness-based (``a or b or c``)
-            raw = raw or pricing.get(alias)
+            raw = raw or table.get(alias)
         value = _to_decimal(raw)
         return None if value is None else value * _ONE_MILLION
 
-    prompt = per_million("prompt")
-    completion = per_million("completion")
+    prompt = per_million(pricing, "prompt")
+    completion = per_million(pricing, "completion")
     request = _to_decimal(pricing.get("request"))
     if prompt is None and completion is None and request is None:
         return None
+    # OpenRouter tier overrides: once a request's billed prompt-token total
+    # crosses overrides[].min_prompt_tokens the override rates apply to the
+    # WHOLE request, not just the tokens above the threshold. Map the lowest
+    # threshold onto the tier fields; a rate absent from the override stays
+    # None so the estimator keeps its base-rate fallback for that component.
+    tiers = [
+        override for override in (pricing.get("overrides") or [])
+        if isinstance(override, dict) and _to_decimal(override.get("min_prompt_tokens")) is not None
+    ]
+    first_tier = min(tiers, key=lambda o: _to_decimal(o["min_prompt_tokens"])) if tiers else None
     return PricingEntry(
         input_cost_per_million=prompt, output_cost_per_million=completion,
-        cache_read_cost_per_million=per_million("cache_read", "cached_prompt", "input_cache_read"),
-        cache_write_cost_per_million=per_million("cache_write", "cache_creation", "input_cache_write"),
+        cache_read_cost_per_million=per_million(pricing, "cache_read", "cached_prompt", "input_cache_read"),
+        cache_write_cost_per_million=per_million(pricing, "cache_write", "cache_creation", "input_cache_write"),
         request_cost=request, source="provider_models_api", source_url=source_url,
         pricing_version=pricing_version, fetched_at=_UTC_NOW(),
+        tier_threshold_tokens=int(_to_decimal(first_tier["min_prompt_tokens"])) if first_tier else None,
+        input_cost_per_million_above=per_million(first_tier, "prompt") if first_tier else None,
+        output_cost_per_million_above=per_million(first_tier, "completion") if first_tier else None,
+        cache_read_cost_per_million_above=(
+            per_million(first_tier, "cache_read", "input_cache_read") if first_tier else None
+        ),
+        cache_write_cost_per_million_above=(
+            per_million(first_tier, "cache_write", "input_cache_write") if first_tier else None
+        ),
     )
 
 

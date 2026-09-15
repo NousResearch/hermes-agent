@@ -50,21 +50,30 @@ class MCPServerRunMixin:
         self._mark_stdio_recycled(recycle_reason)
         return True
 
+    async def _wait_for_rpc_idle(self) -> None:
+        """Wake the lifecycle loop when the active RPC releases its lock."""
+        async with self._rpc_lock:
+            pass
+
     async def _wait_for_lifecycle_event(self) -> str:
         """Serve until a lifecycle event: ``"shutdown"`` (exits run), ``"reconnect"`` (session torn
         down, transport re-entered; event cleared first) or ``"recycle"`` (stdio idle/lifetime
-        limit; restarts lazily on next call). Shutdown wins a tie. A keepalive (``ping``,
-        list_tools fallback) runs every ``keepalive_interval`` (must stay below the server's
-        session TTL); a failure triggers a reconnect.
+        limit; restarts lazily on next call). Shutdown wins a tie. Remote transports run a
+        keepalive (``ping``, list_tools fallback) every ``keepalive_interval`` (which must stay
+        below the server's session TTL); stdio does so only when explicitly configured. A
+        keepalive failure triggers a reconnect.
 
         Periodically sends a lightweight keepalive (``ping``, with a ``list_tools`` fallback for servers
         that don't implement the optional ping utility — see :meth:`_keepalive_probe`) to prevent
         TCP/session state from going stale during idle periods (#17003).
         """
-        keepalive_interval = max(
-            _core._MIN_KEEPALIVE_INTERVAL,
-            float(self._config.get("keepalive_interval", _core._DEFAULT_KEEPALIVE_INTERVAL)))
+        keepalive_interval = None
+        if self._is_http() or "keepalive_interval" in self._config:
+            keepalive_interval = max(
+                _core._MIN_KEEPALIVE_INTERVAL,
+                float(self._config.get("keepalive_interval", _core._DEFAULT_KEEPALIVE_INTERVAL)))
         shutdown_task, reconnect_task = self._event_waiters()
+        rpc_idle_task = None
         try:
             while True:
                 if self._recycle_if_due():
@@ -72,13 +81,29 @@ class MCPServerRunMixin:
                 timeout = keepalive_interval
                 recycle_deadline = self._next_stdio_recycle_deadline()
                 if recycle_deadline is not None:
-                    timeout = max(0.0, min(timeout, recycle_deadline - time.monotonic()))
+                    recycle_timeout = max(0.0, recycle_deadline - time.monotonic())
+                    timeout = recycle_timeout if timeout is None else min(timeout, recycle_timeout)
+                elif (not self._is_http() and self._rpc_lock.locked()
+                      and (self._idle_timeout_seconds is not None
+                           or self._max_lifetime_seconds is not None)):
+                    # Recycle deadlines are intentionally hidden while an RPC is active. Without
+                    # a default stdio keepalive timeout, lock release must wake this loop so the
+                    # now-visible deadline is evaluated instead of waiting forever.
+                    rpc_idle_task = rpc_idle_task or asyncio.ensure_future(self._wait_for_rpc_idle())
+                waiters = {shutdown_task, reconnect_task}
+                if rpc_idle_task is not None:
+                    waiters.add(rpc_idle_task)
                 done, _pending = await asyncio.wait(
-                    {shutdown_task, reconnect_task}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
-                if done:
+                    waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+                if shutdown_task in done or reconnect_task in done:
                     break
+                if rpc_idle_task in done:
+                    rpc_idle_task = None
+                    continue
                 if self._recycle_if_due():
                     return "recycle"
+                if keepalive_interval is None:
+                    continue
                 # Timeout: probe for a stale session — NEVER while an RPC is in flight (a
                 # concurrent ping can wedge the stdio stream; a busy server is alive anyway).
                 # Timeout — no lifecycle event fired. See #48069.
@@ -99,7 +124,10 @@ class MCPServerRunMixin:
                     # Clear the rapid-drop budget (#62212).
                     self._mark_session_proven()
         finally:
-            await self._cancel_waiters(shutdown_task, reconnect_task)
+            waiters = [shutdown_task, reconnect_task]
+            if rpc_idle_task is not None:
+                waiters.append(rpc_idle_task)
+            await self._cancel_waiters(*waiters)
         if self._shutdown_event.is_set():
             self._fail_inflight_calls("shutdown")
             return "shutdown"

@@ -500,13 +500,22 @@ def _home_prefix_fold_regex(path: str):
     """Compile a regex matching *path* as an absolute directory prefix.
     Components match with either separator so native Windows, forward-slash, and mixed forms all
     fold; the caller normalizes the tail's backslashes to ``/``. A non-empty tail is required, so a
-    bare home is never folded. Returns ``None`` for an unset/degenerate path (fewer than two
-    components: ``/``, ``C:\\``, ``""``) so a stray HOME cannot rewrite unrelated prefixes."""
+    bare home is never folded. Returns ``None`` for an unset/degenerate path (no components, or a
+    bare root/drive: ``/``, ``C:``, ``C:\\``, ``""``) so a stray HOME cannot rewrite unrelated
+    prefixes.
+
+    A depth-1 home is NOT degenerate: ``/root`` is root's own default HOME, and skipping it left
+    ``/root/.ssh/authorized_keys`` unfolded — hence "safe" — while the identical command spelled
+    under ``/home/alice`` folded to ``~/.ssh/authorized_keys`` and was denied. A single-component
+    home must therefore match a mandatory leading separator, so a relative same-named path
+    (``root/file``) is still left alone."""
     components = [c for c in re.split(r"[/\\]+", path) if c] if path else []
-    if len(components) < 2:
+    if not components or (len(components) == 1 and re.fullmatch(r"[A-Za-z]:", components[0])):
         return None
-    # Optional leading root separator; a Windows drive letter is a component.
-    return re.compile(r"[/\\]*" + r"[/\\]+".join(re.escape(c) for c in components) + _PATH_TAIL)
+    # Optional leading root separator; a Windows drive letter is a component. Mandatory for the
+    # single-component home above, where the optional form would also fold relative same-named paths.
+    lead = r"[/\\]+" if len(components) == 1 else r"[/\\]*"
+    return re.compile(lead + r"[/\\]+".join(re.escape(c) for c in components) + _PATH_TAIL)
 
 
 def _fold_home_prefixes(command: str, paths, replacement: str) -> str:

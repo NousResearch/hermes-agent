@@ -518,6 +518,54 @@ class TestSchemaConversion:
         assert "definitions" not in schema["parameters"]
 
 
+
+    def test_required_array_filters_entries_not_in_properties(self):
+        """``required`` entries absent from ``properties`` are pruned by repair.
+
+        Regression: when an MCP tool's input schema lists ``required`` keys
+        that do not appear in ``properties`` (common with loosely-defined
+        upstream MCP tools), the sanitizer used to silently drop the entire
+        ``required`` array, losing legitimately-required field metadata.
+        The fix preserves ``required`` but filters it to only entries that
+        actually exist in ``properties``.
+        """
+        from tools.mcp_tool_schema import _repair_object_shape
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "path": {"type": "string"},
+            },
+            "required": ["command", "path", "missing_entry"],
+        }
+
+        repaired = _repair_object_shape(schema)
+
+        # valid entries are kept; entries not in properties are removed
+        assert repaired["required"] == ["command", "path"]
+        assert "missing_entry" not in repaired["required"]
+
+        # all entries valid: required is unchanged
+        schema_all_valid = {
+            "type": "object",
+            "properties": {
+                "a": {"type": "string"},
+                "b": {"type": "integer"},
+            },
+            "required": ["a", "b"],
+        }
+        assert _repair_object_shape(schema_all_valid)["required"] == ["a", "b"]
+
+        # all entries invalid: required becomes an empty list
+        schema_all_invalid = {
+            "type": "object",
+            "properties": {"x": {"type": "string"}},
+            "required": ["y", "z"],
+        }
+        result = _repair_object_shape(schema_all_invalid)
+        assert result["required"] == []
+
     def test_optional_nullable_field_is_collapsed_to_non_null_schema(self):
         """Anthropic rejects MCP/Pydantic anyOf-null optional parameter schemas."""
         from tools.mcp_tool_schema import _normalize_mcp_input_schema

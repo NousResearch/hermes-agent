@@ -1346,7 +1346,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         guild_id,
                     )
             if self._slash_commands:
-                self._register_slash_commands()
+                # Registration walks the skill catalog on disk (#110707); keep the loop free.
+                await asyncio.to_thread(self._register_slash_commands)
             self._disconnecting = False
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
             self._bot_task.add_done_callback(self._handle_bot_task_done)
@@ -4486,11 +4487,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._skill_lookup = {n: (d, k) for n, d, k in entries}
         self._skill_group_hidden_count = hidden
 
-    def refresh_skill_group(self) -> tuple[int, int]:
+    async def refresh_skill_group(self) -> tuple[int, int]:
         """Rescan skills and refresh live ``/skill`` autocomplete; returns ``(new_count, hidden_count)``.
         Called after ``reload_skills``; no ``tree.sync()`` since autocomplete options are dynamic."""
         try:
-            self._refresh_skill_catalog_state()
+            await asyncio.to_thread(self._refresh_skill_catalog_state)
         except Exception as exc:
             logger.warning(
                 "[%s] Failed to refresh /skill autocomplete after reload: %s", self.name, exc,

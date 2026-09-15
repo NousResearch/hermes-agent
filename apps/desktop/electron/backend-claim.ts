@@ -182,6 +182,12 @@ export interface BackendOutputTail {
   text(): string
   /** Human-readable suffix for error messages, or '' when nothing buffered. */
   describe(): string
+  /**
+   * Epoch ms of the last appended chunk, or 0 when nothing has been written
+   * yet. Lets boot phases tell "backend still emitting output" from "backend
+   * silent" (the WS probe's progress signal, #96177).
+   */
+  lastActivityAt(): number
 }
 
 export const DEFAULT_OUTPUT_TAIL_LIMIT = 8192
@@ -192,8 +198,12 @@ export const DEFAULT_OUTPUT_TAIL_LIMIT = 8192
  * stderr (traceback, missing module, bad config) survives into the ownership
  * error and the before-ready exit messages instead of a bare exit code.
  */
-export function createBackendOutputTail(limit: number = DEFAULT_OUTPUT_TAIL_LIMIT): BackendOutputTail {
+export function createBackendOutputTail(
+  limit: number = DEFAULT_OUTPUT_TAIL_LIMIT,
+  { now = Date.now }: { now?: () => number } = {}
+): BackendOutputTail {
   let buffer = ''
+  let lastActivityAt = 0
 
   const append = (chunk: unknown) => {
     buffer += String(chunk)
@@ -201,6 +211,8 @@ export function createBackendOutputTail(limit: number = DEFAULT_OUTPUT_TAIL_LIMI
     if (buffer.length > limit) {
       buffer = buffer.slice(buffer.length - limit)
     }
+
+    lastActivityAt = now()
   }
 
   return {
@@ -216,6 +228,32 @@ export function createBackendOutputTail(limit: number = DEFAULT_OUTPUT_TAIL_LIMI
       const text = buffer.trim()
 
       return text ? `\nRecent backend output:\n${text}` : ''
+    },
+    lastActivityAt() {
+      return lastActivityAt
     }
   }
+}
+
+/**
+ * Progress signal for boot phases that must tolerate a slow-but-alive
+ * backend (the boot-time WS probe, #96177). True while the child process is
+ * still running AND it has either produced no output yet (a cold-start
+ * backend's stdout is block-buffered — an alive process inside the import
+ * window is progress) or written output within the last `withinMs`. A
+ * backend that died, or that has been silent longer than the window, reads
+ * as "no progress".
+ */
+export function backendMakingProgress(
+  child: { exitCode: number | null; killed?: boolean } | null | undefined,
+  outputTail: BackendOutputTail,
+  { withinMs = 30_000, now = Date.now } = {}
+): boolean {
+  if (!child || child.exitCode !== null || child.killed) {
+    return false
+  }
+
+  const lastActivity = outputTail.lastActivityAt()
+
+  return lastActivity === 0 || now() - lastActivity < withinMs
 }

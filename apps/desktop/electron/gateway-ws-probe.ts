@@ -23,6 +23,13 @@
  * a post-upgrade auth rejection). The ``WebSocketImpl`` is injectable so the
  * unit tests can drive the handshake without a real socket; in production the
  * caller passes the Node/Electron global ``WebSocket``.
+ *
+ * The boot-time probe for a LOCAL backend additionally supports progress-aware
+ * waiting (#96177): a Windows cold start can hold the backend's GIL for
+ * 12-28s while gateway platform modules byte-compile, leaving the upgrade
+ * unanswered well past the fixed 10s budget. Passing ``keepWaitingWhile``
+ * turns the one-shot connect timer into a deadline that only fires once the
+ * backend stops reporting progress (and never past ``maxConnectWaitMs``).
  */
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000
@@ -31,6 +38,9 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 10_000
 // window: a frame (gateway.ready) or a still-open socket means success; an
 // early close means the upgrade was accepted but the session was refused.
 const DEFAULT_READY_GRACE_MS = 750
+// While a `keepWaitingWhile` progress callback is active, the connect
+// deadline is re-evaluated on this cadence instead of firing once.
+const DEFAULT_PROGRESS_CHECK_INTERVAL_MS = 1_000
 
 /**
  * Attempt a live WebSocket connection and classify the outcome.
@@ -44,6 +54,28 @@ function probeGatewayWebSocket<T>(
     WebSocketImpl?: any
     connectTimeoutMs?: number
     readyGraceMs?: number
+    /**
+     * Backend-progress-aware waiting (Windows cold start, #96177): once the
+     * `connectTimeoutMs` budget passes, this callback is polled every
+     * `progressCheckIntervalMs`. While it returns true, the probe keeps
+     * waiting instead of failing on the fixed deadline — so a backend that
+     * is still alive and emitting import progress (GIL held for 12-28s
+     * while gateway platform modules byte-compile) is given room to finish,
+     * while a silent/dead backend still fails fast. `maxConnectWaitMs` caps
+     * the total wait even when progress keeps reporting true. When this
+     * callback is omitted the probe behaves exactly as before: a single
+     * fixed `connectTimeoutMs` deadline. A throwing callback is treated as
+     * "no progress" (fail closed).
+     */
+    keepWaitingWhile?: () => boolean
+    /** Cadence at which the connect deadline is re-evaluated (default 1s). */
+    progressCheckIntervalMs?: number
+    /**
+     * Hard ceiling on the TOTAL wait when `keepWaitingWhile` is active.
+     * Defaults to `connectTimeoutMs` — i.e. extension is opt-in; pass an
+     * explicit cap to allow waiting past the base budget.
+     */
+    maxConnectWaitMs?: number
     /** Extra upgrade-request headers (access-proxy credentials such as
      * Cloudflare Access service tokens). Passed as the non-standard second
      * constructor argument `{ headers }` that Node's (undici) WebSocket —
@@ -58,6 +90,9 @@ function probeGatewayWebSocket<T>(
   const WebSocketImpl = options.WebSocketImpl
   const connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
   const readyGraceMs = options.readyGraceMs ?? DEFAULT_READY_GRACE_MS
+  const progressCheckIntervalMs = options.progressCheckIntervalMs ?? DEFAULT_PROGRESS_CHECK_INTERVAL_MS
+  const keepWaitingWhile = options.keepWaitingWhile
+  const maxConnectWaitMs = options.maxConnectWaitMs ?? connectTimeoutMs
   const headers = options.headers && Object.keys(options.headers).length > 0 ? options.headers : null
 
   if (typeof WebSocketImpl !== 'function') {
@@ -169,12 +204,54 @@ function probeGatewayWebSocket<T>(
     addListener(socket, 'close', onClose)
 
     if (connectTimeoutMs > 0) {
-      connectTimer = setTimeout(() => {
-        finish({
-          ok: false,
-          reason: `Timed out after ${connectTimeoutMs}ms waiting for the WebSocket to open.`
-        })
-      }, connectTimeoutMs)
+      // The connect budget is a *quiet* budget: on a healthy gateway the
+      // upgrade completes in well under a second. When `keepWaitingWhile`
+      // is provided (local cold-start boot, #96177), the deadline is
+      // re-evaluated on a cadence instead of firing once — past the budget
+      // the probe only fails when the progress callback stops reporting
+      // forward motion, and never beyond `maxConnectWaitMs`.
+      const startTime = Date.now()
+      const connectDeadline = startTime + connectTimeoutMs
+      const maxWaitDeadline = startTime + Math.max(connectTimeoutMs, maxConnectWaitMs)
+      let extended = false
+
+      const safeKeepWaiting = () => {
+        try {
+          return Boolean(keepWaitingWhile?.())
+        } catch {
+          // A throwing progress check must never hold the probe open —
+          // fail closed and report the plain timeout.
+          return false
+        }
+      }
+
+      const tick = () => {
+        if (settled) {
+          return
+        }
+
+        const now = Date.now()
+        const progressSaysWait = safeKeepWaiting()
+
+        if (now >= maxWaitDeadline || (now >= connectDeadline && !progressSaysWait)) {
+          finish({
+            ok: false,
+            reason: extended
+              ? `Timed out after ${now - startTime}ms waiting for the WebSocket to open (backend progress stopped after ${connectTimeoutMs}ms; hard cap ${maxConnectWaitMs}ms).`
+              : `Timed out after ${connectTimeoutMs}ms waiting for the WebSocket to open.`
+          })
+
+          return
+        }
+
+        if (now >= connectDeadline) {
+          extended = true
+        }
+
+        connectTimer = setTimeout(tick, progressCheckIntervalMs)
+      }
+
+      connectTimer = setTimeout(tick, Math.min(connectTimeoutMs, progressCheckIntervalMs))
     }
   })
 }
@@ -234,4 +311,9 @@ function closeReason(event, fallback) {
   return fallback
 }
 
-export { DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_READY_GRACE_MS, probeGatewayWebSocket }
+export {
+  DEFAULT_CONNECT_TIMEOUT_MS,
+  DEFAULT_PROGRESS_CHECK_INTERVAL_MS,
+  DEFAULT_READY_GRACE_MS,
+  probeGatewayWebSocket
+}

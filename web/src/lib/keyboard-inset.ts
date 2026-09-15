@@ -63,6 +63,7 @@ export function computeKeyboardInset(
 export function keyboardRevealScrollDelta(
   composerBottomPx: number,
   visual: ViewportGeometry,
+  accessoryPx = 0,
 ): number {
   if (
     !Number.isFinite(composerBottomPx) ||
@@ -71,5 +72,8 @@ export function keyboardRevealScrollDelta(
   ) {
     return 0;
   }
-  return Math.round(composerBottomPx - (visual.offsetTop + visual.height));
+  // An accessory bar sits inside the visible viewport, so the composer has to
+  // stop that many pixels higher or the bar covers the line it just revealed.
+  const chrome = Number.isFinite(accessoryPx) && accessoryPx > 0 ? accessoryPx : 0;
+  return Math.round(composerBottomPx - (visual.offsetTop + visual.height - chrome));
 }

@@ -17,6 +17,7 @@ import subprocess
 from pathlib import Path
 
 from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
+from hermes_cli.git_credentials import without_credentials
 
 _GIT_TIMEOUT = 30
 _GH_TIMEOUT = 30
@@ -60,10 +61,42 @@ def _git_line(cwd: str, args: list[str]) -> str:
 
 
 def _git_ok(cwd: str, args: list[str]) -> None:
-    """Run a git mutation, raising RuntimeError with stderr on failure."""
+    """Run a git mutation, raising RuntimeError with stderr on failure.
+
+    Git echoes the remote URL on a failed fetch/push, and this message is what
+    the renderer toasts and the gateway logs — so an embedded credential is
+    stripped before it leaves the process (#101351).
+    """
     code, _, err = _git(cwd, args)
     if code != 0:
-        raise RuntimeError(err.strip() or f"git {' '.join(args)} failed")
+        raise RuntimeError(without_credentials(err.strip()) or f"git {' '.join(args)} failed")
+
+
+def _scrub_recorded_origin(cwd: str) -> None:
+    """Strip credentials from this repo's recorded ``origin`` URL.
+
+    ``git clone https://user:token@host/…`` — and a hand-edited config — leave
+    the token in ``.git/config``, where ``git remote -v``, every later push and
+    any pasted bug report echo it. Repo-scoped and idempotent: only THIS repo's
+    origin is touched, only when it actually carries userinfo. Best-effort —
+    credential hygiene must never be what fails the verb the caller came for.
+    """
+    try:
+        recorded = _git_line(cwd, ["remote", "get-url", "origin"])
+        scrubbed = without_credentials(recorded)
+        if recorded and scrubbed != recorded:
+            _git(cwd, ["remote", "set-url", "origin", scrubbed])
+    except Exception:
+        return
+
+
+def _fetch_best_effort(cwd: str, remote: str, branch: str) -> None:
+    """Refresh one remote-tracking ref, ignoring failure (offline, branch gone).
+
+    A network verb, so it first scrubs a credentialed ``origin``.
+    """
+    _scrub_recorded_origin(cwd)
+    _git(cwd, ["fetch", remote, branch])
 
 
 def _is_dir(cwd: str) -> bool:
@@ -348,6 +381,7 @@ def review_commit(cwd: str, message: str, push: bool) -> dict:
 
 
 def _review_push(cwd: str) -> None:
+    _scrub_recorded_origin(cwd)
     if _git_line(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]):
         _git_ok(cwd, ["push"])
         return
@@ -600,7 +634,7 @@ def _worktree_for_existing(root: str, raw_name: str) -> dict:
     if remote:
         # Best-effort freshness; on failure (offline, branch gone) the last known ref is still
         # there to branch from.
-        _git(root, ["fetch", remote, existing])
+        _fetch_best_effort(root, remote, existing)
         _git_ok(root, ["worktree", "add", "--track", "-b", existing, target, requested])
     else:
         _git_ok(root, ["worktree", "add", target, existing])
@@ -624,7 +658,7 @@ def worktree_add(cwd: str, options: dict) -> dict:
         # (offline / no remote) are ignored — git uses the local ref or raises a clear error
         # below if it is entirely missing.
         if base.startswith("origin/"):
-            _git(root, ["fetch", "origin", base[len("origin/"):]])
+            _fetch_best_effort(root, "origin", base[len("origin/"):])
             # Branching off a remote-tracking ref auto-wires upstream tracking; the user wants
             # a standalone local branch (Electron-op parity).
             args.append("--no-track")

@@ -17,6 +17,10 @@ database:
   # Optional WAL sizing pragmas (integers). Unset = SQLite defaults.
   # wal_autocheckpoint: 1000     # pages between automatic checkpoints
   # journal_size_limit: 67108864 # cap the WAL/journal file size in bytes
+  # Optional per-connection performance pragmas (integers). Unset = SQLite defaults.
+  # cache_size: -64000           # negative = KiB of page cache, positive = pages
+  # mmap_size: 268435456         # bytes of memory-mapped I/O; 0 disables mmap
+  # temp_store: 2                # 0 default, 1 file, 2 memory
   #
   # Durability level for every state.db connection: OFF, NORMAL, FULL, EXTRA
   # (or 0-3). Unset leaves SQLite's default, which is baked in at compile time

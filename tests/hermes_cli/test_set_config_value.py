@@ -475,6 +475,33 @@ class TestSchemaValidation:
 
 
 
+    @pytest.mark.parametrize("key,value", [
+        ("database.synchronous", "FULL"),
+        ("database.cache_size", "-64000"),
+        ("database.mmap_size", "268435456"),
+        ("database.temp_store", "2"),
+        ("code_execution.timeout", "600"),
+        ("code_execution.max_tool_calls", "100"),
+    ])
+    def test_runtime_read_keys_are_not_flagged_unknown(self, key, value, _isolated_hermes_home, capsys):
+        """Keys the runtime actually reads must not be reported as unrecognized.
+
+        ``hermes_state_wal.apply_database_pragmas`` reads all four ``database`` pragmas and
+        ``tools/code_execution_tool`` reads both ``code_execution`` limits (the latter are shipped
+        uncommented in ``cli-config.yaml.example``), but DEFAULT_CONFIG declared none of them, so
+        ``_validate_config_key`` walked into the ``database`` / ``code_execution`` dicts, missed the
+        sub-key and printed "not a recognized config key" over a documented setting.
+        """
+        set_config_value(key, value)
+
+        out = capsys.readouterr().out
+        assert "not a recognized config key" not in out, f"{key} was flagged as unknown: {out!r}"
+        # ...and the value still lands in config.yaml under the section the runtime reads.
+        import yaml
+        section, leaf = key.split(".")
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert str(saved[section][leaf]) == value
+
     def test_force_suppresses_notice(self, _isolated_hermes_home, capsys):
         """``--force`` writes unknown keys without the notice (scripted
         forward-compat writes)."""
@@ -501,6 +528,14 @@ class TestValidateConfigKey:
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
         "approvals.mode",
+        # Runtime-read keys: apply_database_pragmas (hermes_state_wal.py) reads all four
+        # ``database`` pragmas, and code_execution_tool reads both limits.
+        "database.synchronous",
+        "database.cache_size",
+        "database.mmap_size",
+        "database.temp_store",
+        "code_execution.timeout",
+        "code_execution.max_tool_calls",
     ])
     def test_known_keys_pass(self, key):
         from hermes_cli.config import _validate_config_key

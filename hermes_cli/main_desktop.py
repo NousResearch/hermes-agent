@@ -191,6 +191,28 @@ def _desktop_unpacked_root(exe: Path, release_dir: Path) -> Path:
     return unpacked
 
 
+def _rename_with_retry(src: Path, dst: Path, *, attempts: int = 5, delay: float = 1.0) -> None:
+    """``os.rename`` with bounded retry/backoff (#69179 follow-up: a single transient
+    ``Access is denied`` from a Windows file lock — Defender real-time scan, indexer,
+    a Desktop child process holding a DLL under ``win-unpacked`` — used to fail the
+    whole swap after a successful pack). Only errno-class transient errors are worth
+    retrying; exhausting the attempts re-raises the last OSError for the caller's
+    rollback path."""
+    last_exc: Optional[OSError] = None
+    for attempt in range(attempts):
+        try:
+            os.rename(src, dst)
+            return
+        except OSError as exc:
+            last_exc = exc
+            if attempt < attempts - 1:
+                # Retry window also covers a process that grabbed the tree between
+                # _stop_desktop_processes_locking_build and the rename.
+                _time_mod.sleep(delay * (attempt + 1))
+    assert last_exc is not None
+    raise last_exc
+
+
 def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[Path]:
     """Promote a VERIFIED staged pack over ``release/`` by two renames (live → ``.previous``, staged →
     live); a failure between them rolls back. Returns the live exe or None (live app kept). Never raises."""
@@ -211,12 +233,12 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
             stopped = _stop_desktop_processes_locking_build(desktop_dir)
             if stopped:
                 logger.info("stopped desktop processes before staged app promotion: %s", stopped)
-            os.rename(live_root, previous)
+            _rename_with_retry(live_root, previous)
         try:
-            os.rename(staged_root, live_root)
+            _rename_with_retry(staged_root, live_root)
         except OSError:
             if moved_aside:
-                os.rename(previous, live_root)  # restore; live app back as it was
+                _rename_with_retry(previous, live_root)  # restore; live app back as it was
             raise
         if moved_aside:
             shutil.rmtree(previous, ignore_errors=True)
@@ -749,7 +771,7 @@ def _desktop_macos_has_valid_real_signature(app: Path) -> bool:
 
 
 def _desktop_macos_local_codesign(app: Path, *, desktop_dir: Path, identity: str = "-") -> bool:
-    """Sign a local build inside-out (Mach-O files, nested frameworks/helpers, main bundle) with the
+    """Sign a local build inside-out (Mach-O files, native modules/frameworks/helpers, main bundle) with the
     repo's entitlements and an identifier-pinned DR when ad-hoc — a plain ``--deep --sign -`` gives
     a cdhash-only DR (TCC re-prompts every rebuild) and strips the JIT/mic entitlements.
     Raises on signing failure; True after strict verification."""
@@ -767,7 +789,8 @@ def _desktop_macos_local_codesign(app: Path, *, desktop_dir: Path, identity: str
 
     def sign_path(
         path: Path, *, entitlements: Optional[Path] = None, identifier: Optional[str] = None,
-        runtime: bool = True) -> None:
+        runtime: bool = True,
+    ) -> None:
         args = [codesign, "--force", "--sign", identity, "--timestamp=none"]
         if runtime:
             args += ["--options", "runtime"]
@@ -780,7 +803,7 @@ def _desktop_macos_local_codesign(app: Path, *, desktop_dir: Path, identity: str
         args.append(str(path))
         subprocess.run(args, check=True, capture_output=True)
 
-    # 1) Standalone Mach-O files (native modules, dylibs, crashpad handler),
+    # 1. Standalone Mach-O files (native modules, dylibs, crashpad handler),
     #    compared relative to the app root — the absolute path always contains
     #    the outer Hermes.app component.
     contents = app / "Contents"
@@ -796,7 +819,7 @@ def _desktop_macos_local_codesign(app: Path, *, desktop_dir: Path, identity: str
     for fp in sorted(standalone, key=lambda p: len(p.parts), reverse=True):
         sign_path(fp, runtime=False)
 
-    # 2) Nested frameworks and helper apps, deepest first.
+    # 2. Nested frameworks and helper apps, deepest first.
     bundles: set[Path] = set()
     frameworks_dir = contents / "Frameworks"
     if frameworks_dir.exists():
@@ -808,7 +831,7 @@ def _desktop_macos_local_codesign(app: Path, *, desktop_dir: Path, identity: str
         ent = ent_inherit if bundle.suffix == ".app" and "Helper" in bundle.name else None
         sign_path(bundle, entitlements=ent, identifier=_desktop_macos_bundle_id(bundle))
 
-    # 3) The main bundle, with the app's own entitlements.
+    # 3. The main bundle, with the app's own entitlements.
     sign_path(app, entitlements=ent_main, identifier=_desktop_macos_bundle_id(app))
     _codesign_verify(codesign, app, check=True)
     return True
@@ -843,7 +866,8 @@ def _macos_legacy_adhoc_resign(codesign: str, app: Path) -> bool:
 
 def _desktop_macos_relaunchable_fixup(
     desktop_dir: Path, *, publisher_signing_configured: Optional[bool] = None,
-    release_dir: Optional[Path] = None) -> bool:
+    release_dir: Optional[Path] = None,
+) -> bool:
     """Re-sign a locally-built macOS app so in-place self-update doesn't reset TCC grants.
 
     A rebuilt ad-hoc bundle (new cdhash, no stable Designated Requirement) reports
@@ -906,8 +930,10 @@ def _macos_codesigning_identity_valid(security: str, identity: str) -> bool:
 
 
 def _macos_create_signing_identity(
-    openssl: str, security: str, codesign: str, keychain: str, identity: str) -> bool:
-    """Create a self-signed code-signing cert (10 years), import it with codesign access, trust it for codeSign."""
+    openssl: str, security: str, codesign: str, keychain: str, identity: str,
+) -> bool:
+    """Create a self-signed code-signing cert (10 years), import it into the keychain with codesign access,
+    and trust it for codeSign."""
     tmp_dir = Path(tempfile.mkdtemp(prefix="hermes-tcc-"))
     try:
         key = tmp_dir / "sign.key"
@@ -927,8 +953,8 @@ def _macos_create_signing_identity(
 
         # OpenSSL 3 defaults to AES/SHA-2 PKCS#12 that `security import` rejects
         # with "MAC verification failed". `-legacy` restores the accepted
-        # RC2/SHA-1 format but only exists on OpenSSL 3 — so try plain first and
-        # fall back to `-legacy` when the IMPORT fails with that signature.
+        # RC2/SHA-1 format but only exists on OpenSSL 3 — so try plain first
+        # and fall back to `-legacy` when the IMPORT fails with that signature.
         # (Verified E2E on macOS 26.3.1 / OpenSSL 3.6.3 by @ctaylor86 on PR #77189.)
         def _export_p12(extra_args: list) -> None:
             subprocess.run(
@@ -1014,7 +1040,7 @@ def _desktop_macos_setup_tcc_identity(identity: str = "Hermes Local Signing") ->
     if not _macos_codesigning_identity_valid(security, identity):
         print(
             f"  (identity {identity!r} was imported but is not a VALID code-signing identity; "
-            "run `security find-identity -v -p codesigning` to inspect, and see the manual "
+            "run `security find-identity -v -p` to inspect, and see the manual "
             "Keychain Access steps in the desktop docs)"
         )
         return False
@@ -1040,7 +1066,7 @@ def _desktop_macos_setup_tcc_identity(identity: str = "Hermes Local Signing") ->
             print(f"  (could not re-sign packaged app: {exc})")
 
     print(
-        "\n  Note: macOS will re-prompt for permissions ONE final time (the identity "
+        "\n  Note: macOS will re-prompty for permissions ONE final time (the identity "
         "changed). Grant them and they persist from then on. If a permission gets "
         "stuck, reset it with:  tccutil reset All com.nousresearch.hermes"
     )
@@ -1272,7 +1298,7 @@ def _install_desktop_workspace_deps(npm: str, env: dict) -> None:
 
 
 def _run_desktop_pack_with_recovery(
-    desktop_dir: Path, build_cmd: list[str], npm_build_env: dict, env: dict, staging_dir: Optional[Path]
+    desktop_dir: Path, build_cmd: list[str], npm_build_env: dict, env: dict, staging_dir: Optional[Path],
 ) -> subprocess.CompletedProcess:
     """Run the desktop build; a packaged build with NO staged exe retries after an Electron re-download, then via mirror.
 
@@ -1437,9 +1463,9 @@ def _desktop_launch_env(args: argparse.Namespace) -> tuple[dict, list[str]]:
         if getattr(args, attr, False):
             env[key] = "1"
     if getattr(args, "hermes_root", None):
-        env["HERMES_DESKTOP_HERMES_ROOT"] = str(Path(args.hermes_root).expanduser().resolve())
+        env["HERMES_DESKTOP_HERMES_ROOT"] = str(Path(args.hermes_root).resolve())
     cwd = getattr(args, "cwd", None)
-    env["HERMES_DESKTOP_CWD"] = str(Path(cwd).expanduser().resolve()) if cwd else os.getcwd()
+    env["HERMES_DESKTOP_CWD"] = str(Path(cwd).resolve()) if cwd else os.getcwd()
 
     config_electron_flags, config_disable_gpu, config_password_store, config_ozone_hint = (
         _desktop_launch_options())
@@ -1460,7 +1486,7 @@ def _desktop_launch_env(args: argparse.Namespace) -> tuple[dict, list[str]]:
 
 
 def _check_desktop_skip_build(
-    desktop_dir: Path, project_root: Path, *, source_mode: bool, packaged_executable: Optional[Path]
+    desktop_dir: Path, project_root: Path, *, source_mode: bool, packaged_executable: Optional[Path],
 ) -> None:
     """Validate the pre-built artifact ``--skip-build`` promised; exit with a hint when it's missing."""
     if source_mode:
@@ -1471,8 +1497,8 @@ def _check_desktop_skip_build(
             sys.exit(1)
         if not (_electron_dir(project_root) / "package.json").exists():
             print("✗ --skip-build --source requires existing desktop workspace dependencies.")
-            print(f"  Install first:  cd {project_root} && npm ci")
-            print("  Or drop --skip-build to install dependencies and build automatically.")
+            print(f"  Install first:  cd {PROJECT_ROOT} && npm ci")
+            print("  Or drop --skip-build to package automatically.")
             sys.exit(1)
         print(f"→ Skipping desktop source build (--skip-build --source); using dist at {desktop_dir / 'dist'}")
     elif packaged_executable is None:

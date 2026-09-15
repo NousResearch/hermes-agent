@@ -10741,7 +10741,7 @@ def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
     # Agent's system prompt was updated in-place; cached prompt untouched
     assert agent.ephemeral_system_prompt == "You are helpful."
     assert agent._cached_system_prompt == "old"
-    assert ("session.info", "sid", server.SessionLiveInfo(model="?")) in emits
+    assert ("session.info", "sid", server.SessionInfoPayload.of(server.SessionLiveInfo(model="?"))) in emits
     assert ("display.personality", "helpful") in writes
     assert not any(path == "agent.system_prompt" for path, _ in writes)
 
@@ -14549,7 +14549,7 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     # Now returns a before/after summary (was "" before #46686).
     assert seen["compress"]
     assert seen["sync"]
-    assert ("session.info", "sid", server.SessionLiveInfo(model="x")) in emitted
+    assert ("session.info", "sid", server.SessionInfoPayload.of(server.SessionLiveInfo(model="x"))) in emitted
     assert "Compressed:" in warning
     assert "6 → 1 messages" in warning
     assert "tokens" in warning

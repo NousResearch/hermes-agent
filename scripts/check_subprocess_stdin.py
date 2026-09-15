@@ -85,7 +85,9 @@ SKIP_DIRS = {
 }
 
 
-_SPLAT_RE = re.compile(r"\*\*\s*([A-Za-z_][A-Za-z0-9_]*)")
+# ``**helper(...)`` or ``**srv.helper(...)``: tui_gateway siblings call their own published helpers
+# through the ``srv`` facade (see tui_gateway/method_ctx.py); the definition is still in this file.
+_SPLAT_RE = re.compile(r"\*\*\s*(?:srv\.)?([A-Za-z_][A-Za-z0-9_]*)")
 
 
 def _splat_carries_stdin(call_text: str, content: str) -> bool:

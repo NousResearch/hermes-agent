@@ -111,6 +111,7 @@ import {
 import {
   $sessionTiles,
   closeSessionTile,
+  coalesceSessionTilesForStoredIdRotation,
   dropSessionState,
   focusOpenSession,
   holdSessionOwnerUntilForeground,
@@ -417,6 +418,10 @@ export function useSessionActions({
     // Consume the event even when it is stale. Rotation is an edge, not durable
     // state; replaying it after a later remount/selection would steal focus.
     setActiveSessionStoredIdRotation(current => (current === storedIdRotation ? null : current))
+    coalesceSessionTilesForStoredIdRotation(
+      storedIdRotation.previousStoredSessionId,
+      storedIdRotation.nextStoredSessionId
+    )
 
     const selectedStoredSessionId = selectedStoredSessionIdRef.current
     const routedStoredSessionId = getRoutedStoredSessionId()

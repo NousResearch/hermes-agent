@@ -151,6 +151,18 @@ class TestPerJobToolsetMcpMerge:
             result = _resolve_cron_enabled_toolsets(job, {})
         assert result == ["file", "memory", "web"]
 
+    def test_resolver_failure_disables_default_toolsets(self, caplog):
+        """A failed platform lookup must not make a cron job use every tool."""
+        with patch(
+            "hermes_cli.tools_config._get_platform_tools",
+            side_effect=RuntimeError("invalid cron toolset config"),
+        ):
+            with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+                result = _resolve_cron_enabled_toolsets({"enabled_toolsets": None}, {})
+
+        assert result == []
+        assert any("Cron toolset resolution failed" in record.message for record in caplog.records)
+
 
 class TestResolveOrigin:
     def test_full_origin(self):

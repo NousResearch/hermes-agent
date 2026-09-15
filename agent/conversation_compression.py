@@ -33,6 +33,7 @@ from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
 from agent.usage_anchor import set_usage_anchor
+from hermes_state_ids import new_session_id as mint_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -1768,6 +1769,15 @@ def _lower_threshold_to_aux_context(
     )
 
 
+def _aux_inherits_main_route(agent: Any, aux_model: str, aux_base_url: str) -> bool:
+    """True when the auxiliary compression client is the main model on the main endpoint."""
+    from hermes_cli.route_identity import normalize_route_base_url
+    if str(aux_model or "").strip().lower() != str(getattr(agent, "model", "") or "").strip().lower():
+        return False
+    main_base = normalize_route_base_url(str(getattr(agent, "base_url", "") or ""))
+    return not main_base or normalize_route_base_url(aux_base_url) == main_base
+
+
 def check_compression_model_feasibility(agent: Any) -> None:
     """Warn at session start if the aux compression context is below the threshold.
     Called from ``AIAgent.__init__`` (CLI sees it via ``_vprint``); the gateway wires ``status_callback``
@@ -1822,11 +1832,17 @@ def check_compression_model_feasibility(agent: Any) -> None:
         _aux_provider = (
             _aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(agent, "provider", "")
         )
-        aux_context = get_model_context_length(
-            aux_model, base_url=aux_base_url, api_key=aux_api_key,
-            config_context_length=getattr(agent, "_aux_compression_context_length_config", None),
-            provider=_aux_provider, custom_providers=agent._custom_providers,
-        )
+        _aux_cfg_ctx = getattr(agent, "_aux_compression_context_length_config", None)
+        if _aux_cfg_ctx is None and _aux_inherits_main_route(agent, aux_model, aux_base_url):
+            # Same model on the same route: reuse the main model's already-resolved window (which honours
+            # model.context_length / provider pins). Re-resolving from scratch lost the pin and auto-lowered
+            # the session threshold to a catch-all catalog value (#89500, #45519).
+            aux_context = int(agent.context_compressor.context_length)
+        else:
+            aux_context = get_model_context_length(
+                aux_model, base_url=aux_base_url, api_key=aux_api_key, config_context_length=_aux_cfg_ctx,
+                provider=_aux_provider, custom_providers=agent._custom_providers,
+            )
         # Aux model must meet MINIMUM_CONTEXT_LENGTH like the main model, else it cannot summarise a full window.
         if aux_context and aux_context < MINIMUM_CONTEXT_LENGTH:
             raise ValueError(
@@ -2965,7 +2981,7 @@ def _publish_rotated_compaction(
     if _profile_for_child == "default":
         _profile_for_child = None
     old_title = agent._session_db.get_session_title(agent.session_id)
-    new_session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    new_session_id = mint_session_id()
     from agent.context_compressor import _DB_PERSISTED_MARKER
     agent._session_db.publish_compression_child(
         parent_session_id=old_session_id, child_session_id=new_session_id,
@@ -3024,14 +3040,19 @@ def _warn_summary_or_aux_fallback(agent: Any) -> None:
             )
 
 
-def _reset_read_dedup_caches(task_id: str, *, skills: bool = True) -> None:
+def _reset_read_dedup_caches(task_id: str, *, session_id: str = "", skills: bool = True) -> None:
     """Advance the file-read (and skill_view) repeat-read dedup to a fresh generation after a boundary.
     The mtime map is kept: the first read of each unchanged key returns full content compaction may have
     omitted; later reads return stubs, and stub-hit counters restart at the same boundary (#84857).
+    The computer_use screenshot dedup is session-keyed and forgets its last frame for the same reason.
     """
     with contextlib.suppress(Exception):
         from tools.file_tools_read_tracking import reset_file_dedup
         reset_file_dedup(task_id)
+    if session_id:
+        with contextlib.suppress(Exception):
+            from tools.computer_use.tool import reset_screenshot_dedup
+            reset_screenshot_dedup(session_id)
     if not skills:
         return
     with contextlib.suppress(Exception):
@@ -3129,7 +3150,7 @@ def _finish_compaction_boundary(
             )
         else:
             compressor._verify_compaction_cleared_threshold = True
-    _reset_read_dedup_caches(task_id)
+    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
     return _compressed_est
 
 
@@ -3816,7 +3837,7 @@ def _compress_context_via_codex_app_server(
         # armed until a later turn; minimal test engines may lack update_from_response.
         if hasattr(agent.context_compressor, "update_from_response"):
             _record_codex_app_server_usage(agent, result, messages=messages)
-    _reset_read_dedup_caches(task_id, skills=False)
+    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "", skills=False)
     logger.info(
         "codex app-server compaction done: session=%s thread=%s turn=%s", _sid,
         getattr(result, "thread_id", None) or "", getattr(result, "turn_id", None) or "",

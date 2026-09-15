@@ -400,6 +400,54 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
     assert first[-1].choices[0].finish_reason == "tool_calls"
 
 
+def _fc_event(name, args, call_id=None, finish=None):
+    fc = {"name": name, "args": args}
+    if call_id:
+        fc["id"] = call_id
+    cand = {"content": {"parts": [{"functionCall": fc}]}}
+    if finish:
+        cand["finishReason"] = finish
+    return {"candidates": [cand]}
+
+
+def _tool_call_deltas(chunks):
+    return [(tc.index, tc.function.arguments) for c in chunks for tc in (c.choices[0].delta.tool_calls or [])]
+
+
+def test_distinct_same_tool_calls_in_separate_events_get_their_own_slots():
+    """Gemini 2.5 (no call id) streams each parallel call as parts[0] of its own event; two
+    different calls to one tool must not share a slot, and a resend of the second must land on
+    the slot it opened instead of concatenating onto the first."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    slots = {}
+    out = []
+    for args in ({"q": "A"}, {"q": "B"}, {"q": "B"}):
+        out += translate_stream_event(_fc_event("search", args), model="gemini-2.5-flash", tool_call_indices=slots)
+
+    assert _tool_call_deltas(out) == [(0, '{"q": "A"}'), (1, '{"q": "B"}'), (1, "")]
+    for (_, arguments) in _tool_call_deltas(out)[:2]:
+        json.loads(arguments)
+
+
+def test_provider_call_id_is_the_slot_identity():
+    """Gemini 3 ids two calls with identical name and args as two calls; the same id across events
+    (with drifting part_index / signature) is one call."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    slots = {}
+    out = translate_stream_event(_fc_event("search", {"q": "A"}, call_id="c1"), model="gemini-3-pro", tool_call_indices=slots)
+    out += translate_stream_event(_fc_event("search", {"q": "A"}, call_id="c2"), model="gemini-3-pro", tool_call_indices=slots)
+    resend = {"candidates": [{"content": {"parts": [{"text": "x"}, {"functionCall": {"name": "search", "args": {"q": "A"}, "id": "c1"},
+                                                        "thoughtSignature": "sig"}]}}]}
+    out += translate_stream_event(resend, model="gemini-3-pro", tool_call_indices=slots)
+
+    deltas = _tool_call_deltas(out)
+    assert deltas == [(0, '{"q": "A"}'), (1, '{"q": "A"}'), (0, "")]
+    ids = [tc.id for c in out for tc in (c.choices[0].delta.tool_calls or [])]
+    assert ids == ["c1", "c2", "c1"]
+
+
 def test_build_gemini_request_preserves_explicit_max_tokens_without_thinking():
     from agent.gemini_native_adapter import build_gemini_request
 
@@ -675,3 +723,39 @@ def test_text_only_tool_result_has_no_parts():
     )
     fr = request["contents"][1]["parts"][0]["functionResponse"]
     assert "parts" not in fr
+
+
+class _FakeStreamResponse:
+    """Minimal httpx.Response stand-in for _iter_sse_events: text chunks only."""
+
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def iter_text(self):
+        yield from self._chunks
+
+
+def test_iter_sse_events_flushes_residual_buffer_after_eof():
+    """A final SSE frame without a trailing newline must not be dropped (pi#8997 class)."""
+    from agent.gemini_native_adapter import _iter_sse_events
+
+    resp = _FakeStreamResponse([
+        'data: {"candidates": [1]}\n',
+        'data: {"candidates": [2]}',  # no newline, then EOF
+    ])
+    events = list(_iter_sse_events(resp))
+    assert events == [{"candidates": [1]}, {"candidates": [2]}]
+
+
+def test_iter_sse_events_stops_at_done_and_ignores_trailing_frames():
+    """[DONE] terminates iteration even when more frames follow; a residual
+    [DONE] in the leftover buffer is not yielded as data."""
+    from agent.gemini_native_adapter import _iter_sse_events
+
+    resp = _FakeStreamResponse([
+        'data: {"candidates": [1]}\ndata: [DONE]\ndata: {"candidates": [3]}\n',
+    ])
+    assert list(_iter_sse_events(resp)) == [{"candidates": [1]}]
+
+    resp = _FakeStreamResponse(['data: {"candidates": [1]}\ndata: [DONE]'])
+    assert list(_iter_sse_events(resp)) == [{"candidates": [1]}]

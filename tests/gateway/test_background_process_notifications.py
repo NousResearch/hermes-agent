@@ -520,6 +520,73 @@ def test_parse_session_key_with_extra_parts():
     assert result == {"platform": "discord", "chat_type": "group", "chat_id": "chan123"}
 
 
+def test_parse_session_key_named_profile():
+    """A named-profile namespace parses and is reported as ``profile``."""
+    result = _parse_session_key("agent:work:telegram:dm:123")
+    assert result == {
+        "profile": "work",
+        "platform": "telegram",
+        "chat_type": "dm",
+        "chat_id": "123",
+    }
+
+
+def test_parse_session_key_named_profile_thread_id():
+    """Thread-slot handling is identical for named-profile keys."""
+    result = _parse_session_key("agent:work:telegram:thread:100:42")
+    assert result == {
+        "profile": "work",
+        "platform": "telegram",
+        "chat_type": "thread",
+        "chat_id": "100",
+        "thread_id": "42",
+    }
+
+
+def test_parse_session_key_named_profile_group_suffix_omitted():
+    """Group-suffix (user_id) stays omitted for named-profile keys too."""
+    result = _parse_session_key("agent:work:discord:group:chan1:user9")
+    assert result == {
+        "profile": "work",
+        "platform": "discord",
+        "chat_type": "group",
+        "chat_id": "chan1",
+    }
+
+
+def test_parse_session_key_main_shape_unchanged():
+    """``main`` keys keep their historical dict shape exactly (no ``profile`` key)."""
+    result = _parse_session_key("agent:main:telegram:dm:123:42")
+    assert result == {
+        "platform": "telegram",
+        "chat_type": "dm",
+        "chat_id": "123",
+        "thread_id": "42",
+    }
+
+
+def test_parse_session_key_rejects_invalid_namespace():
+    """A namespace slot that cannot be a profile id still parses to None."""
+    assert _parse_session_key("agent:Bad_NS:telegram:dm:123") is None
+    assert _parse_session_key("agent:main:telegram:dm") is None
+    assert _parse_session_key("raw-session-id") is None
+
+
+def test_build_process_event_source_named_profile_key(monkeypatch, tmp_path):
+    """A synthetic event keyed by a named-profile session resolves platform/chat and keeps
+    the profile, instead of being unresolvable and dropped with a warning."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    source = runner._build_process_event_source({
+        "session_id": "proc_watch",
+        "session_key": "agent:work:telegram:dm:123",
+    })
+    assert source is not None
+    assert source.platform is Platform.TELEGRAM
+    assert source.chat_id == "123"
+    assert source.chat_type == "dm"
+    assert source.profile == "work"
+
+
 # ---------------------------------------------------------------------------
 # api_server (stateless) wake routing — gateway/wake.py self-post path
 # ---------------------------------------------------------------------------
@@ -702,3 +769,35 @@ def test_gateway_drain_retains_and_formats_overflow_events():
     out_released = _format_gateway_process_notification(released)
     assert "notifications resumed" in out_released
     assert "exit code" not in out_released
+
+
+@pytest.mark.asyncio
+async def test_raw_output_modes_are_human_facing(monkeypatch, tmp_path):
+    """#54266: the chat-facing watcher messages (final in all/result/error, interim in all) carry a
+    status header and the (ANSI-stripped) output, never the internal ``proc_*`` id or the bracketed
+    ``[Background process …~ …]`` debug wrapper. Full output stays available via the process tool."""
+    import tools.process_registry as pr_module
+
+    running = SimpleNamespace(output_buffer="\x1b[32mstep 1 ok\x1b[0m\n", exited=False, exit_code=None,
+                              command="make -j8 all", started_at=None)
+    done = SimpleNamespace(output_buffer="\x1b[32mstep 1 ok\x1b[0m\n\x1b[31mlinker error\x1b[0m\n", exited=True,
+                           exit_code=2, command="make -j8 all", started_at=None)
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry([running, done]))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    await runner._run_process_watcher(_watcher_dict(session_id="proc_deadbeef"))
+
+    sent = [call.args[1] for call in adapter.send.await_args_list]
+    assert len(sent) == 2
+    interim, final = sent
+    assert interim.startswith("⏳ Background task still running") and "step 1 ok" in interim
+    assert final.startswith("❌ Background task failed (exit 2)") and "linker error" in final
+    for text in sent:
+        assert "proc_deadbeef" not in text and "[Background process" not in text and "~" not in text
+        assert "\x1b[" not in text
+        assert "make -j8 all" in text

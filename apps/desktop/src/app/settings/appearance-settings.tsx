@@ -24,7 +24,12 @@ import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enable
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
-import { $retiredTips, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
+import { $spentTipCount, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
+import {
+  $titlebarAppActionsSide,
+  setTitlebarAppActionsSide,
+  type TitlebarAppActionsSide
+} from '@/store/titlebar-app-actions'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $toursEnabled, setToursEnabled } from '@/store/tours'
 import {
@@ -58,6 +63,7 @@ import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/use
 
 import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
 
+import { ChatFontSetting } from './chat-font-setting'
 import { MODE_OPTIONS } from './constants'
 import { setNested } from './helpers'
 import { PetSettings } from './pet-settings'
@@ -84,7 +90,9 @@ function ResumeLastSessionSetting() {
 
     const next = setNested(config, 'display.resume_last_session', on)
     setHermesConfigCache(next)
-    void saveHermesConfig(next)
+    // Sparse patch: PUT /api/config deep-merges, and echoing the cached
+    // snapshot would overwrite keys other surfaces changed since it loaded.
+    void saveHermesConfig(setNested({}, 'display.resume_last_session', on))
       .then(result => {
         if (!result.ok) {
           throw new Error(t.settings.config.autosaveFailed)
@@ -397,6 +405,7 @@ export function AppearanceSettings() {
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
+  const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
   const zoomPercent = useStore($zoomPercent)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
@@ -407,7 +416,7 @@ export function AppearanceSettings() {
   const reactionsEnabled = useStore($reactionsEnabled)
   const tipsEnabled = useStore($tipsEnabled)
   const toursEnabled = useStore($toursEnabled)
-  const retiredTips = useStore($retiredTips)
+  const spentTips = useStore($spentTipCount)
   const vibeHeartsEnabled = useStore($vibeHeartsEnabled)
   const backdrop = useStore($backdrop)
   const introSplash = useStore($introSplash)
@@ -486,6 +495,11 @@ export function AppearanceSettings() {
     { id: 'never', label: a.tabStripNever }
   ] as const satisfies readonly { id: TabStripDefault; label: string }[]
 
+  const appActionsOptions = [
+    { id: 'right', label: a.appActionsRight },
+    { id: 'left', label: a.appActionsLeft }
+  ] as const satisfies readonly { id: TitlebarAppActionsSide; label: string }[]
+
   const embedOptions = [
     { id: 'ask', label: a.embedsAsk },
     { id: 'always', label: a.embedsAlways },
@@ -521,7 +535,7 @@ export function AppearanceSettings() {
                   <input
                     className="w-full rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-1.5 text-[length:var(--conversation-caption-font-size)] outline-none placeholder:text-(--ui-text-tertiary) focus:border-(--ui-stroke-secondary)"
                     onChange={event => setQuery(event.target.value)}
-                    placeholder="Search your themes or the VS Code Marketplace…"
+                    placeholder={a.themeSearchPlaceholder}
                     spellCheck={false}
                     value={query}
                   />
@@ -629,6 +643,8 @@ export function AppearanceSettings() {
             title={a.uiScaleTitle}
           />
 
+          <ChatFontSetting />
+
           <TerminalFontSetting />
 
           <ListRow
@@ -659,6 +675,22 @@ export function AppearanceSettings() {
             }
             description={a.tabStripDesc}
             title={a.tabStripTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setTitlebarAppActionsSide(id)
+                }}
+                options={appActionsOptions}
+                value={titlebarAppActionsSide}
+              />
+            }
+            description={a.appActionsDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.appActions)}
+            title={a.appActionsTitle}
           />
 
           {/* Linux has neither half of this setting (see TRANSLUCENCY_SUPPORTED),
@@ -842,9 +874,9 @@ export function AppearanceSettings() {
                   ]}
                   value={tipsEnabled ? 'on' : 'off'}
                 />
-                {/* The ✕ on a tip is permanent, so this is the only way back.
-                    It appears once there is something to bring back. */}
-                {retiredTips.length > 0 && (
+                {/* A tip shows once (✕ or timer), so this is the only way to a
+                    second lap. It appears once there is something to bring back. */}
+                {spentTips > 0 && (
                   <Button
                     onClick={() => {
                       triggerHaptic('selection')
@@ -853,7 +885,7 @@ export function AppearanceSettings() {
                     size="inline"
                     variant="text"
                   >
-                    {a.tipsReset(retiredTips.length)}
+                    {a.tipsReset(spentTips)}
                   </Button>
                 )}
               </div>

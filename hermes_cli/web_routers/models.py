@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException
 
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
-    _AUX_TASK_SLOTS, _apply_model_assignment_sync, _dashboard_code_skew_guard,
+    _AUX_TASK_SLOTS, _UNSET, _apply_model_assignment_sync, _dashboard_code_skew_guard,
 )
 from agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
@@ -131,31 +131,8 @@ async def get_model_options(
 
 
 def _nous_recommended_default() -> dict:
-    from hermes_cli import models as m
-    from hermes_cli import models_pricing as mp
-    from hermes_cli.auth import get_provider_auth_state
-
-    model_ids = m.get_curated_nous_model_ids()
-    pricing = mp.get_pricing_for_provider("nous") or {}
-    free_tier = m.check_nous_free_tier(force_fresh=True)
-
-    try:
-        portal_url = (get_provider_auth_state("nous") or {}).get("portal_base_url", "") or ""
-    except Exception:
-        portal_url = ""
-
-    # This endpoint picks the model a user lands on without choosing it, so an unreachable
-    # one is worse than in a picker. Narrow to policy BEFORE the tier split, so a rescued
-    # id still has to pass the free/paid predicate.
-    policy_allowed = mp.nous_policy_allowed_ids()
-    union = m.union_with_portal_free_recommendations if free_tier else m.union_with_portal_paid_recommendations
-    model_ids, pricing = union(model_ids, pricing, portal_url)
-    model_ids = mp.restrict_to_nous_policy(model_ids, policy_allowed, rescue_empty=True)
-    if free_tier:
-        model_ids, _unavailable = m.partition_nous_models_by_tier(model_ids, pricing, free_tier=True)
-
-    model = m.pick_silent_default_model(model_ids, provider="nous")
-    return {"provider": "nous", "model": model, "free_tier": bool(free_tier)}
+    from hermes_cli.models import recommended_nous_default_model
+    return recommended_nous_default_model()
 
 
 @router.get("/api/model/recommended-default")
@@ -211,6 +188,7 @@ def get_auxiliary_models(profile: Optional[str] = None):
             tasks.append({
                 "task": slot, "provider": str(slot_cfg.get("provider", "auto") or "auto"),
                 "model": str(slot_cfg.get("model", "") or ""), "base_url": base_url,
+                "reasoning_effort": str(slot_cfg.get("reasoning_effort") or "") or None,
                 # Lets the UI tell a free local/LAN pin from a forgotten paid-provider pin.
                 "local_endpoint": is_local_endpoint(base_url),
             })
@@ -277,9 +255,13 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                 raise HTTPException(status_code=422, detail="Invalid MoA config: " + "; ".join(problems))
             normalized = normalize_moa_config(raw)
             # Merge, don't overwrite: hand-edited keys not in MoaConfigPayload (save_traces, trace_dir) survive.
-            # See issue #58819.
-            cfg.setdefault("moa", {}).update(normalized)
-            save_config(cfg)
+            # See issue #58819. Write ONLY the moa section (merge_existing deep-merges it over the
+            # on-disk raw file): saving the whole default-expanded ``cfg`` snapshot re-persisted
+            # every other section too, so a Desktop MoA autosave could wipe a chain another
+            # surface wrote meanwhile (#89184, ``fallback_providers: []``).
+            moa_section = dict(cfg.get("moa") or {})
+            moa_section.update(normalized)
+            save_config({"moa": moa_section}, merge_existing=True)
             return {"ok": True, **normalized}
 
 
@@ -311,8 +293,11 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
                 return {"ok": False, "scope": scope, "provider": provider, "model": model,
                         "confirm_required": True, "confirm_message": warning.message}
 
+        reasoning_effort = body.reasoning_effort if "reasoning_effort" in body.model_fields_set else _UNSET
+
         def _apply_assignment():
             with _profile_scope(body.profile or profile):
-                return _apply_model_assignment_sync(scope, provider, model, task, base_url, api_key)
+                return _apply_model_assignment_sync(
+                    scope, provider, model, task, base_url, api_key, reasoning_effort=reasoning_effort)
 
         return await asyncio.to_thread(_apply_assignment)

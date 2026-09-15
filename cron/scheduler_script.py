@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+from cron.env_settings import cron_env_setting
 from cron.jobs import _ensure_cron_dir
 from pathlib import Path
 from typing import Any, Callable, Optional, TYPE_CHECKING
@@ -41,7 +42,7 @@ def _timeout_from_env_or_config(
     env_var: str, config_key: str, parse: Callable[[Any], Any], label: str):
     """Shared env → ``cron.<config_key>`` resolution. ``parse`` returns the value or None to keep
     looking; a parse error on the env var WARNs, on config DEBUGs. None when neither yields."""
-    env_value = os.getenv(env_var, "").strip()
+    env_value = cron_env_setting(env_var).strip()
     if env_value:
         try:
             value = parse(env_value)
@@ -348,7 +349,24 @@ def _run_job_script(
                 # reader threads on non-UTF-8 Windows (#45099).
                 "encoding": "utf-8",
                 "errors": "replace"}
-        env = build_subprocess_env()
+        # A routed profile's script (desktop multi-profile ticker, multiplex gateway) must see ITS
+        # profile's .env + vault values — the process env holds the launch profile's. Drop the
+        # launch profile's dotenv-owned residue first (a name only the launch .env defines must
+        # come through UNSET, not with the launch value — the scrub only knows classified secrets),
+        # then overlay the installed scope, then sanitize, so routed values pass the same scrub /
+        # passthrough rules as any other. No-op outside multiplex or for the launch profile's own
+        # fires; the parent process is never mutated.
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+        from tools.environments.local import restore_managed_env, strip_launch_profile_env
+        base = strip_launch_profile_env(dict(os.environ))
+        if is_multiplex_active():
+            # Single-profile: the scope IS os.environ, so overlaying it would only re-sanitize
+            # values the child already inherits byte-identical.
+            base.update(current_secret_scope() or {})
+            # Administrator-managed values keep their precedence over the routed profile's own .env,
+            # exactly as they do in the launch process (``_apply_managed_env`` applies them last).
+            restore_managed_env(base)
+        env = build_subprocess_env(base=base)
         env.update(env_overlay)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir

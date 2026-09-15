@@ -11,6 +11,7 @@ and an ``__init__.py`` exposing ``register(ctx)``. Plugins register callbacks fo
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import importlib.metadata
 import inspect
 import json
@@ -130,11 +131,21 @@ VALID_HOOKS: Set[str] = {
     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
     # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.
     "pre_gateway_dispatch",
+    # agent_loop_stopped: an agent turn was interrupted mid-run (/stop, or the running-agent
+    # fast-path of /new; see gateway/run.py::_interrupt_and_clear_session). Kwargs: session_key,
+    # platform, reason, invalidation_reason. Return values are ignored.
+    "agent_loop_stopped",
     # Approval observers (tools/approval.py); returns ignored — plugins cannot veto or pre-answer
     # (use pre_tool_call). Kwargs: command, description, pattern_key, pattern_keys, session_key,
     # surface: "cli"|"gateway"|"smart"; post_approval_response adds choice ("once"|"session"|
     # "always"|"deny"|"timeout"|"smart_approve"|"smart_deny") and decided_by.
     "pre_approval_request", "post_approval_response",
+    # on_room_member_activity: a hosted Group Chat member's live runtime events (tool.started/completed,
+    # request.opened, message.delta, reasoning.delta, turn.error, ...) stamped with room_id, thread_id,
+    # member_id, turn_id, task_id, execution_generation. Observer, queued per consumer off the token
+    # path (agent.plugin_stream_hooks); never written to the durable room log. Kwargs: those
+    # coordinates + kind, seq, payload (the client-safe session event payload, approvals redacted).
+    "on_room_member_activity",
     # pre_transcription: after provider resolution, BEFORE any backend runs. Kwargs: file_path,
     # provider, model, language, prompt, source. Return None or a dict mutating prompt/language/
     # model (registration order, last-writer-wins; file_path is read-only).
@@ -1118,6 +1129,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self.home_path = Path(self.scope_key)
         self._discovery_lock = threading.RLock()
         self._discovered: bool = False
+        # True once a discovery re-applied plugin secret sources for this home: the per-home snapshot and
+        # the installed scope may then hold plugin-supplied names, and a later discovery that finds NO
+        # enabled plugin source (plugin removed / disabled) must still reconcile once to drop them.
+        self._plugin_secret_sources_reconciled: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
         self._gateway_message_injector: tuple[object, Callable] | None = None
         self._context_engine = None  # Set by a plugin via register_context_engine()
@@ -1151,9 +1166,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._event_queue: queue.Queue[Any] = queue.Queue(maxsize=_EVENT_PENDING_CAP)
         self._event_worker: Optional[threading.Thread] = None
         self._emit_depth = threading.local()
-        # In-flight / recently-timed-out hook callbacks keyed by (hook_name, id(cb)) so a stuck
-        # policy hook cannot spawn a new abandoned thread on every fire.
+        # In-flight / recently-timed-out hook callbacks keyed by (hook_name, id(cb), call_identity)
+        # so a stuck policy hook cannot spawn a new abandoned thread on every fire.
         self._hook_running_callbacks: Dict[tuple, object] = {}
+        self._hook_abandoned: Dict[tuple, set] = {}
         self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
         self._hook_timeout_lock = threading.Lock()
         self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
@@ -1256,29 +1272,52 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             plugin_sources = list_plugin_sources()
         except Exception:
             return
-        if not plugin_sources:
-            return
-        try:
-            from hermes_cli.config import load_config
-            secrets = (load_config() or {}).get("secrets") or {}
-        except Exception:
-            secrets = {}
-
-        def _enabled(source) -> bool:
-            section = secrets.get(getattr(source, "name", ""))
+        enabled_names: list[str] = []
+        if plugin_sources:
             try:
-                return bool(source.is_enabled(section if isinstance(section, dict) else {}))
+                from hermes_cli.config import load_config
+                secrets = (load_config() or {}).get("secrets") or {}
             except Exception:
-                return False  # mirrors the orchestrator: a raising is_enabled() is skipped
+                secrets = {}
 
-        enabled_names = [getattr(s, "name", "") for s in plugin_sources if _enabled(s)]
+            def _enabled(source) -> bool:
+                section = secrets.get(getattr(source, "name", ""))
+                try:
+                    return bool(source.is_enabled(section if isinstance(section, dict) else {}))
+                except Exception:
+                    return False  # mirrors the orchestrator: a raising is_enabled() is skipped
+
+            enabled_names = [getattr(s, "name", "") for s in plugin_sources if _enabled(s)]
         if not enabled_names:
-            return
+            # Nothing enabled now. If an earlier discovery re-applied plugin sources for this home, the
+            # snapshot and installed scope still carry that plugin's names (force-reload unloads the
+            # registration first, so this is exactly the "last plugin source removed" path) — reconcile
+            # once so they drop out. A home that never had one stays a no-op: no re-pull, no re-load.
+            if not self._plugin_secret_sources_reconciled:
+                return
+            # The marker is cleared only AFTER the cleanup below succeeds: reset/reload/refresh are
+            # fallible, and clearing first left the stale credential active with no retry on the next
+            # discovery (review on f5f88d5058).
+        else:
+            self._plugin_secret_sources_reconciled = True
         try:
-            reset_secret_source_cache()
-            load_hermes_dotenv()
+            # Reset and reload the SAME home the process (or routed turn) resolves to: under multiplex this
+            # runs at gateway boot after sibling profiles may already have hydrated, and a global clear
+            # wiped their snapshots; a routed discovery must rebuild the profile it just dropped.
+            from hermes_constants import get_hermes_home
+            home = get_hermes_home()
+            reset_secret_source_cache(home)
+            load_hermes_dotenv(hermes_home=home)
+            # A scope installed for this home was frozen BEFORE these sources existed — a routed cron
+            # fire builds its scope in run_one_job and only then, on its first agent build, discovers
+            # plugins; under multiplex semantics the load above is hydrate-only, so fold the values
+            # into the installed scope or THIS fire never sees the plugin credential.
+            from agent.secret_scope import refresh_installed_secret_scope
+            refresh_installed_secret_scope(Path(home))
+            if not enabled_names:
+                self._plugin_secret_sources_reconciled = False  # cleanup succeeded; nothing left to drop
             logger.debug("Re-applied secret sources after plugin discovery for: %s",
-                         ", ".join(sorted(enabled_names)))
+                         ", ".join(sorted(enabled_names)) or "<none — reconciled removed plugin sources>")
         except Exception as exc:
             logger.debug("secret source re-apply after discovery failed: %s", exc)
 
@@ -1605,18 +1644,13 @@ def _plugin_toolset_keys_cache_path() -> Path:
 def _persist_plugin_toolset_keys() -> None:
     """Persist discovered plugin toolset keys + portable MCP names (best-effort)."""
     try:
-        import tempfile
+        from utils import atomic_json_write
         keys = sorted({ts_key for ts_key, _, _ in get_plugin_toolsets()})
         try:
             portable = sorted(get_plugin_manager().get_portable_mcp_servers())
         except Exception:
             portable = []
-        path = _plugin_toolset_keys_cache_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".pt_keys.")
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({"toolset_keys": keys, "portable_mcp": portable}, fh)
-        os.replace(tmp, path)
+        atomic_json_write(_plugin_toolset_keys_cache_path(), {"toolset_keys": keys, "portable_mcp": portable}, indent=None, mode=0o600)
     except Exception:
         logger.debug("plugin toolset key persist failed", exc_info=True)
 
@@ -2002,7 +2036,10 @@ def resolve_plugin_command_result(result: Any) -> Any:
         finally:
             done.set()
 
-    threading.Thread(target=_runner, name="hermes-plugin-command-await", daemon=True).start()
+    # copy_context: the helper thread must see the caller's profile/secret scope, else an
+    # async hook under a running loop reads the default HERMES_HOME and get_secret raises.
+    threading.Thread(target=contextvars.copy_context().run, args=(_runner,),
+                     name="hermes-plugin-command-await", daemon=True).start()
     if not done.wait(timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS):
         raise TimeoutError("Plugin command async handler did not complete within "
                            f"{_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS:.0f}s")

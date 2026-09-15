@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from tools.skills_hub_clawhub import ClawHubSource
-from tools.skills_hub_github import GitHubAuth, GitHubSource, _PROVIDER_FILTER_VALUES, _filter_results_by_provider
+from tools.skills_hub_github import GitHubAuth, GitHubSource, _filter_results_by_provider, _provider_filter_of
 from tools.skills_hub_models import SkillMeta, SkillSource, TRUST_RANK, _dedupe_by_trust
 from tools.skills_hub_official import HermesIndexSource, OptionalSkillSource
 from tools.skills_hub_skillssh import SkillsShSource
@@ -102,9 +102,15 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
     ]
 
 
-def _search_one_source(src: SkillSource, query: str, limit: int) -> Tuple[str, List[SkillMeta]]:
+def _search_one_source(
+    src: SkillSource, query: str, limit: int, provider_filter: str = "",
+) -> Tuple[str, List[SkillMeta]]:
     """Search a single source.  Runs in a thread for parallelism."""
     try:
+        # These sources mix providers in one catalog. Narrow before their top-N
+        # cut so another provider cannot crowd every requested match out.
+        if provider_filter and isinstance(src, (HermesIndexSource, GitHubSource)):
+            return src.source_id(), src.search(query, limit=limit, provider_filter=provider_filter)
         return src.source_id(), src.search(query, limit=limit)
     except Exception as e:
         logger.debug("Search failed for %s: %s", src.source_id(), e)
@@ -116,10 +122,11 @@ def _select_active_sources(sources: List[SkillSource], source_filter: str) -> Li
 
     A provider filter (nvidia/openai/...) is not a source id — the data lives
     in the index/github source under ``extra.provider`` — so it selects like
-    "all"; the narrowing happens later on the merged results. "official" is
-    always included alongside an explicit source filter.
+    "all". Mixed-provider sources narrow before their top-N cut; the walker
+    cuts every source's results. "official" is always queried alongside an
+    explicit source filter.
     """
-    effective = "all" if source_filter.strip().lower() in _PROVIDER_FILTER_VALUES else source_filter
+    effective = "all" if _provider_filter_of(source_filter) else source_filter
     index_available = effective == "all" and any(
         src.source_id() == "hermes-index" and getattr(src, "is_available", False) for src in sources
     )
@@ -141,12 +148,15 @@ def parallel_search_sources(
     """Search all sources in parallel with an overall timeout.
 
     Returns ``(all_results, source_counts, timed_out_ids)``. *on_source_done*
-    is an optional ``(source_id, count) -> None`` progress callback.
+    is an optional ``(source_id, count) -> None`` progress callback. Under a
+    provider filter every source's results are narrowed before they are
+    counted and merged, so callers need no provider logic of their own.
     """
     from concurrent.futures import as_completed
 
     per_source_limits = per_source_limits or {}
     active = _select_active_sources(sources, source_filter)
+    provider_filter = _provider_filter_of(source_filter)
     all_results: List[SkillMeta] = []
     source_counts: Dict[str, int] = {}
     timed_out_ids: List[str] = []
@@ -159,13 +169,20 @@ def parallel_search_sources(
     from tools.daemon_pool import DaemonThreadPoolExecutor
     pool = DaemonThreadPoolExecutor(max_workers=min(len(active), 8))
     futures = {
-        pool.submit(_search_one_source, src, query, per_source_limits.get(src.source_id(), 50)): src.source_id()
+        pool.submit(
+            _search_one_source, src, query, per_source_limits.get(src.source_id(), 50), provider_filter,
+        ): src.source_id()
         for src in active
     }
     try:
         for fut in as_completed(futures, timeout=overall_timeout):
             try:
                 sid, results = fut.result(timeout=0)
+                if provider_filter:
+                    # One owner for the merged provider cut: sources that cannot
+                    # filter per-tap (official, url, ...) are narrowed here, so
+                    # every caller (CLI, TUI gateway, dashboard) sees one rule.
+                    results = _filter_results_by_provider(results, provider_filter)
                 source_counts[sid] = len(results)
                 all_results.extend(results)
                 if on_source_done:
@@ -185,9 +202,6 @@ def unified_search(query: str, sources: List[SkillSource],
                    source_filter: str = "all", limit: int = 10) -> List[SkillMeta]:
     """Search all sources (in parallel) and merge results."""
     all_results, _, _ = parallel_search_sources(sources, query=query, source_filter=source_filter, overall_timeout=30)
-    # Provider filters target ``extra.provider`` on the merged set, not a source id.
-    if source_filter.strip().lower() in _PROVIDER_FILTER_VALUES:
-        all_results = _filter_results_by_provider(all_results, source_filter)
     deduped = _dedupe_by_trust(all_results)
     # Stable-sort by trust before truncating so the limit cut never drops a
     # builtin/official entry because a high-volume community source finished

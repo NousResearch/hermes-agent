@@ -88,6 +88,15 @@ def _expect_error(tmp_path, mutation: dict, expected_substring: str, drop: str =
     assert "entry.yaml" in combined, combined
 
 
+def test_unknown_category_fails(tmp_path):
+    path = write_entry(tmp_path, {**VALID_ENTRY, "category": "memmory"})
+    result = run_validator(str(path))
+    assert result.returncode != 0
+    assert "category" in result.stdout + result.stderr
+    path = write_entry(tmp_path, {**VALID_ENTRY, "category": "memory"}, "ok.yaml")
+    assert run_validator(str(path)).returncode == 0
+
+
 def test_bad_name_fails(tmp_path):
     _expect_error(tmp_path, {"name": "Bad Name!"}, "name")
 

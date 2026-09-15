@@ -1,8 +1,12 @@
 import { atom } from 'nanostores'
 
-import { getLocalModelsJobs, getLocalModelsStatus } from '@/hermes'
+import { getApiRequestConnection } from '@/api/client'
+import { getLocalModelsJobs, installLocalRuntime } from '@/hermes'
 import { translateNow } from '@/i18n'
+import { $activeGatewayRoute } from '@/store/gateway'
+import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notify, notifyError } from '@/store/notifications'
+import { $connection } from '@/store/session'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
 // App-level tracker for local-runtime jobs (runtime installs, model
@@ -14,11 +18,144 @@ import type { LocalRuntimeJob } from '@/types/hermes'
 
 export const $localRuntimeJobs = atom<readonly LocalRuntimeJob[]>([])
 
+export const $localRuntimeInstallStarting = atom(false)
+
+// Shared by the settings button and the campaign CTA. This is request state,
+// not invented job progress; the backend registry still owns the actual work.
+export function localRuntimeInstallBusy(): boolean {
+  return (
+    $localRuntimeInstallStarting.get() ||
+    $localRuntimeJobs
+      .get()
+      .some(job => job.status === 'running' && (job.kind === 'runtime-install' || job.kind === 'quickstart'))
+  )
+}
+
+export async function startLocalRuntimeInstall(): Promise<void> {
+  if (localRuntimeInstallBusy()) {
+    return
+  }
+
+  const owner = activeContext
+  owner.postPending = true
+  $localRuntimeInstallStarting.set(true)
+
+  try {
+    const { job_id } = await installLocalRuntime()
+    owner.acceptedIds.add(job_id)
+    owner.postPending = false
+    owner.readPending = true
+    owner.acceptedInstall++
+
+    if (owner !== activeContext) {
+      return
+    }
+
+    // The pane can mount while this POST resolves. Hold the shared lock
+    // through a fresh read, not merely until the request was accepted.
+    await polling
+
+    if (owner !== activeContext) {
+      return
+    }
+
+    await poll()
+  } catch (error) {
+    if (owner === activeContext) {
+      notifyError(error, translateNow('settings.localModels.installFailed'))
+    }
+  } finally {
+    owner.postPending = false
+
+    if (owner === activeContext && !owner.readPending) {
+      $localRuntimeInstallStarting.set(false)
+    }
+  }
+}
+
 const POLL_ACTIVE_MS = 700
 let timer: null | number = null
-let polling = false
-// Jobs we've already toasted for, so a poll race can't double-notify.
-const settledNotified = new Set<string>()
+let polling: Promise<void> | null = null
+let generation = 0
+interface JobContext {
+  jobs: readonly LocalRuntimeJob[]
+  postPending: boolean
+  readPending: boolean
+  acceptedInstall: number
+  acceptedIds: Set<string>
+  settledNotified: Set<string>
+}
+
+// Only foreground requests run; switching away retains ownership, not a poller.
+const contexts = new Map<string, JobContext>()
+
+function contextKey() {
+  const connection = $connection.get()
+
+  return JSON.stringify([
+    getApiRequestConnection() ?? connection?.connectionId ?? [connection?.mode, connection?.baseUrl],
+    $activeGatewayRoute.get()
+  ])
+}
+
+function cachedContext(key: string): JobContext {
+  let state = contexts.get(key)
+
+  if (!state) {
+    state = {
+      jobs: [],
+      postPending: false,
+      readPending: false,
+      acceptedInstall: 0,
+      acceptedIds: new Set(),
+      settledNotified: new Set()
+    }
+    contexts.set(key, state)
+  }
+
+  return state
+}
+
+let activeKey = contextKey()
+let activeContext = cachedContext(activeKey)
+
+function resetContext() {
+  activeContext.jobs = $localRuntimeJobs.get()
+  const context = ++generation
+
+  if (timer !== null) {
+    window.clearTimeout(timer)
+  }
+
+  timer = null
+  polling = null
+  activeKey = contextKey()
+  activeContext = cachedContext(activeKey)
+  activeContext.readPending ||= activeContext.jobs.some(job => job.status === 'running')
+  $localRuntimeJobs.set(activeContext.jobs)
+  $localRuntimeInstallStarting.set(activeContext.postPending || activeContext.readPending)
+
+  // Gateway activation publishes the route BEFORE the REST profile tag.
+  // Coalesce that synchronous re-home before any ambient API request.
+  void Promise.resolve().then(() => {
+    if (context !== generation) {
+      return
+    }
+
+    if (activeKey !== contextKey()) {
+      resetContext()
+
+      return
+    }
+
+    if ($localModelsEnabled.get() && activeContext.readPending && !activeContext.postPending) {
+      void poll()
+    }
+  })
+}
+
+$connection.listen(resetContext)
+$activeGatewayRoute.listen(resetContext)
 
 function jobsEqual(a: readonly LocalRuntimeJob[], b: readonly LocalRuntimeJob[]) {
   if (a.length !== b.length) {
@@ -38,14 +175,20 @@ function jobsEqual(a: readonly LocalRuntimeJob[], b: readonly LocalRuntimeJob[])
 }
 
 function notifySettled(previous: readonly LocalRuntimeJob[], next: readonly LocalRuntimeJob[]) {
+  const { acceptedIds, settledNotified } = activeContext
   const wasRunning = new Set(previous.filter(j => j.status === 'running').map(j => j.job_id))
 
   for (const job of next) {
-    if (job.status === 'running' || !wasRunning.has(job.job_id) || settledNotified.has(job.job_id)) {
+    if (
+      job.status === 'running' ||
+      (!wasRunning.has(job.job_id) && !acceptedIds.has(job.job_id)) ||
+      settledNotified.has(job.job_id)
+    ) {
       continue
     }
 
     settledNotified.add(job.job_id)
+    acceptedIds.delete(job.job_id)
 
     if (job.status === 'done') {
       notify({
@@ -76,41 +219,65 @@ function notifySettled(previous: readonly LocalRuntimeJob[], next: readonly Loca
   }
 }
 
-async function poll() {
-  try {
-    const { jobs } = await getLocalModelsJobs()
-    const previous = $localRuntimeJobs.get()
+function poll(): Promise<void> {
+  if (polling) {
+    return polling
+  }
 
-    if (!jobsEqual(previous, jobs)) {
+  const context = generation
+  const owner = activeContext
+  const accepted = owner.acceptedInstall
+
+  if (timer !== null) {
+    window.clearTimeout(timer)
+  }
+
+  timer = null
+  polling = (async () => {
+    try {
+      const { jobs } = await getLocalModelsJobs()
+
+      if (context !== generation || accepted !== owner.acceptedInstall) {
+        return
+      }
+
+      const previous = $localRuntimeJobs.get()
+
+      // Acceptance can arrive after a pane already read the terminal job.
       notifySettled(previous, jobs)
-      $localRuntimeJobs.set(jobs)
+
+      if (!jobsEqual(previous, jobs)) {
+        $localRuntimeJobs.set(jobs)
+      }
+
+      owner.jobs = jobs
+
+      if (owner.readPending) {
+        owner.readPending = false
+        $localRuntimeInstallStarting.set(owner.postPending)
+      }
+    } catch {
+      // Backend unreachable — keep the last snapshot; the next poll retries.
+    } finally {
+      if (context === generation) {
+        polling = null
+
+        if (owner.readPending || $localRuntimeJobs.get().some(j => j.status === 'running')) {
+          timer = window.setTimeout(() => void poll(), POLL_ACTIVE_MS)
+        }
+      }
     }
-  } catch {
-    // Backend unreachable — keep the last snapshot; the next poll retries.
-  }
+  })()
 
-  const anyRunning = $localRuntimeJobs.get().some(j => j.status === 'running')
-
-  if (anyRunning) {
-    timer = window.setTimeout(() => void poll(), POLL_ACTIVE_MS)
-  } else {
-    polling = false
-    timer = null
-  }
+  return polling
 }
 
 // Idempotent kick: start (or keep) the poll loop while work is in flight.
 // Call after starting a job AND on app boot (to rediscover work started
 // before a reload).
 export function watchLocalRuntimeJobs() {
-  if (polling) {
+  if (polling || timer !== null) {
     return
-  }
-
-  polling = true
-
-  if (timer !== null) {
-    window.clearTimeout(timer)
   }
 
   void poll()
@@ -137,33 +304,4 @@ export function runningModelDownloads(jobs: readonly LocalRuntimeJob[]): LocalRu
 
 export function runningRuntimeInstall(jobs: readonly LocalRuntimeJob[]): LocalRuntimeJob | null {
   return jobs.find(j => j.kind === 'runtime-install' && j.status === 'running') ?? null
-}
-
-// One engine-update toast per app session: checked at boot (after the
-// gateway is ready), only when the user runs the local engine. The
-// download itself is always a button click in Local Models — this is a
-// pointer, not an installer.
-let updateNotified = false
-
-export async function checkLocalRuntimeUpdate() {
-  if (updateNotified) {
-    return
-  }
-
-  try {
-    const status = await getLocalModelsStatus()
-
-    if (status.enabled && status.update_available) {
-      updateNotified = true
-      notify({
-        durationMs: 10_000,
-        kind: 'info',
-        title: translateNow('settings.localModels.title'),
-        message: translateNow('settings.localModels.updateToast', status.configured_tag)
-      })
-    }
-  } catch {
-    // Backend without the endpoint (older runtime) or transient failure —
-    // silently skip; the pane still shows the update row when opened.
-  }
 }

@@ -15,7 +15,7 @@ The desktop has **no build/runtime dependency on the dashboard frontend**: it sp
 NOT embed `hermes --tui` — own composer, transcript, slash pipeline.
 
 **One backward-compat fallback:** `serve` is newer, so the spawn (`electron/backend-command.ts` +
-`backendSupportsServe()` in `electron/main.ts`) checks whether the resolved runtime registers `serve`
+`createBackendServeSupportResolver()` in `electron/backend-serve-support.ts`) checks whether the runtime registers `serve`
 and ONLY when it does not (older managed install / PATH `hermes` not yet updated) rewrites argv to
 legacy `dashboard --no-open`. Without it a new app against an un-upgraded runtime crashes on an
 unknown subcommand and bricks every mid-upgrade user. Keep it narrow and tested.
@@ -28,8 +28,14 @@ via `/api/gateway/*`). Never re-parent the gateway under the backend — `gatewa
 - The backend already provides everything: `commands.catalog` and `complete.slash` include built-ins,
   user `quick_commands`, AND skill-derived commands. No new RPC is needed to see skills.
 - `src/lib/desktop-slash-commands.ts` is the load-bearing file: `DESKTOP_COMMAND_SPECS` (built-ins
-  and their desktop surfaces) + `NO_DESKTOP_SURFACE` block-lists (terminal-only / messaging-only /
-  picker-owned / settings-owned / advanced). `isDesktopSlashCommand(name)` gates **execution** (true
+  and their desktop surfaces) + the block-list. A command's desktop disposition (terminal-only /
+  messaging-only / settings-owned / advanced / hidden) is authored ONCE, as `desktop=` on its
+  `CommandDef` in `hermes_cli/commands.py`; the live `commands.catalog` carries it, and
+  `src/lib/desktop-slash-registry.json` (regenerate with `scripts/dump_desktop_slash_registry.py`;
+  `tests/hermes_cli/test_desktop_slash_registry.py` + the vitest file fail on drift) is the offline
+  fallback. Only names the Python registry has never heard of (`/density`, `/details`, `/logs`,
+  `/mouse` — Ink-local; `/pets`) live in `TS_ONLY_NO_DESKTOP_SURFACE`. `isDesktopSlashCommand(name)`
+  gates **execution** (true
   for built-ins AND any non-built-in so typed skill/quick commands run);
   `isDesktopSlashSuggestion(name)` gates **discovery** — used by BOTH completion paths in
   `app/chat/composer/hooks/use-slash-completions.ts` and by `filterDesktopCommandsCatalog`;
@@ -81,3 +87,12 @@ in `src/plugins/hermes-bots/`: `canonical-chat-registry.test.ts` (tripwire: the 
 reads/writes a stored pointer), `canonical-chat-creation.test.ts`, `canonical-chat-adopt-on-conflict.test.ts`,
 `bot-row-opens-canonical-chat.test.ts`, `hide-bot-chats.test.ts`; plus repo-root
 `tests/tui_gateway/test_profiles_list_canonical_session.py`.
+
+## Free tier surfaces (`src/store/free-tier*.ts`, Billing, statusbar chip, onboarding ready screen)
+
+`$freeTierStatus` mirrors `free_tier.status` (pull; refreshed with the status snapshot and after a
+sign-in). `deriveBillingView` branches on `billing.free_tier` BEFORE `logged_in` (status
+`free_tier`: notice + one Sign in, Plan/Model/Connectors summary, no payment or usage rows). The
+sign-in dialog is a single claimed owner (first mount wins, like the real-profile consent prompt);
+its states map 1:1 to the poll route's `status` + `reason`. Copy is the ruled free-tier copy: never
+"guest", "anonymous", "claim" or "Nous Portal" in user-facing text.

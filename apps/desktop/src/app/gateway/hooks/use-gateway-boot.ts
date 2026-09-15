@@ -1,18 +1,20 @@
 import {
+  type GatewayEvent,
   isGatewayReauthRequired,
   isGatewayWebSocketUrl,
+  JSON_RPC_METHOD_NOT_FOUND,
   JsonRpcGatewayError,
+  reconnectBackoffDelayMs,
   resolveGatewayWsUrl
 } from '@hermes/shared'
 import { useEffect, useRef } from 'react'
 
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
-import type { HermesConnection } from '@/global'
+import type { DesktopBootProgress, HermesConnection } from '@/global'
 import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
 import { decideLivenessForceClose, LIVENESS_REPROBE_DELAY_MS } from '@/lib/gateway-liveness-policy'
-import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $desktopBoot,
@@ -30,6 +32,7 @@ import {
   closeLegacySecondaryGateways,
   closeSecondaryGateways,
   configureGatewayRegistry,
+  dispatchPrimaryServerRequest,
   disposeSecondariesForConnection,
   ensureActiveGatewayOpen,
   ensureGatewayForProfile,
@@ -39,6 +42,7 @@ import {
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
   reportPrimaryGatewayState,
+  type ScopedServerRequest,
   setPrimaryGateway,
   setPrimaryGatewayConnection,
   touchSecondaryGateways
@@ -51,7 +55,7 @@ import {
   isCurrentGatewaySwitch,
   registerGatewaySwitchLifecycle
 } from '@/store/gateway-switch'
-import { checkLocalRuntimeUpdate, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
+import { watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import { notify, notifyError } from '@/store/notifications'
 import { loadPoolLimits } from '@/store/pool-limits'
 import {
@@ -64,6 +68,7 @@ import {
   $activeSessionId,
   $connection,
   $currentCwd,
+  $gatewayState,
   $selectedStoredSessionId,
   $sessions,
   ensureDefaultWorkspaceCwd,
@@ -87,7 +92,6 @@ import {
   resetTileRuntimeBindings
 } from '@/store/session-states'
 import { windowProfileOverride } from '@/store/windows'
-import type { RpcEvent } from '@/types/hermes'
 
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
 
@@ -146,7 +150,9 @@ export function primaryRuntimeConnectionId(connection: Pick<HermesConnection, 'c
 
 interface GatewayBootOptions {
   beforeConnectionSwitch: () => void
-  handleGatewayEvent: (event: RpcEvent) => void
+  handleGatewayEvent: (event: GatewayEvent) => void
+  /** Server→client request from any registry socket; false = no handler (the channel answers -32601). */
+  handleServerRequest: (request: ScopedServerRequest) => boolean
   onConnectionReady: (
     connection: Awaited<ReturnType<NonNullable<typeof window.hermesDesktop>['getConnection']>> | null
   ) => void
@@ -158,6 +164,7 @@ interface GatewayBootOptions {
 export function useGatewayBoot({
   beforeConnectionSwitch,
   handleGatewayEvent,
+  handleServerRequest,
   onConnectionReady,
   onGatewayReady,
   refreshHermesConfig,
@@ -166,6 +173,7 @@ export function useGatewayBoot({
   const callbacksRef = useRef({
     beforeConnectionSwitch,
     handleGatewayEvent,
+    handleServerRequest,
     onConnectionReady,
     onGatewayReady,
     refreshHermesConfig,
@@ -175,6 +183,7 @@ export function useGatewayBoot({
   callbacksRef.current = {
     beforeConnectionSwitch,
     handleGatewayEvent,
+    handleServerRequest,
     onConnectionReady,
     onGatewayReady,
     refreshHermesConfig,
@@ -243,6 +252,21 @@ export function useGatewayBoot({
     // tick — a stale OAuth ticket fails every attempt and would otherwise stack
     // identical error toasts (and their haptics). Reset on the next clean open.
     let reauthNotified = false
+    // After boot, a primary auth failure must not cover a healthy secondary.
+    let primaryReauthError: string | null = null
+
+    const syncPrimaryReauthError = () => {
+      if (!bootCompleted || !primaryReauthError) {
+        return
+      }
+
+      if (isActivePrimary()) {
+        failDesktopBoot(primaryReauthError)
+      } else if (activeGateway()?.connectionState === 'open' && $desktopBoot.get().error === primaryReauthError) {
+        completeDesktopBoot()
+      }
+    }
+
     // Raised once the reconnect loop has been failing for
     // RECONNECT_ESCALATE_AFTER_MS so we fire a single non-blocking toast.
     // Reset on a clean open or a manual/wake-driven reconnect.
@@ -407,10 +431,13 @@ export function useGatewayBoot({
         // through to the backoff in the finally block below — they must NOT
         // take the full-screen "couldn't start" path (locks reading/drafting).
         if (!cancelled && isGatewayReauthRequired(err) && !reauthNotified) {
-          reauthNotified = true
-          const message = err instanceof Error ? err.message : String(err)
-          failDesktopBoot(message)
-          notifyError(err, translateNow('boot.errors.gatewaySignInRequired'))
+          primaryReauthError = err instanceof Error ? err.message : String(err)
+          syncPrimaryReauthError()
+
+          if (isActivePrimary()) {
+            reauthNotified = true
+            notifyError(err, translateNow('boot.errors.gatewaySignInRequired'))
+          }
         }
       } finally {
         reconnecting = false
@@ -604,6 +631,7 @@ export function useGatewayBoot({
         reconnectFailingSince = null
         escalated = false
         reauthNotified = false
+        primaryReauthError = null
 
         gateway.close()
         // The primary mode is changing, but registered v2 sources remain
@@ -682,8 +710,6 @@ export function useGatewayBoot({
         // that were running before a reload — the backend registry is the
         // authority; this just resumes following it.
         watchLocalRuntimeJobs()
-        // One-per-session engine-update pointer (enabled runtimes only).
-        void checkLocalRuntimeUpdate()
       } catch (err) {
         const mayPublishFailure =
           !cancelled && (switchToken === null ? !$gatewaySwitching.get() : isCurrentGatewaySwitch(switchToken))
@@ -709,7 +735,11 @@ export function useGatewayBoot({
       }
     }
 
-    const offBootProgress = desktop.onBootProgress(payload => {
+    const onBootProgress = (payload: DesktopBootProgress) => {
+      if (cancelled) {
+        return
+      }
+
       // Soft switch / post-boot startHermes re-emits progress — ignore so the
       // cold-boot CONNECTING overlay stays down. Post-boot errors are gated:
       // only confirmed reauth takes the full-screen recovery surface. Transient
@@ -717,18 +747,35 @@ export function useGatewayBoot({
       // (otherwise a 1–3 min blip bricks reading/drafting behind "couldn't start").
       if ($gatewaySwitching.get() || bootCompleted) {
         if (payload.error && shouldApplyPostBootProgressError(payload.error)) {
-          applyDesktopBootProgress(payload)
+          primaryReauthError = payload.error
+
+          if (bootCompleted) {
+            syncPrimaryReauthError()
+          } else {
+            applyDesktopBootProgress(payload)
+          }
         }
 
         return
       }
 
       applyDesktopBootProgress(payload)
+    }
+
+    let bootSnapshotSuperseded = false
+
+    const offBootProgress = desktop.onBootProgress(payload => {
+      bootSnapshotSuperseded = true
+      onBootProgress(payload)
     })
 
     void desktop
       .getBootProgress()
-      .then(snapshot => applyDesktopBootProgress(snapshot))
+      .then(snapshot => {
+        if (!bootSnapshotSuperseded && !gatewayOpen()) {
+          onBootProgress(snapshot)
+        }
+      })
       .catch(() => undefined)
 
     setDesktopBootStep({
@@ -764,6 +811,11 @@ export function useGatewayBoot({
     // (connectionId, profile) keep-set so two sources exposing the same
     // profile name (every source has a 'default') can't collide.
     configureGatewayRegistry({
+      onServerRequest: request => {
+        if (!callbacksRef.current.handleServerRequest(request)) {
+          request.fail(JSON_RPC_METHOD_NOT_FOUND, `Hermes Desktop cannot answer ${request.method}`)
+        }
+      },
       // The primary socket has no secondary entry to carry registry identity.
       // Electron's published active descriptor is authoritative after boot;
       // a true legacy primary has no connectionId and remains unqualified.
@@ -820,15 +872,20 @@ export function useGatewayBoot({
       }
     })
 
+    const offActiveGatewayReauth = $gateway.listen(syncPrimaryReauthError)
+    const offActiveStateReauth = $gatewayState.listen(syncPrimaryReauthError)
+
     const offState = gateway.onState(st => {
       // Mirror to the composer only while the primary is the active profile —
       // a background secondary reconnect mustn't flip the foreground state.
       reportPrimaryGatewayState(st)
 
       if (st === 'open') {
+        bootSnapshotSuperseded = true
         reconnectAttempt = 0
         reconnectFailingSince = null
         reauthNotified = false
+        primaryReauthError = null
         escalated = false
         livenessProbeFailures = 0
         clearReconnectTimer()
@@ -863,6 +920,9 @@ export function useGatewayBoot({
       recordSessionEventScope(scopedEvent)
       callbacksRef.current.handleGatewayEvent(scopedEvent)
     })
+
+    // Secondary sockets reach the same handler through the registry's onServerRequest.
+    const offRequest = gateway.onRequest(request => dispatchPrimaryServerRequest(request, sourceProfile))
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.
@@ -1224,8 +1284,11 @@ export function useGatewayBoot({
       offConnectionApplied?.()
       offConnectionsChanged?.()
       offGatewayReconnect()
+      offActiveGatewayReauth()
+      offActiveStateReauth()
       offState()
       offEvent()
+      offRequest()
       offExit()
       offWindowState?.()
       offBootProgress()

@@ -59,6 +59,7 @@ import {
   requestProfileCreate,
   toggleShowAllProfiles
 } from '@/store/profile'
+import { $profileRailVisible, toggleProfileRailVisible } from '@/store/profile-rail-prefs'
 import { runImportProfileFlow } from '@/store/profile-share'
 import { $projectTree } from '@/store/projects'
 import type { PullRequestBucket } from '@/store/pull-requests'
@@ -157,6 +158,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const ordering = useStore($sidebarOrdering)
   const rowMeta = useStore($sidebarRowMeta)
   const cardRows = useStore($sidebarCardRows)
+  const profileRailVisible = useStore($profileRailVisible)
   const showAllSessions = useStore($sidebarShowAllSessions)
   const statusFilter = useStore($sidebarStatusFilter)
   const projectFilter = useStore($sidebarProjectFilter)
@@ -305,6 +307,15 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
             checked={cardRows}
             onCheck={() => setSidebarCardRows(!cardRows)}
             option={{ icon: 'inbox', id: 'card-rows', label: 'Inbox style' }}
+          />
+
+          {/* The colored strip at the sidebar foot. Off, the statusbar grows a
+              profile dropdown beside the gateway switcher, so nobody loses the
+              door — this is for people whose profiles are bots, not workspaces. */}
+          <OptionCheckbox
+            checked={profileRailVisible}
+            onCheck={toggleProfileRailVisible}
+            option={{ icon: 'organization', id: 'profile-rail', label: t.sidebar.profileRail }}
           />
         </DropdownMenuGroup>
 

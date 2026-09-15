@@ -803,12 +803,16 @@ export function useMessageStream({
   )
 
   const failAssistantMessage = useCallback(
-    (sessionId: string, errorMessage: string, occurredAt = Date.now() / 1000) => {
+    (sessionId: string, errorMessage: string, occurredAt = Date.now() / 1000, surface?: ErrorSurface | null) => {
       updateSessionState(sessionId, state => {
         const streamId = state.streamId ?? `assistant-error-${Date.now()}`
         const groupId = state.pendingBranchGroup ?? undefined
         const prev = state.messages
         const error = errorMessage.trim() || 'Hermes reported an error'
+        // The `error` event carries no descriptor; the dispatcher may recover
+        // one from the text (SESSION_NOT_OWNED, disk_full) so the card gates
+        // its buttons like a classified turn.
+        const errorSurface = surface ? { errorSurface: surface } : {}
 
         const durationS = state.turnStartedAt
           ? Math.max(1, Math.round((Date.now() - state.turnStartedAt) / 1000))
@@ -821,6 +825,7 @@ export function useMessageStream({
                     ...message,
                     completedAt: occurredAt,
                     error,
+                    ...errorSurface,
                     parts: completeOpenTimelineParts(message.parts, occurredAt),
                     pending: false,
                     ...(durationS !== undefined ? { durationS } : {})
@@ -836,6 +841,7 @@ export function useMessageStream({
                 timestamp: occurredAt,
                 completedAt: occurredAt,
                 error,
+                ...errorSurface,
                 pending: false,
                 branchGroupId: groupId,
                 ...(durationS !== undefined ? { durationS } : {})

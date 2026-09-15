@@ -1,4 +1,4 @@
-# Hermes LCM — context engine plugin (B04)
+# Hermes LCM: context engine plugin (B04)
 
 Opt-in, DAG-based context management for Hermes Agent. It replaces the built-in
 `ContextCompressor` when the user asks for it, and gets out of the way
@@ -40,7 +40,7 @@ chain of copies.
 
 ## Agent-facing tools
 
-`lcm_search`, `lcm_expand`, `lcm_page`, `lcm_status` — see
+`lcm_search`, `lcm_expand`, `lcm_page`, `lcm_status`. See
 `skills/hermes-lcm/references/recall-tools.md` for arguments and response
 shapes, and `recall-policy.md` for why recall is session-scoped.
 
@@ -48,8 +48,8 @@ shapes, and `recall-policy.md` for why recall is session-scoped.
 
 `page_size` (default 10 / ceiling 50), `max_search_results` (default 8 /
 ceiling 25) and `body_chars` (default 2000 / ceiling 8000) are enforced in the
-storage layer. A config or a caller may lower them; nothing can raise them.
-There is no call that returns a whole session — `lcm_page` walks it one page at
+storage layer. A config or a caller may lower them. Nothing can raise them.
+There is no call that returns a whole session. `lcm_page` walks it one page at
 a time with a cursor, and node lineage is paged the same way.
 
 ## Rollback
@@ -57,7 +57,7 @@ a time with a cursor, and node lineage is paged the same way.
 Unset `context.engine`, set it to `compressor`, misspell the engine name, or
 have the plugin fail to import or construct: in every case the host keeps the
 built-in `ContextCompressor` and the `lcm_*` tools are absent. Nothing needs to
-be repaired or reconciled — the store is a read-only record of what happened.
+be repaired or reconciled. The store is a read-only record of what happened.
 See `tests/plugins/context_engine/test_lcm_rollback.py`.
 
 ## Design notes
@@ -65,7 +65,7 @@ See `tests/plugins/context_engine/test_lcm_rollback.py`.
 - **No model calls.** The digest is deterministic and extractive, so compaction
   cannot fail on a provider error and its output is testable.
 - **Fail-open.** `compress` returns the caller's list unchanged on any internal
-  failure; the ingest hook swallows storage errors; tool calls return JSON
+  failure. The ingest hook swallows storage errors. Tool calls return JSON
   errors rather than raising.
 - **Thread-safe.** Compression can run on a pooled daemon thread
   (`compression.context_timeout_seconds`), so the SQLite connection is opened

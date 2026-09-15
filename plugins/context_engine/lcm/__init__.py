@@ -1,4 +1,4 @@
-"""Hermes LCM — opt-in, DAG-based context engine (``context.engine: lcm``).
+"""Hermes LCM. Opt-in, DAG-based context engine (``context.engine: lcm``).
 
 Layout
 
@@ -17,15 +17,15 @@ discovers always-available engines by scanning ``plugins/context_engine/<name>/`
 "place your engine in ``plugins/context_engine/<name>/``").  The general plugin
 tree is opt-in-by-default and would leave the engine unavailable until a user
 enabled it, which is the opposite of the required behaviour.  This is the
-plugin boundary either way; nothing outside this directory changes.
+plugin boundary either way. Nothing outside this directory changes.
 
 Selecting the engine
 
     context:
-      engine: "lcm"        # config.yaml; "compressor" (the built-in) is default
+      engine: "lcm"        # config.yaml: "compressor" (the built-in) is default
 
 Unset, misspelled, or failing to load, the host stays on the built-in
-``ContextCompressor`` — disabling the plugin is the rollback path.
+``ContextCompressor``. Disabling the plugin is the rollback path.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ def _command_is_ours(name: str) -> bool:
     Discovery and engine loading are independent host paths, so ``register``
     can legitimately run more than once per process.  Re-registering would log a
     spurious plugin-vs-plugin conflict, so we skip only when the existing entry
-    is already ours — another plugin's claim on the name is left to the host's
+    is already ours. Another plugin's claim on the name is left to the host's
     own conflict policy.
     """
     try:
@@ -92,7 +92,7 @@ def register(ctx: Any) -> None:
                 "recall",
                 _SKILL_PATH,
                 description=(
-                    "Use LCM bounded recall for the current session; page summary "
+                    "Use LCM bounded recall for the current session. Page summary "
                     "nodes with lcm_expand instead of loading whole transcripts."
                 ),
             )
@@ -102,7 +102,7 @@ def register(ctx: Any) -> None:
 
 
 def _handle_command(engine: LCMEngine, raw_args: str) -> str:
-    """Handle ``/lcm ...`` — diagnostics and bounded recall from the CLI."""
+    """Handle ``/lcm ...``: diagnostics and bounded recall from the CLI."""
     parts = (raw_args or "").split()
     action = parts[0].lower() if parts else "status"
 

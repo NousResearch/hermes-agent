@@ -1,6 +1,6 @@
 # LCM recall tool reference
 
-All four tools are injected by the engine at startup; they only exist while
+All four tools are injected by the engine at startup. They only exist while
 `context.engine: lcm` is active.
 
 ## `lcm_search`
@@ -9,7 +9,7 @@ Find a retained message in the current session.
 
 | Arg | Type | Notes |
 |---|---|---|
-| `query` | string | Required. Tokens are matched conjunctively; operator characters are neutralised. |
+| `query` | string | Required. Tokens are matched conjunctively. Operator characters are neutralised. |
 | `limit` | integer | Optional. Clamped to `max_search_results`. |
 
 Returns `{session_id, query, returned, results[], bounded, has_more, note}`.
@@ -40,7 +40,7 @@ Walk the session's raw messages ascending by sequence.
 
 | Arg | Type | Notes |
 |---|---|---|
-| `cursor` | integer | `next_cursor` from the previous call; 0 starts at the beginning. |
+| `cursor` | integer | `next_cursor` from the previous call. 0 starts at the beginning. |
 | `page_size` | integer | Clamped to `max_page_size`. |
 
 Returns `{items[], returned, total, page_size, has_more, next_cursor, bounded}`.
@@ -48,8 +48,8 @@ Returns `{items[], returned, total, page_size, has_more, next_cursor, bounded}`.
 ## `lcm_status`
 
 No arguments. Returns the retained-message and summary-node counts, schema
-version, FTS availability, effective bounds, and the recall policy — the same
-view the `/lcm status` slash command prints.
+version, FTS availability, effective bounds, and the recall policy. This is the
+same view the `/lcm status` slash command prints.
 
 ## CLI
 

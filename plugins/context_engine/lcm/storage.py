@@ -3,8 +3,8 @@
 Three properties of this module are load-bearing for the B04 acceptance
 criteria, so they are stated once here rather than re-litigated per method:
 
-1. **Raw messages are append-only.**  ``sync_transcript`` only ever appends;
-   there is no UPDATE or DELETE path for a recorded message.  Compaction
+1. **Raw messages are append-only.**  ``sync_transcript`` only ever appends.
+   There is no UPDATE or DELETE path for a recorded message.  Compaction
    summarizes *by reference*, so the originals survive it.
 2. **Every summary node keeps lineage.**  ``create_node`` writes one
    ``node_sources`` row per source (message id or parent node id), and the
@@ -121,11 +121,11 @@ def schema_version(conn: sqlite3.Connection) -> int:
 
 
 def migrate(conn: sqlite3.Connection) -> int:
-    """Bring *conn* up to ``SCHEMA_VERSION``; return the resulting version.
+    """Bring *conn* up to ``SCHEMA_VERSION``. Return the resulting version.
 
     Migrations are additive and idempotent, so an already-current database is
     a no-op and a partially-migrated one resumes where it stopped.  Existing
-    rows are never touched — a v1 database keeps every message and node.
+    rows are never touched. A v1 database keeps every message and node.
     """
     conn.execute(_SCHEMA_META)
     current = schema_version(conn)
@@ -190,7 +190,7 @@ def _node_id(
     """Content-derived node id.
 
     Seeded by the *sources* rather than the rendered summary text, so the id is
-    stable and knowable before the summary is written — the summary can then
+    stable and knowable before the summary is written. The summary can then
     cite its own node id without a second node having to be created.
     """
     seed = "\x1f".join(
@@ -204,7 +204,7 @@ def _fts_query(query: str) -> str:
     """Quote every token so FTS5 MATCH cannot be driven by user syntax.
 
     FTS5 treats ``"``, ``-``, ``*``, ``:``, ``(``, ``)`` and bare ``AND``/``OR``
-    as operators; a raw passthrough therefore both errors and lets a query
+    as operators. A raw passthrough therefore both errors and lets a query
     change its own semantics.  Quoting each token as a string literal turns the
     whole thing into a plain conjunction of phrases.
     """
@@ -251,7 +251,7 @@ class LCMStore:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             # check_same_thread=False: compression runs on a pooled daemon
             # thread (context_timeout_seconds), so the connection must be
-            # shareable; every statement is serialized by ``_lock``.
+            # shareable. Every statement is serialized by ``_lock``.
             conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
@@ -289,7 +289,7 @@ class LCMStore:
             return schema_version(conn)
 
     def fts_available(self) -> bool:
-        """Whether the FTS5 index exists; ``search`` falls back to LIKE if not."""
+        """Whether the FTS5 index exists. Search falls back to LIKE if not."""
         if self._fts_available is None:
             with self._cursor() as conn:
                 try:
@@ -321,14 +321,14 @@ class LCMStore:
     def sync_transcript(
         self, session_id: str, messages: List[Dict[str, Any]]
     ) -> List[str]:
-        """Append any *new* tail of *messages*; return ids aligned to *messages*.
+        """Append any *new* tail of *messages*. Return ids aligned to *messages*.
 
         The transcript is re-read in full on every hook, so this diffs by
         longest-suffix overlap: find the largest ``k`` such that the last ``k``
         stored payloads equal the first ``k`` incoming payloads, then append
-        everything after ``k``.  The returned list is positional — ``result[i]``
+        everything after ``k``.  The returned list is positional. ``result[i]``
         is the stored id for ``messages[i]``, whether that row pre-existed or
-        was appended by this call — which is what lets compaction cite exact
+        was appended by this call. That is what lets compaction cite exact
         lineage for the range it absorbs.
 
         A compacted transcript (whose middle was replaced by a summary message
@@ -357,11 +357,11 @@ class LCMStore:
                     # No suffix overlap.  Two very different situations:
                     #
                     #  * the caller re-read a *rewritten* transcript (our own
-                    #    compaction marker replaced the middle) — its surviving
+                    #    compaction marker replaced the middle). Its surviving
                     #    head/tail rows are already stored, so appending would
                     #    duplicate history; or
                     #  * the caller handed us only freshly-produced messages
-                    #    (a tail, not a transcript) — nothing overlaps because
+                    #    (a tail, not a transcript). Nothing overlaps because
                     #    none of it is stored yet.
                     #
                     # A bounded membership check tells them apart.  Losing a
@@ -541,10 +541,10 @@ class LCMStore:
         sources: List[Tuple[str, str]],
         node_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Persist a summary node plus its lineage edges; return its record.
+        """Persist a summary node plus its lineage edges. Return its record.
 
         Pass ``node_id`` (from ``resolve_node_id``) when the summary text needs
-        to cite its own node id — the id is derived from the sources, so it is
+        to cite its own node id. The id is derived from the sources, so it is
         knowable before the text is rendered.
         """
         with self._cursor() as conn:
@@ -728,7 +728,7 @@ def default_db_path(hermes_home: Path) -> Path:
 
 
 def backup_db(db_path: Path, dest: Optional[Path] = None) -> Path:
-    """Write a consistent snapshot of *db_path*; return the snapshot path.
+    """Write a consistent snapshot of *db_path*. Return the snapshot path.
 
     Uses the SQLite online backup API so a live WAL database is copied
     consistently rather than by file-level ``cp`` (which can capture a torn

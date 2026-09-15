@@ -1,7 +1,7 @@
 """Configuration resolution for the LCM context engine plugin.
 
-User-facing settings live in ``config.yaml`` under ``context.lcm`` — never in
-``.env`` (Hermes reserves the environment for secrets; see ``AGENTS.md``).
+User-facing settings live in ``config.yaml`` under ``context.lcm``, never in
+``.env`` (Hermes reserves the environment for secrets. See ``AGENTS.md``).
 
 Two rules matter more than the values themselves:
 
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-# Hard ceilings — the bounded-recall contract.  Config may lower these, never
+# Hard ceilings: the bounded-recall contract.  Config may lower these, never
 # raise them: the values are the engine's promise to the host.
 HARD_MAX_PAGE_SIZE = 50
 HARD_MAX_SEARCH_RESULTS = 25
@@ -158,7 +158,7 @@ class LCMConfig:
 def load_lcm_config(config: Optional[Dict[str, Any]] = None) -> LCMConfig:
     """Resolve ``context.lcm`` from the live config, falling back to defaults.
 
-    ``config`` may be passed explicitly (tests); otherwise the loaded Hermes
+    ``config`` may be passed explicitly (tests). Otherwise the loaded Hermes
     config is used, and any failure to read it yields pure defaults.
     """
     block: Any = None

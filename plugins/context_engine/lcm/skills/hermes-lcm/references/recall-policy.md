@@ -28,7 +28,7 @@ is authoritative. So the split is:
 | `max_search_results` | Maximum matches per search. Default 8, ceiling 25. |
 | `body_chars` | Per-message body cap. Default 2000, ceiling 8000. |
 
-These are enforced in the storage layer, so no caller — model, CLI, or config —
+These are enforced in the storage layer, so no caller (model, CLI, or config)
 can widen them past the ceiling. A request above the ceiling is clamped, not
 honored and not errored: the caller gets a valid page plus `has_more: true`.
 
@@ -36,7 +36,7 @@ honored and not errored: the caller gets a valid page plus `has_more: true`.
 
 1. There is no tool argument meaning "the whole session". `lcm_page` takes a
    cursor and returns at most `page_size` messages.
-2. A node expansion returns lineage for **one page** of edges; the node's
+2. A node expansion returns lineage for **one page** of edges. The node's
    `source_count` and the response's `total` tell you how many more pages exist
    without materializing them.
 3. Message bodies are truncated to `body_chars` and the response says
@@ -56,7 +56,7 @@ honored and not errored: the caller gets a valid page plus `has_more: true`.
 ## Failure behaviour
 
 Every recall path is fail-open. If the store cannot be opened, a tool returns a
-JSON error object and the turn continues; if the engine cannot be loaded at all,
+JSON error object and the turn continues. If the engine cannot be loaded at all,
 the host falls back to the built-in `ContextCompressor` and the `lcm_*` tools do
-not appear. There is no state to reconcile when the plugin is disabled — the
+not appear. There is no state to reconcile when the plugin is disabled. The
 store is a read-only record of what already happened.

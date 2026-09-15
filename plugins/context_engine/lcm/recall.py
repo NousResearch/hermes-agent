@@ -8,7 +8,7 @@ The recall contract, stated once:
   ``session_search`` tool, and keeping the two surfaces distinct is the point
   of the recall policy (see ``skills/hermes-lcm/references/recall-policy.md``).
 * **Every response is a page.**  A result list reports ``returned``,
-  ``total``, ``page_size`` and ``has_more``; a node expansion reports the same
+  ``total``, ``page_size`` and ``has_more``. A node expansion reports the same
   over its lineage.  Message bodies are capped at ``body_chars``.
 * **No unbounded transcript is ever assembled.**  ``lsm_page`` walks the store
   one page at a time with a cursor, so even "read the whole session" is a
@@ -68,7 +68,7 @@ def search(
         "bounded": True,
         "has_more": len(hits) >= store.max_search_results,
         "note": (
-            "Matches carry message_id; call lcm_expand(message_id=...) to read "
+            "Matches carry message_id. Call lcm_expand(message_id=...) to read "
             "the stored message."
         ),
     }
@@ -141,7 +141,7 @@ def _expand_node(
                     "kind": "node",
                     "id": edge["id"],
                     "level": child["level"] if child else None,
-                    "note": "superseded summary node — expand it to descend the DAG",
+                    "note": "superseded summary node. Expand it to descend the DAG",
                 }
             )
 
@@ -209,7 +209,7 @@ def page(
         "has_more": window["has_more"],
         "next_cursor": window["next_cursor"],
         "bounded": True,
-        "note": "pass next_cursor as cursor to continue; the session is never returned whole.",
+        "note": "pass next_cursor as cursor to continue. The session is never returned whole.",
     }
 
 

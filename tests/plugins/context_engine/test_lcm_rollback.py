@@ -2,7 +2,7 @@
 
 The acceptance criterion is: "plugin disabled or failed startup leaves the
 built-in Hermes context path usable".  Every route to that outcome is asserted
-here — unset config, an unknown engine name, a plugin that raises on import,
+here. Unset config, an unknown engine name, a plugin that raises on import,
 and a plugin that fails mid-compaction.
 """
 

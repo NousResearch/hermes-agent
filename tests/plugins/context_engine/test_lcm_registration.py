@@ -93,7 +93,7 @@ def test_repo_collector_records_the_engine_and_forwards_the_command():
 
 
 def test_repeated_registration_is_idempotent_and_quiet(caplog):
-    """Discovery and engine loading both call register(); that must not conflict."""
+    """Discovery and engine loading both call register(). That must not conflict."""
     import logging
 
     from hermes_cli.plugins import get_plugin_manager
@@ -120,7 +120,7 @@ def test_repeated_registration_is_idempotent_and_quiet(caplog):
 
 
 def test_host_selects_the_engine_from_config_and_exposes_its_tools():
-    """End-to-end selection with the real loader — no engine patching.
+    """End-to-end selection with the real loader. No engine patching.
 
     Proves the config-driven path on this head: ``context.engine: lcm`` makes
     the agent adopt the plugin engine, hand it the model's context length, and

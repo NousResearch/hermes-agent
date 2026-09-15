@@ -7,7 +7,7 @@ plugin that touches host types.  Everything else is plain storage/logic.
 Behaviour that the acceptance criteria hang on:
 
 * **Opt-in.**  Nothing here auto-activates.  The user sets ``context.engine:
-  lcm``; otherwise the built-in ``ContextCompressor`` is used.  Selecting an
+  lcm``. Otherwise the built-in ``ContextCompressor`` is used.  Selecting an
   engine that fails to import or construct leaves the host on the built-in
   path (``plugins.context_engine.load_context_engine`` returns ``None``).
 * **Fail-open everywhere.**  Every host-facing hook is wrapped so a storage
@@ -16,7 +16,7 @@ Behaviour that the acceptance criteria hang on:
 * **Referential compaction.**  ``compress`` records the compactable range,
   writes a lineage-bearing node, and substitutes a bounded digest that names
   the node.  The raw messages are never deleted.
-* **Bounded recall.**  The agent-facing tools page; they never assemble a
+* **Bounded recall.**  The agent-facing tools page. They never assemble a
   whole transcript.
 """
 
@@ -75,7 +75,7 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
                 "page_size": {"type": "integer", "description": "Page size (clamped)."},
                 "max_chars": {
                     "type": "integer",
-                    "description": "Per-message body cap; clamped to a hard maximum.",
+                    "description": "Per-message body cap. Clamped to a hard maximum.",
                 },
             },
             "required": [],
@@ -113,7 +113,7 @@ _TOOL_NAMES = frozenset(schema["name"] for schema in _TOOL_SCHEMAS)
 class LCMEngine(ContextEngine):
     """DAG-based, opt-in context engine with lineage-preserving compaction."""
 
-    # Routine automatic compaction is background maintenance here; keep it out
+    # Routine automatic compaction is background maintenance here. Keep it out
     # of the user-visible lifecycle stream (warnings/errors/manual still show).
     emit_automatic_compaction_status = False
 
@@ -182,7 +182,7 @@ class LCMEngine(ContextEngine):
         return self._store
 
     def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
-        """Optional host hook; the engine keeps its own store, so this is a no-op."""
+        """Optional host hook. The engine keeps its own store, so this is a no-op."""
         if session_id:
             self._session_id = str(session_id)
 
@@ -192,7 +192,7 @@ class LCMEngine(ContextEngine):
             self._session_id = str(session_id)
             self._ensure_store()
         except Exception as exc:  # pragma: no cover - fail-open
-            logger.warning("LCM: session start failed (%s); running without storage", exc)
+            logger.warning("LCM: session start failed (%s). Running without storage", exc)
 
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]] = None) -> None:
         """Flush any final tail, then close the store."""
@@ -295,13 +295,13 @@ class LCMEngine(ContextEngine):
     ) -> List[Dict[str, Any]]:
         """Replace the compactable middle with a bounded, lineage-bearing digest.
 
-        Returns *messages* unchanged on any internal failure — a broken engine
+        Returns *messages* unchanged on any internal failure. A broken engine
         must never be worse than no engine at all.
         """
         try:
             return self._compress(messages, focus_topic=focus_topic)
         except Exception as exc:
-            logger.warning("LCM: compaction failed (%s); leaving context uncompacted", exc)
+            logger.warning("LCM: compaction failed (%s). Leaving context uncompacted", exc)
             return messages
 
     def _compress(
@@ -357,7 +357,7 @@ class LCMEngine(ContextEngine):
             level = (max(parent_levels) if parent_levels else 1) + 1
 
         # The id is derived from the sources, so it is known before the summary
-        # text exists — the text can therefore cite the node that will hold it.
+        # text exists, so the text can therefore cite the node that will hold it.
         node_id = store.resolve_node_id(session_id, level, sources)
         summary = compaction.build_summary(
             middle,
@@ -405,7 +405,7 @@ class LCMEngine(ContextEngine):
         return [dict(schema) for schema in _TOOL_SCHEMAS]
 
     def handle_tool_call(self, name: str, args: Dict[str, Any], **kwargs: Any) -> str:
-        """Dispatch an LCM tool call; always returns a JSON string."""
+        """Dispatch an LCM tool call. Always returns a JSON string."""
         try:
             if name not in _TOOL_NAMES:
                 return json.dumps({"error": f"unknown LCM tool: {name}"})
@@ -415,7 +415,7 @@ class LCMEngine(ContextEngine):
                 return json.dumps({"error": "LCM store unavailable"})
             if not session_id:
                 return json.dumps(
-                    {"error": "no active session for LCM recall; open a session first"}
+                    {"error": "no active session for LCM recall. Open a session first"}
                 )
             payload = self._dispatch_tool(name, store, session_id, args or {})
             return json.dumps(payload, default=str)
@@ -466,7 +466,7 @@ class LCMEngine(ContextEngine):
         return status
 
     def diagnostics(self) -> Dict[str, Any]:
-        """Extended diagnostics (store shape + bounds); used by ``/lcm``."""
+        """Extended diagnostics (store shape + bounds). Used by ``/lcm``."""
         base = self.get_status()
         try:
             store = self._ensure_store()

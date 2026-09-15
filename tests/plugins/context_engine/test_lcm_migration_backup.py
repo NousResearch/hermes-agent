@@ -73,7 +73,7 @@ def test_migrate_from_v1_preserves_rows_and_adds_the_index(tmp_path):
     conn.commit()
     conn.close()
 
-    store = LCMStore(db).open()  # opening migrates again — must be a no-op
+    store = LCMStore(db).open()  # opening migrates again. Must be a no-op
     assert store.version() == SCHEMA_VERSION
     stats = store.stats("s1")
     assert stats["messages"] == 1

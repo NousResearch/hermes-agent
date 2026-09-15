@@ -1,7 +1,7 @@
 """DAG compaction: turn a message range into a lineage-bearing summary node.
 
 Compaction here is *referential*, not lossy.  The raw messages stay in the
-store; the node that replaces them carries (a) a deterministic extractive
+store. The node that replaces them carries (a) a deterministic extractive
 digest and (b) a lineage edge to every message it absorbed.  That is what lets
 ``lcm_expand`` reconstruct the compacted range in bounded pages.
 
@@ -61,8 +61,8 @@ def choose_summary_role(
 
     The common shapes (``user → marker → user`` and
     ``assistant → marker → assistant``) both come out valid.  The one shape
-    where no single role works — head ending in ``assistant`` and tail opening
-    with ``user`` — is resolved by preferring to preserve the *head* (the
+    where no single role works (head ending in ``assistant`` and tail opening
+    with ``user``) is resolved by preferring to preserve the *head* (the
     prompt-cache prefix) and leaving the collision to the host's
     ``repair_message_sequence`` pass, exactly as the built-in compressor does.
     """
@@ -128,7 +128,7 @@ def build_summary(
 ) -> str:
     """Render a bounded, deterministic digest for a compacted range.
 
-    The recovery pointer is emitted first and never truncated; the bullet list
+    The recovery pointer is emitted first and never truncated. The bullet list
     is what gets trimmed when the budget runs out, and any bullets dropped are
     accounted for explicitly rather than silently.
     """
@@ -165,8 +165,8 @@ def build_summary(
         body += "\n" + "\n".join(bullets)
     if omitted:
         body += (
-            f"\n- ...{omitted} further message(s) omitted from this digest; "
-            f"use lcm_expand to page them."
+            f"\n- ...{omitted} further message(s) omitted from this digest. "
+            f"Use lcm_expand to page them."
         )
     return body[:max_chars]
 

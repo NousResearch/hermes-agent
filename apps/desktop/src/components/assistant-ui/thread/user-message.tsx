@@ -13,6 +13,7 @@ import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { StopFilled } from '@/lib/icons'
+import { LruCache } from '@/lib/lru-cache'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
@@ -89,12 +90,15 @@ export const AGENT_MESSAGE_RE =
   /^(?:Message from (?:🤖\s*)?([^:\n(]{1,64}?)(?:\s*\(@([a-z0-9][a-z0-9_-]{0,63})\))?:\s*|\[Message from agent '([^']{1,64})'\]\s*)([\s\S]*)$/u
 
 // sender handle -> avatar data URL. Module-level so a chat full of notices
-// from one bot resolves once. Hits are cached for the window's lifetime;
-// misses only briefly (30s) — an avatar can appear at any moment (bot just
+// from one bot resolves once. Bounded LRU: handles are parsed out of message
+// text (unbounded distinct senders over a long session list) and hits hold
+// base64 avatar data URLs, so an unbounded map pins image bytes for the
+// window's lifetime. Eviction only costs a refetch.
+// Misses expire after 30s — an avatar can appear at any moment (bot just
 // created, art backfill still running), and a permanent negative cache
 // froze the 🤖 glyph until an app restart.
-export const agentAvatarCache = new Map<string, null | string>()
-const agentAvatarMissAt = new Map<string, number>()
+const AGENT_AVATAR_CACHE_MAX = 128
+export const agentAvatarCache = new LruCache<string, { at: number; url: null | string }>(AGENT_AVATAR_CACHE_MAX)
 const AVATAR_MISS_TTL_MS = 30_000
 const agentAvatarInflight = new Map<string, Promise<null | string>>()
 
@@ -105,19 +109,17 @@ export async function resolveAgentAvatar(handle: string): Promise<null | string>
     return null
   }
 
-  if (agentAvatarCache.has(key)) {
-    const hit = agentAvatarCache.get(key) ?? null
+  const hit = agentAvatarCache.get(key)
 
-    if (hit !== null) {
-      return hit
+  if (hit) {
+    if (hit.url !== null) {
+      return hit.url
     }
 
     // Negative entry: honor it only within the TTL, then re-probe.
-    if (Date.now() - (agentAvatarMissAt.get(key) ?? 0) < AVATAR_MISS_TTL_MS) {
+    if (Date.now() - hit.at < AVATAR_MISS_TTL_MS) {
       return null
     }
-
-    agentAvatarCache.delete(key)
   }
 
   const inflight = agentAvatarInflight.get(key)
@@ -167,11 +169,7 @@ export async function resolveAgentAvatar(handle: string): Promise<null | string>
 
   agentAvatarInflight.set(key, run)
   const out = await run
-  agentAvatarCache.set(key, out)
-
-  if (out === null) {
-    agentAvatarMissAt.set(key, Date.now())
-  }
+  agentAvatarCache.set(key, { at: Date.now(), url: out })
 
   return out
 }
@@ -181,7 +179,7 @@ const AgentMessageNote: FC<{ text: string }> = ({ text }) => {
   const sender = (match?.[1] || match?.[3] || 'agent').trim()
   const handle = (match?.[2] || match?.[3] || sender).trim()
   const body = (match?.[4] || '').trim()
-  const [avatar, setAvatar] = useState<null | string>(() => agentAvatarCache.get(handle.toLowerCase()) ?? null)
+  const [avatar, setAvatar] = useState<null | string>(() => agentAvatarCache.get(handle.toLowerCase())?.url ?? null)
 
   useEffect(() => {
     let live = true

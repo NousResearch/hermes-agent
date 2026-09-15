@@ -586,16 +586,26 @@ class SessionMessagesMixin:
                     f"Compression lease for {session_id!r} lost before sanitation; "
                     "refusing to publish a stale transcript"
                 )
+            if conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone() is None:
+                raise ValueError(f"Session not found: {session_id}")
             tail_ids, tail_tool_calls = self._tail_rows_after_watermark(
                 conn,
                 "SELECT id, tool_calls FROM messages "
                 "WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
                 (session_id, int(watermark)),
             )
-            conn.execute(
-                "DELETE FROM messages WHERE session_id = ? AND id <= ?",
-                (session_id, int(watermark)),
-            )
+            if tail_ids:
+                conn.execute(
+                    f"DELETE FROM messages WHERE session_id = ? "
+                    f"AND id NOT IN ({_placeholders(tail_ids)})",
+                    [session_id, *tail_ids],
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM messages WHERE session_id = ?", (session_id,)
+                )
             inserted, tool_calls_total = self._insert_message_rows(
                 conn, session_id, sanitized_messages
             )

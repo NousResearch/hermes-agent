@@ -690,6 +690,36 @@ def test_automatic_sanitation_commits_exact_candidate_without_boundary_side_effe
     assert "terminal_result=committed" in caplog.text
 
 
+def test_sanitation_preserves_append_that_precedes_watermark_read(
+    tmp_path, monkeypatch
+):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+    real_watermark = harness.db.get_active_message_watermark
+
+    def _append_then_read(session_id):
+        harness.db.append_message(
+            session_id, role="user", content="concurrent-before-watermark"
+        )
+        return real_watermark(session_id)
+
+    monkeypatch.setattr(
+        harness.db, "get_active_message_watermark", _append_then_read
+    )
+
+    compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.db.get_messages_as_conversation(harness.agent.session_id)[-1][
+        "content"
+    ] == "concurrent-before-watermark"
+
+
 def test_pure_sanitation_preserves_prompt_and_skips_generic_boundary_hooks(
     tmp_path,
     monkeypatch,
@@ -795,6 +825,36 @@ def test_structural_growth_scales_with_declared_redactions(tmp_path, caplog):
     assert "changed_fields=" in caplog.text
     assert "declared_placeholders=" in caplog.text
     assert "terminal_result=committed" in caplog.text
+
+
+def test_externalization_marker_must_match_original_identity_and_size():
+    from agent.conversation_compression import _validate_sanitation_candidate
+
+    original = [
+        {
+            "role": "tool",
+            "tool_call_id": "call-real",
+            "content": "sëcret payload",
+        }
+    ]
+    valid = (
+        "[Externalized tool output: tool_call_id=call-real; "
+        f"chars={len(original[0]['content'])}; "
+        f"bytes={len(original[0]['content'].encode())}; ref=payload.json]"
+    )
+    candidate = copy.deepcopy(original)
+    candidate[0]["content"] = valid
+    assert _validate_sanitation_candidate(original, candidate) is not None
+
+    for malformed in (
+        valid.replace("call-real", "call-other"),
+        valid.replace(f"chars={len(original[0]['content'])}", "chars=1"),
+        valid.replace(
+            f"bytes={len(original[0]['content'].encode())}", "bytes=1"
+        ),
+    ):
+        candidate[0]["content"] = malformed
+        assert _validate_sanitation_candidate(original, candidate) is None
 
 
 @pytest.mark.parametrize(
@@ -997,6 +1057,62 @@ def test_sanitation_commit_failure_rolls_back_without_boundary_hooks(
     assert harness.agent._last_compaction_in_place is False
     assert harness.agent.context_compressor.failure_cooldown_calls == 0
     assert "terminal_result=commit_failed" in caplog.text
+
+
+def test_in_place_sanitation_mutation_validates_and_rolls_back_from_snapshot(
+    tmp_path,
+):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+    original = copy.deepcopy(harness.messages)
+    durable_before = harness.db.get_messages_as_conversation(
+        harness.agent.session_id
+    )
+
+    def _mutate(messages, **kwargs):
+        messages[:] = copy.deepcopy(harness.candidate)
+        return messages, kwargs["operation_claim"]
+
+    harness.agent.context_compressor.compress = _mutate
+    harness.candidate[0]["content"] += " undeclared"
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert returned is harness.messages
+    assert harness.messages == original
+    assert (
+        harness.db.get_messages_as_conversation(harness.agent.session_id)
+        == durable_before
+    )
+
+
+def test_valid_in_place_sanitation_mutation_commits_snapshot(tmp_path):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+
+    def _mutate(messages, **kwargs):
+        messages[:] = copy.deepcopy(harness.candidate)
+        return messages, kwargs["operation_claim"]
+
+    harness.agent.context_compressor.compress = _mutate
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert _without_persistence_markers(
+        harness.db.get_messages_as_conversation(harness.agent.session_id)
+    ) == _without_persistence_markers(returned)
 
 
 @pytest.mark.parametrize(

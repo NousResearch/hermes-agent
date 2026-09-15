@@ -87,6 +87,19 @@ def _sanitation_rough_tokens(messages: list) -> int:
     return estimate_messages_tokens_rough(_strip_marker_for_comparison(messages))
 
 
+def _sanitation_snapshot_watermark(messages: Any) -> Optional[int]:
+    """Highest durable row represented by the transcript supplied to sanitation."""
+    row_ids = [
+        message.get("_row_id")
+        for message in messages
+        if isinstance(message, dict)
+        and isinstance(message.get("_row_id"), int)
+        and not isinstance(message.get("_row_id"), bool)
+        and message["_row_id"] > 0
+    ]
+    return max(row_ids) if row_ids else None
+
+
 _SANITATION_PLACEHOLDER_RE = re.compile(
     r"\[LCM sensitive redaction: name=([A-Za-z_][A-Za-z0-9_.-]{0,63}); "
     r"chars=([0-9]{1,9}); bytes=([0-9]{1,9})"
@@ -94,7 +107,7 @@ _SANITATION_PLACEHOLDER_RE = re.compile(
 )
 _LCM_EXTERNALIZED_TOOL_OUTPUT_RE = re.compile(
     r"\[Externalized tool output: "
-    r"tool_call_id=[A-Za-z0-9_.:/?-]{1,120}; "
+    r"tool_call_id=([A-Za-z0-9_.:/?-]{1,120}); "
     r"chars=([0-9]{1,9}); bytes=([0-9]{1,9}); "
     r"ref=[A-Za-z0-9_.-]{1,255}\.json\]"
 )
@@ -125,6 +138,7 @@ def _validate_sanitized_string(
     candidate: str,
     *,
     externalized_role: str | None = None,
+    externalized_tool_call_id: str | None = None,
     allow_json_normalization: bool = False,
 ) -> Optional[_SanitationChanges]:
     if candidate == original:
@@ -141,7 +155,9 @@ def _validate_sanitized_string(
     )
     externalized_counts = None
     if externalized_tool is not None:
-        externalized_counts = externalized_tool.groups()
+        if externalized_tool.group(1) != externalized_tool_call_id:
+            return None
+        externalized_counts = externalized_tool.groups()[1:]
     elif (
         externalized_payload is not None
         and externalized_payload.group(1) == externalized_role
@@ -149,7 +165,7 @@ def _validate_sanitized_string(
         externalized_counts = externalized_payload.groups()[1:]
     if externalized_counts is not None:
         chars, byte_count = (int(value) for value in externalized_counts)
-        if chars < 1 or byte_count < 1:
+        if chars != len(original) or byte_count != len(original.encode()):
             return None
         return _SanitationChanges(
             changed_fields=1,
@@ -207,6 +223,7 @@ def _validate_sanitized_value(
     candidate: Any,
     *,
     externalized_role: str | None = None,
+    externalized_tool_call_id: str | None = None,
     allow_json_normalization: bool = False,
 ) -> Optional[_SanitationChanges]:
     if (
@@ -218,6 +235,7 @@ def _validate_sanitized_value(
             str(original),
             candidate,
             externalized_role=externalized_role,
+            externalized_tool_call_id=externalized_tool_call_id,
         )
         if externalized_changes is not None:
             return externalized_changes
@@ -226,6 +244,7 @@ def _validate_sanitized_value(
             original,
             candidate,
             externalized_role=externalized_role,
+            externalized_tool_call_id=externalized_tool_call_id,
             allow_json_normalization=allow_json_normalization,
         )
     if isinstance(original, list) and isinstance(candidate, list):
@@ -237,6 +256,7 @@ def _validate_sanitized_value(
                 original_item,
                 candidate_item,
                 externalized_role=externalized_role,
+                externalized_tool_call_id=externalized_tool_call_id,
                 allow_json_normalization=allow_json_normalization,
             )
             if item_changes is None:
@@ -262,6 +282,15 @@ def _validate_sanitized_value(
                         in {"system", "user", "assistant", "tool"}
                     )
                     else externalized_role
+                ),
+                externalized_tool_call_id=(
+                    str(original.get("tool_call_id"))
+                    if (
+                        key == "content"
+                        and original.get("role") == candidate.get("role") == "tool"
+                        and isinstance(original.get("tool_call_id"), str)
+                    )
+                    else externalized_tool_call_id
                 ),
                 allow_json_normalization=(
                     key == "arguments"
@@ -292,6 +321,7 @@ def _validate_sanitized_value(
                     original[original_key],
                     candidate[candidate_key],
                     externalized_role=externalized_role,
+                    externalized_tool_call_id=externalized_tool_call_id,
                     allow_json_normalization=allow_json_normalization,
                 )
                 if value_changes is None:
@@ -3634,14 +3664,33 @@ def _commit_compaction(
     commit_started_at = time.monotonic()
     split_status = "not_applicable"
     old_session_id: Optional[str] = None  # bound only once rotation begins
-    sanitation_in = _sanitation_rough_tokens(messages) if pure_sanitation else 0
+    sanitation_original = (
+        messages_before_compression
+        if pure_sanitation and messages_before_compression is not None
+        else messages
+    )
+    sanitation_in = (
+        _sanitation_rough_tokens(sanitation_original) if pure_sanitation else 0
+    )
     sanitation_out = _sanitation_rough_tokens(compressed) if pure_sanitation else 0
     sanitation_changes = (
-        _validate_sanitation_candidate(messages, compressed)
+        _validate_sanitation_candidate(sanitation_original, compressed)
         if pure_sanitation
         else None
     )
-    if pure_sanitation and agent._session_db and not lease.watermark_capture_succeeded:
+    sanitation_watermark = (
+        _sanitation_snapshot_watermark(messages_before_compression)
+        if pure_sanitation
+        else None
+    )
+    if (
+        pure_sanitation
+        and agent._session_db
+        and (
+            not lease.watermark_capture_succeeded
+            or sanitation_watermark is None
+        )
+    ):
         logger.warning(
             "Sanitation commit refused: operation=sanitize reason=missing_watermark "
             "measurement=rough_message_tokens input_tokens=%d output_tokens=%d growth_delta=%d "
@@ -3657,18 +3706,20 @@ def _commit_compaction(
         _emit_aborted_attempt_telemetry(agent, attempt.started_at, "sanitation_missing_watermark")
         _restore_prune_rearm_tokens(agent.context_compressor, attempt.snapshot)
         agent._last_compaction_in_place = False
+        _restore_messages_snapshot(messages, messages_before_compression)
         return _CommitOutcome(
             compressed=messages, refused_prompt=_existing_system_prompt(agent, system_message),
             commit_started_at=commit_started_at,
         )
     if pure_sanitation and not agent._session_db:
         sanitation_candidate, refused_prompt = _salvage_or_refuse_grown_transcript(
-            agent, messages, compressed, system_message=system_message,
+            agent, sanitation_original, compressed, system_message=system_message,
             attempt_started_at=attempt.started_at, attempt_snapshot=attempt.snapshot,
             pure_sanitation=True,
         )
         if sanitation_candidate is None:
             agent._last_compaction_in_place = False
+            _restore_messages_snapshot(messages, messages_before_compression)
             return _CommitOutcome(
                 compressed=messages, refused_prompt=refused_prompt, commit_started_at=commit_started_at
             )
@@ -3685,12 +3736,14 @@ def _commit_compaction(
             # inflate anti-growth or reach the provider. Track ids: salvage may subset list.
             _tail_tagged_ids = {id(m) for m in compressed if isinstance(m, dict) and m.pop("_compaction_tail", None)}
             commit_candidate, _refused_sp = _salvage_or_refuse_grown_transcript(
-                agent, messages, compressed, system_message=system_message, attempt_started_at=attempt.started_at,
+                agent, sanitation_original if pure_sanitation else messages, compressed,
+                system_message=system_message, attempt_started_at=attempt.started_at,
                 attempt_snapshot=attempt.snapshot, pure_sanitation=pure_sanitation,
             )
             if commit_candidate is None:
                 if pure_sanitation:
                     agent._last_compaction_in_place = False
+                    _restore_messages_snapshot(messages, messages_before_compression)
                 return _CommitOutcome(
                     compressed=messages, refused_prompt=_refused_sp, commit_started_at=commit_started_at
                 )
@@ -3705,7 +3758,7 @@ def _commit_compaction(
                     agent._session_db.sanitize_and_compact(
                         agent.session_id,
                         compressed,
-                        watermark=lease.watermark,
+                        watermark=sanitation_watermark,
                         lock_holder=lease.holder,
                     )
                 else:

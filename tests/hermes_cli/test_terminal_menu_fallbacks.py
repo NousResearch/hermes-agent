@@ -134,3 +134,58 @@ def test_remove_custom_provider_falls_back_on_menu_runtime_error(tmp_path, monke
     assert reloaded["custom_providers"] == [
         {"name": "Local B", "base_url": "http://localhost:8002/v1"},
     ]
+
+
+def test_remove_custom_provider_removes_matching_provider_from_both_schemas(
+    tmp_path, monkeypatch
+):
+    from hermes_cli.config import get_compatible_custom_providers
+    from hermes_cli.main_provider_setup import _remove_custom_provider
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", _raise_menu)
+
+    cfg = load_config()
+    cfg["custom_providers"] = [
+        {
+            "name": "OpenAI Direct (Primary)",
+            "base_url": "https://api.openai.com/v1",
+            "model": "gpt-5-mini",
+        }
+    ]
+    cfg["providers"] = {
+        "openai-direct-primary": {
+            "name": "OpenAI Direct (Primary)",
+            "api": "https://api.openai.com/v1",
+            "default_model": "gpt-5-mini",
+        },
+        "secondary-proxy": {
+            "name": "Secondary Proxy",
+            "api": "https://proxy.example.com/v1",
+            "default_model": "gpt-4.1-mini",
+        },
+    }
+    save_config(cfg)
+
+    responses = iter(["1"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(responses))
+
+    _remove_custom_provider(cfg)
+
+    reloaded = load_config()
+    assert reloaded["custom_providers"] == []
+    assert reloaded["providers"] == {
+        "secondary-proxy": {
+            "name": "Secondary Proxy",
+            "api": "https://proxy.example.com/v1",
+            "default_model": "gpt-4.1-mini",
+        }
+    }
+    assert get_compatible_custom_providers(reloaded) == [
+        {
+            "name": "Secondary Proxy",
+            "base_url": "https://proxy.example.com/v1",
+            "provider_key": "secondary-proxy",
+            "model": "gpt-4.1-mini",
+        }
+    ]

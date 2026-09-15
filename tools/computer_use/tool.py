@@ -21,7 +21,14 @@ from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement, image_dimensions_from_bytes
+from tools.computer_use.backend import (
+    ActionResult,
+    CaptureResult,
+    ComputerUseBackend,
+    ELEMENT_STATE_KEYS,
+    UIElement,
+    image_dimensions_from_bytes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -505,14 +512,39 @@ def _bounds_unknown(bounds) -> bool:
 
 def _element_to_dict(e: UIElement) -> Dict[str, Any]:
     # A zero rect is "geometry unknown", not a position — null it so no coordinate= is ever derived from it (the index still works).
-    return {"index": e.index, "role": e.role, "label": e.label[:_MAX_ELEMENT_LABEL_CHARS],
-            "bounds": None if _bounds_unknown(e.bounds) else list(e.bounds), "app": e.app,
-            **({"label_truncated": True} if len(e.label) > _MAX_ELEMENT_LABEL_CHARS else {})}
+    label = e.label[:_MAX_ELEMENT_LABEL_CHARS]
+    out: Dict[str, Any] = {"index": e.index, "role": e.role, "label": label,
+                           "bounds": None if _bounds_unknown(e.bounds) else list(e.bounds), "app": e.app}
+    if len(e.label) > _MAX_ELEMENT_LABEL_CHARS:
+        out["label_truncated"] = True
+    for key in ELEMENT_STATE_KEYS:
+        if key not in e.attributes:
+            continue
+        value = e.attributes[key]
+        if key == "value" and isinstance(value, str) and len(value) > _MAX_ELEMENT_LABEL_CHARS:
+            out[key] = value[:_MAX_ELEMENT_LABEL_CHARS]
+            out["value_truncated"] = True
+        else:
+            out[key] = value
+    return out
 
 def _format_elements(elements: List[UIElement], max_lines: int = 40) -> List[str]:
-    out = [f"  #{e.index} {e.role} {e.label.replace(chr(10), ' ')[:60]!r} "
-           + ("@ bounds-unknown (click by element index)" if _bounds_unknown(e.bounds) else f"@ {e.bounds}")
-           + (f" [{e.app}]" if e.app else "") for e in elements[:max_lines]]
+    out = []
+    for e in elements[:max_lines]:
+        label = e.label.replace("\n", " ")[:60]
+        state_parts = []
+        for key in ELEMENT_STATE_KEYS:
+            if key not in e.attributes:
+                continue
+            value = e.attributes[key]
+            if isinstance(value, str):
+                value = value.replace("\n", " ")[:60]
+            state_parts.append(f"{key}={value!r}")
+        state = " ".join(state_parts)
+        out.append(f"  #{e.index} {e.role} {label!r} "
+                   + ("@ bounds-unknown (click by element index)" if _bounds_unknown(e.bounds) else f"@ {e.bounds}")
+                   + (f" {state}" if state else "")
+                   + (f" [{e.app}]" if e.app else ""))
     return out + ([f"  ... +{len(elements) - max_lines} more (call capture with app= to narrow)"] if len(elements) > max_lines else [])
 
 def _bounds_hints(elements: List[UIElement], image_width: int, image_height: int) -> Tuple[Optional[float], Optional[str]]:
@@ -548,7 +580,14 @@ def _capture_view(cap: CaptureResult, max_elements: int) -> SimpleNamespace:
     width, height = dims or (cap.width, cap.height)
     scale, note = _bounds_hints(visible, width, height)
     # Capped labels / capped element array: spill the complete tree for on-demand reads.
-    lost_detail = len(cap.elements) > len(visible) or any(len(e.label) > _MAX_ELEMENT_LABEL_CHARS for e in visible)
+    lost_detail = len(cap.elements) > len(visible) or any(
+        len(e.label) > _MAX_ELEMENT_LABEL_CHARS
+        or (
+            isinstance(e.attributes.get("value"), str)
+            and len(e.attributes["value"]) > _MAX_ELEMENT_LABEL_CHARS
+        )
+        for e in visible
+    )
     too_small = bool(dims) and min(dims) < _MIN_PROVIDER_IMAGE_DIMENSION
     has_image = bool(cap.png_b64) and cap.mode != "ax" and not too_small
     return SimpleNamespace(cap=cap, visible=visible, total=len(cap.elements), width=width, height=height,
@@ -693,7 +732,8 @@ def _persist_capture_image(cap: CaptureResult) -> Optional[str]:
 def _spill_elements_to_file(cap: CaptureResult) -> Optional[str]:
     """FULL element tree (untruncated labels) in a cache file — the read_file/search_files escape hatch for capped text."""
     payload = {"app": cap.app, "window_title": cap.window_title, "total_elements": len(cap.elements),
-               "elements": [{"index": e.index, "role": e.role, "label": e.label, "bounds": list(e.bounds), "app": e.app}
+               "elements": [{"index": e.index, "role": e.role, "label": e.label, "bounds": list(e.bounds), "app": e.app,
+                             **{key: e.attributes[key] for key in ELEMENT_STATE_KEYS if key in e.attributes}}
                             for e in cap.elements]}
     return _write_cache_file("element spill", "cache/computer_use", "computer_use_cache", f"elements_{uuid.uuid4().hex}.json",
                              "elements_*.json", _MAX_SPILL_FILES,

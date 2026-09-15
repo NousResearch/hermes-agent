@@ -5,7 +5,8 @@ A ``body`` stored as TEXT holding invalid UTF-8 made sqlite3 abort the whole
 ``fetchall`` ("Could not decode to UTF-8 column 'body'"), so ``hermes kanban list``
 failed for every card until the row was deleted by hand; a BLOB-typed body came
 back as ``bytes`` and crashed ``--json``. Board connections now decode lossily
-(U+FFFD) and ``Task.from_row`` coerces BLOB cells the same way.
+(U+FFFD) and the ``from_row`` constructors (task, comment, event, run) coerce
+BLOB cells the same way, so ``show --json`` survives a BLOB comment too.
 """
 
 from __future__ import annotations
@@ -52,3 +53,22 @@ def test_list_survives_undecodable_and_blob_text_cells(board):
             assert isinstance(body, str) and "\ufffd" in body
             json.dumps(dataclasses.asdict(tasks[tid]))  # the --json path
         assert kb.get_task(conn, "t_text_bad").title == "text invalid"
+
+
+def test_show_json_survives_blob_cells_in_sibling_tables(board):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="card", assignee="coder")
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'user', X'FFFEABCD00', 1000)", (tid,),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'note', X'FFFEABCD00', 1000)", (tid,),
+        )
+
+    with kbc.connect() as conn:
+        comments = kb.list_comments(conn, tid)
+        assert isinstance(comments[-1].body, str) and "\ufffd" in comments[-1].body
+        events = kb.list_events(conn, tid)
+        json.dumps([dataclasses.asdict(c) for c in comments] + [dataclasses.asdict(e) for e in events])

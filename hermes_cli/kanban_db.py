@@ -38,7 +38,8 @@ def _lossy_text(value: Any) -> Any:
 
     Installed as every board connection's ``text_factory`` (a TEXT cell holding
     invalid UTF-8 otherwise aborts the whole ``fetchall`` with "Could not decode
-    to UTF-8") and applied to BLOB-typed cells in :meth:`Task.from_row`, so one
+    to UTF-8") and applied to BLOB-typed cells in the ``from_row`` constructors
+    (task, comment, event, run), so one
     corrupt row degrades to replacement characters instead of taking the board
     listing down."""
     if isinstance(value, bytes):
@@ -789,7 +790,7 @@ class Run:
     def from_row(cls, row: sqlite3.Row) -> "Run":
         return cls(
             **{
-                col: row[col] for col in (
+                col: _lossy_text(row[col]) for col in (
                     "task_id", "profile", "step_key", "status", "claim_lock", "claim_expires",
                     "worker_pid", "max_runtime_seconds", "last_heartbeat_at", "outcome", "summary", "error",
                 )
@@ -797,7 +798,7 @@ class Run:
             id=int(row["id"]),
             started_at=int(row["started_at"]),
             ended_at=_opt_int(row["ended_at"]),
-            metadata=_json_or(row["metadata"]),
+            metadata=_json_or(_lossy_text(row["metadata"])),
         )
 
 
@@ -812,8 +813,8 @@ class Comment:
     @classmethod
     def from_row(cls, r: sqlite3.Row) -> "Comment":
         return cls(
-            id=r["id"], task_id=r["task_id"], author=r["author"],
-            body=r["body"], created_at=r["created_at"],
+            id=r["id"], task_id=r["task_id"], author=_lossy_text(r["author"]),
+            body=_lossy_text(r["body"]), created_at=r["created_at"],
         )
 
 
@@ -852,8 +853,8 @@ class Event:
     def from_row(cls, row: sqlite3.Row) -> "Event":
         run_id = _row_get(row, "run_id")
         return cls(
-            id=row["id"], task_id=row["task_id"], kind=row["kind"],
-            payload=_json_or(row["payload"]), created_at=row["created_at"], run_id=_opt_int(run_id),
+            id=row["id"], task_id=row["task_id"], kind=_lossy_text(row["kind"]),
+            payload=_json_or(_lossy_text(row["payload"])), created_at=row["created_at"], run_id=_opt_int(run_id),
         )
 
 

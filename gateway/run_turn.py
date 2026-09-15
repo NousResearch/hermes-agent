@@ -560,6 +560,31 @@ class GatewayTurnMixin:
             "hygiene_failure_cooldown_seconds", hs.failure_cooldown_seconds, float, allow_zero=True,
         )
 
+    @staticmethod
+    def _hmwa_hygiene_failclosed_bound(history, hard_msg_limit):
+        """Deterministic fail-closed in-context bound (#111988).
+
+        When hygiene hasn't landed by turn start (turn-hold release, timeout unwind,
+        summary error), the turn must never see more than ``hygiene_hard_message_limit``
+        messages: keep every leading system/setup row (ephemeral scaffolding the model
+        still needs in context) plus the newest tail of conversation, in order. Returns
+        ``history`` unchanged when it already fits; never mutates it, so the history on
+        disk is untouched — only this turn's model input is trimmed.
+        """
+        _limit = max(int(hard_msg_limit or 0), 1)
+        if len(history) <= _limit:
+            return history
+        _setup_roles = {"system", "session_meta"}
+        _head = []
+        for _msg in history:
+            if isinstance(_msg, dict) and _msg.get("role") in _setup_roles:
+                _head.append(_msg)
+            else:
+                break
+        if len(_head) >= _limit:
+            return _head[:_limit]
+        return [*_head, *history[-(_limit - len(_head)):]]
+
     async def _hmwa_hygiene_settings(self, source, session_key):
         """Resolve model/provider/context-length + hygiene knobs (fail-soft: errors keep defaults).
 
@@ -1236,7 +1261,9 @@ class GatewayTurnMixin:
         if not history or len(history) < 4:
             return history
 
+        _hyg_limit = 5000  # _HygieneSettings.hard_msg_limit default; refreshed when settings resolve
         hs = await self._hmwa_hygiene_settings(source, session_key)
+        _hyg_limit = hs.hard_msg_limit
         if not hs.compression_enabled:
             return history
         plan = await self._hmwa_hygiene_plan(hs, history, session_entry, session_key)
@@ -1267,7 +1294,11 @@ class GatewayTurnMixin:
             pass
         except Exception as e:
             logger.warning("Session hygiene auto-compress failed: %s", e)
-        return attempt.history
+        # Fail-closed (#111988): any path that leaves hygiene unlanded (turn-hold
+        # release, timeout unwind, summary error) still bounds the in-context
+        # transcript — setup head + newest tail, total <= the limit. Disk history
+        # untouched; availability unchanged.
+        return self._hmwa_hygiene_failclosed_bound(attempt.history, _hyg_limit)
 
     async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes):
         """First-ever-message onboarding note + one-time 'no home channel' prompt (both only when

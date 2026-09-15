@@ -11,6 +11,10 @@ from pydantic import BaseModel, SecretStr, StrictBool, field_validator
 class ConfigUpdate(BaseModel):
     config: dict
     profile: Optional[str] = None
+    # Escape hatch for an explicit, user-confirmed "reset to defaults" — the
+    # PUT handler refuses records that reset already-populated sections across
+    # machines (a Desktop cross-connection write, #109357) without this flag.
+    allow_defaults_regression: bool = False
 
 class EnvVarUpdate(BaseModel):
     key: str

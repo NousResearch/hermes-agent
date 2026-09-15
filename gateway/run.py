@@ -3888,11 +3888,38 @@ class GatewayRunner(
             restart_requested=self._restart_requested, active_agents=self._active_work_count(),
             active_work=active_work)
 
+    def _fallback_status_snapshot(self) -> Optional[Dict[str, Any]]:
+        """Return a non-sensitive fallback route only when it is unambiguous.
+
+        The Gateway menu has no session selector. Never show one session's route as another
+        session's status when multiple turns are active; the status is omitted until the
+        gateway can safely identify a single active route.
+        """
+        agents = [agent for _, agent in self._running_agent_items()
+                  if agent is not None and agent is not _AGENT_PENDING_SENTINEL]
+        if len(agents) != 1:
+            return None
+        agent = agents[0]
+        chain = []
+        for entry in list(getattr(agent, "_fallback_chain", []) or []):
+            if isinstance(entry, dict) and entry.get("provider") and entry.get("model"):
+                chain.append({"provider": entry["provider"], "model": entry["model"]})
+        primary = getattr(agent, "_primary_runtime", None) or {}
+        active = {"provider": agent.provider, "model": agent.model} if getattr(agent, "_fallback_activated", False) else None
+        cooldown = getattr(agent, "_rate_limited_until", 0) or 0
+        reason = getattr(agent, "_fallback_status_reason", None) if active else None
+        now = time.monotonic()
+        return {"active": active, "chain": [
+            {"provider": primary.get("provider"), "model": primary.get("model")}, *chain
+        ], "cooldown_until": time.time() + max(0, cooldown - now) if cooldown > now else None,
+        "reason": reason}
+
     def _persist_active_agents(self) -> None:
         """Persist the live in-flight agent count to ``gateway_state.json`` at every turn boundary.
         Passes ONLY ``active_agents`` so the read-merge-write keeps lifecycle state (gateway_state=None
         would clobber it). Best-effort: a failed write must never disrupt a turn."""
-        _write_runtime_status_quiet(active_agents=self._active_work_count())
+        _write_runtime_status_quiet(
+            active_agents=self._active_work_count(), fallback_status=self._fallback_status_snapshot())
 
     def _running_agent_ids(self) -> set:
         """``id()`` of every agent mid-turn — identity-keyed so the lookup is O(1) and independent of

@@ -210,21 +210,37 @@ class TestDisplayDedupe:
         finally:
             db.close()
 
-    def test_legacy_page_keeps_one_snapshot_during_rewind(self, tmp_path, monkeypatch):
-        """The identity scan and payload lookup cannot straddle a committed rewind."""
+    @pytest.mark.parametrize("journal_mode", [
+        pytest.param("wal", marks=pytest.mark.requires_wal),
+        "delete",
+    ])
+    def test_legacy_page_keeps_one_snapshot_during_rewind(self, tmp_path, monkeypatch, journal_mode):
+        """WAL commits beside the snapshot; rollback journaling waits for its release."""
+        monkeypatch.setattr("hermes_state_wal.resolve_journal_mode", lambda: journal_mode)
         path = tmp_path / "snapshot.db"
         writer = SessionDB(path)
+        assert writer._read_one("PRAGMA journal_mode")[0] == journal_mode
         writer.create_session("snapshot", source="desktop")
         writer.append_message("snapshot", "assistant", "visible-at-scan")
         writer._execute_write(lambda conn: conn.execute(
             "UPDATE messages SET display_order = NULL, display_identity = NULL"))
+        writer._conn.execute("PRAGMA busy_timeout = 0")
         reader = SessionDB(path, read_only=True)
         identity = reader._display_identity
 
+        def rewind():
+            writer._execute_write(lambda conn: conn.execute(
+                "UPDATE messages SET content = 'rewound', active = 0, compacted = 0"), patience_s=0)
+
         def rewind_after_identity(key):
             result = identity(key)
-            writer._execute_write(lambda conn: conn.execute(
-                "UPDATE messages SET content = 'rewound', active = 0, compacted = 0"))
+            if journal_mode == "wal":
+                rewind()
+            else:
+                # This callback runs inside the reader. Waiting for its own
+                # transaction to end would deadlock on rollback-journal builds.
+                with pytest.raises(sqlite3.OperationalError, match="locked"):
+                    rewind()
             return result
 
         monkeypatch.setattr(reader, "_display_identity", rewind_after_identity)
@@ -233,6 +249,9 @@ class TestDisplayDedupe:
             assert [(row["active"], row["content"]) for row in page] == [(1, "visible-at-scan")]
             assert reader._conn is not None
             assert not reader._conn.in_transaction
+            monkeypatch.setattr(reader, "_display_identity", identity)
+            if journal_mode == "delete":
+                rewind()
             assert reader.get_messages("snapshot", include_compacted=True) == []
         finally:
             reader.close()

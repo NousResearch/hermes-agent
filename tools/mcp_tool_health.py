@@ -135,9 +135,31 @@ class MCPServerHealthMixin:
         if not self._advertises_tools():
             return  # tools/list would raise MCPError(-32601)
         async with self._refresh_lock:
+            # The run() loop sets ``self.session = None`` on EVERY transport
+            # teardown (clean reconnect, error backoff, cancel, park) and only
+            # repopulates it after the new handshake. A tools/list_changed
+            # notification can still be in flight — or a previously scheduled
+            # refresh task can still be starting up — across a restart, and
+            # ``self.session.list_tools`` then raises AttributeError on
+            # NoneType (#109824). A notification observed on the old transport
+            # is moot by the time the new one is live: the reconnect's own
+            # _discover_tools re-lists and re-registers. So skip the refresh
+            # entirely while the session is being rebuilt instead of crashing
+            # the background task or nuke-and-repaving the registry mid-restart.
+            # Capture the live session (or None) under the refresh lock so the
+            # check and the call below act on the same transport even if run()
+            # swaps ``self.session`` for the fresh one concurrently.
+            session = self.session
+            if session is None:
+                logger.info(
+                    "MCP server '%s': skipping dynamic tool refresh — no live "
+                    "session (transport restarting); tools re-list on reconnect",
+                    self.name,
+                )
+                return
             old_tool_names = set(self._registered_tool_names)
             async with self._rpc_lock:
-                new_mcp_tools = await _core._paginate_full_list(self.session.list_tools, "tools", self.name)
+                new_mcp_tools = await _core._paginate_full_list(session.list_tools, "tools", self.name)
             # Remove only stale names first — no nuke-and-repave: live turns may hold tool-call
             # IDs pointing at existing handlers; in-place replacement avoids "not connected" races.
             self._deregister_owned(old_tool_names - {mcp_prefixed_tool_name(self.name, tool.name) for tool in new_mcp_tools})

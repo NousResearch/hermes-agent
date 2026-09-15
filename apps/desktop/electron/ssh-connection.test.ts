@@ -104,6 +104,41 @@ test('controlSocketPath default base stays under sun_path even with the temp-lis
   assert.ok(!p.includes('/var/folders/'), 'default base must not be os.tmpdir() on macOS')
 })
 
+test('default control base prefers XDG_RUNTIME_DIR on Linux (dotdir-free homes stay clean)', t => {
+  if (process.platform !== 'linux') {
+    return t.skip('linux-only behavior')
+  }
+  const prev = process.env.XDG_RUNTIME_DIR
+  process.env.XDG_RUNTIME_DIR = '/run/user/4242'
+  try {
+    const p = controlSocketPath('me', 'box', 22) // no baseDir → default
+    assert.ok(
+      p.startsWith('/run/user/4242/hermes/desktop-ssh/'),
+      `mux socket must live under XDG_RUNTIME_DIR (got ${p})`
+    )
+    assert.ok(!p.includes('/.hermes/'), '~/.hermes must not be recreated when XDG_RUNTIME_DIR is set')
+    // Still within sun_path with the temp-listener suffix, and shorter than the
+    // ~/.hermes fallback would be.
+    assert.ok((`${p}.0123456789abcdef`).length <= 104)
+  } finally {
+    process.env.XDG_RUNTIME_DIR = prev
+  }
+})
+
+test('default control base falls back to ~/.hermes without XDG_RUNTIME_DIR', () => {
+  if (process.platform === 'win32') {
+    return // windows uses os.tmpdir(); covered by its own path below
+  }
+  const prev = process.env.XDG_RUNTIME_DIR
+  process.env.XDG_RUNTIME_DIR = ''
+  try {
+    const p = controlSocketPath('me', 'box', 22)
+    assert.ok(p.includes(path.join('.hermes', 'desktop-ssh')), `got ${p}`)
+  } finally {
+    process.env.XDG_RUNTIME_DIR = prev
+  }
+})
+
 test('baseSshOptions carries the house ControlMaster/BatchMode/accept-new policy', () => {
   const opts = baseSshOptions('/tmp/x.sock', 15000)
   const joined = opts.join(' ')

@@ -106,7 +106,7 @@ def test_dispatch_once_proceeds_when_gate_approved(
     meta_path = kb.board_metadata_path(kb._slug_or_default(None))
     meta_path.parent.mkdir(parents=True, exist_ok=True)
     meta_path.write_text(
-        json.dumps({"batch_approval_gate": "batch-1"}), encoding="utf-8"
+        json.dumps({"batch_approval_gate": "batch-1", "project_id": "proj"}), encoding="utf-8"
     )
 
     monkeypatch.setattr(

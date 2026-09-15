@@ -147,6 +147,10 @@ _BOARD_SPECS = [
         "NEW board — the slug gains a numeric suffix if it is already taken — so an import can "
         "never overwrite or merge into a board you already have."
     )),
+    _cmd("backfill-projects", [], help=(
+        "Link a project to every existing board that predates auto-project-creation "
+        "(idempotent; skips boards that already have one)"
+    )),
 ]
 
 # Top-level ``hermes kanban <action>`` records, in ``--help`` order.

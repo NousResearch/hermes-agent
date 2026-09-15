@@ -57,6 +57,50 @@ def test_create_board_accepts_project_id(fresh_home):
     assert kb.read_board_metadata("proj-board")["project_id"] == "p_xyz"
 
 
+def test_create_board_auto_creates_project_when_omitted(fresh_home):
+    """There must never be a point where a board exists with no project: a
+    board created without an explicit project_id gets one auto-created and
+    linked, not left null."""
+    meta = kb.create_board("no-project-given", name="Auto Project Board")
+    pid = meta["project_id"]
+    assert pid
+    with pdb.connect_closing() as pconn:
+        proj = pdb.get_project(pconn, pid)
+    assert proj is not None
+    assert proj.board_slug == "no-project-given"
+
+
+def test_create_board_idempotent_reinvoke_keeps_existing_project(fresh_home):
+    """``create_board`` has mkdir-p semantics: calling it again on an existing
+    board must not mint a second project or clobber the first."""
+    first = kb.create_board("stable-board", name="Stable")
+    pid = first["project_id"]
+    assert pid
+
+    again = kb.create_board("stable-board", name="Stable")
+    assert again["project_id"] == pid
+
+
+def test_backfill_board_projects_links_legacy_boards(fresh_home):
+    """A board.json written directly (simulating one created before
+    auto-project-creation existed) has no project_id until backfilled."""
+    kb.write_board_metadata("legacy-board", name="Legacy")
+    assert kb.read_board_metadata("legacy-board")["project_id"] is None
+
+    backfilled = kb.backfill_board_projects()
+
+    slugs = {e["slug"] for e in backfilled}
+    assert "legacy-board" in slugs
+    pid = kb.read_board_metadata("legacy-board")["project_id"]
+    assert pid
+    with pdb.connect_closing() as pconn:
+        proj = pdb.get_project(pconn, pid)
+    assert proj is not None and proj.board_slug == "legacy-board"
+
+    # Idempotent: a second run touches nothing already linked.
+    assert kb.backfill_board_projects() == []
+
+
 def test_create_task_inherits_board_project(fresh_home, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()

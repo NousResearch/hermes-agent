@@ -12,6 +12,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from gateway import kanban_watchers_dispatcher as kwd
+from hermes_cli.kanban_db import scoped_current_board
 
 
 def _dispatcher(monkeypatch, board_meta: dict):
@@ -19,6 +20,7 @@ def _dispatcher(monkeypatch, board_meta: dict):
     fake_kb = SimpleNamespace(
         DEFAULT_BOARD="default",
         read_board_metadata=lambda board=None: board_meta.get(board, {}),
+        scoped_current_board=scoped_current_board,
     )
     return kwd._KanbanDispatcher(fake_kb, settings)
 
@@ -53,8 +55,8 @@ def test_disabled_board_skips_auto_decompose(monkeypatch):
     fake_decompose_task, make_list_triage_ids = _fake_decomp_module(seen_boards)
 
     def fake_list_triage_ids():
-        import os
-        slug = os.environ.get("HERMES_KANBAN_BOARD")
+        from hermes_cli.kanban_db import _CURRENT_BOARD_OVERRIDE
+        slug = _CURRENT_BOARD_OVERRIDE.get()
         return make_list_triage_ids(slug)()
 
     fake = SimpleNamespace(list_triage_ids=fake_list_triage_ids, decompose_task=fake_decompose_task)
@@ -80,8 +82,8 @@ def test_missing_field_keeps_auto_decompose_enabled_by_default(monkeypatch):
     fake_decompose_task, make_list_triage_ids = _fake_decomp_module(seen_boards)
 
     def fake_list_triage_ids():
-        import os
-        slug = os.environ.get("HERMES_KANBAN_BOARD")
+        from hermes_cli.kanban_db import _CURRENT_BOARD_OVERRIDE
+        slug = _CURRENT_BOARD_OVERRIDE.get()
         return make_list_triage_ids(slug)()
 
     fake = SimpleNamespace(list_triage_ids=fake_list_triage_ids, decompose_task=fake_decompose_task)
@@ -107,8 +109,8 @@ def test_flag_flipped_on_reenables_on_next_tick(monkeypatch):
     fake_decompose_task, make_list_triage_ids = _fake_decomp_module(seen_boards)
 
     def fake_list_triage_ids():
-        import os
-        slug = os.environ.get("HERMES_KANBAN_BOARD")
+        from hermes_cli.kanban_db import _CURRENT_BOARD_OVERRIDE
+        slug = _CURRENT_BOARD_OVERRIDE.get()
         return make_list_triage_ids(slug)()
 
     fake = SimpleNamespace(list_triage_ids=fake_list_triage_ids, decompose_task=fake_decompose_task)

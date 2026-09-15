@@ -13,11 +13,15 @@ from types import SimpleNamespace
 from agent import secret_scope as ss
 from gateway import kanban_watchers_dispatcher as kwd
 from gateway.kanban_watchers_common import _to_thread_process_service
+from hermes_cli.kanban_db import scoped_current_board
 
 
 def _dispatcher():
     settings = kwd._DispatcherSettings(60.0, None, None, 2, 0, True, None, None)
-    return kwd._KanbanDispatcher(SimpleNamespace(DEFAULT_BOARD="default"), settings)
+    return kwd._KanbanDispatcher(
+        SimpleNamespace(DEFAULT_BOARD="default", scoped_current_board=scoped_current_board),
+        settings,
+    )
 
 
 def test_auto_decompose_tick_reads_launch_profile_secrets_under_multiplex(monkeypatch, tmp_path):

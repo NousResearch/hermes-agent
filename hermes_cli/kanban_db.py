@@ -700,8 +700,23 @@ def create_board(
     icon: Optional[str] = None, color: Optional[str] = None, default_workdir: Optional[str] = None,
     project_id: Optional[str] = None,
 ) -> dict:
-    """Create board dir + DB + metadata (``mkdir -p`` semantics: existing board returns its metadata)."""
+    """Create board dir + DB + metadata (``mkdir -p`` semantics: existing board returns its metadata).
+
+    Every board must map to a project: if ``project_id`` is omitted and the
+    (idempotent) board.json write is the one that actually creates this board
+    (no ``created_at`` yet), a matching project is auto-created and linked so
+    dispatch's decision-hud/batch-approval gates never fall back to treating
+    the board slug itself as a project id.
+    """
     normed = _require_slug(slug)
+    is_new = not read_board_metadata(normed).get("created_at")
+    if project_id is None and is_new:
+        from hermes_cli import projects_db
+        with projects_db.connect_closing() as conn:
+            project_id = projects_db.create_project(
+                conn, name=name or _default_board_display_name(normed),
+                slug=normed, board_slug=normed,
+            )
     meta = write_board_metadata(
         normed, name=name, description=description, icon=icon, color=color,
         default_workdir=default_workdir, project_id=project_id,
@@ -709,6 +724,29 @@ def create_board(
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
     return meta
+
+
+def backfill_board_projects() -> list[dict]:
+    """One-time migration: every existing board with no ``project_id`` (created
+    before boards auto-linked a project) gets one created and linked now.
+    Idempotent — a board that already has a ``project_id`` is skipped.
+    Returns one ``{"slug": ..., "project_id": ...}`` entry per board that was
+    actually backfilled."""
+    from hermes_cli import projects_db
+
+    backfilled: list[dict] = []
+    for entry in list_boards(include_archived=True):
+        slug = entry["slug"]
+        if entry.get("project_id"):
+            continue
+        with projects_db.connect_closing() as conn:
+            pid = projects_db.create_project(
+                conn, name=entry.get("name") or _default_board_display_name(slug),
+                slug=slug, board_slug=slug,
+            )
+        write_board_metadata(slug, project_id=pid)
+        backfilled.append({"slug": slug, "project_id": pid})
+    return backfilled
 
 
 def list_boards(*, include_archived: bool = True) -> list[dict]:

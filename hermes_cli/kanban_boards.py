@@ -91,6 +91,17 @@ def _cmd_boards_create(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_boards_backfill_projects(args: argparse.Namespace) -> int:
+    backfilled = kb.backfill_board_projects()
+    if not backfilled:
+        print("Every board already has a project_id — nothing to backfill.")
+        return 0
+    for entry in backfilled:
+        print(f"  {entry['slug']!r} -> project {entry['project_id']!r}")
+    print(f"Backfilled {len(backfilled)} board(s).")
+    return 0
+
+
 def _cmd_boards_rm(args: argparse.Namespace) -> int:
     # `boards delete <slug>` (alias) never sets args.delete because --delete belongs to the 'rm'
     # subparser only; treat the alias as `rm --delete`.
@@ -264,4 +275,5 @@ _BOARD_HANDLERS = {
     "set-review-dispatch": _cmd_boards_set_review_dispatch,
     "export": _cmd_boards_export,
     "import": _cmd_boards_import,
+    "backfill-projects": _cmd_boards_backfill_projects,
 }

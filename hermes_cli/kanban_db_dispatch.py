@@ -1666,7 +1666,9 @@ def _retry_cap_gate_ok(board: Optional[str], task_id: str, consecutive_failures:
         return True, ""
     if consecutive_failures < RETRY_CAP_ESCALATION_THRESHOLD:
         return True, ""
-    project = _kb._slug_or_default(board)
+    project = _kb.read_board_metadata(board=board).get("project_id")
+    if not project:
+        return False, f"board {_kb._slug_or_default(board)!r} has no project_id mapped"
     try:
         from hermes_cli.plugin_bridges import decision_hud as _dh_bridge
     except Exception as exc:
@@ -2077,7 +2079,9 @@ def _check_batch_approval_gate(board: Optional[str]) -> Optional[str]:
     gate = meta.get("batch_approval_gate")
     if not gate:
         return "no batch_approval_gate configured on this board"
-    project = meta.get("project_id") or _kb._slug_or_default(board)
+    project = meta.get("project_id")
+    if not project:
+        return f"board {_kb._slug_or_default(board)!r} has no project_id mapped"
     from hermes_cli.plugin_bridges.decision_hud import check_batch_approval
     approved, reason = check_batch_approval(project=project, batch_id=str(gate))
     if not approved:

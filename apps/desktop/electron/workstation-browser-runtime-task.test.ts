@@ -920,13 +920,17 @@ test('runtime restart keeps task metadata parked and recreates a page only on sh
   await second.destroy()
 })
 
-test('getStandardChromeUserAgent outputs modern Chrome UA without Electron or hermes traces', () => {
-  const ua = getStandardChromeUserAgent()
+test.each(['141.0.7390.76', '155.2.3.4'])('getStandardChromeUserAgent uses embedded Chromium %s without product traces', version => {
+  const ua = getStandardChromeUserAgent(version)
   assert.match(ua, /^Mozilla\/5\.0 /)
   assert.match(ua, /AppleWebKit\/537\.36/)
-  assert.match(ua, /Chrome\/133\.0\.0\.0 Safari\/537\.36/)
+  assert.match(ua, new RegExp(`Chrome/${version.replaceAll('.', '\\.') } Safari/537\\.36`))
   assert.equal(ua.includes('Electron'), false)
-  assert.equal(ua.includes('hermes'), false)
+  assert.equal(ua.toLowerCase().includes('hermes'), false)
+})
+
+test('getStandardChromeUserAgent rejects a missing or malformed Chromium version', () => {
+  assert.throws(() => getStandardChromeUserAgent('Electron/40.0.0'), /valid embedded Chromium version/)
 })
 
 test('runtime setVisible removes view from window contentView when false and restores on true', async () => {

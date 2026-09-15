@@ -67,18 +67,22 @@ const FULL_ELEMENTS = 400
 const MAX_EVENTS_ENDPOINT = 200
 const HUMAN_CONTROL_LEASE_TTL_MS = 5 * 60 * 1000
 
-export function getStandardChromeUserAgent(): string {
+export function getStandardChromeUserAgent(chromiumVersion: string = process.versions.chrome): string {
+  if (!/^\d+(?:\.\d+){1,3}$/.test(chromiumVersion)) {
+    throw new Error('Electron did not provide a valid embedded Chromium version.')
+  }
   const plat = process.platform
+  const suffix = `AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromiumVersion} Safari/537.36`
 
   if (plat === 'darwin') {
-    return 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36'
+    return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ${suffix}`
   }
 
   if (plat === 'linux') {
-    return 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36'
+    return `Mozilla/5.0 (X11; Linux x86_64) ${suffix}`
   }
 
-  return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36'
+  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) ${suffix}`
 }
 
 export type WorkstationBrowserControlOwner = 'agent' | 'human'

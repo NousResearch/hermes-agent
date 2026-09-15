@@ -291,6 +291,36 @@ class TestBrowserVaultTools:
         assert out["items"][0]["identifier_type"] == "email"
         assert "s3cret-pw" not in json.dumps(out)
 
+    def test_list_strips_unicode_tags_from_metadata(self, store):
+        from tools import browser_vault_tool
+
+        label = "Example\U000e0041 login"
+        identifier = "user\U000e0042@example.com"
+        store.add_item(
+            kind="login",
+            label=label,
+            origin="https://example.com",
+            secret={
+                "identifier_type": "email",
+                "identifier": identifier,
+                "password": "s3cret-pw",
+            },
+        )
+
+        with patch("agent.vault_store.get_vault_store", return_value=store):
+            out = json.loads(browser_vault_tool.browser_vault_list())
+
+        assert out["items"] == [{
+            "handle": out["items"][0]["handle"],
+            "backend": "local",
+            "label": "Example login",
+            "kind": "login",
+            "origin": "https://example.com",
+            "available": True,
+            "identifier": "user@example.com",
+            "identifier_type": "email",
+        }]
+
     def test_fill_refused_on_origin_mismatch(self, store):
         from tools import browser_vault_tool
 

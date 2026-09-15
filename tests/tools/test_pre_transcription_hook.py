@@ -38,6 +38,11 @@ from tools import transcription_tools
 PROMPT = "Hermes, Teknium, Nous Research, kanban"
 
 
+@pytest.fixture(autouse=True)
+def _no_host_audio_binaries(monkeypatch):
+    monkeypatch.setattr("tools.transcription_audio._find_ffmpeg_binary", lambda: None)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -630,3 +635,35 @@ def test_real_fixture_plugins_thread_prompt_in_registration_order(
     _, kwargs = mock_model.transcribe.call_args
     assert kwargs["initial_prompt"] == PROMPT  # last writer won
     assert kwargs["language"] == "en"  # earlier hook's field preserved
+
+@pytest.mark.parametrize("results,expected", [
+    ([{"prompt": ""}, {"model": "gpt-transcribe"}], ""),
+    ([{"model": "gpt-transcribe"}, {"prompt": ""}], ""),
+    ([{"prompt": ""}, {"prompt": None}, {"language": "fr"}], ""),
+    ([{"prompt": ""}, {"prompt": "last"}], "last"),
+    ([{"model": "gpt-transcribe"}], None),
+])
+def test_real_hook_merger_preserves_prompt_presence(monkeypatch, results, expected):
+    from tools.transcription_command import _apply_pre_transcription_hook
+    manager = plugins_mod.PluginManager()
+    context = plugins_mod.PluginContext(plugins_mod.PluginManifest(name="context-test"), manager)
+    for result in results:
+        context.register_hook("pre_transcription", lambda result=result, **kw: result)
+    monkeypatch.setattr(plugins_mod, "_delivery_manager", lambda: manager)
+    fields = {}
+    model, language, prompt = _apply_pre_transcription_hook(
+        file_path="voice.wav", provider="openai", model=None, language=None,
+        prompt="generic", source="gateway", field_overrides=fields,
+    )
+    assert ("prompt" in fields) == (expected is not None)
+    if expected is not None:
+        assert fields["prompt"] == expected
+        assert prompt == (expected or None)
+    else:
+        assert prompt == "generic"
+    # Existing consumers can still call without metadata and unpack three values.
+    legacy = _apply_pre_transcription_hook(
+        file_path="voice.wav", provider="openai", model=None, language=None,
+        prompt="generic", source="gateway",
+    )
+    assert legacy == (model, language, prompt)

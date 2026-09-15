@@ -282,7 +282,15 @@ def _enabled_mcp_servers(config: Optional[dict[str, Any]]) -> list[str]:
     try:
         from hermes_cli.config import read_raw_config
         from hermes_cli.tools_config import _parse_enabled_flag
-        servers = read_raw_config().get("mcp_servers") or {}
+
+        raw_config = read_raw_config() or {}
+        # Same Managed-Scope overlay as the discovery gate (#91073): an admin-published
+        # server must also stay in this session-toolset allowlist, or it is filtered back
+        # out of the session even once discovery starts it. Fail-open like the overlay.
+        from hermes_cli import managed_scope
+
+        raw_config = managed_scope.apply_managed_overlay(raw_config)
+        servers = raw_config.get("mcp_servers") or {}
         return [
             str(name) for name, cfg in servers.items()
             if isinstance(cfg, dict) and _parse_enabled_flag(cfg.get("enabled", True), default=True)

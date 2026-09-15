@@ -246,6 +246,32 @@ async def test_status_command_prefers_rehydrated_session_model_override(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_status_command_uses_override_route_context_after_session_model_switch(monkeypatch):
+    """A session-only /model route must not inherit the default route's context pin."""
+    from gateway.slash_commands_status import _active_override_context_length, _status_model_route
+
+    override = {
+        "model": "kimi-k3", "provider": "kimi-coding", "base_url": "https://api.kimi.com/coding",
+    }
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {"model": {"context_length": 80_000}},
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length", lambda *args, **kwargs: 1_048_576,
+    )
+
+    model, provider, used, context_total, selected_override = _status_model_route(
+        None, override, {}, {}, SimpleNamespace(last_prompt_tokens=79_455),
+    )
+
+    assert (model, provider, used, context_total, selected_override) == (
+        "kimi-k3", "kimi-coding", 79_455, 0, True,
+    )
+    assert await _active_override_context_length(override, model, provider) == 1_048_576
+
+
+@pytest.mark.asyncio
 async def test_agents_command_reports_active_agents_and_processes(monkeypatch):
     session_key = build_session_key(_make_source())
     session_entry = SessionEntry(

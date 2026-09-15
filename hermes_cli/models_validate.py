@@ -364,13 +364,21 @@ def _validate_anthropic(req: _Request) -> Optional[dict[str, Any]]:
 
 
 def _validate_anthropic_messages(req: _Request) -> dict[str, Any]:
-    """Anthropic Messages transport: many proxies don't implement /v1/models — probe, and accept
-    with a warning when the probe fails or the model isn't listed."""
+    """Anthropic Messages transport: accept unverified names while distinguishing an empty reached
+    listing from a listing endpoint that could not be reached."""
     from hermes_cli import models as _m
 
-    models = _m.fetch_api_models(req.api_key, req.base_url, api_mode=req.api_mode)
+    probe = _m.probe_api_models(req.api_key, req.base_url, api_mode=req.api_mode)
+    models = probe.get("models")
     verdict = _match_in_catalog(req.lookup, models).verdict(req) if models is not None else None
-    return verdict or _soft_accept(
+    if verdict is not None:
+        return verdict
+    if models is not None:
+        return _soft_accept(
+            f"Note: `{req.requested}` was not found in this endpoint's model listing "
+            f"({probe.get('probed_url')}). It may still work if the endpoint supports hidden or aliased models."
+        )
+    return _soft_accept(
         f"Note: could not verify `{req.requested}` against this endpoint's model listing.  Many "
         "Anthropic-compatible proxies do not implement GET /v1/models.  The model name has been accepted "
         "without verification."

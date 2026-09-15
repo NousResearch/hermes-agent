@@ -827,3 +827,23 @@ class TestValidateCustomUnreachableFallback:
         assert "was not saved" in result["message"]
         # A reachable catalog keeps authoritative validation regardless of mode.
         assert self._validate("my-model", "custom", models=["my-model"], api_mode="chat_completions")["recognized"] is True
+
+
+def test_anthropic_messages_empty_reachable_listing_is_not_described_as_unimplemented():
+    """An empty successful /models response is a reachable listing, not a failed probe."""
+    probe = {
+        "models": [],
+        "probed_url": "https://api.example.test/v1/models",
+        "resolved_base_url": "https://api.example.test/v1",
+        "suggested_base_url": None,
+        "used_fallback": False,
+    }
+    with patch("hermes_cli.models.probe_api_models", return_value=probe):
+        result = validate_requested_model(
+            "kimi-k3", "kimi-coding", api_key="key",
+            base_url="https://api.example.test/v1", api_mode="anthropic_messages",
+        )
+
+    assert result["accepted"] is True
+    assert "not found in this endpoint's model listing" in result["message"]
+    assert "do not implement" not in result["message"]

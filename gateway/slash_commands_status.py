@@ -84,7 +84,7 @@ def _quiet_sync(call, default=None):
 def _status_model_route(
     status_agent, active_override: dict, persisted_route: dict, session_row: dict, session_entry
 ):
-    """``(model, provider, context_used, context_total)`` for /status.
+    """``(model, provider, context_used, context_total, active_override_selected)`` for /status.
 
     Order: live/cached agent route -> active session override -> persisted recent route ->
     SessionDB row -> gateway config (only loaded when something is still missing).
@@ -94,18 +94,20 @@ def _status_model_route(
     routes = []
     if status_agent is not None and status_agent is not _AGENT_PENDING_SENTINEL:
         routes.append((_clean_str(getattr(status_agent, "model", "")),
-                       _clean_str(getattr(status_agent, "provider", ""))))
+                       _clean_str(getattr(status_agent, "provider", "")), False))
         ctx = getattr(status_agent, "context_compressor", None)
         if ctx is not None:
             context_used = max(0, _int_value(getattr(ctx, "last_prompt_tokens", 0)))
             context_total = _int_value(getattr(ctx, "context_length", 0))
     routes.append((_clean_str(active_override.get("model")),
-                   _clean_str(active_override.get("provider"))))
+                   _clean_str(active_override.get("provider")), True))
     routes.append((_clean_str(persisted_route.get("model")),
-                   _clean_str(persisted_route.get("billing_provider"))))
+                   _clean_str(persisted_route.get("billing_provider")), False))
     row_route = (_clean_str(session_row.get("model")), _clean_str(session_row.get("billing_provider")))
     # First fully-resolved (model AND provider) route wins; the SessionDB row is used even if partial.
-    model_name, provider_name = next((r for r in routes if r[0] and r[1]), row_route)
+    model_name, provider_name, active_override_selected = next(
+        (r for r in routes if r[0] and r[1]), (*row_route, False)
+    )
     context_used = context_used or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
     user_config: dict[str, Any] = {}
     if not model_name or not provider_name or not context_total:
@@ -115,9 +117,22 @@ def _status_model_route(
     model_name = model_name or _resolve_gateway_model(user_config)
     provider_name = provider_name or _clean_str(model_cfg.get("provider"))
     configured_context = model_cfg.get("context_length")
-    if not context_total and isinstance(configured_context, int) and configured_context > 0:
+    if not context_total and not active_override_selected and isinstance(configured_context, int) and configured_context > 0:
         context_total = configured_context
-    return model_name, provider_name, context_used, context_total
+    return model_name, provider_name, context_used, context_total, active_override_selected
+
+
+async def _active_override_context_length(active_override: dict, model_name: str, provider_name: str) -> int:
+    """Resolve the window for a session-only route without borrowing the default route's pin."""
+    from agent.model_metadata import get_model_context_length
+
+    return _int_value(await asyncio.to_thread(
+        get_model_context_length,
+        model_name,
+        base_url=_clean_str(active_override.get("base_url")),
+        api_key=_clean_str(active_override.get("api_key")),
+        provider=provider_name,
+    ))
 
 
 def _context_compressor_lines(agent, ctx, used: int) -> list[str]:
@@ -241,9 +256,13 @@ class GatewayStatusCommandsMixin:
         status_agent = agent if is_running else self._cached_agent_for(session_key)
         self._rehydrate_session_model_override(session_key)
         active_override = self._session_model_override(session_key) or {}
-        model_name, provider_name, context_used, context_total = _status_model_route(
+        model_name, provider_name, context_used, context_total, active_override_selected = _status_model_route(
             status_agent, active_override, persisted_route, session_row, session_entry
         )
+        if not context_total and active_override_selected:
+            context_total = await _quiet(
+                lambda: _active_override_context_length(active_override, model_name, provider_name), 0
+            )
 
         fields = build_status_fields(
             session_entry.session_id, None, session_row, title=title, model=model_name, provider=provider_name,

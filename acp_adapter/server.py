@@ -22,7 +22,7 @@ from acp.schema import (
     McpServerStdio, NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
     SessionCapabilities, SessionConfigOptionSelect, SessionForkCapabilities,
     SessionInfo, SessionInfoUpdate, SessionListCapabilities, SessionMode, SessionModeState,
-    SessionResumeCapabilities, SetSessionConfigOptionResponse, SetSessionModeResponse, TextContentBlock,
+    SessionResumeCapabilities, SetSessionConfigOptionResponse, SetSessionModeResponse, SetSessionModelResponse, TextContentBlock,
     Usage, UsageUpdate, UserMessageChunk,
 )
 

@@ -34,6 +34,18 @@ def is_multiplex_active() -> bool:
     return _MULTIPLEX_ACTIVE
 
 
+def serves_routed_profile() -> bool:
+    """True when the current task runs for a profile other than the process's own: always under
+    multiplexing, else when a HERMES_HOME override names another home (dashboard/desktop backend,
+    per-profile cron ticker). The MCP registry scope and the check_fn cache key both follow this
+    predicate so a served profile's view never aliases the launch profile's (#111151)."""
+    if is_multiplex_active():
+        return True
+    from hermes_constants import get_hermes_home_override, get_process_hermes_home, hermes_home_key
+    override = get_hermes_home_override()
+    return override is not None and hermes_home_key(override) != hermes_home_key(get_process_hermes_home())
+
+
 _SECRET_SCOPE: ContextVar[Optional[Mapping[str, str]]] = ContextVar("_SECRET_SCOPE", default=None)
 
 

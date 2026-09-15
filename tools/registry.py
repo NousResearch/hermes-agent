@@ -270,9 +270,9 @@ def check_fn_cache_scope() -> Optional[str]:
     except Exception:
         pass
     try:
-        from agent.secret_scope import is_multiplex_active
+        from agent.secret_scope import serves_routed_profile
         from hermes_constants import get_hermes_home_override
-        if not is_multiplex_active():
+        if not serves_routed_profile():
             return None
         override = get_hermes_home_override()
         return str(Path(override).expanduser().resolve()) if override else CHECK_FN_CACHE_BYPASS

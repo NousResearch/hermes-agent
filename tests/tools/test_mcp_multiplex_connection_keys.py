@@ -272,3 +272,31 @@ def test_served_profile_without_multiplex_flag_gets_its_own_connection(two_profi
     with patch("hermes_constants.get_hermes_home_override", return_value=None):
         assert core._mcp_registry_scope() is None
         assert _server_key("x") == "x"
+
+
+def test_served_profile_check_fn_verdict_does_not_shadow_launch_profile(two_profiles, monkeypatch):
+    """With multiplex off, a served profile's (correct) "not my connection" verdict must not sit in
+    the process-wide check_fn cache under the launch profile's key: the cache scope has to follow
+    the same served-profile predicate as the registry scope, or the owner loses its live tools."""
+    import tools.registry as registry_mod
+    from tools import mcp_tool_discovery as disc
+    from tools import mcp_tool_registration as reg
+    from tools.registry import registry
+
+    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: False)
+    cfg_a = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer A"}}
+    srv_a = _server("x", cfg_a)
+    with patch("hermes_constants.get_hermes_home_override", return_value=None):
+        disc._adopt_server("x", srv_a)
+        srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg_a)
+        entry = registry._tools["mcp__x__t"]
+    registry_mod.invalidate_check_fn_cache()
+    try:
+        two_profiles("b")
+        assert registry_mod.check_fn_cache_scope() is not None
+        assert registry_mod._check_fn_cached(entry.check_fn) is False
+        with patch("hermes_constants.get_hermes_home_override", return_value=None):
+            assert registry_mod._check_fn_cached(entry.check_fn) is True
+    finally:
+        registry.deregister("mcp__x__t")
+        registry_mod.invalidate_check_fn_cache()

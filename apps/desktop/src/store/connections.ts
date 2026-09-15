@@ -79,9 +79,26 @@ $activeConnectionProfile.subscribe(({ connectionId, descriptorProfile, profile, 
   // remember a source/profile pair after Electron confirms that exact v2
   // descriptor. This also rejects the brief startup window where the profile
   // atom still carries the previous app run's alias.
+  //
+  // A local-pool profile pick (selectProfile on This device → the legacy
+  // `hermes:connection` IPC) resolves a descriptor WITHOUT the registry-scoped
+  // stamp, so requiring the stamp alone would never remember it: the local
+  // entry kept whatever stale value a later switch-back recomputed, re-homing
+  // the user onto `default` and tripping the post-activation check with a
+  // false "did not become active" toast (#104785, regression of #93718).
+  // Such a descriptor still names the machine-local registry entry (main
+  // resolves a local backend onto the kind:'local' connection id), so treat
+  // that id as memory-eligible. Migrated v1 remotes resolve onto remote ids
+  // and stay excluded, and the descriptor/profile agreement check below still
+  // rejects aliases and the startup window either way.
+  const localConnectionId =
+    $connectionsRegistry.get()?.connections.find(connection => connection.kind === 'local')?.id ?? null
+
+  const memoryEligible = registryScoped || connectionId === localConnectionId
+
   if (
     !connectionId ||
-    !registryScoped ||
+    !memoryEligible ||
     descriptorProfile !== profile ||
     $lastProfileByConnection.get()[connectionId] === profile
   ) {

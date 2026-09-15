@@ -769,10 +769,11 @@ class CLIModalMixin:
         commands. ``_approval_lock`` serializes concurrent requests (parallel delegation subtasks)
         so the shared ``_approval_state`` / ``_approval_deadline`` aren't clobbered.
         """
-        from cli import CLI_CONFIG, _DIM, _RST, _cprint
+        from cli import _DIM, _RST, _cprint
+        from tools.approval_context import _get_approval_timeout
 
         with self._approval_lock:
-            timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 300))
+            timeout = _get_approval_timeout()
             response_queue = queue.Queue()
             self._approval_state = {
                 "command": command,

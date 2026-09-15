@@ -242,7 +242,7 @@ def _(rid, params: dict) -> dict:
 
 # ── setup readiness
 
-def _readiness_check(rid, params, probe):
+def _readiness_check(rid, params, probe, *, scope_launch_profile=False):
     """Shared shell of setup.status / setup.runtime_check. ``probe(profile, scoped)`` runs inside the
     optional ``profile`` param's HERMES_HOME + ``.env`` secret scope (ContextVars: concurrent checks
     stay isolated); ``scoped`` is the ``{"profile": ...}`` payload stamp (``{}`` for the launch
@@ -250,6 +250,10 @@ def _readiness_check(rid, params, probe):
     for the launch profile instead)."""
     import contextlib
     profile = str(params.get("profile") or "").strip() if isinstance(params, dict) else ""
+    # Most launch-profile readiness probes retain the legacy unscoped behavior
+    # in a single-profile process.  A runtime probe is different once this
+    # backend multiplexes: provider resolution may read a profile secret, so
+    # bind the launch profile's frozen scope before it reaches the resolver.
     scope = contextlib.nullcontext()
     if profile:
         from hermes_cli import profiles as profiles_mod
@@ -259,6 +263,8 @@ def _readiness_check(rid, params, probe):
         home = _profile_home(profile)
         if home is not None:
             scope = _session_profile_runtime_scope({"profile_home": str(home)})
+    elif scope_launch_profile:
+        scope = _session_profile_runtime_scope({})
     with scope:
         payload = probe(profile, {"profile": profile} if profile else {})
     return _ok(rid, payload)
@@ -328,7 +334,7 @@ def _(rid, params: dict) -> dict:
                     "source": runtime.get("source"),
                     "free_tier": provider == "nous" and route_is_welcome_host(runtime.get("base_url")),
                     **scoped}
-        return _readiness_check(rid, params, probe)
+        return _readiness_check(rid, params, probe, scope_launch_profile=True)
     except Exception as e:
         return _ok(rid, {"ok": False, "error": str(e)})
 

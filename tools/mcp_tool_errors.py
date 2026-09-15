@@ -3,6 +3,7 @@ headers, redirect header stripping, exception-group unwrapping, auth/session-exp
 method-not-found detection and connect-error formatting. Split from tools/mcp_tool.py."""
 
 import asyncio
+import contextlib
 import errno
 import importlib
 import logging
@@ -229,6 +230,86 @@ def _make_redirect_header_stripper(original_url, *, strict: bool = False,
             while _name in headers:
                 del headers[_name]
     return _strip_on_cross_origin_redirect
+
+
+# Wire-body cap, applied at the httpx transport before the SDK buffers/JSON-parses a response. A
+# hostile or misbehaving remote MCP server can stream an unbounded catalog/tool-result body and none
+# of the post-parse limits (resource cap, tool-result truncation) run before the parse blows up.
+# Non-SSE HTTP bodies are capped at this many bytes (a larger Content-Length is rejected up front);
+# each SSE *event* is capped, with the counter reset at completed event boundaries so a long-lived
+# stream and its keepalives have no cumulative limit. Violations raise the SDK httpx's ReadError and
+# flow through the ordinary transport teardown/reconnect path (#66092).
+_MCP_HTTP_MAX_BODY_BYTES = 10 * 1024 * 1024
+_SSE_NEWLINES = re.compile(br"\r\n|\r|\n")
+
+
+def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_HTTP_MAX_BODY_BYTES):
+    """Wrap ``inner_transport`` so every response body is size-capped. ``httpx_mod`` must be the SDK's
+    own httpx module (``sdk_httpx()``): the transport is handed to that SDK's ``AsyncClient``."""
+
+    class _CappedStream(httpx_mod.AsyncByteStream):
+        def __init__(self, inner, is_sse: bool, url: str):
+            self._inner, self._is_sse, self._url = inner, is_sse, url
+
+        def _reject(self, kind: str):
+            return httpx_mod.ReadError(f"MCP {kind} exceeds {limit} bytes (from {self._url})")
+
+        async def __aiter__(self):
+            counted = 0
+            pending_cr = b""
+            line_empty = True
+            async for chunk in self._inner:
+                if self._is_sse:
+                    # Parse logical lines, not network chunks: one chunk may contain many
+                    # events, or split either byte of a CRLF. Retain only a trailing CR,
+                    # never an event body. SSE also permits lone CR and LF line endings.
+                    data = pending_cr + chunk
+                    pending_cr = b""
+                    if data.endswith(b"\r"):
+                        pending_cr, data = b"\r", data[:-1]
+                    start = 0
+                    for newline in _SSE_NEWLINES.finditer(data):
+                        counted += newline.end() - start
+                        if counted > limit:
+                            raise self._reject("SSE event")
+                        if newline.start() == start and line_empty:
+                            counted = 0  # a blank logical line completes the event
+                        line_empty = True
+                        start = newline.end()
+                    if start < len(data):
+                        counted += len(data) - start
+                        line_empty = False
+                    if counted + len(pending_cr) > limit:
+                        raise self._reject("SSE event")
+                else:
+                    counted += len(chunk)
+                    if counted > limit:
+                        raise self._reject("HTTP response")
+                yield chunk
+
+        async def aclose(self):
+            await self._inner.aclose()
+
+    class _BodyCapTransport(httpx_mod.AsyncBaseTransport):
+        def __init__(self, inner):
+            self._inner = inner
+
+        async def handle_async_request(self, request):
+            response = await self._inner.handle_async_request(request)
+            is_sse = response.headers.get("content-type", "").split(";", 1)[0].strip().lower() == "text/event-stream"
+            declared = response.headers.get("content-length")
+            with contextlib.suppress(ValueError):  # malformed header: the streamed cap still applies
+                if not is_sse and declared is not None and int(declared) > limit:
+                    await response.aclose()
+                    raise httpx_mod.ReadError(f"MCP HTTP response declares Content-Length {declared} > {limit} "
+                                              f"bytes cap (from {request.url})")
+            response.stream = _CappedStream(response.stream, is_sse, str(request.url))
+            return response
+
+        async def aclose(self):
+            await self._inner.aclose()
+
+    return _BodyCapTransport(inner_transport)
 
 
 def _exc_children(exc: BaseException) -> List[BaseException]:

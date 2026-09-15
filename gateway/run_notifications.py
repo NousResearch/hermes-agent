@@ -262,7 +262,7 @@ class GatewayNotificationsMixin:
 
     async def _deliver_media_from_response(
         self, response: str, event: MessageEvent, adapter, thread_metadata: Optional[Dict[str, Any]] = None
-    ) -> None:
+    ) -> Dict[str, bool]:
         """Deliver explicit MEDIA: tags from an already-streamed response (text already delivered).
         EXPLICIT-ONLY, unlike the non-streaming path in ``gateway/platforms/base.py``: a bare local
         path in a streamed reply is shown text or stale inspected content, and promoting it sent
@@ -273,11 +273,15 @@ class GatewayNotificationsMixin:
         #20834.
         """
         from urllib.parse import quote as _quote
+        verdict = {"expected": False, "attempted": False, "succeeded": False}
         with _log_suppressed(logging.WARNING, "Post-stream media extraction failed: %s"):
             # Capture [[as_document]] before extract_media strips it: images then go via send_document.
             force_document_attachments = "[[as_document]]" in response
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
             media_files, cleaned = adapter.extract_media(response)
+            # Preserve the request signal before safe-path filtering.  An attachment-only
+            # response whose requested path is rejected must not be reported as delivered.
+            verdict["expected"] = bool(media_files)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
             # Strip image URLs (parity with the non-streaming chain); no extract_local_files here.
             # Do NOT deduplicate explicit MEDIA tags against prior turns here (#73771). This rescan is
@@ -302,24 +306,39 @@ class GatewayNotificationsMixin:
             image_paths = [p for p, v in media_files if _is_photo(p, v)]
             non_image_media = [(p, v) for p, v in media_files if not _is_photo(p, v)]
             if image_paths:
+                verdict["attempted"] = True
                 try:
-                    images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
+                    # send_multiple_images() removes the ``file://`` prefix and URL-decodes
+                    # the remainder before opening it.  Normalize Windows separators first and
+                    # preserve the drive colon; quote still protects spaces, Unicode and ``#``.
+                    def _file_url(media_path: str) -> str:
+                        uri_path = Path(media_path).as_posix()
+                        return f"file://{_quote(uri_path, safe='/:')}"
+
+                    images = [(_file_url(p), "") for p in image_paths]
+                    result = await adapter.send_multiple_images(
+                        chat_id=chat_id, images=images, metadata=_thread_meta)
+                    verdict["succeeded"] |= bool(getattr(result, "success", False))
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
             for media_path, is_voice in non_image_media:
+                verdict["attempted"] = True
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
+                        result = await adapter.send_voice(
                             chat_id=chat_id, audio_path=media_path, metadata=_thread_meta, is_voice=is_voice,
                         )
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
+                        result = await adapter.send_video(
+                            chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
                     else:
-                        await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
+                        result = await adapter.send_document(
+                            chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
+                    verdict["succeeded"] |= bool(getattr(result, "success", False))
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+        return verdict
 
 
     async def _deliver_queued_first_response(
@@ -327,7 +346,7 @@ class GatewayNotificationsMixin:
         metadata: Optional[Dict[str, Any]] = None, event_message_id: Optional[str] = None,
         text_already_delivered: bool = False, deliver_media: bool = True, stream_consumer=None,
         session_key: Optional[str] = None, inbound_message_id: Optional[str] = None,
-    ) -> None:
+    ) -> Dict[str, bool]:
         """Deliver a queued response using the normal text+attachment split.
 
         ``session_key`` lets the text send record a delivery-ledger obligation like the normal final
@@ -335,6 +354,14 @@ class GatewayNotificationsMixin:
         ``event_message_id`` reply anchor); see ``_send_queued_final_text``. Without a key the send
         stays unledgered."""
         from gateway.run import _strip_response_attachments_for_direct_send
+        # ``expected`` is deliberately based on the original response.  If its only
+        # deliverable is a rejected/filtered attachment, no send occurs and the caller
+        # still receives a truthful failed verdict.
+        verdict = {
+            "expected": bool(str(response or "").strip()),
+            "attempted": bool(text_already_delivered),
+            "succeeded": bool(text_already_delivered),
+        }
         if not text_already_delivered:
             text_content = _strip_response_attachments_for_direct_send(response, adapter)
             if text_content:
@@ -351,8 +378,10 @@ class GatewayNotificationsMixin:
                         _edit_res = await adapter.edit_message(
                             chat_id=source.chat_id, message_id=_sc_msg_id, content=text_content, finalize=True,
                         )
+                        verdict["attempted"] = True
                         if getattr(_edit_res, "success", False):
                             _reconciled = True
+                            verdict["succeeded"] = True
                             logger.info(
                                 "Queued-lane final reconciled by editing message %s in place (no duplicate send).",
                                 _sc_msg_id,
@@ -369,21 +398,27 @@ class GatewayNotificationsMixin:
                                     "connector's egress guard; not falling back "
                                     "to a send (the destination is not approved)."
                                 )
-                                return
+                                return verdict
                     except Exception as _qe:
                         logger.debug("Queued-lane reconcile edit failed (%s); falling back to send.", _qe)
                 if not _reconciled:
-                    await self._send_queued_final_text(
+                    result = await self._send_queued_final_text(
                         adapter, source, text_content, metadata, event_message_id, session_key,
                         inbound_message_id)
+                    verdict["attempted"] = True
+                    verdict["succeeded"] |= bool(getattr(result, "success", False))
         # Failed turns deliver their (normalized failure) text but must not upload attachments as if
         # they succeeded — mirrors the ``not agent_result.get("failed")`` completed-turn guard.
         if not deliver_media:
-            return
-        await self._deliver_media_from_response(
+            return verdict
+        media_verdict = await self._deliver_media_from_response(
             response, MessageEvent(text="", source=source, message_id=event_message_id), adapter,
             thread_metadata=metadata,
         )
+        verdict["expected"] |= media_verdict["expected"]
+        verdict["attempted"] |= media_verdict["attempted"]
+        verdict["succeeded"] |= media_verdict["succeeded"]
+        return verdict
 
     async def _send_queued_final_text(
         self, adapter, source: SessionSource, text_content: str, metadata: Optional[Dict[str, Any]],
@@ -438,9 +473,10 @@ class GatewayNotificationsMixin:
         profile = str(data.get("profile") or "").strip()
         if profile:
             return profile
+        from gateway.session import profile_from_session_key_namespace
         parts = str(data.get("session_key") or "").split(":")
         if len(parts) >= 5 and parts[0] == "agent" and parts[1] not in ("main", ""):
-            return parts[1]
+            return profile_from_session_key_namespace(parts[1])
         return None
 
     def _resolve_update_target(self, paths: "_UpdatePaths") -> Optional["_UpdateTarget"]:
@@ -1644,7 +1680,8 @@ class GatewayNotificationsMixin:
     def _redacted_output_tail(session, limit: int) -> str:
         """Last ``limit`` chars of process output through the secret redactors (unconditional floor)."""
         from gateway.run import _redact_gateway_user_facing_secrets
-        new_output = session.output_buffer[-limit:] if session.output_buffer else ""
+        from tools.ansi_strip import strip_ansi
+        new_output = strip_ansi(session.output_buffer[-limit:]) if session.output_buffer else ""
         if new_output:
             from agent.redact import redact_terminal_output
             new_output = redact_terminal_output(new_output, getattr(session, "command", "") or "")
@@ -1703,19 +1740,26 @@ class GatewayNotificationsMixin:
         }
 
     def _format_process_final_message(self, session_id: str, session, notify_mode: str) -> str:
+        """Human-facing completion message. Every mode shares the one-line status header; the
+        raw-output modes (all/result/error) append the bounded output tail under it instead of the
+        old bracketed ``[Background process proc_… finished~ …]`` debug wrapper (#54266)."""
         from gateway.run import _format_concise_process_notification, _redact_gateway_user_facing_secrets
         new_output = self._redacted_output_tail(session, 1000)
-        if notify_mode != "concise":
-            return (
-                f"[Background process {session_id} finished with exit code {session.exit_code}~ "
-                f"Here's the final output:\n{new_output}]"
-            )
         _started = getattr(session, "started_at", None)
         _dur = max(0.0, time.time() - _started) if isinstance(_started, (int, float)) else None
-        return _format_concise_process_notification(
-            session_id, _redact_gateway_user_facing_secrets(getattr(session, "command", "") or ""),
-            session.exit_code, new_output, duration_seconds=_dur,
-        )
+        command = _redact_gateway_user_facing_secrets(getattr(session, "command", "") or "")
+        if notify_mode == "concise":
+            return _format_concise_process_notification(session_id, command, session.exit_code, new_output,
+                                                        duration_seconds=_dur)
+        header = _format_concise_process_notification(session_id, command, session.exit_code, "", duration_seconds=_dur)
+        return f"{header}\n\nFinal output:\n```\n{new_output.strip()}\n```" if new_output.strip() else header
+
+    def _format_process_running_message(self, session) -> str:
+        from gateway.run import _redact_gateway_user_facing_secrets, _shorten_command_for_display
+        new_output = self._redacted_output_tail(session, 500)
+        short_cmd = _shorten_command_for_display(_redact_gateway_user_facing_secrets(getattr(session, "command", "") or ""))
+        header = "⏳ Background task still running" + (f" — `{short_cmd}`" if short_cmd else "")
+        return f"{header}\n\nRecent output:\n```\n{new_output.strip()}\n```" if new_output.strip() else header
 
     async def _run_process_watcher(self, watcher: dict) -> None:
         """Poll a background process and push updates until it exits. Mode
@@ -1782,9 +1826,7 @@ class GatewayNotificationsMixin:
             elif has_new_output and notify_mode == "all" and not agent_notify:
                 # New output — deliver a status update (only in "all" mode; agent_notify watchers
                 # only care about completion).
-                new_output = self._redacted_output_tail(session, 500)
                 await self._send_watcher_message(
-                    platform_name, chat_id, thread_id,
-                    f"[Background process {session_id} is still running~ New output:\n{new_output}]", watcher,
+                    platform_name, chat_id, thread_id, self._format_process_running_message(session), watcher,
                 )
         logger.debug("Process watcher ended%s: %s", " (silent)" if silent else "", session_id)

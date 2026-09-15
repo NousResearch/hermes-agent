@@ -146,28 +146,37 @@ async def test_in_process_scoped_transport_contract_finishes_headlessly(
     agent.session_prompt_tokens = agent.session_completion_tokens = (
         agent.session_total_tokens
     ) = 0
-    with patch.object(target, "_create_agent", return_value=agent):
-        home.start()
-        home.send(
-            room_id="room-1",
-            event_id="user-1",
-            payload={"text": "@reviewer inspect", "thread_id": "thread-1"},
-        )
-        deadline = asyncio.get_running_loop().time() + 5
-        while asyncio.get_running_loop().time() < deadline:
-            if any(
-                event["kind"] == "message.member"
-                for event in home._events("room-1")
-            ):
-                break
-            await asyncio.sleep(0.02)
-        else:
-            raise AssertionError(
-                "peer reply was not published: "
-                f"status={home.runtime.status()} events={home._events('room-1')}"
+    # This UAT exercises the idle poller; keep its test-only interval bounded
+    # so a scheduler delay cannot consume the entire assertion deadline.
+    home.runtime.poll_interval_seconds = 0.05
+    stopped = False
+    try:
+        with patch.object(target, "_create_agent", return_value=agent):
+            home.start()
+            home.send(
+                room_id="room-1",
+                event_id="user-1",
+                payload={"text": "@reviewer inspect", "thread_id": "thread-1"},
             )
-        assert home.stop(timeout=1.0)
+            deadline = asyncio.get_running_loop().time() + 5
+            while asyncio.get_running_loop().time() < deadline:
+                if any(
+                    event["kind"] == "message.member"
+                    for event in home._events("room-1")
+                ):
+                    break
+                await asyncio.sleep(0.02)
+            else:
+                raise AssertionError(
+                    "peer reply was not published: "
+                    f"status={home.runtime.status()} events={home._events('room-1')}"
+                )
+    finally:
+        stopped = home.stop(timeout=1.0)
+        await server.close()
+        target._run_idempotency_store.close()
 
+    assert stopped
     reply = next(
         event
         for event in home._events("room-1")
@@ -175,5 +184,3 @@ async def test_in_process_scoped_transport_contract_finishes_headlessly(
     )
     assert reply["payload"]["text"] == "Scoped peer response."
     assert reply["actor"]["connection_id"] == "peer-target"
-    await server.close()
-    target._run_idempotency_store.close()

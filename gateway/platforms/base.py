@@ -285,19 +285,24 @@ def should_bypass_proxy(target_hosts: str | list[str] | tuple[str, ...] | set[st
 
 def resolve_proxy_url(
     platform_env_var: str | None = None, *,
-    target_hosts: str | list[str] | tuple[str, ...] | set[str] | None = None) -> str | None:
-    """Proxy URL: *platform_env_var* (e.g. ``DISCORD_PROXY``) first, then HTTPS_PROXY /
-    HTTP_PROXY / ALL_PROXY (any case), then the macOS system proxy — the latter two only when
-    ``gateway.trust_env`` is true. None when nothing is found or NO_PROXY matches a target.
+    target_hosts: str | list[str] | tuple[str, ...] | set[str] | None = None,
+    configured: str | None = None) -> str | None:
+    """Proxy URL: *platform_env_var* (e.g. ``DISCORD_PROXY``) first, then the adapter's own YAML
+    value *configured* (``telegram.proxy_url``), then HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (any
+    case), then the macOS system proxy — the latter two only when ``gateway.trust_env`` is true.
+    None when nothing is found or NO_PROXY matches a target.
 
     *platform_env_var* is a per-adapter, per-profile-configurable setting (each proxy URL can
     embed credentials, e.g. ``http://user:pass@host``) so it is read scope-aware: under a
     secondary multiplex profile it comes from that profile's own ``.env``, not the shared
-    process env another profile's ``TELEGRAM_PROXY``/``DISCORD_PROXY``/etc. may hold. The
-    generic ``HTTPS_PROXY``/``HTTP_PROXY``/``ALL_PROXY`` fallback stays a raw process-env read —
-    those are OS/system-level network settings, not a per-profile Hermes concept."""
+    process env another profile's ``TELEGRAM_PROXY``/``DISCORD_PROXY``/etc. may hold; the YAML
+    value is the same profile's, so a secondary keeps its configured route without any env
+    bridge (#108440). The generic ``HTTPS_PROXY``/``HTTP_PROXY``/``ALL_PROXY`` fallback stays a raw
+    process-env read — those are OS/system-level network settings, not a per-profile Hermes concept."""
     from gateway.platforms._shared import get_scoped_secret as _get_scoped_proxy_var
     value = (_get_scoped_proxy_var(platform_env_var, "") or "").strip() if platform_env_var else ""
+    if not value:
+        value = str(configured or "").strip()
     if not value:
         if not gateway_trust_env():  # only the explicit per-platform var is honored
             return None
@@ -372,7 +377,7 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 
 import dataclasses
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -881,7 +886,7 @@ def _tenv(name: str, default: str = "") -> str:
     return terminal_env(name, default)
 
 
-def _parse_docker_volume_mounts() -> List[Tuple[Path, Path]]:
+def _parse_docker_volume_mounts() -> List[Tuple[Path, PurePosixPath]]:
     """Parse ``TERMINAL_DOCKER_VOLUMES`` (JSON list of ``host:container[:mode]``) into
     ``(host_path, container_path)``; named volumes / non-absolute hosts can't resolve here."""
     raw = _tenv("TERMINAL_DOCKER_VOLUMES", "").strip()
@@ -890,19 +895,22 @@ def _parse_docker_volume_mounts() -> List[Tuple[Path, Path]]:
         parsed = _json.loads(raw) if raw else []
     except Exception:
         return []
-    mounts: List[Tuple[Path, Path]] = []
+    mounts: List[Tuple[Path, PurePosixPath]] = []
     for entry in parsed if isinstance(parsed, list) else ():
         spec = entry.strip() if isinstance(entry, str) else ""
-        # Prefer the first ':/' so absolute container paths are unambiguous.
-        sep = spec.find(":/")
+        # A Windows host may use C:/...; its drive colon is not the mount separator.
+        host_start = 2 if len(spec) > 1 and spec[0].isalpha() and spec[1] == ":" else 0
+        sep = spec.find(":/", host_start)
         if sep <= 0:
             continue
         container_raw = spec[sep + 1:].split(":", 1)[0]  # starts with /
-        # Skip named volumes (no absolute/drive host path).
+        # The host uses native paths; Linux container paths stay POSIX on Windows too.
         host_expanded = os.path.expanduser(spec[:sep])
-        if not (host_expanded.startswith("/") or (len(host_expanded) > 1 and host_expanded[1] == ":")):
+        host_candidate = Path(host_expanded)
+        if not host_candidate.is_absolute():
             continue
-        host_path, container_path = _resolve_path(Path(host_expanded)), Path(container_raw)
+        host_path = _resolve_path(host_candidate)
+        container_path = PurePosixPath(container_raw)
         if host_path is not None and container_path.is_absolute():
             mounts.append((host_path, container_path))
     return mounts
@@ -980,14 +988,14 @@ def _default_docker_workspace_host_roots(session_key: str = "") -> List[Path]:
     return _docker_persistent_sandbox_roots(session_key, "workspace")
 
 
-def _cache_dir_container_mounts() -> List[Tuple[Path, Path]]:
+def _cache_dir_container_mounts() -> List[Tuple[Path, PurePosixPath]]:
     """(host, container) pairs for the auto-mounted Hermes cache dirs (``/root/.hermes/...`` in
     MEDIA tags); longer prefixes than the ``/root`` home mount, so longest-prefix match wins."""
     if not _docker_env_active():
         return []
     try:
         from tools.credential_files import get_cache_directory_mounts
-        return [(Path(m["host_path"]), Path(m["container_path"])) for m in get_cache_directory_mounts()]
+        return [(Path(m["host_path"]), PurePosixPath(m["container_path"])) for m in get_cache_directory_mounts()]
     except Exception:
         return []
 
@@ -1006,9 +1014,10 @@ def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str
                    f", session_key={session_key}" if session_key else "")
 
 
-def _translate_docker_container_media_path(candidate: Path, session_key: str = "") -> Optional[Path]:
+def _translate_docker_container_media_path(candidate: Union[Path, PurePosixPath], session_key: str = "") -> Optional[Path]:
     """Container-absolute path -> host path via longest-prefix match over ``docker_volumes``, the
     auto-mounted cache dirs (``/root/.hermes/...``), persistent ``/workspace`` and ``/root``."""
+    candidate = PurePosixPath(candidate.as_posix())
     if not candidate.is_absolute():
         return None
     # In-process gateways (Desktop, `hermes serve`) may not have bridged terminal.* config into
@@ -1020,13 +1029,13 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
     mounted = {c.as_posix() for _, c in mounts}
     # Synthetic /workspace mounts: profile-scoped layout first, then legacy per-session.
     if "/workspace" not in mounted:
-        mounts.extend((root, Path("/workspace")) for root in _default_docker_workspace_host_roots(session_key))
+        mounts.extend((root, PurePosixPath("/workspace")) for root in _default_docker_workspace_host_roots(session_key))
     # Synthetic /root mounts catch stray home writes (/root/out.png; cache mounts are longer
     # prefixes). /root/.hermes/* that missed a cache mount is the container's credential surface —
     # translating it via the home mount would dodge the host denylist.
     if "/root" not in mounted and not candidate.as_posix().startswith("/root/.hermes"):
         mounts.extend(
-            (root, Path("/root")) for root in _docker_persistent_sandbox_roots(session_key, "home"))
+            (root, PurePosixPath("/root")) for root in _docker_persistent_sandbox_roots(session_key, "home"))
     if not mounts:
         _warn_unresolved_docker_media(candidate, session_key, "no sandbox mounts resolved")
         return None
@@ -1039,7 +1048,7 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
         _warn_unresolved_docker_media(candidate, session_key, "no mounted prefix matches")
         return None
     for host_root, container_root, _score in sorted(matched, key=lambda m: -m[2]):
-        translated = _resolve_path(host_root / candidate.relative_to(container_root), strict=True)
+        translated = _resolve_path(host_root.joinpath(*candidate.relative_to(container_root).parts), strict=True)
         if translated is not None and (
                 translated == host_root or _path_is_within(translated, host_root)):
             return translated
@@ -1061,11 +1070,13 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
     except (OSError, RuntimeError, ValueError):
         # expanduser raises ValueError("embedded null byte") for a ~\x00 path.
         return None
-    if not expanded.is_absolute():
-        return None
     # Docker agents emit MEDIA:/workspace/... — map container paths to host paths first.
     resolved = _translate_docker_container_media_path(expanded, session_key=session_key)
     if resolved is None:
+        # A container-absolute /path is only drive-relative on Windows. Never resolve it
+        # against the host's current drive when no explicit container mapping succeeded.
+        if not expanded.is_absolute():
+            return None
         resolved = _resolve_path(expanded, strict=True)
     if resolved is None or not resolved.is_file():
         return None
@@ -3191,6 +3202,43 @@ class BasePlatformAdapter(ABC):
         except Exception as e:
             logger.warning("[%s] %s hook failed: %s", self.name, hook_name, e)
 
+    async def _complete_queued_followup_processing(
+        self, event: MessageEvent, outcome: ProcessingOutcome,
+    ) -> None:
+        """Close terminal queued-event hooks after the outer final delivery verdict.
+
+        Tickets hold process-local adapter/event objects.  Claim each ticket before its hook
+        await, but leave later tickets attached to the event: if cancellation lands mid-hook,
+        every not-yet-claimed ticket still receives the same already-computed delivery verdict.
+        """
+        tickets = list(getattr(event, "_queued_followup_processing_tickets", ()) or ())
+        cancelled = None
+        for index, ticket in enumerate(tickets):
+            event._queued_followup_processing_tickets = [
+                pending for pending in tickets[index:]
+                if isinstance(pending, dict) and not pending.get("closed")
+            ]
+            if not isinstance(ticket, dict) or ticket.get("closed"):
+                continue
+            ticket["closed"] = True
+            event._queued_followup_processing_tickets = [
+                pending for pending in tickets[index + 1:]
+                if isinstance(pending, dict) and not pending.get("closed")
+            ]
+            adapter = ticket.get("adapter")
+            queued_event = ticket.get("event")
+            run_hook = getattr(adapter, "_run_processing_hook", None)
+            if callable(run_hook) and queued_event is not None:
+                try:
+                    await run_hook("on_processing_complete", queued_event, outcome)
+                except asyncio.CancelledError as exc:
+                    # Keep draining with the delivery verdict already established before
+                    # completion began; re-raise cancellation only after later tickets close.
+                    cancelled = cancelled or exc
+        event._queued_followup_processing_tickets = []
+        if cancelled is not None:
+            raise cancelled
+
     @staticmethod
     def _is_retryable_error(error: Optional[str]) -> bool:
         """Return True if the error string looks like a transient network failure."""
@@ -3244,6 +3292,18 @@ class BasePlatformAdapter(ABC):
             metadata=_mark_notify_metadata(thread_meta))
         if eph_ttl > 0 and result.success and result.message_id:
             self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, eph_ttl)
+
+    def _media_delivery_scope(self, source: Optional[SessionSource]):
+        """The runner's ``_media_delivery_scope_for_source`` (routed profile's home + terminal
+        policy) for validating outbound paths; a no-op without a runner or outside multiplexing."""
+        resolve = getattr(self.gateway_runner, "_media_delivery_scope_for_source", None)
+        if not callable(resolve) or source is None:
+            return contextlib.nullcontext()
+        try:
+            return resolve(source)
+        except Exception:
+            logger.debug("[%s] Failed to resolve media delivery scope", self.name, exc_info=True)
+            return contextlib.nullcontext()
 
     def _final_delivery_adapter(self, source: Optional[SessionSource]) -> "BasePlatformAdapter":
         """The runner's CURRENT adapter for a new final-response send: a reconnect can swap the
@@ -4007,30 +4067,32 @@ class BasePlatformAdapter(ABC):
         # Captured before extract_media strips it: images then go via send_document (no recompression).
         force_document = "[[as_document]]" in response
         pre_extract = response
-        # Pre-extract snapshot for the #29346 recovery/invariant below.
-        media_files, response = self.extract_media(response)
-        media_files = self.filter_media_delivery_paths(media_files, session_key=session_key)
-        images, text_content = self.extract_images(response)
-        # Strip any remaining internal directives from message body (fixes #1561). _strip_media_directives
-        # shares MEDIA_TAG_CLEANUP_RE, so a MEDIA: tag with an unknown extension is intentionally left in
-        # the body for extract_local_files below to pick up rather than silently dropped (#34517).
-        text_content = _strip_media_directives(text_content).strip()
-        if images:
-            logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
-        local_files = []
-        if not is_ephemeral_response:
-            local_files, text_content = self.extract_local_files(text_content)
-            local_files = self.filter_local_delivery_paths(local_files, session_key=session_key)
-            history = (await self._bounded_history_media_paths_for_session(session_key)
-                       if local_files else None)
-            if history:
-                suppressed = [p for p in local_files if p in history]
-                if suppressed:
-                    logger.info("[%s] Suppressing %d bare local file path(s) already delivered in "
-                                "this session: %s", self.name, len(suppressed), suppressed)
-                    local_files = [p for p in local_files if p not in history]
-            if local_files:
-                logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
+        # The handler's routed profile scope is gone by now; Docker MEDIA translation and the
+        # bare-path validator infer the sandbox from the ACTIVE profile (#109024).
+        with self._media_delivery_scope(event.source):
+            media_files, response = self.extract_media(response)
+            media_files = self.filter_media_delivery_paths(media_files, session_key=session_key)
+            images, text_content = self.extract_images(response)
+            # Strip any remaining internal directives from message body (fixes #1561). _strip_media_directives
+            # shares MEDIA_TAG_CLEANUP_RE, so a MEDIA: tag with an unknown extension is intentionally left in
+            # the body for extract_local_files below to pick up rather than silently dropped (#34517).
+            text_content = _strip_media_directives(text_content).strip()
+            if images:
+                logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
+            local_files = []
+            if not is_ephemeral_response:
+                local_files, text_content = self.extract_local_files(text_content)
+                local_files = self.filter_local_delivery_paths(local_files, session_key=session_key)
+        history = (await self._bounded_history_media_paths_for_session(session_key)
+                   if local_files else None)
+        if history:
+            suppressed = [p for p in local_files if p in history]
+            if suppressed:
+                logger.info("[%s] Suppressing %d bare local file path(s) already delivered in "
+                            "this session: %s", self.name, len(suppressed), suppressed)
+                local_files = [p for p in local_files if p not in history]
+        if local_files:
+            logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
         # A2 (#29346): extraction can reduce a non-empty response to empty text with no attachment, and the
         # `if text_content` guard below then drops it silently. Recover on every platform (#33842 was
         # Discord-only); the guard avoids duplicating an attachment.
@@ -4085,6 +4147,7 @@ class BasePlatformAdapter(ABC):
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
+        queued_processing_outcome = None
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -4099,11 +4162,18 @@ class BasePlatformAdapter(ABC):
         try:
             await self._run_processing_hook("on_processing_start", event)
             response = await self._message_handler(event)
+            if (
+                getattr(event, "_queued_followup_processing_outcome", None)
+                is ProcessingOutcome.CANCELLED
+            ):
+                queued_processing_outcome = ProcessingOutcome.CANCELLED
             is_ephemeral_response = isinstance(response, EphemeralReply)
             # Unwrap EphemeralReply for downstream text processing; TTL applies after send.
             response, _ephemeral_ttl = self._unwrap_ephemeral(response)
             # None/empty is normal (streamed/queued). Suppress a stale response after an interrupt.
-            if response and interrupt_event.is_set() and session_key in self._pending_messages:
+            stale_response_suppressed = bool(
+                response and interrupt_event.is_set() and session_key in self._pending_messages)
+            if stale_response_suppressed:
                 logger.info("[%s] Suppressing stale response for interrupted session %s", self.name,
                             session_key)
                 response = None
@@ -4145,9 +4215,15 @@ class BasePlatformAdapter(ABC):
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
                 session_key, getattr(interrupt_event, "_hermes_run_generation", None),
                 event=event) or "")
-            await self._run_processing_hook(
-                "on_processing_complete", event,
+            processing_outcome = (
                 ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE)
+            # A stale response was intentionally not delivered because a newer event owns the
+            # session.  The queued terminal event therefore completed as cancelled, not success.
+            if queued_processing_outcome is None:
+                queued_processing_outcome = (
+                    ProcessingOutcome.CANCELLED if stale_response_suppressed else processing_outcome)
+            await self._run_processing_hook("on_processing_complete", event, processing_outcome)
+            await self._complete_queued_followup_processing(event, queued_processing_outcome)
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)
@@ -4160,12 +4236,34 @@ class BasePlatformAdapter(ABC):
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
             expected = asyncio.current_task() in self._expected_cancelled_tasks
-            await self._run_processing_hook(
-                "on_processing_complete", event,
+            processing_outcome = (
                 ProcessingOutcome.CANCELLED if expected else ProcessingOutcome.FAILURE)
+            await self._run_processing_hook("on_processing_complete", event, processing_outcome)
+            await self._complete_queued_followup_processing(
+                event,
+                queued_processing_outcome
+                or (
+                    ProcessingOutcome.CANCELLED
+                    if getattr(event, "_queued_followup_processing_outcome", None)
+                    is ProcessingOutcome.CANCELLED
+                    else None
+                )
+                or processing_outcome,
+            )
             raise
         except BaseException as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
+            await self._complete_queued_followup_processing(
+                event,
+                queued_processing_outcome
+                or (
+                    ProcessingOutcome.CANCELLED
+                    if getattr(event, "_queued_followup_processing_outcome", None)
+                    is ProcessingOutcome.CANCELLED
+                    else None
+                )
+                or ProcessingOutcome.FAILURE,
+            )
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
             # SystemExit/KeyboardInterrupt propagate; other BaseExceptions are contained.

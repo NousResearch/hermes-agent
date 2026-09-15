@@ -1,6 +1,6 @@
 import { type ThreadMessage } from '@assistant-ui/react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $displayTimestamps } from '@/store/display-timestamps'
 import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
@@ -627,6 +627,39 @@ describe('flat tool list approval surfacing', () => {
     })
 
     expect(screen.queryByLabelText('Dismiss')).toBeNull()
+  })
+})
+
+describe('tool error explanations', () => {
+  it('keeps lookup misses neutral and exposes actual failures when expanded', async () => {
+    for (const [error, destructive] of [
+      ['File not found: /repo/session-view.ts', false],
+      ['Permission denied reading /repo/session-view.ts', true]
+    ] as const) {
+      const message = completedOnlyMessage()
+
+      assert(message.role === 'assistant')
+
+      const part = message.content[0]!
+
+      assert(part.type === 'tool-call')
+
+      const { container, unmount } = render(
+        <GroupHarness
+          message={{
+            ...message,
+            content: [{ ...part, result: { error }, args: { path: '/repo/session-view.ts' } }]
+          }}
+        />
+      )
+
+      fireEvent.click(await screen.findByText('Read session-view.ts'))
+
+      await waitFor(() => expect(container.textContent).toContain(error))
+      expect(Boolean(container.querySelector('[data-tool-row] .text-destructive'))).toBe(destructive)
+      unmount()
+      $toolDisclosureStates.set({})
+    }
   })
 })
 

@@ -146,6 +146,9 @@ class SessionState:
     runtime_lock: Any = field(default_factory=threading.Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+    # Per-session allocator for ACP assistant messageIds (lazily created by
+    # the server so streamed chunks group into distinct assistant replies).
+    message_ids: Any = None
 
 
 class SessionManager:

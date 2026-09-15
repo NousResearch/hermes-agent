@@ -65,6 +65,9 @@ def fleet(tmp_path, monkeypatch):
                 runtime["served_profiles"] = ["default", "coder", "ops"]
             runtime_path.write_text(json.dumps(runtime))
 
+    import gateway.status as status
+    # The default gateway the fixture "starts" is this process; the served probe verifies identity.
+    monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
     monkeypatch.setattr(gm, "_installed_service", lambda home: state.services.get(_name(home)))
     monkeypatch.setattr(gm, "_live_gateway_pid", lambda home: state.pids.get(_name(home)))
     monkeypatch.setattr(gm, "_service_op", _service_op)
@@ -253,6 +256,7 @@ def test_serves_profile_prefix_is_read_from_adapter_classes():
 
 
 def test_update_hook_migrates_when_unblocked_and_only_warns_when_blocked(fleet, capsys):
+    fleet.services["default"] = ("systemd", False)  # same service domain as the secondaries
     gm.maybe_auto_migrate_after_update()
     out = capsys.readouterr().out
     assert "Migrating per-profile gateways" in out and "serves 3 profiles" in out
@@ -262,7 +266,7 @@ def test_update_hook_migrates_when_unblocked_and_only_warns_when_blocked(fleet, 
     for f in ("gateway.pid", "gateway_state.json", gm.MANIFEST_NAME):
         (fleet.root / f).unlink()
     (fleet.root / "config.yaml").write_text("model:\n  default: x\n", encoding="utf-8")
-    fleet.services.update({"coder": ("systemd", False)}); fleet.services.pop("default", None)
+    fleet.services.update({"coder": ("systemd", False), "default": ("systemd", False)})
     fleet.pids.update({"coder": 4101}); fleet.ops.clear()
     (fleet.root / "profiles/coder/.env").write_text("TELEGRAM_BOT_TOKEN=111111:default-token\n", encoding="utf-8")
     gm.maybe_auto_migrate_after_update()
@@ -275,6 +279,146 @@ def test_update_hook_never_touches_single_profile_or_already_multiplexed(fleet, 
     fleet.services.clear(); fleet.pids.clear()  # secondaries exist but run no gateway of their own
     gm.maybe_auto_migrate_after_update()
     assert capsys.readouterr().out == "" and _config_flag(fleet.root) is None
+
+
+@pytest.mark.parametrize(
+    ("secondary_service", "secondary_uid", "secondary_home", "expected"),
+    [
+        (("systemd", True), 1000, "profiles/coder", "different service domain"),
+        (("launchd", False), 1000, "profiles/coder", "different service domain"),
+        (("systemd", False), 2000, "profiles/coder", "UNIX privilege boundary"),
+        (("systemd", False), 1000, "external", "outside"),
+    ],
+)
+def test_update_hook_refuses_to_cross_service_user_or_home_boundary(
+    fleet, capsys, monkeypatch, secondary_service, secondary_uid, secondary_home, expected,
+):
+    """#109954: the unattended hook must not fold a secondary that sits behind a kernel-enforced
+    boundary (other service domain, other UNIX user, HERMES_HOME outside profiles/). It prints the
+    boundary + the explicit command and touches nothing; the dry-run plan shows the same finding as a
+    notice and the explicit command stays available."""
+    fleet.services["default"] = ("systemd", False)
+    fleet.services["ops"] = secondary_service
+    ops_home = fleet.root.parent / "external-ops" if secondary_home == "external" else fleet.root / secondary_home
+    monkeypatch.setattr(
+        gm, "_gateway_identity",
+        lambda home, pid, service: (secondary_uid if _name(home) == "ops" else 1000, ops_home if _name(home) == "ops" else home),
+        raising=False,  # absent on the pre-fix module: the test must then fail on behaviour, not on the seam
+    )
+
+    gm.maybe_auto_migrate_after_update()
+
+    out = capsys.readouterr().out
+    assert expected in out and gm.MIGRATE_COMMAND in out and "'ops'" in out
+    assert fleet.ops == [] and fleet.pids == {"coder": 4101, "ops": 4102}
+    assert fleet.services == {"default": ("systemd", False), "coder": ("systemd", False), "ops": secondary_service}
+    assert _config_flag(fleet.root) is None and not (fleet.root / gm.MANIFEST_NAME).exists()
+
+    plan = gm.build_migration_plan()
+    assert not plan.blocked and any(expected in n for n in plan.notices)
+    gm.cmd_migrate(SimpleNamespace(multiplex=True, standalone=False, dry_run=True, yes=True))
+    assert expected in capsys.readouterr().out
+
+
+def test_update_hook_still_migrates_same_user_same_scope_profiles_under_the_default_tree(fleet, capsys, monkeypatch):
+    """The guard is a boundary check, not a kill switch: one user, one service domain, everything under
+    profiles/ (the shape `hermes profile create` produces) still auto-migrates."""
+    fleet.services["default"] = ("systemd", False)
+    monkeypatch.setattr(gm, "_gateway_identity", lambda home, pid, service: (1000, home), raising=False)
+
+    gm.maybe_auto_migrate_after_update()
+
+    out = capsys.readouterr().out
+    assert "Migrating per-profile gateways" in out and "serves 3 profiles" in out
+    assert _config_flag(fleet.root) is True and ("ops", "uninstall") in fleet.ops
+
+
+def test_auto_multiplex_migration_false_opts_out_of_the_update_hook_but_not_the_explicit_command(fleet, capsys):
+    """``gateway.auto_multiplex_migration: false`` is a durable opt-out: an otherwise-eligible fleet is
+    left alone by ``hermes update`` (no output, no ops, no flag flip), while the operator typing
+    ``migrate --multiplex`` still migrates. Only the nested key counts."""
+    assert gm.build_migration_plan().eligible_for_migration()  # would migrate but for the flag
+    (fleet.root / "config.yaml").write_text(
+        "model:\n  default: x\nauto_multiplex_migration: false\ngateway:\n  auto_multiplex_migration: false\n",
+        encoding="utf-8")
+
+    gm.maybe_auto_migrate_after_update()
+    assert capsys.readouterr().out == ""
+    assert fleet.ops == [] and _config_flag(fleet.root) is None
+    assert fleet.services == {"coder": ("systemd", False), "ops": ("systemd", False)}
+    assert fleet.pids == {"coder": 4101, "ops": 4102}
+    assert not (fleet.root / gm.MANIFEST_NAME).exists()
+
+    # A top-level alias is NOT honoured; absent and an explicit true keep the automatic behaviour.
+    from hermes_cli.gateway_migrate_guards import auto_migration_opted_out
+    (fleet.root / "config.yaml").write_text(
+        "model:\n  default: x\nauto_multiplex_migration: false\n", encoding="utf-8")
+    assert auto_migration_opted_out(fleet.root) is False
+    (fleet.root / "config.yaml").write_text(
+        "model:\n  default: x\ngateway:\n  auto_multiplex_migration: true\n", encoding="utf-8")
+    assert auto_migration_opted_out(fleet.root) is False
+
+    # The opt-out governs the AUTOMATIC path only: an explicit --multiplex is an explicit request.
+    (fleet.root / "config.yaml").write_text(
+        "model:\n  default: x\ngateway:\n  auto_multiplex_migration: false\n", encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        gm.cmd_migrate(SimpleNamespace(multiplex=True, standalone=False, dry_run=False, yes=True))
+    assert exc.value.code == 0
+    assert _config_flag(fleet.root) is True and (fleet.root / gm.MANIFEST_NAME).exists()
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"auto_multiplex_migration": False},
+        {"auto_migrate": False},
+        {"auto_multiplex_migration": True, "auto_migrate": False},
+        {"auto_multiplex_migration": False, "auto_migrate": True},
+    ],
+    ids=["canonical-false", "legacy-false", "legacy-false-conflict", "canonical-false-conflict"],
+)
+def test_automatic_migration_canonical_and_legacy_false_each_veto(fleet, capsys, settings):
+    """The canonical setting and the briefly shipped legacy name both fail safe on false.
+
+    Keep the fleet otherwise eligible so a no-op cannot be explained by a service-domain blocker.
+    """
+    fleet.services["default"] = ("systemd", False)
+    gateway_yaml = "".join(f"  {key}: {str(value).lower()}\n" for key, value in settings.items())
+    (fleet.root / "config.yaml").write_text(
+        f"model:\n  default: x\ngateway:\n{gateway_yaml}", encoding="utf-8")
+
+    gm.maybe_auto_migrate_after_update()
+
+    assert capsys.readouterr().out == ""
+    assert fleet.ops == [] and _config_flag(fleet.root) is None
+    assert fleet.pids == {"coder": 4101, "ops": 4102}
+    assert not (fleet.root / gm.MANIFEST_NAME).exists()
+
+
+@pytest.mark.parametrize("source", ["expanded-user", "managed-overlay"])
+def test_automatic_migration_opt_out_uses_effective_bool_config(fleet, monkeypatch, source):
+    """The presence-sensitive update guard sees the same expanded/managed config and bool strings
+    as gateway runtime, while retaining the legacy-key false veto."""
+    managed = fleet.root / "managed"
+    managed.mkdir()
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    if source == "expanded-user":
+        monkeypatch.setenv("AUTO_MIGRATION_ENABLED", "false")
+        (fleet.root / "config.yaml").write_text(
+            "gateway:\n  auto_migrate: ${AUTO_MIGRATION_ENABLED}\n", encoding="utf-8")
+    else:
+        (managed / "config.yaml").write_text(
+            'gateway:\n  auto_multiplex_migration: "false"\n', encoding="utf-8")
+
+    from hermes_cli.gateway_migrate_guards import auto_migration_opted_out
+
+    assert auto_migration_opted_out(fleet.root) is True
+
+
+def test_automatic_migration_config_key_is_canonical_schema_key():
+    from hermes_cli.config import _validate_config_key
+
+    assert _validate_config_key("gateway.auto_multiplex_migration") == (True, None)
 
 
 def test_explicit_migrate_with_no_standalone_secondaries_still_flips_flag_and_restarts_default(fleet, capsys, monkeypatch):

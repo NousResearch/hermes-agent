@@ -5,6 +5,7 @@ bodies reference server globals bare (``_ok``, ``_err``, ``_sessions``, ...).
 Helper names must not collide with server.py's own (``_cmd_`` / ``_toolset_`` / ``_mcp_`` prefixes).
 """
 
+import contextlib
 import sys
 from pathlib import Path
 
@@ -20,12 +21,20 @@ def _profile_scoped_rpc(
     fail_code: int, *, required=(), catch_resolve: bool = True, prefix: str = "",
     scoped: bool = True, live_session: bool = False,
 ):
-    """Wrap a handler body with the optional ``profile`` HERMES_HOME scope. Order: ``required``
+    """Wrap a handler body with the optional ``profile`` runtime scope. Order: ``required``
     params (4063 ``<key> required``) → ``live_session`` resolution via ``_sess`` (waits for the
     agent build; body gets ``session`` as 3rd arg) → profile (4064 when its dir is missing) → body;
     body exceptions become ``fail_code`` (``prefix`` + message). ``catch_resolve`` also maps
     resolve-time exceptions to ``fail_code``; mcp.servers.* let them propagate to dispatch().
-    ``scoped=False`` ignores ``profile``. The override is always reset afterwards."""
+    ``scoped=False`` ignores ``profile``.
+
+    The scope is the same home + secret + terminal composition a turn binds
+    (``_session_profile_runtime_scope``), not HERMES_HOME alone: these bodies read config.yaml,
+    whose ``${VAR}`` refs (``config._env_ref_lookup``) and the MCP probe's own header/env
+    interpolation resolve through ``get_secret`` — with only the home bound they read plain
+    ``os.environ``, i.e. the launch profile's values, so ``mcp.servers.test`` for a secondary
+    reported green against the default profile's token (or the literal placeholder). External
+    sources are hydrated first (the requested profile may never have been served in this process)."""
 
     def deco(body):
         def handler(rid, params: dict) -> dict:
@@ -38,23 +47,26 @@ def _profile_scoped_rpc(
                 if err:
                     return err
                 args = (rid, params, session)
-            token = None
+            scope = contextlib.nullcontext()
             if profile := _str_arg(params, "profile") if scoped else "":
                 try:
-                    profile_dir = _tools_mod("hermes_cli.profiles").get_profile_dir(profile)
+                    try:
+                        profile_dir = _tools_mod("hermes_cli.profiles").get_profile_dir(profile)
+                    except ValueError:  # traversal-shaped name: same answer as a missing dir
+                        profile_dir = None
                     if not profile_dir or not profile_dir.is_dir():
                         return _err(rid, 4064, f"profile '{profile}' not found")
-                    token = _tools_mod("hermes_constants").set_hermes_home_override(str(profile_dir))
+                    _tools_mod("hermes_cli.env_loader").hydrate_profile_secret_sources(profile_dir)
+                    scope = _session_profile_runtime_scope({"profile_home": str(profile_dir)})
                 except Exception as e:
                     if not catch_resolve:
                         raise
                     return _err(rid, fail_code, str(e))
             try:
-                return body(*args)
+                with scope:
+                    return body(*args)
             except Exception as e:
                 return _err(rid, fail_code, f"{prefix}{e}")
-            finally:
-                _mcp_reset_profile(token)
         handler.__doc__ = body.__doc__
         return handler
     return deco
@@ -257,6 +269,78 @@ def _mcp_reload_confirm_required() -> bool:
         return True
 
 
+_MCP_RELOAD_PENDING_GENERATION = "_mcp_reload_pending_generation"
+
+
+def _mcp_refresh_session_agent_locked(sid: str, session: dict, generation: int, mcp_agent=None):
+    """Refresh one idle session or record the latest generation for its turn boundary.
+
+    The caller owns ``_mcp_reload_lock`` and the session's ``history_lock`` in that order.  Keeping
+    the running check and tool publication under the history lock prevents a prompt admission from
+    racing between them; ``refresh_agent_mcp_tools`` supplies the registry-generation stale-writer
+    guard for the actual snapshot publish.
+    """
+    generation = max(1, int(generation or 0))
+    pending = max(int(session.get(_MCP_RELOAD_PENDING_GENERATION, 0) or 0), generation)
+    session[_MCP_RELOAD_PENDING_GENERATION] = pending
+    if session.get("running"):
+        return None
+    agent = session.get("agent")
+    if agent is None or session.get("_closing"):
+        session.pop(_MCP_RELOAD_PENDING_GENERATION, None)
+        return None
+    try:
+        with _session_profile_runtime_scope(session):
+            (mcp_agent or _tools_mod("tools.mcp_tool_agent")).refresh_agent_mcp_tools(
+                agent, enabled_override=_load_enabled_toolsets(), quiet_mode=True)
+        info = _session_info(agent, session)
+    except Exception as exc:
+        # Keep the generation pending: the next idle boundary retries against the latest registry.
+        logger.warning("Failed to refresh cached agent tools after /reload-mcp (session %s): %s", sid, exc)
+        return None
+    if int(session.get(_MCP_RELOAD_PENDING_GENERATION, 0) or 0) <= generation:
+        session.pop(_MCP_RELOAD_PENDING_GENERATION, None)
+    return info
+
+
+def _mcp_refresh_or_defer_session_agent(sid: str, session: dict, generation: int, mcp_agent=None) -> bool:
+    """Reload-lock-owned path used by ``reload.mcp``; emit only after releasing history_lock."""
+    with session["history_lock"]:
+        info = _mcp_refresh_session_agent_locked(sid, session, generation, mcp_agent)
+    if info is not None:
+        _emit("session.info", sid, info)
+        return True
+    return False
+
+
+def _apply_pending_mcp_reload(sid: str, session: dict) -> bool:
+    """Apply a deferred MCP snapshot at an idle turn boundary; never disrupt turn settlement.
+
+    Lock order is always global reload lock then session history lock, matching ``reload.mcp``.
+    A prompt that wins the history-lock race sets ``running`` first and leaves the latest generation
+    pending for the following boundary.
+    """
+    # Ordinary turns must not queue behind an unrelated, potentially slow rediscovery.  This first
+    # read is only a fast-path hint; release history_lock before the authoritative global→history
+    # acquisition below so the process has one lock order everywhere.
+    with session["history_lock"]:
+        if int(session.get(_MCP_RELOAD_PENDING_GENERATION, 0) or 0) <= 0:
+            return False
+    try:
+        with _mcp_reload_lock:
+            with session["history_lock"]:
+                generation = int(session.get(_MCP_RELOAD_PENDING_GENERATION, 0) or 0)
+                if generation <= 0:
+                    return False
+                info = _mcp_refresh_session_agent_locked(sid, session, generation)
+        if info is not None:
+            _emit("session.info", sid, info)
+            return True
+    except Exception as exc:
+        logger.warning("Deferred MCP tool refresh failed for session %s: %s", sid, exc)
+    return False
+
+
 @_rpc("reload.mcp", 5015)
 def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
@@ -282,18 +366,18 @@ def _(rid, params: dict) -> dict:
     # (generation-only coalescing).
     req_rev = str(params.get("rev") or "")
 
-    def _refresh_session_agent() -> None:
-        """Rebuild THIS session's cached tool snapshot + push session.info (the agent never
-        re-reads the registry). Runs under _mcp_reload_lock so a concurrent reload can't
-        tear the registry down mid-refresh."""
-        if not session:
-            return
-        agent = session["agent"]
-        try:  # enabled_override re-resolves toolsets so a server enabled in config this session is picked up
-            _mcp_agent.refresh_agent_mcp_tools(agent, enabled_override=_load_enabled_toolsets(), quiet_mode=True)
-        except Exception as _exc:
-            logger.warning("Failed to refresh cached agent tools after /reload-mcp: %s", _exc)
-        _emit("session.info", params.get("session_id", ""), _session_info(agent, session))
+    def _refresh_session_agent(generation: int) -> None:
+        """Rebuild EVERY live session's cached tool snapshot + push session.info (agents never
+        re-read the registry). The MCP pool is process-global, so refreshing only the requester
+        would leave sibling sessions on stale tools until /new — and a request without a
+        resolvable session_id (desktop passes ``activeSessionId ?? undefined``) would refresh
+        nothing while still answering "reloaded". A running sibling is stamped for the latest
+        generation and refreshed only after its turn releases admission. Runs under
+        _mcp_reload_lock so a concurrent reload can't tear the registry down mid-refresh."""
+        with _sessions_lock:
+            live = [(sid, sess) for sid, sess in _sessions.items() if sess.get("agent") is not None]
+        for sid, sess in live:
+            _mcp_refresh_or_defer_session_agent(sid, sess, generation, _mcp_agent)
 
     def _do_full_reload() -> None:
         """shutdown+discover+refresh under the lock, then mark a completed generation. Config
@@ -309,9 +393,21 @@ def _(rid, params: dict) -> dict:
             if after == loaded:
                 break
             loaded = after
-        _refresh_session_agent()
+        # The unscoped shutdown tore down every profile's servers, but discover_mcp_tools() above
+        # only rebuilt the launch profile's overlay; a secondary-profile session refreshed against
+        # that registry would lose its MCP tools until its own reload.
+        with _sessions_lock:
+            homes = {sess.get("profile_home") for sess in _sessions.values() if sess.get("agent") is not None}
+        for home in sorted(homes - {None}):
+            try:
+                with _session_profile_runtime_scope({"profile_home": home}):
+                    _mcp_discovery.discover_mcp_tools()
+            except Exception as _exc:
+                logger.warning("MCP rediscovery failed for profile %s: %s", home, _exc)
+        completed_generation = _mcp_reload_gen + 1
+        _refresh_session_agent(completed_generation)
         _mcp_reload_loaded_rev = loaded
-        _mcp_reload_gen += 1
+        _mcp_reload_gen = completed_generation
 
     # LEADER (won the non-blocking acquire) runs the full reload. FOLLOWER waits, then — still
     # holding the lock — coalesces only if a reload COMPLETED meanwhile (generation advanced
@@ -325,7 +421,7 @@ def _(rid, params: dict) -> dict:
     gen_before = _mcp_reload_gen
     with _mcp_reload_lock:
         coalesced = _mcp_reload_gen > gen_before and (not req_rev or req_rev == _mcp_reload_loaded_rev)
-        _refresh_session_agent() if coalesced else _do_full_reload()
+        _refresh_session_agent(_mcp_reload_gen) if coalesced else _do_full_reload()
     return _finish_reload(rid, params, coalesced=coalesced)
 
 

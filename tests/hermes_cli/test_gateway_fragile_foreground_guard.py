@@ -25,11 +25,12 @@ def _force_conditions(monkeypatch, *, tty, console, detached_env):
 
 
 @pytest.mark.windows_only
-def test_refuses_interactive_windows_console_attached_run(monkeypatch, capsys):
+@pytest.mark.parametrize("replace", [False, True])
+def test_refuses_interactive_windows_console_attached_run(monkeypatch, capsys, replace):
     _force_conditions(monkeypatch, tty=True, console=True, detached_env=False)
 
     with pytest.raises(SystemExit) as exc:
-        gateway_cli._guard_fragile_foreground_gateway(replace=False, force=False)
+        gateway_cli._guard_fragile_foreground_gateway(replace=replace, force=False)
 
     assert exc.value.code == 1
     out = capsys.readouterr().out
@@ -42,7 +43,7 @@ def test_refuses_interactive_windows_console_attached_run(monkeypatch, capsys):
     "kwargs, cond",
     [
         # explicit escape hatches
-        (dict(replace=True, force=False), dict(tty=True, console=True, detached_env=False)),
+        (dict(replace=True, force=True), dict(tty=True, console=True, detached_env=False)),
         (dict(replace=False, force=True), dict(tty=True, console=True, detached_env=False)),
         # service launchers set the marker
         (dict(replace=False, force=False), dict(tty=True, console=True, detached_env=True)),

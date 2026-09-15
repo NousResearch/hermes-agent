@@ -42,14 +42,11 @@ def _check_vault_available() -> bool:
     """Schema-gate: the vault tools ride with the browser. An empty vault still needs
     browser_vault_save_login so the agent can offer to remember a login the first time it meets a
     form; hiding the tools until an item exists meant nobody ever discovered the feature."""
-    try:
-        from tools.browser_tool_install import check_browser_requirements
-        from tools.browser_use_cli import is_browser_use_cli_mode
-        # check_browser_requirements() is False by design in Browser Use mode (browser_exec replaces the
-        # built-in surface); the vault serves both stacks.
-        return bool(is_browser_use_cli_mode() or check_browser_requirements())
-    except Exception:
-        return False
+    from tools.browser_tool_install import check_browser_requirements
+    from tools.browser_use_cli import is_browser_use_cli_mode
+    # check_browser_requirements() is False by design in Browser Use mode (browser_exec replaces the
+    # built-in surface); the vault serves both stacks.
+    return bool(is_browser_use_cli_mode() or check_browser_requirements())
 
 
 # ---------------------------------------------------------------------------

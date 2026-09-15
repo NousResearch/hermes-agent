@@ -74,18 +74,17 @@ class TestCompletionConsumedPrune:
     def test_prune_drops_completion_entry_with_expired_session(self):
         """When a finished session is pruned, _completion_consumed is
         cleared for the same session_id."""
-        from tools.process_registry import ProcessRegistry, FINISHED_TTL_SECONDS
+        from tools.process_registry import ProcessRegistry, ProcessSession, FINISHED_TTL_SECONDS
         import time
 
         reg = ProcessRegistry()
-        # Fake a finished session whose started_at is older than the TTL.
-        class _FakeSess:
-            def __init__(self, sid):
-                self.id = sid
-                self.started_at = time.time() - (FINISHED_TTL_SECONDS + 100)
-                self.exited = True
-
-        reg._finished["stale-1"] = _FakeSess("stale-1")
+        # Use the real inert record so pruning exercises the handle-cleanup contract.
+        reg._finished["stale-1"] = ProcessSession(
+            id="stale-1",
+            command="finished-test-command",
+            started_at=time.time() - (FINISHED_TTL_SECONDS + 100),
+            exited=True,
+        )
         reg._completion_consumed.add("stale-1")
 
         with reg._lock:

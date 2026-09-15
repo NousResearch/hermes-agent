@@ -1,6 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { MOCK_REPLY, startMockServer } from '../../../tests-js/scripts/mock-server'
+
 import {
   buildAppEnv,
   createSandbox,
@@ -10,7 +12,6 @@ import {
   writeEnvFile,
   writeMockProviderConfig
 } from './fixtures'
-import { MOCK_REPLY, startMockServer } from '../../../tests-js/scripts/mock-server'
 import { setupOwnedBotFixture } from './owned-bot-fixture'
 import { RealSessionBuilder } from './real-session-builder'
 import { expect, test } from './test'
@@ -26,6 +27,7 @@ import { expect, test } from './test'
 type Page = MockBackendFixture['page']
 
 let fixture: MockBackendFixture | null = null
+let canonicalAlphaId = ''
 
 async function openBots(page: Page): Promise<void> {
   const tab = page
@@ -38,31 +40,20 @@ async function openBots(page: Page): Promise<void> {
 }
 
 async function settle(page: Page, timeout = 90_000): Promise<void> {
-  await page
-    .getByText(/Waking up/i)
-    .first()
-    .waitFor({ state: 'hidden', timeout })
-    .catch(() => undefined)
+  // The swap label stays mounted after fading out. Playwright still considers
+  // opacity: 0 visible, so wait for the foreground wrapper's completed fade.
+  const swapOverlay = page
+    .locator('[data-chat-surface]:not([data-chat-unfocused])')
+    .filter({ visible: true })
+    .locator('div[aria-hidden="true"].transition-opacity')
+    .filter({ hasText: /Waking up/i })
+
+  await expect(swapOverlay).toHaveCount(1, { timeout })
+  await expect(swapOverlay).toHaveCSS('opacity', '0', { timeout })
   await page.waitForTimeout(500)
 }
 
-async function openUntil(action: () => Promise<void>, expected: () => Promise<void>, attempts = 3): Promise<void> {
-  for (let attempt = 1; ; attempt += 1) {
-    await action()
-
-    try {
-      await expected()
-
-      return
-    } catch (error) {
-      if (attempt >= attempts) {
-        throw error
-      }
-    }
-  }
-}
-
-async function seedBot(hermesHome: string, mockUrl: string, name: string, markChildAttempted: () => void): Promise<void> {
+async function seedBot(hermesHome: string, mockUrl: string, name: string, markChildAttempted: () => void): Promise<string> {
   const dir = path.join(hermesHome, 'profiles', name)
   fs.mkdirSync(dir, { recursive: true })
   writeMockProviderConfig(dir, mockUrl)
@@ -72,7 +63,9 @@ async function seedBot(hermesHome: string, mockUrl: string, name: string, markCh
   const builder = await RealSessionBuilder.start(dir)
 
   try {
-    await builder.createSession({ title: 'Bot Chat', turns: [`Hello ${name}`] })
+    const session = await builder.createSession({ title: 'Bot Chat', turns: [`Hello ${name}`] })
+
+    return session.sessionId
   } finally {
     await builder.close()
   }
@@ -89,7 +82,7 @@ test.beforeAll(async () => {
     seed: async (mockUrl, markChildAttempted) => {
       writeMockProviderConfig(sandbox.hermesHome, mockUrl)
       writeEnvFile(sandbox.hermesHome)
-      await seedBot(sandbox.hermesHome, mockUrl, 'alpha', markChildAttempted)
+      canonicalAlphaId = await seedBot(sandbox.hermesHome, mockUrl, 'alpha', markChildAttempted)
       await seedBot(sandbox.hermesHome, mockUrl, 'beta', markChildAttempted)
     },
     launch: onLaunched => launchDesktop(buildAppEnv(sandbox), onLaunched),
@@ -113,43 +106,99 @@ test('a bot row click lands on the Bot Chat the row previews, not a side thread'
   const betaRow = page.getByRole('button', { name: /^beta\b/i }).filter({ visible: true }).first()
   await expect(alphaRow).toBeVisible({ timeout: 30_000 })
   await expect(betaRow).toBeVisible({ timeout: 30_000 })
-  const seededTurn = page.getByText('Hello alpha', { exact: true }).filter({ visible: true })
 
-  await openUntil(
-    () => alphaRow.click(),
-    () => expect(seededTurn.first()).toBeVisible({ timeout: 45_000 })
-  )
+  const canonical = page
+    .locator('[data-chat-surface][data-session-anchor="workspace"]:not([data-chat-unfocused])')
+    .filter({ visible: true })
+
+  const seededTurn = canonical.getByText('Hello alpha', { exact: true })
+
+  // One user selection must finish by itself. Retrying this click hid cold
+  // activation failures even while the test runner reported zero retries.
+  await alphaRow.click()
+  await expect(seededTurn).toBeVisible({ timeout: 45_000 })
   await settle(page, 15_000)
 
-  // A `+` side thread for alpha, with a real turn so it is a persisted tile.
+  // A `+` side thread for alpha, populated through its own focused composer.
   await page.keyboard.press('Control+t')
-  const composer = page.locator('[data-slot="composer-root"] [contenteditable="true"]').filter({ visible: true }).first()
+
+  const newSide = page
+    .locator('[data-chat-surface][data-session-anchor^="session-tile:"]:not([data-chat-unfocused])')
+    .filter({ visible: true })
+
+  await expect(newSide).toHaveCount(1, { timeout: 15_000 })
+
+  const sideAnchor = await newSide.getAttribute('data-session-anchor')
+
+  expect(sideAnchor).toMatch(/^session-tile:[a-zA-Z0-9_-]+$/)
+
+  const sideId = sideAnchor!.slice('session-tile:'.length)
+  const side = page.locator(`[data-chat-surface][data-session-anchor="${sideAnchor}"]`)
+  const sideTab = page.locator(`[data-zone-tabstrip="grp-main"] [data-tree-tab="${sideAnchor}"]`)
+  const sidePrompt = 'hello alpha thread'
+
+  expect(sideId).not.toBe(canonicalAlphaId)
+  await expect(side).toHaveAttribute('data-composer-target', `tile:${sideId}`)
+  await expect(sideTab).toHaveAttribute('aria-selected', 'true')
+  // No old seeded reply may satisfy the side thread's completion assertion.
+  await expect(side.getByText('Hello alpha', { exact: true })).toHaveCount(0)
+  await expect(side.getByText(MOCK_REPLY, { exact: true })).toHaveCount(0)
+
+  const composer = side.locator('[data-slot="composer-root"] [contenteditable="true"]')
+
+  await expect(composer).toHaveCount(1)
   await expect(composer).toBeVisible({ timeout: 15_000 })
   await composer.click()
-  await composer.fill('hello alpha thread')
-  await page.keyboard.press('Enter')
-  await expect(page.getByText(MOCK_REPLY).filter({ visible: true }).first()).toBeVisible({ timeout: 60_000 })
+  await expect(composer).toBeFocused()
+  await composer.fill(sidePrompt)
+  await composer.press('Enter')
+  await expect(side.getByText(sidePrompt, { exact: true })).toBeVisible({ timeout: 15_000 })
+  await expect(side.getByText(MOCK_REPLY, { exact: true })).toBeVisible({ timeout: 60_000 })
+
+  const sideCompletion = side.locator('[data-slot="aui_message-streaming-marker"]')
+
+  await expect(sideCompletion).toHaveCount(1)
+  await expect(sideCompletion).not.toHaveAttribute('data-message-streaming', 'true', { timeout: 60_000 })
+  await expect(side.getByRole('alert')).toHaveCount(0)
+  await test.info().attach('distinct-session-identities', {
+    body: JSON.stringify({ canonicalAlphaId, sideId }),
+    contentType: 'application/json'
+  })
+  await test.info().attach('populated-side-before-switch', {
+    body: await page.screenshot(),
+    contentType: 'image/png'
+  })
 
   // Leave alpha on the side thread, go to beta, come back via the row.
   await betaRow.click()
-  await expect(page.getByText('Hello beta', { exact: true }).filter({ visible: true }).first()).toBeVisible({
+  await expect(canonical.getByText('Hello beta', { exact: true })).toBeVisible({
     timeout: 60_000
   })
   await settle(page)
 
   await alphaRow.click()
   // The row previews the Bot Chat; the click must front it.
-  await expect(seededTurn.first()).toBeVisible({ timeout: 45_000 })
-  // The side thread is still open beside it (scoped to alpha), not closed.
-  await expect
-    .poll(
-      () =>
-        page.evaluate(() =>
-          [...document.querySelectorAll<HTMLElement>('[data-zone-tabstrip="grp-main"] [data-tree-tab]')]
-            .map(element => element.getAttribute('data-tree-tab') ?? '')
-            .filter(id => id.startsWith('session-tile:')).length
-        ),
-      { timeout: 15_000 }
-    )
-    .toBe(1)
+  await expect(seededTurn).toBeVisible({ timeout: 45_000 })
+  await expect(canonical.getByText(sidePrompt, { exact: true })).toHaveCount(0)
+  // Retain the exact populated side tile, not merely any unused empty tile.
+  await expect(sideTab).toHaveCount(1)
+  await expect(sideTab).toHaveAttribute('aria-selected', 'false')
+  await expect(page.locator('[data-zone-tabstrip="grp-main"] [data-tree-tab^="session-tile:"]')).toHaveCount(1)
+  await settle(page, 15_000)
+
+  // Reopen the retained side without resending, then explicitly return to the
+  // canonical row. This is another navigation stage, never a failed-click retry.
+  await sideTab.click()
+  await expect(sideTab).toHaveAttribute('aria-selected', 'true')
+  await expect(side.getByText(sidePrompt, { exact: true })).toBeVisible()
+  await expect(side.getByText(MOCK_REPLY, { exact: true })).toBeVisible()
+  await expect(side.getByText('Hello alpha', { exact: true })).toHaveCount(0)
+  await alphaRow.click()
+  await expect(seededTurn).toBeVisible({ timeout: 45_000 })
+  await expect(canonical.getByText(sidePrompt, { exact: true })).toHaveCount(0)
+  await settle(page, 15_000)
+  await test.info().attach('final-alpha-before-cleanup', {
+    body: await page.screenshot(),
+    contentType: 'image/png'
+  })
 })

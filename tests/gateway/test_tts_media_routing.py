@@ -10,6 +10,7 @@ only renders as a voice bubble when explicitly flagged) and via
 import importlib
 import sys
 import types
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -579,6 +580,6 @@ async def test_queued_resend_branch_delivers_media_and_preserves_protected_examp
     assert first_texts, f"expected queued resend of first response, got: {adapter.sent!r}"
     assert f"MEDIA:{media_file}" not in first_texts[0]
     assert "`MEDIA:/tmp/example.png`" in first_texts[0]
-    assert any(str(media_file) in img["image_path"] for img in adapter.images), (
+    assert any(Path(img["image_path"]) == media_file for img in adapter.images), (
         f"expected native image delivery via queued resend, got: {adapter.images!r}"
     )

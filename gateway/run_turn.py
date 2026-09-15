@@ -21,7 +21,7 @@ from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
@@ -2031,6 +2031,14 @@ class GatewayTurnMixin:
                 persist_user_display_metadata={"gateway_input_owner": prepared.persistence_owner},
                 message_type=event.message_type,
             )
+            if isinstance(agent_result, dict):
+                # Only the terminal runner-drained turn shares this outer adapter delivery.
+                # Intermediate tickets close at their own in-band send; keep the terminal ticket
+                # process-local until BasePlatformAdapter has the real final send outcome.
+                _queued_processing_tickets = agent_result.pop(
+                    "_queued_followup_processing_tickets", None)
+                if _queued_processing_tickets:
+                    event._queued_followup_processing_tickets = _queued_processing_tickets
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
             # A queued (/queue) chain answered the LAST message of the chain, so the outer final
@@ -2045,6 +2053,11 @@ class GatewayTurnMixin:
             await self._hmwa_stop_typing_for_turn(event, source)
 
             if not self._is_session_run_current(_quick_key, run_generation):
+                # Base normally treats a handler's None as successful silence/tool delivery.
+                # This None instead discards a completed terminal queued turn after /stop or
+                # /new invalidated its generation, so preserve that explicit cancellation verdict.
+                if getattr(event, "_queued_followup_processing_tickets", None):
+                    event._queued_followup_processing_outcome = ProcessingOutcome.CANCELLED
                 self._hmwa_discard_stale_result(source, _quick_key, run_generation)
                 return None
 
@@ -2094,6 +2107,20 @@ class GatewayTurnMixin:
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             return _profile_runtime_scope(self._resolve_profile_home_for_source(source))
         return nullcontext()
+
+    def _media_delivery_scope_for_source(self, source: SessionSource):
+        """Home + terminal-policy scope for validating a turn's MEDIA / local-file paths on the
+        adapter's delivery side, which runs after the routed turn scope was reset.
+
+        Docker path translation (``platforms/base.py::_translate_docker_container_media_path``)
+        infers the producing container from the ACTIVE profile (``get_active_profile_name``) and the
+        scope-aware ``TERMINAL_DOCKER_VOLUMES``; without this a secondary's ``MEDIA:/output/x.png``
+        resolves against the default profile's sandbox and mounts (#109024). No secret hydration:
+        path validation reads no credentials and this runs on the event loop."""
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return nullcontext()
+        from gateway.run import _profile_runtime_scope
+        return _profile_runtime_scope(self._resolve_profile_home_for_source(source), {})
 
     def _reset_notice_session_info(self, source: SessionSource) -> str:
         """Session-info block for the auto-reset notice, resolved inside the profile serving ``source``.
@@ -2343,6 +2370,7 @@ class GatewayTurnMixin:
             from tools.mcp_tool_discovery import discover_mcp_tools
             from tools.mcp_tool import _servers, _lock, _server_visible_in_scope
             from tools.mcp_tool_agent import reprobe_tool_availability
+            from tools.mcp_tool_scope import _key_name
             from tools.registry import registry
 
             reload_scope = registry.current_scope_key() if multiplex else None
@@ -2350,8 +2378,8 @@ class GatewayTurnMixin:
             def _scoped_server_names() -> set:
                 with _lock:
                     return {
-                        name for name in _servers
-                        if _server_visible_in_scope(name, reload_scope)
+                        _key_name(key) for key in _servers
+                        if _server_visible_in_scope(key, reload_scope)
                     }
 
             old_servers = _scoped_server_names()
@@ -3461,11 +3489,28 @@ class GatewayTurnMixin:
             pending = None
         return pending_event, pending
 
+    @staticmethod
+    async def _complete_queued_processing_ticket(
+        ticket: Any, outcome: ProcessingOutcome,
+    ) -> None:
+        """Claim and close one runner-owned queued processing lifecycle exactly once."""
+        if not isinstance(ticket, dict) or ticket.get("closed"):
+            return
+        ticket["closed"] = True
+        adapter = ticket.get("adapter")
+        event = ticket.get("event")
+        if adapter is None or event is None:
+            return
+        from gateway.run_turn_followup_ack import _run_followup_processing_hook
+        await _run_followup_processing_hook(
+            adapter, event, "on_processing_complete", outcome)
+
     async def _run_agent_deliver_first_response(
         self, turn_ctx: TurnContext, adapter: Any, response: Any, result: Any, stream_task: Any,
     ) -> None:
-        """Deliver the first response before a queued follow-up runs, unless streaming already did."""
+        """Deliver an intermediate response and close its queued-event lifecycle."""
         session_key = turn_ctx.session_key
+        processing_ticket = getattr(turn_ctx, "_queued_processing_ticket", None)
         _sc = turn_ctx.stream_consumer_holder[0]
         if _sc and stream_task:
             try:
@@ -3478,6 +3523,7 @@ class GatewayTurnMixin:
         _already_streamed = self._run_agent_stream_confirmed_final_delivery(
             _sc, first_response, previewed=bool(_delivery_result.get("response_previewed")),
         )
+        processing_outcome = ProcessingOutcome.SUCCESS
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
         if self._is_intentional_silence(_delivery_result, first_response):
             logger.info(
@@ -3492,7 +3538,7 @@ class GatewayTurnMixin:
                 session_key or "?",
             )
             try:
-                await self._deliver_queued_first_response(
+                _delivery_verdict = await self._deliver_queued_first_response(
                     first_response, source=turn_ctx.source, adapter=adapter,
                     metadata=turn_ctx._status_thread_metadata, event_message_id=turn_ctx.event_message_id,
                     text_already_delivered=_already_streamed,
@@ -3501,8 +3547,12 @@ class GatewayTurnMixin:
                     # the raw inbound id (the anchor above is only the reply target).
                     session_key=session_key, inbound_message_id=turn_ctx.inbound_message_id,
                 )
+                if _delivery_verdict.get("expected") and not _delivery_verdict.get("succeeded"):
+                    processing_outcome = ProcessingOutcome.FAILURE
             except Exception as e:
                 logger.warning("Failed to send first response before queued message: %s", e)
+                processing_outcome = ProcessingOutcome.FAILURE
+        await self._complete_queued_processing_ticket(processing_ticket, processing_outcome)
         # Release deferred bg-review notifications: pop (no double-fire in base.py's finally) and call.
         _bg_cb = self._pop_post_delivery_callback(adapter, session_key, turn_ctx.run_generation)
         if callable(_bg_cb):
@@ -3518,12 +3568,21 @@ class GatewayTurnMixin:
         """Run the queued / interrupting follow-up as the next turn (recursive ``_run_agent``)."""
         from gateway.platforms.base import merge_pending_message_event
         from gateway.run import _preserve_queued_followup_history_offset
+        from gateway.run_turn_followup_ack import (
+            _followup_cancel_outcome, _followup_processing_hooks_apply,
+            _run_followup_processing_hook,
+        )
         source, session_id, session_key, run_generation = (
             turn_ctx.source, turn_ctx.session_id, turn_ctx.session_key, turn_ctx.run_generation,
         )
         _interrupt_depth, history, _status_thread_metadata = (
             turn_ctx._interrupt_depth, turn_ctx.history, turn_ctx._status_thread_metadata,
         )
+        # The background task's adapter owns expected cancellation.  The current ticket belongs
+        # to the queued turn represented by this context; the local ticket below belongs to the
+        # next pending event.
+        _owner_adapter = getattr(turn_ctx, "_queued_processing_owner_adapter", None) or adapter
+        _current_ticket = getattr(turn_ctx, "_queued_processing_ticket", None)
         logger.debug("Processing pending message: '%s...'", pending[:40])
 
         # Clear the interrupt event so the recursive _run_agent isn't re-interrupted (infinite loop).
@@ -3543,11 +3602,37 @@ class GatewayTurnMixin:
                 merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
             elif adapter and hasattr(adapter, 'queue_message'):
                 adapter.queue_message(session_key, pending)
-            return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}
+            capped_result = turn_ctx.result_holder[0] or {
+                "final_response": response, "messages": history}
+            if (
+                isinstance(capped_result, dict)
+                and isinstance(_current_ticket, dict)
+                and not _current_ticket.get("closed")
+            ):
+                existing = list(capped_result.get("_queued_followup_processing_tickets") or ())
+                capped_result = {
+                    **capped_result,
+                    "_queued_followup_processing_tickets": [_current_ticket, *existing],
+                }
+            return capped_result
 
-        # Interrupted: discard the response ("Operation interrupted." is noise).
-        if not result.get("interrupted"):
-            await self._run_agent_deliver_first_response(turn_ctx, adapter, response, result, stream_task)
+        # Interrupted: discard the response ("Operation interrupted." is noise).  Otherwise an
+        # intermediate queued turn closes from its own delivery, before the next turn starts.
+        try:
+            if result.get("interrupted"):
+                await self._complete_queued_processing_ticket(
+                    _current_ticket, ProcessingOutcome.CANCELLED)
+            else:
+                await self._run_agent_deliver_first_response(
+                    turn_ctx, adapter, response, result, stream_task)
+        except asyncio.CancelledError:
+            await self._complete_queued_processing_ticket(
+                _current_ticket, _followup_cancel_outcome(_owner_adapter))
+            raise
+        except BaseException:
+            await self._complete_queued_processing_ticket(
+                _current_ticket, ProcessingOutcome.FAILURE)
+            raise
 
         updated_history = result.get("messages", history)
         next_source, next_message, next_session_key = source, pending, session_key
@@ -3611,15 +3696,54 @@ class GatewayTurnMixin:
         # whole _run_agent chain unwinds — too late for the in-band follow-up. Use the same (session_key,
         # session_id) the recursive call runs under so the snapshot matches exactly what the follow-up's
         # guard will consult. Fail-safe in helper.
-        await self._refresh_agent_cache_message_count(session_key, session_id)
+        # Acknowledge the follow-up the way an idle-session message is: this in-band drain is the only
+        # place a queued/interrupting message ever runs, so base.py's hook site is never entered for it.
+        # Resolve the adapter from the follow-up's OWN source — a multiplexed gateway can route it to a
+        # different profile's adapter, and only that instance holds the per-message reaction state.
+        _hook_adapter = self._adapter_for_source(next_source) if pending_event is not None else None
+        _hook_ticket = None
+        if _followup_processing_hooks_apply(_hook_adapter, pending_event):
+            _hook_ticket = {
+                "adapter": _hook_adapter,
+                "event": pending_event,
+                "closed": False,
+            }
 
-        followup_result = await self._run_agent(
-            message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
-            source=next_source, session_id=session_id, session_key=next_session_key,
-            run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
-            event_message_id=next_message_id, inbound_message_id=next_inbound_id,
-            channel_prompt=next_channel_prompt, message_type=next_message_type,
-        )
+        # The re-baseline sits inside the try: a /stop landing on its DB await must still close the marker
+        # (the helper's own ``except Exception`` does not catch cancellation).
+        try:
+            await _run_followup_processing_hook(_hook_adapter, pending_event, "on_processing_start")
+            await self._refresh_agent_cache_message_count(session_key, session_id)
+
+            followup_result = await self._run_agent(
+                message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
+                source=next_source, session_id=session_id, session_key=next_session_key,
+                run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
+                event_message_id=next_message_id, inbound_message_id=next_inbound_id,
+                channel_prompt=next_channel_prompt, message_type=next_message_type,
+                _queued_processing_owner_adapter=_owner_adapter,
+                _queued_processing_ticket=_hook_ticket,
+            )
+        except asyncio.CancelledError:
+            await self._complete_queued_processing_ticket(
+                _hook_ticket, _followup_cancel_outcome(_owner_adapter))
+            raise
+        except BaseException:
+            await self._complete_queued_processing_ticket(
+                _hook_ticket, ProcessingOutcome.FAILURE)
+            raise
+        if _hook_ticket is not None and not _hook_ticket["closed"]:
+            if not isinstance(followup_result, dict):
+                # There is no safe route to BasePlatformAdapter without the normal result mapping.
+                await self._complete_queued_processing_ticket(
+                    _hook_ticket, ProcessingOutcome.FAILURE)
+            else:
+                existing = list(followup_result.get("_queued_followup_processing_tickets") or ())
+                if not any(ticket is _hook_ticket for ticket in existing):
+                    followup_result = {
+                        **followup_result,
+                        "_queued_followup_processing_tickets": [_hook_ticket, *existing],
+                    }
         merged = _preserve_queued_followup_history_offset(result, followup_result)
         # The TERMINAL turn of the chain owns the ledger identity for the outer final send, which
         # the adapter brackets against the event that OPENED the chain. Without this the terminal
@@ -3922,6 +4046,8 @@ class GatewayTurnMixin:
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
+        _queued_processing_owner_adapter: Any = None,
+        _queued_processing_ticket: Any = None,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
@@ -3947,6 +4073,10 @@ class GatewayTurnMixin:
             persist_user_display_kind=persist_user_display_kind,
             persist_user_display_metadata=persist_user_display_metadata,
         )
+        # Dynamic, process-local wiring: TurnContext is intentionally not widened with adapter
+        # objects that only the queued-follow-up lifecycle needs.
+        turn_ctx._queued_processing_owner_adapter = _queued_processing_owner_adapter
+        turn_ctx._queued_processing_ticket = _queued_processing_ticket
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,
         )

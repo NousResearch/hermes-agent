@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
+import textwrap
 from types import SimpleNamespace
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -84,6 +86,96 @@ def test_tool_call_block_is_parsed_and_stripped_from_the_text():
     # The user must not see the raw JSON.
     assert "<tool_call>" not in cleaned
     assert cleaned == "Sure.\nDone."
+
+
+def test_cold_bridge_import_and_first_tool_call_preserve_sdk_contract(tmp_path):
+    """Catalog discovery may import the ACP bridge beside primary-client startup."""
+    code = textwrap.dedent(f"""
+        import sys
+        import threading
+        from types import SimpleNamespace
+
+        sys.path.insert(0, {_REPO_ROOT!r})
+        assert not any(name == "openai" or name.startswith("openai.") for name in sys.modules)
+        import agent.acp_openai_bridge as bridge
+        import agent.process_bootstrap as process_bootstrap
+
+        loaded = sorted(name for name in sys.modules if name == "openai" or name.startswith("openai."))
+        assert not loaded, loaded
+
+        barrier = threading.Barrier(3)
+        results = {{}}
+        errors = []
+        lock = threading.Lock()
+
+        def build_call():
+            barrier.wait()
+            try:
+                results["built"] = bridge.build_openai_tool_call(
+                    call_id="built-1", name="memory", arguments="{{}}",
+                )
+            except BaseException as exc:
+                with lock:
+                    errors.append(("build", type(exc).__name__, str(exc)))
+
+        def load_primary_client():
+            barrier.wait()
+            try:
+                results["client"] = process_bootstrap._load_openai_cls()
+            except BaseException as exc:
+                with lock:
+                    errors.append(("client", type(exc).__name__, str(exc)))
+
+        threads = [threading.Thread(target=build_call), threading.Thread(target=load_primary_client)]
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join(30)
+        assert not [thread.name for thread in threads if thread.is_alive()]
+        assert not errors, errors
+
+        calls, cleaned = bridge.extract_tool_calls_from_text(
+            '<tool_call>{{"id": "c1", "type": "function", '
+            '"function": {{"name": "memory", "arguments": "{{}}"}}}}</tool_call>'
+        )
+        assert cleaned == ""
+        from openai.types.chat import ChatCompletionMessageToolCall
+
+        call = calls[0]
+        assert type(results["built"]) is ChatCompletionMessageToolCall
+        assert type(call) is ChatCompletionMessageToolCall
+        assert call.model_dump() == {{
+            "id": "c1",
+            "function": {{"arguments": "{{}}", "name": "memory"}},
+            "type": "function",
+            "call_id": "c1",
+            "response_item_id": None,
+        }}
+
+        message = SimpleNamespace(
+            content=None, tool_calls=calls, reasoning=None, reasoning_content=None,
+        )
+        completion = SimpleNamespace(
+            choices=[SimpleNamespace(message=message, finish_reason="tool_calls")],
+            usage=SimpleNamespace(total_tokens=3), model="acp",
+            hermes_projected_messages=[{{"role": "tool", "content": "done"}}],
+        )
+        chunks = bridge.completion_to_stream_chunks(completion)
+        delta_call = chunks[0].choices[0].delta.tool_calls[0]
+        assert (delta_call.id, delta_call.type, delta_call.function.name, delta_call.function.arguments) == (
+            "c1", "function", "memory", "{{}}",
+        )
+        assert chunks[1].usage.total_tokens == 3
+        assert chunks.hermes_projected_messages == [{{"role": "tool", "content": "done"}}]
+    """)
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(tmp_path)
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", code], cwd=_REPO_ROOT, env=env,
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_multiple_blocks_are_all_parsed():

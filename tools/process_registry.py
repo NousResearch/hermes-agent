@@ -1335,6 +1335,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 save_completed_result(session)
                 self._running.pop(session.id)
             self._finished[session.id] = session
+        # Release drained handles immediately, but let a still-active reader
+        # close its own streams. Closing a BufferedReader from another thread
+        # waits for its read lock; an inherited Windows pipe can hold that lock
+        # after the direct child exits and otherwise block poll()/wait()/list().
+        self._release_finished_handles(session)
         self._write_checkpoint()
         if was_running and session.notify_on_complete:
             notification = {
@@ -1362,6 +1367,31 @@ class ProcessRegistry(ProcessCheckpointMixin):
             "completion_reason": session.completion_reason,
             "termination_source": session.termination_source,
         }
+
+    def _release_finished_handles(self, session: ProcessSession):
+        """Close a finished session's OS handles (Popen pipes / PTY master).
+
+        Best-effort and idempotent: the session may have no local Popen (env
+        backends, detached recovery), or the handles may already be closed by
+        the reader loop / kill path. A reader still draining an inherited pipe
+        owns handle cleanup: its finally path calls this again after EOF.
+        Status/completion reporting must not wait for that descendant.
+        """
+        reader = session._reader_thread
+        if reader is not None and reader is not threading.current_thread() and reader.is_alive():
+            return
+        proc = session.process
+        if proc is not None:
+            for stream in (proc.stdout, proc.stderr, proc.stdin):
+                if stream is not None:
+                    with suppress(OSError, ValueError):  # a stdin flush can hit EPIPE
+                        stream.close()
+        if session._pty is not None:
+            # ptyprocess/pywinpty close() is idempotent (``closed`` flag) and
+            # closes the master fd exactly once; it raises only if the child
+            # ignores SIGKILL, which we don't want to surface on the finish path.
+            with suppress(Exception):
+                session._pty.close()
 
     # ----- Query Methods -----
 
@@ -1940,10 +1970,20 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def close_stdin(self, session_id: str) -> dict:
         """Close a running process's stdin / send EOF without killing the process."""
+        def via_pty(pty):
+            # WinPTY's sendeof writes Ctrl-D as input; it cannot half-close stdin.
+            # Do not claim success, inject data, or close the PTY (which kills the child).
+            if _IS_WINDOWS:
+                raise NotImplementedError(
+                    "EOF_UNSUPPORTED_FOR_PTY_BACKEND: Windows PTY cannot safely close "
+                    "stdin without killing the process. No input was sent."
+                )
+            pty.sendeof()
+
         session = self.get(session_id)
         msg = "EOF sent" if session is not None and session._pty else "stdin closed"
         return self._stdin_op(
-            session_id, lambda pty: pty.sendeof(), lambda stdin: stdin.close(), {"status": "ok", "message": msg})
+            session_id, via_pty, lambda stdin: stdin.close(), {"status": "ok", "message": msg})
 
     def count_running(self) -> int:
         """O(1) running count for status-bar polling; dict ``len()`` is atomic, no lock."""
@@ -2101,6 +2141,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if over_cap and (survivors := [sid for sid in self._finished if sid not in expired]):
             expired.append(min(survivors, key=lambda sid: self._finished[sid].started_at))
         for sid in expired:
+            # Belt-and-suspenders handle release: sessions normally arrive in
+            # _finished via _move_to_finished(), which already released their
+            # Popen/PTY handles — but any session inserted into _finished
+            # directly (defensive paths, historical checkpoints) would
+            # otherwise carry its OS handles to the grave unreleased. The
+            # release is idempotent, so double-closing is safe.
+            self._release_finished_handles(self._finished[sid])
             del self._finished[sid]
         # Belt-and-suspenders against module-lifetime growth: forget consumed /
         # poll-observed marks for any session no longer tracked at all.

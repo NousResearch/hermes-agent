@@ -592,9 +592,11 @@ def _scan_gateway_pids(
                 or f"hermes_home={current_home_lc}" in command_lc
             )
 
-        # Default profile: accept unless argv advertises another profile. HERMES_HOME may come via
-        # env (invisible to wmic/CIM), so only a non-matching explicit HERMES_HOME= disqualifies.
-        if "--profile " in command_lc or " -p " in command_lc:
+        # Default profile: accept unless argv advertises another profile in any spelling the CLI
+        # pre-parser accepts (``--profile=ops`` slipped past a substring test, so a default-profile
+        # fallback stop could SIGTERM the named gateway). HERMES_HOME may come via env (invisible to
+        # wmic/CIM), so only a non-matching explicit HERMES_HOME= disqualifies.
+        if profile_flag_value(command_lc) is not None:
             return False
         return not ("hermes_home=" in command_lc and f"hermes_home={current_home_lc}" not in command_lc)
 
@@ -607,10 +609,13 @@ def _scan_gateway_pids(
 
     try:
         if is_windows():
-            listing = _windows_process_listing()
-            if listing is None:
-                return []
-            for pid, command in _iter_windows_list_processes(listing):
+            processes = _gw_windows()._snapshot_process_command_lines()
+            if processes is None:
+                listing = _windows_process_listing()
+                if listing is None:
+                    return []
+                processes = _iter_windows_list_processes(listing)
+            for pid, command in processes:
                 _consider(pid, command)
         else:
             # /proc first (Docker without procps), then `ps -Aww`.
@@ -1629,6 +1634,15 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     # treating only Running as supervised still kills the detached gateway on every desktop serve start
     # (#86098, #87001).
     if is_windows():
+        # Fresh desktop profiles have no gateway to reap. Avoid blocking their
+        # readiness on a PowerShell task query when the canonical scan is empty.
+        # A nonempty/failed scan keeps the existing supervisor guard and the
+        # fresh scan below: never kill from a snapshot taken before that query.
+        try:
+            if not find_gateway_pids(exclude_pids=_reaper_exclusion_pids(extra_exclude)):
+                return False
+        except Exception:
+            pass
         try:
             from hermes_cli.gateway_windows import get_task_name  # profile-aware task name
             _task_name = get_task_name()
@@ -4593,7 +4607,8 @@ def _guard_fragile_foreground_gateway(replace: bool = False, force: bool = False
     console-attached case and is escapable with ``--force`` (or the
     ``HERMES_GATEWAY_DETACHED`` marker every service launcher already sets).
     """
-    if replace or force or _running_under_gateway_supervisor():
+    # Replacing an existing process does not detach the new one from this console.
+    if force or _running_under_gateway_supervisor():
         return
     if not is_windows():
         return

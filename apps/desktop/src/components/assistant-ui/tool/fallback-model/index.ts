@@ -662,10 +662,6 @@ function toolErrorText(part: ToolPart, result: Record<string, unknown>): string 
     return extractedError || (typeof part.result === 'string' && part.result.trim()) || 'Tool returned an error.'
   }
 
-  if (typeof result.error === 'string' && result.error.trim()) {
-    return result.error.trim()
-  }
-
   if (extractedError) {
     return extractedError
   }
@@ -674,7 +670,7 @@ function toolErrorText(part: ToolPart, result: Record<string, unknown>): string 
     return firstStringField(result, ['message', 'reason', 'detail']) || 'Tool returned success=false.'
   }
 
-  if (typeof result.status === 'string' && /\b(error|failed|failure)\b/i.test(result.status)) {
+  if (typeof result.status === 'string' && /^(error|failed|failure|fatal|exception)$/i.test(result.status.trim())) {
     return firstStringField(result, ['message', 'reason', 'detail']) || `Tool returned status "${result.status}".`
   }
 
@@ -708,8 +704,21 @@ function toolStatus(part: ToolPart, resultRecord: Record<string, unknown>): Tool
     return 'success'
   }
 
-  if (!toolErrorText(part, resultRecord)) {
+  const error = toolErrorText(part, resultRecord)
+
+  if (!error) {
     return 'success'
+  }
+
+  // A guessed read path missing is routine exploration, not a broken tool.
+  // Keep the explanation available without a destructive alarm. Writes and
+  // permission failures deliberately do not take this path.
+  if (part.toolName === 'read_file' && /^File not found:/i.test(error)) {
+    return 'notice'
+  }
+
+  if (part.toolName === 'terminal' && error === 'Command failed with exit code 1.') {
+    return 'notice'
   }
 
   // A rejected memory write is a budget negotiation, not a failure: the store

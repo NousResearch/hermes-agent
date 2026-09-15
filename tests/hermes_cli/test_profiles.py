@@ -105,6 +105,17 @@ class TestGetProfileDir:
         result = get_profile_dir("default")
         assert result == tmp_path / ".hermes"
 
+    @pytest.mark.parametrize("name", ["..", "../outside", "../../tmp", "a/b", "a\\b", ".hidden", "has space"])
+    def test_traversal_and_invalid_names_rejected(self, name, profile_env):
+        # The name becomes a path component under profiles/; invalid ids must
+        # raise instead of escaping the root.
+        with pytest.raises(ValueError):
+            get_profile_dir(name)
+
+    @pytest.mark.parametrize("name", ["..", "../outside", "a/b"])
+    def test_profile_exists_false_for_invalid_names(self, name, profile_env):
+        assert profiles.profile_exists(name) is False
+
 
 # ===================================================================
 # TestCreateProfile
@@ -115,9 +126,11 @@ class TestCreateProfile:
 
 
     def test_seeds_placeholder_env_file(self, profile_env):
-        """Fresh profiles get their own .env (owner-only) so channel/env
-        writes are profile-scoped from day one instead of falling through
-        to the shell environment / root install."""
+        """Fresh profiles get their own .env so channel/env writes are profile-scoped.
+
+        POSIX mode bits prove owner-only access there; Windows ACLs are not represented by
+        ``stat.S_IMODE``, so the cross-platform content/isolation checks remain the oracle.
+        """
         import stat
         profile_dir = create_profile("coder", no_alias=True)
         env_path = profile_dir / ".env"
@@ -128,8 +141,8 @@ class TestCreateProfile:
             line.startswith("#") or not line.strip()
             for line in content.splitlines()
         )
-        mode = stat.S_IMODE(env_path.stat().st_mode)
-        assert mode == 0o600
+        if os.name == "posix":
+            assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
 
 
     def test_fresh_profile_inherits_a_usable_model(self, profile_env):
@@ -294,7 +307,8 @@ class TestBackfillProfileEnvs:
         assert sorted(backfilled) == ["old1", "old2"]
         for p in (p1, p2):
             assert (p / ".env").read_text() == "OPENROUTER_API_KEY=root-key\n"
-            assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
+            if os.name == "posix":
+                assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
 
 
     def test_placeholder_when_default_has_no_env(self, profile_env):
@@ -632,15 +646,20 @@ class TestAliasCollision:
 class TestWrapperScript:
     """Tests for create_wrapper_script() and remove_wrapper_script()."""
 
-    def test_creates_sh_on_posix(self, profile_env, monkeypatch):
+    def test_creates_native_wrapper_with_argument_passthrough(self, profile_env, monkeypatch):
         monkeypatch.setattr("hermes_cli.profiles.shutil.which", lambda name: "/opt/hermes/bin/hermes")
         from hermes_cli.profiles import create_wrapper_script
         wrapper = create_wrapper_script("mybot")
         assert wrapper is not None
-        assert wrapper.name == "mybot"
         content = wrapper.read_text()
-        assert content.startswith("#!/bin/sh")
-        assert "exec /opt/hermes/bin/hermes -p mybot" in content
+        if sys.platform == "win32":
+            assert wrapper.name == "mybot.bat"
+            assert [line for line in content.splitlines() if line] == [
+                "@echo off", "hermes -p mybot %*",
+            ]
+        else:
+            assert wrapper.name == "mybot"
+            assert content == '#!/bin/sh\nexec /opt/hermes/bin/hermes -p mybot "$@"\n'
 
 
     @pytest.mark.windows_only
@@ -717,7 +736,8 @@ class TestFindAliasForProfile:
         info = next(p for p in list_profiles() if p.name == "steve")
         assert info.alias_name == "qiaobusi"
         assert info.alias_path is not None
-        assert info.alias_path.name == "qiaobusi"
+        expected_name = "qiaobusi.bat" if sys.platform == "win32" else "qiaobusi"
+        assert info.alias_path.name == expected_name
 
 
 # ===================================================================
@@ -767,6 +787,52 @@ class TestRenameProfile:
         assert "hermes.ssi_health" not in cfg["hosts"]
         assert cfg["hosts"]["hermes_heimdall"]["aiPeer"] == "ssi_health"
         assert cfg["hosts"]["hermes_heimdall"]["peerName"] == "user-peer"
+
+    def test_multiplexed_rename_unroutes_old_then_hot_serves_new(self, profile_env):
+        """Under a live multiplexer the old name is tombstoned + unrouted BEFORE the directory
+        moves and the new name is hot-served after, so a stale runtime mkdir of the old home is
+        refused instead of resurrecting a ghost served profile (#109267)."""
+        from hermes_constants import mkdir_under_hermes_home
+        tmp_path = profile_env
+        create_profile("oldname", no_alias=True)
+        old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
+        new_dir = tmp_path / ".hermes" / "profiles" / "newname"
+
+        calls = []
+
+        def _record_notify(name):
+            # Snapshot the world at each multiplexer signal to pin ordering.
+            calls.append((name, old_dir.exists(), new_dir.exists(), profiles.named_profile_is_deleted(old_dir)))
+            if name == "oldname" and old_dir.exists():
+                # A still-live component of the multiplexer writing into the old home mid-teardown.
+                with pytest.raises(FileNotFoundError):
+                    mkdir_under_hermes_home(old_dir / "logs")
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+             patch("hermes_cli.profiles._live_default_multiplexer", return_value=True), \
+             patch("hermes_cli.profiles._notify_multiplexer", side_effect=_record_notify):
+            rename_profile("oldname", "newname")
+
+        # (name, old_exists, new_exists, old_tombstoned): unroute first, hot-serve last.
+        assert calls[0] == ("oldname", True, False, True)
+        assert calls[-1] == ("newname", False, True, False)
+        assert not old_dir.exists() and new_dir.is_dir()
+        assert not profiles.named_profile_is_deleted(old_dir)  # a future 'oldname' is not born deleted
+
+    def test_unmultiplexed_rename_does_not_signal_multiplexer(self, profile_env):
+        """No live multiplexer → rename must neither tombstone nor ping (single-profile installs)."""
+        tmp_path = profile_env
+        create_profile("oldname", no_alias=True)
+        old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+             patch("hermes_cli.profiles._live_default_multiplexer", return_value=False), \
+             patch("hermes_cli.profiles._notify_multiplexer") as notify:
+            new_dir = rename_profile("oldname", "newname")
+
+        notify.assert_not_called()
+        assert not (tmp_path / ".hermes" / "profiles" / ".deleted").exists()
+        assert not old_dir.exists() and new_dir.is_dir()
 
 
 # ===================================================================
@@ -1159,5 +1225,3 @@ class TestResolveProfileEnvSpelling:
         # No HERMES_HOME: the platform default root applies (existing contract).
         monkeypatch.delenv("HERMES_HOME", raising=False)
         assert Path(resolve_profile_env("default")) == _get_default_hermes_home()
-
-

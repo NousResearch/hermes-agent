@@ -7240,7 +7240,7 @@ def test_notification_poller_live_loop_requeues_foreign_completion_for_owner(
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **_kwargs: emitted.append(args))
 
-    def _deliver(_rid, sid, session, text):
+    def _deliver(_rid, sid, session, text, **_kw):
         delivered["a" if sid == "sid-a-live-handoff" else "b"].append(text)
         session["running"] = False
 
@@ -7349,7 +7349,7 @@ def test_notification_poller_live_loop_drops_addressed_orphan(
     monkeypatch.setattr(
         server,
         "_run_prompt_submit",
-        lambda _rid, _sid, _session, text: delivered.append(text),
+        lambda _rid, _sid, _session, text, **_kw: delivered.append(text),
     )
     server._sessions["sid-live-orphan"] = session
     process_registry._completion_consumed.discard(event["session_id"])
@@ -7390,7 +7390,7 @@ def test_notification_poller_drops_orphaned_events(monkeypatch, routing):
     monkeypatch.setattr(
         server,
         "_run_prompt_submit",
-        lambda _rid, _sid, _session, text: delivered.append(text),
+        lambda _rid, _sid, _session, text, **_kw: delivered.append(text),
     )
     monkeypatch.setattr(server, "_get_db", lambda: None)
 
@@ -7456,7 +7456,7 @@ def test_notification_poller_delivers_owned_events(
     monkeypatch.setattr(
         server,
         "_run_prompt_submit",
-        lambda _rid, _sid, _session, text: delivered.append(text),
+        lambda _rid, _sid, _session, text, **_kw: delivered.append(text),
     )
     monkeypatch.setattr(server, "_get_db", lambda: _CompressionDB())
 
@@ -11750,6 +11750,46 @@ def test_session_status_reads_live_gateway_agent(monkeypatch):
     assert "Model: live-model (live-provider)" in out
     assert "Tokens: 1,234" in out
     assert "Agent Running: Yes" in out
+
+
+def test_session_status_reads_live_compute_host_metadata(monkeypatch):
+    agent = types.SimpleNamespace(
+        model="stale-gateway-model",
+        provider="stale-gateway-provider",
+    )
+    server._sessions["sid"] = _session(
+        agent=agent,
+        _compute_host_active=True,
+        _metadata_mirror={
+            "model": "live-host-model",
+            "provider": "live-host-provider",
+        },
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.status", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "Model: live-host-model (live-host-provider)" in resp["result"]["output"]
+
+
+def test_session_status_falls_back_to_agent_before_first_host_frame(monkeypatch):
+    agent = types.SimpleNamespace(model="live-model", provider="live-provider")
+    server._sessions["sid"] = _session(agent=agent, _compute_host_active=True)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.status", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "Model: live-model (live-provider)" in resp["result"]["output"]
 
 
 def test_skills_reload_runs_in_gateway_process(monkeypatch):

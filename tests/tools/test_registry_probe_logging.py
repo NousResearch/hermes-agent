@@ -44,3 +44,9 @@ def test_grace_failure_reprobes_with_safe_callable_label(monkeypatch, caplog, ra
     records = [r for r in caplog.records if r.name == "tools.registry"]
     assert len(records) == 3
     assert all(record.levelno == level for record in records)
+    if raises:
+        assert records[-1].exc_info is not None
+        assert isinstance(records[-1].exc_info[1], RuntimeError)
+        assert str(records[-1].exc_info[1]) == "probe failed"
+    else:
+        assert records[-1].exc_info is None

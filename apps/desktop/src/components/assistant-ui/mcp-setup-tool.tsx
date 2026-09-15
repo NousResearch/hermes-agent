@@ -21,6 +21,7 @@ import {
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2 } from '@/lib/icons'
+import { isSubmitEnter } from '@/lib/ime'
 import { completeMcpDesktopOAuth, McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
 import { directoryEntry } from '@/lib/mcp-directory'
 import { prettyName } from '@/lib/text'
@@ -419,7 +420,7 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
         return
       }
 
-      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      if (isSubmitEnter(event) && (event.metaKey || event.ctrlKey)) {
         if (!working) {
           event.preventDefault()
           void approve()

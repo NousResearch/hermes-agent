@@ -11,6 +11,8 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_state
+import hermes_state_compression
+import hermes_state_messages
 from hermes_state import SessionDB
 from hermes_state_errors import SessionTurnLeaseLostError
 
@@ -491,22 +493,51 @@ def test_turn_lease_fences_stale_transcript_flush_after_reclaim(tmp_path):
     db.release_session_turn_lease("shared", next_holder)
 
 
-def test_turn_lease_revives_expired_row_still_owned_by_writer(tmp_path):
+def test_turn_lease_revives_expired_row_still_owned_by_writer(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
     db = SessionDB(tmp_path / "state.db")
     db.create_session("shared", source="test")
     holder = f"pid={os.getpid()}:turn=owner"
+    contender = f"pid={os.getpid()}:turn=contender"
+
+    class _Clock:
+        now = 100.0
+
+        def time(self) -> float:
+            return self.now
+
+        def advance(self, seconds: float) -> None:
+            self.now += seconds
+
+    clock = _Clock()
+    # Keep the clock local to the two mixin modules used by this write path.
+    # Replacing the module references (rather than time.time itself) avoids
+    # changing the clock seen by unrelated code in this process.
+    monkeypatch.setattr(
+        hermes_state_compression,
+        "time",
+        SimpleNamespace(time=clock.time),
+    )
+    monkeypatch.setattr(
+        hermes_state_messages,
+        "time",
+        SimpleNamespace(time=clock.time),
+    )
 
     assert db.try_acquire_session_turn_lease("shared", holder, ttl_seconds=0.05)
-    time.sleep(0.12)
+    clock.advance(0.11)
     assert db.append_messages_batch(
         "shared",
         [{"role": "assistant", "content": "after ttl"}],
         turn_lease_holder=holder,
-        turn_lease_ttl_seconds=0.2,
+        turn_lease_ttl_seconds=5,
     ) == 1
-    assert not db.try_acquire_session_turn_lease(
-        "shared", f"pid={os.getpid()}:turn=contender", ttl_seconds=5
-    )
+    # The expired row was revived by the writer, so a contender cannot take
+    # the still-owned lease until the renewal interval itself has elapsed.
+    assert not db.try_acquire_session_turn_lease("shared", contender, ttl_seconds=5)
+    clock.advance(5.01)
+    assert db.try_acquire_session_turn_lease("shared", contender, ttl_seconds=5)
 
 
 def test_turn_lease_fences_flush_when_row_is_absent(tmp_path):

@@ -312,10 +312,14 @@ def _check_fn_cached(fn: Callable) -> bool:
         cached = _check_fn_cache.get(cache_key)
         if cached is not None:
             return cached[1]
+    exc_info = None
     try:
         value, outcome = bool(fn()), "returned False"
-    except Exception:
-        value, outcome = False, "raised"
+    except Exception as exc:
+        # Keep the exception for the verdict log below (emitted outside this block, where
+        # ``exc_info=True`` would resolve to nothing): a check_fn that raises is a bug in the probe
+        # or its resolver, and a bare "raised" verdict reads as "nothing configured" (#87950).
+        value, outcome, exc_info = False, "raised", exc
     with _check_fn_cache_lock:
         _prune_check_fn_caches(now)
         if value:
@@ -335,7 +339,8 @@ def _check_fn_cached(fn: Callable) -> bool:
         # Optional capabilities may normally be unavailable; exceptions remain warnings.
         log = logger.warning if outcome == "raised" else logger.info
         log(
-            "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome)
+            "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome,
+            exc_info=exc_info)
         _check_fn_cache[cache_key] = (now, False)
         return False
 

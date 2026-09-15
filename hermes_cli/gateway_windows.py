@@ -54,6 +54,39 @@ _TASK_RESTART_COUNT = 999
 _GATEWAY_ENV = (("PYTHONIOENCODING", "utf-8"), ("HERMES_GATEWAY_DETACHED", "1"), ("HERMES_SUPERVISED_CHILD", "1"))
 
 
+def _snapshot_process_command_lines() -> list[tuple[int, str]] | None:
+    """Return a native Windows process snapshot, or ``None`` when it is globally unavailable.
+
+    Per-process access races are represented by empty ``cmdline`` values and are skipped.  Preserve
+    Windows argument boundaries for the shared gateway command-line matchers; a naive join changes
+    quoted paths and arguments containing spaces.
+    """
+    try:
+        import psutil  # type: ignore
+    except (ImportError, OSError):
+        return None
+
+    processes: list[tuple[int, str]] = []
+    try:
+        for process in psutil.process_iter(["pid", "cmdline"], ad_value=None):
+            info = process.info
+            pid = info.get("pid")
+            argv = info.get("cmdline")
+            if (
+                not isinstance(pid, int)
+                or isinstance(pid, bool)
+                or pid <= 0
+                or not isinstance(argv, (list, tuple))
+                or not argv
+                or not all(isinstance(argument, str) for argument in argv)
+            ):
+                continue
+            processes.append((pid, subprocess.list2cmdline(argv)))
+    except Exception:
+        return None
+    return processes or None
+
+
 def _schtasks_encoding() -> str:
     """Console encoding for ``schtasks.exe`` output: localized Windows emits the OEM/ANSI code page,
     not UTF-8, and decoding with the wrong codec raised UnicodeDecodeError in subprocess' reader

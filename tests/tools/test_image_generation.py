@@ -87,8 +87,11 @@ class TestFalCatalog:
             if "edit_endpoint" not in meta:
                 continue
             assert meta.get("edit_supports"), f"{mid} has edit_endpoint but no edit_supports"
-            assert "image_urls" in meta["edit_supports"], \
-                f"{mid} edit_supports must allow image_urls"
+            # Most edit endpoints take an `image_urls` list; entries with a
+            # singular image key (Kling Image v3) declare edit_image_param.
+            image_param = meta.get("edit_image_param") or "image_urls"
+            assert image_param in meta["edit_supports"], \
+                f"{mid} edit_supports must allow {image_param}"
             cap = meta.get("max_reference_images")
             assert isinstance(cap, int) and cap > 0, \
                 f"{mid} needs a positive max_reference_images"

@@ -378,6 +378,7 @@ def _dispatch_followup_turn(rid, sid: str, session: dict, prompt: Any, what: str
         _hook_failure(what, exc)
         with session["history_lock"]:
             session["running"] = False
+        _apply_pending_mcp_reload(sid, session)
 
 
 def _run_post_turn_followups(
@@ -540,8 +541,13 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         # unscoped and fall back to ambient os.environ. Once any secondary home
         # has been served, bind the launch home's own terminal policy so a
         # poisoned ambient bridge can never become the launch turn's authority.
+        # The launch process's env-only policy (TERMINAL_ENV=ssh from systemd /
+        # a launcher) has no file to rebuild it from: overlay the TERMINAL_*
+        # snapshot frozen at multiplex activation, never live os.environ.
         from tools.terminal_scope import install_profile_terminal_scope
-        scopes.terminal = install_profile_terminal_scope(Path(_hermes_home))
+        from tui_gateway.launch_terminal_policy import launch_terminal_env
+        scopes.terminal = install_profile_terminal_scope(
+            Path(_hermes_home), env_overlay=launch_terminal_env())
     # The sudo password callback is thread-local: without re-wiring here, sudo prompts
     # fall through to /dev/tty and hang the headless gateway (re-run is a no-op).
     _wire_callbacks(sid)
@@ -886,6 +892,7 @@ def _run_prompt_submit(
     if admitted is None:
         if hosted_task is not None:
             _finish_cancelled_hosted_start(session, hosted_task, terminal_callback)
+        _apply_pending_mcp_reload(sid, session)
         return False
     images, agent = admitted
     # The ONE INFO record proving a prompt was accepted by THIS process; ties ui sid,
@@ -964,6 +971,7 @@ def _run_prompt_submit(
                     session["last_active"] = time.time()
                     if not st.error_retained:
                         _clear_inflight_turn(session)
+            _apply_pending_mcp_reload(sid, session)
             # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
             # agent.session_id is re-read because compression may have rotated it (an
             # accepted/finished pair whose id changed IS a rotation trace).
@@ -995,6 +1003,7 @@ def _run_prompt_submit(
     if not can_start:
         with session["history_lock"]:
             session["running"] = False
+        _apply_pending_mcp_reload(sid, session)
     return can_start
 
 

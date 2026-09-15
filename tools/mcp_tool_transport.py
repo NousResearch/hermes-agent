@@ -7,7 +7,7 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 from typing import Dict, Optional, Set
-from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
+from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_config as _config
@@ -351,14 +351,16 @@ class MCPServerTransportMixin:
         # Streamable HTTP read timeout), not tool_timeout. ``auth`` must be forwarded or OAuth SSE 401s silently.
         sse_kwargs: dict = {"url": url, "headers": headers or None, "timeout": float(connect_timeout),
                             "sse_read_timeout": 300.0, **_present(auth=oauth_auth)}
-        if client_cert is not None or ssl_verify is not True:
-            # sse_client has no verify/cert kwargs: an httpx_client_factory forwards the SDK's (headers,
-            # auth, timeout) and layers TLS on top. Client MUST come from the SDK's httpx (httpx2 on mcp >= 2.0).
-            _httpx_mod = _core.sdk_httpx()
-            sse_kwargs["httpx_client_factory"] = lambda headers=None, timeout=None, auth=None: _httpx_mod.AsyncClient(
-                follow_redirects=True, verify=ssl_verify,
-                timeout=timeout if timeout is not None else _httpx_mod.Timeout(30.0, read=300.0),
-                **_present(headers=headers, auth=auth, cert=client_cert))
+        # Always own the client: the httpx_client_factory forwards the SDK's (headers, auth, timeout),
+        # installs the wire-body cap and layers TLS on the inner transport (client-level verify/cert are
+        # inert once a custom transport= is passed). Client MUST come from the SDK's httpx (httpx2 on mcp >= 2.0).
+        _httpx_mod = _core.sdk_httpx()
+        sse_kwargs["httpx_client_factory"] = lambda headers=None, timeout=None, auth=None: _httpx_mod.AsyncClient(
+            follow_redirects=True,
+            timeout=timeout if timeout is not None else _httpx_mod.Timeout(30.0, read=300.0),
+            transport=_make_mcp_body_cap_transport(
+                _httpx_mod, _httpx_mod.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))),
+            **_present(headers=headers, auth=auth))
         return _core.sse_client(**sse_kwargs)
 
     def _streamable_http_transport(self, url: str, headers: dict, connect_timeout: float,
@@ -378,10 +380,13 @@ class MCPServerTransportMixin:
         httpx = _core.sdk_httpx()
         _strip_auth_on_cross_origin_redirect = _make_redirect_header_stripper(
             httpx.URL(url), strict=strict_cfg_headers, configured_header_names=configured_header_names)
+        # verify/cert live on the inner transport: a custom transport= makes client-level TLS kwargs inert.
         client_kwargs: dict = {"follow_redirects": True, "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
-                               "verify": ssl_verify, **({"headers": headers} if headers else {}),
+                               **({"headers": headers} if headers else {}),
                                "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
-                               **_present(auth=oauth_auth, cert=client_cert)}
+                               "transport": _make_mcp_body_cap_transport(
+                                   httpx, httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))),
+                               **_present(auth=oauth_auth)}
 
         @asynccontextmanager
         async def _owned_client_streams():  # the SDK skips cleanup when http_client is provided

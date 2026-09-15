@@ -561,6 +561,7 @@ class TestMediaDeliveryPathValidation:
         secret = ssh_dir / "id_rsa.txt"
         secret.write_bytes(b"-----BEGIN ...")  # mtime = now
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))  # Native Windows expanduser/home.
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
 
@@ -624,6 +625,7 @@ class TestMediaDeliveryDefaultMode:
         secret = hermes_dir / rel
         secret.write_text('{"access_token": "live-bearer-abc123"}')
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))  # Native Windows expanduser/home.
         monkeypatch.setattr(
             "gateway.platforms.base._HERMES_HOME",
             hermes_dir,
@@ -651,6 +653,7 @@ class TestMediaDeliveryDefaultMode:
         token = hermes_dir / "google_token.json"
         token.write_text('{"access_token": "***", "refresh_token": "***"}')
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))  # Native Windows expanduser/home.
         monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
         monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
 
@@ -673,6 +676,7 @@ class TestMediaDeliveryDefaultMode:
         artifact = hermes_dir / "adhoc_report.pdf"
         artifact.write_bytes(b"%PDF-1.4")  # fresh mtime
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))  # Native Windows expanduser/home.
         monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
         monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
 
@@ -690,6 +694,7 @@ class TestMediaDeliveryDefaultMode:
         hermes_dir = fake_home / ".hermes"
         hermes_dir.mkdir(parents=True)
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))  # Native Windows expanduser/home.
         monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
         monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
         board = hermes_dir / "kanban" / "boards" / "team-a"
@@ -718,6 +723,7 @@ class TestMediaDeliveryDefaultMode:
         hermes_root = fake_home / ".hermes"
         profile_b = hermes_root / "profiles" / "beta"
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))  # Native Windows expanduser/home.
         monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_root)
         monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_root)
 
@@ -768,6 +774,7 @@ class TestMediaDeliveryDefaultMode:
         doc = workdir / "proposal.docx"
         doc.write_bytes(b"PK\x03\x04")
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))  # Native Windows expanduser/home.
         # $HOME is itself on the denied-prefix list, mirroring /root.
         monkeypatch.setattr(
             "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
@@ -803,6 +810,7 @@ class TestMediaDeliveryDefaultMode:
         fake_home = tmp_path / "opt" / "data" / "home"
         fake_home.mkdir(parents=True)
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))  # Native Windows expanduser/home.
         monkeypatch.setattr(
             "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
             (str(denied_root),),
@@ -833,6 +841,7 @@ class TestMediaDeliveryDefaultMode:
         link = workdir / "innocent.pdf"
         link.symlink_to(key)
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))  # Native Windows expanduser/home.
         monkeypatch.setattr(
             "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
             (str(fake_home),),

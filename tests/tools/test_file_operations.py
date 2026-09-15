@@ -247,7 +247,8 @@ def file_ops(mock_env):
     return ShellFileOperations(mock_env)
 
 
-def make_real_subprocess_env(cwd: str, include_stderr: bool = False) -> MagicMock:
+def make_real_subprocess_env(cwd: str, include_stderr: bool = False,
+                             process_env: dict | None = None) -> MagicMock:
     """Mock env whose execute() runs the command in a real subprocess.
 
     For tests that need the generated shell scripts to actually run
@@ -258,6 +259,7 @@ def make_real_subprocess_env(cwd: str, include_stderr: bool = False) -> MagicMoc
     """
     env = MagicMock()
     env.cwd = cwd
+    run_env = os.environ | (process_env or {})
 
     def execute(command, **kwargs):
         stdin_data = kwargs.get("stdin_data")
@@ -273,6 +275,7 @@ def make_real_subprocess_env(cwd: str, include_stderr: bool = False) -> MagicMoc
             capture_output=True,
             input=(stdin_data.encode("utf-8", "surrogateescape")
                    if is_windows and stdin_data is not None else stdin_data),
+            env=run_env,
         )
         output = (
             completed.stdout.decode("utf-8", "replace")
@@ -628,6 +631,48 @@ class _DeletedTestGitBaselineCheck:
     helper is restored or replaced.
     """
     pass
+
+
+# =========================================================================
+# Atomic write: failed swaps clean temporary siblings
+# =========================================================================
+
+class TestAtomicWriteFailureCleanup:
+    """A failed rename must leave the original file and no Hermes temp sibling."""
+
+    @pytest.fixture
+    def failing_mv_env(self, tmp_path):
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        failing_mv = bin_dir / "mv"
+        failing_mv.write_text("#!/bin/sh\nexit 1\n")
+        failing_mv.chmod(0o755)
+        return make_real_subprocess_env(
+            str(tmp_path),
+            process_env={"PATH": f"{bin_dir}:{os.environ['PATH']}"},
+        )
+
+    def test_write_file_failed_atomic_swap_cleans_temp_sibling(self, failing_mv_env, tmp_path):
+        target = tmp_path / "write.txt"
+        target.write_text("original\n")
+        ops = ShellFileOperations(failing_mv_env, cwd=str(tmp_path))
+
+        result = ops.write_file(str(target), "replacement\n")
+
+        assert result.error is not None
+        assert target.read_text() == "original\n"
+        assert not list(tmp_path.glob(".hermes-tmp.*"))
+
+    def test_patch_replace_failed_atomic_swap_cleans_temp_sibling(self, failing_mv_env, tmp_path):
+        target = tmp_path / "patch.txt"
+        target.write_text("original\n")
+        ops = ShellFileOperations(failing_mv_env, cwd=str(tmp_path))
+
+        result = ops.patch_replace(str(target), "original", "replacement")
+
+        assert result.error is not None
+        assert target.read_text() == "original\n"
+        assert not list(tmp_path.glob(".hermes-tmp.*"))
 
 
 # =========================================================================

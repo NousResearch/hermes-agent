@@ -3576,10 +3576,14 @@ def invalidate_descendants_for_parent_reopen(
 def specify_triage_task(
     conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
     body: Optional[str] = None, assignee: Optional[str] = None, author: Optional[str] = None,
+    ears_sentence: Optional[str] = None,
 ) -> bool:
     """Update title/body/assignee (when given) and move ``triage -> todo`` in one
     txn; False when not in triage. Lands in ``todo`` (not ``ready``) so parent
     gating still applies; the audit comment is written only when a field changed.
+    ``ears_sentence``: Rule 6 EARS-restated requirement, stored verbatim when
+    given (already mechanically validated by the caller — see
+    ``kanban_decompose._resolve_ears_sentence``; never validated here).
     """
     if title is not None and not title.strip():
         raise ValueError("title cannot be blank")
@@ -3606,6 +3610,9 @@ def specify_triage_task(
             sets.append("assignee = ?")
             params.append(assignee)
             changed_fields.append("assignee")
+        if ears_sentence is not None:
+            sets.append("ears_sentence = ?")
+            params.append(ears_sentence)
         params.append(task_id)
         cur = conn.execute(
             f"UPDATE tasks SET {', '.join(sets)} "

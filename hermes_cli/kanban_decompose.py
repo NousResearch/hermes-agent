@@ -13,6 +13,36 @@ expected failures). ``fanout=false`` collapses to the ``specify`` behaviour
 (tighten + promote, no children), making ``decompose`` a strict superset.
 Unknown assignees are rewritten to ``default_assignee`` — a child NEVER ends
 up with ``assignee=None``.
+
+Rule 6 — EARS gate: this module's aux-LLM call is the one real choke point
+where a triage task becomes concrete child tasks, so this is where the
+EARS-restatement gate lives (not decision-hud, not the dispatch loop). The
+same JSON response that produces each child's title/body/assignee is asked
+to also produce an ``ears_sentence`` — a one-sentence EARS-pattern
+(Ubiquitous/Event-driven-When/State-driven-While/Unwanted-behavior-If-then/
+Optional-Where) restatement of that child's requirement. Two independent
+checks guard against the LLM "grading its own homework": (1) the LLM may
+self-report ``ears_refusal`` instead of guessing when the task doesn't give
+it enough to restate without inventing details; (2) even a claimed
+``ears_sentence`` is mechanically re-validated against the five templates by
+:func:`validate_ears_sentence` — a plausible-but-malformed sentence is
+treated exactly like an explicit refusal, never trusted at face value.
+
+OWNER CHOICE (design decision, preserved from the originating plan): on
+refusal/failure, this module does **not** block task creation. It calls
+:func:`hermes_cli.plugin_bridges.decision_hud.push_problem_report`
+(fail-open — logged, never raised, mirroring ``check_batch_approval``'s
+contract) and creates the child with ``ears_sentence=None``. Rationale: (a)
+Rule 6 is a pre-dispatch SCOPING aid, not (yet) a dispatch gate — nothing
+downstream reads ``ears_sentence`` to permit/deny work, so blocking here
+would strand triage work behind a field with no enforcement consumer; (b)
+the existing F1 batch-approval gate already owns the "some work needs PO
+sign-off before running" mechanism, and duplicating a second blocking gate
+on the same choke point stacks two different escalation semantics onto one
+call path. The problem report gives a human (or a future gate) full
+visibility into every failure without adding a new hard stop today. If
+``ears_sentence`` is later wired into enforcement, this default should be
+revisited.
 """
 
 from __future__ import annotations
@@ -30,6 +60,7 @@ from hermes_cli.kanban_specify import (
     _call_aux, _extract_json_blob, _load_triage_task, _task_prompt_fields, _title_body,
 )
 from hermes_cli.kanban_specify import _profile_author as _specify_author
+from hermes_cli.plugin_bridges import decision_hud as _dh_bridge
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +86,9 @@ Output a single JSON object with this exact shape:
         "title": "<concrete task title, imperative voice, <= 80 chars>",
         "body":  "<detailed spec for the worker on this child task>",
         "assignee": "<profile name from the roster, or null for default>",
-        "parents": [<int>, ...]
+        "parents": [<int>, ...],
+        "ears_sentence": "<one EARS-pattern sentence restating this child's requirement, or omit/null>",
+        "ears_refusal": "<one sentence on what's missing, ONLY if you cannot EARS-ify without inventing details>"
       },
       ...
     ]
@@ -74,6 +107,18 @@ Rules:
     and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
+  - "ears_sentence": restate the child's requirement as EXACTLY ONE
+    sentence in one of these five EARS patterns:
+      Ubiquitous:        "The <system> shall <response>."
+      Event-driven:      "When <trigger>, the <system> shall <response>."
+      State-driven:      "While <state>, the <system> shall <response>."
+      Unwanted behavior: "If <condition>, then the <system> shall <response>."
+      Optional feature:  "Where <feature is included>, the <system> shall <response>."
+    Use ONLY facts present in the title/body/original task — never invent
+    a trigger, state, or system behavior that isn't there. If the task
+    doesn't give you enough to do this honestly, do NOT guess: omit
+    "ears_sentence" and instead set "ears_refusal" to one sentence
+    explaining what's missing.
 
 When the task is genuinely a single unit of work (no useful decomposition),
 return:
@@ -83,7 +128,9 @@ return:
     "rationale": "<one sentence>",
     "title": "<tightened title>",
     "body":  "<concrete spec for a single worker>",
-    "assignee": "<profile name from the roster, or null for default>"
+    "assignee": "<profile name from the roster, or null for default>",
+    "ears_sentence": "<one EARS-pattern sentence, or omit/null>",
+    "ears_refusal": "<one sentence on what's missing, ONLY if you cannot EARS-ify>"
   }
 
 In that case the task stays as one work item, just with a tightened spec and
@@ -107,6 +154,73 @@ Default assignee (used when no profile fits a task): {default_assignee}
 
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
+
+# --- Rule 6: mechanical EARS-shape validator ---------------------------------
+# One regex per template (case-insensitive "shall"/"the system" wording is
+# lenient — the LLM names the real system/worker, not a literal "system").
+# This is intentionally independent of the LLM call that produced the
+# sentence: it never trusts the LLM's own claim of success (see module
+# docstring "grading its own homework").
+_EARS_PATTERNS = (
+    # Event-driven: "When <trigger>, the <system> shall <response>."
+    re.compile(r"^when\b.+,\s*(the\s+)?\S.*\bshall\b.+\.$", re.IGNORECASE),
+    # State-driven: "While <state>, the <system> shall <response>."
+    re.compile(r"^while\b.+,\s*(the\s+)?\S.*\bshall\b.+\.$", re.IGNORECASE),
+    # Unwanted behavior: "If <condition>, then the <system> shall <response>."
+    re.compile(r"^if\b.+,\s*then\s+(the\s+)?\S.*\bshall\b.+\.$", re.IGNORECASE),
+    # Optional feature: "Where <feature>, the <system> shall <response>."
+    re.compile(r"^where\b.+,\s*(the\s+)?\S.*\bshall\b.+\.$", re.IGNORECASE),
+    # Ubiquitous: "The <system> shall <response>." (checked last — the most
+    # permissive shape, so trigger/state/condition words above match first).
+    re.compile(r"^the\s+\S.*\bshall\b.+\.$", re.IGNORECASE),
+)
+
+
+def validate_ears_sentence(sentence: object) -> bool:
+    """True iff ``sentence`` is a single, non-empty string that mechanically
+    matches one of the five EARS templates (Ubiquitous/Event-driven-When/
+    State-driven-While/Unwanted-behavior-If-then/Optional-Where). Shape-only
+    — does not (cannot) verify the restatement is faithful to the original
+    task, only that it has the grammatical form a human reviewer expects.
+    """
+    if not isinstance(sentence, str):
+        return False
+    text = sentence.strip()
+    if not text:
+        return False
+    return any(p.match(text) for p in _EARS_PATTERNS)
+
+
+def _resolve_ears_sentence(entry: dict, *, task_id: str, child_title: str) -> Optional[str]:
+    """Validate ``entry.get("ears_sentence")``; on any failure (explicit
+    ``ears_refusal``, missing/malformed sentence) file a problem report via
+    decision-hud and return ``None`` — never invents a sentence. See the
+    module docstring's OWNER CHOICE section for the fail-open (proceed with
+    ``ears_sentence=None``) rationale.
+    """
+    candidate = entry.get("ears_sentence")
+    if validate_ears_sentence(candidate):
+        return candidate.strip()  # type: ignore[union-attr]
+
+    refusal = entry.get("ears_refusal")
+    if isinstance(refusal, str) and refusal.strip():
+        problem = (
+            f"Decomposer could not EARS-ify child task {child_title!r} "
+            f"(root task {task_id}): {refusal.strip()}"
+        )
+    else:
+        problem = (
+            f"Decomposer produced no valid EARS restatement for child task "
+            f"{child_title!r} (root task {task_id}); LLM did not explicitly "
+            f"refuse, but the returned sentence (if any) failed the mechanical "
+            f"EARS-shape check: {candidate!r}"
+        )
+    ok, detail = _dh_bridge.push_problem_report(
+        project="kanban", problem=problem, context=f"task_id={task_id}", reporter="decomposer",
+    )
+    if not ok:
+        logger.warning("decompose: EARS problem report failed for task %s: %s", task_id, detail)
+    return None
 
 
 @dataclass
@@ -220,9 +334,14 @@ def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
         )
     if title_val is None and body_val is None:
         return DecomposeOutcome(task.id, False, "decomposer returned fanout=false with no title/body")
+    mode_title = title_val if title_val is not None else task.title
+    # Rule 6: resolve the EARS restatement (validate/refuse+report; never
+    # invent) — see module docstring for the fail-open owner choice.
+    ears_sentence_val = _resolve_ears_sentence(parsed, task_id=task.id, child_title=mode_title)
     with kbc.connect_closing() as conn:
         ok = kb.specify_triage_task(
             conn, task.id, title=title_val, body=body_val, assignee=assignee_val, author=author,
+            ears_sentence=ears_sentence_val,
         )
     if not ok:
         return DecomposeOutcome(task.id, False, "task moved out of triage before promotion")
@@ -239,6 +358,7 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[l
         title = entry.get("title")
         if not isinstance(title, str) or not title.strip():
             return [], f"tasks[{idx}].title is missing or empty"
+        title_clean = title.strip()[:200]
         body = entry.get("body")
         assignee = entry.get("assignee")
         chosen = _normalize_assignee_choice(
@@ -254,9 +374,13 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[l
         if not isinstance(parents, list):
             parents = []
         children.append({
-            "title": title.strip()[:200],
+            "title": title_clean,
             "body": body.strip() if isinstance(body, str) else "",
             "assignee": chosen,
+            # Rule 6: resolve the EARS restatement (validate/refuse+report;
+            # never invent) — see module docstring for the fail-open owner
+            # choice.
+            "ears_sentence": _resolve_ears_sentence(entry, task_id=task_id, child_title=title_clean),
             # Drop non-int, out-of-range and self parent indices.
             "parents": [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx],
         })

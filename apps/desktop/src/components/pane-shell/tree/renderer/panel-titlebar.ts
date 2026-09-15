@@ -1,6 +1,7 @@
 import { type RefObject, useCallback, useLayoutEffect, useState } from 'react'
 
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { subscribeTitlebarChromeRevision } from '@/store/titlebar-chrome'
 
 /** Reserve actual chrome intersections, including after a neighbor becomes a rail. */
 export function usePanelTitlebar(ref: RefObject<HTMLElement | null>, enabled: boolean, minimized: boolean) {
@@ -51,10 +52,12 @@ export function usePanelTitlebar(ref: RefObject<HTMLElement | null>, enabled: bo
     }
 
     window.addEventListener('resize', measure)
+    const unsubscribeChromeRevision = subscribeTitlebarChromeRevision(measure)
 
     return () => {
       observer.disconnect()
       window.removeEventListener('resize', measure)
+      unsubscribeChromeRevision()
     }
   }, [enabled, measure])
 

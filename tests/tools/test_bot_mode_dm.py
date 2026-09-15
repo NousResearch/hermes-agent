@@ -945,14 +945,18 @@ def test_cleanup_sweeps_stale_live_intents_and_keeps_fresh_ones(tmp_path, monkey
 def test_settled_live_wait_unlinks_the_intent_but_a_pending_one_keeps_it(tmp_path, monkeypatch, capsys):
     from tools import bot_live_delivery as live
 
+    dm_file = tmp_path / "dm-x.txt"
+    dm_file.write_text("secret plaintext", encoding="utf-8")
     intent = tmp_path / "dm-x.txt.live.json"
     intent.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
 
     monkeypatch.setattr(live, "read_delivery_result", lambda home, did: {"status": "queued"})
-    assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", intent_path=intent) == 0
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", dm_file=dm_file) == 0
     assert intent.exists(), "a pending delivery may still be retried from the same intent"
+    assert dm_file.exists()
 
     monkeypatch.setattr(live, "read_delivery_result", lambda home, did: {"status": "settled", "reply": "ok"})
-    assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", intent_path=intent) == 0
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", dm_file=dm_file) == 0
     assert not intent.exists()
+    assert not dm_file.exists(), "the dm .txt holds the same plaintext as the settled intent"

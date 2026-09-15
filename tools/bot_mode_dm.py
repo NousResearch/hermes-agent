@@ -451,7 +451,7 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
     return record
 
 
-def _wait_live_dm(home: str, delivery_id: str, *, intent_path: "str | os.PathLike | None" = None) -> int:
+def _wait_live_dm(home: str, delivery_id: str, *, dm_file: "str | os.PathLike | None" = None) -> int:
     from tools.bot_live_delivery import read_delivery_result
 
     deadline = time.monotonic() + _LIVE_WAIT_SECONDS
@@ -465,10 +465,12 @@ def _wait_live_dm(home: str, delivery_id: str, *, intent_path: "str | os.PathLik
     payload.update(status=status, delivery_id=delivery_id)
     if status in ("queued", "claimed", "ambiguous"):
         payload["detail"] = "Delivery remains pending or its outcome is unknown. Do not resend; receipt is retained."
-    elif status == "settled" and intent_path is not None:
+    elif status == "settled" and dm_file is not None:
         # The intent carries the message plaintext so a retry can replay the SAME delivery id;
-        # once the owner settled it nothing retries, so it goes the way the dm file does.
-        _unlink_dm_file(str(intent_path))
+        # once the owner settled it nothing retries, so it goes along with the dm file (same
+        # plaintext) — the live branch returns before _run_delivery's own unlink.
+        _unlink_dm_file(str(dm_file) + ".live.json")
+        _unlink_dm_file(str(dm_file))
     print(json.dumps(payload))
     return 0 if status in ("settled", "queued", "claimed") else 1
 
@@ -509,7 +511,7 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
                     "evidence_file": dm_file}))
                 return 1
             if record is not None:
-                return _wait_live_dm(record["profile_home"], record["delivery_id"], intent_path=dm_file + ".live.json")
+                return _wait_live_dm(record["profile_home"], record["delivery_id"], dm_file=dm_file)
     try:
         from tools.bot_relay import delivery_env
 

@@ -35,7 +35,7 @@ from hermes_cli.web_server_messaging import (
 from hermes_cli.web_routers._common import http_failure
 from hermes_cli.web_models import (
     MessagingPlatformUpdate, TelegramOnboardingApply, TelegramOnboardingStart,
-    WhatsAppOnboardingApply, WhatsAppOnboardingStart,
+    TeamsPreflightRequest, WhatsAppOnboardingApply, WhatsAppOnboardingStart,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -938,3 +938,23 @@ async def test_messaging_platform(platform_id: str, profile: Optional[str] = Non
     if payload.get("error_message"):
         return result(False, payload["error_message"])
     return result(False, "Setup looks complete, but the gateway has not reported a connection yet. Restart the gateway.")
+
+
+@router.post("/api/messaging/teams/preflight")
+async def preflight_teams(request: TeamsPreflightRequest):
+    """Test submitted Teams credentials without touching profile state or gateway."""
+    from plugins.platforms.teams.preflight import preflight_teams_config
+    from fastapi.responses import JSONResponse
+
+    result = await preflight_teams_config(request.config)
+    if not result.get("ok"):
+        status = {
+            "malformed_configuration": 422,
+            "invalid_credentials": 401,
+            "permission_denied": 403,
+            "timeout": 504,
+            "network_error": 502,
+            "token_acquisition_failed": 502,
+        }.get(result.get("category"), 502)
+        return JSONResponse(status_code=status, content=result)
+    return result

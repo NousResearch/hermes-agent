@@ -15,6 +15,7 @@ import { Tip } from '@/components/ui/tooltip'
 import {
   approvePairing,
   getMessagingPlatforms,
+  preflightTeamsConfig,
   getPairing,
   type MessagingEnvVarInfo,
   type MessagingPlatformInfo,
@@ -683,6 +684,21 @@ function PlatformDetail({
   const { t } = useI18n()
   const m = t.messaging
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const [preflight, setPreflight] = useState<'idle' | 'loading' | 'error' | 'success'>('idle')
+  const [preflightMessage, setPreflightMessage] = useState('')
+
+  async function handleTeamsPreflight() {
+    const config = Object.fromEntries(Object.entries(edits).filter(([, value]) => value.trim()))
+    setPreflight('loading')
+    try {
+      const result = await preflightTeamsConfig(config, scopeProfile)
+      setPreflight(result.ok ? 'success' : 'error')
+      setPreflightMessage(result.message)
+    } catch (error) {
+      setPreflight('error')
+      setPreflightMessage(error instanceof Error ? error.message : 'Teams configuration test failed.')
+    }
+  }
 
   const requiredFields = platform.env_vars.filter(field => field.required)
   const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field, m).advanced)
@@ -711,6 +727,17 @@ function PlatformDetail({
           <PlatformHint platform={platform} />
         </div>
       </header>
+
+      {platform.id === 'teams' && (
+        <section className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-sm">
+          <p className="font-medium">Teste a configuração do Teams antes de salvar</p>
+          <p className="mt-1 text-muted-foreground">Este teste não habilita o Teams nem reinicia o gateway.</p>
+          <Button className="mt-2" disabled={preflight === 'loading'} onClick={() => void handleTeamsPreflight()} size="sm" variant="secondary">
+            {preflight === 'loading' ? 'Testando…' : 'Testar configuração'}
+          </Button>
+          {preflightMessage && <p className={cn('mt-2', preflight === 'success' ? 'text-primary' : 'text-destructive')}>{preflightMessage}</p>}
+        </section>
+      )}
 
       {platform.error_message && <ErrorBanner>{platform.error_message}</ErrorBanner>}
 

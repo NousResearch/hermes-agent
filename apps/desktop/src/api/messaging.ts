@@ -54,6 +54,25 @@ export function testMessagingPlatform(
   })
 }
 
+export interface TeamsPreflightResponse {
+  category: string
+  checklist?: {
+    capabilities: Array<{ name: string; status: string }>
+    permissions: Array<{ name: string; status: string; note?: string }>
+  }
+  message: string
+  ok: boolean
+}
+
+export function preflightTeamsConfig(config: Record<string, string>, profile?: null | string): Promise<TeamsPreflightResponse> {
+  return hermesApi<TeamsPreflightResponse>({
+    ...profileScoped(profile),
+    path: '/api/messaging/teams/preflight',
+    method: 'POST',
+    body: { config }
+  })
+}
+
 // -- Telegram QR onboarding ---------------------------------------------------
 // Pairing state lives in the memory of the backend process that started it, so
 // every call in one flow carries the SAME profile scope — the Electron router

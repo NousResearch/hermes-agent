@@ -20,7 +20,7 @@ def db(tmp_path, monkeypatch):
     database.close()
 
 
-def test_worker_spawn_tags_session_source_kanban(monkeypatch, tmp_path):
+def test_worker_spawn_tags_session_source_kanban(monkeypatch, tmp_path, contained_worker_spawn):
     """The dispatcher tags the worker's env so its session is a `kanban` row."""
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_dispatch as kbd

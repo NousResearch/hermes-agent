@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import re
 import signal
@@ -26,6 +27,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
+
+logger = logging.getLogger(__name__)
 
 
 # After this many consecutive non-success attempts on a task/profile the
@@ -288,13 +291,23 @@ def _terminate_reclaimed_worker(
     *,
     signal_fn=None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths."""
+    """Best-effort host-local worker termination for reclaim paths.
+
+    Terminating the worker is not sufficient: its descendants must go too, or the
+    next attempt overlaps the previous executor tree on this host. On Windows the
+    attempt's containment job is ended (whole tree, OS-owned); uncontained workers
+    fall back to ``taskkill /F /T``. The disposition is reported so cleanup is
+    visible on the run rather than an invisible side effect.
+    """
     info: dict[str, Any] = {
         "prev_pid": int(pid) if pid else None,
         "host_local": False,
         "termination_attempted": False,
         "terminated": False,
         "sigkill": False,
+        "tree_contained": False,
+        "tree_terminated": False,
+        "survivors": None,
     }
     if not pid or pid <= 0 or not claim_lock:
         return info
@@ -305,6 +318,18 @@ def _terminate_reclaimed_worker(
     kill = _kill_fn(signal_fn)
     if kill is None:
         return info
+
+    # End the contained tree FIRST, while the job handle is still resolvable from
+    # the live PID. A dead worker leaves no descendants to walk afterwards.
+    if signal_fn is None:
+        try:
+            from hermes_cli import kanban_worker_containment as _containment
+            _cleanup = _containment.terminate_worker_job(int(pid), _containment.attempt_job_name(int(pid)))
+            info["tree_contained"] = _cleanup["contained"]
+            info["tree_terminated"] = _cleanup["tree_terminated"]
+            info["survivors"] = _cleanup["survivors"]
+        except Exception:
+            logger.debug("containment cleanup failed for pid %s", pid, exc_info=True)
 
     info["termination_attempted"] = True
     try:
@@ -321,6 +346,16 @@ def _terminate_reclaimed_worker(
         info["terminated"] = True
         return info
     if _kb._pid_alive(pid):
+        # A worker whose containment job was created cannot refuse the job-scoped
+        # terminate; reaching here means no job was held, so sweep the tree
+        # explicitly instead of leaving descendants orphaned (issue #77862).
+        if signal_fn is None and _kb._IS_WINDOWS and not info["tree_contained"]:
+            from hermes_cli import kanban_worker_containment as _containment
+            if _containment.terminate_pid_tree(
+                int(pid), _worker_spawn_identity(conn, task_id, int(pid))
+            ):
+                info["tree_terminated"] = True
+                info["survivors"] = 0
         if not _sigkill(kill, pid):
             return info
         info["sigkill"] = True
@@ -461,6 +496,24 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
             if _kb._pid_alive(pid):
                 killed = _sigkill(kill, pid)
 
+        # A timed-out worker's descendants outlive it exactly as a crashed one's
+        # do, so the attempt's containment tree is ended here too — before the
+        # task is released back to the pool for another attempt.
+        tree_cleanup = {"requested": False, "contained": False, "tree_terminated": False, "survivors": None}
+        if signal_fn is None:
+            try:
+                from hermes_cli import kanban_worker_containment as _containment
+                tree_cleanup["requested"] = True
+                _job = _containment.terminate_worker_job(pid, _containment.attempt_job_name(int(pid)))
+                tree_cleanup.update({k: _job[k] for k in ("contained", "tree_terminated", "survivors")})
+                if not _job["contained"] and _kb._IS_WINDOWS:
+                    tree_cleanup["tree_terminated"] = _containment.terminate_pid_tree(
+                        pid, _worker_spawn_identity(conn, tid, int(pid))
+                    )
+                    tree_cleanup["survivors"] = 0 if tree_cleanup["tree_terminated"] else None
+            except Exception:
+                logger.debug("timeout containment cleanup failed for pid %s", pid, exc_info=True)
+
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
         with _kb.write_txn(conn):
             retry_status = _kb._retry_status_for_run(conn, tid)
@@ -479,6 +532,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                     "limit_seconds": limit,
                     "sigkill": killed,
                     "retry_status": retry_status,
+                    "cleanup": tree_cleanup,
                 }
                 run_id = _kb._end_run(
                     conn, tid, outcome="timed_out", status="timed_out",
@@ -825,9 +879,35 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
                 continue
 
             pid = int(row["worker_pid"])
+            tid = row["id"]
+            # The worker is dead, but its descendants may not be. Sweep the dead
+            # attempt's contained tree BEFORE the task is released for a retry,
+            # otherwise the next attempt runs alongside the previous executor tree
+            # (measured: 288s of overlap across a 255s recovery attempt). Cleanup
+            # is recorded on the run so it is part of execution truth.
+            cleanup = {"requested": False, "contained": False, "tree_terminated": False, "survivors": None}
+            try:
+                from hermes_cli import kanban_worker_containment as _containment
+                cleanup["requested"] = True
+                _job = _containment.terminate_worker_job(pid, _containment.attempt_job_name(pid))
+                cleanup["contained"] = _job["contained"]
+                cleanup["tree_terminated"] = _job["tree_terminated"]
+                cleanup["survivors"] = _job["survivors"]
+                if not _job["contained"] and _kb._IS_WINDOWS:
+                    # No job was held (worker spawned by an older build, or job
+                    # creation failed): sweep by tree walk so descendants of such a
+                    # worker still get reaped. Guarded on process identity so a
+                    # recycled PID cannot aim the kill at an unrelated process.
+                    cleanup["tree_terminated"] = _containment.terminate_pid_tree(
+                        pid, _worker_spawn_identity(conn, tid, pid)
+                    )
+                    cleanup["survivors"] = 0 if cleanup["tree_terminated"] else None
+            except Exception:
+                logger.debug("post-crash containment cleanup failed for pid %s", pid, exc_info=True)
             dead = _classify_dead_worker(pid, row["claim_lock"])
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
+            dead.event_payload["cleanup"] = cleanup
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
@@ -1098,13 +1178,57 @@ def _record_task_failure(
 
 
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
-    """Record the spawned child's pid + emit a ``spawned`` event carrying it."""
+    """Record the spawned child's pid + emit a ``spawned`` event carrying it.
+
+    The event also carries the process's ``create_time``, captured at spawn. That
+    pair is the worker's identity: a later cleanup can tell "the worker that was
+    spawned" from "an unrelated process that happens to hold the same PID now",
+    which is what makes the non-contained fallback kill safe to attempt and the
+    refusal honest when the identity does not match.
+    """
     with _kb.write_txn(conn):
         conn.execute("UPDATE tasks SET worker_pid = ? WHERE id = ?", (int(pid), task_id))
         run_id = _kb._current_run_id(conn, task_id)
         if run_id is not None:
             conn.execute("UPDATE task_runs SET worker_pid = ? WHERE id = ?", (int(pid), run_id))
-        _kb._append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
+        # Resolve through sys.modules rather than a stale module object: a test
+        # that reloads this module would otherwise patch one instance while the
+        # call site reads another.
+        import sys
+
+        _containment = sys.modules.get("hermes_cli.kanban_worker_containment")
+        if _containment is None:
+            from hermes_cli import kanban_worker_containment as _containment
+        _kb._append_event(
+            conn, task_id, "spawned",
+            {"pid": int(pid), "create_time": _containment.process_create_time(int(pid))},
+            run_id=run_id,
+        )
+
+
+def _worker_spawn_identity(conn: sqlite3.Connection, task_id: str, pid: int) -> Optional[float]:
+    """``create_time`` recorded when ``pid`` was spawned for ``task_id``.
+
+    ``None`` when no matching spawn is on record (a worker from an older build, or
+    the PID never belonged to this task). Callers treat ``None`` as "identity not
+    proven" and must not aim a PID-addressed kill from it.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'spawned' "
+            "ORDER BY id DESC LIMIT 50",
+            (task_id,),
+        ).fetchall()
+    except Exception:
+        logger.debug("spawn identity lookup failed for task %s", task_id, exc_info=True)
+        return None
+    for (payload,) in rows:
+        data = _kb._json_dict(payload)
+        if not isinstance(data, dict) or int(data.get("pid", -1)) != int(pid):
+            continue
+        created = data.get("create_time")
+        return float(created) if created is not None else None
+    return None
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -2298,6 +2422,14 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     from tools.process_registry import systemd_user_bus_env
     env = systemd_user_bus_env(env)
     log_f = _open_worker_log(task, board)
+    # Windows has no process group to fall back on (``start_new_session`` is
+    # ``setsid()`` and a silent no-op there), so the attempt is contained in a
+    # NAMED kill-on-close Job Object instead. It is created SUSPENDED so nothing
+    # the worker spawns can start before it is inside the job — a descendant that
+    # began first could never be assigned. Ownership of the job handle is handed
+    # TO THE WORKER (see ``contain_and_resume``): a dispatcher-held handle would
+    # kill the worker as soon as a one-shot dispatcher exited.
+    from hermes_cli import kanban_worker_containment as _containment
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
             cmd,
@@ -2307,13 +2439,24 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if _kb._IS_WINDOWS else 0,
+            creationflags=(
+                (subprocess.CREATE_NO_WINDOW | _containment.windows_job_creationflags())
+                if _kb._IS_WINDOWS else 0
+            ),
         )
     except FileNotFoundError:
         log_f.close()
         raise RuntimeError(
             "`hermes` executable not found on PATH. "
             "Install Hermes Agent or activate its venv before running the kanban dispatcher."
+        )
+    # Containment is established (and the child resumed) before this returns, so a
+    # worker is never observable as running while uncontained. A failure here
+    # raises: the worker has already been terminated, so there is no PID to return
+    # and no half-started attempt to retry against.
+    if _kb._IS_WINDOWS:
+        _containment.contain_and_resume(
+            proc.pid, _containment.attempt_job_name(proc.pid), process=proc
         )
     # Intentionally NOT closing log_f: the child keeps writing after return;
     # the OS-level FD stays open in the child until it exits.

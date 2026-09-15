@@ -245,7 +245,7 @@ class TestWorkerSpawnEnv:
     actually spawning anything.
     """
 
-    def test_default_spawn_sets_env_vars(self, fresh_home, monkeypatch):
+    def test_default_spawn_sets_env_vars(self, fresh_home, monkeypatch, contained_worker_spawn):
         captured = {}
 
         class FakeProc:

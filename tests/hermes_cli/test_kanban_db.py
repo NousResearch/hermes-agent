@@ -856,7 +856,7 @@ class TestSharedBoardPaths:
 
 
     def test_dispatcher_spawn_injects_kanban_paths_without_stale_session(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, contained_worker_spawn
     ):
         # The dispatcher must pin board paths while stripping any unrelated
         # HERMES_SESSION_* identity inherited from the long-lived gateway.

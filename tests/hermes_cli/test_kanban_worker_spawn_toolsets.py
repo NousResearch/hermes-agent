@@ -24,7 +24,7 @@ def _make_task(kb, *, assignee: str):
     )
 
 
-def test_default_spawn_pins_assignee_profile_cli_toolsets(monkeypatch, tmp_path):
+def test_default_spawn_pins_assignee_profile_cli_toolsets(monkeypatch, tmp_path, contained_worker_spawn):
     """Manual profile assignment should keep that profile's CLI tools.
 
     Regression guard for dispatcher-spawned workers that boot with
@@ -90,7 +90,7 @@ agent:
         assert required in pinned
 
 
-def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_path):
+def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_path, contained_worker_spawn):
     """The dispatcher's pre-``chat`` model flag must reach ``args.model``.
 
     This is an integration contract between Kanban's worker argv builder and

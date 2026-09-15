@@ -181,12 +181,14 @@ def _check_and_apply_config_migration(
     # object is still cached — reloading a hand-picked list re-fixes this per symptom
     # (#111271). The purge is the class fix already used by the fleet-restart phase.
     from hermes_cli.update_cmd import _m
-    _m()._purge_stale_hermes_modules()
-    # Reload BEFORE any config reads so all checks use the updated code.
-    _reload_config_modules()
-    from hermes_cli.config import get_missing_env_vars, get_missing_config_fields
     # A config-check failure must not break an otherwise-successful update.
     try:
+        _m()._purge_stale_hermes_modules()
+        # Reload BEFORE any config reads so all checks use the updated code.
+        _reload_config_modules()
+        # Post-purge this re-executes the NEW config.py against whatever root modules
+        # (hermes_constants, utils, ...) are still cached, so it can fail too.
+        from hermes_cli.config import get_missing_env_vars, get_missing_config_fields
         # Log, point at the manual command, and return. See #91360.
         missing_env = get_missing_env_vars(required_only=True)
         missing_config = get_missing_config_fields()

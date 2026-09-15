@@ -67,3 +67,25 @@ def test_update_migration_survives_stale_module_missing_call_time_symbol(tmp_pat
 
     text = (home / "config.yaml").read_text(encoding="utf-8")
     assert "_config_version: 45" in text, text
+
+
+def test_update_migration_import_failure_after_purge_prints_fallback(tmp_path, monkeypatch, capsys):
+    """The purge evicts ``hermes_cli.*`` but not root modules (``hermes_constants``, ...), so the
+    post-purge ``from hermes_cli.config import ...`` re-executes NEW config.py against OLD root
+    modules and can raise ImportError. That must print the 'run hermes config migrate' fallback and
+    return — not escape and abort the rest of post-update maintenance (fleet restart)."""
+    home = tmp_path / "flat-home"
+    home.mkdir()
+    (home / "config.yaml").write_text("_config_version: 44\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    import hermes_cli.config  # noqa: F401  (pre-pull world has config cached)
+    import hermes_constants
+    # A pre-pull root module lacking a symbol the post-pull hermes_cli/config.py imports at module level.
+    monkeypatch.delattr(hermes_constants, "get_process_hermes_home")
+
+    from hermes_cli.update_cmd import _check_and_apply_config_migration
+    _check_and_apply_config_migration(assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None)
+
+    out = capsys.readouterr().out
+    assert "Could not check config version" in out, out
+    assert "hermes config migrate" in out, out

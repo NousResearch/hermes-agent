@@ -8,12 +8,11 @@ import {
   hopIsCurrent,
   hopDetail,
   hopLocked,
-  hopPaintQuery,
+  hopMatch,
   hopPrice,
   keepReasoningLabel,
   listStep,
   orderHopRows,
-  paintHits,
   providerIndexAfterClearingFilter,
   searchAppend
 } from '../components/modelPicker.js'
@@ -96,8 +95,8 @@ describe('ModelPicker hop catalog', () => {
   it('fuzzy-matches model fragments without a provider prefix', () => {
     const rows = buildModelHopRows([nous, openrouter], ['Nous Portal', 'OpenRouter'])
     expect(filterModelHopRows(rows, 'son4').map(row => row.model)).toEqual([
-      'anthropic/claude-sonnet-4.6',
-      'claude-sonnet-4.6'
+      'claude-sonnet-4.6',
+      'anthropic/claude-sonnet-4.6'
     ])
     expect(filterModelHopRows(rows, 'hrms').map(row => row.selector)).toEqual(['nous/hermes-4'])
   })
@@ -129,30 +128,7 @@ describe('hop current + paste', () => {
   })
 })
 
-describe('paintHits', () => {
-  it('marks typed subsequence chars', () => {
-    expect(paintHits('claude-sonnet-4.6', 'son4').filter(p => p.hit).map(p => p.t)).toEqual(['son', '4'])
-  })
 
-  it('is a no-op for an empty query', () => {
-    expect(paintHits('nous/hermes-4', '')).toEqual([{ t: 'nous/hermes-4', hit: false }])
-  })
-})
-
-describe('hopPaintQuery', () => {
-  it('uses the model side of nous/ so paint matches rank', () => {
-    expect(hopPaintQuery('son4')).toBe('son4')
-    expect(hopPaintQuery('nous/son4')).toBe('son4')
-    expect(hopPaintQuery('  nous/ ')).toBe('')
-    expect(hopPaintQuery('openrouter/anthropic/claude')).toBe('anthropic/claude')
-    expect(
-      paintHits('nous/claude-sonnet-4.6', hopPaintQuery('nous/son4'))
-        .filter(p => p.hit)
-        .map(p => p.t)
-        .join('')
-    ).toBe('son4')
-  })
-})
 
 describe('searchAppend', () => {
   it('strips controls out of a paste', () => {
@@ -220,5 +196,13 @@ describe('hop catalog extras', () => {
     expect(hopDetail(by.paid!)).toBe('$1/$2 · fast')
     expect(hopDetail(by.pro!)).toBe('locked')
     expect(hopDetail()).toBe('')
+  })
+})
+
+describe('hopMatch', () => {
+  it('substring beats a scattered subsequence', () => {
+    expect(hopMatch('nous/claude-sonnet-4.6', 'son4')).toBe(0)
+    expect(hopMatch('nous/hermes-4', 'hermes')).toBeGreaterThan(hopMatch('nous/hermes-4', 'hrms') ?? -1)
+    expect(hopMatch('nous/hermes-4', 'xyz')).toBeNull()
   })
 })

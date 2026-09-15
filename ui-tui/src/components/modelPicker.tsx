@@ -1,7 +1,6 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
-import { fuzzyRank, fuzzyScoreMulti } from '@hermes/shared/fuzzy'
+import { fuzzyRank } from '@hermes/shared/fuzzy'
 import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared/gateway-events'
-import { modelSearchText } from '@hermes/shared/model-search-text'
 import { REASONING_EFFORTS } from '@hermes/shared/reasoning-effort'
 import { useEffect, useMemo, useState } from 'react'
 
@@ -23,6 +22,7 @@ type Stage = 'hop' | 'provider' | 'key' | 'model' | 'reasoning' | 'disconnect'
 type ProviderRow = { name: string; provider: ModelOptionProvider }
 
 export type ModelHopRow = {
+  hay: string
   model: string
   name: string
   provider: ModelOptionProvider
@@ -37,21 +37,18 @@ export function buildModelHopRows(providers: ModelOptionProvider[], names: strin
     const name = names[i] ?? provider.name ?? provider.slug
 
     for (const model of provider.models ?? []) {
+      const selector = `${provider.slug}/${model}`
       rows.push({
+        hay: selector.toLowerCase(),
         model,
         name,
         provider,
-        selector: `${provider.slug}/${model}`
+        selector
       })
     }
   })
 
   return rows
-}
-
-export function hopRowSearchText(row: ModelHopRow): string {
-  // Rank on `provider/id` (OMP /switch). Extra display names made `son4` hit `hermes-4`.
-  return `${row.selector} ${modelSearchText(row.model)}`
 }
 
 export function hopIsCurrent(h: ModelHopRow, current: string) {
@@ -70,13 +67,6 @@ export function searchAppend(prev: string, ch: string) {
     if (c >= ' ') add += c
   }
   return add ? prev + add : prev
-}
-
-/** Rank/paint query after a `nous/` provider scope. `nous/` → empty (no fake hits on the slug). */
-export function hopPaintQuery(q: string) {
-  const t = q.trim()
-  const i = t.indexOf('/')
-  return i < 0 ? t : t.slice(i + 1).trim()
 }
 
 export function keepReasoningLabel(current: string) {
@@ -125,23 +115,25 @@ export function orderHopRows(rows: ModelHopRow[], current: string) {
   })
 }
 
-/** Consecutive runs of `text` whose indices fuzzy-matched `q` (OMP /switch). */
-export function paintHits(text: string, q: string): { t: string; hit: boolean }[] {
-  const hits = new Set(fuzzyScoreMulti(text, q.trim())?.positions ?? [])
-  const out: { t: string; hit: boolean }[] = []
-
-  for (let i = 0; i < text.length; i++) {
-    const hit = hits.has(i)
-    const last = out.at(-1)
-
-    if (last && last.hit === hit) {
-      last.t += text[i]
-    } else {
-      out.push({ t: text[i]!, hit })
+/** Cheap hop rank: substring (higher) else subsequence. No fuzzyScore — that crawls the whole catalog. */
+export function hopMatch(hay: string, query: string): number | null {
+  const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  if (!tokens.length) return 0
+  let score = 0
+  for (const token of tokens) {
+    const at = hay.indexOf(token)
+    if (at >= 0) {
+      score += 1000 - at
+      continue
+    }
+    let i = 0
+    for (const c of token) {
+      i = hay.indexOf(c, i)
+      if (i < 0) return null
+      i += 1
     }
   }
-
-  return out
+  return score
 }
 
 export function filterModelHopRows(rows: ModelHopRow[], query: string): ModelHopRow[] {
@@ -150,7 +142,6 @@ export function filterModelHopRows(rows: ModelHopRow[], query: string): ModelHop
     return rows
   }
 
-  // `nous/` is a provider scope (OMP /switch). The rest is `@hermes/shared/fuzzy`.
   const slash = q.indexOf('/')
   let pool = rows
   let rest = q
@@ -159,9 +150,7 @@ export function filterModelHopRows(rows: ModelHopRow[], query: string): ModelHop
     rest = q.slice(slash + 1)
     if (providerQuery) {
       pool = rows.filter(
-        row =>
-          row.provider.slug.toLowerCase().startsWith(providerQuery) ||
-          (row.provider.name ?? '').toLowerCase().startsWith(providerQuery)
+        row => row.hay.startsWith(providerQuery) || (row.provider.name ?? '').toLowerCase().startsWith(providerQuery)
       )
     }
     if (!rest.trim()) {
@@ -169,7 +158,14 @@ export function filterModelHopRows(rows: ModelHopRow[], query: string): ModelHop
     }
   }
 
-  return fuzzyRank(pool, rest, hopRowSearchText).map(r => r.item)
+  const ranked: { i: number; s: number; row: ModelHopRow }[] = []
+  pool.forEach((row, i) => {
+    const s = hopMatch(row.hay, rest)
+    if (s == null) return
+    ranked.push({ i, s, row })
+  })
+  ranked.sort((a, b) => b.s - a.s || a.i - b.i)
+  return ranked.map(r => r.row)
 }
 
 
@@ -212,26 +208,6 @@ export function providerIndexAfterClearingFilter(
   }
 
   return providerRows.findIndex(row => row.provider.slug === provider.slug)
-}
-
-function HitLabel({ dim = 0, q, t, text }: { dim?: number; q: string; t: Theme; text: string }) {
-  let n = 0
-  return (
-    <>
-      {paintHits(text, q).map((p, i) => {
-        const start = n
-        n += p.t.length
-        const color = p.hit ? t.color.accent : start < dim ? t.color.label : undefined
-        return color ? (
-          <Text key={i} color={color}>
-            {p.t}
-          </Text>
-        ) : (
-          p.t
-        )
-      })}
-    </>
-  )
 }
 
 export function ModelPicker({
@@ -344,7 +320,7 @@ export function ModelPicker({
     return fuzzyRank(
       providerRows,
       filter,
-      row => `${row.name} ${row.provider.slug} ${(row.provider.models ?? []).join(' ')}`
+      row => `${row.name} ${row.provider.slug}`
     ).map(r => r.item)
   }, [providerRows, filter, stage])
 
@@ -369,9 +345,14 @@ export function ModelPicker({
       return allModels
     }
 
-    // modelSearchText adds aliases for brand-less wire ids (e.g. Kimi
-    // Coding `k3` still matches a "kimi" query).
-    return fuzzyRank(allModels, filter, modelSearchText).map(r => r.item)
+    const ranked: { i: number; s: number; id: string }[] = []
+    allModels.forEach((id, i) => {
+      const s = hopMatch(id.toLowerCase(), filter)
+      if (s == null) return
+      ranked.push({ i, s, id })
+    })
+    ranked.sort((a, b) => b.s - a.s || a.i - b.i)
+    return ranked.map(r => r.id)
   }, [allModels, filter, stage])
 
   const models = filteredModels
@@ -971,7 +952,6 @@ export function ModelPicker({
             const hop = filteredHopRows[idx]
             const current = hop ? hopIsCurrent(hop, currentModel) : false
             const locked = hop ? hopLocked(hop) : false
-            const dim = hop ? hop.provider.slug.length + 1 : 0
 
             return row ? (
               <Text
@@ -981,7 +961,7 @@ export function ModelPicker({
                 wrap="truncate-end"
               >
                 {modelIdx === idx ? '▸ ' : current ? '* ' : '  '}
-                {idx + 1}. <HitLabel dim={dim} q={hopPaintQuery(filter)} t={t} text={row} />
+                {idx + 1}. {row}
               </Text>
             ) : (
               <Text color={t.color.muted} key={`pad-${i}`} wrap="truncate-end">
@@ -1065,7 +1045,7 @@ export function ModelPicker({
                 wrap="truncate-end"
               >
                 {providerIdx === idx ? '▸ ' : '  '}
-                {idx + 1}. <HitLabel q={filter} t={t} text={row} />
+                {idx + 1}. {row}
               </Text>
             ) : (
               <Text color={t.color.muted} key={`pad-${i}`} wrap="truncate-end">
@@ -1170,7 +1150,7 @@ export function ModelPicker({
             wrap="truncate-end"
           >
             {prefix}
-            {idx + 1}. <HitLabel q={filter} t={t} text={row} />
+            {idx + 1}. {row}
           </Text>
         )
       })}

@@ -1,13 +1,17 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  $historyArrowsEnabled,
   $perSessionBrowse,
   browseBackward,
   browseForward,
   deriveUserHistory,
   isBrowsingHistory,
-  resetBrowseState
+  resetBrowseState,
+  setHistoryArrowsEnabled
 } from './composer-input-history'
+
+const ARROWS_KEY = 'hermes.desktop.composerHistory.arrowsEnabled'
 
 const SESSION_A = 'session-a'
 const SESSION_B = 'session-b'
@@ -134,5 +138,97 @@ describe('session switch behavior', () => {
     expect(browseBackward(SESSION_B, '', sessionBHistory)).toBe('world-b')
     expect(browseBackward(SESSION_B, '', sessionBHistory)).toBe('hello-b')
     expect(isBrowsingHistory(SESSION_A)).toBe(false)
+  })
+})
+
+describe('arrow-history preference', () => {
+  beforeEach(() => {
+    window.localStorage.removeItem(ARROWS_KEY)
+  })
+
+  it('defaults to on when nothing is stored', async () => {
+    // Reload-based so the assertion reads the seed of a fresh module, not the
+    // atom captured whenever this file happened to be imported.
+    vi.resetModules()
+    const reloaded = await import('./composer-input-history')
+
+    expect(reloaded.$historyArrowsEnabled.get()).toBe(true)
+  })
+
+  it('disabling persists the choice and drops in-flight browse state', async () => {
+    browseBackward(SESSION_A, 'draft', HISTORY)
+
+    expect(isBrowsingHistory(SESSION_A)).toBe(true)
+
+    setHistoryArrowsEnabled(false)
+
+    expect($historyArrowsEnabled.get()).toBe(false)
+    expect($perSessionBrowse.get()).toEqual({})
+
+    // Round-trip through a reload instead of pinning the stored string, so the
+    // test checks the choice survived without freezing persistBoolean's format.
+    vi.resetModules()
+    const reloaded = await import('./composer-input-history')
+
+    expect(reloaded.$historyArrowsEnabled.get()).toBe(false)
+  })
+
+  it('re-enabling persists the choice across a reload', async () => {
+    setHistoryArrowsEnabled(false)
+    setHistoryArrowsEnabled(true)
+
+    vi.resetModules()
+    const reloaded = await import('./composer-input-history')
+
+    expect(reloaded.$historyArrowsEnabled.get()).toBe(true)
+  })
+
+  it('follows a sibling window toggling the preference', async () => {
+    // Fresh module seeded while the key is absent → atom starts on, like a
+    // window that opened before the sibling's Settings toggle.
+    vi.resetModules()
+    const reloaded = await import('./composer-input-history')
+
+    expect(reloaded.$historyArrowsEnabled.get()).toBe(true)
+
+    // The sibling's write lands first; the storage event fires after it.
+    window.localStorage.setItem(ARROWS_KEY, 'false')
+    window.dispatchEvent(new StorageEvent('storage', { key: ARROWS_KEY }))
+
+    expect(reloaded.$historyArrowsEnabled.get()).toBe(false)
+
+    // Removal falls back to the default (on).
+    window.localStorage.removeItem(ARROWS_KEY)
+    window.dispatchEvent(new StorageEvent('storage', { key: ARROWS_KEY }))
+
+    expect(reloaded.$historyArrowsEnabled.get()).toBe(true)
+  })
+
+  it('a sibling disable also drops the passive window browse state', async () => {
+    // Same fresh-module setup as the sibling case: the listener lives on this
+    // module instance, so the browse state must be seeded on it too — the
+    // top-level import's atom is a different instance after resetModules.
+    vi.resetModules()
+    const reloaded = await import('./composer-input-history')
+
+    reloaded.browseBackward(SESSION_A, 'draft', HISTORY)
+    expect(reloaded.isBrowsingHistory(SESSION_A)).toBe(true)
+
+    window.localStorage.setItem(ARROWS_KEY, 'false')
+    window.dispatchEvent(new StorageEvent('storage', { key: ARROWS_KEY }))
+
+    expect(reloaded.$historyArrowsEnabled.get()).toBe(false)
+    // use-composer-draft skips its stash reads while a cursor is live, so a
+    // passive window that kept browsing would stop stashing new drafts.
+    expect(reloaded.$perSessionBrowse.get()).toEqual({})
+  })
+
+  it('reads a stored false back as off after a reload', async () => {
+    window.localStorage.setItem(ARROWS_KEY, 'false')
+    vi.resetModules()
+
+    const reloaded = await import('./composer-input-history')
+
+    expect(reloaded.$historyArrowsEnabled.get()).toBe(false)
   })
 })

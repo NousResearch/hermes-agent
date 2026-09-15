@@ -10,6 +10,7 @@ import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
+import { $historyArrowsEnabled, setHistoryArrowsEnabled } from '@/store/composer-input-history'
 import { confirm } from '@/store/confirm'
 import {
   $dataUrlReadMaxMb,
@@ -93,6 +94,7 @@ function ConfigSettingsInner({
   const c = t.settings.config
   const keepAwake = useStore($keepAwake)
   const disableF12 = useStore($disableF12)
+  const historyArrowsEnabled = useStore($historyArrowsEnabled)
   // The editable draft is local (debounced autosave watches it), but it's seeded
   // from — and saved back through — the shared config cache, so edits are visible
   // in the MCP/model surfaces and reopening the page doesn't reload-flash.
@@ -411,10 +413,19 @@ function ConfigSettingsInner({
           <QuickEntrySettings />
         </>
       )}
-      {/* Device-local attach/preview byte cap (main-process IPC guard). Chat is
-          where image-attachment behavior already lives, so this sits above the
-          schema fields for that section. */}
-      {activeSectionId === 'chat' ? <AttachmentSizeSetting /> : null}
+      {/* Device-local preferences for the chat surface, not config.yaml: the
+          arrow-recall switch and the attach/preview cap. */}
+      {activeSectionId === 'chat' ? (
+        <>
+          <ToggleRow
+            checked={historyArrowsEnabled}
+            description={c.historyArrowsDesc}
+            label={c.historyArrowsTitle}
+            onChange={setHistoryArrowsEnabled}
+          />
+          <AttachmentSizeSetting />
+        </>
+      ) : null}
       {visibleFields.length === 0 && activeSectionId !== 'chat' ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : visibleFields.length === 0 ? null : (

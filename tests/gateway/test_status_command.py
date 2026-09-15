@@ -245,6 +245,75 @@ async def test_status_command_prefers_rehydrated_session_model_override(tmp_path
         db.close()
 
 
+def _runner_with_session_override(override: dict, *, last_prompt_tokens: int):
+    """Runner whose session has a committed /model override but no resident agent (no compressor)."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    session_entry.last_prompt_tokens = last_prompt_tokens
+    runner = _make_runner(session_entry)
+    runner._session_state(session_entry.session_key).conversation.model_override = override
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_status_command_resolves_window_of_session_only_model_switch():
+    """After a session-only /model switch with no turn yet, /status must show used / window for the
+    switched-to route (looked up against THAT route's endpoint, and never the default route's
+    ``model.context_length`` pin) instead of the occupancy-only line (#111436)."""
+    override = {"model": "kimi-k3", "provider": "kimi-coding",
+                "base_url": "https://api.kimi.com/coding", "api_key": "sk-override"}
+    runner = _runner_with_session_override(override, last_prompt_tokens=79_455)
+    config = {"model": {"default": "default-model", "provider": "openrouter", "context_length": 80_000}}
+
+    with patch("gateway.run._load_gateway_config", return_value=config), patch(
+        "gateway.run._resolve_runtime_agent_kwargs"
+    ) as default_runtime, patch(
+        "agent.model_metadata.get_model_context_length", return_value=1_048_576
+    ) as lookup:
+        result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `kimi-k3` (kimi-coding)" in result
+    assert "**Context:** 79,455 / 1,048,576 (8%)" in result
+    assert "80,000" not in result
+    default_runtime.assert_not_called()
+    kwargs = lookup.call_args.kwargs
+    assert (kwargs["base_url"], kwargs["api_key"], kwargs["provider"]) == (
+        override["base_url"], override["api_key"], "kimi-coding")
+    assert kwargs["config_context_length"] is None
+
+
+@pytest.mark.asyncio
+async def test_status_command_keeps_occupancy_only_for_unknown_model_window():
+    """A model the resolver cannot size falls to DEFAULT_FALLBACK_CONTEXT; /status must not present
+    that invented number as the window (a catalog-listed model of the same size still counts)."""
+    from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
+
+    runner = _runner_with_session_override(
+        {"model": "proxy-mystery-model", "provider": "custom:proxy", "base_url": "http://127.0.0.1:1/v1"},
+        last_prompt_tokens=4_321,
+    )
+    with patch("gateway.run._load_gateway_config", return_value={}), patch(
+        "agent.model_metadata.get_model_context_length", return_value=DEFAULT_FALLBACK_CONTEXT
+    ):
+        result = await runner._handle_message(_make_event("/status"))
+    assert "**Context:** ~4,321 tokens" in result
+    assert f"{DEFAULT_FALLBACK_CONTEXT:,}" not in result
+
+    runner = _runner_with_session_override(
+        {"model": "grok-4", "provider": "xai", "base_url": ""}, last_prompt_tokens=4_321)
+    with patch("gateway.run._load_gateway_config", return_value={}), patch(
+        "agent.model_metadata.get_model_context_length", return_value=DEFAULT_FALLBACK_CONTEXT
+    ):
+        result = await runner._handle_message(_make_event("/status"))
+    assert f"**Context:** 4,321 / {DEFAULT_FALLBACK_CONTEXT:,} (2%)" in result
+
+
 @pytest.mark.asyncio
 async def test_agents_command_reports_active_agents_and_processes(monkeypatch):
     session_key = build_session_key(_make_source())

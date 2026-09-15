@@ -280,6 +280,41 @@ test('host-target: host build/Release IS staged for a matching target', () => {
 })
 
 test.skipIf(process.platform === 'win32')(
+  'staging normalizes owner-only source permissions to world-readable (regression: EACCES on install as another user)',
+  () => {
+    const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+    try {
+      const srcRoot = join(tmp, 'node-pty')
+      const destRoot = join(tmp, 'dest')
+
+      makeFakeNodePty(srcRoot, { prebuildPlatform: process.platform, prebuildArch: process.arch })
+      // Simulate a source tree extracted with a restrictive umask (e.g. npm
+      // install under CI, or dpkg-deb running as root) — every staged file
+      // is owner-only. A build produced from this tree must never ship
+      // files a different runtime user (the actual desktop install) can't
+      // read, or Electron fails at startup with a misleading "Cannot find
+      // package" ESM resolution error.
+      fs.chmodSync(join(srcRoot, 'package.json'), 0o600)
+      fs.chmodSync(join(srcRoot, 'lib', 'index.js'), 0o600)
+      const prebuildFile = join(srcRoot, 'prebuilds', `${process.platform}-${process.arch}`, 'pty.node')
+      fs.chmodSync(prebuildFile, 0o600)
+
+      stageNodePtyInto(srcRoot, destRoot, { platform: process.platform, arch: process.arch })
+
+      assert.equal(fs.statSync(join(destRoot, 'package.json')).mode & 0o777, 0o644)
+      assert.equal(fs.statSync(join(destRoot, 'lib', 'index.js')).mode & 0o777, 0o644)
+      assert.equal(
+        fs.statSync(join(destRoot, 'prebuilds', `${process.platform}-${process.arch}`, 'pty.node')).mode & 0o777,
+        0o644
+      )
+      assert.equal(fs.statSync(destRoot).mode & 0o777, 0o755)
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+)
+
+test.skipIf(process.platform === 'win32')(
   'host-target: staged node-pty resolves an already-unpacked helper and preserves executable helpers',
   async () => {
     const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))

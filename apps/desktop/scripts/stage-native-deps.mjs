@@ -20,6 +20,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync
 } from 'node:fs'
 import { spawnSync } from 'node:child_process'
@@ -31,6 +32,39 @@ const require = createRequire(import.meta.url)
 
 function makeExecutable(filePath) {
   chmodSync(filePath, 0o755)
+}
+
+/**
+ * Force sane, world-readable permissions on everything staged under `root`.
+ *
+ * `cpSync` preserves the source file's mode bits by default. node-pty's
+ * npm-published tarball (and get-windows') can legitimately land on disk
+ * with owner-only permissions (e.g. `600`/`700`) depending on the umask of
+ * whatever process extracted it — npm install, a CI runner, or dpkg-deb
+ * building the Linux package as root under a restrictive umask. Staging
+ * those files verbatim ships an Electron app that can start under the
+ * builder's user but throws `Cannot find package 'node-pty'` (ENOENT-style
+ * ESM resolution failure — really EACCES misreported) the moment it runs as
+ * anyone else, e.g. a normal desktop install running as the logged-in user.
+ *
+ * Directories and already-executable files get `755` (traversable /
+ * runnable by everyone); every other file gets `644` (readable by
+ * everyone). This runs unconditionally after staging, so the staged output
+ * is byte-for-byte reproducible in content but never permission-locked to
+ * whichever account happened to build it.
+ */
+function normalizePermissions(root) {
+  if (!existsSync(root)) return
+  const stat = statSync(root)
+  if (stat.isDirectory()) {
+    chmodSync(root, 0o755)
+    for (const entry of readdirSync(root)) {
+      normalizePermissions(join(root, entry))
+    }
+    return
+  }
+  const isExecutable = (stat.mode & 0o111) !== 0
+  chmodSync(root, isExecutable ? 0o755 : 0o644)
 }
 
 function patchUnixTerminalAsarPaths(destRoot) {
@@ -339,6 +373,12 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
   // Validate every staged .node binary matches the target platform.
   validateStagedBinaries(destRoot, platform)
 
+  // Fix up permissions last: some copies above (build/Release, prebuilds)
+  // may run after this point on the electron-rebuild fallback path, but
+  // those are host-only rebuild artifacts read back for verification, not
+  // shipped structure. Everything actually staged is normalized here.
+  normalizePermissions(destRoot)
+
   console.log(`[stage-native-deps] staged node-pty (${platform}-${arch}) -> ${destRoot}`)
   return destRoot
 }
@@ -539,6 +579,8 @@ export function stageGetWindowsInto(
       }
     }
   }
+
+  normalizePermissions(destRoot)
 
   console.log(`[stage-native-deps] staged get-windows (${platform}) -> ${destRoot}`)
   return destRoot

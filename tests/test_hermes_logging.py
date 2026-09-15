@@ -604,6 +604,23 @@ class TestExternalRotationRecovery:
         assert "AFTER rotation" not in rotated.read_text()
 
 
+def test_eio_from_file_handler_is_suppressed(tmp_path, capsys):
+    """An unavailable log destination must not print a traceback per record."""
+    handler = hermes_logging._ManagedRotatingFileHandler(
+        str(tmp_path / "agent.log"), maxBytes=1024, backupCount=1, encoding="utf-8",
+    )
+    record = logging.LogRecord("test.eio", logging.INFO, __file__, 0, "message", (), None)
+    try:
+        try:
+            raise OSError(5, "Input/output error")
+        except OSError:
+            handler.handleError(record)
+
+        assert "--- Logging error ---" not in capsys.readouterr().err
+    finally:
+        handler.close()
+
+
 class TestSafeStderr:
     """Tests for _safe_stderr() — Unicode tolerance on Windows console."""
 
@@ -685,4 +702,3 @@ class TestAsyncQueueLogging:
             "agent.log" in getattr(h, "baseFilename", "")
             for h in hermes_logging._queued_file_handlers
         )
-

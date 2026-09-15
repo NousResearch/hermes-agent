@@ -81,6 +81,14 @@ def _is_windows_concurrent_log_lock_timeout(exc: BaseException | None) -> bool:
     )
 
 
+def _is_unavailable_log_stream(exc: BaseException | None) -> bool:
+    """True when a file handler lost its backing stream during teardown or I/O."""
+    return (
+        (isinstance(exc, OSError) and exc.errno == 5)
+        or (isinstance(exc, ValueError) and "closed file" in str(exc).lower())
+    )
+
+
 # Third-party loggers that are noisy at DEBUG/INFO level.
 _NOISY_LOGGERS = (
     "openai", "openai._base_client", "httpx", "httpcore", "asyncio", "hpack", "hpack.hpack",
@@ -324,8 +332,18 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         silence it before stdlib prints to stderr (which the Desktop slash-worker
         captures into chat output).
         """
-        if not _is_windows_concurrent_log_lock_timeout(sys.exc_info()[1]):
-            super().handleError(record)
+        exc = sys.exc_info()[1]
+        if _is_windows_concurrent_log_lock_timeout(exc):
+            return
+        if _is_unavailable_log_stream(exc):
+            # The QueueListener must not turn a transient filesystem failure
+            # into a traceback for every queued record. Drop the stale stream;
+            # the next emit will reopen it if the destination has recovered.
+            if self.stream is not None:
+                _quietly(self.stream.close)
+            self.stream = None  # type: ignore[assignment]
+            return
+        super().handleError(record)
 
     def _open(self):
         stream = super()._open()

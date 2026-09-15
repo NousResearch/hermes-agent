@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 from hermes_constants import venv_python_path
+from hermes_cli._subprocess_compat import bounded_probe_run
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -83,14 +84,15 @@ def _critical_module_import_failures(
             venv_python = venv_python_path(Path(root) / "venv", windows=_m()._is_windows())
             if venv_python.exists():
                 interpreter = str(venv_python)
-        result = subprocess.run(
-            [interpreter, "-c", probe], cwd=str(root), capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=120)
-    except subprocess.TimeoutExpired:
-        return _probe_failure("TimeoutExpired", "timed out before reporting import health")
+        result = bounded_probe_run(
+            [interpreter, "-c", probe], timeout=120, cwd=str(root),
+        )
     except (OSError, subprocess.SubprocessError):
-        # Can't run the probe — don't block the update on our own tooling.
+        # Keep this guard advisory: a broken probe runner cannot make an otherwise
+        # successful update fail.
         return {}
+    if result is None:
+        return _probe_failure("TimeoutExpired", "timed out before reporting import health")
     output = result.stdout or ""
     if marker not in output:
         return _probe_failure(

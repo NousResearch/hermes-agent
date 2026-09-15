@@ -17,6 +17,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from tools.code_kernel_remote import (
+    _REGISTRY,
     _REMOTE_KERNELS,
     RemoteKernel,
     execute_in_remote_kernel,
@@ -278,8 +279,14 @@ class TestIdleReapAndCapEviction(RemoteKernelBase):
         with patch("tools.code_kernel._lifecycle_limits", return_value=(1, 1800)):
             worker = threading.Thread(target=_run, args=(busy_env,), kwargs={"task": "busy"})
             worker.start()
-            while not any(k.attached for k in _REMOTE_KERNELS.values()):
-                pass
+            # The worker publishes and updates the registry under its lock;
+            # observe it under the same lock so this synchronization probe
+            # cannot race a concurrent insert and raise ``dictionary changed
+            # size during iteration``.
+            while True:
+                with _REGISTRY.lock:
+                    if any(k.attached for k in _REMOTE_KERNELS.values()):
+                        break
             env = ScriptedEnv(_spawn_ok_handlers([_cell()]))
             _run(env, task="settled")
             owners = {key[0] for key in _REMOTE_KERNELS}

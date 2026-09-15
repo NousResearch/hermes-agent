@@ -644,8 +644,7 @@ def cmd_mcp_add(args):
     try:
         tools = _probe_single_server(name, server_config)
     except Exception as exc:
-        _error(f"Failed to connect: {_probe_failure_reason(exc)}")
-        _info(_probe_failure_next_step(name, exc))
+        _error(f"Failed to connect: {redact_mcp_probe_text(exc)}")
         if _confirm("Save config anyway (you can test later)?", default=False):
             server_config["enabled"] = False
             if _save_mcp_server(name, server_config):
@@ -739,31 +738,12 @@ def cmd_mcp_list(args=None):
     print()
 
 
-def _probe_failure_reason(exc: BaseException) -> str:
-    """Plain reason for a failed probe: ``_format_connect_error`` unwraps ExceptionGroups and names a
-    missing executable; the result is redacted like every other probe string."""
-    from tools.mcp_tool_errors import _format_connect_error
-    return redact_mcp_probe_text(_format_connect_error(exc))
-
-
-def _probe_failure_next_step(name: str, exc: BaseException) -> str:
-    """The one command that fixes the common probe failures (sign-in, missing command, everything else)."""
-    from tools.mcp_tool_errors import _format_connect_error, _is_auth_error, _unwrap_exception_group
-    root = _unwrap_exception_group(exc)
-    if _is_auth_error(root) or getattr(getattr(root, "response", None), "status_code", None) in (401, 403):
-        return f"The server rejected the sign-in. Run: hermes mcp login {name}"
-    if "missing executable" in _format_connect_error(exc):
-        return (f"Install that command, or set mcp_servers.{name}.command in {display_hermes_home()}/config.yaml "
-                "to its full path.")
-    return f"Check the server is running and the URL/command in its config, then run: hermes mcp test {name}"
-
-
 def cmd_mcp_test(args):
     """Test connection to an MCP server."""
     name = args.name
     cfg = _lookup_server(name, _get_mcp_servers(), "Available")
     if cfg is None:
-        return
+        return 1
     print()
     print(color(f"  Testing '{name}'...", Colors.CYAN))
     if "url" in cfg:
@@ -787,16 +767,15 @@ def cmd_mcp_test(args):
     try:
         tools = _probe_single_server(name, cfg)
     except Exception as exc:
-        elapsed = time.monotonic() - start
-        _error(f"Connection failed ({elapsed:.1f}s): {_probe_failure_reason(exc)}")
-        _info(_probe_failure_next_step(name, exc))
-        return
+        _error(f"Connection failed ({(time.monotonic() - start) * 1000:.0f}ms): {redact_mcp_probe_text(exc)}")
+        return 1
     _success(f"Connected ({(time.monotonic() - start) * 1000:.0f}ms)")
     _success(f"Tools discovered: {len(tools)}")
     if tools:
         print()
         _print_tools(tools, 36, 55)
     print()
+    return 0
 
 
 def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = None) -> bool:
@@ -1080,8 +1059,7 @@ def mcp_command(args):
         "config": cmd_mcp_configure, "login": cmd_mcp_login, "reauth": cmd_mcp_reauth,
     }.get(action)
     if handler:
-        handler(args)
-        return
+        return handler(args)
     # No subcommand — drop the user into the catalog picker (same UX as `hermes plugin`).
     from hermes_cli.mcp_picker import run_picker
     run_picker()

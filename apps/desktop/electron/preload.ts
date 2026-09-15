@@ -172,6 +172,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener('hermes:hud:game-overlay', listener)
     }
   },
+  loginStartup: {
+    getSettings: () => ipcRenderer.invoke('hermes:login-startup:get'),
+    setSettings: enabled => ipcRenderer.invoke('hermes:login-startup:set', enabled)
+  },
   // Quick Entry: the global-hotkey mini composer window. Main owns the OS
   // shortcut + the persisted preference; the quick window only captures text
   // and hands it back, and the primary renderer submits it through the normal

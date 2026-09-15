@@ -197,6 +197,7 @@ export const ja = defineLocale({
         'デスクトップバックエンドがそのリクエストを拒否しました (405 Method Not Allowed)。Hermes Desktop を再起動してください。',
       microphonePermission: 'マイクのアクセス許可が拒否されました。',
       openaiRejectedApiKey: 'OpenAI が API キーを拒否しました。',
+      openaiRejectedApiKeyWithStatus: status => `OpenAI が API キーを拒否しました (${status} invalid_api_key)。`,
       openaiTtsNeedsKey: 'OpenAI TTS には VOICE_TOOLS_OPENAI_KEY または OPENAI_API_KEY が必要です。',
       codeSkewRestartRequired:
         'アップデート後、このバックエンドは古いコードのままです。再起動して新しいコードを読み込んでください。'
@@ -393,8 +394,9 @@ export const ja = defineLocale({
           `未検出です。${name} のコマンドラインツールをインストールしてサインインすると、Hermes が自動的に検出します。`,
         disabledDesc: '検出済みですが、Hermes では無効になっています。',
         lockedDesc:
-          '検出済み。エージェントがログイン情報を必要とするときにロック解除を求めます。今すぐ解除することもできます。',
-        unlockedDesc: 'このセッションでロック解除済み。30分間操作がないか Hermes を閉じると自動的にロックされます。',
+          'この設定画面の接続ではロックされています。保存済みのログイン情報を表示するには、ここで解除してください。各チャットでは個別に解除を求めます。',
+        unlockedDesc:
+          'この設定画面の接続でのみロック解除済み。30分間使用しないか、この接続が切れるとロックされます。チャットでは個別に解除が必要です。',
         statusLocked: 'ロック中',
         statusNotDetected: '未検出',
         statusOff: 'オフ',
@@ -402,10 +404,10 @@ export const ja = defineLocale({
         unlock: 'ロック解除',
         unlocking: 'ロック解除中…',
         lock: 'ロック',
-        unlocked: name => `${name} をこのセッションでロック解除しました。`,
+        unlocked: name => `${name} をこの設定画面の接続でのみロック解除しました。`,
         unlockTitle: name => `${name} のロックを解除`,
         unlockDescription:
-          'マスターパスワードを入力してください。このマシン上のパスワードマネージャーに渡された後に破棄され、保存・記録されることも、エージェントに表示されることもありません。',
+          'このロック解除は、この設定画面の接続にのみ適用されます。各チャットでは個別に解除を求めます。マスターパスワードはパスワードマネージャーに渡された後、ローカルで破棄されます。保存・記録されることも、エージェントに表示されることもありません。',
         masterPasswordPlaceholder: 'マスターパスワード'
       }
     },
@@ -512,13 +514,6 @@ export const ja = defineLocale({
       terminalFontPlaceholder: 'MesloLGS NF または CSS フォントスタック',
       terminalFontPreview: 'グリフのプレビュー',
       terminalFontReset: '既定値を使用',
-      chatFontTitle: 'チャットフォント',
-      chatFontDesc:
-        'チャットとアプリ全体に使うインストール済みフォントを選択します。OpenDyslexic などの読みやすいフォントに便利です。空欄ならテーマのフォントを使います。',
-      chatFontPlaceholder: 'OpenDyslexic または CSS フォントスタック',
-      chatFontPreview: 'プレビュー',
-      chatFontSample: 'いろはにほへと ちりぬるを 0123456789',
-      chatFontReset: 'テーマのフォントを使用',
       translucencyTitle: 'ウィンドウの透過',
       translucencyDesc: 'テキストも含めウィンドウ全体を透過させてデスクトップを表示します。',
       translucencyGlassDesc: 'マットガラス: デスクトップが滑らかなぼかしとして透け、テキストは鮮明なまま。',
@@ -569,6 +564,11 @@ export const ja = defineLocale({
       resumeLastSessionTitle: '起動時に前回のチャットを再開',
       resumeLastSessionDesc:
         'オンの場合、コールドスタート時に直近のチャットを再び開きます。オフにすると常に新しいチャットから始まります。',
+      loginStartupTitle: 'Windows と同時に Hermes を起動',
+      loginStartupDesc:
+        'サインイン時にデスクトップアプリを最小化して開きます。保存されたプライマリプロファイルを使用します。',
+      loginStartupFailed:
+        'Windows でスタートアップを有効にできませんでした。Windows の設定でスタートアップ アプリを確認してください。',
       product: 'プロダクト',
       productDesc: '読みやすいツール活動と簡潔な要約を表示します。',
       technical: 'テクニカル',
@@ -774,7 +774,6 @@ export const ja = defineLocale({
       compression: {
         enabled: '自動圧縮',
         threshold: '圧縮しきい値',
-        codexGpt55Autoraise: 'Codex 圧縮の自動引き上げ',
         targetRatio: '圧縮目標',
         protectLastN: '保護する直近メッセージ'
       },
@@ -836,8 +835,7 @@ export const ja = defineLocale({
         engine: '長い会話がコンテキスト上限に近づいたときの管理戦略です。'
       },
       compression: {
-        enabled: '会話が大きくなったとき、古いコンテキストを要約します。',
-        codexGpt55Autoraise: '対応する ChatGPT Codex OAuth モデルの圧縮しきい値を 85% に引き上げます。'
+        enabled: '会話が大きくなったとき、古いコンテキストを要約します。'
       },
       voice: {
         autoTts: 'アシスタントの応答を自動で読み上げます。'
@@ -870,8 +868,9 @@ export const ja = defineLocale({
       checking: '確認中…',
       seeWhatsNew: '新機能を見る',
       updateNow: '今すぐ更新',
+      updateSource: '更新ソース',
       releaseNotes: 'リリースノート',
-      onLatest: '最新バージョンです。',
+      onLatest: '設定した更新ソースは最新です。',
       installing: '更新をインストール中です。',
       cantUpdate: 'このビルドはアプリ内から更新できません。',
       cantReach: '更新サーバーに接続できませんでした。',
@@ -882,6 +881,8 @@ export const ja = defineLocale({
       justNowSuffix: ' · たった今',
       automaticUpdates: '自動更新',
       automaticUpdatesDesc: 'Hermes はバックグラウンドで自動的に更新を確認し、利用可能になったら通知します。',
+      updateParked: '安全なチェックアウトを待機しています。',
+      updateParkedDesc: 'ローカル修正は保持されています。上流更新をインストールする前に確認または移動してください。',
       branchCommit: (branch, commit) => `ブランチ ${branch} · コミット ${commit}`,
       never: '未確認',
       justNow: 'たった今',
@@ -1165,9 +1166,6 @@ export const ja = defineLocale({
         mcp: { label: 'MCP', hint: 'MCP ツールルーティング' },
         title_generation: { label: 'タイトル生成', hint: 'セッションタイトル' },
         review: { label: 'レビュー', hint: '/review レビューサブエージェント' },
-        triage_specifier: { label: 'トリアージ指定', hint: 'カンバン仕様の具体化' },
-        kanban_decomposer: { label: 'カンバン分解', hint: 'タスク分解' },
-        profile_describer: { label: 'プロファイル記述', hint: 'プロファイル概要の自動生成' },
         curator: { label: 'キュレーター', hint: 'スキル使用レビュー' }
       }
     },
@@ -1218,7 +1216,9 @@ export const ja = defineLocale({
       updateAction: 'エンジンを更新',
       updating: 'エンジンを更新中…',
       upToDateTitle: 'エンジンは最新です',
-      upToDateDetail: (tag, backend) => `llama.cpp ${tag}（${backend}）で動作中——設定されたビルドです。`,
+      upToDateDetail: (tag, backend) => `llama.cpp ${tag}（${backend}）で動作中——Hermes が提供する最新ビルドです。`,
+      updateToast: next =>
+        `ローカルエンジンの新しいビルド（${next}）があります。設定 → ローカルモデル から更新できます。`,
       activeDetail: '新しいチャットはこのモデルを使用——最初のメッセージ送信時に読み込みます',
       activeNotLoaded: '最初のメッセージで読み込みます',
       loadedPill: '読み込み済み',
@@ -1429,6 +1429,7 @@ export const ja = defineLocale({
   skills: {
     tabSkills: 'スキル',
     tabToolsets: 'ツールセット',
+    tabHub: 'スキルハブ',
     tabMcp: 'MCP',
     all: 'すべて',
     searchSkills: 'スキルを検索...',
@@ -1472,6 +1473,7 @@ export const ja = defineLocale({
       bundled: '組み込み',
       hub: 'ハブ'
     },
+    provenanceSummary: (agent, bundled, hub) => `${agent} 学習済み · ${bundled} 組み込み · ${hub} ハブ`,
     emptyNoneFound: noun => `${noun} が見つかりません`,
     emptyNothingMatches: query => `「${query}」に一致するものはありません。`,
     emptyNoneAvailable: noun => `利用可能な ${noun} はまだありません。`,
@@ -1660,9 +1662,13 @@ export const ja = defineLocale({
     actionDone: '完了',
     actionFailed: '失敗',
     actionStartedWaiting: 'アクションが開始されました。ステータスを待機中...',
+    actionTimedOut: 'アクションはまだ実行中です。最終状態は最新ログで確認してください。',
     loadingStatus: 'ステータスを読み込み中...',
     recentLogs: '最近のログ',
     noLogs: 'ログはまだ読み込まれていません。',
+    allLogLevels: 'すべてのレベル',
+    noMatchingLogs: '検索に一致するログ行はありません。',
+    logTailHint: count => `選択したファイルとレベルの最新ログを最大${count}行表示しています。`,
     days: count => `${count}日`,
     statSessions: 'セッション',
     statApiCalls: 'API コール',
@@ -2646,6 +2652,7 @@ export const ja = defineLocale({
   },
 
   updates: {
+    automaticUpdatesSaveFailed: '設定の保存を確認できませんでした。もう一度お試しください。',
     stages: {
       idle: '準備中…',
       prepare: '準備中…',
@@ -3365,19 +3372,6 @@ export const ja = defineLocale({
       copyQuery: 'クエリをコピー',
       copyFile: 'ファイルをコピー',
       copyPath: 'パスをコピー',
-      failedCalls: (count: number) => `失敗したツール呼び出し: ${count}`,
-      skillActivity: {
-        loading: 'スキルを読み込み中',
-        loaded: 'スキルを読み込みました',
-        loadFailed: 'スキルの読み込みに失敗しました',
-        readingResource: 'スキルのリソースを読み込み中',
-        readResource: 'スキルのリソースを読み込みました',
-        resourceFailed: 'スキルのリソースの読み込みに失敗しました',
-        listing: 'スキル一覧を取得中',
-        listed: 'スキル一覧を取得しました',
-        listFailed: 'スキル一覧の取得に失敗しました',
-        unavailable: 'スキルの結果を取得できません'
-      },
       outputAlt: 'ツール出力',
       rawResponse: '生の応答',
       copyActivity: 'アクティビティをコピー',
@@ -3389,7 +3383,6 @@ export const ja = defineLocale({
       statusError: 'エラー',
       statusRecovered: '回復しました',
       statusDone: '完了',
-      resultUnavailable: '結果を取得できません',
       memoryWriteNoted: 'メモリへの書き込みを記録',
       actions: {
         read: '読み取り完了',
@@ -3482,8 +3475,7 @@ export const ja = defineLocale({
     secretSendFailed: 'シークレットを送信できませんでした',
     sudoTitle: '管理者パスワード',
     sudoDesc:
-      'sudo パスワードを入力する前にコマンドを確認してください。パスワードは実行するエージェントに送信され、このセッション中キャッシュされます。',
-    sudoCommandUnavailable: 'エージェントからコマンドが提供されていません。会話で確認できない場合はキャンセルしてください。',
+      'Hermes は特権コマンドを実行するために sudo パスワードが必要です。ローカルエージェントにのみ送信されます。',
     sudoPlaceholder: 'sudo パスワード',
     secretTitle: 'シークレットが必要です',
     secretDesc: 'Hermes は続行するための認証情報が必要です。',
@@ -3634,11 +3626,6 @@ export const ja = defineLocale({
       'composer-mentions': {
         title: 'ファイルとコマンド',
         text: '@ でファイルを会話に取り込み、/ でコマンドを実行できます。'
-      },
-      'local-runtime-update': {
-        title: 'ローカルエンジンの更新があります',
-        text: 'ローカルモデルを実行するエンジンを更新します。実行中のローカルリクエストが中断される場合があります。',
-        action: '今すぐ更新'
       },
       'local-setup': {
         title: 'このマシンはローカルでモデルを実行できます',

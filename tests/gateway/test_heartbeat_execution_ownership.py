@@ -13,7 +13,7 @@ from hermes_cli.heartbeat import HeartbeatState, migrate_heartbeat_to_session, s
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("boundary", ["reset", "suspend", "compression", "prepare-reset", "prepare-suspend", "unchanged"])
+@pytest.mark.parametrize("boundary", ["reset", "suspend", "compression", "prepare-reset", "prepare-suspend", "hook-reset", "unchanged"])
 async def test_admitted_heartbeat_executes_only_in_own_conversation(tmp_path, boundary):
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig()
@@ -59,17 +59,24 @@ async def test_admitted_heartbeat_executes_only_in_own_conversation(tmp_path, bo
 
     runner._hmwa_prepare_turn = prepare
     runner._run_agent = model
-    runner.hooks = SimpleNamespace(emit=AsyncMock())
+    async def hook(name, _context):
+        if boundary == "hook-reset" and name == "agent:start":
+            change()
+
+    runner.hooks = SimpleNamespace(emit=AsyncMock(side_effect=hook))
     adapter.set_message_handler(lambda event: runner._handle_message_with_agent(event, source, key, 1))
     try:
         await runner._heartbeat_poll_once({key: (source, old)})
         assert key in adapter._session_tasks  # prove admission before changing ownership
-        if not boundary.startswith("prepare-"):
+        if not boundary.startswith(("prepare-", "hook-")):
             change()
         await asyncio.gather(*adapter._background_tasks, return_exceptions=True)
         await asyncio.sleep(0)
         expected = [old + "-child"] if boundary == "compression" else [old] if boundary == "unchanged" else []
         assert executions == expected
+        if not expected:
+            hook_events = [call.args[0] for call in runner.hooks.emit.await_args_list]
+            assert hook_events.count("agent:start") == hook_events.count("agent:end")
         if boundary == "suspend":
             assert runner.session_store.peek_session_id(key) != old  # normal reset policy still runs
     finally:

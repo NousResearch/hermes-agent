@@ -67,13 +67,16 @@ describe('BrowserRealProfilePanel', () => {
       fireEvent.click(toggle)
     })
 
-    // Saves ONLY the toggled key (PUT deep-merges); the cache keeps the whole
-    // merged record so sibling browser keys survive without a refetch.
-    expect(mocks.save).toHaveBeenCalledWith({ browser: { use_real_profile: true } }, undefined)
-    expect(mocks.cache).toHaveBeenCalledWith({
-      browser: { allow_private_urls: false, use_real_profile: true },
-      model: { provider: 'nous' }
-    })
+    // Saves the WHOLE merged record with only use_real_profile added — sibling
+    // browser keys survive.
+    expect(mocks.save).toHaveBeenCalledWith(
+      {
+        browser: { allow_private_urls: false, use_real_profile: true },
+        model: { provider: 'nous' }
+      },
+      undefined
+    )
+    expect(mocks.cache).toHaveBeenCalledWith(mocks.save.mock.calls[0][0])
     expect(mocks.notify).toHaveBeenCalled()
   })
 

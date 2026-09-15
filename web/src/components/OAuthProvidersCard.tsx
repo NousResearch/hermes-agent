@@ -21,7 +21,6 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { OAuthLoginModal } from "@/components/OAuthLoginModal";
 import { useI18n } from "@/i18n";
-import { errorMessage } from "@/lib/api-error";
 
 interface Props {
   onError?: (msg: string) => void;
@@ -67,7 +66,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
     api
       .getOAuthProviders()
       .then((resp) => setProviders(resp.providers))
-      .catch((e) => onErrorRef.current?.(`Failed to load providers: ${errorMessage(e)}`))
+      .catch((e) => onErrorRef.current?.(`Failed to load providers: ${e}`))
       .finally(() => setLoading(false));
   }, []);
 
@@ -83,7 +82,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
       onSuccess?.(`${provider.name} ${t.oauth.disconnect.toLowerCase()}ed`);
       refresh();
     } catch (e) {
-      onError?.(`${t.oauth.disconnect} failed: ${errorMessage(e)}`);
+      onError?.(`${t.oauth.disconnect} failed: ${e}`);
     } finally {
       setBusyId(null);
     }

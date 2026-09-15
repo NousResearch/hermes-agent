@@ -23,7 +23,7 @@ declare global {
       // profile's backend from the pool.
       getConnection: (
         profile?: string | null,
-        opts?: { priority?: 'foreground' | 'background' }
+        opts?: { priority?: 'foreground' | 'background'; speculative?: boolean }
       ) => Promise<HermesConnection>
       // Registry-scoped backend resolution: dial (connectionId, profile). An
       // empty/local connectionId delegates to the legacy getConnection path.
@@ -31,6 +31,7 @@ declare global {
         connectionId?: null | string
         profile?: null | string
         priority?: 'foreground' | 'background'
+        speculative?: boolean
       }) => Promise<HermesConnection>
       // Registry-scoped fresh WS URL (same result contract as getGatewayWsUrl).
       getGatewayWsUrlFor?: (payload: {
@@ -166,6 +167,10 @@ declare global {
         onChanged: (callback: (state: { open: boolean; sessionId: null | string }) => void) => () => void
         onCursor: (callback: (point: { x: number; y: number } | null) => void) => () => void
         onGameOverlay: (callback: (state: { active: boolean; app: string }) => void) => () => void
+      }
+      loginStartup?: {
+        getSettings: () => Promise<{ supported: boolean; openAtLogin: boolean }>
+        setSettings: (enabled: boolean) => Promise<{ supported: boolean; openAtLogin: boolean }>
       }
       // Quick Entry: a global-hotkey mini composer window. Main owns the OS
       // shortcut registration + the persisted preference (it must restore the
@@ -368,13 +373,13 @@ declare global {
       /** One-shot loopback callback listener for MCP OAuth against remote
        *  backends (electron/mcp-oauth-callback-ipc.ts): bind on THIS machine,
        *  pass redirectUri as client_redirect_uri to mcp.servers.oauth.start,
-       *  await the provider redirect, relay code/state/iss via oauth.callback. */
+       *  await the provider redirect, relay code/state via oauth.callback. */
       mcpOauth?: {
         listen: () => Promise<{ id: string; redirectUri: string }>
         wait: (
           id: string,
           timeoutMs?: number
-        ) => Promise<{ code: null | string; error: null | string; iss: null | string; state: null | string }>
+        ) => Promise<{ code: null | string; error: null | string; state: null | string }>
         cancel: (id: string) => Promise<boolean>
       }
       openPreviewInBrowser?: (url: string) => Promise<void>
@@ -698,6 +703,8 @@ export interface DesktopUpdateCommit {
 
 export interface DesktopUpdateStatus {
   supported: boolean
+  /** Sanitized GitHub owner/repository for the configured origin, never a credential-bearing URL. */
+  repository?: string
   updateAvailable?: boolean
   branch?: string
   currentBranch?: string

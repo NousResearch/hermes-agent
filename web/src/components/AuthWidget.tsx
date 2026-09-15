@@ -25,13 +25,8 @@
 
 import { useEffect, useState } from "react";
 import { api, type AuthMeResponse } from "@/lib/api";
-import { ApiError } from "@/lib/api-error";
 import { cn } from "@/lib/utils";
 import { LogOut } from "lucide-react";
-
-/** Shown when /api/auth/me fails for a reason other than "not gated". */
-export const AUTH_STATUS_UNAVAILABLE_MESSAGE =
-  "Could not check who is signed in. Reload the page; if it persists, sign in again.";
 
 interface AuthWidgetProps {
   className?: string;
@@ -67,15 +62,17 @@ export function AuthWidget({ className }: AuthWidgetProps) {
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        // 401/403 from /api/auth/me means the gate isn't engaged in this
-        // process (loopback mode) — render nothing. The global 401 handler
-        // only redirects on the structured envelope, so a plain 401 from
-        // /api/auth/me with no envelope bubbles up here as an ApiError.
-        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        // 401 from /api/auth/me means the gate isn't engaged in this
+        // process (loopback mode) — render nothing. fetchJSON throws an
+        // Error with the status code as a prefix; the global 401
+        // handler only redirects on the structured envelope, so a plain
+        // 401 from /api/auth/me with no envelope bubbles up here.
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.startsWith("401:") || msg.startsWith("403:")) {
           setHidden(true);
           return;
         }
-        setError(AUTH_STATUS_UNAVAILABLE_MESSAGE);
+        setError("auth status unavailable");
       });
     return () => {
       cancelled = true;
@@ -91,19 +88,11 @@ export function AuthWidget({ className }: AuthWidgetProps) {
     return (
       <div
         className={cn(
-          "flex flex-col gap-1 px-5 py-2 text-[0.65rem] tracking-[0.05em] text-muted-foreground/70",
+          "px-5 py-2 text-[0.65rem] tracking-[0.05em] text-muted-foreground/70",
           className,
         )}
-        role="status"
       >
-        <span>{error}</span>
-        <button
-          type="button"
-          onClick={() => window.location.reload()}
-          className="self-start underline underline-offset-2 hover:text-foreground"
-        >
-          Reload page
-        </button>
+        {error}
       </div>
     );
   }

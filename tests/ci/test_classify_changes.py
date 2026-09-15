@@ -101,12 +101,8 @@ CASES = {
     "frontend → no uv_lock": (["apps/desktop/src/store/profile.ts"], _lanes(frontend=True)),
     # Cross-language contract JSON under apps/: the pytest that pins it against
     # the Python side must run even when nothing else in the PR is Python.
-    "generated gateway contract → python + frontend": (
-        ["apps/shared/src/gateway-contract.generated.ts"],
-        _lanes(python=True, frontend=True),
-    ),
-    "gateway OpenRPC document → python + frontend": (
-        ["apps/shared/src/gateway-contract.openrpc.json"],
+    "gateway-events contract JSON → python + frontend": (
+        ["apps/shared/src/gateway-events.json"],
         _lanes(python=True, frontend=True),
     ),
     "desktop slash-registry JSON → python + frontend": (
@@ -362,8 +358,9 @@ def _write_event(tmp_path, number: int | None = 88442) -> Path:
     return path
 
 
-def test_pull_request_changed_files_skips_non_pr_events(monkeypatch):
-    monkeypatch.setenv("EVENT_NAME", "push")
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+def test_pull_request_changed_files_skips_non_pr_events(monkeypatch, event):
+    monkeypatch.setenv("EVENT_NAME", event)
     monkeypatch.setenv("REPO", "NousResearch/hermes-agent")
     assert pull_request_changed_files() == []
 
@@ -432,3 +429,27 @@ def test_main_still_fail_opens_when_recovery_is_empty(monkeypatch, capsys):
     assert main() == 0
     out = capsys.readouterr().out
     assert "ci_review=true" in out
+
+
+def test_manual_fork_run_emits_full_validation_without_pr_lookup(
+    tmp_path, monkeypatch, capsys
+):
+    """A manual run has no PR diff, but must still validate every default lane."""
+    monkeypatch.setenv("EVENT_NAME", "workflow_dispatch")
+    monkeypatch.setenv("REPO", "joojalre/hermes-agent-almorshednet")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_event(tmp_path, number=None)))
+    output = tmp_path / "github-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\n"))
+
+    def unexpected_pr_lookup(*args, **kwargs):
+        pytest.fail("workflow_dispatch must not query a nonexistent pull request")
+
+    monkeypatch.setattr(_mod.subprocess, "run", unexpected_pr_lookup)
+    assert main() == 0
+    emitted = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    assert emitted == {
+        **{key: str(value).lower() for key, value in DEFAULT.items()},
+        "ci_review_files": "[]",
+    }
+    assert capsys.readouterr().out == output.read_text()

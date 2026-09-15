@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -52,18 +52,20 @@ async def _hold_typing(_chat_id, interval=2.0, metadata=None, stop_event=None):
     await (stop_event.wait() if stop_event is not None else asyncio.Event().wait())
 
 
-def _docker_profile(home: Path, mount: Path) -> None:
+def _docker_profile(home: Path, mount: Path, *, forward_slashes: bool = False) -> None:
     mount.mkdir(parents=True)
+    host = mount.as_posix() if forward_slashes else str(mount)
     (home / "config.yaml").write_text(json.dumps(
-        {"terminal": {"backend": "docker", "docker_volumes": [f"{mount}:/output"]}}), encoding="utf-8")
+        {"terminal": {"backend": "docker", "docker_volumes": [f"{host}:/output"]}}), encoding="utf-8")
 
 
 @pytest.mark.asyncio
-async def test_secondary_docker_media_resolves_via_its_own_mounts(tmp_path, monkeypatch):
+@pytest.mark.parametrize("forward_slashes", [False, True])
+async def test_secondary_docker_media_resolves_via_its_own_mounts(tmp_path, monkeypatch, forward_slashes):
     root = tmp_path / "hermes"
     default_out, public_out = root / "cache" / "output", root / "profiles" / "public" / "cache" / "output"
-    _docker_profile(root, default_out)
-    _docker_profile(root / "profiles" / "public", public_out)
+    _docker_profile(root, default_out, forward_slashes=forward_slashes)
+    _docker_profile(root / "profiles" / "public", public_out, forward_slashes=forward_slashes)
     # The launch process carries the DEFAULT profile's bridged terminal env.
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setenv("TERMINAL_ENV", "docker")
@@ -89,3 +91,66 @@ async def test_secondary_docker_media_resolves_via_its_own_mounts(tmp_path, monk
 
     assert len(adapter.images) == 1
     assert b"public" in adapter.images[0]
+
+
+@pytest.mark.parametrize("forward_slashes", [False, True])
+def test_mount_parser_separates_host_drive_from_posix_container(tmp_path, monkeypatch, forward_slashes):
+    from gateway.platforms import base
+
+    host = tmp_path.as_posix() if forward_slashes else str(tmp_path)
+    raw = json.dumps([f"{host}:/output:ro", "named-volume:/ignored", "relative:/ignored"])
+    monkeypatch.setattr(base, "_tenv", lambda name, default="": raw if name == "TERMINAL_DOCKER_VOLUMES" else default)
+
+    mounts = base._parse_docker_volume_mounts()
+
+    assert mounts == [(tmp_path.resolve(), PurePosixPath("/output"))]
+    assert mounts[0][1].is_absolute()
+
+
+def test_container_parent_traversal_cannot_escape_mapped_host(tmp_path, monkeypatch):
+    from gateway.platforms import base
+
+    mount = tmp_path / "output"
+    mount.mkdir()
+    (tmp_path / "outside.png").write_bytes(b"not an allowed mapped file")
+    monkeypatch.setattr(base, "_parse_docker_volume_mounts", lambda: [(mount, PurePosixPath("/output"))])
+    monkeypatch.setattr(base, "_cache_dir_container_mounts", lambda: [])
+    monkeypatch.setattr(base, "_docker_persistent_sandbox_roots", lambda *args: [])
+    monkeypatch.setattr(base, "_default_docker_workspace_host_roots", lambda *args: [])
+
+    assert base._translate_docker_container_media_path(
+        PurePosixPath("/output/../outside.png")
+    ) is None
+
+
+def test_native_absolute_host_media_still_delivers(tmp_path, monkeypatch):
+    from gateway.platforms import base
+
+    media = tmp_path / "host-image.png"
+    media.write_bytes(b"host image")
+    monkeypatch.setattr(base, "_parse_docker_volume_mounts", lambda: [])
+    monkeypatch.setattr(base, "_cache_dir_container_mounts", lambda: [])
+    monkeypatch.setattr(base, "_docker_persistent_sandbox_roots", lambda *args: [])
+    monkeypatch.setattr(base, "_default_docker_workspace_host_roots", lambda *args: [])
+    monkeypatch.setattr(base, "_media_delivery_allowed_roots", lambda: [tmp_path])
+
+    assert base.validate_media_delivery_path(str(media)) == str(media.resolve())
+
+
+@pytest.mark.windows_only
+def test_unmapped_container_path_never_uses_host_current_drive(tmp_path, monkeypatch):
+    from gateway.platforms import base
+
+    media = tmp_path / "must-not-be-found.png"
+    media.write_bytes(b"host file outside any container mount")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(base, "_parse_docker_volume_mounts", lambda: [])
+    monkeypatch.setattr(base, "_cache_dir_container_mounts", lambda: [])
+    monkeypatch.setattr(base, "_docker_persistent_sandbox_roots", lambda *args: [])
+    monkeypatch.setattr(base, "_default_docker_workspace_host_roots", lambda *args: [])
+    monkeypatch.setattr(base, "_media_delivery_allowed_roots", lambda: [tmp_path])
+    drive_relative = media.as_posix()[len(media.drive):]
+    assert not Path(drive_relative).is_absolute()
+    assert Path(drive_relative).is_file()  # Windows would otherwise use the current drive.
+
+    assert base.validate_media_delivery_path(drive_relative) is None

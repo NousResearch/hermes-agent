@@ -25,7 +25,7 @@ jobs:
     outputs:
       review_status: ${{ steps.review-status.outputs.review_status }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # ── System deps for Electron on headless Ubuntu ───────────────────
       # Electron needs GTK, NSS,atk, etc. even under xvfb. Playwright's
@@ -127,7 +127,7 @@ jobs:
       # ── Save updated baselines to cache (main only) ───────────────────
       - name: Save updated baselines to cache
         if: github.ref_name == 'main' && always()
-        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: apps/desktop/e2e/*-snapshots
           key: visual-baselines-main

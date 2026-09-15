@@ -322,7 +322,7 @@ def test_stalled_runner_is_interrupted_then_finalized(monkeypatch):
         assert evt["status"] == "stalled"
         assert evt["delegation_id"] == res["delegation_id"]
         assert evt["api_calls"] == 0
-        assert "stopped responding" in evt["error"]  # status carries "stalled"; the text is for the user
+        assert "stalled" in evt["error"]
         # Interrupt was requested BEFORE force-finalization (grace window).
         assert interrupted["count"] >= 1
         assert ad.active_count() == 0

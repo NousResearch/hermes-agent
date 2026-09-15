@@ -2,6 +2,7 @@ import { capabilityScoped } from '@/api/client'
 import { addMcpServer, getMcpCatalog, listMcpServers, removeMcpServer } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { completeMcpDesktopOAuth, McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
+import { MCP_DIRECTORY } from '@/lib/mcp-directory'
 import { prettyName } from '@/lib/text'
 import { type ComposerSuggestion, registerDraftProvider } from '@/store/composer-suggestions'
 import { $gateway } from '@/store/gateway'
@@ -14,7 +15,9 @@ import { notifyError } from '@/store/notifications'
  * metadata (`GET /api/mcp/catalog` — the same reviewed manifests behind
  * `hermes mcp catalog`), by whole-word keyword and pasted-link host suffix,
  * excluding servers already configured. The catalog is the single source of
- * truth for suggestible servers. A suggestion's invoke runs the whole
+ * truth for suggestible servers; the renderer-local `lib/mcp-directory.ts`
+ * remains only as a compatibility rung for older backends whose catalog
+ * entries carry no `suggest` field. A suggestion's invoke runs the whole
  * connect: validated config write → browser OAuth → live tool reload, with
  * rollback on cancel/failure so a decline never strands a half-configured
  * server.
@@ -37,7 +40,8 @@ interface SuggestibleServer {
   url: string
 }
 
-// Suggestible servers from the catalog (entries with `suggest` + an http url).
+// Suggestible servers from the catalog (entries with `suggest` + an http
+// url), or the static directory on backends that predate `suggest`.
 let suggestible: SuggestibleServer[] | null = null
 let suggestibleAt = 0
 
@@ -80,7 +84,18 @@ async function loadSuggestible(): Promise<SuggestibleServer[]> {
       url: entry.url!
     }))
 
-  suggestible = fromCatalog
+  // Compatibility rung: an older backend serves the catalog without any
+  // `suggest` metadata. Fall back to the static directory rather than
+  // silently losing the feature (remove once the backend contract bumps).
+  suggestible =
+    fromCatalog.length > 0
+      ? fromCatalog
+      : MCP_DIRECTORY.map(entry => ({
+          hosts: entry.hosts,
+          keywords: entry.keywords,
+          server: entry.name,
+          url: entry.url
+        }))
   suggestibleAt = Date.now()
 
   return suggestible

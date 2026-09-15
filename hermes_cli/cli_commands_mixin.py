@@ -357,7 +357,7 @@ def _without_session_meta(messages) -> list:
 
 def _db_unavailable_line() -> str:
     from hermes_state import format_session_db_unavailable
-    return f"  {format_session_db_unavailable(details=True)}"
+    return f"  {format_session_db_unavailable()}"
 
 
 def _print_side_result_panel(cli, *, header_lines, body, title_suffix, empty_note, console=None) -> None:
@@ -1999,8 +1999,9 @@ class CLICommandsMixin:
                 _print_side_result_panel(self, header_lines=header_lines, body=body,
                                          title_suffix=title_suffix, empty_note=empty_note,
                                          console=console)
-                if bell:
-                    self._ring_bell(context=f"{fail_label} complete")
+                if bell and self.bell_on_complete:
+                    sys.stdout.write("\a")
+                    sys.stdout.flush()
             except Exception as e:
                 _refresh_tui_before_print(self)
                 line = f"  ❌ {fail_label} failed: {e}"

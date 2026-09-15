@@ -819,18 +819,6 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_fallback is False
 
-    def test_opencode_zen_wrapped_replay_rejection_reaches_replay_strip(self):
-        """OpenCode Zen wraps the rejected encrypted replay in a generic 400."""
-        e = MockAPIError(
-            "HTTP 400: Error from provider (Console): Upstream request failed: "
-            "[invalid_request_error] reasoning `encrypted_content` was not issued to this caller",
-            status_code=400,
-        )
-        result = classify_api_error(e, provider="opencode-zen", model="muse-spark-1.3-contributor-free")
-        assert result.reason == FailoverReason.invalid_encrypted_content
-        assert result.retryable is True
-        assert result.should_fallback is False
-
     # ── Codex masked encrypted-reasoning replay rejection (#92353) ──
 
     _CODEX_MASKED = {"message": "Request blocked.", "type": "invalid_request_error", "param": None, "code": "invalid_prompt"}
@@ -856,20 +844,17 @@ class TestClassifyApiError:
         e = MockAPIError("Error code: 400 - " + body["message"], status_code=400, body=body)
         assert classify_api_error(e, provider=provider, model="gpt-5.5").reason == expected
 
-    @pytest.mark.parametrize(("provider", "model", "message", "code"), [
-        ("azure-foundry", "gpt-6-astra", "Conflicting authenticated continuation identities.", "invalid_value"),
-        # Custom Responses endpoint wraps the replay rejection in a generic bad_request (#95834).
-        ("custom", "gpt-5.6", "The encrypted content could not be decrypted or parsed.", "bad_request"),
-    ], ids=["azure-continuation-identities", "custom-decrypted-or-parsed"])
-    def test_message_only_replay_rejection_is_invalid_encrypted_content(self, provider, model, message, code):
-        """Endpoints whose ``code`` is generic; the message wording alone must decide."""
+    def test_azure_conflicting_continuation_identities_is_invalid_encrypted_content(self):
+        """Azure Foundry's wording for a rejected encrypted-reasoning replay (#105369); ``code`` is the
+        generic ``invalid_value``, so the message decides."""
+        message = "Conflicting authenticated continuation identities."
         e = MockAPIError(
             f"Error code: 400 - {{'error': {{'message': '{message}', 'type': 'invalid_request_error', "
-            f"'param': 'input', 'code': '{code}'}}",
+            "'param': 'input', 'code': 'invalid_value'}}",
             status_code=400,
-            body={"error": {"message": message, "type": "invalid_request_error", "param": "input", "code": code}},
+            body={"error": {"message": message, "type": "invalid_request_error", "param": "input", "code": "invalid_value"}},
         )
-        result = classify_api_error(e, provider=provider, model=model)
+        result = classify_api_error(e, provider="azure-foundry", model="gpt-6-astra")
         assert result.reason == FailoverReason.invalid_encrypted_content
         assert result.retryable is True
         assert result.should_fallback is False

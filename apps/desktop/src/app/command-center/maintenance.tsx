@@ -21,6 +21,7 @@ import {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertCircle } from '@/lib/icons'
+import { downloadGatewayMediaFile, isRemoteGateway } from '@/lib/media'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { confirm } from '@/store/confirm'
@@ -63,6 +64,49 @@ export function MaintenancePanel() {
   const [share, setShare] = useState<DebugShareResponse | null>(null)
   const [sharing, setSharing] = useState(false)
   const [error, setError] = useState('')
+
+  const openMemoryFile = useCallback(
+    async (path?: string) => {
+      if (!path) {
+        return
+      }
+
+      try {
+        // A remote gateway path does not exist on this machine. Fetch it
+        // through the authenticated bridge first, then open the saved copy.
+        let localPath = path
+
+        if (isRemoteGateway()) {
+          const result = await downloadGatewayMediaFile(path)
+
+          if (!result.saved || !result.path) {
+            return
+          }
+
+          localPath = result.path
+        }
+
+        if (!window.hermesDesktop?.openExternal) {
+          throw new Error('Desktop file opener is unavailable')
+        }
+
+        const normalized = localPath.replace(/\\/g, '/')
+
+        const encoded = normalized
+          .split('/')
+          .map(part => encodeURIComponent(part))
+          .join('/')
+
+        const url = `file://${encoded.startsWith('/') ? encoded : `/${encoded}`}`
+
+        await window.hermesDesktop.openExternal(url)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+        notifyError(err, mm.openFile)
+      }
+    },
+    [mm]
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -326,7 +370,10 @@ export function MaintenancePanel() {
             <MemoryFileRow
               busy={memoryBusy}
               label={mm.memoryFile}
+              onOpen={() => void openMemoryFile(memory.builtin_paths?.memory)}
               onReset={() => void doResetMemory('memory', mm.memoryFile)}
+              openDisabled={!memory.builtin_paths?.memory}
+              openLabel={mm.openFile}
               resetLabel={mm.resetMemory}
               size={memory.builtin_files.memory}
               sizeLabel={memory.builtin_files.memory > 0 ? formatBytes(memory.builtin_files.memory) : mm.empty}
@@ -334,7 +381,10 @@ export function MaintenancePanel() {
             <MemoryFileRow
               busy={memoryBusy}
               label={mm.userFile}
+              onOpen={() => void openMemoryFile(memory.builtin_paths?.user)}
               onReset={() => void doResetMemory('user', mm.userFile)}
+              openDisabled={!memory.builtin_paths?.user}
+              openLabel={mm.openFile}
               resetLabel={mm.resetUser}
               size={memory.builtin_files.user}
               sizeLabel={memory.builtin_files.user > 0 ? formatBytes(memory.builtin_files.user) : mm.empty}
@@ -383,14 +433,20 @@ function OpRow({
 function MemoryFileRow({
   busy,
   label,
+  onOpen,
   onReset,
+  openDisabled,
+  openLabel,
   resetLabel,
   size,
   sizeLabel
 }: {
   busy: boolean
   label: string
+  onOpen: () => void
   onReset: () => void
+  openDisabled?: boolean
+  openLabel: string
   resetLabel: string
   size: number
   sizeLabel: string
@@ -403,15 +459,20 @@ function MemoryFileRow({
           {sizeLabel}
         </span>
       </div>
-      <Button
-        className="text-destructive hover:text-destructive"
-        disabled={busy || size <= 0}
-        onClick={onReset}
-        size="xs"
-        variant="text"
-      >
-        {resetLabel}
-      </Button>
+      <div className="flex shrink-0 items-center gap-1.5">
+        <Button disabled={busy || size <= 0 || openDisabled} onClick={onOpen} size="xs" variant="text">
+          {openLabel}
+        </Button>
+        <Button
+          className="text-destructive hover:text-destructive"
+          disabled={busy || size <= 0}
+          onClick={onReset}
+          size="xs"
+          variant="text"
+        >
+          {resetLabel}
+        </Button>
+      </div>
     </div>
   )
 }

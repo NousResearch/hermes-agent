@@ -26,6 +26,8 @@ from functools import partial
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
+from utils import is_truthy_value
+
 logger = logging.getLogger(__name__)
 
 # Historical env prefixes that do not match a platform's config id. They SUPPLEMENT the canonical
@@ -57,6 +59,7 @@ _POLICY_MARKERS = ("_ALLOWED_USERS", "_ALLOW_ALL_USERS", "_ALLOWED_CHATS", "_HOM
 _GATEWAY_OWNER_KEYS = ("multiplex_profiles", "profile_routes")
 
 _ENV_LINE_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
+_CONFIG_REF_RE = re.compile(r"\$\{[^}]+}")
 
 
 @contextlib.contextmanager
@@ -212,8 +215,23 @@ def _explicit_enabled(raw: dict, pid: str) -> Optional[bool]:
     for section in (raw.get("platforms"), gateway.get("platforms")):
         block = section.get(pid) if isinstance(section, dict) else None
         if isinstance(block, dict) and "enabled" in block:
-            return bool(block["enabled"])
+            value = block["enabled"]
+            if isinstance(value, str) and _CONFIG_REF_RE.search(value):
+                return None
+            return is_truthy_value(value, default=False)
     return None
+
+
+def _source_config_effective(source_dir: Path) -> dict:
+    """Effective source config under the same profile-local secret scope gateway runtime uses."""
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_cli.config_effective import load_user_config_effective
+
+    token = set_secret_scope(build_profile_secret_scope(source_dir))
+    try:
+        return load_user_config_effective(source_dir / "config.yaml")
+    finally:
+        reset_secret_scope(token)
 
 
 def _shared_adapters_active(source_dir: Optional[Path]) -> Set[str]:
@@ -223,10 +241,8 @@ def _shared_adapters_active(source_dir: Optional[Path]) -> Set[str]:
     if source_dir is None:
         return set(_SHARED_WITH_TOOLS)  # no source to consult: the historical (strip) behaviour
     raw: dict = {}
-    if (source_dir / "config.yaml").is_file():
-        from hermes_cli.config import read_user_config_raw
-        with contextlib.suppress(Exception):
-            raw = read_user_config_raw(source_dir / "config.yaml") or {}
+    with contextlib.suppress(Exception):
+        raw = _source_config_effective(source_dir) or {}
     env = _env_values(source_dir / ".env")
     creds_by_platform: Dict[str, Set[str]] = {}
     with contextlib.suppress(Exception):

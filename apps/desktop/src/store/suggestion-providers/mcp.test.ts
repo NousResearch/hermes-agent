@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
+import { MCP_DIRECTORY } from '@/lib/mcp-directory'
+
 import { matchSuggestions } from './mcp'
 
 const INDEX = [
@@ -93,15 +95,9 @@ describe('matchSuggestions', () => {
     ])
   })
 
-  it('does not offer GitHub: it is not in the catalog, so no index entry can match it', () => {
-    // GitHub is not in optional-mcps (its hosted MCP needs a per-host OAuth app), so a
-    // catalog-built index has no entry for it.
-    const catalogIndex = [
-      { hosts: ['linear.app'], keywords: ['linear'], server: 'linear' },
-      { hosts: ['figma.com'], keywords: ['figma'], server: 'figma' }
-    ]
+  it('does not offer GitHub through the generic OAuth registration path', () => {
+    const index = MCP_DIRECTORY.map(entry => ({ hosts: entry.hosts, keywords: entry.keywords, server: entry.name }))
 
-    expect(matchSuggestions('connect github please', catalogIndex)).toEqual([])
-    expect(matchSuggestions('connect github please', [])).toEqual([])
+    expect(matchSuggestions('connect github', index)).toEqual([])
   })
 })

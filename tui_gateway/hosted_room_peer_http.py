@@ -108,6 +108,11 @@ def _read_bounded_response(response: Any, *, max_bytes: int, deadline: float) ->
         _set_response_socket_timeout(response, remaining)
         try:
             chunk = reader(min(_PEER_RESPONSE_CHUNK_BYTES, max_bytes + 1 - len(body)))
+        except TimeoutError as exc:
+            # The socket timeout is tightened to the remaining whole-response budget.
+            # Classify it even when it fires a few milliseconds before the monotonic
+            # deadline; otherwise _request mislabels a slow body as an unreachable peer.
+            raise _PeerResponseDeadlineExceeded from exc
         except Exception as exc:
             if time.monotonic() >= deadline:
                 raise _PeerResponseDeadlineExceeded from exc

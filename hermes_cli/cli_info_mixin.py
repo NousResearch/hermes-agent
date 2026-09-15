@@ -16,7 +16,7 @@ import time
 
 from hermes_constants import is_termux as _is_termux_environment
 from rich.markup import escape as _escape
-from utils import base_url_hostname, file_signature
+from utils import base_url_hostname
 
 from hermes_cli.cli_modal_mixin import _gated_confirm
 from hermes_cli.colors import Colors as _Colors
@@ -654,16 +654,10 @@ class CLIInfoMixin:
             except Exception:
                 details = {"skills": [], "toolsets": []}
 
-        from agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
-        try:
-            file_lines = render_context_file_lines(context_file_sources_for_agent(self.agent))
-        except Exception:
-            file_lines = []
-
         print()
         print(f"  🧠 Context Usage — {payload.get('model') or self.model}")
         print()
-        for line in render_context_breakdown_lines(payload, details=details, grid=True) + ([""] + file_lines if file_lines else []):
+        for line in render_context_breakdown_lines(payload, details=details, grid=True):
             print(f"  {line}")
         print()
 
@@ -778,12 +772,9 @@ class CLIInfoMixin:
                 i += 1
 
         try:
-            from hermes_state import SessionDB, _default_db_path
+            from hermes_state import SessionDB
             from agent.insights import InsightsEngine
-            if not _default_db_path().exists():
-                print("  No session data yet.")
-                return
-            db = SessionDB(read_only=True)
+            db = SessionDB()
             try:
                 engine = InsightsEngine(db)
                 print(engine.format_terminal(engine.generate(days=days, source=source)))
@@ -818,13 +809,13 @@ class CLIInfoMixin:
         if not cfg_path.exists():
             return
         try:
-            sig = file_signature(cfg_path.stat())
+            mtime = cfg_path.stat().st_mtime
         except OSError:
             return
-        if sig == self._config_sig:
+        if mtime == self._config_mtime:
             return  # unchanged — fast path
 
-        self._config_sig = sig
+        self._config_mtime = mtime
         try:
             with open(cfg_path, encoding="utf-8") as f:
                 new_cfg = _yaml.safe_load(f) or {}

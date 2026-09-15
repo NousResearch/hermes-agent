@@ -36,7 +36,6 @@ import type {
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
-import { errorMessage } from "@/lib/api-error";
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
@@ -167,7 +166,7 @@ export default function ChannelsPage() {
         setEnvPath(res.env_path || "~/.hermes/.env");
         setGatewayStartCommand(res.gateway_start_command || "hermes gateway start");
       })
-      .catch((e) => showToast(`Could not load channels: ${errorMessage(e)}`, "error"));
+      .catch((e) => showToast(`Error: ${e}`, "error"));
   }, [showToast]);
 
   useEffect(() => {
@@ -228,7 +227,7 @@ export default function ChannelsPage() {
       await load();
       if (result.hot_served) setTimeout(() => void load(), 4000);
     } catch (e) {
-      showToast(`Failed to save: ${errorMessage(e)}`, "error");
+      showToast(`Failed to save: ${e}`, "error");
     } finally {
       setSaving(false);
     }
@@ -249,7 +248,7 @@ export default function ChannelsPage() {
       if (result.hot_served) setTimeout(() => void load(), 4000);
       else setRestartNeeded(true);
     } catch (e) {
-      showToast(`Could not update the channel: ${errorMessage(e)}`, "error");
+      showToast(`Error: ${e}`, "error");
     } finally {
       setTogglingId(null);
     }
@@ -261,7 +260,7 @@ export default function ChannelsPage() {
       const res = await api.testMessagingPlatform(platform.id);
       showToast(`${platform.name}: ${res.message}`, res.ok ? "success" : "error");
     } catch (e) {
-      showToast(`Could not test the channel: ${errorMessage(e)}`, "error");
+      showToast(`Error: ${e}`, "error");
     } finally {
       setTestingId(null);
     }
@@ -276,7 +275,7 @@ export default function ChannelsPage() {
       // Give the gateway a moment to come up, then refresh status.
       setTimeout(() => void load(), 4000);
     } catch (e) {
-      showToast(`Failed to restart: ${errorMessage(e)}`, "error");
+      showToast(`Failed to restart: ${e}`, "error");
     } finally {
       setRestarting(false);
     }

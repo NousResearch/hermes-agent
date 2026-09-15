@@ -36,5 +36,3 @@ def _custom_health_base_url(provider: str, explicit_base_url: Optional[str] = No
         if entry:
             return explicit or str(entry.get("base_url") or "").strip()
     return ""
-
-

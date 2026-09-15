@@ -200,6 +200,7 @@ export const ar = defineLocale({
       methodNotAllowed: 'رفضت خلفية سطح المكتب هذا الطلب (405 Method Not Allowed). جرب إعادة تشغيل Hermes Desktop.',
       microphonePermission: 'تم رفض إذن الميكروفون.',
       openaiRejectedApiKey: 'رفض OpenAI مفتاح API.',
+      openaiRejectedApiKeyWithStatus: status => `رفض OpenAI مفتاح API (${status} invalid_api_key).`,
       openaiTtsNeedsKey: 'يتطلب OpenAI TTS المفتاح VOICE_TOOLS_OPENAI_KEY أو OPENAI_API_KEY.',
       codeSkewRestartRequired: 'بعد التحديث ما زال هذا الخلفية يشغّل كودا قديما. أعد تشغيله لتحميل الكود الجديد.'
     },
@@ -445,8 +446,10 @@ export const ar = defineLocale({
         toggleFailed: 'تعذر تحديث مدير كلمات المرور',
         notInstalled: name => `غير مكتشف. ثبّت أداة سطر الأوامر ${name} وسجّل الدخول إليها؛ سيكتشفها Hermes تلقائيًا.`,
         disabledDesc: 'مكتشف لكنه معطّل لـ Hermes.',
-        lockedDesc: 'مكتشف. سيطلب منك الوكيل فتحه عند الحاجة إلى بيانات دخول، أو افتحه الآن.',
-        unlockedDesc: 'مفتوح لهذه الجلسة. يُقفل تلقائيًا بعد 30 دقيقة من الخمول أو عند إغلاق Hermes.',
+        lockedDesc:
+          'مقفل لاتصال الإعدادات هذا. افتحه هنا لعرض بيانات الدخول المحفوظة؛ تطلب كل محادثة فتح القفل بشكل مستقل.',
+        unlockedDesc:
+          'مفتوح لاتصال الإعدادات هذا فقط. يُقفل بعد 30 دقيقة من الخمول أو عند انقطاع هذا الاتصال. يُفتح القفل لكل محادثة بشكل مستقل.',
         statusLocked: 'مقفل',
         statusNotDetected: 'غير مكتشف',
         statusOff: 'متوقف',
@@ -454,10 +457,10 @@ export const ar = defineLocale({
         unlock: 'فتح القفل',
         unlocking: 'جارٍ فتح القفل…',
         lock: 'قفل',
-        unlocked: name => `تم فتح قفل ${name} لهذه الجلسة.`,
+        unlocked: name => `تم فتح قفل ${name} لاتصال الإعدادات هذا فقط.`,
         unlockTitle: name => `فتح قفل ${name}`,
         unlockDescription:
-          'أدخل كلمة المرور الرئيسية. تُسلَّم إلى مدير كلمات المرور على هذا الجهاز ثم تُهمل — لا تُخزَّن ولا تُسجَّل ولا تُعرض على الوكيل أبدًا.',
+          'يسري فتح القفل على اتصال الإعدادات هذا فقط. تطلب كل محادثة فتحه بشكل مستقل. تُسلَّم كلمة المرور الرئيسية إلى مدير كلمات المرور ثم تُهمل محليًا؛ لا تُخزَّن ولا تُسجَّل ولا تُعرض على الوكيل أبدًا.',
         masterPasswordPlaceholder: 'كلمة المرور الرئيسية'
       }
     },
@@ -601,6 +604,9 @@ export const ar = defineLocale({
       embedsReset: count => `إعادة تعيين ${count} ${count === 1 ? 'خدمة مسموح بها' : 'خدمة مسموح بها'}`,
       resumeLastSessionTitle: 'إعادة فتح آخر محادثة عند التشغيل',
       resumeLastSessionDesc: 'متابعة من حيث توقفت عند بدء التطبيق. أوقفه للبدء دائمًا بمحادثة جديدة.',
+      loginStartupTitle: 'تشغيل Hermes مع Windows',
+      loginStartupDesc: 'فتح تطبيق سطح المكتب مصغّرًا عند تسجيل الدخول. يستخدم الملف الشخصي الأساسي المحفوظ.',
+      loginStartupFailed: 'لم يتمكّن Windows من تفعيل بدء التشغيل. تحقّق من تطبيقات بدء التشغيل في إعدادات Windows.',
       product: 'مبسط',
       productDesc: 'عرض أنظف يركز على النتيجة.',
       technical: 'تقني',
@@ -733,7 +739,6 @@ export const ar = defineLocale({
       'context.engine': 'محرك السياق',
       'compression.enabled': 'الضغط التلقائي',
       'compression.threshold': 'عتبة الضغط',
-      'compression.codexGpt55Autoraise': 'الرفع التلقائي لضغط Codex',
       'compression.targetRatio': 'هدف الضغط',
       'compression.protectLastN': 'الرسائل الأخيرة المحمية',
       'delegation.model': 'نموذج الوكيل الفرعي',
@@ -770,7 +775,6 @@ export const ar = defineLocale({
       'memory.userProfileEnabled': 'يحافظ على ملف مختصر لتفضيلات المستخدم.',
       'context.engine': 'استراتيجية إدارة المحادثات الطويلة قرب حد السياق.',
       'compression.enabled': 'يلخص السياق الأقدم عندما تكبر المحادثات.',
-      'compression.codexGpt55Autoraise': 'يرفع عتبة الضغط إلى 85٪ لنماذج ChatGPT Codex OAuth المدعومة.',
       'voice.autoTts': 'ينطق ردود المساعد تلقائياً.',
       'tts.xai.voiceId': 'معرف صوت xAI مثل eve أو معرف صوت مخصص.',
       'tts.xai.language': 'رمز لغة النطق، مثل en.',
@@ -797,8 +801,9 @@ export const ar = defineLocale({
       checking: 'جار التحقق...',
       seeWhatsNew: 'عرض الجديد',
       updateNow: 'تحديث الآن',
+      updateSource: 'مصدر التحديث',
       releaseNotes: 'ملاحظات الإصدار',
-      onLatest: 'أنت على أحدث إصدار',
+      onLatest: 'مصدر التحديث المحدد محدث',
       installing: 'جار التثبيت...',
       cantUpdate: 'تعذر التحديث',
       cantReach: 'تعذر الوصول لخدمة التحديث',
@@ -807,8 +812,10 @@ export const ar = defineLocale({
       updateReadyUnknown: 'تحديث جديد جاهز.',
       lastChecked: age => `آخر تحقق ${age}`,
       justNowSuffix: 'الآن',
-      automaticUpdates: 'التحديثات التلقائية',
-      automaticUpdatesDesc: 'اسمح لـ Hermes بالتحقق من التحديثات وتثبيتها.',
+      automaticUpdates: 'التحقق التلقائي من التحديثات',
+      automaticUpdatesDesc: 'تحقق من التحديثات وأرسل تنبيهاً في الخلفية. التثبيت يبقى إجراءً يدوياً.',
+      updateParked: 'التحديث متوقف مؤقتاً بانتظار بيئة آمنة.',
+      updateParkedDesc: 'تغييرات الإصلاح المحلية محفوظة. راجعها أو انقلها قبل تثبيت تحديث المصدر.',
       branchCommit: (branch, commit) => `${branch} عند ${commit}`,
       never: 'أبدا',
       justNow: 'الآن',
@@ -1027,18 +1034,6 @@ export const ar = defineLocale({
           label: 'المراجعة',
           hint: 'وكيل المراجعة الفرعي /review'
         },
-        triage_specifier: {
-          label: 'محدد الفرز',
-          hint: 'توضيح مواصفات كانبان'
-        },
-        kanban_decomposer: {
-          label: 'مفكك كانبان',
-          hint: 'تفكيك المهام'
-        },
-        profile_describer: {
-          label: 'واصف الملف الشخصي',
-          hint: 'أوصاف ملفات شخصية تلقائية'
-        },
         curator: {
           label: 'المنسّق',
           hint: 'مراجعة استخدام المهارات'
@@ -1135,6 +1130,7 @@ export const ar = defineLocale({
   skills: {
     tabSkills: 'المهارات',
     tabToolsets: 'مجموعات الأدوات',
+    tabHub: 'تصفّح مركز المهارات',
     all: 'الكل',
     searchSkills: 'البحث في المهارات',
     searchToolsets: 'البحث في مجموعات الأدوات',
@@ -1158,7 +1154,8 @@ export const ar = defineLocale({
     toolsetEnabled: 'تم تفعيل مجموعة الأدوات',
     toolsetDisabled: 'تم تعطيل مجموعة الأدوات',
     appliesToNewSessions: name => `ينطبق على الجلسات الجديدة في ${name}`,
-    failedToUpdate: name => `فشل تحديث ${name}`
+    failedToUpdate: name => `فشل تحديث ${name}`,
+    provenanceSummary: (agent, bundled, hub) => `${agent} متعلّمة · ${bundled} مدمجة · ${hub} من Hub`
   },
   agents: {
     extendedTranscript: 'سجل موسّع',
@@ -1346,9 +1343,16 @@ export const ar = defineLocale({
     actionDone: 'اكتمل الإجراء',
     actionFailed: 'فشل الإجراء',
     actionStartedWaiting: 'بدأ الإجراء، جار الانتظار...',
+    actionTimedOut: 'ما زال الإجراء يعمل؛ راجع السجلات الأخيرة لمعرفة حالته النهائية.',
     loadingStatus: 'جار تحميل الحالة',
     recentLogs: 'السجلات الأخيرة',
     noLogs: 'لا توجد سجلات',
+    logFile: 'ملف السجل',
+    logLevel: 'مستوى السجل',
+    allLogLevels: 'كل المستويات',
+    noMatchingLogs: 'لا توجد سطور تطابق البحث.',
+    logTailHint: count => `يُعرض آخر ${count} سطر كحد أقصى من الملف والمستوى المحددين.`,
+    logSearchPlaceholder: 'البحث في سطور السجل...',
     days: count => `${count} يوم`,
     statSessions: 'الجلسات',
     statApiCalls: 'نداءات API',
@@ -1366,7 +1370,10 @@ export const ar = defineLocale({
     noModelUsage: 'لا يوجد استخدام نماذج',
     topSkills: 'أكثر المهارات استخداما',
     noSkillActivity: 'لا يوجد نشاط مهارات',
-    actions: count => `${count} إجراء`
+    actions: count => `${count} إجراء`,
+    maintenance: {
+      openFile: 'فتح الملف'
+    }
   },
   messaging: {
     search: 'بحث',
@@ -2288,6 +2295,7 @@ export const ar = defineLocale({
     }
   },
   updates: {
+    automaticUpdatesSaveFailed: 'تعذّر تأكيد حفظ الإعداد. أعد المحاولة.',
     stages: {
       idle: 'جار التحضير...',
       prepare: 'جار التحضير...',
@@ -2902,19 +2910,6 @@ export const ar = defineLocale({
       copyQuery: 'نسخ الاستعلام',
       copyFile: 'نسخ الملف',
       copyPath: 'نسخ المسار',
-      failedCalls: (count: number) => `عدد استدعاءات الأدوات الفاشلة: ${count}`,
-      skillActivity: {
-        loading: 'جارٍ تحميل المهارة',
-        loaded: 'تم تحميل المهارة',
-        loadFailed: 'تعذر تحميل المهارة',
-        readingResource: 'جارٍ قراءة مورد المهارة',
-        readResource: 'تمت قراءة مورد المهارة',
-        resourceFailed: 'تعذرت قراءة مورد المهارة',
-        listing: 'جارٍ عرض المهارات',
-        listed: 'تم عرض المهارات',
-        listFailed: 'تعذر عرض المهارات',
-        unavailable: 'نتيجة المهارة غير متاحة'
-      },
       outputAlt: 'إخراج الأداة',
       rawResponse: 'الرد الخام',
       copyActivity: 'نسخ النشاط',
@@ -2926,7 +2921,6 @@ export const ar = defineLocale({
       statusError: 'خطأ',
       statusRecovered: 'تم الاسترداد',
       statusDone: 'تم',
-      resultUnavailable: 'النتيجة غير متاحة',
       memoryWriteNoted: 'تم تسجيل كتابة الذاكرة',
       actions: {
         read: 'قراءة',
@@ -3076,8 +3070,7 @@ export const ar = defineLocale({
     sudoSendFailed: 'فشل إرسال كلمة مرور sudo',
     secretSendFailed: 'فشل إرسال السر',
     sudoTitle: 'مطلوب sudo',
-    sudoDesc: 'راجع الأمر قبل إدخال كلمة مرور sudo. تُرسل كلمة المرور إلى الوكيل الذي ينفّذه وتُحفظ مؤقتًا لهذه الجلسة.',
-    sudoCommandUnavailable: 'لم يقدّم هذا الوكيل الأمر. ألغِ الطلب إذا لم تتمكن من التحقق منه في المحادثة.',
+    sudoDesc: 'أدخل كلمة المرور لمتابعة الأمر.',
     sudoPlaceholder: 'كلمة المرور',
     secretTitle: 'مطلوب سر',
     secretDesc: 'أدخل القيمة المطلوبة لمتابعة المهمة.',
@@ -3231,11 +3224,6 @@ export const ar = defineLocale({
       'composer-mentions': {
         title: 'المرفقات والأوامر',
         text: 'اكتب @ لإحضار ملف إلى المحادثة، و / لتشغيل أمر.'
-      },
-      'local-runtime-update': {
-        title: 'يتوفر تحديث للمحرك المحلي',
-        text: 'حدّث المحرك الذي يشغّل نماذجك المحلية. قد تنقطع الطلبات المحلية الجارية.',
-        action: 'التحديث الآن'
       },
       'local-setup': {
         title: 'هذا الجهاز يمكنه تشغيل النماذج محليًا',

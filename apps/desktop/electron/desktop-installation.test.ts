@@ -38,10 +38,17 @@ test('loadOrCreateInstallationId persists and reuses one installation ID', () =>
       loadOrCreateInstallationId(filePath, () => ID_B),
       ID_A
     )
+    assert.equal(JSON.parse(fs.readFileSync(filePath, 'utf8')).installationId, ID_A)
+  }))
+
+test.runIf(process.platform !== 'win32')('loadOrCreateInstallationId creates an owner-only POSIX file', () =>
+  withTempDir(directory => {
+    const filePath = path.join(directory, 'desktop-installation.json')
+    loadOrCreateInstallationId(filePath, () => ID_A)
     assert.equal(fs.statSync(filePath).mode & 0o777, 0o600)
   }))
 
-test('loadOrCreateInstallationId tightens an existing identity file', () =>
+test.runIf(process.platform !== 'win32')('loadOrCreateInstallationId tightens an existing identity file', () =>
   withTempDir(directory => {
     const filePath = path.join(directory, 'desktop-installation.json')
     fs.writeFileSync(filePath, JSON.stringify({ installationId: ID_A }), { mode: 0o644 })
@@ -50,9 +57,7 @@ test('loadOrCreateInstallationId tightens an existing identity file', () =>
       ID_A
     )
 
-    if (process.platform !== 'win32') {
-      assert.equal(fs.statSync(filePath).mode & 0o777, 0o600)
-    }
+    assert.equal(fs.statSync(filePath).mode & 0o777, 0o600)
   }))
 
 test('loadOrCreateInstallationId replaces a malformed existing record', () =>
@@ -66,12 +71,8 @@ test('loadOrCreateInstallationId replaces a malformed existing record', () =>
     assert.equal(JSON.parse(fs.readFileSync(filePath, 'utf8')).installationId, ID_A)
   }))
 
-test('loadOrCreateInstallationId replaces an existing symlink', () =>
+test.runIf(process.platform !== 'win32')('loadOrCreateInstallationId replaces an existing symlink', () =>
   withTempDir(directory => {
-    if (process.platform === 'win32') {
-      return
-    }
-
     const target = path.join(directory, 'target.json')
     const filePath = path.join(directory, 'desktop-installation.json')
     fs.writeFileSync(target, JSON.stringify({ installationId: ID_B }), { mode: 0o600 })

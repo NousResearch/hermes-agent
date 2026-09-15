@@ -10,7 +10,7 @@ def test_remote_entries_run_request_hook_and_execution_policies(monkeypatch, blo
     import model_tools
     import hermes_cli.plugins as plugins
     from tools.registry import invalidate_check_fn_cache
-    from tools.connectors.gateway import bridge, config
+    from tools.tool_gateway import bridge, config
 
     monkeypatch.setattr(config, "connectors_available", lambda: True)
     monkeypatch.setattr(bridge, "connectors_available", lambda: True)
@@ -81,7 +81,7 @@ def test_stop_during_a_connector_batch_leaves_unstarted_entries_unsent(monkeypat
     import model_tools
     from tools.interrupt import set_interrupt
     from tools.registry import invalidate_check_fn_cache
-    from tools.connectors.gateway import bridge, config
+    from tools.tool_gateway import bridge, config
 
     monkeypatch.setattr(config, "connectors_available", lambda: True)
     monkeypatch.setattr(bridge, "connectors_available", lambda: True)
@@ -112,12 +112,11 @@ def test_stop_during_a_connector_batch_leaves_unstarted_entries_unsent(monkeypat
 
 
 def test_disabled_connections_cannot_be_called_through_a_stale_schema(monkeypatch):
-    from tools.connectors import managed
-    from tools.connectors.gateway import config
+    from tools import connections_tool
     from tools.registry import registry
 
-    monkeypatch.setattr(config, "connectors_available", lambda: False)
-    monkeypatch.setattr(managed, "_default_client",
+    monkeypatch.setattr(connections_tool, "_connectors_available", lambda: False)
+    monkeypatch.setattr(connections_tool, "_default_client",
                         lambda: (_ for _ in ()).throw(AssertionError("disabled connector attempted I/O")))
     result = json.loads(registry.dispatch("manage_connections", {"action": "connect", "connectors": ["gmail"]}))
     assert "not available" in result["error"]

@@ -207,7 +207,6 @@ def _card_state(adapter: _CardAdapter):
     return SimpleNamespace(
         tasks=[{"text": "step"}],
         native_failed=False,
-        publication_suppressed=False,
         visible_tasks=lambda: [{"text": "step"}],
         fallback_text=lambda: "step",
         adapter=adapter,
@@ -356,11 +355,11 @@ def test_task_card_fallback_edit_decline_does_not_send_progress_text():
         fallback_msg_id="m0",
         fallback_text=lambda: "task text",
         adapter=adapter,
-        publication_suppressed=False,
+        egress_declined=False,
     )
 
     asyncio.run(runner._task_card_send_or_edit_fallback(st))
 
     assert adapter.ops == ["edit"]
     assert sent == []
-    assert st.publication_suppressed is True
+    assert st.egress_declined is True

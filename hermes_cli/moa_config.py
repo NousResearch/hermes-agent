@@ -29,19 +29,19 @@ def _coerce_number(value: Any, cast, default=None, *, positive: bool = False):
     """Coerce ``value`` with ``cast`` (float/int); ``default`` when unset/blank/invalid.
 
     ``int`` also accepts float-looking strings ("3.0"). With ``positive`` the result must be > 0
-    or ``default`` is returned. Non-finite floats always fall back to ``default``."""
+    (and finite for floats) or ``default`` is returned."""
     if value is None or value == "":
         return default
     try:
         number = cast(value)
-    except (TypeError, ValueError, OverflowError):
+    except (TypeError, ValueError):
         if cast is not int:
             return default
         try:
             number = int(float(value))
-        except (TypeError, ValueError, OverflowError):
+        except (TypeError, ValueError):
             return default
-    if (cast is float and not math.isfinite(number)) or (positive and number <= 0):
+    if positive and (number <= 0 or (cast is float and not math.isfinite(number))):
         return default
     return number
 

@@ -183,7 +183,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
             BOT_CHAT_TITLE, _handle, _hermes_root, _peers, _profile_name as _self_profile_name, _roster,
             is_bot_mode_managed,
         )
-        from tools.bot_relay import BOT_CHAT_TURN_ARGS, _hermes_cli
+        from tools.bot_relay import BOT_CHAT_TURN_ARGS
 
         if _session_title(agent) != BOT_CHAT_TITLE:
             return _err("message_agent is only available in a Bot Mode 'Bot Chat' session. "
@@ -231,12 +231,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         # Pin the registry-owning profile: `hermes peer` resolves bot_peers via the profile-scoped
         # load_config(), while the roster above reads the machine-root config — the CLI must run
         # in that same profile or a secondary-profile bot sees an empty registry.
-        # The delivery runs in a background service context whose PATH lacks the gateway's
-        # venv bin dir, so a bare "hermes" resolves to a system install and dies on import
-        # under the wrong interpreter (#108628). _hermes_cli pins the entrypoint beside
-        # this interpreter; _delivery_lock/_local_delivery_home match argv[0] by basename,
-        # so the absolute path stays compatible.
-        return _start_delivery([_hermes_cli(), "-p", _self_profile_name(root), "peer", "dm", dm_target], content,
+        return _start_delivery(["hermes", "-p", _self_profile_name(root), "peer", "dm", dm_target], content,
                                f"@{peer_profile or peer_name} on peer '{peer_name}'", stdin_file=True,
                                author=peer_author, **delivery)
 
@@ -257,7 +252,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _roster_err(f"No teammate named '{raw_target}' on this install, on a connected "
                            "machine, or on a registered peer. Pick a name from the roster "
                            "(roles are listed in your system prompt).")
-    return _start_delivery([_hermes_cli(), "-p", resolved, *BOT_CHAT_TURN_ARGS], content, f"@{_handle(resolved)}",
+    return _start_delivery(["hermes", "-p", resolved, *BOT_CHAT_TURN_ARGS], content, f"@{_handle(resolved)}",
                            stdin_file=False, profile_home=roster_homes[resolved], author=author, **delivery)
 
 
@@ -320,12 +315,7 @@ def cleanup_bot_dm_cache(max_age_hours: float = _DM_STALE_SECONDS / 3600, *, now
     temp_root = Path(tempfile.gettempdir())
     locations = [(temp_root, "hermes-dm-*.txt"), (temp_root, "hermes-relay-dm-*.txt")]
     with contextlib.suppress(OSError):
-        dm_dir = _dm_dir()
-        locations.append((dm_dir, "*.txt"))
-        # Live-delivery intents (``<dm file>.live.json``, message plaintext included) outlive
-        # their runner on purpose — a retry replays the same delivery id from them — so the
-        # orphans of runners that never settled are swept here too.
-        locations.append((dm_dir, "*.live.json"))
+        locations.append((_dm_dir(), "*.txt"))
     from tools.bot_relay import unlink_files_older_than
 
     return sum(unlink_files_older_than(d, pattern, cutoff) for d, pattern in locations)
@@ -408,15 +398,8 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
         }))
         return 1
     # Re-emit the transport's streams: stdout is the reply text the
-    # completion notification carries back to the sending agent. A successful bare
-    # silence marker is a delivery decision (same rule as the gateway and the live
-    # Bot Chat completion): the turn stays in the target's transcript, the sender
-    # never sees the marker as prose.
-    from gateway.response_filters import is_intentional_silence_response
-    reply = proc.stdout or ""
-    if proc.returncode == 0 and is_intentional_silence_response(reply):
-        reply = ""
-    for stream, text in ((sys.stdout, reply), (sys.stderr, proc.stderr)):
+    # completion notification carries back to the sending agent.
+    for stream, text in ((sys.stdout, proc.stdout), (sys.stderr, proc.stderr)):
         if text:
             stream.write(text)
             stream.flush()
@@ -458,28 +441,27 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
     return record
 
 
-def _wait_live_dm(home: str, delivery_id: str, *, dm_file: "str | os.PathLike | None" = None) -> int:
+def _wait_live_dm(home: str, delivery_id: str) -> int:
+    """Keep the background completion owner alive until its durable receipt settles.
+
+    The initial window bounds fast polling, not notification ownership. A busy
+    Bot Chat can legitimately claim and answer long after that window expires.
+    """
     from tools.bot_live_delivery import read_delivery_result
 
     deadline = time.monotonic() + _LIVE_WAIT_SECONDS
     while True:
         record = read_delivery_result(home, delivery_id)
         status = record["status"] if record else "ambiguous"
-        if status not in ("queued", "claimed") or time.monotonic() >= deadline:
+        if status not in ("queued", "claimed"):
             break
-        time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+        time.sleep(0.5 if time.monotonic() < deadline else 5.0)
     payload = {key: record[key] for key in ("reply", "error", "reason") if record and record.get(key)}
     payload.update(status=status, delivery_id=delivery_id)
-    if status in ("queued", "claimed", "ambiguous"):
+    if status == "ambiguous":
         payload["detail"] = "Delivery remains pending or its outcome is unknown. Do not resend; receipt is retained."
-    elif status == "settled" and dm_file is not None:
-        # The intent carries the message plaintext so a retry can replay the SAME delivery id;
-        # once the owner settled it nothing retries, so it goes along with the dm file (same
-        # plaintext) — the live branch returns before _run_delivery's own unlink.
-        _unlink_dm_file(str(dm_file) + ".live.json")
-        _unlink_dm_file(str(dm_file))
     print(json.dumps(payload))
-    return 0 if status in ("settled", "queued", "claimed") else 1
+    return 0 if status == "settled" else 1
 
 
 def _local_delivery_home(argv: list[str]) -> Path | None:
@@ -518,18 +500,25 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
                     "evidence_file": dm_file}))
                 return 1
             if record is not None:
-                return _wait_live_dm(record["profile_home"], record["delivery_id"], dm_file=dm_file)
+                return _wait_live_dm(record["profile_home"], record["delivery_id"])
     try:
         from tools.bot_relay import delivery_env
 
-        env = delivery_env(author, profile_home if not stdin_file else None)
+        env = delivery_env(author)
         with _delivery_lock(argv, stdin_file=stdin_file):
             if not stdin_file:
                 return _run_local_turn(argv, dm_file, env=env)
             # Keep the file open until the transport exits; cleanup occurs
             # after subprocess.run returns, not merely after stdin reaches EOF.
+            from tools.environments.local import build_subprocess_env
+
+            child_env = build_subprocess_env(
+                scrub_secrets=False,
+                inherit_profile_home=False,
+                extra={"PYTHONIOENCODING": "utf-8"},
+            )
             with open(dm_file, "r", encoding="utf-8") as stream:
-                return subprocess.run(argv, stdin=stream, check=False, env=env).returncode
+                return subprocess.run(argv, stdin=stream, check=False, env={**child_env, **env}).returncode
     finally:
         _unlink_dm_file(dm_file)
 

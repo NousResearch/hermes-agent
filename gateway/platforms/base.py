@@ -377,15 +377,13 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 
 import dataclasses
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
-from gateway.platforms.base_exec_approval import (
-    EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
@@ -438,20 +436,6 @@ def streaming_tts_should_skip_whole_file(completed_turns: set[str], session_key:
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
     "Secure secret entry is not supported over messaging. "
     "Load this skill in the local CLI to be prompted, or add the key to ~/.hermes/.env manually.")
-
-# One sentence for every "you may not press/run this" refusal on every platform (slash commands,
-# approval buttons, pickers, prompts). ``{platform}`` is the ``Platform.value`` for the
-# ``hermes pairing approve`` command (hermes_cli/subcommands/pairing.py) that lets the owner fix it.
-# Kept under 200 chars: Telegram's answerCallbackQuery truncates longer text.
-UNAUTHORIZED_ACTION_NOTICE = (
-    "This bot is private and you're not on its allowed list. If you own it, run "
-    "`hermes pairing approve {platform} <request-id>` on the host (`hermes pairing list` shows the id).")
-
-
-def unauthorized_action_notice(platform: Any) -> str:
-    """``UNAUTHORIZED_ACTION_NOTICE`` for a ``Platform`` member or its string name."""
-    name = getattr(platform, "value", platform)
-    return UNAUTHORIZED_ACTION_NOTICE.format(platform=str(name or "<platform>"))
 
 
 def safe_url_for_log(url: str, max_len: int = 80) -> str:
@@ -902,7 +886,7 @@ def _tenv(name: str, default: str = "") -> str:
     return terminal_env(name, default)
 
 
-def _parse_docker_volume_mounts() -> List[Tuple[Path, Path]]:
+def _parse_docker_volume_mounts() -> List[Tuple[Path, PurePosixPath]]:
     """Parse ``TERMINAL_DOCKER_VOLUMES`` (JSON list of ``host:container[:mode]``) into
     ``(host_path, container_path)``; named volumes / non-absolute hosts can't resolve here."""
     raw = _tenv("TERMINAL_DOCKER_VOLUMES", "").strip()
@@ -911,19 +895,22 @@ def _parse_docker_volume_mounts() -> List[Tuple[Path, Path]]:
         parsed = _json.loads(raw) if raw else []
     except Exception:
         return []
-    mounts: List[Tuple[Path, Path]] = []
+    mounts: List[Tuple[Path, PurePosixPath]] = []
     for entry in parsed if isinstance(parsed, list) else ():
         spec = entry.strip() if isinstance(entry, str) else ""
-        # Prefer the first ':/' so absolute container paths are unambiguous.
-        sep = spec.find(":/")
+        # A Windows host may use C:/...; its drive colon is not the mount separator.
+        host_start = 2 if len(spec) > 1 and spec[0].isalpha() and spec[1] == ":" else 0
+        sep = spec.find(":/", host_start)
         if sep <= 0:
             continue
         container_raw = spec[sep + 1:].split(":", 1)[0]  # starts with /
-        # Skip named volumes (no absolute/drive host path).
+        # The host uses native paths; Linux container paths stay POSIX on Windows too.
         host_expanded = os.path.expanduser(spec[:sep])
-        if not (host_expanded.startswith("/") or (len(host_expanded) > 1 and host_expanded[1] == ":")):
+        host_candidate = Path(host_expanded)
+        if not host_candidate.is_absolute():
             continue
-        host_path, container_path = _resolve_path(Path(host_expanded)), Path(container_raw)
+        host_path = _resolve_path(host_candidate)
+        container_path = PurePosixPath(container_raw)
         if host_path is not None and container_path.is_absolute():
             mounts.append((host_path, container_path))
     return mounts
@@ -1001,14 +988,14 @@ def _default_docker_workspace_host_roots(session_key: str = "") -> List[Path]:
     return _docker_persistent_sandbox_roots(session_key, "workspace")
 
 
-def _cache_dir_container_mounts() -> List[Tuple[Path, Path]]:
+def _cache_dir_container_mounts() -> List[Tuple[Path, PurePosixPath]]:
     """(host, container) pairs for the auto-mounted Hermes cache dirs (``/root/.hermes/...`` in
     MEDIA tags); longer prefixes than the ``/root`` home mount, so longest-prefix match wins."""
     if not _docker_env_active():
         return []
     try:
         from tools.credential_files import get_cache_directory_mounts
-        return [(Path(m["host_path"]), Path(m["container_path"])) for m in get_cache_directory_mounts()]
+        return [(Path(m["host_path"]), PurePosixPath(m["container_path"])) for m in get_cache_directory_mounts()]
     except Exception:
         return []
 
@@ -1027,9 +1014,10 @@ def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str
                    f", session_key={session_key}" if session_key else "")
 
 
-def _translate_docker_container_media_path(candidate: Path, session_key: str = "") -> Optional[Path]:
+def _translate_docker_container_media_path(candidate: Union[Path, PurePosixPath], session_key: str = "") -> Optional[Path]:
     """Container-absolute path -> host path via longest-prefix match over ``docker_volumes``, the
     auto-mounted cache dirs (``/root/.hermes/...``), persistent ``/workspace`` and ``/root``."""
+    candidate = PurePosixPath(candidate.as_posix())
     if not candidate.is_absolute():
         return None
     # In-process gateways (Desktop, `hermes serve`) may not have bridged terminal.* config into
@@ -1041,13 +1029,13 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
     mounted = {c.as_posix() for _, c in mounts}
     # Synthetic /workspace mounts: profile-scoped layout first, then legacy per-session.
     if "/workspace" not in mounted:
-        mounts.extend((root, Path("/workspace")) for root in _default_docker_workspace_host_roots(session_key))
+        mounts.extend((root, PurePosixPath("/workspace")) for root in _default_docker_workspace_host_roots(session_key))
     # Synthetic /root mounts catch stray home writes (/root/out.png; cache mounts are longer
     # prefixes). /root/.hermes/* that missed a cache mount is the container's credential surface —
     # translating it via the home mount would dodge the host denylist.
     if "/root" not in mounted and not candidate.as_posix().startswith("/root/.hermes"):
         mounts.extend(
-            (root, Path("/root")) for root in _docker_persistent_sandbox_roots(session_key, "home"))
+            (root, PurePosixPath("/root")) for root in _docker_persistent_sandbox_roots(session_key, "home"))
     if not mounts:
         _warn_unresolved_docker_media(candidate, session_key, "no sandbox mounts resolved")
         return None
@@ -1060,7 +1048,7 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
         _warn_unresolved_docker_media(candidate, session_key, "no mounted prefix matches")
         return None
     for host_root, container_root, _score in sorted(matched, key=lambda m: -m[2]):
-        translated = _resolve_path(host_root / candidate.relative_to(container_root), strict=True)
+        translated = _resolve_path(host_root.joinpath(*candidate.relative_to(container_root).parts), strict=True)
         if translated is not None and (
                 translated == host_root or _path_is_within(translated, host_root)):
             return translated
@@ -1082,11 +1070,13 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
     except (OSError, RuntimeError, ValueError):
         # expanduser raises ValueError("embedded null byte") for a ~\x00 path.
         return None
-    if not expanded.is_absolute():
-        return None
     # Docker agents emit MEDIA:/workspace/... — map container paths to host paths first.
     resolved = _translate_docker_container_media_path(expanded, session_key=session_key)
     if resolved is None:
+        # A container-absolute /path is only drive-relative on Windows. Never resolve it
+        # against the host's current drive when no explicit container mapping succeeded.
+        if not expanded.is_absolute():
+            return None
         resolved = _resolve_path(expanded, strict=True)
     if resolved is None or not resolved.is_file():
         return None
@@ -1318,43 +1308,11 @@ def _has_media_directives(text: str) -> bool:
     return "MEDIA:" in text or "[[audio_as_voice]]" in text or "[[as_document]]" in text
 
 
-# A provider can leak its exact end-of-sequence control token glued to the last MEDIA path
-# (``MEDIA:/x.png<|eos|>``). Neither tag regex accepts ``<`` as a path terminator — deliberately,
-# since widening the delimiter set re-opens the glue classes #68773/#88038 — so the attachment was
-# silently dropped (#111046). The one exact token is recognised here, at the seam every scan shares
-# (extraction, display strip, stream cleanup), and only when it terminates the whole response.
-_TERMINAL_SENTINEL = "<|eos|>"
-
-
-def _terminal_sentinel_start(text: str) -> int:
-    """Offset where the run of exact ``<|eos|>`` tokens closing ``text`` (trailing whitespace
-    ignored) begins, else -1; the run ends at ``len(text.rstrip())``."""
-    end = start = len(text.rstrip())
-    while start >= len(_TERMINAL_SENTINEL) and text[start - len(_TERMINAL_SENTINEL):start] == _TERMINAL_SENTINEL:
-        start -= len(_TERMINAL_SENTINEL)
-    return start if start < end else -1
-
-
 def _mask_media_scan_text(text: str) -> str:
-    """Offset-preserving mask of protected spans (code, quotes, JSON string values) and of a
-    terminal ``<|eos|>`` sentinel, so a tag glued to it ends on whitespace like any other.
+    """Offset-preserving mask of protected spans (code, quotes, JSON string values).
     BasePlatformAdapter is defined later in this module; resolved at call time."""
     A = BasePlatformAdapter
-    masked = A._mask_json_string_media(A._mask_protected_spans(text))
-    start = _terminal_sentinel_start(text)
-    if start >= 0:
-        masked = _blank_spans(masked, [(start, len(text.rstrip()))])
-    return masked
-
-
-def _deliverable_tag_spans(text: str) -> list:
-    """Spans to delete from ``text``: its deliverable MEDIA tags (located on the masked copy)
-    plus a terminal ``<|eos|>`` sentinel, which is a control token and never user content."""
-    spans = _real_media_tag_spans(_mask_media_scan_text(text))
-    start = _terminal_sentinel_start(text)
-    if spans and start >= 0:
-        spans.append((start, len(text.rstrip())))
-    return spans
+    return A._mask_json_string_media(A._mask_protected_spans(text))
 
 
 def _extensionless_media_matches(masked: str):
@@ -1421,7 +1379,7 @@ def _strip_media_tag_directives(text: str) -> str:
     if not text or not _has_media_directives(text):
         return text
     cleaned = text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
-    return _delete_spans(cleaned, _deliverable_tag_spans(cleaned))
+    return _delete_spans(cleaned, _real_media_tag_spans(_mask_media_scan_text(cleaned)))
 
 
 def cache_document_from_bytes(data: bytes, filename: str) -> str:
@@ -2562,14 +2520,11 @@ class BasePlatformAdapter(ABC):
             # No running loop (unit tests): close the coroutine to avoid a never-awaited warning.
             coro.close()
 
-    # ── ``_format_exec_approval`` templates; adapters override only the MARKUP (bold, HTML,
-    # fences) — the words come from ``gateway.platforms.base_exec_approval`` so every surface
-    # says the same thing.
-    _EA_HEADER: str = f"⚠️ {EA_HEADER_TEXT}\n\n"
+    # ── ``_format_exec_approval`` templates; adapters override to keep historical wording.
+    _EA_HEADER: str = "⚠️ Command Approval Required\n\n"
     _EA_CODE_OPEN: str = "```\n"
     _EA_CODE_CLOSE: str = "\n```\n"
-    _EA_REASON_LABEL: str = f"{EA_REASON_LABEL_TEXT}: "
-    _EA_DEADLINE_PREFIX: str = "\n\n"  # separates the deadline line from the reason line
+    _EA_REASON_LABEL: str = "Reason: "
     _EA_SMART_DENY_LINE: str = "\n\nSmart DENY: owner override applies to this one operation only."
     _EA_CMD_BUDGET: int = 3000
     _EA_REASON_BUDGET: int = 0  # 0 = the reason is never truncated
@@ -2588,23 +2543,17 @@ class BasePlatformAdapter(ABC):
         """Chars of command preview that fit; platforms with a hard message cap compute it."""
         return self._EA_CMD_BUDGET
 
-    def _ea_deadline_line(self) -> str:
-        """The "doing nothing means it will NOT run" line, with the configured approvals.timeout."""
-        return self._EA_DEADLINE_PREFIX + self._ea_escape(format_approval_deadline_line(approval_timeout_seconds()))
-
     def _format_exec_approval(
         self, command: str, description: str = "dangerous command", smart_denied: bool = False) -> str:
-        """Shared exec-approval prompt text: header + fenced (truncated) command + why it was
-        flagged + the deadline line, plus the smart-deny line. Buttons/trailing instructions stay
-        platform-local."""
+        """Shared exec-approval prompt text: header + fenced (truncated) command + reason,
+        plus the smart-deny line. Buttons/trailing instructions stay platform-local."""
         if self._EA_REASON_BUDGET:
             description = self._truncate_preview(str(description or ""), self._EA_REASON_BUDGET)
         cmd_preview = self._truncate_preview(
             str(command or ""), self._exec_approval_cmd_budget(description, smart_denied))
         text = (f"{self._EA_HEADER}"
                 f"{self._EA_CODE_OPEN}{self._ea_escape(cmd_preview)}{self._EA_CODE_CLOSE}"
-                f"{self._EA_REASON_LABEL}{self._ea_escape(description)}"
-                f"{self._ea_deadline_line()}")
+                f"{self._EA_REASON_LABEL}{self._ea_escape(description)}")
         return text + self._EA_SMART_DENY_LINE if smart_denied else text
 
     # ── Exec-approval prompt (template method). The choice set is one rule for every button
@@ -2684,9 +2633,7 @@ class BasePlatformAdapter(ABC):
         ``tools.clarify_gateway.resolve_gateway_clarify(clarify_id, response)``, "Other" calls
         ``mark_awaiting_text(clarify_id)``. Open-ended: send the question as text (the gateway
         text-intercept resolves the next message). Default: numbered list +
-        ``mark_awaiting_text``. Adapters whose prompt is a persistent card MAY define
-        ``async retire_clarify_card(clarify_id, notice)``; the gateway calls it when the clarify
-        ends without a click (timeout, session reset, superseding free prose)."""
+        ``mark_awaiting_text``."""
         if choices:
             # Multi-select flag lives on the pending entry (signature stays adapter-compatible).
             try:
@@ -3044,7 +2991,7 @@ class BasePlatformAdapter(ABC):
         # Locate tag spans on a masked copy, delete them from the unmasked text (protected spans
         # survive).
         if media:
-            spans = _deliverable_tag_spans(cleaned)
+            spans = _real_media_tag_spans(_mask_media_scan_text(cleaned))
             if spans:
                 cleaned = re.sub(r'\n{3,}', '\n\n', _delete_spans(cleaned, spans)).strip()
         return media, cleaned
@@ -3254,6 +3201,43 @@ class BasePlatformAdapter(ABC):
             await hook(*args, **kwargs)
         except Exception as e:
             logger.warning("[%s] %s hook failed: %s", self.name, hook_name, e)
+
+    async def _complete_queued_followup_processing(
+        self, event: MessageEvent, outcome: ProcessingOutcome,
+    ) -> None:
+        """Close terminal queued-event hooks after the outer final delivery verdict.
+
+        Tickets hold process-local adapter/event objects.  Claim each ticket before its hook
+        await, but leave later tickets attached to the event: if cancellation lands mid-hook,
+        every not-yet-claimed ticket still receives the same already-computed delivery verdict.
+        """
+        tickets = list(getattr(event, "_queued_followup_processing_tickets", ()) or ())
+        cancelled = None
+        for index, ticket in enumerate(tickets):
+            event._queued_followup_processing_tickets = [
+                pending for pending in tickets[index:]
+                if isinstance(pending, dict) and not pending.get("closed")
+            ]
+            if not isinstance(ticket, dict) or ticket.get("closed"):
+                continue
+            ticket["closed"] = True
+            event._queued_followup_processing_tickets = [
+                pending for pending in tickets[index + 1:]
+                if isinstance(pending, dict) and not pending.get("closed")
+            ]
+            adapter = ticket.get("adapter")
+            queued_event = ticket.get("event")
+            run_hook = getattr(adapter, "_run_processing_hook", None)
+            if callable(run_hook) and queued_event is not None:
+                try:
+                    await run_hook("on_processing_complete", queued_event, outcome)
+                except asyncio.CancelledError as exc:
+                    # Keep draining with the delivery verdict already established before
+                    # completion began; re-raise cancellation only after later tickets close.
+                    cancelled = cancelled or exc
+        event._queued_followup_processing_tickets = []
+        if cancelled is not None:
+            raise cancelled
 
     @staticmethod
     def _is_retryable_error(error: Optional[str]) -> bool:
@@ -4163,6 +4147,7 @@ class BasePlatformAdapter(ABC):
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
+        queued_processing_outcome = None
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -4177,11 +4162,18 @@ class BasePlatformAdapter(ABC):
         try:
             await self._run_processing_hook("on_processing_start", event)
             response = await self._message_handler(event)
+            if (
+                getattr(event, "_queued_followup_processing_outcome", None)
+                is ProcessingOutcome.CANCELLED
+            ):
+                queued_processing_outcome = ProcessingOutcome.CANCELLED
             is_ephemeral_response = isinstance(response, EphemeralReply)
             # Unwrap EphemeralReply for downstream text processing; TTL applies after send.
             response, _ephemeral_ttl = self._unwrap_ephemeral(response)
             # None/empty is normal (streamed/queued). Suppress a stale response after an interrupt.
-            if response and interrupt_event.is_set() and session_key in self._pending_messages:
+            stale_response_suppressed = bool(
+                response and interrupt_event.is_set() and session_key in self._pending_messages)
+            if stale_response_suppressed:
                 logger.info("[%s] Suppressing stale response for interrupted session %s", self.name,
                             session_key)
                 response = None
@@ -4223,9 +4215,15 @@ class BasePlatformAdapter(ABC):
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
                 session_key, getattr(interrupt_event, "_hermes_run_generation", None),
                 event=event) or "")
-            await self._run_processing_hook(
-                "on_processing_complete", event,
+            processing_outcome = (
                 ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE)
+            # A stale response was intentionally not delivered because a newer event owns the
+            # session.  The queued terminal event therefore completed as cancelled, not success.
+            if queued_processing_outcome is None:
+                queued_processing_outcome = (
+                    ProcessingOutcome.CANCELLED if stale_response_suppressed else processing_outcome)
+            await self._run_processing_hook("on_processing_complete", event, processing_outcome)
+            await self._complete_queued_followup_processing(event, queued_processing_outcome)
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)
@@ -4238,12 +4236,34 @@ class BasePlatformAdapter(ABC):
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
             expected = asyncio.current_task() in self._expected_cancelled_tasks
-            await self._run_processing_hook(
-                "on_processing_complete", event,
+            processing_outcome = (
                 ProcessingOutcome.CANCELLED if expected else ProcessingOutcome.FAILURE)
+            await self._run_processing_hook("on_processing_complete", event, processing_outcome)
+            await self._complete_queued_followup_processing(
+                event,
+                queued_processing_outcome
+                or (
+                    ProcessingOutcome.CANCELLED
+                    if getattr(event, "_queued_followup_processing_outcome", None)
+                    is ProcessingOutcome.CANCELLED
+                    else None
+                )
+                or processing_outcome,
+            )
             raise
         except BaseException as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
+            await self._complete_queued_followup_processing(
+                event,
+                queued_processing_outcome
+                or (
+                    ProcessingOutcome.CANCELLED
+                    if getattr(event, "_queued_followup_processing_outcome", None)
+                    is ProcessingOutcome.CANCELLED
+                    else None
+                )
+                or ProcessingOutcome.FAILURE,
+            )
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
             # SystemExit/KeyboardInterrupt propagate; other BaseExceptions are contained.

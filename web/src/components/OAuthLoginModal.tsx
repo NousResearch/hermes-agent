@@ -8,7 +8,6 @@ import { copyTextToClipboard } from "@/lib/clipboard";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { useI18n } from "@/i18n";
 import { cn, themedBody } from "@/lib/utils";
-import { errorMessage } from "@/lib/api-error";
 
 interface Props {
   provider: OAuthProvider;
@@ -59,7 +58,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
       .catch((e) => {
         if (!isMounted.current) return;
         setPhase("error");
-        setErrorMsg(`Failed to start login: ${errorMessage(e)}`);
+        setErrorMsg(`Failed to start login: ${e}`);
       });
     return () => {
       isMounted.current = false;
@@ -142,7 +141,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
       } catch (e) {
         if (!isMounted.current) return;
         setPhase("error");
-        setErrorMsg(`Polling failed: ${errorMessage(e)}`);
+        setErrorMsg(`Polling failed: ${e}`);
         if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
       }
     }, 2000);
@@ -174,7 +173,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
     } catch (e) {
       if (!isMounted.current) return;
       setPhase("error");
-      setErrorMsg(`Submit failed: ${errorMessage(e)}`);
+      setErrorMsg(`Submit failed: ${e}`);
     }
   };
 
@@ -412,7 +411,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
                       .catch((e) => {
                         if (!isMounted.current) return;
                         setPhase("error");
-                        setErrorMsg(`${t.common.retry} failed: ${errorMessage(e)}`);
+                        setErrorMsg(`${t.common.retry} failed: ${e}`);
                       });
                   }}
                 >

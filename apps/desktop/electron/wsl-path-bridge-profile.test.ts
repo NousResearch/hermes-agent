@@ -27,7 +27,9 @@
  */
 import assert from 'node:assert/strict'
 
-import { afterEach, describe, test } from 'vitest'
+import { afterEach, describe, test, vi } from 'vitest'
+
+vi.mock('node:fs', () => ({ default: { existsSync: vi.fn(() => false) } }))
 
 import {
   isWslBridgeActive,

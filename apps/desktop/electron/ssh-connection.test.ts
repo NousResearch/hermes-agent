@@ -1,10 +1,8 @@
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { promisify } from 'node:util'
 
 import { test } from 'vitest'
 
@@ -20,18 +18,14 @@ import {
   forwardSpec,
   hostArgs,
   redactSecrets,
-  REMOTE_PROBE_TIMEOUT_SECS,
   runSsh,
   SSH_ERROR,
   SshConnection,
   sshErrorMessage,
   stopTunnelChild,
   target,
-  validateSshTarget,
-  withRemoteTimeout
+  validateSshTarget
 } from './ssh-connection'
-
-const execFileAsync = promisify(execFile)
 
 test('redactSecrets scrubs the spawn-time session token env var', () => {
   const line = 'setsid env HERMES_DASHBOARD_SESSION_TOKEN=abc123deadbeef HERMES_DESKTOP=1 hermes dashboard'
@@ -93,10 +87,10 @@ test('controlSocketPath is stable, short, and host-distinct', () => {
   assert.equal(a, a2, 'same triple → same socket (ControlMaster reuse)')
   assert.notEqual(a, b, 'different host → different socket')
   // 16 hex chars + .sock keeps the basename short for sun_path 104-byte limit
-  assert.match(a, /\/[0-9a-f]{16}\.sock$/)
+  assert.match(path.basename(a), /^[0-9a-f]{16}\.sock$/)
 })
 
-test('controlSocketPath default base stays under sun_path even with the temp-listener suffix', () => {
+test.runIf(process.platform !== 'win32')('controlSocketPath default base stays under sun_path even with the temp-listener suffix', () => {
   // OpenSSH binds a temporary listener at `<ControlPath>.<16 random chars>` (a
   // 17-byte suffix) while opening the master. The macOS regression was the
   // default base under os.tmpdir() (/var/folders/.../T/) pushing it over 104.
@@ -270,7 +264,7 @@ function scriptedSpawn(scripts) {
   return fn
 }
 
-test('open() establishes the master when not already alive', async () => {
+test.runIf(process.platform !== 'win32')('open() establishes the master when not already alive', async () => {
   // `-O check` fails first (not alive) → master opens (code 0). Track which
   // ssh ops ran rather than re-probing with the same always-failing check.
   const ops: string[] = []
@@ -308,7 +302,7 @@ test('open() abort kills an in-flight SSH child instead of waiting for timeout',
   assert.equal(child._killed, true)
 })
 
-test('open() is a no-op when the master is already alive and execs verify', async () => {
+test.runIf(process.platform !== 'win32')('open() is a no-op when the master is already alive and execs verify', async () => {
   const ops: string[] = []
 
   const spawnFn = scriptedSpawn(args => {
@@ -322,7 +316,7 @@ test('open() is a no-op when the master is already alive and execs verify', asyn
   assert.deepEqual(ops, ['check', 'verify'], 'alive master is exec-verified, then trusted without reopening')
 })
 
-test('open() evicts a wedged master (check passes, exec hangs) and dials fresh', async () => {
+test.runIf(process.platform !== 'win32')('open() evicts a wedged master (check passes, exec hangs) and dials fresh', async () => {
   // The macOS mode-switch wedge: ControlPersist master answers -O check but
   // every exec through it hangs. open() must verify, evict (-O exit), and
   // establish a fresh master instead of trusting the corpse.
@@ -362,7 +356,7 @@ test('open() evicts a wedged master (check passes, exec hangs) and dials fresh',
   )
 })
 
-test('close() removes the control socket when -O exit fails', async () => {
+test.runIf(process.platform !== 'win32')('close() removes the control socket when -O exit fails', async () => {
   const dir = path.join(os.tmpdir(), `hermes-ssh-close-${process.pid}-${Date.now()}`)
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
 
@@ -386,7 +380,7 @@ test('close() removes the control socket when -O exit fails', async () => {
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-test('open() creates the control-socket directory if it does not exist', async () => {
+test.runIf(process.platform !== 'win32')('open() creates the control-socket directory if it does not exist', async () => {
   const dir = path.join(os.tmpdir(), `hermes-ssh-test-${process.pid}-${Date.now()}`)
   assert.ok(!fs.existsSync(dir), 'precondition: control dir absent')
   const spawnFn = scriptedSpawn(args => (args.includes('check') ? { code: 255 } : { code: 0 }))
@@ -455,7 +449,7 @@ test('exec() treats a hung ssh as a timeout (half-open connection)', async () =>
   )
 })
 
-test('forward() issues -O forward with a loopback-bound -L spec', async () => {
+test.runIf(process.platform !== 'win32')('forward() issues -O forward with a loopback-bound -L spec', async () => {
   const spawnFn = scriptedSpawn([{ code: 0 }])
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
   await conn.forward(5000, 6000)
@@ -467,7 +461,9 @@ test('forward() issues -O forward with a loopback-bound -L spec', async () => {
 
 test('lifecycle logging passes through redaction', async () => {
   const logs: string[] = []
-  const spawnFn = scriptedSpawn(args => (args.includes('check') ? { code: 255 } : { code: 0 }))
+  // First liveness probe fails on either native transport; the next dial
+  // succeeds, so this exercises the logging path instead of early reuse.
+  const spawnFn = scriptedSpawn([{ code: 255 }, { code: 0 }])
 
   const conn = new SshConnection(
     { host: 'box', user: 'me' },
@@ -482,6 +478,27 @@ test('lifecycle logging passes through redaction', async () => {
   }
 
   assert.ok(logs.some(l => l.includes('[ssh]')))
+})
+
+test.runIf(process.platform === 'win32')('Windows defaults to one-shot SSH without creating a control directory', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-ssh-win-'))
+  const controlDir = path.join(dir, 'unused-control')
+  const spawnFn = scriptedSpawn([{ code: 255 }, { code: 0 }])
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir })
+  try {
+    await conn.open()
+    assert.equal(conn.controlPath, '')
+    assert.equal(fs.existsSync(controlDir), false)
+    assert.equal(spawnFn.calls.length, 2)
+    for (const args of spawnFn.calls) {
+      assert.equal(args.at(-1), 'exit 0')
+      assert.ok(!args.some(arg => /ControlMaster|ControlPath|ControlPersist/.test(arg)))
+    }
+    await conn.close()
+    assert.equal(conn._opened, false)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('no-mux: ssh args carry no ControlMaster/ControlPath options', async () => {
@@ -926,7 +943,7 @@ test('runSsh delivers stdinData to the child and does not log it', async () => {
   assert.equal(stdinWritten, 'secret-token-value', 'stdinData must be written to child.stdin')
 })
 
-test('open() rejects a control-dir that is a symlink', async () => {
+test.runIf(process.platform !== 'win32')('open() rejects a control-dir that is a symlink', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh-test-'))
   const real = path.join(tmp, 'real')
   const link = path.join(tmp, 'link')
@@ -938,11 +955,7 @@ test('open() rejects a control-dir that is a symlink', async () => {
   fs.rmSync(tmp, { recursive: true, force: true })
 })
 
-test('open() enforces 0700 on an existing control dir with lax permissions', async () => {
-  if (process.platform === 'win32') {
-    return
-  }
-
+test.runIf(process.platform !== 'win32')('open() enforces 0700 on an existing control dir with lax permissions', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh-test-'))
   const dir = path.join(tmp, 'ctrl')
   fs.mkdirSync(dir, { mode: 0o755 })
@@ -1004,7 +1017,7 @@ test('control socket identity separates installation scope and key identity', ()
   )
 })
 
-test('closing one scope addresses only that scope control master', async () => {
+test.runIf(process.platform !== 'win32')('closing one scope addresses only that scope control master', async () => {
   const firstSpawn = scriptedSpawn({ code: 0 })
   const secondSpawn = scriptedSpawn({ code: 0 })
 
@@ -1037,7 +1050,7 @@ test('closing one scope addresses only that scope control master', async () => {
   assert.equal(second._opened, true)
 })
 
-test('failed ControlMaster close disowns the master instead of retrying it', async () => {
+test.runIf(process.platform !== 'win32')('failed ControlMaster close disowns the master instead of retrying it', async () => {
   // Old contract kept _opened=true for a retry — which left wedged ControlPersist
   // masters trusted and reattachable (the macOS mode-switch livelock). New
   // contract: a master that refuses -O exit is disowned — socket dropped,
@@ -1072,75 +1085,4 @@ test('stopTunnelChild waits for process exit', async () => {
   assert.equal(stopped, false)
   await stopping
   assert.equal(stopped, true)
-})
-
-test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#110478)', async () => {
-  if (process.platform === 'win32') {
-    return
-  }
-
-  // Shape: POSIX watchdog — macOS remotes have no GNU `timeout`.
-  const wrapped = withRemoteTimeout('hermes --version 2>&1', 15)
-
-  assert.ok(wrapped.includes('sleep 15'), 'watchdog duration honored')
-  assert.ok(wrapped.includes('kill -9'), 'watchdog kills the hung child remotely')
-  assert.ok(!/(^|[ ;(])timeout[ ;]/.test(wrapped), 'no GNU timeout dependency')
-  assert.ok(wrapped.endsWith('exit $__htrc'), 'inner exit code propagated')
-  assert.ok(
-    withRemoteTimeout('true').includes(`sleep ${REMOTE_PROBE_TIMEOUT_SECS}`),
-    'defaults to REMOTE_PROBE_TIMEOUT_SECS'
-  )
-  assert.ok(REMOTE_PROBE_TIMEOUT_SECS * 1000 < 20_000, 'remote watchdog fires before the local exec timeout')
-
-  // Behavior through a real POSIX shell: healthy output passes through …
-  const healthyStart = Date.now()
-  const { stdout } = await execFileAsync('sh', ['-c', withRemoteTimeout('echo hello', 5)])
-  const healthyElapsed = Date.now() - healthyStart
-
-  assert.equal(stdout, 'hello\n')
-  // … and returns promptly: the watchdog's orphaned `sleep` must not hold the
-  // session pipes open until the full timeout on the healthy path.
-  assert.ok(healthyElapsed < 4000, `healthy probe returned fast (took ${healthyElapsed}ms)`)
-
-  // … a hung command is killed promptly with a non-zero exit … The duration
-  // is unique to this run so the orphan sweep below cannot match an unrelated
-  // `sleep` on a busy host.
-  const hungSecs = 30_000 + (process.pid % 10_000)
-  const start = Date.now()
-
-  const err: any = await execFileAsync('sh', ['-c', withRemoteTimeout(`sleep ${hungSecs}`, 1)]).then(
-    () => null,
-    e => e
-  )
-
-  const elapsed = Date.now() - start
-
-  assert.ok(err && err.code !== 0, 'hung command must exit non-zero')
-  assert.ok(elapsed < 15000, `watchdog fired promptly instead of waiting ${hungSecs}s (took ${elapsed}ms)`)
-
-  // … and no orphan is left behind.
-  const { stdout: strays } = await execFileAsync('sh', ['-c', `ps -eo args | grep "[s]leep ${hungSecs}$" || true`])
-
-  assert.equal(strays.trim(), '', 'killed probe left no orphan process')
-
-  // … including the grandchild of a launcher that runs the CLI without exec
-  // (the broken-launcher class of #110478). Needs a shell with job control
-  // off a tty; bash has it, dash does not.
-  const bash = await execFileAsync('sh', ['-c', 'command -v bash || true']).then(r => r.stdout.trim())
-
-  if (bash) {
-    const grandSecs = hungSecs + 1
-    const launcher = `sh -c 'sleep ${grandSecs}; echo done'`
-
-    const err2: any = await execFileAsync(bash, ['-c', withRemoteTimeout(launcher, 1)]).then(
-      () => null,
-      e => e
-    )
-
-    assert.ok(err2 && err2.code !== 0, 'hung launcher must exit non-zero')
-
-    const { stdout: grandStrays } = await execFileAsync('sh', ['-c', `ps -eo args | grep "[s]leep ${grandSecs}$" || true`])
-
-    assert.equal(grandStrays.trim(), '', 'watchdog killed the launcher’s grandchild too')
-  }
 })

@@ -189,7 +189,7 @@ function Set-GitRedirect {
     }
     # first, get the set origin url
     $actualGitUrl = Invoke-Git @("-C", $RepoRoot, "remote", "get-url", "origin")
-    # then override it 
+    # then override it
     @"
 [url "$fileUrl"]
 	insteadOf = $actualGitUrl

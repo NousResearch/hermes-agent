@@ -23,7 +23,6 @@ import {
   type McpTransport,
 } from "@/lib/mcp-server-create";
 import { cn } from "@/lib/utils";
-import { errorMessage } from "@/lib/api-error";
 
 // Profile name rule mirrors the backend (`^[a-z0-9][a-z0-9_-]{0,63}$`).
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -271,7 +270,7 @@ export default function ProfileBuilderPage() {
       );
       navigate("/profiles");
     } catch (e) {
-      showToast(`Create failed: ${errorMessage(e)}`, "error");
+      showToast(`Create failed: ${e}`, "error");
     } finally {
       setCreating(false);
     }

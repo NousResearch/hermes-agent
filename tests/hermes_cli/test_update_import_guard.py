@@ -16,7 +16,6 @@ and the syntax guard reported the update as successful.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
@@ -207,7 +206,7 @@ def test_import_guard_rejects_malformed_health_payload(monkeypatch, tmp_path):
         Result.stdout = f"{marker}{{}}"
         return Result()
 
-    monkeypatch.setattr(update_cmd_deps, "bounded_probe_run", malformed)
+    monkeypatch.setattr(update_cmd.subprocess, "run", malformed)
 
     ok, module, error = update_cmd._validate_critical_modules_import(tmp_path)
 
@@ -220,9 +219,9 @@ def test_import_guard_reports_probe_timeout(monkeypatch, tmp_path):
     import subprocess
 
     def timeout(*_args, **_kwargs):
-        return None
+        raise subprocess.TimeoutExpired(["python", "-c", "probe"], 120)
 
-    monkeypatch.setattr(update_cmd_deps, "bounded_probe_run", timeout)
+    monkeypatch.setattr(update_cmd.subprocess, "run", timeout)
 
     ok, module, error = update_cmd._validate_critical_modules_import(tmp_path)
 
@@ -242,22 +241,13 @@ def test_untracked_enumeration_failure_is_visible(monkeypatch, tmp_path, capsys)
     assert "Could not enumerate untracked files" in capsys.readouterr().out
 
 
-def test_import_guard_reports_bounded_probe_failure(monkeypatch, tmp_path):
-    """A wedged child reports promptly instead of blocking update teardown."""
-    monkeypatch.setattr(update_cmd_deps, "bounded_probe_run", lambda *_a, **_kw: None)
-    assert update_cmd._validate_critical_modules_import(tmp_path) == (
-        False, "critical-module probe", "timed out before reporting import health",
-    )
+def test_import_guard_is_non_fatal_when_probe_cannot_run(monkeypatch, tmp_path):
+    """If we can't spawn the probe, don't block the user's update."""
 
+    def boom(*_a, **_kw):
+        raise OSError("cannot spawn")
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX exec-bit PermissionError")
-def test_import_guard_is_non_fatal_when_probe_cannot_run(tmp_path):
-    """A venv interpreter that exists but cannot be executed must not read as a hung probe:
-    spawn failure stays advisory (real ``bounded_probe_run``, real ``Popen``)."""
-    venv_python = tmp_path / "venv" / "bin" / "python"
-    venv_python.parent.mkdir(parents=True)
-    venv_python.write_text("#!/bin/sh\nexit 0\n")
-    venv_python.chmod(0o644)  # present, not executable -> Popen raises PermissionError
+    monkeypatch.setattr(update_cmd.subprocess, "run", boom)
     assert update_cmd._validate_critical_modules_import(tmp_path) == (True, None, None)
 
 
@@ -309,7 +299,6 @@ def test_import_guard_prefers_the_project_venv_interpreter(monkeypatch, tmp_path
 
     def fake_run(cmd, **kwargs):
         seen["interpreter"] = cmd[0]
-        seen["cwd"] = kwargs["cwd"]
 
         class R:
             returncode = 0
@@ -318,11 +307,10 @@ def test_import_guard_prefers_the_project_venv_interpreter(monkeypatch, tmp_path
 
         return R()
 
-    monkeypatch.setattr(update_cmd_deps, "bounded_probe_run", fake_run)
+    monkeypatch.setattr(update_cmd.subprocess, "run", fake_run)
     update_cmd._validate_critical_modules_import(tmp_path)
 
     assert seen["interpreter"] == str(venv_python)
-    assert seen["cwd"] == str(tmp_path)
 
 
 def test_import_guard_ignores_missing_third_party_dependency(monkeypatch, tmp_path):
@@ -393,12 +381,12 @@ def test_probe_and_hint_share_one_first_party_definition():
         captured["probe"] = cmd[-1]
         return _Result()
 
-    real_run = update_cmd_deps.bounded_probe_run
-    update_cmd_deps.bounded_probe_run = capture
+    real_run = update_cmd.subprocess.run
+    update_cmd.subprocess.run = capture
     try:
         update_cmd._validate_critical_modules_import("/tmp")
     finally:
-        update_cmd_deps.bounded_probe_run = real_run
+        update_cmd.subprocess.run = real_run
 
     probe_src = captured["probe"]
     # Every first-party root must appear in the probe's injected tuple.

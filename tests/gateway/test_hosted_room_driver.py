@@ -95,6 +95,25 @@ def _open_driver_schema(path: str) -> int:
     return len(driver.list_tasks(path, room_id="room-1"))
 
 
+def test_read_does_not_require_sqlite_writer_lock(db, monkeypatch):
+    identity = _identity()
+    _admit(db, identity, FakeClock())
+    writer = sqlite3.connect(db)
+    real_connect = sqlite3.connect
+
+    def connect_with_short_timeout(*args, **kwargs):
+        kwargs["timeout"] = 0.05
+        return real_connect(*args, **kwargs)
+
+    try:
+        writer.execute("BEGIN IMMEDIATE")
+        monkeypatch.setattr(driver.sqlite3, "connect", connect_with_short_timeout)
+        assert driver.get_task(db, identity)["status"] == "queued"
+    finally:
+        writer.rollback()
+        writer.close()
+
+
 def test_two_contenders_have_one_winner(db):
     clock = FakeClock()
 
@@ -110,6 +129,67 @@ def test_two_contenders_have_one_winner(db):
     winners = [result for result in results if result is not None]
     assert len(winners) == 1
     assert winners[0].lease_generation == 1
+
+
+def test_terminal_receipt_is_durable_idempotent_and_generation_fenced(db):
+    clock = FakeClock()
+    identity = _identity()
+    lease = _lease(db, clock)
+    _admit(db, identity, clock)
+    attempt = driver.start_task(
+        db,
+        identity,
+        lease,
+        expected_cancel_generation=0,
+        clock=clock,
+    )
+
+    first = driver.record_terminal_receipt(
+        db,
+        identity,
+        execution_generation=attempt.execution_generation,
+        settlement_id="reply-task-1-1",
+        status="settled",
+        result={"message_id": "reply-task-1-1", "text": "done"},
+        clock=clock,
+    )
+    repeated = driver.record_terminal_receipt(
+        db,
+        identity,
+        execution_generation=attempt.execution_generation,
+        settlement_id="reply-task-1-1",
+        status="settled",
+        result={"message_id": "reply-task-1-1", "text": "done"},
+        clock=clock,
+    )
+
+    assert first["idempotent"] is False
+    assert repeated["idempotent"] is True
+    assert driver.get_terminal_receipt(
+        db,
+        identity,
+        execution_generation=attempt.execution_generation,
+    )["result"]["text"] == "done"
+    with pytest.raises(driver.TaskConflictError):
+        driver.record_terminal_receipt(
+            db,
+            identity,
+            execution_generation=attempt.execution_generation,
+            settlement_id="reply-task-1-1",
+            status="failed",
+            result={"message_id": "reply-task-1-1", "error": "different"},
+            clock=clock,
+        )
+    with pytest.raises(driver.StaleTaskError):
+        driver.record_terminal_receipt(
+            db,
+            identity,
+            execution_generation=attempt.execution_generation + 1,
+            settlement_id="reply-task-1-2",
+            status="settled",
+            result={"message_id": "reply-task-1-2", "text": "stale"},
+            clock=clock,
+        )
 
 
 def test_expiry_allows_reclaim_and_fences_stale_renew_and_release(db):
@@ -473,6 +553,119 @@ def test_cancellation_fences_late_success(db):
             settlement_id="late-success",
             status="settled",
             result={"text": "too late"},
+            clock=clock,
+        )
+
+
+def test_stop_intent_fences_pending_approval_decision(db):
+    clock = FakeClock()
+    identity = _identity()
+    lease = _lease(db, clock)
+    _admit(db, identity, clock)
+    attempt = driver.start_task(
+        db,
+        identity,
+        lease,
+        expected_cancel_generation=0,
+        clock=clock,
+    )
+    driver.publish_approval_request(
+        db,
+        identity,
+        execution_generation=attempt.execution_generation,
+        member_id="ops",
+        request_id="approval-1",
+        session_id="session-1",
+        action={"command": "deploy --dry-run"},
+        clock=clock,
+    )
+
+    driver.begin_task_cancel(
+        db,
+        identity,
+        cancel_id="cancel-approval",
+        expected_cancel_generation=attempt.cancel_generation,
+        clock=clock,
+    )
+
+    with pytest.raises(driver.StaleTaskError, match="no longer running"):
+        driver.decide_approval_request(
+            db,
+            identity,
+            execution_generation=attempt.execution_generation,
+            member_id="ops",
+            request_id="approval-1",
+            choice="once",
+            clock=clock,
+        )
+
+    with sqlite3.connect(db) as conn:
+        choice = conn.execute(
+            """SELECT choice FROM hosted_room_approval_requests
+               WHERE room_id=? AND task_id=? AND execution_generation=?
+                 AND member_id=? AND request_id=?""",
+            (
+                identity.room_id,
+                identity.task_id,
+                attempt.execution_generation,
+                "ops",
+                "approval-1",
+            ),
+        ).fetchone()[0]
+    assert choice is None
+
+
+def test_approval_requests_are_stale_once_task_is_stopping(db):
+    clock = FakeClock()
+    identity = _identity()
+    lease = _lease(db, clock)
+    _admit(db, identity, clock)
+    attempt = driver.start_task(
+        db,
+        identity,
+        lease,
+        expected_cancel_generation=0,
+        clock=clock,
+    )
+    driver.publish_approval_request(
+        db,
+        identity,
+        execution_generation=attempt.execution_generation,
+        member_id="member-ops",
+        request_id="approval-1",
+        session_id="session-1",
+        action={"tool": "shell", "command": "inspect"},
+        clock=clock,
+    )
+
+    driver.begin_task_cancel(
+        db,
+        identity,
+        cancel_id="cancel-before-approval",
+        expected_cancel_generation=0,
+        clock=clock,
+    )
+
+    assert driver.list_pending_approval_requests(db, room_id="room-1") == []
+    with pytest.raises(driver.StaleTaskError, match="no longer running"):
+        driver.decide_approval_request(
+            db,
+            identity,
+            execution_generation=attempt.execution_generation,
+            member_id="member-ops",
+            request_id="approval-1",
+            choice="once",
+            clock=clock,
+        )
+    with pytest.raises(driver.InvalidTaskTransitionError, match="running task"):
+        driver.publish_approval_request(
+            db,
+            identity,
+            execution_generation=attempt.execution_generation,
+            member_id="member-ops",
+            request_id="approval-2",
+            session_id="session-1",
+            action={"tool": "shell", "command": "inspect again"},
             clock=clock,
         )
 

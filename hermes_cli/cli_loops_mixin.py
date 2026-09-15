@@ -116,7 +116,7 @@ class CLILoopsMixin:
         if len(parts) == 1:
             # No argument: show current title and session ID.
             if not self._session_db:
-                _cprint(f"  {format_session_db_unavailable(details=True)}")
+                _cprint(f"  {format_session_db_unavailable()}")
                 return
             _cprint(f"  Session ID: {self.session_id}")
             session = self._session_db.get_session(self.session_id)
@@ -132,7 +132,7 @@ class CLILoopsMixin:
             _cprint("  Usage: /title <your session title>")
             return
         if not self._session_db:
-            _cprint(f"  {format_session_db_unavailable(details=True)}")
+            _cprint(f"  {format_session_db_unavailable()}")
             return
         # Sanitize early so feedback matches what gets stored. A rejection (e.g. too
         # long) prints that one reason and stops — never a second, contradictory

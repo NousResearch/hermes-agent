@@ -269,4 +269,3 @@ def parse_systemd_duration_to_us(raw: str) -> Optional[int]:
         elif digits and not _flush():
             return None
     return total_us if total_us > 0 else None
-

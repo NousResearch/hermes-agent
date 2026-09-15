@@ -126,9 +126,11 @@ class TestCreateProfile:
 
 
     def test_seeds_placeholder_env_file(self, profile_env):
-        """Fresh profiles get their own .env (owner-only) so channel/env
-        writes are profile-scoped from day one instead of falling through
-        to the shell environment / root install."""
+        """Fresh profiles get their own .env so channel/env writes are profile-scoped.
+
+        POSIX mode bits prove owner-only access there; Windows ACLs are not represented by
+        ``stat.S_IMODE``, so the cross-platform content/isolation checks remain the oracle.
+        """
         import stat
         profile_dir = create_profile("coder", no_alias=True)
         env_path = profile_dir / ".env"
@@ -139,8 +141,8 @@ class TestCreateProfile:
             line.startswith("#") or not line.strip()
             for line in content.splitlines()
         )
-        mode = stat.S_IMODE(env_path.stat().st_mode)
-        assert mode == 0o600
+        if os.name == "posix":
+            assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
 
 
     def test_fresh_profile_inherits_a_usable_model(self, profile_env):
@@ -201,31 +203,6 @@ class TestCreateProfile:
         assert (profile_dir / ".env").read_text().strip() == "KEY=val"
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
 
-    def test_clone_sync_imports_carries_manifest_but_never_links_profiles(self, profile_env):
-        """--sync-imports copies import-sync.json (a pointer at EXTERNAL agent trees) and nothing
-        else changes: the clone still gets its own config/skills copies, never a live link."""
-        from hermes_cli.agent_import_sync import SYNC_MANIFEST_NAME, load_sync_manifest
-
-        default_home = profile_env / ".hermes"
-        (default_home / "config.yaml").write_text("model: test")
-        manifest = {"version": 1, "agents": {"claude-code": {
-            "source": str(profile_env / ".claude"), "digest": "d", "overwrite": False,
-            "last_import": 1, "imported_skills": ["s1"]}}}
-        (default_home / SYNC_MANIFEST_NAME).write_text(json.dumps(manifest))
-
-        plain = create_profile("plain", clone_config=True, no_alias=True)
-        assert not (plain / SYNC_MANIFEST_NAME).exists()
-
-        synced = create_profile("synced", clone_config=True, sync_imports=True, no_alias=True)
-        assert load_sync_manifest(synced)["agents"] == manifest["agents"]
-        # Editing the source afterwards does not reach the clone: still an independent island.
-        (default_home / "config.yaml").write_text("model: changed")
-        assert yaml.safe_load((synced / "config.yaml").read_text())["model"] == "test"
-
-    def test_sync_imports_requires_a_clone_source(self, profile_env):
-        with pytest.raises(ValueError, match="--sync-imports requires"):
-            create_profile("lonely", sync_imports=True, no_alias=True)
-
     def test_clone_all_does_not_copy_cron_jobs(self, profile_env):
         # Cron jobs are scheduled work bound to the source profile + origin channel; a clone
         # that inherits jobs.json fires every job twice (two gateways, same job ids).
@@ -240,22 +217,6 @@ class TestCreateProfile:
         assert (profile_dir / "cron").is_dir()
         assert not any((profile_dir / "cron").iterdir())
         assert yaml.safe_load((profile_dir / "config.yaml").read_text())["model"] == "test"
-
-    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="special files need a POSIX filesystem")
-    def test_clone_all_skips_special_files(self, profile_env):
-        # A live source profile holds special files copytree cannot copy (e.g. a suffixless
-        # agent-browser control socket); one of them must not abort the whole clone.
-        default_home = profile_env / ".hermes"
-        (default_home / "config.yaml").write_text("model: test")
-        browser_dir = default_home / "home" / ".agent-browser"
-        browser_dir.mkdir(parents=True)
-        (browser_dir / "state.json").write_text("{}")
-        os.mkfifo(browser_dir / "control")
-
-        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
-
-        assert (profile_dir / "home" / ".agent-browser" / "state.json").is_file()
-        assert not (profile_dir / "home" / ".agent-browser" / "control").exists()
 
 
 
@@ -346,7 +307,8 @@ class TestBackfillProfileEnvs:
         assert sorted(backfilled) == ["old1", "old2"]
         for p in (p1, p2):
             assert (p / ".env").read_text() == "OPENROUTER_API_KEY=root-key\n"
-            assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
+            if os.name == "posix":
+                assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
 
 
     def test_placeholder_when_default_has_no_env(self, profile_env):
@@ -684,15 +646,20 @@ class TestAliasCollision:
 class TestWrapperScript:
     """Tests for create_wrapper_script() and remove_wrapper_script()."""
 
-    def test_creates_sh_on_posix(self, profile_env, monkeypatch):
+    def test_creates_native_wrapper_with_argument_passthrough(self, profile_env, monkeypatch):
         monkeypatch.setattr("hermes_cli.profiles.shutil.which", lambda name: "/opt/hermes/bin/hermes")
         from hermes_cli.profiles import create_wrapper_script
         wrapper = create_wrapper_script("mybot")
         assert wrapper is not None
-        assert wrapper.name == "mybot"
         content = wrapper.read_text()
-        assert content.startswith("#!/bin/sh")
-        assert "exec /opt/hermes/bin/hermes -p mybot" in content
+        if sys.platform == "win32":
+            assert wrapper.name == "mybot.bat"
+            assert [line for line in content.splitlines() if line] == [
+                "@echo off", "hermes -p mybot %*",
+            ]
+        else:
+            assert wrapper.name == "mybot"
+            assert content == '#!/bin/sh\nexec /opt/hermes/bin/hermes -p mybot "$@"\n'
 
 
     @pytest.mark.windows_only
@@ -769,7 +736,8 @@ class TestFindAliasForProfile:
         info = next(p for p in list_profiles() if p.name == "steve")
         assert info.alias_name == "qiaobusi"
         assert info.alias_path is not None
-        assert info.alias_path.name == "qiaobusi"
+        expected_name = "qiaobusi.bat" if sys.platform == "win32" else "qiaobusi"
+        assert info.alias_path.name == expected_name
 
 
 # ===================================================================
@@ -887,10 +855,7 @@ class TestExportImport:
 
     def test_export_default_includes_profile_data(self, profile_env, tmp_path):
         """Profile data files end up in the archive (credentials excluded)."""
-        # Write through HERMES_HOME, not get_profile_dir("default"): the latter resolves to the
-        # OPERATOR's real install whenever basetest sits inside it, so this test used to
-        # overwrite the live config.yaml / .env / MEMORY.md with its fixtures.
-        default_dir = profile_env / ".hermes"
+        default_dir = get_profile_dir("default")
         (default_dir / "config.yaml").write_text("model: test")
         (default_dir / ".env").write_text("KEY=val")
         (default_dir / "SOUL.md").write_text("Be nice.")
@@ -919,8 +884,7 @@ class TestExportImport:
         symlinks inside *allowed* artifacts (e.g. ``skills/``) survive as
         symlinks; the link and its target are both retained.
         """
-        # Same reason as above: never resolve the operator's real default home from a test.
-        default_dir = profile_env / ".hermes"
+        default_dir = get_profile_dir("default")
         (default_dir / "config.yaml").write_text("ok")
         # Place broken symlink *inside* the allowed ``skills/`` tree so the
         # root-level allow-list passes the directory through; the
@@ -1261,5 +1225,3 @@ class TestResolveProfileEnvSpelling:
         # No HERMES_HOME: the platform default root applies (existing contract).
         monkeypatch.delenv("HERMES_HOME", raising=False)
         assert Path(resolve_profile_env("default")) == _get_default_hermes_home()
-
-

@@ -5,7 +5,6 @@ import {
   type GatewayRequestId,
   JsonRpcRequestChannel,
   type JsonRpcTransport,
-  type ServerRequestHandler,
   wireFrameText
 } from './json-rpc-channel.js'
 
@@ -344,15 +343,6 @@ export class JsonRpcGatewayClient {
     return this.onAny(handler)
   }
 
-  /**
-   * Server→client requests (clarify, approval, sudo, …). Live frames and
-   * `open_requests` re-delivered after a reconnect both arrive here; the
-   * latter carry `replayed: true`.
-   */
-  onRequest(handler: ServerRequestHandler): () => void {
-    return this.channel.onRequest(handler)
-  }
-
   onState(handler: (state: ConnectionState) => void): () => void {
     this.stateHandlers.add(handler)
     handler(this.state)
@@ -455,7 +445,6 @@ export class JsonRpcGatewayClient {
       // One RPC per known session keeps params flat; sessions are few (<20).
       const results = await Promise.allSettled(
         entries.map(([sid, lastSeen]) =>
-          // `open_requests` on the answer are re-delivered by the channel itself.
           this.request<{ events?: Array<{ type: string; session_id?: string; seq?: number; payload?: unknown }> }>(
             'session.events.since',
             { session_id: sid, last_seen: lastSeen },

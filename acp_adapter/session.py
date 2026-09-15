@@ -6,7 +6,7 @@ survive process restarts and appear in ``session_search``; ``load_session`` /
 """
 from __future__ import annotations
 
-from hermes_constants import get_hermes_home, translate_cwd_for_wsl_backend, windows_path_to_wsl
+from hermes_constants import get_hermes_home, is_wsl, translate_cwd_for_wsl_backend, windows_path_to_wsl
 
 import copy
 import json
@@ -33,12 +33,15 @@ def _translate_acp_cwd(cwd: str) -> str:
 def _normalize_cwd_for_compare(cwd: str | None) -> str:
     expanded = os.path.expanduser(str(cwd or ".").strip() or ".")
 
-    # Windows drive paths -> WSL mount form so history filters match across hosts.
-    translated = windows_path_to_wsl(expanded)
-    if translated is not None:
-        expanded = translated
-    elif re.match(r"^/mnt/[A-Za-z]/", expanded):
-        expanded = f"/mnt/{expanded[5].lower()}/{expanded[7:]}"
+    # Windows drive paths use the WSL mount spelling only when the backend actually runs in WSL.
+    # On native Windows, converting ``C:\\...`` to ``/mnt/c/...`` makes ``realpath`` look below
+    # ``C:\\mnt`` instead of resolving the editor workspace and its symlink aliases.
+    if is_wsl():
+        translated = windows_path_to_wsl(expanded)
+        if translated is not None:
+            expanded = translated
+        elif re.match(r"^/mnt/[A-Za-z]/", expanded):
+            expanded = f"/mnt/{expanded[5].lower()}/{expanded[7:]}"
 
     # realpath resolves symlink aliases (macOS ``/var`` vs ``/private/var``, ``/tmp`` vs
     # ``/private/tmp``) that otherwise drop a workspace's own sessions; it is lexical
@@ -269,15 +272,13 @@ class SessionManager:
         return state
 
     def _get_db(self):
-        """Lazily acquire the process-shared SessionDB; ``None`` if unavailable (e.g. import
-        error in a minimal test env). ``HERMES_HOME`` is resolved here, not via the import-time
-        ``DEFAULT_DB_PATH``, so test fixtures that change the env var later are honoured. The
-        registry handle is the one in-process tools (delegation, session_search, goals) also
-        acquire, so the ACP server holds ONE writer on state.db instead of two (#100896)."""
+        """Lazily initialise the SessionDB; ``None`` if unavailable (e.g. import error in a
+        minimal test env). ``HERMES_HOME`` is resolved here, not via the import-time
+        ``DEFAULT_DB_PATH``, so test fixtures that change the env var later are honoured."""
         if self._db_instance is None:
             try:
-                from hermes_state_registry import acquire
-                self._db_instance = acquire(get_hermes_home() / "state.db")
+                from hermes_state import SessionDB
+                self._db_instance = SessionDB(db_path=get_hermes_home() / "state.db")
             except Exception:
                 logger.debug("SessionDB unavailable for ACP persistence", exc_info=True)
         return self._db_instance

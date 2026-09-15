@@ -267,13 +267,11 @@ def run_oneshot(
 
 def _create_session_db_for_oneshot():
     """Best-effort SessionDB — oneshot bypasses ``HermesCLI._init_agent()``, so it must wire the
-    SQLite store itself or ``session_search`` is advertised but always unavailable. The registry
-    handle is the one in-process tools (delegation, goals) acquire during the run, so the process
-    holds one writer; ``_close_agent``'s ``close()`` releases the refcount."""
+    SQLite store itself or ``session_search`` is advertised but always unavailable."""
     try:
-        from hermes_state_registry import acquire
+        from hermes_state import SessionDB
 
-        return acquire()
+        return SessionDB()
     except Exception as exc:
         logging.debug("SQLite session store not available for oneshot mode: %s", exc)
         return None

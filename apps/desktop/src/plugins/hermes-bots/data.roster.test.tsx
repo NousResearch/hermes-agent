@@ -31,7 +31,7 @@ import type { RosterRow } from './types'
 const { hostMock } = vi.hoisted(() => ({
   hostMock: {
     agents: vi.fn(),
-    profileRoutes: undefined as unknown,
+    profileRoutes: vi.fn(),
     request: vi.fn(),
     requestProfile: vi.fn(),
     state: { connectionId: { get: vi.fn(() => 'local') }, profile: { get: () => 'default' } }
@@ -106,6 +106,7 @@ const identities = (rows: RowFixture[]) => rows.map(row => `${row.connectionId}:
 
 beforeEach(() => {
   vi.clearAllMocks()
+  hostMock.profileRoutes.mockResolvedValue([])
   $lastRoster.set([])
 })
 
@@ -132,6 +133,41 @@ describe('no union roster', () => {
     )
 
     expect(identities(rows)).toEqual(['undefined:default'])
+  })
+
+  it('keeps a local bot on its own profile when the union read fails', async () => {
+    hostMock.profileRoutes.mockResolvedValue([
+      { connectionId: 'local', mode: 'local', profile: 'default', targetProfile: 'default' },
+      { connectionId: 'local', mode: 'local', profile: 'localgeneral', targetProfile: 'localgeneral' }
+    ])
+
+    const rows = await mergedRoster(
+      { profiles: [{ last_session: { id: 'hermes-chat', last_active: 1 }, name: 'default' }] },
+      null
+    )
+
+    expect(rows[0]).toMatchObject({
+      connectionId: 'local',
+      connectionKind: 'local',
+      route: { connectionId: 'local', mode: 'local', profile: 'default', targetProfile: 'default' },
+      sourceScoped: true
+    })
+  })
+
+  it('does not retarget an active row to the only non-live route', async () => {
+    hostMock.profileRoutes.mockResolvedValue([
+      { connectionId: 'homelab', mode: 'remote', profile: 'default', targetProfile: 'default' }
+    ])
+
+    const rows = await mergedRoster(
+      { profiles: [{ last_session: { id: 'hermes-chat', last_active: 1 }, name: 'default' }] },
+      null,
+      'work'
+    )
+
+    expect(rows[0]).toMatchObject({ name: 'default' })
+    expect(rows[0].connectionId).toBeUndefined()
+    expect(rows[0].sourceScoped).toBeUndefined()
   })
 })
 

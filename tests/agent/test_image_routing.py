@@ -377,9 +377,18 @@ class TestExtractImageRefs:
         assert paths == [str(img)]
         assert urls == []
 
+    def test_finds_windows_drive_path(self):
+        path = r"C:\Users\alice\screenshot.png"
+        with patch("agent.image_routing._existing_file", return_value=path):
+            paths, urls = extract_image_refs(f"Look at {path} and tell me what's wrong.")
+
+        assert paths == [path]
+        assert urls == []
+
     def test_finds_home_relative_path(self, tmp_path: Path, monkeypatch):
         # Simulate ~/foo.png by pointing HOME at tmp_path and creating the file
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         img = tmp_path / "foo.png"
         img.write_bytes(_png_bytes())
         paths, urls = extract_image_refs("see ~/foo.png please")

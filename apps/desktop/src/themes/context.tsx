@@ -21,7 +21,6 @@ import { setAppearance } from '@/store/translucency'
 
 import { $accentOverride } from './accent-override'
 import { $backendThemes, $pendingSkinApply } from './backend-sync'
-import { $chatFontFamily, resolveChatFontFamily } from './chat-font'
 import { harmonize, readableInk } from './color'
 import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
 import { retintTheme } from './retint'
@@ -207,7 +206,7 @@ const mixesFor = (isDark: boolean): Record<string, string> => ({
   '--theme-mix-bubble': isDark ? '46%' : '0%'
 })
 
-function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily = $chatFontFamily.get()) {
+function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
   if (typeof document === 'undefined') {
     return
   }
@@ -276,7 +275,7 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily 
     // `harmonize`); a blue one turns the sidebar's finished dots teal rather
     // than leaving eight emerald spots fighting the theme.
     '--ui-success': harmonize('#10b981', midground, 0.25),
-    '--dt-font-sans': resolveChatFontFamily(chatFontFamily, typo.fontSans),
+    '--dt-font-sans': typo.fontSans,
     '--dt-font-mono': typo.fontMono,
     '--noise-opacity-mul': isDark ? 'calc(0.04 / 0.21)' : 'calc(0.34 / 0.21)'
   }
@@ -478,11 +477,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // What actually gets painted (matches the `.dark` class applyTheme toggles).
   const renderedMode = useMemo(() => renderedModeFor(paintedTheme.colors, paintedMode), [paintedTheme, paintedMode])
 
-  // The chat face rides on the theme paint: the config-backed family is layered
-  // in front of the theme's own stack, so an empty value is exactly the theme.
-  const chatFontFamily = useStore($chatFontFamily)
-
-  useEffect(() => applyTheme(paintedTheme, paintedMode, chatFontFamily), [paintedTheme, paintedMode, chatFontFamily])
+  useEffect(() => applyTheme(paintedTheme, paintedMode), [paintedTheme, paintedMode])
 
   // Keep the native window appearance pinned to the app theme (vibrancy
   // material, titlebar, new-window pre-paint background).

@@ -40,8 +40,10 @@ _BARE_MODULE_SCOPE: Dict[str, str] = {}  # bare module name -> owning scope_key
 def _evict_modules(module_name: str) -> None:
     """Drop ``module_name`` and every ``module_name.*`` submodule from ``sys.modules``."""
     prefix = f"{module_name}."
-    for name in [n for n in sys.modules if n == module_name or n.startswith(prefix)]:
-        del sys.modules[name]
+    # Other threads can import or unload modules while plugin names are filtered.
+    for name in tuple(sys.modules):
+        if name == module_name or name.startswith(prefix):
+            sys.modules.pop(name, None)
 
 
 def _serialized_replacement(method):

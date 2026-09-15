@@ -59,12 +59,13 @@ test('probeStartMarker passes a successful marker through', async () => {
 })
 
 // --- real probe: drives the actual OS helper (PowerShell on the Windows lane) ---
+// The native Windows probe has its own 30s deadline; the test must allow it to finish.
 
 test('processStartMarker resolves a real marker for the current process', async () => {
   const marker = await processStartMarker(process.pid)
 
   assert.match(marker, /^(linux|win|winms|ps):.+/)
-})
+}, 40_000)
 
 test('a missing PID is classified as ESRCH so reapOrphans can drop the record', async () => {
   // Largest PIDs are bounded well below this on every supported platform.
@@ -72,7 +73,7 @@ test('a missing PID is classified as ESRCH so reapOrphans can drop the record', 
   // the identity matchers treated as "unknown" and kept forever. The native
   // gate throws ESRCH — the errno those catch blocks already map to gone.
   await assert.rejects(processStartMarker(2 ** 30 + 12345), (error: NodeJS.ErrnoException) => error?.code === 'ESRCH')
-})
+}, 40_000)
 
 // --- PID-only marker helpers --------------------------------------------------
 

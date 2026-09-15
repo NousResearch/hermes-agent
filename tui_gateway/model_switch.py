@@ -51,66 +51,29 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             agent.reasoning_config = snapshot["reasoning_config"]
 
 
-def _launch_profile_scope_needed() -> bool:
-    """A launch-profile body must run scoped once this process multiplexes (``get_secret`` fails
-    closed and ambient ``os.environ`` may carry a secondary's residue); a single-profile process
-    stays unscoped so systemd / ``op run`` credential injection keeps its ``os.environ`` fallthrough."""
-    from agent.secret_scope import is_multiplex_active
-    return is_multiplex_active()
-
-
-def _profile_runtime_scope_tokens(profile_home) -> "_TurnScopes | None":
-    """Bind HERMES_HOME + secret + terminal scope for ``profile_home`` (None = launch profile) and
-    return the reset tokens; None when nothing needs binding (unscoped single-profile launch body).
-    The launch profile's scope is its ``.env`` over the env frozen at activation (never live
-    ``os.environ``: a secondary context may have written to it since, #107422)."""
-    scopes = _TurnScopes()
-    if profile_home:
-        home = Path(profile_home)
-        # External sources first: the requested profile may never have been served in this process.
-        from hermes_cli.env_loader import hydrate_profile_secret_sources
-        hydrate_profile_secret_sources(home)
-        secrets = build_profile_secret_scope(home)
-        overlay = None
-        scopes.home = set_hermes_home_override(str(home))
-    elif _launch_profile_scope_needed():
-        # No home override: the launch home IS get_hermes_home() (``_profile_home`` answers None for
-        # "already the launch profile"); only its secrets + terminal policy need binding.
-        from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
-        home = Path(_hermes_home)
-        secrets = launch_secret_scope(home)
-        overlay = launch_terminal_env()
-    else:
-        return None
-    scopes.secret = set_secret_scope(secrets)
-    # Same terminal policy the gateway binds per turn: a docker-configured profile
-    # must never resolve the launch process's pinned env. Failure → refusal scope.
-    from tools.terminal_scope import install_profile_terminal_scope
-    scopes.terminal = install_profile_terminal_scope(home, env_overlay=overlay)
-    return scopes
-
-
-def _release_profile_runtime_scope_tokens(scopes: "_TurnScopes | None") -> None:
-    if scopes is None:
-        return
-    from tools.terminal_scope import reset_terminal_scope
-    if scopes.terminal is not None:
-        reset_terminal_scope(scopes.terminal)
-    if scopes.secret is not None:
-        reset_secret_scope(scopes.secret)
-    if scopes.home is not None:
-        reset_hermes_home_override(scopes.home)
-
-
 @contextlib.contextmanager
 def _session_profile_runtime_scope(session: dict):
-    """Bind model resolution to the session's profile config and secrets (launch profile included
-    once the process multiplexes; see ``_profile_runtime_scope_tokens``)."""
-    scopes = _profile_runtime_scope_tokens(session.get("profile_home"))
-    try:
+    """Bind model resolution to the session's profile config and secrets."""
+    profile_home = session.get("profile_home")
+    if not profile_home and not _served_profile_homes:
         yield
-    finally:
-        _release_profile_runtime_scope_tokens(scopes)
+        return
+    # Same terminal policy the gateway binds per turn: a docker-configured profile
+    # must never resolve the launch process's pinned env. Failure → refusal scope.
+    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
+    with contextlib.ExitStack() as scopes:
+        if profile_home:
+            scopes.callback(reset_hermes_home_override, set_hermes_home_override(profile_home))
+            scopes.callback(reset_secret_scope, set_secret_scope(build_profile_secret_scope(Path(profile_home))))
+        terminal_home = Path(profile_home or _hermes_home)
+        env_overlay = None
+        if _served_profile_homes and terminal_home.resolve() == Path(_hermes_home).resolve():
+            # Off-turn workers and explicit launch-home builds need the same frozen
+            # env-only policy as ordinary launch turns, never a secondary's ambient env.
+            from tui_gateway.launch_terminal_policy import launch_terminal_env
+            env_overlay = launch_terminal_env()
+        scopes.callback(reset_terminal_scope, install_profile_terminal_scope(terminal_home, env_overlay=env_overlay))
+        yield
 
 
 def _restart_completed_failed_agent_build(sid: str, session: dict, failed_ready: threading.Event | None) -> bool:

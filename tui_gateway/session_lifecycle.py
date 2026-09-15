@@ -27,13 +27,15 @@ _AUTOMATIC_SESSION_END_REASONS = frozenset({"ws_orphan_reap", "ws_disconnect", "
 
 
 def _claim_active_session_slot(
-    session_key: str, *, live_session_id: str, surface: str = "tui", profile_home: str | Path | None = None
+    session_key: str, *, live_session_id: str, surface: str = "tui", profile_home: str | Path | None = None,
+    pending_title: str | None = None,
 ) -> tuple[Any, str | None]:
     try:
         from hermes_cli.active_sessions import try_acquire_active_session
         return try_acquire_active_session(
             session_id=session_key, surface=surface, config=_load_cfg(), registry_home=profile_home,
-            metadata={"live_session_id": live_session_id, "bot_live_delivery_consumer": True},
+            metadata={"live_session_id": live_session_id, "bot_live_delivery_consumer": True,
+                      "pending_title": pending_title},
             track_liveness=str(surface or "").strip().lower() == "desktop")
     except Exception as exc:
         logger.warning("Failed to claim active session slot: %s", exc)
@@ -53,7 +55,8 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
         return None
     lease, limit_message = _claim_active_session_slot(
         str(session.get("session_key") or ""), live_session_id=sid,
-        surface=_session_source(session), profile_home=session.get("profile_home"))
+        surface=_session_source(session), profile_home=session.get("profile_home"),
+        pending_title=session.get("pending_title"))
     if limit_message is None:
         session["active_session_lease"] = lease
     return limit_message
@@ -232,22 +235,17 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     if hasattr(agent, "_persist_session") and (snapshot := getattr(agent, "_session_messages", None)):
         with contextlib.suppress(Exception):
             agent._persist_session(snapshot)
-    # interrupted=True so crash-recovery plugins can flush state (mirrors cli.py atexit). The end-of-session
-    # hooks and the memory commit read the provider's config/credentials at call time; every caller of this
-    # chokepoint is an unscoped reaper/Timer/atexit/pool thread, so bind the SESSION's profile here — unscoped
-    # they fail closed under multiplex (tail never committed) or, on the Desktop backend serving a named
-    # profile, commit a secondary's transcript to the launch profile's memory tenant (same class as #110622).
-    with _session_profile_runtime_scope(session):
-        if agent is not None:
-            with contextlib.suppress(Exception):
-                from hermes_cli.lifecycle import invoke_hook
-                invoke_hook(
-                    "on_session_end", completed=False, interrupted=True,
-                    session_id=getattr(agent, "session_id", None) or session.get("session_key", ""),
-                    model=getattr(agent, "model", "unknown"), platform=getattr(agent, "platform", None) or "tui")
-        if agent is not None and history and hasattr(agent, "commit_memory_session"):
-            with contextlib.suppress(Exception):
-                agent.commit_memory_session(history)
+    # interrupted=True so crash-recovery plugins can flush state (mirrors cli.py atexit).
+    if agent is not None:
+        with contextlib.suppress(Exception):
+            from hermes_cli.lifecycle import invoke_hook
+            invoke_hook(
+                "on_session_end", completed=False, interrupted=True,
+                session_id=getattr(agent, "session_id", None) or session.get("session_key", ""),
+                model=getattr(agent, "model", "unknown"), platform=getattr(agent, "platform", None) or "tui")
+    if agent is not None and history and hasattr(agent, "commit_memory_session"):
+        with contextlib.suppress(Exception):
+            agent.commit_memory_session(history)
 
     session_key = session.get("session_key")
     session_id = getattr(agent, "session_id", None) or session_key
@@ -316,9 +314,7 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
         from tools.approval import unregister_gateway_notify
         if key := session.get("session_key"):
             unregister_gateway_notify(key)
-    # agent.close() → shutdown_memory_provider reads the provider's config/credentials at call time; same
-    # scope rule as _finalize_session (every caller here is an unscoped reaper/atexit/pool thread).
-    with contextlib.suppress(Exception), _session_profile_runtime_scope(session):
+    with contextlib.suppress(Exception):
         if hasattr(agent := session.get("agent"), "close"):
             agent.close()
 

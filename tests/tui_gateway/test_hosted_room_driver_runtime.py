@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -89,6 +91,7 @@ class FakeSessionRPC:
         title: str = room_session_title(ROOM_ID),
         active: bool = False,
         task_id: str | None = None,
+        member_id: str | None = None,
         history: list[dict[str, Any]] | None = None,
     ) -> str:
         with self._lock:
@@ -100,6 +103,9 @@ class FakeSessionRPC:
                 "active": active,
                 "task_id": task_id,
                 "execution_generation": None,
+                "hosted_task": ({**asdict(_identity(task_id)), "execution_generation": 1,
+                                 "member_id": member_id if member_id is not None else profile}
+                                if task_id else None),
                 "history": list(history or []),
                 "on_terminal": None,
                 "pending_approval": None,
@@ -188,12 +194,15 @@ class FakeSessionRPC:
             "task": task,
             "execution_generation": execution_generation,
             "on_terminal": on_terminal,
+            "member_id": member_id,
         }
         self.calls.append(("submit", params))
         with self._lock:
             self.states[session_id]["active"] = True
             self.states[session_id]["task_id"] = task.task_id
             self.states[session_id]["execution_generation"] = execution_generation
+            self.states[session_id]["hosted_task"] = {
+                **asdict(task), "execution_generation": execution_generation, "member_id": member_id}
             self.states[session_id]["on_terminal"] = on_terminal
         self.submitted.set()
         if self.auto_complete:
@@ -227,6 +236,7 @@ class FakeSessionRPC:
             result = {
                 "active": session_state["active"],
                 "task_id": session_state["task_id"],
+                "hosted_task": session_state["hosted_task"],
             }
             if session_state.get("pending_approval"):
                 result["status"] = "waiting_for_approval"
@@ -242,6 +252,9 @@ class FakeSessionRPC:
         session_id: str,
         source: str,
         expected_task_id: str,
+        expected_task: state.TaskIdentity | None = None,
+        expected_execution_generation: int | None = None,
+        expected_member_id: str | None = None,
     ):
         params = {
             "profile": profile,
@@ -251,7 +264,10 @@ class FakeSessionRPC:
         }
         with self._lock:
             current = self.states[session_id]
-            if not current["active"] or current["task_id"] != expected_task_id:
+            exact = expected_task is None or current["hosted_task"] == {
+                **asdict(expected_task), "execution_generation": expected_execution_generation,
+                "member_id": expected_member_id}
+            if not current["active"] or current["task_id"] != expected_task_id or not exact:
                 self.calls.append(("interrupt_skipped", params))
                 return {"interrupted": False}
             current["active"] = False
@@ -422,7 +438,7 @@ def _runtime(
     )
 
 
-def _wait_for(predicate, *, timeout: float = 5.0) -> None:
+def _wait_for(predicate, *, timeout: float = 2.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -834,6 +850,69 @@ def test_existing_canonical_session_is_resumed_not_duplicated(db: Path):
         "session_id": session_id,
         "source": ROOM_SESSION_SOURCE,
     }
+
+
+def test_long_room_id_reuses_bounded_collision_resistant_session_title(
+    tmp_path: Path,
+):
+    room_id = "r" * 127 + "a"
+    sibling_room_id = "r" * 127 + "b"
+    title = room_session_title(room_id)
+
+    assert len(title) == 100
+    assert title.endswith(hashlib.sha256(room_id.encode("utf-8")).hexdigest())
+    assert title == room_session_title(room_id)
+    assert title != room_session_title(sibling_room_id)
+
+    db = tmp_path / "state.db"
+    binding = HostedRoomBinding(room_id, "gateway-a", 1)
+    hosted_rooms.create_room(
+        db,
+        room_id=room_id,
+        name="Long identity room",
+        members=[{"profile": PROFILE, "handle": PROFILE}],
+        authority_gateway_id=binding.gateway_id,
+        now=time.time(),
+    )
+    rpc = FakeSessionRPC()
+    runtime = HostedRoomRuntime(
+        db_path=db,
+        rooms=[binding],
+        rpc=rpc,
+        turn_lock=RecordingTurnLocks(),
+        lease_ttl_seconds=0.4,
+        poll_interval_seconds=0.01,
+    )
+
+    first = state.TaskIdentity(room_id, "task-1", "thread-1", "turn-1")
+    _admit(db, first, prompt="First turn.")
+    runtime._process_room(binding)
+
+    second = state.TaskIdentity(room_id, "task-2", "thread-1", "turn-2")
+    _admit(db, second, prompt="Second turn.")
+    runtime._process_room(binding)
+
+    creates = [params for method, params in rpc.calls if method == "create"]
+    resumes = [params for method, params in rpc.calls if method == "resume"]
+    assert [params["title"] for params in creates] == [title]
+    assert len(resumes) == 1
+    assert len(rpc.sessions) == 1
+
+
+def test_room_session_title_bounds_max_room_id_and_preserves_uniqueness():
+    assert room_session_title("room-1") == "Group: room-1"
+
+    shared_prefix = "r" * 127
+    first = room_session_title(f"{shared_prefix}a")
+    second = room_session_title(f"{shared_prefix}b")
+
+    assert len(first) <= 100
+    assert len(second) <= 100
+    assert first.startswith("Group: ")
+    assert second.startswith("Group: ")
+    assert first != second
+    assert len(first.rsplit("~", 1)[1]) == 64
+    assert len(second.rsplit("~", 1)[1]) == 64
 
 
 def test_local_crash_recovery_keeps_ambiguous_history_explicit_without_resume(
@@ -1441,6 +1520,59 @@ def test_ambiguous_recovery_remains_indeterminate(db: Path):
     assert not [call for call in rpc.calls if call[0] == "submit"]
 
 
+def test_restart_harvests_private_durable_terminal_receipt(db: Path):
+    identity = _identity()
+    now = [100.0]
+
+    def clock():
+        return now[0]
+
+    old_lease = state.acquire_lease(
+        db,
+        room_id=ROOM_ID,
+        gateway_id=BINDING.gateway_id,
+        authority_epoch=BINDING.authority_epoch,
+        process_generation="old-process",
+        ttl_seconds=0.2,
+        clock=clock,
+    )
+    _admit(db, identity)
+    attempt = state.start_task(
+        db,
+        identity,
+        old_lease,
+        expected_cancel_generation=0,
+        clock=clock,
+    )
+    state.record_terminal_receipt(
+        db,
+        identity,
+        execution_generation=attempt.execution_generation,
+        settlement_id="reply-task-1-1",
+        status="settled",
+        result={"message_id": "reply-task-1-1", "text": "durable answer"},
+        clock=clock,
+    )
+    rpc = FakeSessionRPC(auto_complete=False)
+    rpc.add_session(active=False, task_id=identity.task_id)
+    now[0] = 101.0
+    published = []
+    runtime = _runtime(
+        db,
+        rpc,
+        clock=clock,
+        publish_terminal=lambda _binding, task: published.append(task),
+    )
+
+    runtime._process_room(BINDING)
+
+    settled = state.get_task(db, identity)
+    assert settled["status"] == "settled"
+    assert settled["result"]["text"] == "durable answer"
+    assert [task["status"] for task in published] == ["settled"]
+    assert not [call for call in rpc.calls if call[0] == "submit"]
+
+
 def test_offline_member_defers_then_healthy_task_runs_and_retry_is_fenced(
     db: Path,
 ):
@@ -1552,11 +1684,24 @@ def test_offline_member_defers_then_healthy_task_runs_and_retry_is_fenced(
     assert state.get_task(db, first)["result"]["text"] == "retry accepted"
 
 
-def test_post_submit_observation_failure_preserves_recoverable_outcome(db: Path):
+def test_post_submit_observation_failure_preserves_recoverable_outcome(
+    db: Path,
+    monkeypatch,
+):
     identity = _identity()
     _admit(db, identity)
     rpc = FakeSessionRPC(auto_complete=False)
-    rpc.history_failures = 1
+    original_receipt = state.get_terminal_receipt
+    failures = 1
+
+    def fail_receipt_once(*args, **kwargs):
+        nonlocal failures
+        if failures:
+            failures -= 1
+            raise RuntimeError("transient durable receipt read failed")
+        return original_receipt(*args, **kwargs)
+
+    monkeypatch.setattr(state, "get_terminal_receipt", fail_receipt_once)
     runtime = _runtime(db, rpc)
 
     runtime.start()
@@ -1606,30 +1751,52 @@ def test_transient_remote_stop_failure_stays_pending_and_retries(db: Path):
     identity = _identity()
     _admit(db, identity)
     rpc = FakeSessionRPC(auto_complete=False)
-    runtime = _runtime(db, rpc)
+    # This tests wake/retry delivery, not expiry of the fixture's 0.4s lease.
+    # Keep authority time fixed while real thread barriers control the retry.
+    authority_now = time.time()
+    runtime = _runtime(db, rpc, active_poll_interval_seconds=10.0, clock=lambda: authority_now)
     original_interrupt = rpc.interrupt
+    original_record_error = runtime._record_error
     attempts = 0
-    retry_allowed = threading.Event()
+    recorded_errors = []
+    worker_failure_recorded = threading.Event()
+    release_worker = threading.Event()
 
     def flaky_interrupt(**kwargs):
         nonlocal attempts
         attempts += 1
-        if attempts == 1:
+        if attempts <= 2:
             raise RuntimeError("temporary stop transport failure")
-        assert retry_allowed.wait(1.0)
         return original_interrupt(**kwargs)
 
+    def block_worker_after_retry_failure(message: str) -> None:
+        recorded_errors.append(message)
+        original_record_error(message)
+        if message.startswith("stop retry remains pending"):
+            worker_failure_recorded.set()
+            assert release_worker.wait(2.0)
+
     rpc.interrupt = flaky_interrupt
+    runtime._record_error = block_worker_after_retry_failure
     runtime.start()
-    assert rpc.submitted.wait(1.0)
-    stopping = runtime.cancel(identity, cancel_id="cancel-retry")
-    assert stopping["status"] == "stopping"
-    assert state.get_task(db, identity)["status"] == "stopping"
-    retry_allowed.set()
-    runtime.wakeup()
-    _wait_for(lambda: state.get_task(db, identity)["status"] == "cancelled")
-    assert attempts >= 2
-    assert runtime.stop(timeout=5.0)
+    try:
+        assert rpc.submitted.wait(1.0)
+        stopping = runtime.cancel(identity, cancel_id="cancel-retry")
+        assert stopping["status"] == "stopping"
+        assert state.get_task(db, identity)["status"] == "stopping"
+        assert worker_failure_recorded.wait(1.0)
+        cycles = runtime.status()["cycles"]
+        runtime.wakeup()
+        release_worker.set()
+        _wait_for(lambda: runtime.status()["cycles"] > cycles)
+        _wait_for(lambda: state.get_task(db, identity)["status"] == "cancelled")
+        assert attempts >= 3
+    except AssertionError as exc:
+        raise AssertionError({"attempts": attempts, "errors": recorded_errors,
+                              "runtime": runtime.status(), "task": state.get_task(db, identity)}) from exc
+    finally:
+        release_worker.set()
+        assert runtime.stop(timeout=5.0)
     assert state.get_task(db, identity)["status"] == "cancelled"
 
 
@@ -1776,8 +1943,38 @@ def test_completion_wins_a_race_with_unacknowledged_stop(db: Path):
     rpc.on_info = finish_only_after_stop_intent
     result = runtime.cancel(identity, cancel_id="cancel-raced")
 
+    assert result["status"] in {"stopping", "settled"}
+    _wait_for(lambda: state.get_task(db, identity)["status"] == "settled")
+    settled = state.get_task(db, identity)
+    assert settled["result"]["text"] == "Already done."
+    assert runtime.stop(timeout=1.0)
+
+
+def test_completion_wins_stop_race_after_attempt_lease_expires(db: Path):
+    identity = _identity()
+    _admit(db, identity)
+    now = [100.0]
+    rpc = FakeSessionRPC(auto_complete=False)
+    runtime = _runtime(
+        db,
+        rpc,
+        clock=lambda: now[0],
+        lease_ttl_seconds=0.4,
+    )
+
+    runtime.start()
+    assert rpc.submitted.wait(1.0)
+
+    def finish_after_stop_intent_and_lease_expiry():
+        if state.get_task(db, identity)["status"] == "stopping":
+            now[0] = 101.0
+            rpc.complete(identity.task_id, content="Already done after expiry.")
+
+    rpc.on_info = finish_after_stop_intent_and_lease_expiry
+    result = runtime.cancel(identity, cancel_id="cancel-raced-expired-lease")
+
     assert result["status"] == "settled"
-    assert result["result"]["text"] == "Already done."
+    assert result["result"]["text"] == "Already done after expiry."
     assert runtime.stop(timeout=5.0)
 
 
@@ -1812,21 +2009,22 @@ def test_restart_harvests_completion_before_retrying_durable_stop(db: Path):
         expected_cancel_generation=attempt.cancel_generation,
         clock=clock,
     )
+    state.record_terminal_receipt(
+        db,
+        identity,
+        execution_generation=attempt.execution_generation,
+        settlement_id="reply-after-stop",
+        status="settled",
+        result={"text": "Finished before Stop reached the session."},
+        clock=lambda: now[0],
+    )
     rpc = FakeSessionRPC(auto_complete=False)
     rpc.add_session(
         active=False,
         task_id=identity.task_id,
-        history=[
-            {
-                "role": "assistant",
-                "task_id": identity.task_id,
-                "execution_generation": attempt.execution_generation,
-                "status": "settled",
-                "message_id": "reply-after-stop",
-                "content": "Finished before Stop reached the session.",
-            }
-        ],
+        history=[],
     )
+    rpc.history_failures = 1
     now[0] = 102.0
     runtime = _runtime(
         db,
@@ -2072,17 +2270,68 @@ def test_profile_turn_lock_covers_resolve_submit_and_terminal_observation(db: Pa
     _admit(db, identity)
     locks = RecordingTurnLocks()
     rpc = FakeSessionRPC(required_lock=locks)
-    runtime = _runtime(db, rpc, locks)
+    authority_now = time.time()
+    runtime = _runtime(db, rpc, locks, clock=lambda: authority_now)
 
-    runtime.start()
-    _wait_for(lambda: state.get_task(db, identity)["status"] == "settled")
+    # Drive one actual scheduling cycle; a concurrent idle/recovery cycle is
+    # not part of the resolve/submit/terminal lock span asserted here.
+    runtime._run_cycle()
+    assert state.get_task(db, identity)["status"] == "settled"
     assert runtime.stop(timeout=5.0)
 
-    assert locks.events == [("lock-enter", PROFILE), ("lock-exit", PROFILE)]
+    assert locks.events == [("lock-enter", PROFILE), ("lock-exit", PROFILE)], runtime.status()
     methods = [method for method, _params in rpc.calls]
     assert methods.index("resolve_exact") < methods.index("submit")
     assert methods.index("submit") < methods.index("complete")
     assert "history" not in methods
+
+
+def test_profile_lock_timeout_leaves_unsubmitted_task_queued(db: Path):
+    identity = _identity()
+    _admit(db, identity)
+    rpc = FakeSessionRPC()
+
+    @contextmanager
+    def busy_lock(_profile: str):
+        raise RuntimeError("target_busy")
+        yield
+
+    runtime = _runtime(db, rpc, locks=busy_lock)
+
+    with pytest.raises(RuntimeError, match="target_busy"):
+        runtime._process_room(BINDING)
+
+    task = state.get_task(db, identity)
+    assert task["status"] == "queued"
+    assert task["execution_generation"] == 0
+    assert not [call for call in rpc.calls if call[0] == "submit"]
+
+    runtime.turn_lock = RecordingTurnLocks()
+    runtime._process_room(BINDING)
+    assert state.get_task(db, identity)["status"] == "settled"
+
+
+def test_proven_not_admitted_submission_settles_without_ambiguity(db: Path):
+    identity = _identity()
+    _admit(db, identity)
+
+    class ProvenNotAdmittedError(RuntimeError):
+        not_admitted = True
+
+    class RejectingSessionRPC(FakeSessionRPC):
+        def submit(self, **kwargs):
+            self.calls.append(("submit", dict(kwargs)))
+            raise ProvenNotAdmittedError("hosted room member session is busy")
+
+    runtime = _runtime(db, RejectingSessionRPC())
+
+    runtime._process_room(BINDING)
+
+    failed = state.get_task(db, identity)
+    assert failed["status"] == "failed"
+    assert failed["result"] == {"error": "hosted room member session is busy"}
+    assert runtime._ambiguous_rooms == {}
+    assert "observation failed after submit" not in str(runtime.status()["last_error"])
 
 
 def test_stop_is_bounded_and_does_not_interrupt_active_turn(db: Path):
@@ -2092,12 +2341,11 @@ def test_stop_is_bounded_and_does_not_interrupt_active_turn(db: Path):
     runtime = _runtime(db, rpc, poll_interval_seconds=0.01)
 
     runtime.start()
-    assert rpc.submitted.wait(5.0)
+    assert rpc.submitted.wait(1.0)
     started = time.monotonic()
-    stopped = runtime.stop(timeout=5.0)
+    stopped = runtime.stop(timeout=0.5)
 
     assert stopped is True
-    # Bounded: returns well before its own timeout and without waiting for the active turn (which never completes).
-    assert time.monotonic() - started < 2.0
+    assert time.monotonic() - started < 0.5
     assert state.get_task(db, identity)["status"] == "running"
     assert not [call for call in rpc.calls if call[0] == "interrupt"]

@@ -13,7 +13,7 @@
 
 import { existsSync, readFileSync } from "fs"
 import { createRequire } from "module"
-import { resolve, join, dirname } from "path"
+import { resolve, join, dirname, isAbsolute, relative } from "path"
 import { isMain } from "./utils.mjs"
 
 // Packages the build *consumes*, as opposed to merely declares. Each one is
@@ -45,15 +45,22 @@ import { isMain } from "./utils.mjs"
 const BUILD_CRITICAL_PACKAGES = ["vite", "katex", "electron", "electron-builder"]
 export { BUILD_CRITICAL_PACKAGES }
 
-// Resolve the way Node's own lookup does — walk `node_modules` upward — rather
-// than through `require.resolve`. A package whose `exports` map does not expose
-// `./package.json` is not resolvable by path even when correctly installed, and
-// that must not read as "missing". Scoped names (`@scope/name`) are a nested
-// directory under `node_modules`, which `join` handles.
-function packageIsInstalled(name, fromDir) {
-  let dir = fromDir
+// Resolve the way Node's own lookup does — walk `node_modules` upward — but
+// never above the declared repository root. A package whose `exports` map does
+// not expose `./package.json` is not resolvable by path even when correctly
+// installed, and that must not read as "missing". Scoped names
+// (`@scope/name`) are a nested directory under `node_modules`, which `join`
+// handles. Packages in a parent directory outside the repository cannot make a
+// partial checkout look buildable.
+function packageIsInstalled(name, fromDir, rootDir) {
+  const boundary = resolve(rootDir)
+  let dir = resolve(fromDir)
+  const fromBoundary = relative(boundary, dir)
+  if (fromBoundary.startsWith("..") || isAbsolute(fromBoundary)) return false
+
   for (;;) {
     if (existsSync(join(dir, "node_modules", name, "package.json"))) return true
+    if (dir === boundary) return false
     const parent = dirname(dir)
     if (parent === dir) return false
     dir = parent
@@ -80,7 +87,7 @@ export function requiredPackages(appDir) {
 // Kept side-effect-free so it can be unit tested without spawning a process.
 export function checkRootInstall(appDir, rootDir) {
   const wanted = [...new Set([...BUILD_CRITICAL_PACKAGES, ...requiredPackages(appDir)])]
-  const missing = wanted.filter(pkg => !packageIsInstalled(pkg, appDir))
+  const missing = wanted.filter(pkg => !packageIsInstalled(pkg, appDir, rootDir))
   if (missing.length > 0) {
     return {
       ok: false,

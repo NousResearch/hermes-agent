@@ -34,6 +34,17 @@ def _clear_actual_env(monkeypatch):
     monkeypatch.delenv("ACTUAL_API_MODE", raising=False)
 
 
+def _clear_actual_ca_env(monkeypatch):
+    """Keep runner CA configuration from changing the hosted default contract."""
+    for name in (
+        "HERMES_CA_BUNDLE",
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 def test_actual_aliases_and_profile_metadata():
     profile = get_provider_profile("actual-computer")
 
@@ -424,6 +435,8 @@ def test_actual_profile_translates_explicit_reasoning_controls():
 
 @pytest.mark.macos_only
 def test_actual_hosted_client_uses_scoped_macos_certifi(monkeypatch):
+    """The hosted macOS default uses certifi when no explicit CA is configured."""
+    _clear_actual_ca_env(monkeypatch)
     import certifi
 
     profile = get_provider_profile("actual")
@@ -438,6 +451,8 @@ def test_actual_hosted_client_uses_scoped_macos_certifi(monkeypatch):
 
 @pytest.mark.macos_only
 def test_actual_client_tls_default_does_not_override_explicit_config(monkeypatch):
+    """The default uses certifi, while an explicit client CA remains authoritative."""
+    _clear_actual_ca_env(monkeypatch)
     from agent.agent_runtime_helpers import create_openai_client
 
     captured: list[dict] = []

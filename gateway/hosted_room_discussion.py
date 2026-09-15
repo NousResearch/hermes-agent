@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from functools import partial
 from typing import Any, Literal
 
@@ -62,7 +62,10 @@ _GATEWAY_EVENT_FIELDS = {
         frozenset({"status", "reason_code", "thread_id", "discussion_event_id"}),
         ("reason_code", "thread_id", "discussion_event_id")),
     "room.stop_requested": (frozenset({"cancel_id"}), ("cancel_id",))}
-_EPOCH_STAMPED_KINDS = _TERMINAL_EVENT_KINDS | {"message.member", *_GATEWAY_EVENT_FIELDS}
+_EPOCH_STAMPED_KINDS = _TERMINAL_EVENT_KINDS | {"message.user", "message.member", *_GATEWAY_EVENT_FIELDS}
+_AUTHORITY_EVENT_KINDS = frozenset({"authority.claimed", "authority.lost"})
+_AUTHORITY_EVENT_FIELDS = frozenset({"previous_gateway_id", "authority_gateway_id", "authority_epoch"})
+_AUTHORITY_PROMOTION_FIELDS = frozenset({"promoted_from_replica", "reason"})
 
 
 class DiscussionPolicyError(ValueError): """Base class for invalid policy input or unreconstructable state."""
@@ -192,9 +195,11 @@ def validate_user_payload(value: Any) -> dict[str, Any]:
         "thread_id": _identifier(payload["thread_id"], label="thread_id")}
 
 
-def _validate_member_target(value: Any, *, profile: str, known_profiles: set[str], index: int) -> dict[str, Any]:
+def _validate_member_target(
+    value: Any, *, profile: str, known_profiles: set[str], index: int,
+    require_current_profiles: bool) -> dict[str, Any]:
     if value is None:
-        if profile not in known_profiles:
+        if require_current_profiles and profile not in known_profiles:
             raise DiscussionValidationError(f"member {index} profile '{profile}' is not local to this gateway")
         return {"kind": "local", "profile": profile}
     if not isinstance(value, Mapping):
@@ -205,7 +210,7 @@ def _validate_member_target(value: Any, *, profile: str, known_profiles: set[str
     target = _exact_fields(value, label=f"member {index} {kind} target", required=_TARGET_FIELDS[kind])
     target_profile = _identifier(target["profile"], label=f"member {index} target profile")
     if kind == "local":
-        if target_profile != profile or profile not in known_profiles:
+        if target_profile != profile or (require_current_profiles and profile not in known_profiles):
             raise DiscussionValidationError(f"member {index} local target does not match a local profile")
         return {"kind": "local", "profile": profile}
     if target_profile != profile:
@@ -219,7 +224,8 @@ def _validate_member_target(value: Any, *, profile: str, known_profiles: set[str
         "profile": target_profile, "capability_digest": digest}
 
 
-def _validate_member(raw: Any, index: int, known_profiles: set[str]) -> DiscussionMember:
+def _validate_member(
+    raw: Any, index: int, known_profiles: set[str], *, require_current_profiles: bool) -> DiscussionMember:
     if not isinstance(raw, Mapping):
         raise DiscussionValidationError(f"member {index} must be an object")
     if remote_fields := frozenset(raw) & _REMOTE_MEMBER_FIELDS:
@@ -231,7 +237,9 @@ def _validate_member(raw: Any, index: int, known_profiles: set[str]) -> Discussi
     member_id, profile, handle = (
         _identifier(member[field], label=f"member {index} {label}")
         for field, label in (("member_id", "id"), ("profile", "profile"), ("handle", "handle")))
-    target = _validate_member_target(member.get("target"), profile=profile, known_profiles=known_profiles, index=index)
+    target = _validate_member_target(
+        member.get("target"), profile=profile, known_profiles=known_profiles, index=index,
+        require_current_profiles=require_current_profiles)
     if not isinstance(display_name := member.get("display_name", ""), str):
         raise DiscussionValidationError(f"member {index} display_name must be a string")
     if len(display_name := display_name.strip()) > hosted_rooms.MAX_ACTOR_LABEL_CHARS:
@@ -239,8 +247,13 @@ def _validate_member(raw: Any, index: int, known_profiles: set[str]) -> Discussi
     return DiscussionMember(member_id, profile, handle, display_name, target)
 
 
-def validate_roster(value: Any, *, local_profiles: Iterable[str]) -> tuple[DiscussionMember, ...]:
-    """Validate a frozen 2-6 member roster of profiles on this gateway."""
+def validate_roster(
+    value: Any, *, local_profiles: Iterable[str],
+    require_current_profiles: bool = True) -> tuple[DiscussionMember, ...]:
+    """Validate a frozen roster; only creation requires live local profiles.
+
+    Replay must survive deleted profiles so execution can defer unavailable members.
+    """
     if not isinstance(value, list):
         raise DiscussionValidationError("members must be a list")
     if not MIN_DISCUSSION_MEMBERS <= len(value) <= MAX_DISCUSSION_MEMBERS:
@@ -252,7 +265,7 @@ def validate_roster(value: Any, *, local_profiles: Iterable[str]) -> tuple[Discu
     handles: set[str] = {"all", "everyone"}  # reserved mention handles
     member_ids: set[str] = set()
     for index, raw in enumerate(value):
-        member = _validate_member(raw, index, known_profiles)
+        member = _validate_member(raw, index, known_profiles, require_current_profiles=require_current_profiles)
         unique = "profiles" if member.target.get("kind") == "local" else "targets"
         for key, seen, message in (
             (compact_json(member.target, ensure_ascii=False).casefold(), targets, f"member {unique} must be unique"),
@@ -265,7 +278,8 @@ def validate_roster(value: Any, *, local_profiles: Iterable[str]) -> tuple[Discu
     return tuple(members)
 
 
-def validate_room(value: Any, *, local_profiles: Iterable[str]) -> DiscussionRoom:
+def validate_room(
+    value: Any, *, local_profiles: Iterable[str], require_current_profiles: bool = True) -> DiscussionRoom:
     """Project a hosted-room row into the strict same-gateway policy shape."""
     if not isinstance(value, Mapping):
         raise DiscussionValidationError("room must be an object")
@@ -278,7 +292,8 @@ def validate_room(value: Any, *, local_profiles: Iterable[str]) -> DiscussionRoo
         raise DiscussionValidationError("room name is too long")
     gateway_id = _identifier(value.get("authority_gateway_id"), label="authority_gateway_id")
     authority_epoch = _positive_int(value.get("authority_epoch"), label="authority_epoch")
-    members = validate_roster(value.get("members"), local_profiles=local_profiles)
+    members = validate_roster(
+        value.get("members"), local_profiles=local_profiles, require_current_profiles=require_current_profiles)
     return DiscussionRoom(room_id, name, members, gateway_id, authority_epoch)
 
 
@@ -426,21 +441,152 @@ def _validate_event(raw: Any, *, room: DiscussionRoom, previous_seq: int) -> _Va
         if not isinstance(value, expected):
             raise DiscussionValidationError(message)
     if kind in _EPOCH_STAMPED_KINDS and raw.get("authority_epoch") != room.authority_epoch:
-        raise DiscussionValidationError(f"{kind} authority epoch does not match the room")
+        raise DiscussionValidationError(f"{kind} authority epoch does not match its lineage")
     if (validator := _EVENT_VALIDATORS.get(kind)) is not None:
         payload = validator(kind, payload, actor, room)
     return _ValidatedEvent(raw=raw, seq=seq, event_id=event_id, kind=kind, actor=actor, payload=payload)
 
 
+def _validate_authority_event(
+    raw: Mapping[str, Any],
+    *,
+    previous_seq: int,
+    room: DiscussionRoom,
+    authority_gateway_id: str,
+    authority_epoch: int,
+) -> tuple[_ValidatedEvent, str, int]:
+    event = _validate_event(
+        raw,
+        room=room,
+        previous_seq=previous_seq,
+    )
+    payload = _exact_fields(
+        event.payload,
+        label=f"{event.kind} payload",
+        required=_AUTHORITY_EVENT_FIELDS,
+        optional=(
+            _AUTHORITY_PROMOTION_FIELDS
+            if event.kind == "authority.claimed"
+            else frozenset()
+        ),
+    )
+    if event.actor != {"kind": "system", "id": "authority-control"}:
+        raise DiscussionValidationError(
+            f"{event.kind} requires the authority-control actor"
+        )
+    previous_gateway_id = _identifier(
+        payload.get("previous_gateway_id"),
+        label="previous_gateway_id",
+    )
+    next_gateway_id = _identifier(
+        payload.get("authority_gateway_id"),
+        label="authority_gateway_id",
+    )
+    next_epoch = _positive_int(
+        payload.get("authority_epoch"),
+        label="authority_epoch",
+    )
+    promotion_fields = frozenset(payload) & _AUTHORITY_PROMOTION_FIELDS
+    if promotion_fields:
+        if promotion_fields != _AUTHORITY_PROMOTION_FIELDS:
+            raise DiscussionValidationError(
+                "authority.claimed replica proof is incomplete"
+            )
+        if payload.get("promoted_from_replica") is not True:
+            raise DiscussionValidationError(
+                "authority.claimed replica proof must be explicit"
+            )
+        reason = payload.get("reason")
+        if not isinstance(reason, str) or not reason or len(reason) > 200:
+            raise DiscussionValidationError(
+                "authority.claimed replica reason must be a non-empty string"
+            )
+    if previous_gateway_id != authority_gateway_id:
+        raise DiscussionValidationError(
+            f"{event.kind} does not continue the authority lineage"
+        )
+    if raw.get("authority_epoch") != next_epoch:
+        raise DiscussionValidationError(
+            f"{event.kind} event and payload epochs do not match"
+        )
+    if event.kind == "authority.claimed":
+        if next_epoch != authority_epoch + 1:
+            raise DiscussionValidationError(
+                "authority.claimed must advance exactly one epoch"
+            )
+    elif next_epoch <= authority_epoch:
+        raise DiscussionValidationError(
+            "authority.lost must advance to a newer epoch"
+        )
+    return event, next_gateway_id, next_epoch
+
+
 def _validated_events(events: Sequence[Mapping[str, Any]], *, room: DiscussionRoom) -> tuple[_ValidatedEvent, ...]:
+    first_transition = next(
+        (
+            raw
+            for raw in events
+            if isinstance(raw, Mapping)
+            and raw.get("kind") in _AUTHORITY_EVENT_KINDS
+        ),
+        None,
+    )
+    if first_transition is None:
+        authority_gateway_id = room.gateway_id
+        authority_epoch = room.authority_epoch
+    else:
+        transition_payload = first_transition.get("payload")
+        if not isinstance(transition_payload, Mapping):
+            raise DiscussionValidationError("authority event payload must be an object")
+        authority_gateway_id = _identifier(
+            transition_payload.get("previous_gateway_id"),
+            label="previous_gateway_id",
+        )
+        prior_events = [
+            raw
+            for raw in events
+            if raw is not first_transition
+            and isinstance(raw, Mapping)
+            and _positive_int(raw.get("seq"), label="event seq")
+            < _positive_int(first_transition.get("seq"), label="event seq")
+        ]
+        if prior_events:
+            authority_epoch = _positive_int(
+                prior_events[0].get("authority_epoch"),
+                label="authority_epoch",
+            )
+        else:
+            authority_epoch = _positive_int(
+                transition_payload.get("authority_epoch"),
+                label="authority_epoch",
+            ) - 1
+            if authority_epoch < 1:
+                raise DiscussionValidationError(
+                    "authority lineage cannot start before epoch one"
+                )
+
     validated: list[_ValidatedEvent] = []
     event_ids: set[str] = set()
     for raw in events:
-        event = _validate_event(raw, room=room, previous_seq=validated[-1].seq if validated else 0)
+        previous_seq = validated[-1].seq if validated else 0
+        lineage_room = replace(room, gateway_id=authority_gateway_id, authority_epoch=authority_epoch)
+        if isinstance(raw, Mapping) and raw.get("kind") in _AUTHORITY_EVENT_KINDS:
+            event, authority_gateway_id, authority_epoch = _validate_authority_event(
+                raw, previous_seq=previous_seq, room=lineage_room,
+                authority_gateway_id=authority_gateway_id, authority_epoch=authority_epoch)
+        else:
+            event = _validate_event(raw, room=lineage_room, previous_seq=previous_seq)
         if event.event_id in event_ids:
             raise DiscussionValidationError("room event ids must be unique")
         validated.append(event)
         event_ids.add(event.event_id)
+    if (
+        authority_gateway_id != room.gateway_id
+        or authority_epoch != room.authority_epoch
+    ):
+        raise DiscussionValidationError(
+            "authority lineage does not reach the room's current owner"
+        )
     return tuple(validated)
 
 
@@ -449,7 +595,7 @@ def derive_member_watermarks(
 ) -> dict[tuple[str, str], int]:
     """Derive ``(thread_id, member_id)`` watermarks from terminal events."""
     return _derive_member_watermarks(
-        _validated_events(events, room=validate_room(room_value, local_profiles=local_profiles)))
+        _validated_events(events, room=validate_room(room_value, local_profiles=local_profiles, require_current_profiles=False)))
 
 
 def _derive_member_watermarks(events: Sequence[_ValidatedEvent]) -> dict[tuple[str, str], int]:
@@ -520,19 +666,33 @@ def _build_prompt(
         "- Mention a teammate by handle to pull them into the next round; do not repeat points already made.",
         "- Never reveal content from private conversations. Your reply is published verbatim."]
     fixed_bytes = len("\n".join([*opening, *rules]).encode("utf-8"))
-    available = max(0, driver.MAX_PROMPT_BYTES - fixed_bytes - 1)
-    selected: list[str] = []
-    for event in reversed(delta):
-        line = f"  {_format_message(event, room)}"
-        if (line_bytes := len(line.encode("utf-8")) + 1) > available:
+    notice = "  [Earlier content omitted to fit this turn.]"
+
+    def _select(available: int) -> tuple[list[str], bool]:
+        selected: list[str] = []
+        omitted = False
+        for event in reversed(delta):
+            line = f"  {_format_message(event, room)}"
+            line_bytes = len(line.encode("utf-8")) + 1
+            if line_bytes <= available:
+                selected.append(line)
+                available -= line_bytes
+                continue
             if not selected and available > 32:
                 selected.append(_truncate_utf8_text(line, max_bytes=available))
-            selected.append("  [Earlier content omitted to fit this turn.]")
+            omitted = True
             break
-        selected.append(line)
-        available -= line_bytes
-    selected.reverse()
-    if len((prompt := "\n".join([*opening, *selected, *rules])).encode("utf-8")) > driver.MAX_PROMPT_BYTES:
+        selected.reverse()
+        return selected, omitted
+
+    full_available = max(0, driver.MAX_PROMPT_BYTES - fixed_bytes - 1)
+    selected, omitted = _select(full_available)
+    if omitted:
+        notice_bytes = len(notice.encode("utf-8")) + 1
+        selected, omitted = _select(max(0, full_available - notice_bytes))
+        selected.insert(0, notice)
+    prompt = "\n".join([*opening, *selected, *rules])
+    if len(prompt.encode("utf-8")) > driver.MAX_PROMPT_BYTES:
         raise DiscussionValidationError("Discussion prompt exceeds the driver limit")
     return prompt
 
@@ -606,7 +766,7 @@ def plan_next_task(
     room_value: Any, events: Sequence[Mapping[str, Any]], *, local_profiles: Iterable[str],
     initial_watermarks: Mapping[tuple[str, str], int] | None = None) -> DiscussionDecision:
     """Replay the complete room log and return at most one next member task."""
-    room = validate_room(room_value, local_profiles=local_profiles)
+    room = validate_room(room_value, local_profiles=local_profiles, require_current_profiles=False)
     validated = _validated_events(events, room=room)
     if (discussion := _pending_discussion(validated)) is None:
         return DiscussionDecision(status="idle", reason="no_pending_user_event")
@@ -654,7 +814,7 @@ def reconstruct_task_plan(
     room_value: Any, events: Sequence[Mapping[str, Any]], task: Mapping[str, Any], *, local_profiles: Iterable[str]
 ) -> DiscussionTaskPlan:
     """Reconstruct and verify one persisted driver task after a restart."""
-    room = validate_room(room_value, local_profiles=local_profiles)
+    room = validate_room(room_value, local_profiles=local_profiles, require_current_profiles=False)
     validated = _validated_events(events, room=room)
     identity, payload = task.get("identity"), task.get("payload")
     if not isinstance(identity, driver.TaskIdentity) or not isinstance(payload, Mapping):
@@ -756,7 +916,7 @@ def plan_publication(
     A newer user event in the same thread supersedes a late result: the task stays terminal in driver state,
     but only a deterministic cancellation is published so stale prose and its watermark cannot hide it.
     """
-    room = validate_room(room_value, local_profiles=local_profiles)
+    room = validate_room(room_value, local_profiles=local_profiles, require_current_profiles=False)
     validated = _validated_events(events, room=room)
     for failed, message in (
         (task.identity.room_id != room.room_id, "task belongs to a different room"),

@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
-import { rememberServerRequest, resetServerRequestsForTests } from '../app/serverRequestStore.js'
 import {
   applyVoiceRecordResponse,
   dismissSensitivePrompt,
@@ -157,37 +156,31 @@ describe('applyVoiceRecordResponse', () => {
 })
 
 describe('dismissSensitivePrompt', () => {
-  const openRequest = (id: string, method: string) => {
-    const respond = vi.fn()
-
-    rememberServerRequest({ fail: vi.fn(), id, method, params: {}, respond })
-
-    return respond
-  }
-
-  it('clears a sudo overlay and answers the server request with an empty value', () => {
+  it('clears a sudo overlay before a stale cancel RPC resolves', async () => {
     resetOverlayState()
-    resetServerRequestsForTests()
-    patchOverlayState({ sudo: { requestId: 'srq-sudo' } })
-    const respond = openRequest('srq-sudo', 'sudo')
+    patchOverlayState({ sudo: { requestId: 'sudo-1' } })
+    const rpc = vi.fn().mockResolvedValue(null)
     const sys = vi.fn()
 
-    dismissSensitivePrompt(getOverlayState(), vi.fn(), sys)
+    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys)
 
     expect(getOverlayState().sudo).toBeNull()
     expect(sys).toHaveBeenCalledWith('sudo cancelled')
-    expect(respond).toHaveBeenCalledWith({ value: '' })
+    expect(rpc).toHaveBeenCalledWith('sudo.respond', { password: '', request_id: 'sudo-1' })
+    await pending
   })
 
-  it('clears a secret overlay even when its request already expired (nothing left to answer)', () => {
+  it('clears a secret overlay before a stale cancel RPC resolves', async () => {
     resetOverlayState()
-    resetServerRequestsForTests()
-    patchOverlayState({ secret: { envVar: 'API_KEY', prompt: 'Enter API key', requestId: 'srq-gone' } })
+    patchOverlayState({ secret: { envVar: 'API_KEY', prompt: 'Enter API key', requestId: 'secret-1' } })
+    const rpc = vi.fn().mockResolvedValue(null)
     const sys = vi.fn()
 
-    dismissSensitivePrompt(getOverlayState(), vi.fn(), sys)
+    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys)
 
     expect(getOverlayState().secret).toBeNull()
     expect(sys).toHaveBeenCalledWith('secret entry cancelled')
+    expect(rpc).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-1', value: '' })
+    await pending
   })
 })

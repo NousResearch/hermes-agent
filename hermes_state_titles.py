@@ -97,7 +97,7 @@ class SessionTitlesMixin:
                 return 0
             if title:
                 conflict = conn.execute(
-                    "SELECT id, archived, hidden FROM sessions WHERE title = ? AND id != ?", (title, session_id),
+                    "SELECT id FROM sessions WHERE title = ? AND id != ?", (title, session_id),
                 ).fetchone()
                 if conflict:
                     conflict_id = conflict["id"]
@@ -105,16 +105,6 @@ class SessionTitlesMixin:
                     # user, so transfer it onto the tip (uniqueness + lineage kept).
                     if self._is_compression_ancestor(conn, ancestor_id=conflict_id, descendant_id=session_id):
                         conn.execute("UPDATE sessions SET title = NULL WHERE id = ?", (conflict_id,))
-                    # A deliberately archived hidden Bot Chat is a retired registry
-                    # entry, not a live identity. Retire its name in the same title
-                    # transaction so a replacement can become the sole canonical row;
-                    # the old session remains archived and otherwise untouched.
-                    elif (title == self.CANONICAL_BOT_CHAT_TITLE and bool(conflict["archived"])
-                          and bool(conflict["hidden"])):
-                        conn.execute(
-                            "UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?",
-                            (conflict_id,),
-                        )
                     else:
                         raise ValueError(f"Title '{title}' is already in use by session {conflict_id}")
             # CAS on the values just read (``IS`` is NULL-safe): a concurrent write between
@@ -156,12 +146,21 @@ class SessionTitlesMixin:
             "UPDATE sessions SET title_source = ? WHERE id = ? AND title IS NOT NULL", (source, session_id)
         ) > 0
 
-    def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
-        """Look up a session by exact title. Returns session dict or None."""
+    def get_session_by_title(
+        self, title: str, *, source: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Look up an exact title, optionally within one owning surface."""
+        source_clause = " AND s.source = ?" if source is not None else ""
+        order_clause = (
+            " ORDER BY CASE WHEN COALESCE(s.message_count, 0) > 0 "
+            "THEN 0 ELSE 1 END, s.started_at ASC, s.id ASC"
+            if source is not None else ""
+        )
+        params = (title, source) if source is not None else (title,)
         row = self._read_one(
             "SELECT s.*, COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved "
             "FROM sessions s LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
-            "WHERE s.title = ?", (title,))
+            f"WHERE s.title = ?{source_clause}{order_clause} LIMIT 1", params)
         return self._session_row_dict(row) if row else None
 
     def resolve_session_by_title(self, title: str) -> Optional[str]:

@@ -108,21 +108,6 @@ def test_deliver_requires_params(home):
     assert "error" in err
 
 
-def test_deliver_relays_empty_reply_for_a_bare_silence_marker(home, monkeypatch):
-    """#110782: the subprocess transport applies the gateway's silence rule — a bare marker
-    relays as "", prose that merely mentions one is relayed verbatim."""
-    class _Proc:
-        returncode, stderr = 0, ""
-        stdout = " *NO_REPLY* "
-
-    monkeypatch.setattr("subprocess.run", lambda *_a, **_k: _Proc())
-    assert _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping"}))["reply"] == ""
-
-    _Proc.stdout = "The NO_REPLY marker means do not answer."
-    out = _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping"}))
-    assert out["reply"] == _Proc.stdout.strip()
-
-
 def test_deliver_lands_in_live_bot_chat_instead_of_subprocess(home, monkeypatch):
     """#100523: a Desktop-owned Bot Chat receives the DM as a normal user turn.
 
@@ -195,17 +180,21 @@ def test_deliver_write_failure_still_removes_tempfile(home, monkeypatch, tmp_pat
         return fd, path
 
     class _BrokenWriter:
+        def __init__(self, fd):
+            self._fd = fd
+
         def __enter__(self):
             return self
 
         def __exit__(self, *exc_info):
+            os.close(self._fd)
             return False
 
         def write(self, content):
             raise OSError("disk full")
 
     monkeypatch.setattr("tempfile.mkstemp", _tracking_mkstemp)
-    monkeypatch.setattr("os.fdopen", lambda *a, **k: _BrokenWriter())
+    monkeypatch.setattr("os.fdopen", lambda fd, *a, **k: _BrokenWriter(fd))
     err = srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "x"})
     assert "error" in err
     assert made, "mkstemp was never reached"

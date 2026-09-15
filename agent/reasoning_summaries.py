@@ -36,13 +36,22 @@ _MERGEABLE_DETAIL_TEXT_KEYS = {"reasoning.text": "text", "reasoning.summary": "s
 _BACKFILL_DETAIL_KEYS = ("signature", "id", "format", "index")
 
 
+def _detail_blocks_compatible(previous: dict, current: dict) -> bool:
+    """Whether two deltas can belong to one block without conflicting identity metadata."""
+    for key in _BACKFILL_DETAIL_KEYS:
+        previous_value, current_value = previous.get(key), current.get(key)
+        if previous_value not in (None, "") and current_value not in (None, "") and previous_value != current_value:
+            return False
+    return True
+
+
 def append_streamed_reasoning_detail(details_acc: list, detail: Any) -> None:
     """Accumulate one streamed ``reasoning_details`` delta entry into *details_acc*.
 
     OpenRouter streams ``reasoning_details`` as word-level deltas: consecutive
     ``reasoning.text`` / ``reasoning.summary`` entries are fragments of one logical
-    block and are merged (later fragments backfill ``signature``/``id`` the first
-    omitted); encrypted/opaque entries stay discrete. Unmerged, a long thought
+    block and are merged when their identity metadata is compatible (later fragments
+    backfill ``signature``/``id`` the first omitted); encrypted/opaque entries stay discrete. Unmerged, a long thought
     replays as hundreds of one-word entries and providers that validate the
     sequence shape on the next turn reject it. SDK objects are normalized to dicts.
     """
@@ -56,7 +65,8 @@ def append_streamed_reasoning_detail(details_acc: list, detail: Any) -> None:
     dtype = detail.get("type")
     merge_key = _MERGEABLE_DETAIL_TEXT_KEYS.get(dtype)
     last = details_acc[-1] if details_acc else None
-    if last is not None and merge_key and last.get("type") == dtype and isinstance(detail.get(merge_key), str):
+    if (isinstance(last, dict) and merge_key and last.get("type") == dtype
+            and isinstance(detail.get(merge_key), str) and _detail_blocks_compatible(last, detail)):
         last[merge_key] = (last.get(merge_key) or "") + detail[merge_key]
         for k in _BACKFILL_DETAIL_KEYS:
             if last.get(k) in (None, "") and detail.get(k) not in (None, ""):

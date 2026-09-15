@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { MessagingPlatformInfo } from '@/types/hermes'
 
@@ -82,6 +82,13 @@ function platform(patch: Partial<MessagingPlatformInfo> = {}): MessagingPlatform
     ...patch
   }
 }
+
+// Load the real page before opening a React act scope. A cold transform must
+// fail setup, not leave the first test's unfinished render poisoning the rest.
+beforeAll(async () => {
+  await import('./index')
+  await import('@/store/settings-scope')
+}, 120_000)
 
 beforeEach(() => {
   updateMessagingPlatform.mockResolvedValue({ ok: true, platform: 'teams' })

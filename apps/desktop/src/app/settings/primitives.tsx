@@ -177,12 +177,14 @@ export function ToggleRow({
   checked,
   description,
   disabled,
+  hint,
   label,
   onChange
 }: {
   checked: boolean
   description?: string
   disabled?: boolean
+  hint?: string
   label: string
   onChange: (on: boolean) => void
 }) {
@@ -200,6 +202,7 @@ export function ToggleRow({
         />
       }
       description={description}
+      hint={hint}
       title={label}
     />
   )

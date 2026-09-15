@@ -12,19 +12,7 @@ def _directory_links(path: Path) -> list[Path]:
     return [part for part in (*reversed(path.parents), path) if part.is_symlink()]
 
 
-def _operator_owned_links(links: list[Path], home: Path) -> list[Path]:
-    """Keep only the links that make the operator the owner of the home's permissions.
-
-    That boundary is the home itself and anything under it. A link *above* the home
-    (macOS ``/tmp`` -> ``/private/tmp``, ``/var`` -> ``/private/var``, or any aliased parent
-    the user happens to live in) says nothing about who owns :data:`home`, and treating it as
-    an operator-owned link left a fresh home and its ``cron``/``sessions``/``logs``/``memories``
-    subdirectories at the default ``0o755`` instead of ``0o700``.
-    """
-    return [link for link in links if link == home or home in link.parents]
-
-
-def _ensure_directory(path: Path, *, create: bool, secure: bool, home: Path) -> None:
+def _ensure_directory(path: Path, *, create: bool, secure: bool) -> None:
     from hermes_cli.config import _secure_dir
 
     detail = ""
@@ -40,7 +28,7 @@ def _ensure_directory(path: Path, *, create: bool, secure: bool, home: Path) -> 
         elif not path.is_dir():
             raise FileNotFoundError(f"Required directory does not exist: {path}")
         # The operator owns permissions beyond a link, including logs/curator.
-        if secure and not _operator_owned_links(links, home):
+        if secure and not links:
             _secure_dir(path)
     except OSError as exc:
         raise HomeInitializationError(
@@ -58,12 +46,12 @@ def initialize_home(home: Path, subdirs: tuple[str, ...], ensured: set[str]) -> 
     managed = is_managed()
     old_umask = os.umask(0o007) if managed else None
     try:
-        _ensure_directory(home, create=not managed, secure=not managed, home=home)
+        _ensure_directory(home, create=not managed, secure=not managed)
         required = ("cron", "sessions", "logs", "memories") if managed else subdirs
         for subdir in required:
-            _ensure_directory(home / subdir, create=not managed, secure=not managed, home=home)
+            _ensure_directory(home / subdir, create=not managed, secure=not managed)
         if managed:
-            _ensure_directory(home / "logs" / "curator", create=True, secure=False, home=home)
+            _ensure_directory(home / "logs" / "curator", create=True, secure=False)
         try:
             _ensure_default_soul_md(home)
         except OSError as exc:

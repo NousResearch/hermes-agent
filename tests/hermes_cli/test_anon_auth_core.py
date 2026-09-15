@@ -7,6 +7,7 @@ the wire contract is exercised, never mocked away.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import time
@@ -17,12 +18,84 @@ import pytest
 
 from hermes_cli import anon_auth
 from hermes_cli.auth import _load_auth_store, resolve_provider
-from tests.hermes_cli.anon_portal import PORTAL, WELCOME, install_portal, make_jwt as _jwt  # noqa: F401
+
+WELCOME = "https://welcome-api.nousresearch.com/v1"
+PORTAL = "https://portal.example.test"
+
+
+def _jwt(**claims) -> str:
+    def seg(obj):
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+    payload = {"sub": "nas_user:1", "client_id": "nas-anonymous", "account_tier": "anonymous",
+               "scope": "inference:invoke tool:invoke", "exp": int(time.time()) + 900, **claims}
+    return f"{seg({'alg': 'RS256'})}.{seg(payload)}.sig"
+
+
+class FakePortal:
+    """Minimal NAS anonymous surface. Records every call; scenarios flip its behaviour."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, str]] = []
+        self.dead_tokens: set[str] = set()
+        self.gate_closed = False
+        self.minted = 0
+        # What the token exchange names as the inference host; None = an older NAS that omits it.
+        self.inference_base_url: str | None = WELCOME
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        self.calls.append((request.method, path))
+        if path.startswith("/api/anonymous/") and not request.headers.get("x-anonymous-api-secret"):
+            return httpx.Response(401, json={"error": "invalid_shared_secret"})
+        if self.gate_closed:
+            return httpx.Response(401, json={"error": "invalid_shared_secret"})
+        if path == "/api/anonymous/create":
+            self.minted += 1
+            return httpx.Response(201, json={"user_id": f"nas_user:{self.minted}", "org_id": "nas_org:1",
+                                             "token": f"anon_{self.minted:04d}", "idle_ttl_days": 14})
+        if path == "/api/anonymous/token":
+            token = json.loads(request.content)["token"]
+            if token in self.dead_tokens:
+                return httpx.Response(404, json={"error": "unknown_token"})
+            body = {"access_token": _jwt(), "token_type": "Bearer", "expires_in": 900,
+                    "user_id": "nas_user:1", "org_id": "nas_org:1"}
+            if self.inference_base_url:
+                body["inference_base_url"] = self.inference_base_url
+            return httpx.Response(200, json=body)
+        return httpx.Response(500, json={"error": f"unexpected {path}"})
 
 
 @pytest.fixture
 def portal(monkeypatch, tmp_path):
-    return install_portal(monkeypatch, tmp_path)
+    fake = FakePortal()
+    monkeypatch.setenv("HERMES_PORTAL_BASE_URL", PORTAL)
+    monkeypatch.setenv("HERMES_ANON_API_SECRET", "test-secret")
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
+    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
+    for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NOUS_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    from hermes_cli import auth_nous
+
+    def _client(timeout_seconds, verify):
+        return httpx.Client(transport=httpx.MockTransport(fake.handler), base_url=PORTAL)
+    monkeypatch.setattr(auth_nous, "_nous_http_client", _client)
+    # resolve_nous_access_token builds its own client; route it through the fake too.
+    real_client = httpx.Client
+
+    class _RoutedClient(real_client):
+        def __init__(self, *a, **kw):
+            kw.pop("verify", None)
+            kw["transport"] = httpx.MockTransport(fake.handler)
+            super().__init__(*a, **kw)
+    monkeypatch.setattr(httpx, "Client", _RoutedClient)
+    anon_auth._mint_failed = False
+    from hermes_cli import free_tier_bootstrap as _fb
+    _fb.reset_for_tests()
+    # resolve_nous_access_token memoises the last token for 5 s per profile home (dict); a token minted
+    # by an earlier test must not be served to this one.
+    from hermes_cli import auth as auth_mod
+    monkeypatch.setattr(auth_mod, "_RESOLVE_TOKEN_CACHE", {})
+    return fake
 
 
 def _write_config(monkeypatch, **nous):
@@ -40,6 +113,23 @@ def _shared_store(tmp_path) -> dict:
 
 
 class TestIdentityLifecycle:
+    def test_configured_opt_in_provisions_without_a_launcher_flag(self, portal, monkeypatch):
+        monkeypatch.delenv("HERMES_GUEST_ONBOARDING", raising=False)
+        _write_config(monkeypatch, guest=True)
+        assert anon_auth.guest_enabled() is True
+        state = anon_auth.ensure_portal_identity(explicit=True)
+        assert anon_auth.is_guest_state(state)
+        assert portal.minted == 1
+
+    @pytest.mark.parametrize("choice", [False, "false", "true", 1])
+    def test_explicit_non_opt_in_cannot_be_enabled_by_a_launcher(self, portal, monkeypatch, choice):
+        from hermes_cli import config as cfg_mod
+
+        monkeypatch.setattr(cfg_mod, "load_config_readonly", lambda: {"nous": {"guest": choice}})
+        assert anon_auth.guest_enabled() is False
+        assert anon_auth.ensure_portal_identity(explicit=True) is None
+        assert portal.calls == []
+
     def test_fresh_install_mints_once_and_is_the_active_provider(self, portal, tmp_path):
         state = anon_auth.ensure_portal_identity(explicit=True)
         assert anon_auth.is_guest_state(state)
@@ -84,10 +174,11 @@ class TestIdentityLifecycle:
         with pytest.raises(anon_auth.AuthError):
             resolve_provider("auto")
 
-    def test_launch_gate_off_means_no_free_tier_at_all(self, portal, monkeypatch):
-        """Without ``HERMES_GUEST_ONBOARDING=1`` the free tier does not exist: no mint, no portal
-        traffic, ``nous.guest``'s default is never consulted, and an identity already on disk is
-        not treated as enabled. The env var is the only lever; ``0``/``true``/anything but ``1`` is off."""
+    def test_unset_profile_retains_legacy_launcher_opt_in(self, portal, monkeypatch):
+        """An unset profile stays off unless an older launcher explicitly opts in.
+
+        Configured profiles are covered separately and do not need this hint.
+        """
         monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
         for raw in ("", "0", "true", "yes", "new"):
             monkeypatch.setenv("HERMES_GUEST_ONBOARDING", raw)
@@ -98,6 +189,15 @@ class TestIdentityLifecycle:
             resolve_provider("auto")
         monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
         assert anon_auth.guest_enabled() is True
+
+    @pytest.mark.parametrize("hint, enabled", [("", False), ("0", False), ("1", True)])
+    def test_null_profile_choice_retains_legacy_onboarding(self, portal, monkeypatch, hint, enabled):
+        from hermes_cli import config as cfg_mod
+
+        monkeypatch.setattr(cfg_mod, "load_config_readonly", lambda: {"nous": {"guest": None}})
+        monkeypatch.setenv("HERMES_GUEST_ONBOARDING", hint)
+        assert anon_auth.guest_enabled() is enabled
+        assert portal.calls == []
 
 
 class TestExplicitProvision:

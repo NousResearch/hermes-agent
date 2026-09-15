@@ -31,6 +31,7 @@ import {
 
 type FakeChildProcess = EventEmitter & {
   stdout: EventEmitter
+  stderr: EventEmitter
 }
 
 // A minimal stand-in for a spawned child process: an EventEmitter with a
@@ -39,6 +40,7 @@ type FakeChildProcess = EventEmitter & {
 function makeFakeChild(): FakeChildProcess {
   const child = new EventEmitter() as FakeChildProcess
   child.stdout = new EventEmitter()
+  child.stderr = new EventEmitter()
 
   return child
 }
@@ -199,6 +201,24 @@ test('waitForDashboardPortAnnouncement uses ready file when provided', async () 
     const p = waitForDashboardPortAnnouncement(child, { readyFile: tmp.file, timeoutMs: 1000 })
     setTimeout(() => fs.writeFileSync(tmp.file, JSON.stringify({ port: 9876 })), 20)
     assert.equal(await p, 9876)
+  } finally {
+    tmp.cleanup()
+  }
+})
+
+test('waitForDashboardPortAnnouncement falls back to stdout when the ready file stays absent', async () => {
+  const tmp = mkTmpReadyFile()
+  const child = makeFakeChild()
+
+  try {
+    const p = waitForDashboardPortAnnouncement(child, { readyFile: tmp.file, timeoutMs: 1000 })
+    child.stdout.emit('data', 'HERMES_DASHBOARD_READY port=6543\n')
+
+    assert.equal(await p, 6543)
+    assert.equal(child.stdout.listenerCount('data'), 0)
+    assert.equal(child.stderr.listenerCount('data'), 0)
+    assert.equal(child.listenerCount('exit'), 0)
+    assert.equal(child.listenerCount('error'), 0)
   } finally {
     tmp.cleanup()
   }

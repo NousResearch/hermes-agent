@@ -154,7 +154,7 @@ test('encryptDesktopSecret stores safeStorage base64 payload', () => {
 
 // ─── Owner-only credential files (connection.json) ─────────────────────────
 
-test('writeSecretFileAtomic creates the file owner-only, not at the 0644 umask default', () => {
+test.runIf(process.platform !== 'win32')('writeSecretFileAtomic creates the file owner-only, not at the 0644 umask default', () => {
   withTempDir(dir => {
     const target = path.join(dir, 'connection.json')
     const payload = JSON.stringify({ remote: { token: { encoding: SAFE_STORAGE_ENCODING, value: 'BLOB' } } })
@@ -381,7 +381,7 @@ test('resolvePersistedRemoteToken keeps the existing token when no new token is 
   assert.equal(called, false, 'an empty incoming token must not re-encrypt anything')
 })
 
-test('writeSecretFileAtomic does not inherit loose bits from a stale temp file', () => {
+test.runIf(process.platform !== 'win32')('writeSecretFileAtomic does not inherit loose bits from a stale temp file', () => {
   // renameSync keeps the TEMP file's permissions, and writeFileSync's `mode`
   // is ignored when the path already exists — so a temp left by a crashed
   // earlier write would otherwise hand 0644 straight to the target.
@@ -409,7 +409,7 @@ function fsWith(overrides: Record<string, unknown>) {
   return { ...fs, ...overrides } as any
 }
 
-test('the written file is owner-only even where chmod does nothing', () => {
+test.runIf(process.platform !== 'win32')('the written file is owner-only even where chmod does nothing', () => {
   // Windows, and any mount that refuses chmod. The create-time `mode` is what
   // covers this — there is no second chance to tighten.
   withTempDir(dir => {
@@ -434,7 +434,7 @@ test('the written file is owner-only even where chmod does nothing', () => {
   })
 })
 
-test('the written file is owner-only even when a stale temp cannot be removed', () => {
+test.runIf(process.platform !== 'win32')('the written file is owner-only even when a stale temp cannot be removed', () => {
   // The unlink is best-effort; if the stale temp survives, writeFileSync's
   // `mode` is ignored on an existing path and only the chmod before the rename
   // can still fix the bits.
@@ -449,7 +449,7 @@ test('the written file is owner-only even when a stale temp cannot be removed', 
   })
 })
 
-test('writeSecretFileAtomic cannot be redirected through a symlink planted at the temp path', () => {
+test('writeSecretFileAtomic cannot be redirected through a symlink planted at the temp path', context => {
   // A stale temp path is attacker-controllable in a shared temp/userData dir.
   // Following it would write the token into the victim file AND then rename the
   // link over connection.json, so every later write leaks too.
@@ -457,12 +457,13 @@ test('writeSecretFileAtomic cannot be redirected through a symlink planted at th
     const target = path.join(dir, 'connection.json')
     const victim = path.join(dir, 'victim.txt')
     fs.writeFileSync(victim, 'original', { mode: 0o644 })
+    const victimMode = modeOf(victim)
 
     try {
       fs.symlinkSync(victim, `${target}.tmp`, 'file')
     } catch (error: any) {
       if (error?.code === 'EPERM' || error?.code === 'EACCES') {
-        return
+        context.skip(`Native file symlink creation is unavailable: ${error.code}`)
       }
 
       throw error
@@ -471,14 +472,17 @@ test('writeSecretFileAtomic cannot be redirected through a symlink planted at th
     writeSecretFileAtomic(target, 'tok-live-42')
 
     assert.equal(fs.readFileSync(victim, 'utf8'), 'original', 'the symlink target was not written through')
-    assert.equal(modeOf(victim), 0o644, 'the victim file was not chmodded either')
+    assert.equal(modeOf(victim), victimMode, 'the victim file was not chmodded either')
     assert.equal(fs.readFileSync(target, 'utf8'), 'tok-live-42')
     assert.equal(fs.lstatSync(target).isSymbolicLink(), false, 'the target is a real file, not the planted link')
-    assert.equal(modeOf(target), SECRET_FILE_MODE)
+
+    if (process.platform !== 'win32') {
+      assert.equal(modeOf(target), SECRET_FILE_MODE)
+    }
   })
 })
 
-test('tightenSecretFileMode tightens a pre-existing world-readable config in place', () => {
+test.runIf(process.platform !== 'win32')('tightenSecretFileMode tightens a pre-existing world-readable config in place', () => {
   // The upgrade path: a connection.json written by an older build sits at 0644
   // with a real (encrypted) token in it. Tightening must change the mode and
   // nothing else — the token has to stay readable or the user loses their
@@ -505,7 +509,7 @@ test('tightenSecretFileMode tightens a pre-existing world-readable config in pla
   })
 })
 
-test('tightenSecretFileMode leaves a non-safeStorage token payload readable', () => {
+test.runIf(process.platform !== 'win32')('tightenSecretFileMode leaves a non-safeStorage token payload readable', () => {
   // A hand-edited config (or one from a pre-release build) can hold a
   // non-safeStorage token payload, which decryptDesktopSecret still reads
   // verbatim on purpose. Tightening the mode must not disturb that fallback —
@@ -527,7 +531,7 @@ test('tightenSecretFileMode leaves a non-safeStorage token payload readable', ()
   })
 })
 
-test('tightenSecretFileMode is idempotent and never throws on an unusable path', () => {
+test.runIf(process.platform !== 'win32')('tightenSecretFileMode is idempotent and never throws on an unusable path', () => {
   withTempDir(dir => {
     const target = path.join(dir, 'connection.json')
     writeSecretFileAtomic(target, '{}')
@@ -542,7 +546,7 @@ test('tightenSecretFileMode is idempotent and never throws on an unusable path',
   })
 })
 
-test('tightenSecretFileMode refuses to chmod a symlink instead of following it to its target', () => {
+test.runIf(process.platform !== 'win32')('tightenSecretFileMode refuses to chmod a symlink instead of following it to its target', () => {
   // Matches readInstallationId in desktop-installation.ts. Without the lstat
   // guard a link planted at the config path sends the chmod to whatever it
   // resolves to — someone else's file gets its mode rewritten.
@@ -566,7 +570,7 @@ test('tightenSecretFileMode refuses to chmod a symlink instead of following it t
   })
 })
 
-test('tightenSecretFileMode only touches a regular file the current user owns', () => {
+test.runIf(process.platform !== 'win32')('tightenSecretFileMode only touches a regular file the current user owns', () => {
   // Directories, sockets, fifos and files owned by another account are all
   // "not ours to chmod". Injected lstat so the foreign-owner branch is
   // reachable without a second OS account.
@@ -622,6 +626,22 @@ test('tightenSecretFileMode leaves Windows alone rather than flipping the read-o
   // suppressed it above.
   assert.equal(tightenSecretFileMode('/home/me/connection.json', { fs: fakeFs, platform: 'linux' }), true)
   assert.ok(chmods.includes('/home/me/connection.json'), 'the POSIX path was tightened')
+})
+
+test.runIf(process.platform === 'win32')('Windows atomic secret replacement preserves contents and remains writable', () => {
+  withTempDir(dir => {
+    const target = path.join(dir, 'connection.json')
+    const payload = JSON.stringify({ remote: { token: { encoding: SAFE_STORAGE_ENCODING, value: 'BLOB' } } })
+    fs.writeFileSync(target, 'old')
+    fs.writeFileSync(target + '.tmp', 'stale')
+    writeSecretFileAtomic(target, payload)
+    assert.equal(fs.readFileSync(target, 'utf8'), payload)
+    assert.equal(tightenSecretFileMode(target), true)
+    assertNoSecretDebris(dir, 'connection.json', 'BLOB')
+    writeSecretFileAtomic(target, 'replacement')
+    assert.equal(fs.readFileSync(target, 'utf8'), 'replacement')
+    assert.equal(fs.lstatSync(target).isFile(), true)
+  })
 })
 
 test('a token is never persisted in plaintext when safeStorage is unavailable', () => {

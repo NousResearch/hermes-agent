@@ -192,7 +192,6 @@ def test_no_chat_copy_of_any_sign_in_state_leaks_a_terminal_verb_or_a_forbidden_
         "model_changed": True,
         "reason": "unknown",
         "detail": "private detail",
-        "retry_after": 0.0,
     }
     forbidden = re.compile(r"claim|nous portal|anonymous|guest", re.IGNORECASE)
     terminal_or_url = re.compile(r"hermes |https?://", re.IGNORECASE)
@@ -229,7 +228,7 @@ def test_the_paid_tool_notice_switches_wording_inside_a_chat():
 
 
 @pytest.mark.asyncio
-async def test_the_wait_line_is_only_composed_on_the_state(monkeypatch):
+async def test_renderers_use_the_state_owned_wait_line(monkeypatch):
     from gateway.slash_commands_login import GatewayLoginCommandsMixin
 
     state = anon_auth.Code(
@@ -239,6 +238,10 @@ async def test_the_wait_line_is_only_composed_on_the_state(monkeypatch):
     assert state.copy_with_wait == (
         f"{anon_auth.UPGRADE_DO_NOT_SHARE} {anon_auth.format_wait_line(state.expires_in)}"
     )
+
+    # Give the state distinct copy so a renderer recomposing it independently
+    # fails by behavior, without inspecting production source text.
+    monkeypatch.setattr(anon_auth.Code, "copy_with_wait", property(lambda _self: "state-owned wait copy"))
 
     monkeypatch.setattr(
         "hermes_cli.auth_device_flow._print_device_code_instructions", lambda *_args, **_kwargs: None
@@ -255,14 +258,6 @@ async def test_the_wait_line_is_only_composed_on_the_state(monkeypatch):
         call(attempt, state.code),
         call(attempt, state.copy_with_wait),
     ]
-
-    # The wait line is composed once, on the state. A renderer that called
-    # format_wait_line itself would emit the same text and pass the assertions
-    # above, so the renderers are checked by source instead.
-    repo = Path(anon_auth.__file__).resolve().parents[1]
-    for rel in ("gateway/slash_commands_login.py", "hermes_cli/cli_commands_mixin.py"):
-        assert "format_wait_line" not in (repo / rel).read_text(encoding="utf-8"), rel
-
 
 def test_cli_chat_status_names_the_free_tier(isolated_store):
     from hermes_cli.cli_session_mixin import CLISessionMixin

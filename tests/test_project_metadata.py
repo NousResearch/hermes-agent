@@ -100,6 +100,23 @@ def _exact_pins(specs):
     return pins
 
 
+def test_h2_security_override_matches_uv_lock():
+    """Existing installs must not keep a vulnerable transitive h2 version.
+
+    ``hermes update`` uses ``uv pip install -e .[all]`` without ``--upgrade``.
+    A lockfile-only bump therefore does not replace an already-installed h2
+    that still satisfies its consumers' broad requirements.  The uv override
+    constrains h2 only when it is present and forces the update path onto the
+    same patched version committed in ``uv.lock``.
+    """
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject_path.open("rb") as handle:
+        uv_config = tomllib.load(handle)["tool"]["uv"]
+
+    override_pins = _exact_pins(uv_config["override-dependencies"])
+    assert override_pins.get("h2") == _uv_lock_version("h2") == "4.4.1"
+
+
 
 
 def test_pyproject_pins_match_lazy_deps_pins():

@@ -12,8 +12,12 @@
  */
 
 import { spawnSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
 
 import { describe, expect, it } from 'vitest'
+
+// eslint-disable-next-line no-restricted-imports -- Native test oracle only; the plugin never imports or exposes this capability.
+import { findGitBash } from '../../../electron/find-git-bash'
 
 import { isLegacyDelegatedRoutine, normalizedProfileName, routineInputError, routinePrompt } from './cron'
 
@@ -21,8 +25,26 @@ import { isLegacyDelegatedRoutine, normalizedProfileName, routineInputError, rou
  *  the assertion is what the SHELL passed — not what the string looks like. */
 function argvOf(prompt: string): string[] {
   const command = prompt.slice(prompt.indexOf('hermes '), prompt.lastIndexOf('\n\nIf the command'))
-  const result = spawnSync('sh', ['-c', `hermes() { printf '%s\\037' "$@"; }\n${command}`], { encoding: 'utf8' })
 
+  // Windows ships Git Bash, not a `sh` executable on the desktop's PATH. Keep
+  // a real shell oracle on both hosts: string assertions cannot prove quoting.
+  const isWindows = process.platform === 'win32'
+
+  const shell = isWindows
+    ? findGitBash({ isWindows, env: process.env, fileExists: existsSync })
+    : 'sh'
+
+  expect(shell, 'Git Bash is required for the Windows shell-quoting regression').not.toBeNull()
+
+  const result = spawnSync(shell!, [...(isWindows ? ['--noprofile', '--norc'] : []), '-c',
+    `hermes() { printf '%s\\037' "$@"; }\n${command}`], {
+    encoding: 'utf8',
+    input: '',
+    timeout: 10_000,
+    windowsHide: true
+  })
+
+  expect(result.error).toBeUndefined()
   expect(result.status, result.stderr).toBe(0)
 
   return result.stdout.split('\u001f').slice(0, -1)

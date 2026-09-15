@@ -165,7 +165,17 @@ def _record_client_active_in_process(
 ) -> None:
     store = SharedMetricsStore(Path(database_path), Path(outbox_directory))
     start_barrier.wait()
-    store.record_client_active(_resource())
+    for attempt in range(4):
+        try:
+            store.record_client_active(_resource())
+            return
+        except sqlite3.OperationalError as exc:
+            if exc.sqlite_errorcode != sqlite3.SQLITE_BUSY or attempt == 3:
+                raise
+            # The production path intentionally fails fast on contention. A
+            # child in this cross-process proof may retry only that transient
+            # SQLITE_BUSY outcome before the parent checks the deduplicated row.
+            time.sleep(0.05 * (2**attempt))
 
 
 def test_model_call_counter_survives_restart_and_exports_only_new_deltas(tmp_path):

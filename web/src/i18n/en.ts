@@ -10,8 +10,6 @@ export const en: Translations = {
     delete: "Delete",
     refresh: "Refresh",
     retry: "Retry",
-    loadFailed: "Could not load {what}. Check that the dashboard server is running and click Retry.",
-    loadFailedDetails: "Details: {detail}",
     search: "Search...",
     loading: "Loading...",
     create: "Create",
@@ -251,11 +249,6 @@ export const en: Translations = {
   },
 
   cron: {
-    loadWhat: "cron jobs",
-    // Script-only mode on, Script field empty. `no_agent` is the config key, not a term the
-    // user has seen; name the field they must fill instead.
-    scriptRequired:
-      "Script-only jobs need a script path. Fill in the Script field or switch the job back to prompt mode.",
     confirmDeleteMessage:
       "This removes the job from the schedule. This cannot be undone.",
     confirmDeleteTitle: "Delete scheduled job?",
@@ -379,7 +372,7 @@ export const en: Translations = {
     modelOptional: "Model (optional)",
     modelInherit: "Inherit from clone / default",
     modelLoading: "Loading models…",
-    modelNone: "No model providers are set up yet. Add an API key under Keys or sign in to a provider under Models.",
+    modelNone: "No authenticated providers — set a key first",
     editModel: "Change model",
     modelSaved: "Model updated",
     modelSelect: "Select a model",
@@ -445,14 +438,11 @@ export const en: Translations = {
   skills: {
     title: "Skills",
     searchPlaceholder: "Search skills and toolsets...",
-    loadWhat: "skills",
-    browseHub: "Browse skills hub",
-    createSkill: "Create skill",
     enabledOf: "{enabled}/{total} enabled",
     all: "All",
     categories: "Categories",
     filters: "Filters",
-    noSkills: "No skills installed yet. Browse the skills hub or create one here; from a terminal you can also run `hermes skills search <topic>`.",
+    noSkills: "No skills found. Skills are loaded from ~/.hermes/skills/",
     noSkillsMatch: "No skills match your search or filter.",
     skillCount: "{count} skill{s}",
     resultCount: "{count} result{s}",

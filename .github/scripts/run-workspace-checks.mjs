@@ -26,7 +26,7 @@ const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 function discoverUnits() {
   const raw = execFileSync(NPM, ['query', '.workspace'], {
     encoding: 'utf-8',
-    shell: process.platform === 'win32',
+    shell: process.platform === 'win32'
   })
   /** @type {{location: string, scripts?: Record<string,string>}[]} */
   const pkgs = JSON.parse(raw)
@@ -35,7 +35,7 @@ function discoverUnits() {
   const units = []
   for (const pkg of pkgs) {
     const scripts = pkg.scripts || {}
-    const subs = Object.keys(scripts).filter((s) => /^check:.+$/.test(s))
+    const subs = Object.keys(scripts).filter(s => /^check:.+$/.test(s))
     if (subs.length > 0) {
       for (const script of subs) units.push({ pkg: pkg.location, script })
     } else if (scripts.check) {
@@ -47,28 +47,35 @@ function discoverUnits() {
 
 /** @param {{pkg: string, script: string}} unit */
 function runUnit(unit) {
-  return new Promise((resolve) => {
+  return new Promise(resolve => {
     const started = Date.now()
     const child = spawn(NPM, ['run', '--prefix', unit.pkg, unit.script], {
       // Buffer, and do not inherit. Children that share one stdout
       // interleave their lines, and a failure is then hard to read.
       stdio: ['ignore', 'pipe', 'pipe'],
-      shell: process.platform === 'win32',
+      shell: process.platform === 'win32'
     })
     /** @type {Buffer[]} */
     const chunks = []
-    child.stdout.on('data', (c) => chunks.push(c))
-    child.stderr.on('data', (c) => chunks.push(c))
-    child.on('error', (err) => {
+    child.stdout.on('data', c => chunks.push(c))
+    child.stderr.on('data', c => chunks.push(c))
+    child.on('error', err => {
       chunks.push(Buffer.from(`failed to spawn: ${err.message}\n`))
-      resolve({ unit, code: 1, output: Buffer.concat(chunks).toString('utf-8'), ms: Date.now() - started })
+      resolve({
+        unit,
+        code: 1,
+        signal: null,
+        output: Buffer.concat(chunks).toString('utf-8'),
+        ms: Date.now() - started
+      })
     })
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
       resolve({
         unit,
         code: code ?? 1,
+        signal,
         output: Buffer.concat(chunks).toString('utf-8'),
-        ms: Date.now() - started,
+        ms: Date.now() - started
       })
     })
   })
@@ -80,9 +87,10 @@ async function main() {
 
   if (units.length === 0) {
     console.error(
-      '::error::No workspace package declares a check script — refusing to report green having run nothing.',
+      '::error::No workspace package declares a check script — refusing to report green having run nothing.'
     )
-    process.exit(1)
+    process.exitCode = 1
+    return
   }
 
   if (argv.includes('--list')) {
@@ -93,7 +101,7 @@ async function main() {
   const flagIdx = argv.indexOf('--concurrency')
   const concurrency = Math.max(
     1,
-    flagIdx !== -1 ? Number(argv[flagIdx + 1]) : Math.min(units.length, availableParallelism()),
+    flagIdx !== -1 ? Number(argv[flagIdx + 1]) : Math.min(units.length, availableParallelism())
   )
 
   console.log(`running ${units.length} checks, up to ${concurrency} at a time:`)
@@ -101,7 +109,7 @@ async function main() {
   console.log('')
 
   const queue = [...units]
-  /** @type {{unit: {pkg: string, script: string}, code: number, output: string, ms: number}[]} */
+  /** @type {{unit: {pkg: string, script: string}, code: number, signal: string | null, output: string, ms: number}[]} */
   const results = []
 
   async function worker() {
@@ -122,18 +130,26 @@ async function main() {
 
   await Promise.all(Array.from({ length: Math.min(concurrency, units.length) }, worker))
 
-  const failed = results.filter((r) => r.code !== 0)
+  const failed = results.filter(r => r.code !== 0)
   console.log('\n=== summary ===')
   for (const r of [...results].sort((a, b) => b.ms - a.ms)) {
     console.log(
-      `  ${r.code === 0 ? 'pass' : 'FAIL'}  ${(r.ms / 1000).toFixed(1).padStart(6)}s  ${r.unit.pkg} :: ${r.unit.script}`,
+      `  ${r.code === 0 ? 'pass' : 'FAIL'}  ${(r.ms / 1000).toFixed(1).padStart(6)}s  ${r.unit.pkg} :: ${r.unit.script}`
     )
   }
 
   if (failed.length > 0) {
-    for (const r of failed) console.error(`::error::${r.unit.pkg} :: ${r.unit.script} failed`)
+    for (const r of failed) {
+      console.error(
+        `::error::${r.unit.pkg} :: ${r.unit.script} failed (exit ${r.code}${r.signal ? `, signal ${r.signal}` : ''})`
+      )
+    }
     console.error(`::error::${failed.length} of ${results.length} checks failed`)
-    process.exit(1)
+    // A verbose failure can leave megabytes queued on an asynchronous CI
+    // stdout pipe. An immediate exit discards its tail, including the actual
+    // failing assertion. Preserve failure while letting pending writes drain.
+    process.exitCode = 1
+    return
   }
   console.log(`\nall ${results.length} checks passed`)
 }

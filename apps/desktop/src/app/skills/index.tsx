@@ -37,7 +37,7 @@ import { normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
-import { $hubActions, installHubSkill, notifyHubActionFailed, OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
+import { $hubActions, installHubSkill, OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import type { OfficialSkillInfo, SkillInfo, ToolsetInfo } from '@/types/hermes'
@@ -72,10 +72,9 @@ import { McpTab } from './mcp-tab'
 import { PluginsTab } from './plugins-tab'
 import { $skillsSortDesc, $toolsetsSortDesc } from './store'
 
-// 'hub' is gone as a top-level tab — the Skills Hub browser lives inside the
-// Skills tab now (EmbeddedHubPicker below the installed list). Legacy
-// `?tab=hub` links fall back to 'skills' via useRouteEnumParam.
-const SKILLS_MODES = ['skills', 'toolsets', 'mcp', 'plugins'] as const
+// The Hub is a durable page-local tab. Its iframe is mounted on first visit,
+// then kept hidden across tab switches so returning never reloads the docs site.
+const SKILLS_MODES = ['skills', 'toolsets', 'mcp', 'plugins', 'hub'] as const
 
 // Skills + toolsets live in the RQ cache so switching tabs/pages paints the
 // cached lists instantly (no reload flash) and mount only fires a deduped
@@ -135,6 +134,11 @@ function skillSubtitle(skill: SkillInfo): React.ReactNode {
       {provenance === 'hub' && (
         <Badge className="shrink-0 normal-case" variant="muted">
           hub
+        </Badge>
+      )}
+      {provenance === 'bundled' && (
+        <Badge className="shrink-0 normal-case" variant="muted">
+          built-in
         </Badge>
       )}
     </>
@@ -246,13 +250,13 @@ export function SkillsView({
   const [query, setQuery] = useState('')
 
   // The hub picker hosts a full docs-site iframe — the single most expensive
-  // thing on this page. It mounts lazily (first time the Skills tab is shown)
+  // thing on this page. It mounts lazily (first time the Hub tab is shown)
   // and then STAYS mounted but hidden across tab switches, so bouncing to
   // Tools/MCP and back never reloads the site. Derived-state pattern: flips
   // once, during render, never back.
-  const [hubMounted, setHubMounted] = useState(mode === 'skills')
+  const [hubMounted, setHubMounted] = useState(mode === 'hub')
 
-  if (mode === 'skills' && !hubMounted) {
+  if (mode === 'hub' && !hubMounted) {
     setHubMounted(true)
   }
 
@@ -290,7 +294,7 @@ export function SkillsView({
 
   const { data: profilesData } = useQuery({
     queryKey: ['capabilities-profiles'],
-    queryFn: () => getProfiles(),
+    queryFn: getProfiles,
     staleTime: 60_000,
     // Pinned scope never shows the selector, so don't fetch the roster for it.
     enabled: !fixedProfile
@@ -465,6 +469,30 @@ export function SkillsView({
 
   const runningInstalls = useMemo(() => new Set(runningInstallKey.split('|').filter(Boolean)), [runningInstallKey])
 
+  // Provenance counts make it clear why a skill appears in this list (agent,
+  // bundled, or Skills Hub) instead of implying that only one source exists.
+  // Older backends do not send provenance at all; do not fabricate an
+  // `agent` count because that would turn missing metadata into a false claim.
+  const provenanceSummary = useMemo(() => {
+    if (!skills || skills.some(skill => !skill.provenance)) {
+      return null
+    }
+
+    const counts = { agent: 0, bundled: 0, hub: 0 }
+
+    for (const skill of skills) {
+      const provenance = skill.provenance
+
+      if (!provenance) {
+        return null
+      }
+
+      counts[provenance] += 1
+    }
+
+    return t.skills.provenanceSummary(counts.agent, counts.bundled, counts.hub)
+  }, [skills, t.skills])
+
   const visibleToolsets = useMemo(
     () => (toolsets ? filteredToolsets(toolsets, query, toolCalls ?? {}, toolsetsSortDesc) : []),
     [query, toolCalls, toolsets, toolsetsSortDesc]
@@ -548,9 +576,7 @@ export function SkillsView({
   // catalog section into the installed section with the normal toggle.
   function handleInstallOfficial(skill: OfficialSkillInfo) {
     notify({ kind: 'success', title: t.skills.hub.installStarted(skill.name), message: t.skills.hub.actionLog })
-    void installHubSkill(skill.identifier, scopeProfile).catch(err =>
-      notifyHubActionFailed(err, t.skills.hub.actionFailed, skill.name, scopeProfile)
-    )
+    void installHubSkill(skill.identifier, scopeProfile).catch(err => notifyError(err, t.skills.hub.actionFailed))
   }
 
   async function handleToggleToolset(toolset: ToolsetInfo, enabled: boolean) {
@@ -864,7 +890,7 @@ export function SkillsView({
       onTabChange={id => setMode(id as (typeof SKILLS_MODES)[number])}
       // MCP manages a handful of entries with the editor right there —
       // searching it is noise.
-      searchHidden={mode === 'mcp' || mode === 'plugins'}
+      searchHidden={mode === 'mcp' || mode === 'plugins' || mode === 'hub'}
       searchHints={searchHints}
       searchPlaceholder={mode === 'skills' ? t.skills.searchSkills : t.skills.searchToolsets}
       searchValue={query}
@@ -872,7 +898,8 @@ export function SkillsView({
         { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
         { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null },
         { id: 'mcp', label: t.skills.tabMcp },
-        { id: 'plugins', label: t.skills.tabPlugins }
+        { id: 'plugins', label: t.skills.tabPlugins },
+        { id: 'hub', label: t.skills.tabHub }
       ]}
     >
       {/* One shared column: the scope selector sits above whichever tab is
@@ -884,7 +911,11 @@ export function SkillsView({
             must not sit under a "Configuring: <profile>" header. */}
         {mode !== 'plugins' && profileScopeSelector}
         <div className="flex min-h-0 flex-1 flex-col">
-          <div className={mode === 'skills' ? 'min-h-40 flex-1 overflow-hidden' : 'min-h-0 flex-1'}>
+          <div
+            className={
+              mode === 'hub' ? 'hidden' : mode === 'skills' ? 'min-h-40 flex-1 overflow-hidden' : 'min-h-0 flex-1'
+            }
+          >
             {mode === 'plugins' ? (
               // Agent plugins for the scoped profile (selector in the section
               // header), app-level desktop plugins, the live catalog picker
@@ -903,7 +934,7 @@ export function SkillsView({
               // machine's MCP servers, so it is withheld (config edits still
               // apply on that backend's next session).
               <McpTab gateway={crossBackendScope ? null : gateway} key={`mcp-${scopeKey}`} profile={scopeProfile} />
-            ) : (skillsFailed || toolsetsFailed) && (!skills || !toolsets) ? (
+            ) : mode === 'hub' ? null : (skillsFailed || toolsetsFailed) && (!skills || !toolsets) ? (
               <PanelEmpty
                 action={
                   <Button onClick={() => void refreshCapabilities()} size="sm">
@@ -929,22 +960,29 @@ export function SkillsView({
                 <MasterDetail pane={skillEditorPane} resizeId="capabilities-split" split="wide">
                   <ListColumn
                     header={
-                      <ListStrip
-                        left={sortButton(skillsSortDesc, () => $skillsSortDesc.set(!$skillsSortDesc.get()))}
-                        right={
-                          <ListStripMenu
-                            items={[
-                              {
-                                disabled: bulkBusy,
-                                label: t.skills.disableUnused,
-                                onSelect: () => void disableUnused()
-                              }
-                            ]}
-                            label={t.skills.tabSkills}
-                            toggle={bulkSwitch(allSkillsEnabled)}
-                          />
-                        }
-                      />
+                      <>
+                        {provenanceSummary ? (
+                          <div className="border-b border-(--ui-stroke-secondary) px-3 py-1 text-[0.65rem] text-(--ui-text-tertiary)">
+                            {provenanceSummary}
+                          </div>
+                        ) : null}
+                        <ListStrip
+                          left={sortButton(skillsSortDesc, () => $skillsSortDesc.set(!$skillsSortDesc.get()))}
+                          right={
+                            <ListStripMenu
+                              items={[
+                                {
+                                  disabled: bulkBusy,
+                                  label: t.skills.disableUnused,
+                                  onSelect: () => void disableUnused()
+                                }
+                              ]}
+                              label={t.skills.tabSkills}
+                              toggle={bulkSwitch(allSkillsEnabled)}
+                            />
+                          }
+                        />
+                      </>
                     }
                   >
                     {visibleSkills.map(skill => (
@@ -1074,13 +1112,18 @@ export function SkillsView({
             )}
           </div>
           {/* Hub picker OUTSIDE the tab ternary: it lazy-mounts the first time
-              Skills is shown, then stays mounted (hidden) across Tools/MCP so
+              Hub is shown, then stays mounted (hidden) across Skills/Tools/MCP so
               the docs-site iframe never reloads on a tab bounce. No scope key
               on purpose — the picker fetches nothing; scope rides the
               `profile` prop into each install call, and remounting on scope
               change would reload the whole site for no data benefit. */}
           {hubMounted && (
-            <EmbeddedHubPicker hidden={mode !== 'skills'} installedNames={installedSkillNames} profile={scopeProfile} />
+            <EmbeddedHubPicker
+              hidden={mode !== 'hub'}
+              installedNames={installedSkillNames}
+              profile={scopeProfile}
+              standalone
+            />
           )}
         </div>
       </div>

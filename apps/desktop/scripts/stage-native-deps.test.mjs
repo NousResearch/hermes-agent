@@ -594,7 +594,7 @@ test('darwin staging ships the Swift helper executable and the rewritten windows
 
     stageGetWindowsInto(srcRoot, destRoot, { platform: 'darwin' })
 
-    assert.equal(fs.statSync(join(destRoot, 'main')).mode & 0o777, 0o755)
+    assert.deepEqual(fs.readFileSync(join(destRoot, 'main')), fs.readFileSync(join(srcRoot, 'main')))
     const staged = fs.readFileSync(join(destRoot, 'lib', 'windows.js'), 'utf8')
     assert.match(staged, /Rewritten by stage-native-deps\.mjs/)
     assert.ok(!staged.includes('node-pre-gyp'), 'pre-gyp loader must not survive staging')
@@ -610,6 +610,19 @@ test('darwin staging ships the Swift helper executable and the rewritten windows
 // state: its prebuilt URL returns 404 and npm may omit the optional dependency.
 // Staging skips those unsupported targets, but supported native targets remain
 // a hard failure when the package is missing.
+
+test.runIf(process.platform !== 'win32')('darwin staging preserves executable mode on a POSIX filesystem', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'get-windows')
+    const destRoot = join(tmp, 'dest')
+    makeFakeGetWindows(srcRoot)
+    stageGetWindowsInto(srcRoot, destRoot, { platform: 'darwin' })
+    assert.equal(fs.statSync(join(destRoot, 'main')).mode & 0o777, 0o755)
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
 
 test('linux staging skips when get-windows is absent (optional dep skipped by npm)', () => {
   assert.equal(stageGetWindows({ platform: 'linux', resolveRoot: () => null }), undefined)

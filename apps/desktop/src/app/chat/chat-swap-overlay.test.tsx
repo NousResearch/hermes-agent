@@ -42,12 +42,18 @@ describe('ChatSwapOverlay', () => {
   it('keeps the last profile name through the fade-out, with the glyph frozen', () => {
     const { container, rerender } = render(<ChatSwapOverlay profile="turqoise" />)
 
+    const overlay = container.firstElementChild
+    expect(overlay?.classList.contains('opacity-100')).toBe(true)
+    expect(overlay?.classList.contains('opacity-0')).toBe(false)
     expect(container.querySelector('.glyph-spinner')?.hasAttribute('data-paused')).toBe(false)
 
     rerender(<ChatSwapOverlay profile={null} />)
 
     // Label held so the overlay doesn't blank while it fades.
     expect(screen.getByText(/turqoise/)).toBeTruthy()
+    expect(container.firstElementChild).toBe(overlay)
+    expect(overlay?.classList.contains('opacity-100')).toBe(false)
+    expect(overlay?.classList.contains('opacity-0')).toBe(true)
     // ...and the spinner stops, the way clearing the interval used to stop it.
     expect(container.querySelector('.glyph-spinner')?.getAttribute('data-paused')).toBe('true')
   })

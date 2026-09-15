@@ -13,7 +13,6 @@
 //      re-selected forever instead of falling through to bootstrap.
 
 import assert from 'node:assert/strict'
-import path from 'node:path'
 
 import { test } from 'vitest'
 
@@ -90,7 +89,7 @@ function makeDeps(overrides: Partial<Parameters<typeof resolveVenvHermesCommand>
     isCommandScript: () => false,
     fileExists: () => true,
     directoryExists: () => false,
-    canImportHermesCli: async () => true,
+    canImportHermesCli: () => true,
     getVenvPython: (venvRoot: string) => `${venvRoot}/Scripts/python.exe`,
     getVenvSitePackagesEntries: () => [],
     buildDesktopBackendEnv: () => ({ FAKE_ENV: '1' }),
@@ -103,41 +102,41 @@ function makeDeps(overrides: Partial<Parameters<typeof resolveVenvHermesCommand>
   }
 }
 
-test('resolveVenvHermesCommand: returns null off Windows', async () => {
+test('resolveVenvHermesCommand: returns null off Windows', () => {
   const deps = makeDeps({ isWindows: false })
 
-  assert.equal(await resolveVenvHermesCommand('/root/venv/Scripts/hermes.exe', [], deps), null)
+  assert.equal(resolveVenvHermesCommand('/root/venv/Scripts/hermes.exe', [], deps), null)
 })
 
-test('resolveVenvHermesCommand: returns null for a .cmd/.bat script command', async () => {
+test('resolveVenvHermesCommand: returns null for a .cmd/.bat script command', () => {
   const deps = makeDeps({ isCommandScript: () => true })
 
-  assert.equal(await resolveVenvHermesCommand('/root/venv/Scripts/hermes.cmd', [], deps), null)
+  assert.equal(resolveVenvHermesCommand('/root/venv/Scripts/hermes.cmd', [], deps), null)
 })
 
-test('resolveVenvHermesCommand: returns null when the basename is not hermes/hermes.exe', async () => {
+test('resolveVenvHermesCommand: returns null when the basename is not hermes/hermes.exe', () => {
   const deps = makeDeps()
 
-  assert.equal(await resolveVenvHermesCommand('/root/venv/Scripts/python.exe', [], deps), null)
+  assert.equal(resolveVenvHermesCommand('/root/venv/Scripts/python.exe', [], deps), null)
 })
 
-test('resolveVenvHermesCommand: returns null when the parent dir is not Scripts', async () => {
+test('resolveVenvHermesCommand: returns null when the parent dir is not Scripts', () => {
   const deps = makeDeps()
 
-  assert.equal(await resolveVenvHermesCommand('/root/venv/bin/hermes.exe', [], deps), null)
+  assert.equal(resolveVenvHermesCommand('/root/venv/bin/hermes.exe', [], deps), null)
 })
 
-test('resolveVenvHermesCommand: returns null when the venv python does not exist on disk', async () => {
+test('resolveVenvHermesCommand: returns null when the venv python does not exist on disk', () => {
   const deps = makeDeps({ fileExists: () => false })
 
-  assert.equal(await resolveVenvHermesCommand('/root/venv/Scripts/hermes.exe', [], deps), null)
+  assert.equal(resolveVenvHermesCommand('/root/venv/Scripts/hermes.exe', [], deps), null)
 })
 
-test('resolveVenvHermesCommand: probes the venv python before trusting it (returns null on failed probe)', async () => {
+test('resolveVenvHermesCommand: probes the venv python before trusting it (returns null on failed probe)', () => {
   let probed = false
 
   const deps = makeDeps({
-    canImportHermesCli: async (python: string) => {
+    canImportHermesCli: (python: string) => {
       probed = true
       assert.equal(python, '/root/venv/Scripts/python.exe')
 
@@ -145,15 +144,15 @@ test('resolveVenvHermesCommand: probes the venv python before trusting it (retur
     }
   })
 
-  const result = await resolveVenvHermesCommand('/root/venv/Scripts/hermes.exe', ['serve'], deps)
+  const result = resolveVenvHermesCommand('/root/venv/Scripts/hermes.exe', ['serve'], deps)
 
   assert.equal(probed, true, 'must probe the venv interpreter; a broken venv must not be re-selected forever')
   assert.equal(result, null, 'a failed probe must fall through (return null) so the resolver reaches bootstrap')
 })
 
-test('resolveVenvHermesCommand: returns the resolved python backend descriptor when the probe passes', async () => {
+test('resolveVenvHermesCommand: returns the resolved python backend descriptor when the probe passes', () => {
   const deps = makeDeps()
-  const result = await resolveVenvHermesCommand('/root/venv/Scripts/hermes.exe', ['serve', '--port', '0'], deps)
+  const result = resolveVenvHermesCommand('/root/venv/Scripts/hermes.exe', ['serve', '--port', '0'], deps)
 
   assert.ok(result, 'a passing probe must return a backend descriptor, not null')
   assert.equal(result.command, '/root/venv/Scripts/python.exe')
@@ -164,17 +163,17 @@ test('resolveVenvHermesCommand: returns the resolved python backend descriptor w
   assert.deepEqual(result.env, { FAKE_ENV: '1' })
 })
 
-test('resolveVenvHermesCommand: is case-insensitive on hermes.exe and the Scripts dir name', async () => {
+test('resolveVenvHermesCommand: is case-insensitive on hermes.exe and the Scripts dir name', () => {
   const deps = makeDeps()
 
-  assert.ok(await resolveVenvHermesCommand('/root/venv/Scripts/HERMES.EXE', [], deps))
-  assert.ok(await resolveVenvHermesCommand('/root/venv/SCRIPTS/hermes.exe', [], deps))
+  assert.ok(resolveVenvHermesCommand('/root/venv/Scripts/HERMES.EXE', [], deps))
+  assert.ok(resolveVenvHermesCommand('/root/venv/SCRIPTS/hermes.exe', [], deps))
 })
 
 // ── getVenvSitePackagesEntries ─────────────────────────────────────────────
 
 test('getVenvSitePackagesEntries: returns Lib/site-packages on Windows when it exists', () => {
-  const expected = path.join('C:\\venv', 'Lib', 'site-packages')
+  const expected = 'C:\\venv\\Lib\\site-packages'
 
   const result = getVenvSitePackagesEntries('C:\\venv', {
     isWindows: true,
@@ -194,15 +193,16 @@ test('getVenvSitePackagesEntries: returns empty on Windows when site-packages do
 })
 
 test('getVenvSitePackagesEntries: reads pyvenv.cfg version on POSIX and resolves lib/pythonX.Y/site-packages', () => {
-  const expected = path.join('/venv', 'lib', 'python3.12', 'site-packages')
-
   const result = getVenvSitePackagesEntries('/venv', {
     isWindows: false,
-    directoryExists: p => p === expected,
-    readFile: () => 'version_info = 3.12.1\n'
+    directoryExists: p => p === '/venv/lib/python3.12/site-packages',
+    readFile: p => {
+      assert.equal(p, '/venv/pyvenv.cfg')
+      return 'version_info = 3.12.1\n'
+    }
   })
 
-  assert.deepEqual(result, [expected])
+  assert.deepEqual(result, ['/venv/lib/python3.12/site-packages'])
 })
 
 test('getVenvSitePackagesEntries: returns empty on POSIX when pyvenv.cfg is missing', () => {

@@ -478,56 +478,14 @@ describe('live tool run', () => {
     })
   })
 
-  it('honors explicit disclosure across live updates and completion', async () => {
-    const message = groupedPendingMessage()
-    const { container, rerender } = render(<GroupHarness message={message} />)
-    const toggle = () => container.querySelector('[data-tool-summary] button[aria-expanded]') as HTMLButtonElement
+  it('cannot be collapsed while a tool is still running', async () => {
+    const { container } = render(<GroupHarness message={groupedPendingMessage()} />)
 
-    await waitFor(() => expect(toggle()).not.toBeNull())
-    fireEvent.click(toggle())
-    expect(toggle().getAttribute('aria-expanded')).toBe('true')
-    expect(container.querySelector('[data-tool-ticker]')).toBeNull()
-    fireEvent.click(toggle())
-    const row = container.querySelector('[data-tool-ticker] [data-tool-row] button[aria-expanded="false"]')
-    expect(row).not.toBeNull()
-    fireEvent.click(row as Element)
-    await waitFor(() => expect(container.querySelector('[data-tool-ticker]')).toBeNull())
+    await waitFor(() => {
+      expect(container.querySelector('[data-tool-summary]')).not.toBeNull()
+    })
 
-    const next = {
-      ...message,
-      content: [
-        ...message.content,
-        {
-          type: 'tool-call',
-          toolCallId: 'read-next',
-          toolName: 'read_file',
-          args: { path: '/tmp/next' },
-          argsText: '{}'
-        }
-      ]
-    } as ThreadMessage
-
-    rerender(<GroupHarness message={next} />)
-    await waitFor(() => expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(3))
-    rerender(<GroupHarness message={{ ...next, status: { type: 'complete', reason: 'stop' } }} />)
-    await waitFor(() => expect(toggle().getAttribute('aria-expanded')).toBe('true'))
-    fireEvent.click(toggle())
-    expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(0)
-  })
-
-  it('updates named skill summaries when identifying arguments arrive late', async () => {
-    const message = groupedPendingMessage()
-    const first = { ...message.content[0], toolName: 'skill_view', args: {}, result: { success: true } }
-
-    const { container, rerender } = render(
-      <GroupHarness message={{ ...message, content: [first, message.content[1]] } as ThreadMessage} />
-    )
-
-    const summary = () => container.querySelector('[data-tool-summary]')?.textContent
-    await waitFor(() => expect(summary()).toContain('Loaded skill'))
-    const named = { ...first, args: { name: 'research-notes' } }
-    rerender(<GroupHarness message={{ ...message, content: [named, message.content[1]] } as ThreadMessage} />)
-    await waitFor(() => expect(summary()).toContain('research-notes'))
+    expect(container.querySelector('[data-tool-summary] button[aria-expanded]')).toBeNull()
   })
 
   // Liveness used to also require an unresolved call, which is false for the
@@ -539,7 +497,7 @@ describe('live tool run', () => {
 
     expect(await screen.findByText('Running 2 commands')).toBeTruthy()
     expect(container.querySelector('[data-tool-ticker]')).not.toBeNull()
-    expect(container.querySelector('[data-tool-summary] button[aria-expanded]')).not.toBeNull()
+    expect(container.querySelector('[data-tool-summary] button[aria-expanded]')).toBeNull()
   })
 
   // The ticker is a one-line window, so a row opened inside it had its output

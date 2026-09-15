@@ -27,8 +27,6 @@ def _arm_rate_limit_cooldown(agent, reason: "FailoverReason | None") -> int | No
     agent._rate_limited_until = time.monotonic() + backoff_seconds
     logging.info("Rate-limit backoff level %d: cooldown %d s (%.1f min, backoff#%d)", backoff_count, backoff_seconds, backoff_seconds / 60, backoff_count + 1)
     return backoff_seconds
-
-
 # Codex ChatGPT-account entitlement 400 — the account can never use the named slug, so with
 # nothing to rotate it is a config error, not a transient failure (#106475).
 _CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER = "model is not supported when using codex with a chatgpt account"

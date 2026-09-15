@@ -7,18 +7,12 @@ any actual MCP servers or API keys.
 
 import argparse
 import os
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from tools import mcp_tool_config as _mcp_config
-
-
-def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
-    from unittest.mock import MagicMock
-
-    mock_stdin = MagicMock()
-    mock_stdin.isatty.return_value = is_tty
-    monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +279,31 @@ class TestMcpAdd:
 
 class TestMcpTest:
 
+    @pytest.mark.parametrize("outcome, expected", [("missing", 1), ("failure", 1), ("success", 0)])
+    def test_cli_main_propagates_probe_result(self, outcome, expected, tmp_path, monkeypatch, capsys):
+        from hermes_cli import main as main_module, mcp_config
+
+        _seed_config(tmp_path, {} if outcome == "missing" else {"local": {"command": "unused"}})
+        calls = []
+
+        def probe(name, config):
+            calls.append(name)
+            if outcome == "failure":
+                raise TimeoutError("probe timed out")
+            return []
+
+        monkeypatch.setattr(mcp_config, "_probe_single_server", probe)
+        monkeypatch.setattr(main_module, "_plugin_cli_discovery_needed", lambda: False)
+        monkeypatch.setattr(sys, "argv", ["hermes", "mcp", "test", "local"])
+        if expected:
+            with pytest.raises(SystemExit) as exc:
+                main_module.main()
+            assert exc.value.code == expected
+        else:
+            assert main_module.main() is None
+        assert calls == ([] if outcome == "missing" else ["local"])
+        assert "invalid choice" not in capsys.readouterr().err.lower()
+
     def test_test_success(self, tmp_path, capsys, monkeypatch):
         _seed_config(tmp_path, {
             "ink": {"url": "https://mcp.ml.ink/mcp"},
@@ -298,10 +317,37 @@ class TestMcpTest:
         )
         from hermes_cli.mcp_config import cmd_mcp_test
 
-        cmd_mcp_test(_make_args(name="ink"))
+        result = cmd_mcp_test(_make_args(name="ink"))
         out = capsys.readouterr().out
+        assert result == 0
         assert "Connected" in out
         assert "Tools discovered: 2" in out
+
+    def test_test_failure_returns_nonzero(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {
+            "ink": {"url": "https://mcp.ml.ink/mcp"},
+        })
+
+        def mock_probe(name, config, **kw):
+            raise TimeoutError("probe timed out")
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        result = cmd_mcp_test(_make_args(name="ink"))
+        out = capsys.readouterr().out
+        assert result == 1
+        assert "Connection failed" in out
+
+    def test_dispatcher_propagates_test_failure(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config.cmd_mcp_test", lambda args: 1
+        )
+        from hermes_cli.mcp_config import mcp_command
+
+        assert mcp_command(_make_args(mcp_action="test")) == 1
 
     def test_probe_uses_configured_connect_timeout(self, monkeypatch):
         """OAuth-capable probes must not hard-code a short 30s timeout."""
@@ -700,12 +746,13 @@ class TestMcpRemoveEvictsManager:
             "hermes_cli.mcp_config.get_hermes_home", lambda: tmp_path
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        _set_interactive_stdin(monkeypatch)
-
         from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
         reset_manager_for_tests()
 
         mgr = get_manager()
+        # Exercise the real cache and removal path without starting an OAuth
+        # flow or depending on a real interactive Windows console.
+        monkeypatch.setattr(mgr, "_build_provider", lambda *_: SimpleNamespace())
         mgr.get_or_build_provider(
             "oauth-srv", "https://example.com/mcp", None,
         )
@@ -855,4 +902,3 @@ def test_tool_filters_keeps_explicit_empty_include():
     assert _tool_filters({"tools": {"include": []}}) == ([], None)
     assert _tool_filters({"tools": {"include": "bad", "exclude": ["x"]}}) == (None, ["x"])
     assert _tool_filters({}) == (None, None)
-

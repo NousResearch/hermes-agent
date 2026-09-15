@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it, vi } from 'vitest'
 
-import { BackendDialClaims } from './backend-dial-claim'
+import { BackendDialClaims, runForegroundRetryingDialClaim } from './backend-dial-claim'
 import { parseBackendScopeKey } from './connection-registry'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -105,6 +105,34 @@ describe('BackendDialClaims (#90812)', () => {
 
     expect(claims.inFlight('default')).toBe(false)
   })
+
+  it('retries a foreground click after it joined a rejected speculative pre-warm', async () => {
+    const claims = new BackendDialClaims()
+    const capacitySkip = new Error('no background slot is currently free')
+    let rejectPrewarm!: (error: Error) => void
+
+    const prewarm = claims.run(
+      'local::research',
+      () =>
+        new Promise<never>((_resolve, reject) => {
+          rejectPrewarm = reject
+        })
+    )
+    const foregroundDial = vi.fn(async () => 'foreground-connected')
+    const click = runForegroundRetryingDialClaim(
+      claims,
+      'local::research',
+      'foreground',
+      foregroundDial,
+      error => error === capacitySkip
+    )
+
+    rejectPrewarm(capacitySkip)
+
+    await expect(prewarm).rejects.toBe(capacitySkip)
+    await expect(click).resolves.toBe('foreground-connected')
+    expect(foregroundDial).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('parseBackendScopeKey (#90812/#93910)', () => {
@@ -128,8 +156,9 @@ describe('main.ts wiring for #90812', () => {
     expect(handlerStart).toBeGreaterThan(-1)
     const body = mainSource.slice(handlerStart, handlerStart + 1200)
 
-    expect(body).toContain('backendDialClaims.run(')
-    expect(body).toContain('ensureBackend(profile, { spawnPriority })')
+    expect(body).toContain('runForegroundRetryingDialClaim(')
+    expect(body).toContain('backendDialClaims,')
+    expect(body).toContain('ensureBackend(profile, { spawnPriority, speculative })')
   })
 
   it('routes the registry-scoped dial IPC through the claim keyed by backendScopeKey(connectionId, profile)', () => {
@@ -138,8 +167,9 @@ describe('main.ts wiring for #90812', () => {
     const body = mainSource.slice(handlerStart, handlerStart + 1_200)
 
     expect(body).toContain('const scopeKey = backendScopeKey(id, profile)')
-    expect(body).toContain('backendDialClaims.run(scopeKey, ')
-    expect(body).toContain("ensureRegistryBackend(id, profile, '', { spawnPriority })")
+    expect(body).toContain('runForegroundRetryingDialClaim(')
+    expect(body).toContain('backendDialClaims,')
+    expect(body).toContain("ensureRegistryBackend(id, profile, '', { spawnPriority, speculative: speculative === true })")
   })
 
   // The four IPC/probe surfaces below call ensureRegistryBackend()/ensureBackend()

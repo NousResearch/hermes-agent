@@ -350,4 +350,3 @@ class TestResnapshot:
         assert by_id["j2"]["model_snapshot"] == "old"
         # pinned job keeps None.
         assert by_id["j3"]["model_snapshot"] is None
-

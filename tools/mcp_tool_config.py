@@ -7,30 +7,33 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple
+from hermes_constants import find_node_executable
 from tools.mcp_tool_common import _env_ref_name, _prepend_path
 
 logger = logging.getLogger("tools.mcp_tool")
 
 _mcp_stderr_log_fh: Dict[str, Any] = {}  # profile home key -> handle
 _mcp_stderr_log_lock = threading.Lock()
+_NPM_CONFIG_CACHE_TIMEOUT_S = 2.0
 
 
 def _get_mcp_stderr_log() -> Any:
-    """Shared append-mode handle for MCP subprocess stderr, cached until shutdown PER PROFILE HOME (a
+    """Shared append-mode handle for MCP subprocess stderr, opened once per process PER PROFILE HOME (a
     multiplexed gateway's secondary profile must log under ITS ``logs/``, not the launch profile's). Must
     expose a real fd (asyncio wires the child's stderr to it); falls back to ``/dev/null``, then real stderr."""
-    from hermes_constants import get_hermes_home, hermes_home_key, mkdir_under_hermes_home
+    from hermes_constants import get_hermes_home, hermes_home_key
     home_key = hermes_home_key()
     with _mcp_stderr_log_lock:
         fh = _mcp_stderr_log_fh.get(home_key)
-        if fh is None or fh.closed:
+        if fh is None:
             try:
                 log_dir = get_hermes_home() / "logs"
-                mkdir_under_hermes_home(log_dir)
+                log_dir.mkdir(parents=True, exist_ok=True)
                 # Line-buffered so output lands promptly; errors="replace" tolerates garbled binary.
                 fh = open(log_dir / "mcp-stderr.log", "a", encoding="utf-8", errors="replace", buffering=1)
                 fh.fileno()  # confirm a real fd before committing
@@ -42,21 +45,6 @@ def _get_mcp_stderr_log() -> Any:
                     fh = sys.stderr
             _mcp_stderr_log_fh[home_key] = fh
         return fh
-
-
-def _close_mcp_stderr_logs(*, scope: Optional[str] = None) -> None:
-    """Release cached parent handles after the selected MCP transports have stopped."""
-    with _mcp_stderr_log_lock:
-        keys = list(_mcp_stderr_log_fh) if scope is None else [scope]
-        for key in keys:
-            fh = _mcp_stderr_log_fh.pop(key, None)
-            # The last-resort fallback is borrowed, not owned by MCP.
-            if fh is None or fh is sys.stderr or fh is sys.__stderr__:
-                continue
-            try:
-                fh.close()
-            except OSError:
-                logger.warning("Could not close MCP stderr log for %s", key, exc_info=True)
 
 
 def _write_stderr_log_header(server_name: str) -> None:
@@ -191,15 +179,149 @@ def _npx_bin_candidates(bin_dir: str, name: str, *, windows: Optional[bool] = No
     return [os.path.join(bin_dir, name)]
 
 
-def _npx_cached_bin(args: list) -> Optional[tuple]:
-    """Resolve ``npx -y <pkg>`` to the already-installed binary, or None.
+def _env_value(
+    env: Mapping[str, str], name: str, *, case_insensitive: bool = False,
+) -> Optional[str]:
+    """Read one child-environment value using the platform or explicit key rules.
 
-    ``npx`` resolves the package and then FORKS, staying resident as the real server's parent
-    for nothing (~48 MB private memory per MCP server, measured); Hermes already supervises the
-    child (shared death supervisor). When the package is in npx's cache we spawn its binary
-    directly. Deliberately conservative — None (caller keeps plain ``npx``, so a cold machine
-    still installs) for a cache miss, a version pin (``pkg@1.2.3``), extra npx flags, a manifest
-    without one obvious bin, or any unreadable cache entry. Returns ``(binary_path, remaining_args)``."""
+    ``_build_safe_env`` starts from the current process environment and then appends the
+    server's explicit ``env`` mapping. A server can therefore legitimately override a
+    baseline ``npm_config_cache`` using the conventional uppercase spelling. npm treats its
+    ``npm_config_*`` variables case-insensitively on every host, while ordinary child
+    environment lookups retain the platform's native behavior. Iterating all matching keys
+    deliberately keeps the last mapping entry, matching that override.
+    """
+    if os.name != "nt" and not case_insensitive:
+        return env.get(name)
+    value = None
+    folded_name = name.casefold()
+    for key, candidate in env.items():
+        if isinstance(key, str) and key.casefold() == folded_name:
+            value = candidate
+    return value
+
+
+def _npx_sibling_npm_command(npx_command: str, env: dict) -> Optional[list[str]]:
+    """Return a local npm CLI command paired with the resolved ``npx`` command.
+
+    The cached-binary shortcut must use the same config source that ``npx`` would use.  On
+    Windows, npm/npx are normally ``.cmd`` shims, which ``subprocess`` cannot execute directly;
+    invoking the paired ``npm-cli.js`` through Node avoids a shell and console flash.  A layout we
+    cannot identify is deliberately left to the original npx command.
+    """
+    npx_path = os.path.abspath(os.path.expanduser(str(npx_command)))
+    npx_dir = os.path.dirname(npx_path)
+    if not npx_dir or not os.path.isdir(npx_dir):
+        return None
+
+    if os.name == "nt":
+        if os.path.splitext(npx_path)[1].lower() == ".exe":
+            npm_exe = os.path.join(npx_dir, "npm.exe")
+            return [npm_exe] if os.path.isfile(npm_exe) else None
+
+        npm_cli = os.path.join(npx_dir, "node_modules", "npm", "bin", "npm-cli.js")
+        if not os.path.isfile(npm_cli):
+            return None
+        # Prefer a Node launcher installed alongside npx.  If that layout omits
+        # one, use Hermes's managed resolver rather than probing an arbitrary
+        # PATH: the latter can select an unrelated system Node even while
+        # Hermes owns the runtime that launches its MCP servers.
+        for node_name in ("node.exe", "node.cmd", "node.bat", "node.com"):
+            node = os.path.join(npx_dir, node_name)
+            if os.path.isfile(node):
+                return [node, npm_cli]
+
+        managed_node = find_node_executable("node")
+        if managed_node and os.path.isfile(managed_node):
+            return [managed_node, npm_cli]
+        return None
+
+    npm = os.path.join(npx_dir, "npm")
+    return [npm] if os.path.isfile(npm) else None
+
+
+def _effective_npx_cache_env(
+    npx_command: str, env: Optional[dict] = None, cwd: Optional[str] = None,
+) -> Optional[dict]:
+    """Return the child env with npm's effective cache pinned, or ``None`` to keep npx.
+
+    An explicit ``npm_config_cache`` already wins.  Otherwise ask the npm installation paired
+    with the resolved npx command for its local, user, and project ``.npmrc`` result.  This is an
+    offline config read, not an install or registry operation.  If its result cannot be established
+    within the small bound, the caller must retain npx instead of guessing a potentially stale
+    platform-default cache.
+    """
+    cache_env = dict(os.environ if env is None else env)
+    if _env_value(cache_env, "npm_config_cache", case_insensitive=True):
+        return cache_env
+
+    npm_command = _npx_sibling_npm_command(npx_command, cache_env)
+    if npm_command is None:
+        logger.debug("Unable to resolve npm paired with npx command %s; keeping npx", npx_command)
+        return None
+
+    try:
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
+        result = subprocess.run(
+            [*npm_command, "--silent", "--no-update-notifier", "--offline", "config", "get", "cache"],
+            cwd=cwd,
+            env=cache_env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_NPM_CONFIG_CACHE_TIMEOUT_S,
+            check=False,
+            creationflags=windows_hide_flags(),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug("Unable to read npm cache configuration for %s: %s", npx_command, exc)
+        return None
+
+    configured_cache = result.stdout.strip()
+    if result.returncode != 0 or not configured_cache or configured_cache.lower() in {"null", "undefined"}:
+        logger.debug("npm cache configuration was unavailable for %s (exit %s)", npx_command, result.returncode)
+        return None
+    configured_cache = _resolve_npm_cache_path(configured_cache, cache_env, cwd)
+
+    for key in list(cache_env):
+        if isinstance(key, str) and key.casefold() == "npm_config_cache":
+            del cache_env[key]
+    cache_env["npm_config_cache"] = configured_cache
+    return cache_env
+
+
+def _resolve_npm_cache_path(configured_cache: str, env: Mapping[str, str], cwd: Optional[str]) -> str:
+    """Resolve npm's cache path with the same child home and working directory.
+
+    npm accepts ``~``-relative cache settings. ``os.path.expanduser`` reads Hermes's own process
+    environment, which can differ from the stdio child's HOME/USERPROFILE, so expand a plain home
+    alias from the exact child environment before handling genuinely relative paths.
+    """
+    cache_path = str(configured_cache)
+    if cache_path == "~" or cache_path.startswith(("~/", "~\\")):
+        home = _env_value(env, "HOME") or _env_value(env, "USERPROFILE")
+        if home:
+            cache_path = os.path.join(str(home), cache_path[2:])
+        else:
+            cache_path = os.path.expanduser(cache_path)
+    else:
+        cache_path = os.path.expanduser(cache_path)
+    if not os.path.isabs(cache_path):
+        cache_path = os.path.join(cwd or os.getcwd(), cache_path)
+    return os.path.abspath(cache_path)
+
+
+def _npx_cached_invocation(args: list) -> Optional[tuple[str, list]]:
+    """Return a cache-safe npx package spec and server args, or ``None``.
+
+    The direct launcher only implements ``npx -y <package> [server args]``. Any npx-specific
+    flag, version pin, or ambiguous invocation stays with npx, including before configuration
+    probing so a caller's ``--userconfig`` choice cannot be overwritten.
+    """
     if not isinstance(args, list) or not args:
         return None
 
@@ -209,50 +331,86 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
     if not rest:
         return None
     # `npx pkg -y` (flag AFTER the spec) would hand the server a flag npx would have eaten.
-    if any(str(a) in ("-y", "--yes") for a in rest[1:]):
+    if any(str(arg) in ("-y", "--yes") for arg in rest[1:]):
         return None
 
     spec = str(rest[0])
     # Scoped names keep their leading '@', so only an '@' AFTER the scope is a version separator.
-    if "@" in (spec[1:] if spec.startswith("@") else spec):
+    if not spec or spec.startswith("-") or "@" in (spec[1:] if spec.startswith("@") else spec):
         return None
-    if not spec or spec.startswith("-"):
-        return None
+    return spec, rest[1:]
 
-    cache_root = os.environ.get("npm_config_cache") or os.path.join(os.path.expanduser("~"), ".npm")
-    npx_root = os.path.join(cache_root, "_npx")
-    if not os.path.isdir(npx_root):
-        return None
-    try:
-        entries = os.listdir(npx_root)
-    except OSError:
-        return None
 
-    for entry in entries:
-        manifest = os.path.join(npx_root, entry, "package.json")
+def _npx_cached_bin(
+    args: list,
+    env: Optional[dict] = None,
+    cwd: Optional[str] = None,
+) -> Optional[tuple]:
+    """Resolve ``npx -y <pkg>`` to the already-installed binary, or None.
+
+    ``npx`` resolves the package and then FORKS, staying resident as the real server's parent
+    for nothing (~48 MB private memory per MCP server, measured); Hermes already supervises the
+    child (shared death supervisor). When the package is in npx's cache we spawn its binary
+    directly. Deliberately conservative — None (caller keeps plain ``npx``, so a cold machine
+    still installs) for a cache miss, a version pin (``pkg@1.2.3``), extra npx flags, a manifest
+    without one obvious bin, or any unreadable cache entry. ``env`` and ``cwd`` are
+    the exact stdio-child settings when supplied, so a per-server
+    ``npm_config_cache`` selects the same package cache that the original ``npx``
+    command would use, including a relative configured cache path.
+    Returns ``(binary_path, remaining_args)``."""
+    invocation = _npx_cached_invocation(args)
+    if invocation is None:
+        return None
+    spec, server_args = invocation
+
+    cache_env = os.environ if env is None else env
+    configured_cache = _env_value(cache_env, "npm_config_cache", case_insensitive=True)
+    if configured_cache:
+        cache_roots = [_resolve_npm_cache_path(configured_cache, cache_env, cwd)]
+    elif os.name == "nt":
+        # npm's Windows default is %LOCALAPPDATA%\npm-cache, not ~/.npm.
+        # Falling back to ~/.npm keeps old/portable layouts working without
+        # overriding an explicit npm_config_cache selected by the user.
+        local_app_data = _env_value(cache_env, "LOCALAPPDATA")
+        cache_roots = [os.path.join(local_app_data, "npm-cache")] if local_app_data else []
+        cache_roots.append(os.path.join(os.path.expanduser("~"), ".npm"))
+    else:
+        cache_roots = [os.path.join(os.path.expanduser("~"), ".npm")]
+
+    for cache_root in cache_roots:
+        npx_root = os.path.join(cache_root, "_npx")
+        if not os.path.isdir(npx_root):
+            continue
         try:
-            with open(manifest, "r", encoding="utf-8") as fh:
-                deps = (json.load(fh) or {}).get("dependencies") or {}
-        except (OSError, ValueError, TypeError):
+            entries = os.listdir(npx_root)
+        except OSError:
             continue
-        if spec not in deps:
-            continue
-        pkg_json = os.path.join(npx_root, entry, "node_modules", spec, "package.json")
-        try:
-            with open(pkg_json, "r", encoding="utf-8") as fh:
-                bin_field = (json.load(fh) or {}).get("bin")
-        except (OSError, ValueError, TypeError):
-            continue
-        if isinstance(bin_field, str):
-            names = [os.path.basename(spec)]
-        elif isinstance(bin_field, dict) and len(bin_field) == 1:
-            names = list(bin_field.keys())
-        else:
-            continue  # zero or several bins: which one npx would pick is not ours to guess
-        bin_dir = os.path.join(npx_root, entry, "node_modules", ".bin")
-        for candidate in _npx_bin_candidates(bin_dir, names[0]):
-            if os.path.exists(candidate) and os.access(candidate, os.X_OK):
-                return candidate, rest[1:]
+
+        for entry in entries:
+            manifest = os.path.join(npx_root, entry, "package.json")
+            try:
+                with open(manifest, "r", encoding="utf-8") as fh:
+                    deps = (json.load(fh) or {}).get("dependencies") or {}
+            except (OSError, ValueError, TypeError):
+                continue
+            if spec not in deps:
+                continue
+            pkg_json = os.path.join(npx_root, entry, "node_modules", spec, "package.json")
+            try:
+                with open(pkg_json, "r", encoding="utf-8") as fh:
+                    bin_field = (json.load(fh) or {}).get("bin")
+            except (OSError, ValueError, TypeError):
+                continue
+            if isinstance(bin_field, str):
+                names = [os.path.basename(spec)]
+            elif isinstance(bin_field, dict) and len(bin_field) == 1:
+                names = list(bin_field.keys())
+            else:
+                continue  # zero or several bins: which one npx would pick is not ours to guess
+            bin_dir = os.path.join(npx_root, entry, "node_modules", ".bin")
+            for candidate in _npx_bin_candidates(bin_dir, names[0]):
+                if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+                    return candidate, server_args
     return None
 
 

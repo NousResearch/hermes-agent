@@ -291,6 +291,39 @@ def _agent_cache_opts(agent: Any) -> tuple[Any, Any]:
     return (None, None) if agent is None else (getattr(agent, "_cache_disabled", None), getattr(agent, "_cache_ttl", None))
 
 
+def _moa_aggregator_prompt_cache_key(
+    agent: Any, messages: list[dict[str, Any]], tools: Any, runtime: dict[str, Any],
+) -> str | None:
+    """Return the stable cache-routing key for a Nous OpenAI aggregator.
+
+    MoA calls the auxiliary chat-completions facade, so it does not pass through
+    the main transport's key builder.  The key is deliberately derived only from
+    the conversation scope, leading instructions, and tool schemas: reference
+    guidance and growing tool history are request state, not cache identity.
+    """
+    provider = str(runtime.get("provider") or "").strip().lower()
+    if provider not in {"nous", "nous-portal", "nousresearch"}:
+        return None
+    if str(runtime.get("api_mode") or "chat_completions") != "chat_completions":
+        return None
+    if agent is None:
+        return None
+    try:
+        from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
+        from agent.transports.chat_completions import _static_prompt_instructions
+        from agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
+
+        scope = resolve_prompt_cache_scope_safe(agent) or getattr(agent, "session_id", None)
+        if not scope:
+            return None
+        return _content_cache_key(
+            _static_prompt_instructions(messages), tools, _cache_scope_from_session_id(scope),
+        )
+    except Exception:  # pragma: no cover - cache routing must fail open
+        logger.debug("MoA aggregator prompt-cache key derivation skipped", exc_info=True)
+        return None
+
+
 def _with_cache_disabled(runtime: dict[str, Any], cache_disabled: Any) -> dict[str, Any]:
     """Pin the live agent's cache disable onto a runtime snapshot (None is a no-op)."""
     return runtime if cache_disabled is None else {**runtime, "_cache_disabled": cache_disabled}
@@ -1107,6 +1140,11 @@ class MoAChatCompletions:
                 stream_kwargs["timeout"] = api_kwargs["timeout"]
         # Pop the runtime's extra_body so the explicit kwarg never collides with **agg_runtime.
         agg_extra_body = _merge_slot_extra_body(agg_runtime.pop("extra_body", None), api_kwargs.get("extra_body"))
+        cache_key = _moa_aggregator_prompt_cache_key(
+            getattr(self, "_agent", None), agg_messages, tools, agg_runtime
+        )
+        if cache_key and not (isinstance(agg_extra_body, dict) and agg_extra_body.get("prompt_cache_key")):
+            agg_extra_body = {**(agg_extra_body or {}), "prompt_cache_key": cache_key}
         agg_response = call_llm(
             task="moa_aggregator", messages=agg_messages, temperature=prepared["aggregator_temperature"],
             max_tokens=api_kwargs.get("max_tokens"), tools=tools, extra_body=agg_extra_body,

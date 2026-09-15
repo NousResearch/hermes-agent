@@ -151,3 +151,58 @@ def test_prepared_aggregator_plans_tools_without_decorating_prepared_state(monke
     assert "cache_control" in calls[0]["tools"][-1]
     assert "cache_control" not in tools[-1]
     assert prepared == canonical_prepared
+
+
+def test_nous_aggregator_uses_a_stable_conversation_scoped_prompt_cache_key(monkeypatch):
+    """Tool-loop guidance must not rotate the Nous/OpenAI cache bucket."""
+    from agent import moa_loop
+
+    calls = []
+    monkeypatch.setattr(moa_loop, "call_llm", lambda **kwargs: calls.append(kwargs) or _response())
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {
+            "provider": "nous", "model": "openai/gpt-6-astra",
+            "base_url": "https://inference-api.nousresearch.com/v1", "api_mode": "chat_completions",
+        },
+    )
+    completions = moa_loop.MoAChatCompletions.__new__(moa_loop.MoAChatCompletions)
+    completions._pending_trace = None
+    completions._agent = SimpleNamespace(session_id="conversation-112358")
+    prepared = {
+        "messages": [{"role": "system", "content": "stable system"}, {"role": "user", "content": "task"}],
+        "guidance": "volatile reference guidance", "aggregator": {"provider": "nous", "model": "openai/gpt-6-astra"},
+        "aggregator_temperature": None,
+    }
+
+    completions._call_prepared_aggregator(prepared, {"tools": [{"type": "function", "function": {"name": "lookup"}}]})
+    prepared["messages"].extend([
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "call-1"}]},
+        {"role": "tool", "tool_call_id": "call-1", "content": "growing tool result"},
+    ])
+    prepared["guidance"] = "different volatile reference guidance"
+    completions._call_prepared_aggregator(prepared, {"tools": [{"type": "function", "function": {"name": "lookup"}}]})
+
+    assert calls[0]["extra_body"]["prompt_cache_key"].startswith("pck_")
+    assert calls[1]["extra_body"]["prompt_cache_key"] == calls[0]["extra_body"]["prompt_cache_key"]
+
+
+def test_non_nous_moa_aggregator_does_not_inject_prompt_cache_key(monkeypatch):
+    from agent import moa_loop
+
+    calls = []
+    monkeypatch.setattr(moa_loop, "call_llm", lambda **kwargs: calls.append(kwargs) or _response())
+    monkeypatch.setattr(
+        moa_loop, "_slot_runtime",
+        lambda slot: {"provider": "openai", "model": "gpt-6-astra", "api_mode": "chat_completions"},
+    )
+    completions = moa_loop.MoAChatCompletions.__new__(moa_loop.MoAChatCompletions)
+    completions._pending_trace = None
+    completions._agent = SimpleNamespace(session_id="conversation-112358")
+    completions._call_prepared_aggregator({
+        "messages": [{"role": "system", "content": "stable system"}, {"role": "user", "content": "task"}],
+        "guidance": None, "aggregator": {"provider": "openai", "model": "gpt-6-astra"}, "aggregator_temperature": None,
+    }, {})
+
+    assert not (calls[0].get("extra_body") or {}).get("prompt_cache_key")

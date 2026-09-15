@@ -109,9 +109,10 @@ def test_update_network_git_calls_never_prompt_for_credentials():
 
     # Network git calls live in the origin (``_git_run``) and the split git module.
     src = inspect.getsource(update_cmd) + inspect.getsource(update_cmd_git)
-    # Every subprocess.run(...) whose argv is a fetch/pull must spread the kwargs.
+    # Every spawn whose argv is a fetch/pull must spread the kwargs — including the streaming
+    # ``subprocess.Popen`` the update path uses so git's progress meter reaches the user.
     calls = []
-    for m in re.finditer(r"subprocess\.run\(", src):
+    for m in re.finditer(r"subprocess\.(?:run|Popen)\(", src):
         depth, i = 1, m.end()
         while depth:
             depth += {"(": 1, ")": -1}.get(src[i], 0)

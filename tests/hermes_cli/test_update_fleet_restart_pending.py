@@ -78,6 +78,9 @@ def _make_up_to_date_side_effect(sha="abc123"):
 def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     """Patch ``_cmd_update_impl`` helpers. Mirrors test_update_head_moved_gate."""
     monkeypatch.setattr(hermes_main.subprocess, "run", run_side_effect)
+    # The fetch has its own seam now; route it through the run fake so the harness sees the same argv.
+    monkeypatch.setattr(update_cmd, "_fetch_with_progress",
+                        lambda git_cmd, branch, **kw: hermes_main.subprocess.run([*git_cmd, "fetch", "origin", branch]))
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     (tmp_path / ".git").mkdir()
     monkeypatch.setattr(hermes_main, "_resolve_update_branch", lambda args: "main")

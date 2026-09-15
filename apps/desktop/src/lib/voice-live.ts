@@ -66,8 +66,13 @@ export interface VoiceLiveHandlers {
   onClosed: (reason: string, usageSeconds: null | number) => void
   /** Transcript deltas, for captions / live UI. */
   onTranscript?: (fragment: LiveTranscriptFragment) => void
-  /** Assistant audio output level hint: the remote track is speaking. */
-  onSpeakingChange?: (speaking: boolean) => void
+  /** Assistant audio output level hint: the remote track is speaking.
+   *  `level` is the probe's per-frame amplitude, normalized to 0..1. */
+  onSpeakingChange?: (speaking: boolean, level: number) => void
+  /** Per-frame amplitude of the speaking probe (0..1), fired every probe
+   *  tick so level meters move with the real signal instead of the
+   *  speaking on/off edge. */
+  onSpeakingLevel?: (level: number) => void
 }
 
 const CLOSE_TIMEOUT_MS = 15_000
@@ -359,11 +364,18 @@ export class VoiceLiveSession {
         const loud = peak > 6
         quietFrames = loud ? 0 : quietFrames + 1
         const speaking = loud || quietFrames < 4
+        // Peak is the byte-domain deviation from silence (0..~128); 64 lands
+        // a firm voice near 1 while the >6 loud gate sits around 0.09.
+        const level = Math.min(1, peak / 64)
 
         if (speaking !== this.lastSpeaking) {
           this.lastSpeaking = speaking
-          this.handlers.onSpeakingChange?.(speaking)
+          this.handlers.onSpeakingChange?.(speaking, level)
         }
+
+        // The speaking edge above owns turn-lifecycle state; the meter gets
+        // a fresh amplitude every tick either way.
+        this.handlers.onSpeakingLevel?.(level)
       }, 100)
     } catch {
       // No analyser → no speaking indicator; the conversation still works.

@@ -67,34 +67,48 @@ class SessionRecoveryMixin:
     def _recovered_row_allowed_for_active_profile(
         self, *, requested_session_key: str, recovered: Dict[str, Any]
     ) -> bool:
-        """Prevent a gateway from reviving another profile's row. Single-profile: the row's
-        namespace must match the ACTIVE profile. Multiplexed: it must match the requested key's
-        namespace (the active profile is meaningless there). Keyless rows stay adoptable.
+        """Prevent a gateway from reviving another profile's row.
 
-        Multiplexed: several profiles serve traffic at once, so the active profile is meaningless — the
-        requested key carries the profile the turn was routed to, and the recovered row must sit in the same
-        ``agent:<ns>:`` namespace (#74285). Rows with no key namespace stay adoptable in both modes
-        (legacy/keyless data owned by this store).
+        Single-profile recovery follows the durable owner first, then the row's key namespace.
+        Multiplexed recovery follows the requested key's profile namespace because no one process-active
+        profile owns all routed turns. Rows with neither owner nor key remain adoptable legacy data.
         """
+        multiplex_profiles = getattr(self.config, "multiplex_profiles", False)
+        active_profile = self._active_profile_name()
+        requested_profile = self._profile_from_session_key(requested_session_key)
+
+        durable_profile = str(recovered.get("profile_name") or "").strip()
+        if durable_profile:
+            if multiplex_profiles:
+                return requested_profile is None or durable_profile == requested_profile
+            return durable_profile == active_profile
+
         recovered_key = str(recovered.get("session_key") or "")
         if not recovered_key or recovered_key == requested_session_key:
             return True
         recovered_profile = self._profile_from_session_key(recovered_key)
         if recovered_profile is None:
             return True
-        if getattr(self.config, "multiplex_profiles", False):
-            requested_profile = self._profile_from_session_key(requested_session_key)
+        if multiplex_profiles:
             return requested_profile is None or recovered_profile == requested_profile
-        return recovered_profile == self._active_profile_name()
+        return recovered_profile == active_profile
 
     def _generate_session_key(self, source: SessionSource, key_source: Optional[SessionSource] = None) -> str:
         """Session key for *source* (profile from *source*; key from *key_source* if given)."""
         from gateway.session import build_session_key
+        group_per_user, thread_per_user = self._resolve_session_isolation(
+            key_source if key_source is not None else source
+        )
         return build_session_key(
             key_source if key_source is not None else source,
-            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            group_sessions_per_user=group_per_user,
+            thread_sessions_per_user=thread_per_user,
             profile=self._resolve_profile_for_key(source))
+
+    def _resolve_session_isolation(self, source: SessionSource) -> tuple[bool, bool]:
+        """Resolve group/thread isolation from platform config, then global defaults."""
+        from gateway.session import resolve_session_isolation
+        return resolve_session_isolation(self.config, source)
 
     def _legacy_slack_session_key(self, source: SessionSource) -> Optional[str]:
         """Pre-workspace Slack key for an explicitly scoped source. Deliberately Slack-only: an
@@ -162,6 +176,8 @@ class SessionRecoveryMixin:
         """Query one durable gateway session row. Scoped Slack lookups disable SessionDB's
         platform/chat/user fallback: that tuple has no workspace id and could revive another team's
         session; the caller performs one explicit exact lookup of the old unscoped key instead."""
+        from gateway.session import effective_session_thread_id
+
         db = self._db_for_key(session_key)
         finder = getattr(db, "find_latest_gateway_session_for_peer", None) if db else None
         if not callable(finder):
@@ -171,7 +187,7 @@ class SessionRecoveryMixin:
                 source=source.platform.value, user_id=source.user_id, session_key=session_key,
                 chat_id=source.chat_id if allow_peer_fallback else None,
                 chat_type=source.chat_type if allow_peer_fallback else None,
-                thread_id=source.thread_id)
+                thread_id=effective_session_thread_id(source))
         except Exception as exc:
             logger.debug("Gateway session DB recovery failed for %s: %s", session_key, exc)
             if raise_on_lookup_error:
@@ -274,12 +290,15 @@ class SessionRecoveryMixin:
         db = self._db_for_key(session_key)
         if not db or not source:
             return
+        from gateway.session import effective_session_chat_type, effective_session_thread_id
+
         recorder = getattr(db, "record_gateway_session_peer", None)
         if not callable(recorder):
             return
         peer = dict(
             source=source.platform.value, user_id=source.user_id, session_key=session_key,
-            chat_id=source.chat_id, chat_type=source.chat_type, thread_id=source.thread_id)
+            chat_id=source.chat_id, chat_type=effective_session_chat_type(source),
+            thread_id=effective_session_thread_id(source))
         try:
             recorder(
                 session_id, **peer, display_name=display_name or source.chat_name,
@@ -355,14 +374,16 @@ class SessionRecoveryMixin:
         """kwargs for ``SessionDB.create_session``. Identity (origin_json) and lineage
         (parent/_reset_from) land atomically in the INSERT so a crash right after cannot strand the
         row unroutable."""
+        from gateway.session import effective_session_chat_type, effective_session_thread_id
+
         return {
             "session_id": session_id,
             "source": source_value,
             "user_id": origin.user_id if origin else None,
             "session_key": session_key,
             "chat_id": origin.chat_id if origin else None,
-            "chat_type": origin.chat_type if origin else None,
-            "thread_id": origin.thread_id if origin else None,
+            "chat_type": effective_session_chat_type(origin) if origin else None,
+            "thread_id": effective_session_thread_id(origin) if origin else None,
             "profile_name": origin.profile if origin else None,
             "origin_json": _origin_json(origin),
             "display_name": display_name,

@@ -1845,7 +1845,7 @@ test('probes run under the remote watchdog so a hung CLI cannot orphan (#110478)
 
   assert.equal(await remoteSupportsSshOwnership(helpSsh, '/x/hermes'), true)
   assert.ok(helpProbe.includes('kill -9'), 'ownership probe wrapped in the remote watchdog')
-  assert.ok(helpProbe.includes('$( ('), 'watchdog nested around the inner serve --help')
+  assert.ok(/\$\(.*\(.*serve --help.*\) <\/dev\/null &/.test(helpProbe), 'watchdog nested around the inner serve --help')
 })
 
 test('cleanupStale escalates to SIGKILL when the backend survives the graceful wait (#91668 quit-during-active-turn)', async () => {

@@ -1122,4 +1122,25 @@ test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#11
   const { stdout: strays } = await execFileAsync('sh', ['-c', `ps -eo args | grep "[s]leep ${hungSecs}$" || true`])
 
   assert.equal(strays.trim(), '', 'killed probe left no orphan process')
+
+  // … including the grandchild of a launcher that runs the CLI without exec
+  // (the broken-launcher class of #110478). Needs a shell with job control
+  // off a tty; bash has it, dash does not.
+  const bash = await execFileAsync('sh', ['-c', 'command -v bash || true']).then(r => r.stdout.trim())
+
+  if (bash) {
+    const grandSecs = hungSecs + 1
+    const launcher = `sh -c 'sleep ${grandSecs}; echo done'`
+
+    const err2: any = await execFileAsync(bash, ['-c', withRemoteTimeout(launcher, 1)]).then(
+      () => null,
+      e => e
+    )
+
+    assert.ok(err2 && err2.code !== 0, 'hung launcher must exit non-zero')
+
+    const { stdout: grandStrays } = await execFileAsync('sh', ['-c', `ps -eo args | grep "[s]leep ${grandSecs}$" || true`])
+
+    assert.equal(grandStrays.trim(), '', 'watchdog killed the launcher’s grandchild too')
+  }
 })

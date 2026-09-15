@@ -348,9 +348,13 @@ function buildInteractiveSshArgs(conn, remoteCwd, connectTimeoutMs?, remoteComma
 function withRemoteTimeout(remoteCommand, timeoutSecs = REMOTE_PROBE_TIMEOUT_SECS) {
   const secs = Number.isFinite(timeoutSecs) && timeoutSecs > 0 ? Math.floor(timeoutSecs) : REMOTE_PROBE_TIMEOUT_SECS
 
+  // Job control (`set -m`) puts the probe in its own process group so the
+  // watchdog can also reach a grandchild left behind by a launcher that runs
+  // the CLI without exec. Shells that cannot enable it without a tty fall
+  // back to killing the direct child.
   return (
-    `(${remoteCommand}) </dev/null & __htp=$!; ` +
-    `(sleep ${secs} </dev/null >/dev/null 2>&1; kill -9 $__htp 2>/dev/null) & __htw=$!; ` +
+    `set -m 2>/dev/null; (${remoteCommand}) </dev/null & __htp=$!; set +m 2>/dev/null; ` +
+    `(sleep ${secs} </dev/null >/dev/null 2>&1; kill -9 -- -$__htp 2>/dev/null; kill -9 $__htp 2>/dev/null) & __htw=$!; ` +
     `wait $__htp; __htrc=$?; ` +
     `kill $__htw 2>/dev/null; wait $__htw 2>/dev/null; ` +
     `exit $__htrc`

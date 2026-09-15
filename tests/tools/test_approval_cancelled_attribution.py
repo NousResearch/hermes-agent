@@ -5,6 +5,7 @@ end, a ``/stop``) end the wait fail-closed, but the tool result carries ``outcom
 and the cause instead of "denied by user" (#112026, #22992).
 """
 import threading
+import time
 
 import pytest
 
@@ -94,3 +95,35 @@ def test_turn_end_unregister_reports_withdrawn_prompt(gateway_session):
     denied = holder["result"]
     assert denied["outcome"] == "denied"
     assert "denied by user" in denied["message"]
+
+
+def test_session_boundary_teardown_reports_withdrawn_prompt(gateway_session):
+    """``clear_session`` (/new, /reset, auto-reset) wakes the wait with no decision: the result
+    is a withdrawn prompt, not a user deny."""
+    thread, holder = _run_gate_until_pending()
+    mod.clear_session(SESSION_KEY)
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    _assert_withdrawn(holder["result"], "the session ended before the prompt was answered")
+
+
+def test_coalesced_follower_inherits_the_leaders_cancellation(gateway_session):
+    """A follower coalesced onto an interrupted leader wakes with the leader's cause, not a deny."""
+    leader_thread, leader = _run_gate_until_pending()
+    follower = {}
+    follower_thread = threading.Thread(
+        target=lambda: follower.__setitem__("result", mod.check_all_command_guards("rm -rf .git", "local")))
+    follower_thread.start()  # identical command → coalesces onto the leader, no second prompt
+    deadline = time.monotonic() + 10
+    while not any(n == "pre_approval_request" and kw.get("coalesced") for n, kw in gateway_session):
+        assert time.monotonic() < deadline, "follower never coalesced onto the leader"
+        time.sleep(0.05)
+    set_interrupt(True, leader["tid"], reason="parent delegation ended")
+    try:
+        leader_thread.join(timeout=10)
+        follower_thread.join(timeout=10)
+    finally:
+        set_interrupt(False, leader["tid"])
+    assert not leader_thread.is_alive() and not follower_thread.is_alive()
+    _assert_withdrawn(leader["result"], "parent delegation ended")
+    _assert_withdrawn(follower["result"], "parent delegation ended")

@@ -268,8 +268,9 @@ def clear_session(session_key: str) -> None:
         _pending.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
     for entry in entries:
-        # Cancel blocked waits now so the old run unwinds instead of idling until timeout.
-        entry.result = "deny"
+        # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
+        # the prompt was withdrawn, nobody denied it.
+        entry.cancelled = "the session ended before the prompt was answered"
         entry.event.set()
     _release_permission_mode_dependents(session_key)
     # Session-persistent code kernels (local and remote) share this owner key and die at the same boundary so a

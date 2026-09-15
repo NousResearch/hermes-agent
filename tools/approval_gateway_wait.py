@@ -24,7 +24,7 @@ logger = logging.getLogger("tools.approval")
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason", "acknowledged", "settle")
+    __slots__ = ("event", "data", "result", "reason", "acknowledged", "settle", "cancelled")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
@@ -37,6 +37,9 @@ class _ApprovalEntry:
         self.result: str | None = None  # "once"|"session"|"always"|"deny"
         # Free-text reason from ``/deny <reason>`` so the agent can adapt, not just hear "denied".
         self.reason: str | None = None
+        # Why the prompt was withdrawn with nobody answering (interrupt cause, session teardown);
+        # followers and teardown read it so a withdrawn prompt never renders as a user deny.
+        self.cancelled: str | None = None
 
 
 def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str) -> str:
@@ -70,15 +73,16 @@ def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str)
             heartbeat()
 
 
-def _cancel_cause(state: str, result: str | None) -> str | None:
+def _cancel_cause(state: str, entry) -> str | None:
     """Why the wait ended with nobody answering: the turn was interrupted (cause from the
-    per-thread channel — a user /stop or a parent's delegation teardown) or the turn ended
+    per-thread channel — a user /stop or a parent's delegation teardown), the entry was
+    withdrawn with a stamped cause (leader interrupted, session torn down), or the turn ended
     under the prompt (notifier unregistered, result never set). ``None`` for a real answer
     or a plain timeout."""
     if state == "interrupted":
         return get_interrupt_reason() or "turn interrupted"
-    if state == "set" and result is None:
-        return "the turn ended before the prompt was answered"
+    if state == "set" and entry.result is None:
+        return entry.cancelled or "the turn ended before the prompt was answered"
     return None
 
 
@@ -107,7 +111,7 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
     state = _poll_event(leader.event, session_key,
                         interrupt_log="Coalesced approval wait interrupted — "
                                       "returning deny for session %s")
-    cancelled = _cancel_cause(state, leader.result)
+    cancelled = _cancel_cause(state, leader)
     if state == "interrupted":
         # Deny only OUR follower; the leader thread handles its own signal.
         choice, resolved = "deny", True
@@ -187,10 +191,13 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
 
     state = _poll_event(entry.event, session_key,
                         interrupt_log="Approval wait interrupted — returning deny for session %s")
-    cancelled = _cancel_cause(state, entry.result)
+    cancelled = _cancel_cause(state, entry)
+    choice = entry.result
     if state == "interrupted":
-        entry.result = "deny"
+        # Our own decision stays a fail-closed deny; coalesced followers wake with the
+        # cause instead of a deny nobody issued.
+        choice, entry.cancelled = "deny", cancelled
         entry.event.set()
     _drop_entry("answered" if state == "set" else state)
     extra = {"cancelled": cancelled} if cancelled else {}
-    return _finish(payload, state != "timeout", entry.result, entry.reason, **extra)
+    return _finish(payload, state != "timeout", choice, entry.reason, **extra)

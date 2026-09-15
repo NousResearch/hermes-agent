@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -288,6 +289,23 @@ def test_cli_reopen_review_is_transition_first_and_redacts_reason(
         comments = kb.list_comments(conn, review_id)
         assert len(comments) == 1
         assert secret not in comments[0].body
+
+    # The same native CLI can consume a stored feedback reference after review.
+    with kbc.connect_closing() as conn:
+        assert kb.request_review(conn, review_id, summary="Second review")
+        comment_id = kb.add_comment(conn, review_id, "operator", "Fresh feedback")
+    detail = json.loads(kc.run_slash(f"show {review_id} --read-only --json"))
+    comment = next(row for row in detail["comments"] if row["id"] == comment_id)
+    latest = max(row["id"] for row in detail["events"])
+    digest = hashlib.sha256(comment["body"].encode()).hexdigest()
+    output = kc.run_slash(
+        f"reopen-review {review_id} --expected-event-id {latest} "
+        f"--feedback-id {hashlib.sha256(b'fixture:feedback').hexdigest()} "
+        f"--feedback-comment-id {comment_id} --feedback-comment-sha256 {digest}"
+    )
+    assert "Reopened" in output
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, review_id).status == "ready"
 
 
 def test_goal_mode_review_handoff_cannot_bypass_judge(

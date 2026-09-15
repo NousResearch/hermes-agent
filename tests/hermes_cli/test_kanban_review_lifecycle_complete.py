@@ -11,6 +11,7 @@ These tests cover the two review models that must coexist:
 
 from __future__ import annotations
 
+import hashlib
 import time
 from pathlib import Path
 
@@ -33,6 +34,116 @@ def conn(tmp_path: Path):
 
 def _event(events, kind: str):
     return [event for event in events if event.kind == kind][-1]
+
+
+def _feedback_reference(conn, task_id, identity="conversation:fixture"):
+    comment_id = kb.add_comment(conn, task_id, "synthetic-intake", "  Exact café feedback\n ")
+    stored = next(comment for comment in kb.list_comments(conn, task_id) if comment.id == comment_id)
+    return dict(
+        expected_event_id=max(event.id for event in kb.list_events(conn, task_id)),
+        feedback_id=hashlib.sha256(identity.encode()).hexdigest(),
+        feedback_comment_id=comment_id,
+        feedback_comment_sha256=hashlib.sha256(stored.body.encode()).hexdigest(),
+    )
+
+
+def _parked_reviewed(conn, status):
+    task_id = kb.create_task(conn, title="Original spec", body="Do not rewrite", assignee="builder")
+    assert kb.request_review(conn, task_id, summary="Original review", reviewer="reviewer")
+    if status != "review":
+        assert kb.reopen_review_task(conn, task_id)
+        attempts = kb.BLOCK_RECURRENCE_LIMIT if status == "triage" else 1
+        for attempt in range(attempts):
+            claimed = kb.claim_task(conn, task_id)
+            assert claimed is not None
+            assert kb.block_task(conn, task_id, kind="capability", reason="Fixture blocker", expected_run_id=claimed.current_run_id)
+            if attempt + 1 < attempts:
+                assert kb.unblock_task(conn, task_id)
+    assert kb.get_task(conn, task_id).status == status
+    return task_id
+
+
+def _feedback_snapshot(conn, task_id):
+    return (kb.get_task(conn, task_id), kb.list_runs(conn, task_id),
+            kb.list_events(conn, task_id), kb.list_comments(conn, task_id))
+
+
+@pytest.mark.parametrize("status", ["review", "blocked", "triage"])
+def test_guarded_recovery_preserves_history_and_deduplicates_after_retriage(conn, status):
+    task_id = _parked_reviewed(conn, status)
+    reference = _feedback_reference(conn, task_id)
+    before, runs, _, comments = _feedback_snapshot(conn, task_id)
+    assert kb.reopen_review_task(conn, task_id, **reference, with_reason=True) == (True, None)
+    after = kb.get_task(conn, task_id)
+    assert after.status == "ready" and after.assignee == "builder"
+    for field in ("title", "body", "workspace_path", "branch_name", "current_run_id",
+                  "block_kind", "block_recurrences", "consecutive_failures"):
+        assert getattr(after, field) == getattr(before, field)
+    assert kb.list_runs(conn, task_id) == runs
+    assert kb.list_comments(conn, task_id) == comments
+    receipt = _event(kb.list_events(conn, task_id), "review_reopened").payload
+    assert all(receipt[name] == value for name, value in reference.items())
+    assert receipt["previous_status"] == status
+    assert "source_status" not in receipt
+    for _ in range(kb.BLOCK_RECURRENCE_LIMIT):
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+        kb.block_task(conn, task_id, reason="Fixture blocker", kind="capability", expected_run_id=claimed.current_run_id)
+        if kb.get_task(conn, task_id).status == "triage":
+            break
+        assert kb.unblock_task(conn, task_id)
+    assert kb.get_task(conn, task_id).status == "triage"
+    snapshot = _feedback_snapshot(conn, task_id)
+    assert kb.reopen_review_task(conn, task_id, **reference, with_reason=True) == (False, "feedback already consumed")
+    assert _feedback_snapshot(conn, task_id) == snapshot
+    # A duplicate comment must not renew the already-consumed wake identity.
+    duplicate = _feedback_reference(conn, task_id)
+    snapshot = _feedback_snapshot(conn, task_id)
+    assert not kb.reopen_review_task(conn, task_id, **duplicate)
+    assert _feedback_snapshot(conn, task_id) == snapshot
+    assert kb.reopen_review_task(conn, task_id, **_feedback_reference(conn, task_id, "conversation:new"))
+
+
+@pytest.mark.parametrize("fault", [
+    "never-reviewed", "bad-provenance", "no-implementer", "wrong-review-run", "open-review-run", "wrong-review-outcome",
+    "current-run", "claim-lock", "claim-expiry", "worker", "orphan-open-run",
+    "stale-event", "wrong-task-comment", "changed-comment", "wrong-hash", "running",
+])
+def test_guarded_recovery_refuses_invalid_or_active_state_without_reclaim(conn, fault):
+    task_id = _parked_reviewed(conn, "triage")
+    reference = _feedback_reference(conn, task_id)
+    review = _event(kb.list_events(conn, task_id), "review_requested")
+    if fault == "never-reviewed":
+        conn.execute("DELETE FROM task_events WHERE task_id=? AND kind='review_requested'", (task_id,))
+    elif fault in ("bad-provenance", "no-implementer"):
+        conn.execute("UPDATE task_events SET payload=? WHERE id=?", ("[1]" if fault == "bad-provenance" else "{}", review.id))
+    elif fault == "wrong-review-run":
+        conn.execute("UPDATE task_events SET run_id=NULL WHERE id=?", (review.id,))
+    elif fault == "open-review-run":
+        conn.execute("UPDATE task_runs SET ended_at=NULL WHERE id=?", (review.run_id,))
+    elif fault == "wrong-review-outcome":
+        conn.execute("UPDATE task_runs SET outcome='blocked' WHERE id=?", (review.run_id,))
+    elif fault in ("current-run", "claim-lock", "claim-expiry", "worker", "running"):
+        column, value = {
+            "current-run": ("current_run_id", review.run_id), "claim-lock": ("claim_lock", "owned"),
+            "claim-expiry": ("claim_expires", 0), "worker": ("worker_pid", 0), "running": ("status", "running"),
+        }[fault]
+        conn.execute(f"UPDATE tasks SET {column}=? WHERE id=?", (value, task_id))
+    elif fault == "orphan-open-run":
+        conn.execute("INSERT INTO task_runs (task_id, status, started_at) VALUES (?, 'running', 1)", (task_id,))
+    elif fault == "stale-event":
+        kb.add_comment(conn, task_id, "operator", "intervening event")
+    elif fault == "wrong-task-comment":
+        other = kb.create_task(conn, title="Other task")
+        reference["feedback_comment_id"] = kb.add_comment(conn, other, "operator", "different task")
+    elif fault == "changed-comment":
+        conn.execute("UPDATE task_comments SET body='changed' WHERE id=?", (reference["feedback_comment_id"],))
+    elif fault == "wrong-hash":
+        reference["feedback_comment_sha256"] = "0" * 64
+    before = _feedback_snapshot(conn, task_id)
+    ok, reason = kb.reopen_review_task(conn, task_id, **reference, with_reason=True)
+    assert not ok and reason
+    assert _feedback_snapshot(conn, task_id) == before
 
 
 def _run(runs, outcome: str):

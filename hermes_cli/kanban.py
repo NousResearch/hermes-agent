@@ -11,6 +11,7 @@ import contextlib
 import json
 import os
 import shlex
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -35,6 +36,10 @@ from hermes_cli.kanban_parser import build_parser  # noqa: F401  (re-exported: h
 
 
 # --- Flag parsing helpers ---
+
+_REVIEW_FEEDBACK_FIELDS = (
+    "expected_event_id", "feedback_id", "feedback_comment_id", "feedback_comment_sha256",
+)
 
 def _none_profile(value: str) -> Optional[str]:
     """``none`` / ``-`` / ``null`` mean "unassign"."""
@@ -183,7 +188,14 @@ def kanban_command(args: argparse.Namespace) -> int:
         # init_db is idempotent (one sqlite_master SELECT when tables exist) and prevents
         # "no such table: tasks" on first use from a fresh HERMES_HOME.
         try:
-            kb.init_db()
+            observational = (
+                action in ("list", "ls") and bool(getattr(args, "no_promote", False))
+            ) or (action == "show" and bool(getattr(args, "read_only", False)))
+            guarded_reopen = action == "reopen-review" and any(
+                getattr(args, name, None) is not None for name in _REVIEW_FEEDBACK_FIELDS
+            )
+            if not observational and not guarded_reopen:
+                kb.init_db()
         except Exception as exc:
             return _err(f"kanban: could not initialize database: {exc}")
 
@@ -192,7 +204,9 @@ def kanban_command(args: argparse.Namespace) -> int:
             return _err(f"kanban: unknown action {action!r}", 2)
         try:
             return int(handler(args) or 0)
-        except (ValueError, RuntimeError, PermissionError) as exc:
+        except (ValueError, RuntimeError, PermissionError, sqlite3.OperationalError) as exc:
+            if isinstance(exc, sqlite3.OperationalError) and not observational:
+                raise
             return _err(f"kanban: {exc}")
 
 
@@ -222,7 +236,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
 
 _DELEGATED_CHILD_DENIED_BOARD_ACTIONS: frozenset[str] = frozenset({
     "create", "new", "rm", "remove", "delete", "switch", "use", "rename",
-    "set-default-workdir", "import",
+    "set-default-workdir", "set-pre-claim", "import",
 })
 
 
@@ -419,9 +433,11 @@ def _cmd_list(args: argparse.Namespace) -> int:
     assignee = args.assignee
     if args.mine and not assignee:
         assignee = _profile_author()
-    with kbc.connect_closing() as conn:
+    no_promote = bool(getattr(args, "no_promote", False))
+    with kbc.connect_closing(read_only=no_promote) as conn:
         # Cheap mini-dispatch so list reflects dependencies cleared since the last tick.
-        kb.recompute_ready(conn)
+        if not no_promote:
+            kb.recompute_ready(conn)
         tasks = kb.list_tasks(
             conn, assignee=assignee, status=args.status, tenant=args.tenant, session_id=args.session,
             include_archived=args.archived, order_by=getattr(args, "sort", None),
@@ -476,7 +492,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
         return rc
     graph = None
     want_json = getattr(args, "json", False)
-    with kbc.connect_closing() as conn:
+    with kbc.connect_closing(read_only=bool(getattr(args, "read_only", False))) as conn:
         task = kb.get_task(conn, args.task_id)
         if not task:
             return _err(f"no such task: {args.task_id}")
@@ -493,8 +509,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
     if want_json:
         _print_json({
             "task": _task_to_dict(task), "latest_summary": latest_summary, "parents": parents, "children": children,
-            "comments": [_obj_dict(c, ("author", "body", "created_at")) for c in comments],
-            "events": [_obj_dict(e, ("kind", "payload", "created_at", "run_id")) for e in events],
+            "comments": [_obj_dict(c, ("id", "author", "body", "created_at")) for c in comments],
+            "events": [_obj_dict(e, ("id", "kind", "payload", "created_at", "run_id")) for e in events],
             "runs": [_obj_dict(r, _SHOW_RUN_FIELDS) for r in runs],
         })
         return 0
@@ -992,6 +1008,23 @@ def _cmd_reopen_review(args: argparse.Namespace) -> int:
     ids, rc = _require_ids(args)
     if rc:
         return rc
+    feedback = {name: getattr(args, name, None) for name in _REVIEW_FEEDBACK_FIELDS}
+    if any(value is not None for value in feedback.values()):
+        try:
+            if len(ids) != 1 or getattr(args, "reason", None) is not None:
+                raise ValueError("guarded feedback requires one task and no --reason")
+            kb.validate_review_feedback(**feedback)
+        except ValueError as exc:
+            return _err(f"kanban: {exc}", 2)
+        with kbc.connect_closing() as conn:
+            ok, diagnostic = kb.reopen_review_task(conn, ids[0], **feedback, with_reason=True)
+        if ok:
+            print(f"Reopened {ids[0]}")
+            return 0
+        if diagnostic == "feedback already consumed":
+            print(f"Already consumed feedback for {ids[0]}")
+            return 0
+        return _err(f"cannot reopen {ids[0]}: {diagnostic}")
     reason = getattr(args, "reason", None)
     if reason is not None:
         reason = str(kb.redact_review_value(reason.strip())).strip() or None

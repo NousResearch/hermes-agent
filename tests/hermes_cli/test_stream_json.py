@@ -16,24 +16,34 @@ def _events(capsys):
 def test_emitter_event_stream_is_valid_jsonl(capsys):
     emitter = StreamJsonEmitter(model="test-model", session_id="s-1")
     emitter.on_text_delta("hel")
-    emitter.on_text_delta("   ")  # whitespace-only deltas carry no information
+    emitter.on_text_delta("\n  ")  # whitespace deltas are part of the answer and must be forwarded verbatim
+    emitter.on_text_delta("lo")
     emitter.on_text_delta(None)  # the turn-end sentinel the agent sends
-    emitter.on_tool_progress("tool.started", "read_file", "preview", {"path": "x"})
+    emitter.on_text_delta("")
+    emitter.on_tool_progress("tool.started", "read_file", "preview", {"path": "x"}, tool_call_id="call-a")
+    emitter.on_tool_progress("tool.started", "read_file", "preview", {"path": "y"}, tool_call_id="call-b")
     emitter.on_tool_progress("reasoning.available", "_thinking", "hmm", None)  # not part of the protocol
-    emitter.on_tool_progress("tool.completed", "read_file", None, None, duration=0.5, is_error=False, result="x" * 6000)
+    emitter.on_tool_progress("tool.completed", "read_file", None, None, tool_call_id="call-b", result="y")
+    emitter.on_tool_progress("tool.completed", "read_file", None, None, tool_call_id="call-a", duration=0.5,
+                             is_error=False, result="x" * 6000)
     code = emitter.emit_result({"final_response": "", "failed": True, "error": "boom", "input_tokens": 3}, exit_code=0)
 
     events = _events(capsys)
-    assert [e["type"] for e in events] == ["system", "text", "tool_use", "tool_result", "result"]
+    assert [e["type"] for e in events] == ["system", "text", "text", "text", "tool_use", "tool_use", "tool_result",
+                                           "tool_result", "result"]
+    assert "".join(e["text"] for e in events if e["type"] == "text") == "hel\n  lo"
     assert events[0]["subtype"] == "init" and events[0]["model"] == "test-model"
-    assert events[2]["input"] == {"path": "x"}
-    assert events[3]["duration_ms"] == 500 and events[3]["output"].endswith("...") and len(events[3]["output"]) == 5003
+    assert events[4]["input"] == {"path": "x"} and events[4]["tool_call_id"] == "call-a"
+    # concurrent same-name calls: each result pairs with its own start, not the last-started one
+    assert [e["tool_call_id"] for e in events if e["type"] == "tool_result"] == ["call-b", "call-a"]
+    assert events[6]["duration_ms"] < 500
+    assert events[7]["duration_ms"] == 500 and events[7]["output"].endswith("...") and len(events[7]["output"]) == 5003
     assert code == 1 and events[-1] == {**events[-1], "exit_code": 1, "error": "boom", "session_id": "s-1"}
     assert events[-1]["tokens"]["input"] == 3
     assert all("timestamp" in e for e in events)
 
 
-def _run_stream_json_chat(monkeypatch, capsys, run_conversation):
+def _run_stream_json_chat(monkeypatch, capsys, run_conversation, credentials_ok=True):
     """parser → cmd_chat → cli.main → quiet single-query path with a deterministic fake agent."""
     import cli
     import hermes_cli.main as cli_entry
@@ -58,7 +68,7 @@ def _run_stream_json_chat(monkeypatch, capsys, run_conversation):
             return True
 
         def _ensure_runtime_credentials(self):
-            return True
+            return credentials_ok
 
         def _resolve_turn_agent_config(self, _query):
             return {"signature": "r", "model": None, "runtime": None, "request_overrides": None}
@@ -103,13 +113,15 @@ def _interrupted_turn(_agent):
     raise KeyboardInterrupt
 
 
-@pytest.mark.parametrize("turn, exit_code, types", [
-    (_ok_turn, 0, ["system", "text", "tool_use", "tool_result", "result"]),
-    (_interrupted_turn, 130, ["system", "result"]),
+@pytest.mark.parametrize("turn, credentials_ok, exit_code, types", [
+    (_ok_turn, True, 0, ["system", "text", "tool_use", "tool_result", "result"]),
+    (_interrupted_turn, True, 130, ["system", "result"]),
+    (_ok_turn, False, 1, ["system", "result"]),  # credentials fail before the agent exists
 ])
-def test_chat_stream_json_implies_quiet_and_closes_with_result(monkeypatch, capsys, turn, exit_code, types):
+def test_chat_stream_json_implies_quiet_and_closes_with_result(monkeypatch, capsys, turn, credentials_ok, exit_code,
+                                                                types):
     """No ``-Q`` needed; stdout is only JSONL; the stream always ends in a ``result`` carrying the exit code."""
-    code, events = _run_stream_json_chat(monkeypatch, capsys, turn)
+    code, events = _run_stream_json_chat(monkeypatch, capsys, turn, credentials_ok=credentials_ok)
     assert code == exit_code
     assert [e["type"] for e in events] == types
     assert events[-1]["exit_code"] == exit_code and events[-1]["session_id"] == "session-123"

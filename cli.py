@@ -4472,6 +4472,12 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
         if quiet:
             # Quiet mode: suppress banner, spinner, tool previews.
             cli.tool_progress_mode = "off"
+            emitter = None
+            if stream_json:
+                # Built BEFORE credentials/agent init so a failed start still closes the protocol
+                # (init + result) instead of exiting 1 with an empty stdout.
+                from hermes_cli.stream_json import StreamJsonEmitter
+                emitter = StreamJsonEmitter(model=getattr(cli, "model", "") or "", session_id=cli.session_id or "")
             if cli._ensure_runtime_credentials():
                 effective_query: Any = _route_single_query_images(
                     cli, query, query, single_query_images, single_query_image_urls
@@ -4485,12 +4491,13 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
                     request_overrides=turn_route.get("request_overrides"),
                 ):
                     _configure_quiet_agent(cli.agent)
-                    emitter = None
-                    if stream_json:
-                        from hermes_cli.stream_json import StreamJsonEmitter
-                        emitter = StreamJsonEmitter.attach(cli.agent, session_id=cli.session_id or "")
+                    if emitter is not None:
+                        emitter.attach(cli.agent)
                     _run_quiet_single_query(cli, effective_query, emitter=emitter)
 
+            if emitter is not None:
+                emitter.emit_result({"failed": True, "error": "credentials or agent init failed"},
+                                    session_id=cli.session_id or "", exit_code=1)
             sys.exit(1)  # credentials or agent init failed
         # No welcome banner (~420 ms cold); session id / resume hint come from _print_exit_summary().
         _query_label = query or ("[image attached]" if single_query_images else "")

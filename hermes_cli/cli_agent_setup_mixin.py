@@ -194,7 +194,10 @@ class CLIAgentSetupMixin:
                 _primary_exc = None
         if runtime is None:
             message = format_runtime_provider_error(_primary_exc) if _primary_exc else "Provider resolution failed."
-            ChatConsole().print(f"[bold red]{message}[/]")
+            if getattr(self, "tool_progress_mode", "full") == "off":
+                print(message, file=sys.stderr)  # quiet/stream-json: stdout is machine-readable
+            else:
+                ChatConsole().print(f"[bold red]{message}[/]")
             return False
         api_key = runtime.get("api_key")
         base_url = runtime.get("base_url")

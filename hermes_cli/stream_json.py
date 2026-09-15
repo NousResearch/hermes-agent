@@ -43,33 +43,39 @@ class StreamJsonEmitter:
         self._tool_started: dict[str, float] = {}
         self._emit({"type": "system", "subtype": "init", "model": model, "session_id": session_id})
 
-    @classmethod
-    def attach(cls, agent, *, session_id: str = "") -> "StreamJsonEmitter":
-        """Emit ``init`` and route the agent's streaming/tool callbacks into this emitter."""
-        emitter = cls(model=getattr(agent, "model", "") or "", session_id=session_id)
-        agent.stream_delta_callback = emitter.on_text_delta
-        agent.tool_progress_callback = emitter.on_tool_progress
-        return emitter
+    def attach(self, agent) -> "StreamJsonEmitter":
+        """Route the agent's streaming/tool callbacks into this emitter (``init`` was already written at
+        construction, before credentials/agent init, so a failed start still yields init + result)."""
+        agent.stream_delta_callback = self.on_text_delta
+        agent.tool_progress_callback = self.on_tool_progress
+        return self
 
     def on_text_delta(self, text: str | None) -> None:
-        if text and str(text).strip():
-            self._emit({"type": "text", "text": text})
+        # Only None/"" (the turn-end sentinel) is dropped: whitespace deltas are part of the text, and
+        # a consumer concatenating ``text`` events must reproduce the answer byte for byte.
+        if text:
+            self._emit({"type": "text", "text": str(text)})
 
     def on_tool_progress(self, event_type: str, tool_name: str | None = None, preview: Any = None, args: Any = None,
                          **kwargs: Any) -> None:
         """``tool.started`` → ``tool_use`` (with ``input`` when the args are a dict); ``tool.completed`` →
         ``tool_result``. Other progress events (reasoning, output risk) are not part of the protocol."""
         name = tool_name or "unknown"
+        # Parallel same-name calls would clobber each other's start time under a name-only key.
+        key = kwargs.get("tool_call_id") or name
         if event_type == "tool.started":
-            self._tool_started[name] = time.time()
+            self._tool_started[key] = time.time()
             payload: dict[str, Any] = {"type": "tool_use", "name": name}
+            if kwargs.get("tool_call_id"):
+                payload["tool_call_id"] = kwargs["tool_call_id"]
             if isinstance(args, dict):
                 payload["input"] = args
             self._emit(payload)
         elif event_type == "tool.completed":
-            duration = kwargs.get("duration") or (time.time() - self._tool_started.pop(name, time.time()))
+            duration = kwargs.get("duration") or (time.time() - self._tool_started.pop(key, time.time()))
             output = str(kwargs.get("result") or "")
             self._emit({"type": "tool_result", "name": name,
+                        **({"tool_call_id": kwargs["tool_call_id"]} if kwargs.get("tool_call_id") else {}),
                         "output": output if len(output) <= _TOOL_OUTPUT_CAP else output[:_TOOL_OUTPUT_CAP] + "...",
                         "duration_ms": int(float(duration) * 1000), "is_error": bool(kwargs.get("is_error", False))})
 

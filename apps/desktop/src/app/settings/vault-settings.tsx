@@ -46,6 +46,7 @@ export interface VaultSource {
   needs_unlock: boolean
   unlocked: boolean
   installed: boolean
+  app_unlock?: boolean
 }
 
 export type VaultKind = 'address' | 'login' | 'payment'
@@ -223,11 +224,15 @@ export function VaultSettings() {
   }, [])
 
   const unlockSource = useMutation({
-    mutationFn: ({ name }: { name: VaultSourceName }) => {
-      const password = pendingMasterPassword.current
+    mutationFn: ({ name, password }: { name: VaultSourceName; password?: string }) => {
+      const secret = password ?? pendingMasterPassword.current
       pendingMasterPassword.current = ''
+      const params: { name: VaultSourceName; password?: string } = { name }
+      if (secret) {
+        params.password = secret
+      }
 
-      return requestGateway<{ unlocked: boolean }>('vault.unlock', { name, password })
+      return requestGateway<{ unlocked: boolean }>('vault.unlock', params)
     },
     onSuccess: (_result, { name }) => {
       triggerHaptic('submit')
@@ -236,9 +241,12 @@ export function VaultSettings() {
       closeUnlock()
       invalidateVault()
     },
-    onError: err => {
+    onError: (err, vars) => {
       setMasterPassword('')
       setUnlockError(err instanceof Error ? err.message : String(err))
+      if (!vars.password) {
+        notifyError(err, v.sources.toggleFailed)
+      }
     }
   })
 
@@ -470,7 +478,14 @@ export function VaultSettings() {
                 ) : (
                   <Button
                     className="gap-1.5"
-                    onClick={() => setUnlockTarget(source)}
+                    disabled={unlockSource.isPending}
+                    onClick={() => {
+                      if (source.app_unlock) {
+                        unlockSource.mutate({ name: source.name })
+                      } else {
+                        setUnlockTarget(source)
+                      }
+                    }}
                     size="sm"
                     type="button"
                     variant="outline"
@@ -532,9 +547,10 @@ export function VaultSettings() {
               e.preventDefault()
 
               if (unlockTarget && masterPassword) {
-                pendingMasterPassword.current = masterPassword
+                pendingMasterPassword.current = ''
+                const password = masterPassword
                 setMasterPassword('')
-                unlockSource.mutate({ name: unlockTarget.name })
+                unlockSource.mutate({ name: unlockTarget.name, password })
               }
             }}
           >

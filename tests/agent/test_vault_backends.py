@@ -20,6 +20,7 @@ import pytest
 
 from agent.vault_backends import unlock as unlock_mod
 from agent.vault_backends.bitwarden import BitwardenLoginBackend
+from agent.vault_backends.onepassword import OnePasswordLoginBackend
 
 # A stand-in `bw` that mimics the three commands the backend uses and the real CLI's password contract
 # (bw 2026.x rejects a piped password: "Master password is required"; it reads --passwordenv <VAR>).
@@ -168,3 +169,131 @@ def test_lock_during_unlock_wins_and_only_the_owning_session_release_drops_a_tok
         unlock_mod.release_session("sess-A")
         assert not backend.is_unlocked()
         unlock_mod.set_current_session_id(None)
+
+
+# ── 1Password: desktop-app session, never a master password in Hermes ─────────
+
+# A stand-in `op` that mimics app integration: `signin` (no --raw) and `whoami`
+# succeed when the app is unlocked. `signin --raw` is the master-password path and is a tripwire.
+_FAKE_OP = r'''#!/usr/bin/env python3
+import json, os, sys
+here = os.path.dirname(os.path.abspath(__file__))
+log = open(os.path.join(here, "op.log"), "a")
+argv = sys.argv[1:]
+stdin = sys.stdin.read() if not sys.stdin.isatty() else ""
+log.write(json.dumps({"argv": argv, "stdin": stdin,
+                      "OP_SESSION": os.environ.get("OP_SESSION"),
+                      "has_service_token": bool(os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"))}) + "\n")
+locked = os.path.exists(os.path.join(here, "op.locked"))
+if argv[:1] == ["whoami"]:
+    # Real op whoami is broken with app integration; Hermes must not depend on it.
+    sys.stderr.write("not signed in\n"); sys.exit(1)
+if argv[:2] == ["account", "get"]:
+    if locked:
+        sys.stderr.write("not signed in\n"); sys.exit(1)
+    print("ID: dummy"); sys.exit(0)
+if argv[:1] == ["signin"]:
+    if "--raw" in argv:
+        sys.stderr.write("signin --raw is the master-password path and must not run\n"); sys.exit(99)
+    if locked:
+        sys.stderr.write("not signed in\n"); sys.exit(1)
+    sys.exit(0)
+if argv[:2] == ["item", "list"]:
+    print(json.dumps([{"id": "iid", "title": "Example", "created_at": "2026-01-01T00:00:00Z",
+                       "urls": [{"href": "https://example.com/login"}],
+                       "additional_information": "jane@example.com"}])); sys.exit(0)
+if argv[:2] == ["item", "get"] and "--otp" not in argv:
+    print("plain sentence nobody would flag 7"); sys.exit(0)
+sys.exit(2)
+'''
+
+
+@pytest.fixture
+def fake_op(tmp_path, monkeypatch):
+    exe = tmp_path / "op"
+    exe.write_text(_FAKE_OP, encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    unlock_mod.lock()
+    yield exe, tmp_path / "op.log"
+    unlock_mod.lock()
+
+
+def _enabled_op(exe):
+    backend = OnePasswordLoginBackend({"enabled": True, "binary_path": str(exe)})
+    return patch("agent.vault_backends.base.enabled_backends", return_value=[backend]), backend
+
+
+def test_onepassword_unlocks_via_app_session_and_never_sends_a_master_password(fake_op):
+    """1Password on a desktop uses `op whoami` (app integration). A master password must never
+    reach argv, stdin, or env — even if a caller still hands one to unlock()."""
+    exe, log = fake_op
+    patcher, backend = _enabled_op(exe)
+    from tools.browser_vault_tool import browser_vault_fill, browser_vault_list, browser_vault_unlock
+
+    prompts = []
+    unlock_mod.set_unlock_prompt_callback(lambda name, display: prompts.append((name, display)) or "correct horse")
+    try:
+        with patcher, patch("agent.vault_backends.enabled_backends", return_value=[backend]), \
+             patch("tools.browser_vault_tool._current_page_origin", return_value="https://example.com"), \
+             patch("tools.browser_vault_tool._eval_js", return_value={"success": True, "result": json.dumps([
+                 {"tag": "input", "type": "password", "name": "password", "id": "pw", "autocomplete": "current-password",
+                  "visible": True}])}), \
+             patch("tools.browser_vault_tool._eval_js_secret", return_value={"success": True, "result": json.dumps(
+                 {"filled": 1})}):
+            unlocked = json.loads(browser_vault_unlock("onepassword"))
+            assert unlocked == {"success": True, "backend": "onepassword"}
+            assert prompts == [], "1Password must not ask Hermes for a master password"
+            listed = json.loads(browser_vault_list())
+            assert listed["items"][0]["handle"] == "op:iid"
+            assert listed["items"][0]["identifier"] == "jane@example.com"
+            filled = json.loads(browser_vault_fill("op:iid", task_id="t"))
+            filled.pop("next", None)
+            assert filled["success"] is True and filled["backend"] == "onepassword"
+    finally:
+        unlock_mod.set_unlock_prompt_callback(None)
+
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert any(c["argv"][:1] == ["signin"] and "--raw" not in c["argv"] for c in calls)
+    assert all("--raw" not in c["argv"] for c in calls), "op signin --raw is the master-password path; it must not run"
+    assert all(c["stdin"] == "" for c in calls)
+    assert all("correct horse" not in json.dumps(c) for c in calls)
+    assert all(c.get("OP_SESSION") in (None, "") for c in calls), "app integration must not mint OP_SESSION"
+
+
+def test_onepassword_unlock_ignores_a_supplied_master_password(fake_op):
+    exe, log = fake_op
+    backend = OnePasswordLoginBackend({"binary_path": str(exe)})
+    backend.unlock("correct horse")
+    assert backend.is_unlocked()
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert all("--raw" not in c["argv"] for c in calls)
+    assert all(c["stdin"] == "" for c in calls)
+
+
+def test_onepassword_locked_app_fails_closed_without_signin(fake_op):
+    exe, log = fake_op
+    (exe.parent / "op.locked").write_text("1", encoding="utf-8")
+    backend = OnePasswordLoginBackend({"binary_path": str(exe)})
+    with pytest.raises(RuntimeError, match="1Password"):
+        backend.unlock("")
+    assert not backend.is_unlocked()
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert all("--raw" not in c["argv"] for c in calls)
+
+
+def test_onepassword_headless_does_not_probe_the_app(fake_op, monkeypatch):
+    exe, log = fake_op
+    from tools.browser_vault_tool import browser_vault_unlock
+
+    patcher, backend = _enabled_op(exe)
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    unlock_mod.set_unlock_prompt_callback(lambda *_: "correct horse")
+    try:
+        with patcher, patch("agent.vault_backends.enabled_backends", return_value=[backend]):
+            out = json.loads(browser_vault_unlock("onepassword"))
+            assert out["success"] is False and out["error_type"] == "unlock_unavailable"
+    finally:
+        unlock_mod.set_unlock_prompt_callback(None)
+    assert not log.exists(), "op must not be invoked from a headless session"
+    assert not backend.is_unlocked()

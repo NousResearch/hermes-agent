@@ -80,7 +80,8 @@ def _(rid, params: dict) -> dict:
         live = enabled.get(cls.name)
         rows.append({"name": cls.name, "display_name": cls.display_name, "enabled": live is not None,
                      "needs_unlock": True, "unlocked": bool(live and live.is_unlocked()),
-                     "installed": is_installed(cls.name)})
+                     "installed": is_installed(cls.name),
+                     "app_unlock": bool(getattr(cls, "app_unlock", False))})
     return _ok(rid, {"sources": rows})
 
 
@@ -109,7 +110,7 @@ def _(rid, params: dict) -> dict:
 
 @method("vault.unlock")
 def _(rid, params: dict) -> dict:
-    """Unlock a manager with the master password typed in the Settings dialog (consumed by the CLI on stdin)."""
+    """Unlock a manager. 1Password uses the app session (no password). Bitwarden still takes a master password."""
     from agent.vault_backends import enabled_backends
 
     name = str(params.get("name") or "")
@@ -117,12 +118,16 @@ def _(rid, params: dict) -> dict:
     backend = next((b for b in enabled_backends() if b.name == name and b.needs_unlock), None)
     if backend is None:
         return _err(rid, 5095, f"{name} is not an enabled password manager")
-    if not password:
+    app_unlock = bool(getattr(backend, "app_unlock", False))
+    if not app_unlock and not password:
         return _err(rid, 5095, "master password is required")
     try:
-        backend.unlock(password)  # type: ignore[attr-defined]
+        backend.unlock("" if app_unlock else password)  # type: ignore[attr-defined]
     except Exception as e:
-        return _err(rid, 5095, str(e).replace(password, "[REDACTED]"))
+        msg = str(e)
+        if password:
+            msg = msg.replace(password, "[REDACTED]")
+        return _err(rid, 5095, msg)
     finally:
         del password
     return _ok(rid, {"name": name, "unlocked": True})

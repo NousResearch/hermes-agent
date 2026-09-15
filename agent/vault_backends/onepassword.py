@@ -1,10 +1,8 @@
 """1Password Login items as a vault backend (``op`` CLI).
 
-Unlock: ``op signin --raw`` with the master password on stdin (desktop-app
-integration or account-level auth) mints an ``OP_SESSION_<account>`` token.
-A configured service-account token skips the prompt entirely (headless).
-List: ``op item list --categories Login --format json`` → title, urls,
-username. Resolve: ``op item get <id> --fields label=password --reveal``.
+Unlock: ``op signin`` (no ``--raw``) so 1Password.app can do Touch ID, then
+``op account get`` to confirm (``op whoami`` lies under app integration).
+Hermes never collects the master password. A service-account token skips unlock.
 """
 
 from __future__ import annotations
@@ -18,13 +16,20 @@ from typing import Dict, List, Optional
 
 from agent.secret_sources.base import run_cli
 from agent.secret_sources.onepassword import _OP_ENV_ALLOWLIST, _scrub, find_op
-from agent.vault_backends.base import LoginBackend, UnlockRequired, run_with_stdin_secret
+from agent.vault_backends.base import LoginBackend, UnlockRequired
 from agent.vault_backends import unlock as _unlock
 from agent.vault_store import VaultItemMeta, normalize_origin
 
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 30.0
+# In-memory marker: this process may call `op` with desktop-app integration (no OP_SESSION).
+# Never passed to the child as an env value.
+_APP_SESSION = "__hermes_op_app__"
+_UNLOCK_HINT = (
+    "Unlock 1Password with Touch ID (Settings → Security), and turn on "
+    "Settings → Developer → Integrate with 1Password CLI. Hermes does not take your master password."
+)
 
 
 class OnePasswordLoginBackend(LoginBackend):
@@ -32,6 +37,7 @@ class OnePasswordLoginBackend(LoginBackend):
     display_name = "1Password"
     prefix = "op:"
     needs_unlock = True
+    app_unlock = True
 
     def __init__(self, cfg: Optional[Dict] = None):
         self.cfg = cfg or {}
@@ -61,26 +67,36 @@ class OnePasswordLoginBackend(LoginBackend):
             env["OP_ACCOUNT"] = account
         if self._service_token:
             env["OP_SERVICE_ACCOUNT_TOKEN"] = self._service_token
-        elif session_token:
-            # op signin --raw prints the bare token; the env var name carries the account shorthand,
-            # which op also accepts as plain OP_SESSION for the default account.
+        elif session_token and session_token != _APP_SESSION:
             env[f"OP_SESSION_{account}" if account else "OP_SESSION"] = session_token
         return env
 
     def is_unlocked(self) -> bool:
         return bool(self._service_token) or _unlock.is_unlocked(self.name)
 
-    def unlock(self, master_password: str) -> None:
-        """Mint a session token from the master password (consumed on stdin, never argv)."""
+    def unlock(self, master_password: str = "") -> None:
+        """Unlock via the 1Password app (Touch ID). Never collect the master password."""
+        _ = master_password  # old Settings UI may still send one; never hand it to `op`
         generation = _unlock.begin_unlock(self.name)
-        cmd = [str(self._op()), "signin", "--raw"]
-        if account := str(self.cfg.get("account") or ""):
-            cmd += ["--account", account]
-        proc = run_with_stdin_secret(cmd, env=self._env(None), secret=master_password, timeout=_TIMEOUT, label="op")
-        token = (proc.stdout or "").strip()
-        if proc.returncode != 0 or not token:
-            raise RuntimeError(f"1Password unlock failed: {_scrub(proc.stderr or '')[:200] or 'no session token'}")
-        if not _unlock.store_session_token(self.name, token, generation):
+        op = str(self._op())
+        env = self._env(None)
+        # Documented app-integration path: `op signin` with no --raw. 1Password.app
+        # does Touch ID. stdin is /dev/null so a classic password prompt cannot run.
+        try:
+            proc = run_cli(
+                [op, "signin"], env=env, timeout=_TIMEOUT, label="op",
+                timeout_message="op timed out waiting for 1Password Touch ID", stdin=subprocess.DEVNULL)
+        except RuntimeError as exc:
+            raise RuntimeError(_UNLOCK_HINT) from exc
+        # `op whoami` reports "not signed in" even when app-integration sessions work
+        # (`op account get` / item list succeed). Do not use whoami as the probe.
+        probe = run_cli(
+            [op, "account", "get"], env=env, timeout=_TIMEOUT, label="op",
+            timeout_message="op timed out waiting for 1Password", stdin=subprocess.DEVNULL)
+        if probe.returncode != 0:
+            err = _scrub((proc.stderr or "") + "\n" + (probe.stderr or ""))[:160]
+            raise RuntimeError(f"{_UNLOCK_HINT} ({err or 'not signed in'})")
+        if not _unlock.store_session_token(self.name, _APP_SESSION, generation):
             raise RuntimeError("1Password was locked while unlocking; try again")
 
     def _run(self, *args: str) -> str:

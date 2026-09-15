@@ -30,6 +30,9 @@ class LoginBackend(ABC):
     display_name: str        # user-facing
     prefix: str              # handle prefix ("vault_", "op:", "bw:")
     needs_unlock: bool = False
+    # True: unlock is the manager's own UI (1Password app / Touch ID). Hermes must not
+    # collect a master password. False: Hermes shows a masked prompt (Bitwarden).
+    app_unlock: bool = False
 
     def owns(self, handle: str) -> bool:
         return handle.startswith(self.prefix)

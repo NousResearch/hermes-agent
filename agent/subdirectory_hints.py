@@ -37,15 +37,24 @@ def _digest(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def _first_hint_file(directory: Path):
+def _first_hint_file(directory: Path, timeout: Optional[float] = None):
     """``(path, stripped content)`` of the first readable non-empty hint file
-    in *directory* (priority order), or None. Unreadable files are skipped."""
+    in *directory* (priority order), or None. Unreadable files are skipped.
+
+    The read goes through ``_read_text_with_timeout`` (same as the sibling
+    ``_load_hints_for_directory``): this runs in ``SubdirectoryHintTracker.__init__``
+    on the session startup path, and a bare ``read_text`` blocks the whole
+    startup when a file stalls (e.g. an evicted iCloud Drive file that downloads
+    on read) — #10047."""
     for filename in _HINT_FILENAMES:
         candidate = directory / filename
         try:
             if not candidate.is_file():
                 continue
-            content = candidate.read_text(encoding="utf-8").strip()
+            content = _read_text_with_timeout(candidate, timeout=timeout)
+            if content is None:
+                continue
+            content = content.strip()
         except (OSError, UnicodeDecodeError):
             continue
         return candidate, content

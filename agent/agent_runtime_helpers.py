@@ -370,6 +370,8 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
     """Fold a consecutive assistant ``msg`` into ``prev`` (union tool_calls, concat text)."""
     prev_calls = list(prev.get("tool_calls") or [])
     new_calls = list(msg.get("tool_calls") or [])
+    original_content = prev.get("content")
+    original_calls = list(prev.get("tool_calls") or [])
     if new_calls:
         prev["tool_calls"] = prev_calls + new_calls
     elif prev_calls:
@@ -421,6 +423,11 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
     # invariant for no reason (wz-heng, #78063 review).
     if content_rewritten:
         drop_stale_api_content(prev)
+    if prev.get("content") != original_content or list(prev.get("tool_calls") or []) != original_calls:
+        prev["_repair_mutated"] = True
+    dropped_id = msg.get("_row_id")
+    if isinstance(dropped_id, int) and not isinstance(dropped_id, bool) and dropped_id > 0:
+        prev.setdefault("_archived_row_ids", []).append(dropped_id)
 
 
 def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int]:

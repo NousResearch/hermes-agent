@@ -356,8 +356,18 @@ class SessionMessagesMixin:
             from agent.transcript_repair import resolve_and_repair_transcript_batch
             inserted_rows = resolve_and_repair_transcript_batch(conn, session_id, messages,
                 encode_content_fn=self._encode_content, decode_content_fn=self._decode_content)
+            archived_ids = {
+                rid for msg in messages for rid in (msg.get("_archived_row_ids") or [])
+                if isinstance(rid, int) and not isinstance(rid, bool) and rid > 0
+            }
+            if archived_ids:
+                conn.executemany("UPDATE messages SET active = 0 WHERE session_id = ? AND id = ?", ((session_id, rid) for rid in archived_ids))
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
-            self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
+            if archived_ids:
+                message_count, tool_call_count = self._active_transcript_counts(conn, session_id)
+                conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?", (message_count, tool_call_count, session_id))
+            else:
+                self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
             return inserted
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 

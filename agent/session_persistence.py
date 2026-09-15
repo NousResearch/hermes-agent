@@ -182,6 +182,10 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
     }
     if isinstance(msg.get("_row_id"), int):
         row["_row_id"] = msg["_row_id"]
+    if isinstance(msg.get("_archived_row_ids"), list):
+        row["_archived_row_ids"] = msg["_archived_row_ids"]
+    if msg.get("_repair_mutated"):
+        row["_repair_mutated"] = True
     return row
 
 

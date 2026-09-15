@@ -442,6 +442,11 @@ class SessionPortabilityMixin:
             raise ValueError("session id is required")
         if session_id in seen_ids:
             raise ValueError("duplicate session id")
+        # The id later becomes a filename under sessions/ on export and a glob
+        # component on delete; refuse ids that could escape or widen that path.
+        from hermes_state_sessions import _is_safe_session_file_id
+        if not _is_safe_session_file_id(session_id):
+            raise ValueError("session id is not a safe filename")
         messages = raw.get("messages") or []
         if not isinstance(messages, list):
             raise ValueError("messages must be a list")

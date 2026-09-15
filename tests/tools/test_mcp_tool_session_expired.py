@@ -337,6 +337,13 @@ def test_session_expired_handler_returns_none_without_loop(monkeypatch):
             "Without an event loop, session-expired handler must fall "
             "through to caller's generic error path — not hang or raise."
         )
+        # A write-capable call still gets the outcome-uncertain verdict: a generic "call failed"
+        # would invite the model to replay a write that may have landed.
+        out = _handle_session_expired_and_retry(
+            "srv-noloop", RuntimeError("Invalid or expired session"), lambda: '{"ok": true}',
+            "tools/call", call_may_have_side_effects=True,
+        )
+        assert out is not None and json.loads(out).get("outcome_uncertain") is True
     finally:
         mcp_tool._servers.pop("srv-noloop", None)
 

@@ -210,11 +210,13 @@ def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retr
     healed but the call is never re-run; the model gets an ``outcome_uncertain`` error instead (same
     contract as the mid-call stdio death path). Callers pass True unless the tool is positively read-only.
     """
-    srv = _lookup_reconnectable_server(server_name, require_loop=True) if _is_session_expired_error(exc) else None
-    if srv is None:
+    if not _is_session_expired_error(exc):
         return None
+    srv = _lookup_reconnectable_server(server_name, require_loop=True)
     if call_may_have_side_effects:
-        reconnected = _loop._signal_reconnect_and_wait(
+        # Even without a signallable server the outcome is still uncertain: a generic "call failed"
+        # would invite the model to re-invoke a write that may already have landed.
+        reconnected = srv is not None and _loop._signal_reconnect_and_wait(
             server_name, srv, op_description=f"{op_description} (write, no auto-retry)", timeout=15)
         if reconnected:  # session state failed, not server health: no breaker strike
             _core._reset_server_error(server_name)
@@ -226,6 +228,8 @@ def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retr
         return tool_error(_SESSION_OUTCOME_UNCERTAIN_MSG.format(
             s=server_name, state="been re-established" if reconnected else "not recovered yet"),
             outcome_uncertain=True, server=server_name)
+    if srv is None:
+        return None
     logger.info("MCP server '%s': %s failed with session-expired error (%s); signalling transport reconnect "
                 "and retrying once.", server_name, op_description, exc)
     if not _loop._signal_reconnect_and_wait(server_name, srv, op_description=op_description, timeout=15):
@@ -325,7 +329,7 @@ def _dispatch(server_name: str, server: Any, op: str, call, tool_timeout: float,
 
 
 @asynccontextmanager
-async def _track_inflight_rpc(server: Any, server_name: str, op: str):
+async def _track_inflight_rpc(server: Any, server_name: str, op: str, *, retry_safe: bool = True):
     """Register the running RPC so teardown can fail it fast. A deliberate teardown
     (``_reconnecting`` set first) turns the cancel into a retryable RuntimeError; external
     cancels propagate unchanged. Doubles without ``_inflight_tasks`` skip tracking.
@@ -333,7 +337,8 @@ async def _track_inflight_rpc(server: Any, server_name: str, op: str):
     Every user-visible request family wraps its RPC in this context (#48069 salvage). If a deliberate
     reconnect/shutdown teardown cancels the task (``_fail_inflight_calls`` sets ``_reconnecting`` first),
     the cancel is converted into a clean retryable RuntimeError instead of a raw CancelledError; external
-    cancels (caller timeout, user interrupt) propagate unchanged.
+    cancels (caller timeout, user interrupt) propagate unchanged. ``retry_safe=False`` (a write-capable
+    ``tools/call``) words the error as outcome-uncertain instead of inviting a replay.
     """
     inflight, task = getattr(server, "_inflight_tasks", None), asyncio.current_task()
     tracked = task is not None and inflight is not None
@@ -343,8 +348,9 @@ async def _track_inflight_rpc(server: Any, server_name: str, op: str):
         yield
     except asyncio.CancelledError:
         if getattr(server, "_reconnecting", False):
-            raise RuntimeError(f"MCP {op} on '{server_name}' was aborted by a reconnect teardown; retry the "
-                               f"request on the rebuilt session") from None
+            advice = ("retry the request on the rebuilt session" if retry_safe else
+                      "the request may already have been dispatched, so verify its effect before re-invoking")
+            raise RuntimeError(f"MCP {op} on '{server_name}' was aborted by a reconnect teardown; {advice}") from None
         raise
     finally:
         if tracked:
@@ -519,9 +525,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         server, error = _acquire_call_server(server_name, tool_timeout)
         if server is None:
             return error
+        # Only a tool annotated readOnlyHint=True is replayed after session expiry; a 401 is always
+        # pre-dispatch so the auth recoverer keeps its retry for every tool.
+        read_only = _tool_is_read_only(server_name, tool_name)
 
         async def _call():
-            async with server._rpc_lock, _track_inflight_rpc(server, server_name, op):
+            async with server._rpc_lock, _track_inflight_rpc(server, server_name, op, retry_safe=read_only):
                 server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
                 try:
                     result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args)
@@ -534,10 +543,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         def _on_failure(exc):
             _core._bump_server_error(server_name)
             logger.error("MCP tool %s/%s call failed: %s", server_name, tool_name, exc)
-        # Only a tool annotated readOnlyHint=True is replayed after session expiry; a 401 is always
-        # pre-dispatch so the auth recoverer keeps its retry for every tool.
-        session_expired = partial(_handle_session_expired_and_retry,
-                                  call_may_have_side_effects=not _tool_is_read_only(server_name, tool_name))
+        session_expired = partial(_handle_session_expired_and_retry, call_may_have_side_effects=not read_only)
         return _dispatch(
             server_name, server, op, _call, tool_timeout,
             (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, session_expired),

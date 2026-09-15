@@ -528,6 +528,28 @@ def register(ctx):
 - `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below
 - `ctx.dispatch_tool(name, arguments)` — call any other tool (built-in or from another plugin) with the parent agent's context (approvals, credentials, task_id) wired up automatically. Useful from slash-command handlers that need to invoke `terminal`, `read_file`, or any other tool as if the model had called it directly.
 - `ctx.get_config()` / `ctx.set_config()` access only this plugin's settings namespace; `ctx.state` stores plugin-owned runtime data under the active profile.
+
+### Register an optional content-search backend
+
+Plugins that accelerate file content search without replacing the `search_files` tool can register an advisory backend:
+
+```python
+from hermes_cli.search_backends import SearchBackendDecline, SearchBackendResult
+
+
+def search(request):
+    if not request.is_local or request.context:
+        return SearchBackendDecline("unsupported_request")
+    # Return validated matches/files/counts, or decline to native rg/grep.
+    return SearchBackendResult(
+        backend="my-index", route_reason="eligible", matches=[], total_count=0)
+
+
+def register(ctx):
+    ctx.register_search_backend("my-index", search)
+```
+
+The seam is intentionally narrow and content-search-only. Hermes performs path existence checks before invocation and retains result containment validation, blocked-path filtering, redaction, pagination output shaping, and native rg/grep fallback. A callback exception, malformed result, out-of-root path, `SearchBackendDecline`, or `None` cannot replace those contracts; Hermes falls back to native search. Registrations are scoped to the active profile and are disposed on plugin unload. No `tools.override` capability is required.
 - If this function crashes, the plugin is disabled but Hermes continues fine
 
 **`dispatch_tool` example — a slash command that runs a tool:**

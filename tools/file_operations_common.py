@@ -103,6 +103,8 @@ class SearchResult:
     limit_reason: Optional[str] = None
     warning: Optional[str] = None
     error: Optional[str] = None
+    backend: Optional[str] = None
+    route_reason: Optional[str] = None
 
     # Below this many matches the verbose array is already compact enough that
     # a path-grouping header would cost more tokens than it saves.
@@ -146,7 +148,7 @@ class SearchResult:
         if self.truncated:
             result["truncated"] = True
             result["total_count_is_lower_bound"] = True
-        for key in ("limit_reason", "warning", "error"):
+        for key in ("limit_reason", "warning", "error", "backend", "route_reason"):
             value = getattr(self, key)
             if value:
                 result[key] = value

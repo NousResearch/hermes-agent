@@ -258,6 +258,8 @@ class SearchMixin:
     ``_escape_native_tool_arg``, ``env``, ``cwd``, ``_command_cache``,
     ``_rg_resolution_cache`` and ``_rg_modified_capability`` from the host class."""
 
+    env: Any
+
     # --- rg resolution --------------------------------------------------------
 
     def _resolve_command(self, cmd: str) -> Optional[str]:
@@ -798,13 +800,37 @@ class SearchMixin:
 
     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
-        """Content search: rg, else grep; attaches zero-match steering hints."""
+        """Content search: registered profile backend, then rg/grep fallback."""
+        backend_run = self._search_with_registered_backend(
+            pattern, path, file_glob, limit, offset, output_mode, context)
+        if backend_run is not None and backend_run.result is not None:
+            candidate = backend_run.result
+            end = offset + limit
+            result = SearchResult(
+                matches=[SearchMatch(m.path, m.line_number, m.content) for m in candidate.matches[offset:end]],
+                files=list(candidate.files[offset:end]),
+                counts=dict(candidate.counts),
+                total_count=candidate.total_count,
+                truncated=candidate.truncated or candidate.total_count > end,
+                limit_reason=candidate.limit_reason,
+                warning=candidate.warning,
+                backend=candidate.backend,
+                route_reason=candidate.route_reason,
+            )
+            return result
+        fallback_reason = backend_run.route_reason if backend_run is not None else None
         used_rg = self._has_command('rg')
         if used_rg:
             result = self._search_with_rg(pattern, path, file_glob, limit, offset, output_mode, context,
                                           rg_executable=self._resolve_command("rg") or "rg")
+            if fallback_reason:
+                result.backend = "rg"
+                result.route_reason = fallback_reason
         elif self._has_command('grep'):
             result = self._search_with_grep(pattern, path, file_glob, limit, offset, output_mode, context)
+            if fallback_reason:
+                result.backend = "grep"
+                result.route_reason = fallback_reason
         else:
             return SearchResult(
                 error="Content search requires ripgrep (rg) or grep. "
@@ -822,6 +848,27 @@ class SearchMixin:
         if used_rg:
             return result
         return _maybe_warn_line_oriented_newline_pattern(result, pattern)
+
+    def _search_with_registered_backend(
+        self, pattern: str, path: str, file_glob: Optional[str], limit: int,
+        offset: int, output_mode: str, context: int,
+    ):
+        """Invoke the profile-scoped extension point after the root existence check."""
+        from hermes_cli.search_backends import SearchBackendRequest, run_search_backends
+
+        env_type = type(self.env)
+        return run_search_backends(SearchBackendRequest(
+            pattern=pattern,
+            path=path,
+            file_glob=file_glob,
+            limit=limit,
+            offset=offset,
+            output_mode=output_mode,
+            context=context,
+            environment_kind=f"{env_type.__module__}.{env_type.__qualname__}",
+            is_local=bool(getattr(self.env, "is_local", False)),
+            cwd=str(getattr(self.env, "cwd", None) or getattr(self, "cwd", None) or "."),
+        ))
 
     def _run_search_pipeline(self, cmd_parts: List[str], output_mode: str, limit: int,
                              offset: int, context: int, warning: Optional[str] = None,

@@ -24,7 +24,7 @@ export interface FleetGroup {
   /** The gateway's default profile — every Hermes home has one, so a group
    *  always carries it even before the roster has been enumerated. */
   defaultAgent: FleetAgent
-  /** Named (non-default) profiles, alphabetical for a stable strip. */
+  /** Named (non-default) profiles in the user's rail order, like the active strip. */
   named: FleetAgent[]
 }
 
@@ -33,8 +33,6 @@ export const DEFAULT_PROFILE = 'default'
 export function fleetRouteKey(connectionId: string, profile: string): string {
   return `${connectionId}::${profile}`
 }
-
-const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
 
 /**
  * Groups for every registered gateway EXCEPT the active one, in the same order
@@ -51,10 +49,12 @@ const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'bas
 export function buildRestGroups({
   activeConnectionId,
   connections,
+  order = [],
   roster
 }: {
   activeConnectionId: null | string
   connections: readonly DesktopRegistryConnection[]
+  order?: readonly string[]
   roster: DesktopAgentRoster | null
 }): FleetGroup[] {
   const groups: FleetGroup[] = []
@@ -82,10 +82,25 @@ export function buildRestGroups({
 
     const defaultRow = rows.find(row => row.profile === DEFAULT_PROFILE)
 
+    const orderIndex = new Map(order.map((profile, index) => [profile, index]))
     const named = rows
       .filter(row => row.profile !== DEFAULT_PROFILE)
       .map(row => toAgent(row.profile, row.handle))
-      .sort((left, right) => collator.compare(left.profile, right.profile))
+      .sort((left, right) => {
+        const leftIndex = orderIndex.get(left.profile)
+        const rightIndex = orderIndex.get(right.profile)
+
+        if (leftIndex !== undefined && rightIndex !== undefined) {
+          return leftIndex - rightIndex
+        }
+        if (leftIndex !== undefined) {
+          return -1
+        }
+        if (rightIndex !== undefined) {
+          return 1
+        }
+        return left.profile.localeCompare(right.profile, undefined, { numeric: true, sensitivity: 'base' })
+      })
 
     groups.push({
       connectionId: connection.id,

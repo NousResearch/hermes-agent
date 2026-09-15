@@ -9,7 +9,6 @@ pattern.
 
 These tests lock in:
   * ``_is_unsupported_parameter_error(exc, param)`` across common phrasings
-  * the back-compat wrapper ``_is_unsupported_temperature_error`` still works
   * the max_tokens retry branch no longer pops a key that was never set
     (``max_tokens is None`` gate)
   * the max_tokens retry branch matches via the generic helper on top of the
@@ -24,7 +23,6 @@ from agent.auxiliary_client import (
     call_llm,
     async_call_llm,
     _is_unsupported_parameter_error,
-    _is_unsupported_temperature_error,
 )
 
 
@@ -36,6 +34,10 @@ class TestIsUnsupportedParameterError:
         ("temperature", "HTTP 400: Unsupported parameter: temperature"),
         ("temperature", "Error code: 400 - {'error': {'code': 'unsupported_parameter', 'param': 'temperature'}}"),
         ("temperature", "this model does not support temperature"),
+        # Bedrock Converse wordings (xAI Grok contraction, inference-profile Claude deprecation, #111043)
+        ("temperature", "An error occurred (ValidationException) when calling the Converse operation: "
+                        "This model doesn't support the temperature field. Remove temperature and try again."),
+        ("temperature", "ValidationException: `temperature` is deprecated for this model."),
         # max_tokens phrasings
         ("max_tokens", "HTTP 400: Unsupported parameter: max_tokens"),
         ("max_tokens", "Unknown parameter: max_tokens — use max_completion_tokens"),
@@ -49,13 +51,12 @@ class TestIsUnsupportedParameterError:
 
 
 
-    def test_temperature_wrapper_delegates_to_generic(self):
-        """Back-compat: ``_is_unsupported_temperature_error`` still routes through."""
+    def test_temperature_param_routes_through_generic(self):
         msg = "HTTP 400: Unsupported parameter: temperature"
-        assert _is_unsupported_temperature_error(RuntimeError(msg)) is True
+        assert _is_unsupported_parameter_error(RuntimeError(msg), "temperature") is True
         # And the unrelated-case still holds
-        assert _is_unsupported_temperature_error(
-            RuntimeError("max_tokens is too large")) is False
+        assert _is_unsupported_parameter_error(
+            RuntimeError("max_tokens is too large"), "temperature") is False
 
 
 def _dummy_response():

@@ -435,3 +435,38 @@ test('addWorktree: a remote default branch gets its own worktree, not a home swi
     fs.rmSync(cloneDir, { recursive: true, force: true })
   }
 })
+
+test('switchBranch: non-repo dir short-circuits instead of throwing', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-sw-'))
+
+  try {
+    // A plain folder pinned as a project (no .git): its lane label is the
+    // folder basename, not a branch — switching must no-op, not error, so
+    // callers like "+" new session can proceed with a plain session.
+    const result = await switchBranch(dir, '国创大赛', 'git')
+
+    assert.deepEqual(result, { branch: null })
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('switchBranch: repo dir still validates the branch name and switches', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-sw-'))
+
+  try {
+    execFileSync('git', ['init', '-b', 'main'], { cwd: dir })
+    execFileSync('git', ['config', 'user.email', 't@example.com'], { cwd: dir })
+    execFileSync('git', ['config', 'user.name', 'test'], { cwd: dir })
+    execFileSync('git', ['commit', '--allow-empty', '-m', 'root'], { cwd: dir })
+
+    // Existing behaviour preserved: an illegal branch name still errors.
+    await assert.rejects(() => switchBranch(dir, '///', 'git'), /Branch name is required/)
+
+    // And switching to a real branch still works.
+    const result = await switchBranch(dir, 'main', 'git')
+    assert.deepEqual(result, { branch: 'main' })
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

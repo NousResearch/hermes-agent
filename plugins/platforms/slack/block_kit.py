@@ -82,11 +82,8 @@ _STRIKE_RE = re.compile(r"~~(.+?)~~")
 
 def _inline_elements(text: str) -> List[Dict[str, Any]]:
     """Parse a run of inline markdown into rich_text section child elements.
-
-    Produces ``text`` elements (optionally styled bold/italic/strike/code) and
-    ``link`` elements.  Unmatched markup is emitted verbatim as plain text, so
-    this never loses characters.
-    """
+    Produces ``text`` elements (optionally styled bold/italic/strike/code) and ``link`` elements.
+    Unmatched markup is emitted verbatim as plain text, so this never loses characters."""
     elements: List[Dict[str, Any]] = []
 
     def emit_text(s: str, style: Optional[Dict[str, bool]] = None) -> None:
@@ -104,24 +101,20 @@ def _inline_elements(text: str) -> List[Dict[str, Any]]:
         pos = 0
         # inline code is opaque — no nested styling
         for m in _INLINE_CODE_RE.finditer(s):
-            _walk_links(s[pos:m.start()], style)
-            code_style = dict(style)
-            code_style["code"] = True
-            emit_text(m.group(1), code_style or None)
+            _walk_links(s[pos : m.start()], style)
+            emit_text(m.group(1), {**style, "code": True})
             pos = m.end()
         _walk_links(s[pos:], style)
-
     def _walk_links(s: str, style: Dict[str, bool]) -> None:
         pos = 0
         for m in _LINK_RE.finditer(s):
-            _walk_emphasis(s[pos:m.start()], style)
+            _walk_emphasis(s[pos : m.start()], style)
             link_el: Dict[str, Any] = {"type": "link", "url": m.group(2), "text": m.group(1)}
             if style:
                 link_el["style"] = dict(style)
             elements.append(link_el)
             pos = m.end()
         _walk_emphasis(s[pos:], style)
-
     def _walk_emphasis(s: str, style: Dict[str, bool]) -> None:
         if not s:
             return
@@ -129,14 +122,13 @@ def _inline_elements(text: str) -> List[Dict[str, Any]]:
         for rx, key in ((_BOLD_RE, "bold"), (_STRIKE_RE, "strike"), (_ITALIC_RE, "italic")):
             m = rx.search(s)
             if m:
-                _walk_emphasis(s[:m.start()], style)
+                _walk_emphasis(s[: m.start()], style)
                 inner_style = dict(style)
                 inner_style[key] = True
                 _walk_emphasis(m.group(1), inner_style)
-                _walk_emphasis(s[m.end():], style)
+                _walk_emphasis(s[m.end() :], style)
                 return
         emit_text(s, dict(style) if style else None)
-
     walk(text, {})
     return elements or [{"type": "text", "text": text}]
 
@@ -148,17 +140,13 @@ def _inline_elements(text: str) -> List[Dict[str, Any]]:
 
 def _nonempty_elements(elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Make a rich_text child-element list safe for Slack.
-
-    Slack rejects any ``rich_text_section`` / ``rich_text_preformatted`` /
-    ``rich_text_quote`` whose ``elements`` list is empty or contains a ``text``
-    element of zero length (``invalid_blocks``: "missing element" / "must be
-    more than 0 characters"). Empty content is common — ragged table rows are
-    padded with ``""``, agents emit empty code fences around empty tool output,
-    blank quote lines and empty list items occur in the wild — so drop
-    zero-length text elements and, if nothing remains, substitute a single
-    space, which renders as blank yet stays schema-valid. Used by every
-    rich_text builder so empty content can never poison the whole payload.
-    """
+    Slack rejects any ``rich_text_section`` / ``rich_text_preformatted`` / ``rich_text_quote`` whose
+    ``elements`` list is empty or contains a ``text`` element of zero length (``invalid_blocks``:
+    "missing element" / "must be more than 0 characters"). Empty content is common — ragged table
+    rows are padded with ``""``, agents emit empty code fences around empty tool output, blank quote
+    lines and empty list items occur in the wild — so drop zero-length text elements and, if nothing
+    remains, substitute a single space, which renders as blank yet stays schema-valid. Used by every
+    rich_text builder so empty content can never poison the whole payload."""
     els = [e for e in elements if not (e.get("type") == "text" and not e.get("text"))]
     return els or [{"type": "text", "text": " "}]
 
@@ -180,17 +168,15 @@ def _divider_block() -> Block:
     return {"type": "divider"}
 
 
+def _rich_text_block(kind: str, children: List[Dict[str, Any]]) -> Block:
+    """One ``rich_text`` block wrapping a single ``kind`` element (section/quote/preformatted)."""
+    return {
+        "type": "rich_text", "elements": [{"type": kind, "elements": _nonempty_elements(children)}]}
+
+
 def _preformatted_block(text: str) -> Block:
     # rich_text_preformatted renders monospace; used for code fences + tables.
-    return {
-        "type": "rich_text",
-        "elements": [
-            {
-                "type": "rich_text_preformatted",
-                "elements": _nonempty_elements([{"type": "text", "text": text.rstrip("\n")}]),
-            }
-        ],
-    }
+    return _rich_text_block("rich_text_preformatted", [{"type": "text", "text": text.rstrip("\n")}])
 
 
 def _quote_block(lines: List[str]) -> Block:
@@ -199,20 +185,14 @@ def _quote_block(lines: List[str]) -> Block:
         if i:
             section_children.append({"type": "text", "text": "\n"})
         section_children.extend(_inline_elements(ln))
-    return {
-        "type": "rich_text",
-        "elements": [{"type": "rich_text_quote", "elements": _nonempty_elements(section_children)}],
-    }
+    return _rich_text_block("rich_text_quote", section_children)
 
 
 def _list_block(items: List[Tuple[int, bool, str]]) -> Block:
     """Build ONE rich_text block from consecutive list items.
-
-    ``items`` is a list of ``(indent, ordered, text)``.  Each contiguous run
-    sharing the same (indent, ordered) becomes a ``rich_text_list`` element;
-    indentation changes start a new element, which is how Slack renders true
-    nesting.
-    """
+    ``items`` is a list of ``(indent, ordered, text)``. Each contiguous run sharing the same
+    (indent, ordered) becomes a ``rich_text_list`` element; indentation changes start a new element,
+    which is how Slack renders true nesting."""
     elements: List[Dict[str, Any]] = []
     cur: Optional[Dict[str, Any]] = None
     cur_key: Optional[Tuple[int, bool]] = None
@@ -220,21 +200,12 @@ def _list_block(items: List[Tuple[int, bool, str]]) -> Block:
         key = (indent, ordered)
         if key != cur_key:
             cur = {
-                "type": "rich_text_list",
-                "style": "ordered" if ordered else "bullet",
-                "indent": indent,
-                "elements": [],
-            }
+                "type": "rich_text_list", "style": "ordered" if ordered else "bullet",
+                "indent": indent, "elements": []}
             elements.append(cur)
             cur_key = key
-        if cur is None:
-            # Defensive: should never happen (first iteration always enters
-            # the ``if key != cur_key`` block above), but guard explicitly
-            # so ``python -O`` doesn't silently drop the check.
-            continue
         cur["elements"].append(
-            {"type": "rich_text_section", "elements": _nonempty_elements(_inline_elements(text))}
-        )
+            {"type": "rich_text_section", "elements": _nonempty_elements(_inline_elements(text))})
     return {"type": "rich_text", "elements": elements}
 
 
@@ -249,29 +220,18 @@ def _section_block(text: str) -> Block:
 
 def _parse_alignment(sep_line: str) -> List[str]:
     """Parse a markdown separator row (``|:--|:-:|--:|``) into column aligns.
-
-    Returns a list of ``"left"``/``"center"``/``"right"`` per column.
-    """
+    Returns a list of ``"left"``/``"center"``/``"right"`` per column."""
     aligns: List[str] = []
     for cell in sep_line.strip().strip("|").split("|"):
         c = cell.strip()
-        left = c.startswith(":")
-        right = c.endswith(":")
-        if left and right:
-            aligns.append("center")
-        elif right:
-            aligns.append("right")
-        else:
-            aligns.append("left")
+        left, right = c.startswith(":"), c.endswith(":")
+        aligns.append("center" if left and right else "right" if right else "left")
     return aligns
 
 
 def _split_row(row: str) -> List[str]:
     """Split a markdown table row into trimmed cell strings.
-
-    Respects backslash-escaped pipes (``\\|``) so they aren't treated as
-    column separators.
-    """
+    Respects backslash-escaped pipes (``\\|``) so they aren't treated as column separators."""
     # Temporarily protect escaped pipes, split on real ones, then restore.
     protected = row.strip().strip("|").replace(r"\|", "\x00PIPE\x00")
     return [c.strip().replace("\x00PIPE\x00", "|") for c in protected.split("|")]
@@ -279,28 +239,18 @@ def _split_row(row: str) -> List[str]:
 
 def _rich_text_cell(text: str) -> Dict[str, Any]:
     """A ``rich_text`` table cell carrying inline-formatted content.
-
-    Empty cells are common (ragged rows are padded with ``""``); Slack rejects
-    a cell whose section is empty or carries a zero-length text element, so the
-    elements are routed through ``_nonempty_elements``.
-    """
-    return {
-        "type": "rich_text",
-        "elements": [
-            {"type": "rich_text_section", "elements": _nonempty_elements(_inline_elements(text))}
-        ],
-    }
+    Empty cells are common (ragged rows are padded with ``""``); Slack rejects a cell whose section
+    is empty or carries a zero-length text element, so the elements are routed through
+    ``_nonempty_elements``."""
+    return _rich_text_block("rich_text_section", _inline_elements(text))
 
 
 def _table_block(rows: List[str], sep_line: str) -> Optional[Block]:
     """Build a native Slack ``table`` block from markdown pipe-table rows.
-
-    ``rows`` includes the header row (index 0) and body rows; ``sep_line`` is
-    the ``|---|`` alignment row (already consumed by the caller).  Returns
-    ``None`` when the table exceeds Slack's limits (100 rows / 20 cols /
-    10,000 aggregate cell chars) or parses to nothing — the caller then falls
-    back to the monospace preformatted rendering.
-    """
+    ``rows`` includes the header row (index 0) and body rows; ``sep_line`` is the ``|---|``
+    alignment row (already consumed by the caller). Returns ``None`` when the table exceeds Slack's
+    limits (100 rows / 20 cols / 10,000 aggregate cell chars) or parses to nothing — the caller then
+    falls back to the monospace preformatted rendering."""
     parsed = [_split_row(r) for r in rows if r.strip()]
     if not parsed:
         return None
@@ -310,30 +260,19 @@ def _table_block(rows: List[str], sep_line: str) -> Optional[Block]:
         return None
     for r in parsed:
         r.extend([""] * (ncols - len(r)))
-
     total_chars = sum(len(c) for r in parsed for c in r)
     if total_chars > MAX_TABLE_CHARS:
         return None
-
     aligns = _parse_alignment(sep_line)
     # Slack requires every provided ``column_settings`` entry to be an object.
     # Missing trailing entries inherit defaults, so only emit settings through
     # the last non-default alignment. Earlier default-left placeholders still
     # need explicit valid objects to preserve positional alignment.
-    last_non_default = -1
-    for c in range(min(ncols, MAX_TABLE_COLS)):
-        align = aligns[c] if c < len(aligns) else "left"
-        if align != "left":
-            last_non_default = c
-    column_settings: List[Dict[str, Any]] = []
-    for c in range(last_non_default + 1):
-        align = aligns[c] if c < len(aligns) else "left"
-        column_settings.append({"align": align})
-
+    padded = [aligns[c] if c < len(aligns) else "left" for c in range(ncols)]
+    last_non_default = max((c for c, a in enumerate(padded) if a != "left"), default=-1)
+    column_settings = [{"align": a} for a in padded[: last_non_default + 1]]
     block: Block = {
-        "type": "table",
-        "rows": [[_rich_text_cell(cell) for cell in row] for row in parsed],
-    }
+        "type": "table", "rows": [[_rich_text_cell(cell) for cell in row] for row in parsed]}
     if column_settings:
         block["column_settings"] = column_settings
     return block
@@ -341,10 +280,7 @@ def _table_block(rows: List[str], sep_line: str) -> Optional[Block]:
 
 def _render_table(rows: List[str]) -> str:
     """Render markdown pipe-table rows as aligned monospace text (fallback)."""
-    parsed: List[List[str]] = []
-    for r in rows:
-        cells = _split_row(r)
-        parsed.append(cells)
+    parsed = [_split_row(r) for r in rows]
     if not parsed:
         return "\n".join(rows)
     ncols = max(len(r) for r in parsed)
@@ -365,12 +301,8 @@ def _render_table(rows: List[str]) -> str:
 # ----------------------------------------------------------------------------
 
 
-def render_blocks(
-    markdown: str,
-    mrkdwn_fn=None,
-) -> Optional[List[Block]]:
+def render_blocks(markdown: str, mrkdwn_fn=None) -> Optional[List[Block]]:
     """Convert agent markdown to a Slack Block Kit ``blocks`` list.
-
     Args:
         markdown: The agent's response text (standard markdown).
         mrkdwn_fn: Optional callable converting a markdown paragraph to Slack
@@ -380,11 +312,9 @@ def render_blocks(
     Returns:
         A list of Block Kit block dicts, or ``None`` when the content is empty,
         exceeds Slack's structural limits, or hits an unexpected shape — the
-        caller then falls back to the flat ``text`` payload.  Never raises.
-    """
+        caller then falls back to the flat ``text`` payload.  Never raises."""
     if not markdown or not markdown.strip():
         return None
-
     fmt = mrkdwn_fn or (lambda s: s)
 
     try:
@@ -405,7 +335,6 @@ def render_blocks(
             # Split oversized sections on the 3000-char limit.
             for chunk in _split_text(rendered, MAX_SECTION_TEXT):
                 blocks.append(_section_block(chunk))
-
         while i < n:
             line = lines[i]
 
@@ -520,7 +449,6 @@ def render_blocks(
             # Default: accumulate into a paragraph
             para.append(line)
             i += 1
-
         flush_para()
 
         if not blocks:
@@ -537,13 +465,10 @@ def render_blocks(
 
 def _split_text(text: str, limit: int) -> List[str]:
     """Split ``text`` into <= ``limit``-char chunks on line, then hard, boundaries.
-
-    Chunks are fence-balanced: when a split lands inside a ``` code span that
-    survived into section text (the renderer normally routes fenced blocks to
-    ``rich_text_preformatted``, but mrkdwn text can still carry fences), the
-    fence is closed at the end of the chunk and reopened on the next so each
-    section renders correctly on its own.
-    """
+    Chunks are fence-balanced: when a split lands inside a ``` code span that survived into section
+    text (the renderer normally routes fenced blocks to ``rich_text_preformatted``, but mrkdwn text
+    can still carry fences), the fence is closed at the end of the chunk and reopened on the next so
+    each section renders correctly on its own."""
     if len(text) <= limit:
         return [text]
     # Reserve headroom for the close/reopen markers the balancing pass adds.
@@ -590,7 +515,6 @@ def _clamp_text_obj(text_obj: Dict[str, Any], limit: int) -> Dict[str, Any]:
 
 def sanitize_blocks(blocks: Optional[List[Block]]) -> Optional[List[Block]]:
     """Clamp an outbound ``blocks`` payload to Slack's hard limits.
-
     Defensive boundary applied wherever the adapter attaches ``blocks`` to
     ``chat.postMessage`` / ``chat.update``.  One oversized or malformed block
     fails the WHOLE call with ``invalid_blocks`` — approval cards then never
@@ -611,8 +535,7 @@ def sanitize_blocks(blocks: Optional[List[Block]]) -> Optional[List[Block]]:
     * The payload is capped at Slack's 50-block maximum.
 
     Returns the sanitized list, or ``None`` when nothing valid remains — the
-    caller then sends the plain ``text`` fallback alone.  Never raises.
-    """
+    caller then sends the plain ``text`` fallback alone.  Never raises."""
     if not blocks:
         return None
     try:
@@ -634,7 +557,6 @@ def sanitize_blocks(blocks: Optional[List[Block]]) -> Optional[List[Block]]:
                         block["text"] = clamped
                 elif not has_body:
                     continue
-
             elif btype == "header":
                 text_obj = block.get("text")
                 if not isinstance(text_obj, dict) or not (text_obj.get("text") or "").strip():
@@ -643,7 +565,6 @@ def sanitize_blocks(blocks: Optional[List[Block]]) -> Optional[List[Block]]:
                 if clamped is not text_obj:
                     block = dict(block)
                     block["text"] = clamped
-
             elif btype == "context":
                 elements = block.get("elements") or []
                 if not elements:
@@ -652,23 +573,18 @@ def sanitize_blocks(blocks: Optional[List[Block]]) -> Optional[List[Block]]:
                     _clamp_text_obj(el, MAX_SECTION_TEXT)
                     if isinstance(el, dict) and el.get("type") in ("mrkdwn", "plain_text")
                     else el
-                    for el in elements
-                ]
+                    for el in elements]
                 if any(c is not e for c, e in zip(clamped_els, elements)):
                     block = dict(block)
                     block["elements"] = clamped_els
-
             elif btype in ("rich_text", "actions", "context_actions"):
                 if not block.get("elements"):
                     continue
-
             elif btype == "table":
                 if not block.get("rows"):
                     continue
                 settings = block.get("column_settings")
-                if isinstance(settings, list) and any(
-                    not isinstance(cs, dict) for cs in settings
-                ):
+                if isinstance(settings, list) and any(not isinstance(cs, dict) for cs in settings):
                     fixed = [cs if isinstance(cs, dict) else {} for cs in settings]
                     while fixed and not fixed[-1]:
                         fixed.pop()
@@ -677,9 +593,7 @@ def sanitize_blocks(blocks: Optional[List[Block]]) -> Optional[List[Block]]:
                         block["column_settings"] = fixed
                     else:
                         block.pop("column_settings", None)
-
             out.append(block)
-
         if not out:
             return None
         return out[:MAX_BLOCKS]

@@ -1,7 +1,7 @@
 {
   "name": "@hermes/bootstrap-installer",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.21.1",
   "description": "Hermes Setup — signed installer that drives scripts/install.ps1 with a polished native UI.",
   "type": "module",
   "scripts": {
@@ -32,7 +32,7 @@
     "clsx": "2.1.1",
     "katex": "0.16.47",
     "lucide-react": "0.577.0",
-    "nanostores": "1.4.0",
+    "nanostores": "1.4.2",
     "radix-ui": "1.6.7",
     "react": "19.2.7",
     "react-dom": "19.2.7",

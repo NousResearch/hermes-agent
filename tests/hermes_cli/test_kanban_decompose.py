@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_decompose as decomp
 
 
@@ -76,7 +77,7 @@ def _patch_list_profiles(names: list[str]):
 
 
 def test_decompose_with_fanout_creates_children(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="ship a feature", triage=True)
 
     llm_payload = jsonlib.dumps({
@@ -102,7 +103,7 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert outcome.fanout is True
     assert outcome.child_ids and len(outcome.child_ids) == 2
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         root = kb.get_task(conn, tid)
         c0 = kb.get_task(conn, outcome.child_ids[0])
         c1 = kb.get_task(conn, outcome.child_ids[1])
@@ -114,7 +115,7 @@ def test_decompose_with_fanout_creates_children(kanban_home):
 
 
 def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="route me safely", triage=True)
 
     llm_payload = jsonlib.dumps({
@@ -130,7 +131,7 @@ def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
         p.start()
     try:
         with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
-            "hermes_cli.kanban_decompose._load_config",
+            "hermes_cli.config.load_config_readonly",
             return_value={"kanban": {"default_assignee": "fallback"}},
         ):
             outcome = decomp.decompose_task(tid, author="me")
@@ -139,14 +140,27 @@ def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
             p.stop()
 
     assert outcome.ok, outcome.reason
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task = kb.get_task(conn, tid)
     assert task is not None
     assert task.assignee == "fallback"
 
 
+def test_load_routing_falls_back_to_defaults_when_config_unreadable(kanban_home, monkeypatch):
+    """decompose_task promises ok=False on expected failures; a config read that raises (missing
+    profile home, HomeInitializationError) must not escape _load_routing as an exception."""
+    from hermes_cli import config as config_mod
+
+    def _boom():
+        raise FileNotFoundError("profile home is gone")
+
+    monkeypatch.setattr(config_mod, "load_config_readonly", _boom)
+    routing = decomp._load_routing()
+    assert routing.default_assignee == "default" and routing.auto_promote is True
+
+
 def test_decompose_returns_false_when_task_not_triage(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="x")  # ready, not triage
 
     patches = _patch_list_profiles(["orchestrator"])

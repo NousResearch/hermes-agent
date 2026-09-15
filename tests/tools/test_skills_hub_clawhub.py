@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
+import time
 import unittest
 from unittest.mock import patch
 
-from tools.skills_hub import ClawHubSource, SkillMeta
+from tools.skills_hub_clawhub import ClawHubSource
+from tools.skills_hub_models import SkillMeta
 
 
 class _MockResponse:
@@ -156,9 +158,12 @@ class TestClawHubSource(unittest.TestCase):
         self.assertIsNotNone(meta)
         self.assertNotIn("owner", meta.extra or {})
 
+    @patch("tools.skills_hub_clawhub._guarded_http_stream")
     @patch("tools.skills_hub._ssrf_safe_http_get")
     @patch("tools.skills_hub.httpx.get")
-    def test_fetch_resolves_latest_version_and_downloads_raw_files(self, mock_get, mock_safe_get):
+    def test_fetch_resolves_latest_version_and_downloads_raw_files(
+        self, mock_get, mock_safe_get, mock_stream
+    ):
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills/caldav-calendar"):
                 return _MockResponse(
@@ -182,6 +187,7 @@ class TestClawHubSource(unittest.TestCase):
 
         mock_get.side_effect = side_effect
         mock_safe_get.return_value = _MockResponse(status_code=200, text="# Skill")
+        mock_stream.return_value.__enter__.return_value = _MockResponse(status_code=404)
 
         bundle = self.src.fetch("caldav-calendar")
 
@@ -209,11 +215,14 @@ class TestClawHubSource(unittest.TestCase):
         self.assertIsNotNone(bundle)
         self.assertEqual(bundle.files["SKILL.md"], "# Skill")
 
+    @patch("tools.skills_hub_clawhub._guarded_http_stream")
     @patch("tools.skills_hub.check_website_access", return_value=None)
     @patch("tools.skills_hub.is_safe_url")
     @patch("tools.skills_hub.httpx.get")
     @patch("tools.skills_hub._ssrf_safe_http_get")
-    def test_fetch_blocks_private_raw_url(self, mock_safe_get, mock_get, mock_safe, _mock_policy):
+    def test_fetch_blocks_private_raw_url(
+        self, mock_safe_get, mock_get, mock_safe, _mock_policy, mock_stream
+    ):
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills/caldav-calendar"):
                 return _MockResponse(
@@ -238,11 +247,12 @@ class TestClawHubSource(unittest.TestCase):
 
         mock_get.side_effect = side_effect
         mock_safe.side_effect = lambda url: not url.startswith("http://127.0.0.1/")
+        mock_stream.return_value.__enter__.return_value = _MockResponse(status_code=404)
 
         bundle = self.src.fetch("caldav-calendar")
 
         self.assertIsNone(bundle)
-        self.assertEqual(mock_get.call_count, 3)
+        self.assertEqual(mock_get.call_count, 2)
         mock_safe_get.assert_not_called()
 
     @patch("tools.skills_hub._write_index_cache")
@@ -369,6 +379,67 @@ class TestClawHubSource(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].identifier, "only-skill")
         mock_write_cache.assert_called_once()
+
+    def test_parse_identifier_accepts_clawhub_shapes(self):
+        self.assertEqual(ClawHubSource._parse_identifier("skillopt"), ("skillopt", None))
+        self.assertEqual(ClawHubSource._parse_identifier("clawhub/skillopt"), ("skillopt", None))
+        self.assertEqual(
+            ClawHubSource._parse_identifier("@harrylabsj/skillopt"),
+            ("skillopt", "harrylabsj"),
+        )
+        self.assertEqual(
+            ClawHubSource._parse_identifier("clawhub/@harrylabsj/skillopt"),
+            ("skillopt", "harrylabsj"),
+        )
+        self.assertEqual(
+            ClawHubSource._parse_identifier("harrylabsj/skills/skillopt"),
+            ("skillopt", "harrylabsj"),
+        )
+
+    def test_parse_identifier_rejects_github_style_paths(self):
+        self.assertIsNone(
+            ClawHubSource._parse_identifier("latipun7/agent-skill-collections/skillopt")
+        )
+        self.assertIsNone(
+            ClawHubSource._parse_identifier(
+                "latipun7/agent-skill-collections/skills/skillopt"
+            )
+        )
+        self.assertIsNone(
+            ClawHubSource._parse_identifier(
+                "skills-sh/latipun7/agent-skill-collections/skills/skillopt"
+            )
+        )
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_does_not_claim_github_style_identifier(self, mock_get):
+        meta = self.src.inspect("latipun7/agent-skill-collections/skills/skillopt")
+        self.assertIsNone(meta)
+        mock_get.assert_not_called()
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_does_not_claim_github_style_identifier(self, mock_get):
+        bundle = self.src.fetch("latipun7/agent-skill-collections/skillopt")
+        self.assertIsNone(bundle)
+        mock_get.assert_not_called()
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_rejects_owner_mismatch_on_clawhub_url_path(self, mock_get):
+        mock_get.return_value = _MockResponse(
+            status_code=200,
+            json_data={
+                "slug": "skillopt",
+                "displayName": "SkillOpt",
+                "summary": "Train, evaluate, and improve Agent skill files",
+                "owner": {"handle": "harrylabsj"},
+            },
+        )
+
+        meta = self.src.inspect("latipun7/skills/skillopt")
+
+        self.assertIsNone(meta)
+        mock_get.assert_called_once()
+
 
 
 class TestClawHubCatalogWalkBounded(unittest.TestCase):
@@ -618,6 +689,26 @@ class TestFetchOwnerHandleRetry(unittest.TestCase):
         # 3 skills × 2 attempts each = 6 total HTTP calls (no abort)
         self.assertEqual(call_count["n"], 6)
         mock_sleep.assert_called()
+
+    @patch("tools.skills_hub_clawhub.httpx.get")
+    def test_enrich_owners_budget_stops_early_and_keeps_partial_results(self, mock_get):
+        """An exhausted budget ends enrichment early (the un-enriched rest ships without an
+        owner) instead of walking every remaining skill — the unbounded walk over 78k skills
+        at ~2s each is what timed out the CI index build for two months."""
+        def slow_owner(url, *args, **kwargs):
+            time.sleep(0.05)
+            return _MockResponse(status_code=200,
+                                 json_data={"skill": {"slug": "s"}, "owner": {"handle": "eve"}})
+        mock_get.side_effect = slow_owner
+        skills = [SkillMeta(name=f"s{i}", description="", source="clawhub",
+                            identifier=f"s{i}", trust_level="community") for i in range(200)]
+
+        enriched = self.src.enrich_owners(skills, max_workers=1, budget_seconds=0.3)
+
+        self.assertGreaterEqual(enriched, 1)
+        self.assertLess(enriched, 200)
+        self.assertEqual(enriched, sum(1 for s in skills if s.extra.get("owner") == "eve"))
+        self.assertLess(mock_get.call_count, 200)
 
 
 if __name__ == "__main__":

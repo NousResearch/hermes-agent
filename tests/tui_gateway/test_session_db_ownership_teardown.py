@@ -178,7 +178,7 @@ def test_lazy_recall_open_is_owned_by_the_agent(monkeypatch):
         opened.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state.SessionDB", _factory)
+    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
 
     agent = _bare_agent(_session_db=None, _persist_disabled=False)
     got = agent._get_session_db_for_recall()
@@ -227,6 +227,33 @@ def test_transfer_is_refused_for_missing_operands(agent, db):
     assert server._transfer_db_to_agent(agent, db) is False
 
 
+def test_transfer_is_refused_for_the_shared_launch_handle(monkeypatch):
+    """Defense in depth for #91610: identity alone passes for the SHARED
+    launch handle — a launch-profile agent IS holding it — so ownership
+    would make session.close() tear down the process-wide database under
+    every other session. The transfer must refuse it even when a caller
+    invokes the transfer incorrectly."""
+    shared = _RecordingDB()
+    monkeypatch.setattr(server, "_get_db", lambda: shared)
+    agent = types.SimpleNamespace(_session_db=shared, _owns_session_db=False)
+
+    assert server._transfer_db_to_agent(agent, shared) is False
+    assert agent._owns_session_db is False
+
+
+def test_get_db_returns_the_cached_instance(monkeypatch):
+    """The identity defense (``db is _get_db()``) only works while _get_db
+    hands out ONE process-wide instance. Pin the caching semantics: once a
+    handle exists, repeated calls return the same object rather than
+    constructing per-call wrappers (review finding on #91631)."""
+    sentinel = types.SimpleNamespace(closed=0)
+    monkeypatch.setattr(server, "_db", sentinel)
+    monkeypatch.setattr(server, "_db_error", None)
+
+    assert server._get_db() is sentinel
+    assert server._get_db() is server._get_db()
+
+
 # ---------------------------------------------------------------------------
 # 3. The deferred builder — _start_agent_build
 # ---------------------------------------------------------------------------
@@ -245,7 +272,7 @@ def build_env(monkeypatch, tmp_path):
         opened.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state.SessionDB", _factory)
+    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
     for name, value in [
         ("_set_session_context", lambda _key: []),
         ("_clear_session_context", lambda _tokens: None),
@@ -339,6 +366,34 @@ def test_deferred_build_transfers_the_handle_on_success(
     assert db.closed == 0
     # Ownership landed on the agent, so _teardown_session releases it later.
     assert session["agent"]._owns_session_db is True
+
+
+def test_deferred_build_uses_the_preserved_desktop_workspace_provenance(
+    build_env, registered, monkeypatch
+):
+    captured: dict = {}
+
+    def _fake_make_agent(*_args, session_db=None, **kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(_session_db=session_db, _owns_session_db=False)
+
+    monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
+    monkeypatch.setattr(
+        server, "_session_source", lambda current: current.get("source")
+    )
+    sid, session = "sid-workspace", _session(build_env.profile_home)
+    session.update(
+        {
+            "cwd": "C:/picked/repo",
+            "explicit_cwd": True,
+            "source": "desktop",
+        }
+    )
+    registered(sid, session)
+
+    _run_build(sid, session)
+
+    assert captured["context_cwd_is_launch_artifact"] is False
 
 
 def test_deferred_build_closes_the_handle_when_the_session_is_reaped_midbuild(

@@ -701,6 +701,35 @@ gateway:
 
 `port`, `key`, `host`, `cors_origins`, and `model_name` are automatically bridged into the platform's `extra` settings, so they behave exactly like their `API_SERVER_*` environment-variable counterparts. Environment variables take precedence over `config.yaml` values. The block is also accepted under `gateway.platforms.api_server:` or a top-level `platforms.api_server:` section.
 
+### Hosted dashboard route
+
+Hosted instances whose public hostname normally serves only the OAuth-gated dashboard can expose
+the API server through an opt-in loopback bridge:
+
+```yaml
+gateway:
+  platforms:
+    api_server:
+      enabled: true
+      extra:
+        port: 8642
+        public_route: true
+```
+
+Keep the strong `API_SERVER_KEY` in `.env`. The externally reachable API base becomes
+`https://<dashboard-host>/hermes-api`; for example, `GET /hermes-api/v1/models` and
+`POST /hermes-api/api/sessions/<id>/chat`. Set that base directly when registering a peer:
+
+```bash
+hermes peer add nova --url https://nova.example/hermes-api --key <NOVA_API_SERVER_KEY>
+```
+
+The bridge bypasses browser OAuth because machine callers cannot complete an interactive login,
+but it does not bypass API authentication: the bearer-token `Authorization` header is passed to
+the loopback API listener, which remains the security boundary. Dashboard cookies and
+the private dashboard session token are stripped. Enable the same route and register the opposite
+URL on both instances for bidirectional `hermes peer dm` delivery.
+
 ### Concurrent-run cap
 
 The API server limits how many agent runs may execute at once across the OpenAI-compatible and Runs endpoints. The cap is read from `gateway.api_server.max_concurrent_runs` (default **10**; `0` disables the limit, negative values clamp to 0). When the cap is reached, new run-starting requests are rejected with **HTTP 429** `Too many concurrent runs (max N)` — clients should back off and retry.

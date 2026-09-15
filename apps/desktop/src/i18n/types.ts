@@ -586,11 +586,23 @@ export interface Translations extends NoticeTranslations {
       description: string
       modeEnter: string
       modeDoubleEnter: string
+      modePause: string
       modeModEnter: string
       doubleTapTitle: string
       doubleTapDescription: string
       doubleTapUnit: string
-      doubleTapFileHint: (path: string) => string
+      typingIdleTitle: string
+      typingIdleDescription: string
+      typingIdleUnit: string
+      graceTitle: string
+      graceDescription: string
+      graceOff: string
+      graceInferred: string
+      graceAll: string
+      graceMsTitle: string
+      graceMsDescription: string
+      graceMsUnit: string
+      fileHint: (path: string) => string
     }
   }
 

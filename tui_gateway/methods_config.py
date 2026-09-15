@@ -300,16 +300,21 @@ def _(rid, params: dict) -> dict:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         from hermes_cli.auth import has_usable_secret
         from hermes_cli.main import _has_any_provider_configured
-        requested = str(params.get("provider") or "").strip() or None
+        requested_provider = str(params.get("provider") or "").strip() or None
 
         def probe(profile, scoped):
-            runtime = resolve_runtime_provider(requested=requested)
+            # Mirror the session factory: the selected model can choose a provider-specific
+            # API surface, and a launch model seed can pin its provider. Resolve inside the
+            # profile scope so both choices see that profile's config and environment.
+            model, startup_provider = _resolve_startup_runtime()
+            requested = requested_provider or startup_provider
+            runtime = resolve_runtime_provider(requested=requested, target_model=model or None)
             provider_configured = bool(_has_any_provider_configured(strict_profile_scope=bool(profile)))
             provider = runtime.get("provider") or "provider"
             source = str(runtime.get("source") or "")
 
             def fail(error, src):
-                return {"ok": False, "provider": provider, "model": runtime.get("model"),
+                return {"ok": False, "provider": provider, "model": model,
                         "source": src, "error": error, **scoped}
             if (not provider_configured and provider == "bedrock"
                     and source in {"iam-role", "aws-sdk-default-chain"}):
@@ -322,7 +327,7 @@ def _(rid, params: dict) -> dict:
             from hermes_cli.anon_auth import route_is_welcome_host
             # free_tier is keyed on the SELECTED route (the welcome host serves only nous/welcome), not
             # on profile state: a paid Nous key beside a free-tier identity must not read as free.
-            return {"ok": True, "provider": runtime.get("provider"), "model": runtime.get("model"),
+            return {"ok": True, "provider": runtime.get("provider"), "model": model,
                     "source": runtime.get("source"),
                     "free_tier": provider == "nous" and route_is_welcome_host(runtime.get("base_url")),
                     **scoped}

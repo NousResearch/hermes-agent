@@ -9144,9 +9144,10 @@ def test_probe_credentials_allows_keyless_custom_runtime():
 
 def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("openrouter/test-model", None))
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
-        lambda requested=None: {
+        lambda requested=None, **_kw: {
             "provider": "openrouter",
             "api_key": "",
             "source": "env/config",
@@ -9158,7 +9159,7 @@ def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
     assert resp["result"] == {
         "ok": False,
         "provider": "openrouter",
-        "model": None,
+        "model": "openrouter/test-model",
         "source": "env/config",
         "error": "No usable credentials found for openrouter.",
     }
@@ -9168,7 +9169,7 @@ def test_setup_runtime_check_allows_no_key_custom_runtime(monkeypatch):
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
-        lambda requested=None: {
+        lambda requested=None, **_kw: {
             "provider": "custom",
             "api_key": "no-key-required",
             "source": "env/config",
@@ -9185,7 +9186,7 @@ def test_setup_runtime_check_rejects_implicit_bedrock_when_unconfigured(monkeypa
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: False)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
-        lambda requested=None: {
+        lambda requested=None, **_kw: {
             "provider": "bedrock",
             "api_key": "aws-sdk",
             "source": "iam-role",
@@ -9229,6 +9230,59 @@ def test_setup_runtime_check_honors_requested_provider(monkeypatch):
     default = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
     assert default["result"]["ok"] is False
     assert default["result"]["provider"] == "anthropic"
+
+
+def test_setup_runtime_check_resolves_the_session_target_model(monkeypatch):
+    """The readiness probe must resolve the model that session creation will use."""
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("nous/fast-model", "nous"))
+    seen = {}
+
+    def fake_resolve(*, requested=None, target_model=None):
+        seen.update(requested=requested, target_model=target_model)
+        return {"provider": "nous", "api_key": "invoke-jwt", "source": "portal"}
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve)
+
+    resp = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+
+    assert resp["result"]["ok"] is True
+    assert seen == {"requested": "nous", "target_model": "nous/fast-model"}
+
+
+def test_setup_runtime_check_uses_target_model_for_requested_provider(monkeypatch):
+    """An onboarding provider keeps its scope while resolving the session's target model."""
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("opencode/zen-free", "openrouter"))
+
+    def fake_resolve(*, requested=None, target_model=None):
+        provider = "opencode" if target_model == "opencode/zen-free" else "openrouter"
+        return {"provider": provider, "api_key": "no-key-required", "source": "model-route"}
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "setup.runtime_check", "params": {"provider": "opencode"}}
+    )
+
+    assert resp["result"]["ok"] is True
+    assert resp["result"]["provider"] == "opencode"
+
+
+def test_setup_runtime_check_reports_target_model_on_credential_failure(monkeypatch):
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("z-ai/glm-5.2", None))
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda *, requested=None, target_model=None: {
+            "provider": "zai", "api_key": "", "source": "env/config"
+        },
+    )
+
+    resp = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+
+    assert resp["result"]["ok"] is False
+    assert resp["result"]["model"] == "z-ai/glm-5.2"
 
 
 def test_setup_readiness_scopes_to_requested_profile(monkeypatch, tmp_path):

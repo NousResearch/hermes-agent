@@ -147,6 +147,8 @@ interface GatewayRegistryState {
   /** Registry source currently served by primaryGateway, when known. */
   primaryConnectionId: null | string
   primaryProfile: string
+  /** Advances at the primary ownership writers, including same-object ABA. */
+  primaryOwnerGeneration?: number
   activeKey: string
   activationEpoch: number
   secondaries: Map<string, Secondary>
@@ -252,6 +254,10 @@ export function emitLocalGatewayEvent(event: GatewayEvent): void {
 export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'default'): void {
   const next = normKey(profile)
 
+  if (g.primaryGateway !== gateway || g.primaryProfile !== next) {
+    g.primaryOwnerGeneration = (g.primaryOwnerGeneration ?? 0) + 1
+  }
+
   if (g.primaryGateway !== gateway) {
     g.primaryConnectionId = null
   }
@@ -286,7 +292,13 @@ export function setPrimaryGatewayConnectionId(connectionId: null | string | unde
     return
   }
 
-  g.primaryConnectionId = (connectionId ?? '').trim() || null
+  const next = (connectionId ?? '').trim() || null
+
+  if (g.primaryConnectionId !== next) {
+    g.primaryOwnerGeneration = (g.primaryOwnerGeneration ?? 0) + 1
+  }
+
+  g.primaryConnectionId = next
 
   if (g.activeKey === g.primaryProfile) {
     setApiRequestConnection(g.primaryConnectionId)
@@ -309,29 +321,49 @@ function isPrimaryRegistryRoute(connectionId: null | string, profile: string): b
   )
 }
 
-/** True when `connectionId` is the window's already-attached source AND that
+interface AttachedRemoteProbe {
+  gateway: HermesGateway | null
+  sharedRemote: boolean
+  assertCurrent: () => void
+}
+
+/** Resolve whether `connectionId` is the window's already-attached source AND that
  *  source is a one-host-many-profiles remote (`sharedRemote`). Named member
  *  profiles on that host must reuse the primary socket — a registry secondary
  *  dials a second WebSocket at the same Tailscale URL, which accept/closes in
  *  ~30ms (`messages=1`) and never runs `session.create` (#96493). Isolated
  *  SSH/pooled backends (`sharedRemote: false`) still get their own secondary. */
-async function isAttachedSharedRemote(connectionId: null | string, profile: string): Promise<boolean> {
+async function attachedRemoteProbe(
+  connectionId: null | string, profile: string, signal?: AbortSignal
+): Promise<AttachedRemoteProbe | null> {
+  signal?.throwIfAborted()
   const id = String(connectionId ?? '').trim()
   const key = normKey(profile)
 
-  if (!id || !g.primaryConnectionId || id !== g.primaryConnectionId) {
-    return false
-  }
-
-  if (isPrimaryRegistryRoute(id, key)) {
-    return false
+  if (!id || !g.primaryConnectionId || id !== g.primaryConnectionId || isPrimaryRegistryRoute(id, key)) {
+    return null
   }
 
   const desktop = window.hermesDesktop
 
   if (!desktop?.getConnectionFor) {
-    return false
+    return null
   }
+
+  const gateway = g.primaryGateway
+  const primaryProfile = g.primaryProfile
+  const generation = g.primaryOwnerGeneration ?? 0
+
+  const assertCurrent = () => {
+    signal?.throwIfAborted()
+
+    if (gateway !== g.primaryGateway || id !== g.primaryConnectionId ||
+      primaryProfile !== g.primaryProfile || generation !== (g.primaryOwnerGeneration ?? 0)) {
+      throw new Error('Hermes gateway connection owner changed')
+    }
+  }
+
+  let sharedRemote = true
 
   try {
     const conn = await withTimeout(
@@ -340,23 +372,29 @@ async function isAttachedSharedRemote(connectionId: null | string, profile: stri
       `Timed out resolving shared-remote route for "${key}"`
     )
 
-    return Boolean(conn && typeof conn === 'object' && (conn as { sharedRemote?: boolean }).sharedRemote === true)
+    sharedRemote = Boolean(conn && typeof conn === 'object' && (conn as { sharedRemote?: boolean }).sharedRemote === true)
   } catch {
     // Probe failed. A secondary at this already-attached source is the #96493
     // ghost WebSocket (accept/close, messages=1). Prefer the primary until a
     // later probe can prove isolation (`sharedRemote: false`). Isolated SSH
     // still dials its own socket when getConnectionFor succeeds.
-    return true
   }
+
+  // A stale probe is NOT a false descriptor (nor a failed-probe fallback).
+  assertCurrent()
+
+  return { gateway, sharedRemote, assertCurrent }
 }
 
 async function requestOnPrimaryGateway<T>(
+  owner: AttachedRemoteProbe,
   method: string,
   params: Record<string, unknown>,
   timeoutMs?: number,
   signal?: AbortSignal
 ): Promise<T> {
-  const gateway = g.primaryGateway
+  owner.assertCurrent()
+  const gateway = owner.gateway
 
   if (!gateway || !isOpen(gateway)) {
     throw new Error('Hermes gateway unavailable')
@@ -974,8 +1012,12 @@ export async function requestGatewayForAgent<T>(
     return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal)
   }
 
-  if (await isAttachedSharedRemote(connectionId, key)) {
-    return requestOnPrimaryGateway<T>(method, { ...params, profile: key }, timeoutMs, signal)
+  const attached = await attachedRemoteProbe(connectionId, key, signal)
+  signal?.throwIfAborted()
+  attached?.assertCurrent()
+
+  if (attached?.sharedRemote) {
+    return requestOnPrimaryGateway<T>(attached, method, { ...params, profile: key }, timeoutMs, signal)
   }
 
   if (!window.hermesDesktop?.getConnectionFor) {
@@ -1161,7 +1203,14 @@ export async function retainGatewayForAgent(connectionId: null | string, profile
     return route.release
   }
 
-  if (isPrimaryRegistryRoute(connectionId, key) || (await isAttachedSharedRemote(connectionId, key))) {
+  if (isPrimaryRegistryRoute(connectionId, key)) {
+    return () => undefined
+  }
+
+  const attached = await attachedRemoteProbe(connectionId, key)
+  attached?.assertCurrent()
+
+  if (attached?.sharedRemote) {
     // Primary socket stays open for the window lifetime — no secondary to hold.
     return () => undefined
   }
@@ -1392,8 +1441,11 @@ export async function openGatewayForAgent(
     return openGatewayForProfile(profile)
   }
 
-  if (await isAttachedSharedRemote(connectionId, profile)) {
-    if (!isOpen(g.primaryGateway)) {
+  const attached = await attachedRemoteProbe(connectionId, profile)
+  attached?.assertCurrent()
+
+  if (attached?.sharedRemote) {
+    if (!isOpen(attached.gateway)) {
       throw new Error('Hermes gateway unavailable')
     }
 
@@ -1446,8 +1498,11 @@ export async function ensureGatewayForAgent(
     return !signal?.aborted
   }
 
-  if (await isAttachedSharedRemote(connectionId, profile)) {
-    return Boolean(isOpen(g.primaryGateway) && !signal?.aborted)
+  const attached = await attachedRemoteProbe(connectionId, profile)
+  attached?.assertCurrent()
+
+  if (attached?.sharedRemote) {
+    return Boolean(isOpen(attached.gateway) && !signal?.aborted)
   }
 
   if (!window.hermesDesktop?.getConnectionFor) {

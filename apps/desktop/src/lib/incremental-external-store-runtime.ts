@@ -36,7 +36,7 @@ const shallowEqual = (a: object, b: object): boolean => {
 const getThreadListAdapter = (store: ExternalStoreAdapter) => store.adapters?.threadList ?? {}
 
 /**
- * assistant-ui's ThreadListRuntimeImpl exposes a LazyMemoizeSubject's
+ * @assistant-ui/core 0.2.23's ThreadListRuntimeImpl exposes a LazyMemoizeSubject's
  * getState(), but subscribes directly to the underlying core. Because the
  * subject never becomes connected in that arrangement, getState() allocates a
  * new wrapper object on every read. React/tap treats that as a changed
@@ -44,7 +44,9 @@ const getThreadListAdapter = (store: ExternalStoreAdapter) => store.adapters?.th
  * session is even opened.
  *
  * Keep the public runtime API intact while making the snapshot contract
- * explicit: equal list states must retain their reference identity.
+ * explicit: equal list states must retain their reference identity. Compare
+ * all top-level fields; the external-store core replaces arrays and item maps
+ * when they change. Remove this workaround when upstream caches these reads.
  */
 export function stabilizeThreadListSnapshot(runtime: AssistantRuntime): AssistantRuntime {
   const threads = runtime.threads

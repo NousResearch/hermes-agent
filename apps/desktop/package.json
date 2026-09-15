@@ -82,8 +82,6 @@
     "@assistant-ui/core": "0.2.23",
     "@assistant-ui/react": "0.14.24",
     "@assistant-ui/react-streamdown": "0.3.5",
-    "@assistant-ui/store": "0.2.22",
-    "@assistant-ui/tap": "0.9.17",
     "@audiowave/react": "0.6.2",
     "@chenglou/pretext": "0.0.6",
     "@codemirror/commands": "6.10.4",

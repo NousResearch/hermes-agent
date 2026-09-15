@@ -21,7 +21,9 @@ test runner at ``scripts/run_tests.sh``.
 
 import asyncio
 import atexit
+import builtins
 import importlib
+import io
 import os
 import shutil
 import sqlite3
@@ -756,6 +758,164 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
         )
 
     monkeypatch.setattr(_kdbc, "connect", _guarded_connect)
+
+
+# ── Real profile-directory write guard ──────────────────────────────────────
+# Third sibling of the two guards around it (kanban DB, state DB), for the
+# operator's PROFILE REGISTRY: ``<real hermes root>/profiles/``.
+#
+# The incident: a full-suite run left eight fixture directories behind in a
+# live ``~/.hermes/profiles`` — ``builder-auth``, ``work`` (carrying a
+# ``config.yaml`` whose ``mcp_servers`` pointed at example.com), ``worker``,
+# ``coder``, ``demo``, ``ops``, ``secondary``, ``yangyang``. Nothing crashed;
+# the tests passed. But ``hermes profile list`` enumerates that directory, so
+# every one of them became a *profile of the fleet* — and the watchdogs that
+# fan out over profiles started reporting on agents that do not exist.
+#
+# A directory is all it takes: no config, no session, no registration. That is
+# why this guard sits on ``mkdir`` rather than on some Hermes-level "create
+# profile" entry point — the leak does not go through one.
+#
+# Deny-list, not allow-list, for the same reason as the kanban guard (#69385):
+# tests legitimately move HERMES_HOME to sibling tempdirs, so an allow-list
+# captured at setup time would reject hermetic tests. Only paths resolving
+# under the REAL profiles root — captured from the pre-sandbox environment at
+# import time — are refused. Reads are untouched.
+#
+# Installed at conftest IMPORT time, not as an autouse fixture: a leak can
+# happen while a test module is being imported (collection) or inside a
+# session-scoped fixture, and both of those run outside any autouse window.
+
+
+def _capture_real_profile_roots() -> tuple[Path, ...]:
+    """The profile registries a test must never write into.
+
+    Always the platform-default ``~/.hermes/profiles``: the leak vector is
+    code that reaches for ``Path.home() / ".hermes"`` instead of the canonical
+    ``get_hermes_home()``, and that code ignores HERMES_HOME by construction.
+
+    Plus, when the pre-sandbox environment named a genuinely CUSTOM root
+    (Docker/portable installs), that root's ``profiles/`` too — mirroring the
+    deny-list capture of the kanban guard above.
+    """
+    roots: list[Path] = []
+
+    def _add(profiles_dir: Path) -> None:
+        try:
+            resolved = profiles_dir.expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            return
+        if resolved not in roots:
+            roots.append(resolved)
+
+    _add(Path.home() / ".hermes" / "profiles")
+    if _PRE_SANDBOX_HERMES_HOME and not _hermes_home_points_at_production(
+        _PRE_SANDBOX_HERMES_HOME
+    ):
+        custom = Path(_PRE_SANDBOX_HERMES_HOME).expanduser()
+        # HERMES_HOME may itself BE a profile home: <root>/profiles/<name>.
+        if custom.parent.name == "profiles":
+            custom = custom.parent.parent
+        _add(custom / "profiles")
+    return tuple(roots)
+
+
+_REAL_PROFILE_ROOTS = _capture_real_profile_roots()
+# Cheap pre-filter so the common case costs one substring scan instead of a
+# ``resolve()`` syscall walk. Derived from the roots themselves — never a
+# hardcoded literal — so a relocated registry keeps its guard.
+_REAL_PROFILE_HINTS = tuple({root.name for root in _REAL_PROFILE_ROOTS})
+
+
+def _denied_real_profile_path(path) -> Path | None:
+    """Resolved path when *path* lands in a real profile registry, else None."""
+    if not _REAL_PROFILE_ROOTS:
+        return None
+    try:
+        raw = os.fspath(path)
+    except TypeError:
+        # An int fd (``open(fd)``) or something exotic — not a path we can
+        # place, and not a way to create a directory.
+        return None
+    if isinstance(raw, bytes):
+        try:
+            raw = os.fsdecode(raw)
+        except (UnicodeDecodeError, ValueError):
+            return None
+    if not any(hint in raw for hint in _REAL_PROFILE_HINTS):
+        return None
+    try:
+        resolved = Path(raw).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    for root in _REAL_PROFILE_ROOTS:
+        if resolved == root or root in resolved.parents:
+            return resolved
+    return None
+
+
+def _refuse_real_profile_write(resolved: Path, action: str) -> None:
+    # PYTEST_CURRENT_TEST is what turns "something leaked during the suite"
+    # into "THIS test leaked" — the whole reason the guard exists rather than
+    # a post-run `ls`.
+    where = os.environ.get("PYTEST_CURRENT_TEST") or (
+        "<no active test — collection, or a session/module-scoped fixture>"
+    )
+    raise RuntimeError(
+        f"real_profile_write_guard: {action} resolved to {resolved}, which is "
+        f"under the REAL profile registry "
+        f"({', '.join(str(r) for r in _REAL_PROFILE_ROOTS)}). A fixture "
+        f"profile created there is picked up by `hermes profile list` as a "
+        f"member of the operator's fleet. Point the write at HERMES_HOME "
+        f"(get_hermes_home()), not at Path.home() / '.hermes'. "
+        f"Offending test: {where}"
+    )
+
+
+_UNGUARDED_OS_MKDIR = os.mkdir
+_UNGUARDED_IO_OPEN = io.open
+
+
+def _install_real_profile_write_guard() -> None:
+    """Patch the two primitives that can plant a profile in the real registry.
+
+    ``os.mkdir`` covers ``os.makedirs`` and ``pathlib.Path.mkdir`` too — both
+    look the name up on the ``os`` module at call time.
+
+    ``io.open`` is patched as well as ``builtins.open`` because they are the
+    same object reached through two different module attributes:
+    ``Path.open`` / ``Path.write_text`` go through ``io.open``, so patching
+    only the builtin would leave the pathlib half unguarded.
+    """
+    if not _REAL_PROFILE_ROOTS:
+        return
+    if getattr(os.mkdir, "_hermes_real_profile_guard", False):
+        return  # already installed (conftest re-imported under another name)
+
+    def _guarded_mkdir(path, mode=0o777, *, dir_fd=None):
+        if dir_fd is None:
+            hit = _denied_real_profile_path(path)
+            if hit is not None:
+                _refuse_real_profile_write(hit, "mkdir()")
+        return _UNGUARDED_OS_MKDIR(path, mode, dir_fd=dir_fd)
+
+    _guarded_mkdir._hermes_real_profile_guard = True
+
+    def _guarded_open(file, mode="r", *args, **kwargs):
+        if any(flag in mode for flag in "wax+"):
+            hit = _denied_real_profile_path(file)
+            if hit is not None:
+                _refuse_real_profile_write(hit, f"open(mode={mode!r})")
+        return _UNGUARDED_IO_OPEN(file, mode, *args, **kwargs)
+
+    _guarded_open._hermes_real_profile_guard = True
+
+    os.mkdir = _guarded_mkdir
+    io.open = _guarded_open
+    builtins.open = _guarded_open
+
+
+_install_real_profile_write_guard()
 
 
 # ── Live state.db write guard ───────────────────────────────────────────────

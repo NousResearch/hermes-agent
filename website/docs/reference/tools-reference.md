@@ -151,6 +151,8 @@ Registered when the agent is either (a) spawned by the kanban dispatcher (`HERME
 |------|-------------|----------------------|
 | `kanban_show` | Show the active kanban task assigned to this worker (title, description, comments, dependencies). | `HERMES_KANBAN_TASK` or `kanban` toolset |
 | `kanban_list` | List board tasks with filters. Orchestrator-only; hidden from dispatcher-spawned task workers. | profile with `kanban` toolset |
+| `kanban_edit` | Edit title, description (`body`), or priority using matching `expected_title`, `expected_body`, and/or `expected_priority` from `kanban_show`. Stale values reject the whole edit. Does not change task lifecycle or redirect an active worker. | profile with `kanban` toolset; orchestrator only |
+| `kanban_archive` | Archive a stopped leaf task with `expected_status` and a reason. Refuses active claims, unfinished runs, and tasks with children. Preserves workspace files and task history. Verify external jobs have stopped before calling. | profile with `kanban` toolset; orchestrator only |
 | `kanban_complete` | Mark the current task done with a structured handoff payload (results, artifacts, follow-ups). | `HERMES_KANBAN_TASK` or `kanban` toolset |
 | `kanban_block` | Block the current task on a question for the user — the dispatcher pauses, surfaces the question, and resumes once a human replies. | `HERMES_KANBAN_TASK` or `kanban` toolset |
 | `kanban_request_review` | Hand the implementation to a reviewer with `summary`, optional structured `metadata`, and an optional reviewer profile. Moves the same task to `review`; it is not a block and does not affect block-loop accounting. | `HERMES_KANBAN_TASK` or `kanban` toolset |

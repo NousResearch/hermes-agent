@@ -531,3 +531,32 @@ KANBAN_LINK_SCHEMA = _schema(
     },
     ["parent_id", "child_id"],
 )
+
+
+KANBAN_EDIT_SCHEMA = _schema(
+    "kanban_edit",
+    "Edit title, body or priority in place, preserving task state and dependencies. "
+    "Orchestrator-only. Read the task first and provide each field's exact expected old value; "
+    "stale values refuse the edit. An edit does not redirect an already running worker.",
+    {
+        "task_id": _prop("string", "Task to edit."),
+        "title": _prop("string", "New title."),
+        "body": _prop("string", "New description."),
+        "priority": _prop("integer", "New priority."),
+        "expected_title": _prop("string", "Exact title from the last read, required when editing title."),
+        "expected_body": {"type": ["string", "null"], "description": "Exact body from last read, required when editing body."},
+        "expected_priority": _prop("integer", "Exact priority from last read, required when editing priority."),
+    }, ["task_id"],
+)
+
+KANBAN_ARCHIVE_SCHEMA = _schema(
+    "kanban_archive",
+    "Archive one stopped leaf task, retaining history and workspace files. Orchestrator-only. "
+    "Refuses active runs, claims, and tasks with children. This is archival, not completion or cancellation "
+    "of external work: verify that external execution has stopped and record the reason first.",
+    {
+        "task_id": _prop("string", "Task to archive."),
+        "expected_status": _prop("string", "Exact status from the last read."),
+        "reason": _prop("string", "Why this task can be archived; include external execution verification when applicable."),
+    }, ["task_id", "expected_status", "reason"],
+)

@@ -1219,7 +1219,7 @@ class _ConcurrentBatch:
             ref.emit_post(agent, result, duration_ms=int(duration * 1000))
         is_error, _ = _detect_tool_failure(ref.name, result)
         if is_error:
-            logger.info("tool %s failed (%.2fs): %s", ref.name, duration, result[:200])
+            logger.info("tool %s failed (%.2fs): %s", ref.name, duration, str(result)[:200])
         else:
             logger.info("tool %s completed (%.2fs, %d chars)", ref.name, duration, len(result))
         return _ToolOutcome(ref, result, duration, is_error, blocked)

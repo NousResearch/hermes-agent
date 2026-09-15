@@ -138,11 +138,13 @@ GOOGLE_CHAT_MAX_BYTES=16777216                  # 16 MiB — 在途消息字节�
 
 项目 ID 也可回退到 `GOOGLE_CLOUD_PROJECT`，SA 路径可回退到 `GOOGLE_APPLICATION_CREDENTIALS`——使用你偏好的约定即可。
 
-安装 Google Chat 适配器所需的依赖（目前没有发布 Hermes extra，请直接安装）：
+通过适配器维护的安装程序安装 Google Chat 依赖。该程序会应用与运行时检查相同的固定安全版本：
 
 ```bash
-pip install google-cloud-pubsub google-api-python-client google-auth google-auth-oauthlib
+python -m plugins.platforms.google_chat.oauth --install-deps
 ```
+
+在 Docker / hosted 镜像中 `/opt/hermes/.venv` 只读。该安装程序通过 `tools.lazy_deps` 写入 `HERMES_LAZY_INSTALL_TARGET`（官方镜像为 `/opt/data/lazy-packages`），而不是 site-packages。完成后重启 gateway。发布镜像也会预装 `[google-chat]` extra，新容器不必在首次启动时再装。
 
 启动 gateway（网关）：
 

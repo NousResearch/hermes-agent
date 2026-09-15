@@ -59,4 +59,3 @@ def test_audit_preserves_safety_and_ranks_evidence_backed_impact():
         assert boundary in CONTENT
     assert "Rank findings by likely removable maintenance burden" in CONTENT
     assert "Findings are ranked by likely impact and cite evidence" in CONTENT
-

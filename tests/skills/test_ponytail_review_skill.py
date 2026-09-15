@@ -59,4 +59,3 @@ def test_findings_require_location_tag_cut_and_replacement():
     assert "<file>:L<line>: <tag> <what to cut>. <replacement>." in CONTENT
     assert "one location, one tag, and one replacement" in CONTENT
     assert "No over-engineering findings in this scope" in CONTENT
-

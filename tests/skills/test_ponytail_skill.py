@@ -62,4 +62,3 @@ def test_safety_and_verification_are_protected_from_simplification():
     for boundary in protected:
         assert boundary in CONTENT
     assert "Run the repository's smallest relevant test" in CONTENT
-

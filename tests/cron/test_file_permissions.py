@@ -125,9 +125,21 @@ class TestSecureHelpers(unittest.TestCase):
         from cron.jobs import _secure_file
         _secure_file(Path("/nonexistent/path/file.json"))  # Should not raise
 
-    def test_secure_dir_nonexistent_no_error(self):
+    def test_secure_dir_preserves_operator_mode_in_container(self):
+        """A bind-mounted data dir shared with sibling containers must keep the operator's mode;
+        an explicit HERMES_HOME_MODE is still honored (#10757)."""
         from cron.jobs import _secure_dir
-        _secure_dir(Path("/nonexistent/path"))  # Should not raise
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "cron"
+            d.mkdir()
+            os.chmod(d, 0o755)
+            with patch.dict(os.environ, {"HERMES_CONTAINER": "1"}, clear=False):
+                os.environ.pop("HERMES_HOME_MODE", None)
+                _secure_dir(d)
+                self.assertEqual(stat.S_IMODE(os.stat(d).st_mode), 0o755)
+                os.environ["HERMES_HOME_MODE"] = "0701"
+                _secure_dir(d)
+                self.assertEqual(stat.S_IMODE(os.stat(d).st_mode), 0o701)
 
 
 if __name__ == "__main__":

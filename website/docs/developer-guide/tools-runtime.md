@@ -30,17 +30,19 @@ Every tool file in `tools/` calls `registry.register()` at module level to decla
 registry.register(
     name="terminal",               # Unique tool name (used in API schemas)
     toolset="terminal",            # Toolset this tool belongs to
-    schema={...},                  # OpenAI function-calling schema (description, parameters)
+    schema={...},                  # Model-facing schema (description, parameters)
     handler=handle_terminal,       # The function that executes when the tool is called
     check_fn=check_terminal,       # Optional: returns True/False for availability
     requires_env=["SOME_VAR"],     # Optional: env vars needed (for UI display)
     is_async=False,                # Whether the handler is an async coroutine
-    description="Run commands",    # Human-readable description
+    description="Run commands",    # Optional ToolEntry registry metadata
     emoji="💻",                    # Emoji for spinner/progress display
 )
 ```
 
-Each call creates a `ToolEntry` stored in the singleton `ToolRegistry._tools` dict keyed by tool name. If a name collision occurs across toolsets, a warning is logged and the later registration wins.
+Each call creates a `ToolEntry` stored in the singleton `ToolRegistry._tools` dict keyed by tool name. A registration that would shadow an existing tool from a **different** toolset is rejected (with an error log) unless the caller passes `override=True`; plugin overrides of built-in tools additionally require the operator opt-in `plugins.entries.<plugin_id>.allow_tool_override: true` in `config.yaml`.
+
+`schema["description"]` is the authoritative model-facing description. The separate `description=` argument populates `ToolEntry.description`; when it is omitted, the registry metadata falls back to the schema description. `get_definitions()` builds the OpenAI function definition from `entry.schema` and does not copy `entry.description` into a schema that lacks `description`. Therefore, `description=` alone does not describe the tool to the model, and when both values differ the model sees the schema value. Prefer defining the description once in the schema unless a registry consumer intentionally needs different metadata.
 
 ### Discovery: `discover_builtin_tools()`
 
@@ -63,7 +65,7 @@ Each import triggers the module's `registry.register()` calls. Errors in optiona
 
 After core tool discovery, MCP tools and plugin tools are also discovered:
 
-1. **MCP tools** — `tools.mcp_tool.discover_mcp_tools()` reads MCP server config and registers tools from external servers.
+1. **MCP tools** — `tools.mcp_tool_discovery.discover_mcp_tools()` (re-exported by the `tools.mcp_tool` facade) reads MCP server config and registers tools from external servers.
 2. **Plugin tools** — `hermes_cli.plugins.discover_plugins()` loads user/project/pip plugins that may register additional tools.
 
 ## Tool availability checking (`check_fn`)
@@ -130,7 +132,7 @@ When the model returns a `tool_call`, the flow is:
 ```
 Model response with tool_call
     ↓
-run_agent.py agent loop
+agent loop (`agent/conversation_loop.py`, via `run_agent.py`'s `AIAgent` facade)
     ↓
 model_tools.handle_function_call(name, args, task_id, user_task)
     ↓
@@ -213,6 +215,7 @@ The terminal system supports multiple backends:
 - singularity
 - modal
 - daytona
+- vercel_sandbox
 
 It also supports:
 
@@ -220,6 +223,20 @@ It also supports:
 - background process management
 - PTY mode
 - approval callbacks for dangerous commands
+
+`tools/process_registry_checkpoint.py` owns running-process checkpoints and
+PID-safe adoption. Completed output is separate: `tools/process_registry_results.py`
+writes one atomic, redacted receipt per process under the profile's
+`logs/process-results/`. Producers cannot overwrite another parent's results by
+rewriting the shared PID checkpoint. The registry persists the receipt before
+releasing its completion event; one-shot linger waits on that event. The existing
+process query methods load retained snapshots without adopting PIDs or enqueuing
+notifications. Reads require the commissioning durable session or its compression
+continuation; knowing a handle alone does not authorize a retained result read.
+The registry captures that owner before starting any output reader, including on
+CLI and non-notifying processes, and preserves the producer's profile context in
+reader threads. Receipt redaction is forced independently of live-output opt-out;
+retention is bounded by age and count.
 
 ## Concurrency
 

@@ -30,7 +30,7 @@ def _load_json(path: Path | None) -> list[dict]:
     if path is None or not path.exists() or path.stat().st_size == 0:
         return []
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         print(f"warning: could not parse {path}: {exc}", file=sys.stderr)
         return []
@@ -197,7 +197,7 @@ def main() -> int:
 
     summary = "\n".join(buf)
     if args.output:
-        args.output.write_text(summary)
+        args.output.write_text(summary, encoding="utf-8")
     else:
         print(summary)
     return 0

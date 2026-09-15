@@ -842,6 +842,13 @@ def write_runtime_status(
     ))
     if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})
+        if platform_state == "connected":
+            # Every writer that publishes ``connected`` (startup stamp, adapter ``_mark_connected``,
+            # Telegram's in-place polling recovery) ends the retry episode; only the watcher's
+            # reconnect path used to say so, and a restart after a NEEDS_ATTENTION escalation
+            # carried the flag into a healthy record for weeks.
+            needs_attention = False if needs_attention is _UNSET else needs_attention
+            retrying_since = None if retrying_since is _UNSET else retrying_since
         _apply_set_fields(platform_payload, (
             ("state", platform_state, None), ("error_code", error_code, None),
             ("error_message", error_message, None),

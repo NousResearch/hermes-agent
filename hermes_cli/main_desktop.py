@@ -1258,6 +1258,9 @@ def _install_desktop_workspace_deps(npm: str, env: dict) -> None:
     nixos_env = with_hermes_node_path(_nixos_build_env())
     install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
     if install_result.returncode == 0:
+        # ignore-scripts retry can skip electron's postinstall; refill dist if staged package is empty.
+        if _electron_pkg_staged_missing_dist(PROJECT_ROOT):
+            _try_redownload_electron_dist(PROJECT_ROOT, env)
         return
     if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
         print(f"✗ Desktop dependency install failed\n  Run manually:  cd {PROJECT_ROOT} && npm ci")

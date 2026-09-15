@@ -325,6 +325,11 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         if self.stream is not None or os.path.exists(self.baseFilename):
             self._reopen_if_externally_rotated()
         super().emit(record)
+        # A record actually reached the file: only now has the destination recovered. Resetting
+        # in _open() is wrong — open() succeeds on a device whose write/flush still raise EIO,
+        # which re-armed the report and printed the path once per record.
+        if self.stream is not None:
+            self._unavailable_reported = False
 
     def handleError(self, record: logging.LogRecord) -> None:
         """Suppress the known Windows ``concurrent-log-handler`` lock timeout.
@@ -354,7 +359,6 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
     def _open(self):
         stream = super()._open()
         self._chmod_if_managed()
-        self._unavailable_reported = False  # recovered: report again if it breaks anew
         return stream
 
     def doRollover(self):

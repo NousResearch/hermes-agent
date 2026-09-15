@@ -1165,14 +1165,20 @@ agent:
                                # Set a positive integer to cap; "none"/"null"/
                                # "unlimited"/"inf"/"infinity"/"infinite"/0/-1 = no limit
   budget_warning_ratio: null   # Optional one-time checkpoint warning, e.g. 0.75
-  api_max_retries: 3           # Retries per provider before fallback engages (default: 3)
+  api_max_retries: 3           # API attempts per provider before fallback (minimum: 1)
+  codex:
+    ttfb_below_stale: true     # Couple small-request TTFB below the stale deadline
+    ttfb_fast_reconnect_seconds: 40.0  # Target cutoff; <= 0 disables coupling
+    ttfb_below_stale_margin_seconds: 10.0  # Desired gap before stale (nonnegative)
 ```
 
 `agent.max_turns` is **unlimited by default** — the turn cap caused more problems than it solved (silent mid-task truncation), so out of the box Hermes runs a conversation turn to completion. To impose a cap, set a positive integer. To be explicit about "no limit", any of these case-insensitive spellings work: `"none"`, `"null"`, `"unlimited"`, `"infinite"`, `"infinity"`, `"inf"`, `0`, `-1` (they resolve to a `sys.maxsize` sentinel so the loop never exits on a turn count).
 
 `agent.budget_warning_ratio` is off by default for ordinary and delegated conversations. When set to a value strictly between `0` and `1` alongside a finite `max_turns`, Hermes appends one model-visible checkpoint notice to the latest tool result after the threshold is reached. The notice rearms each conversation turn and uses each agent's own iteration budget. It only appends to a current tool-result tail, never an older turn, and does not add a synthetic user/system message or change the existing exhaustion grace call. Dispatcher-owned Kanban workers receive a completion checkpoint at 90% by default (an explicit ratio changes that threshold), while their tools are still available. The checkpoint asks for verified completion or a durable progress comment, not premature success.
 
-`agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
+`agent.api_max_retries` controls the application-level attempt budget for a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3`; `1` selects a single attempt. Cron jobs may set `api_max_retries` through `cronjob_manage` create/update to **raise**, never lower, this inherited budget. An absent override inherits the global setting; an empty string on update clears the override.
+
+`agent.codex` configures no-event fast reconnect for Codex Responses requests below 10,000 estimated tokens. It never lengthens an existing TTFB cutoff or enables a disabled watchdog, and leaves upstream large-prefill and hard-timeout policies unchanged. With a finite positive stale deadline, the cutoff stays strictly below it, even below five seconds: the desired margin is capped at half the stale budget (a zero margin still leaves a strictly earlier deadline). Polling may observe both deadlines in one tick; TTFB is checked first. Set `ttfb_below_stale: false` to disable coupling. These three settings are read from `config.yaml` per request, not from environment variables; existing watchdog environment settings are unchanged.
 
 ## Wall-Clock Run Budget
 

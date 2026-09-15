@@ -2157,7 +2157,7 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
 def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup, *, workdir, session_id, session_db):
     runtime = setup.runtime
     pr = _cfg.get("provider_routing") or {}
-    return AIAgent(
+    agent = AIAgent(
         model=setup.model,
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
@@ -2189,6 +2189,15 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         session_id=session_id,
         session_db=session_db,
     )
+    # Per-job budgets can only raise the inherited config.yaml attempt budget.
+    from cron.jobs import _normalize_api_max_retries
+    try:
+        retries = _normalize_api_max_retries(job.get("api_max_retries"))
+        if retries is not None:
+            agent._api_max_retries = max(agent._api_max_retries, retries)
+    except ValueError:
+        logger.warning("Job '%s': invalid api_max_retries; using agent default", job.get("id"))
+    return agent
 
 
 class _FireAudit:

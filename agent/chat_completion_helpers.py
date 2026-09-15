@@ -1063,6 +1063,32 @@ class _NonStreamWatchdogs:
     idle_requires_progress: bool
 
 
+def _codex_fast_reconnect_timeout(timeout: float, stale: float) -> float:
+    """Config-only coupling; never lengthen an existing TTFB deadline."""
+    import math
+    from hermes_cli.config_effective import load_user_config_effective
+
+    try:
+        cfg = load_user_config_effective().get("agent", {}).get("codex", {})
+        enabled = cfg.get("ttfb_below_stale", True)
+        if str(enabled).lower() in {"false", "0", "no", "off"}:
+            return timeout
+        fast = float(cfg.get("ttfb_fast_reconnect_seconds", 40.0))
+        margin = float(cfg.get("ttfb_below_stale_margin_seconds", 10.0))
+        if not math.isfinite(fast) or not math.isfinite(margin) or margin < 0:
+            raise ValueError("invalid fast-reconnect duration")
+    except (AttributeError, TypeError, ValueError):
+        fast, margin = 40.0, 10.0
+    if fast <= 0:
+        return timeout
+    if math.isfinite(stale):
+        if stale <= 0:
+            return timeout
+        # No 5s floor: even a sub-5s stale deadline must remain strictly later.
+        fast = min(fast, max(stale - margin, stale / 2), math.nextafter(stale, 0))
+    return min(timeout, fast) if fast > 0 else timeout
+
+
 def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs:
     """Stale-call timeout plus the Codex Responses stream watchdogs.
 
@@ -1122,6 +1148,11 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
                 "(context=~%s tokens). Set HERMES_CODEX_TTFB_MAX_SECONDS to tune.", ttfb_timeout, ttfb_cap,
                 f"{est_tokens:,}")
             ttfb_timeout = ttfb_cap
+
+    # Preserve upstream's large-prefill policy: only small requests get the
+    # aggressive reconnect target, and explicitly disabled TTFB stays disabled.
+    if ttfb_enabled and est_tokens < 10_000:
+        ttfb_timeout = _codex_fast_reconnect_timeout(ttfb_timeout, stale_timeout)
 
     # An operator-set idle timeout keeps first-event semantics; only the implicit
     # default defers arming until model progress. Sentinel: env_float returns the

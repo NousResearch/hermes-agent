@@ -313,6 +313,53 @@ class SubagentWorktreeTests(unittest.TestCase):
         ):
             self.assertFalse(sw.local_backend_active())
 
+    def test_env_backend_honored_when_config_silent(self):
+        with (
+            mock.patch(
+                "hermes_cli.config.load_config_readonly",
+                return_value={},
+            ),
+            mock.patch.dict(os.environ, {"TERMINAL_ENV": "docker"}),
+        ):
+            self.assertFalse(sw.local_backend_active())
+
+    def test_explicit_config_backend_beats_env(self):
+        # Mirrors the bridge: an explicit terminal.backend overrides env.
+        with (
+            mock.patch(
+                "hermes_cli.config.load_config_readonly",
+                return_value={"terminal": {"backend": "local"}},
+            ),
+            mock.patch.dict(os.environ, {"TERMINAL_ENV": "docker"}),
+        ):
+            self.assertTrue(sw.local_backend_active())
+
+    def test_multiplex_scope_wins_over_config(self):
+        from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+
+        token = set_terminal_scope({"TERMINAL_ENV": "docker"})
+        try:
+            with mock.patch(
+                "hermes_cli.config.load_config_readonly",
+                return_value={"terminal": {"backend": "local"}},
+            ):
+                self.assertFalse(sw.local_backend_active())
+        finally:
+            reset_terminal_scope(token)
+
+    def test_refusal_scope_fails_closed(self):
+        from tools.terminal_scope import (
+            reset_terminal_scope,
+            set_terminal_scope,
+            TerminalPolicyRefusal,
+        )
+
+        token = set_terminal_scope(TerminalPolicyRefusal("unreadable"))
+        try:
+            self.assertFalse(sw.local_backend_active())
+        finally:
+            reset_terminal_scope(token)
+
     # ── context note ───────────────────────────────────────────────────
 
     def test_context_note_names_path_and_branch(self):

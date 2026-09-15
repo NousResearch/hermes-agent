@@ -255,3 +255,31 @@ class TestZaiToolStreamWireShape:
             provider_name="zai",
         )
         assert kwargs["extra_body"]["tool_stream"] is True
+
+
+class TestZaiToolStreamOnAuxiliaryPath:
+    """Auxiliary and sub-agent calls assemble kwargs on their own path.
+
+    They carry tools just like the main loop, so they hit the same buffered-argument
+    stall; the profile only sees it because ``_project_provider_profile`` hands the
+    profile its tools. Sibling call path of the transport-side wiring.
+    """
+
+    def test_auxiliary_tool_call_asks_for_tool_stream(self, zai_profile):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            "zai", "glm-5.3", [{"role": "user", "content": "ping"}],
+            tools=[{"type": "function", "function": {"name": "t", "parameters": {}}}],
+            base_url="https://api.z.ai/api/paas/v4",
+        )
+        assert kwargs["extra_body"]["tool_stream"] is True
+
+    def test_auxiliary_plain_completion_omits_tool_stream(self, zai_profile):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            "zai", "glm-5.3", [{"role": "user", "content": "ping"}],
+            base_url="https://api.z.ai/api/paas/v4",
+        )
+        assert "tool_stream" not in kwargs.get("extra_body", {})

@@ -23,6 +23,7 @@ def _reset_bridge_state(monkeypatch):
         "TERMINAL_CWD",
         "TERMINAL_DOCKER_IMAGE",
         "TERMINAL_SSH_HOST",
+        "HERMES_TERMINAL_CWD_OVERRIDE",
     ):
         monkeypatch.delenv(name, raising=False)
     yield
@@ -95,6 +96,42 @@ def test_ssh_config_preserves_remote_tilde_cwd(monkeypatch):
 
     assert os.environ["TERMINAL_CWD"] == "~"
     assert config["cwd"] == "~"
+
+
+def test_cwd_override_wins_over_explicit_profile_cwd(monkeypatch, tmp_path):
+    """A trusted launcher cwd override beats terminal.cwd from profile config."""
+    shared_checkout = str(tmp_path / "shared-checkout")
+    sandbox = str(tmp_path / "sandbox")
+    _write_config(f"terminal:\n  backend: local\n  cwd: {shared_checkout!r}\n")
+    monkeypatch.setenv("HERMES_TERMINAL_CWD_OVERRIDE", sandbox)
+
+    config = terminal_tool._get_env_config()
+
+    assert os.environ["TERMINAL_CWD"] == sandbox
+    assert config["cwd"] == sandbox
+
+
+def test_invalid_relative_cwd_override_is_ignored(monkeypatch, tmp_path):
+    """A relative override falls through to the normal profile cwd."""
+    profile_cwd = str(tmp_path / "profile-cwd")
+    _write_config(f"terminal:\n  backend: local\n  cwd: {profile_cwd!r}\n")
+    monkeypatch.setenv("HERMES_TERMINAL_CWD_OVERRIDE", "relative/not/absolute")
+
+    config = terminal_tool._get_env_config()
+
+    assert os.environ["TERMINAL_CWD"] == profile_cwd
+    assert config["cwd"] == profile_cwd
+
+
+def test_empty_cwd_override_is_ignored(monkeypatch, tmp_path):
+    profile_cwd = str(tmp_path / "profile-cwd")
+    _write_config(f"terminal:\n  backend: local\n  cwd: {profile_cwd!r}\n")
+    monkeypatch.setenv("HERMES_TERMINAL_CWD_OVERRIDE", "   ")
+
+    config = terminal_tool._get_env_config()
+
+    assert os.environ["TERMINAL_CWD"] == profile_cwd
+    assert config["cwd"] == profile_cwd
 
 
 def test_env_is_preserved_when_config_has_no_terminal_section(monkeypatch):

@@ -1,5 +1,6 @@
 """Tests for agent/system_prompt.py — context-file cwd wiring."""
 
+from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -450,6 +451,58 @@ def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
 
     assert prompt == expected
     assert agent._cached_system_prompt_static == "\n\n".join(expected.split("\n\n")[:4])
+
+
+def test_self_help_guidance_toggle(monkeypatch):
+    """config.yaml ``agent.self_help_guidance: False`` drops the "You run on
+    Hermes Agent" docs-pointer block without touching any other guidance.
+
+    Embedded / white-labeled deployments use this to strip the runtime's
+    vendor identity and public docs URL from the prompt. Default (attribute
+    absent) must keep today's behavior.
+    """
+    import agent.system_prompt as system_prompt
+
+    monkeypatch.setattr(system_prompt, "DEFAULT_AGENT_IDENTITY", "IDENTITY")
+    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE", "HELP-SKILL-VARIANT")
+    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS", "HELP-NO-SKILL-VARIANT")
+    monkeypatch.setattr(system_prompt, "STEER_CHANNEL_NOTE", "STEER")
+    monkeypatch.setattr(system_prompt, "get_hermes_home", lambda: Path("/hermes"))
+
+    common = (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value="CONTEXT_FILES"),
+        patch(
+            "agent.coding_context.coding_system_prompt_parts",
+            return_value=(["CODING_STABLE"], ["WORKSPACE"], ["Operator instructions:\nOPERATOR"]),
+        ),
+        patch("agent.file_safety._resolve_active_profile_name", return_value="default"),
+        patch("hermes_time.now", return_value=datetime(2026, 1, 2)),
+    )
+
+    # Default: the no-skills variant is present and holds its slot.
+    agent = _make_agent()
+    with ExitStack() as stack:
+        for cm in common:
+            stack.enter_context(cm)
+        prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
+    assert "HELP-NO-SKILL-VARIANT" in prompt
+    assert agent._cached_system_prompt_static.split("\n\n")[1] == "HELP-NO-SKILL-VARIANT"
+
+    # Disabled: the block is gone, identity still first, and the static
+    # cache split loses exactly one part (order of the rest preserved).
+    agent = _make_agent(_self_help_guidance=False)
+    with ExitStack() as stack:
+        for cm in common:
+            stack.enter_context(cm)
+        prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
+    assert "HELP-NO-SKILL-VARIANT" not in prompt
+    assert "HELP-SKILL-VARIANT" not in prompt
+    # The static/dynamic cache split stays consistent without the slot.
+    static = agent._cached_system_prompt_static
+    assert static and prompt.startswith(static)
+    assert "HELP-NO-SKILL-VARIANT" not in static and "HELP-SKILL-VARIANT" not in static
 
 
 class TestTelegramRichMessagesHint:

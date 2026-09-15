@@ -81,8 +81,10 @@ class PlatformEntry:
     # ``_apply_env_overrides`` BEFORE adapter construction so ``gateway status`` sees it.
     env_enablement_fn: Optional[Callable[[], Optional[dict]]] = None
     # YAML->env bridge ``(yaml_cfg, platform_cfg) -> Optional[dict]`` merged into ``extra``; runs
-    # after the shared-key loop, before ``_apply_env_overrides``. May set ``os.environ`` (guard
-    # with ``not os.getenv(...)`` to keep env > YAML). Contract: docs/developer-guide/adding-platform-adapters.md.
+    # after the shared-key loop, before ``_apply_env_overrides``. Build it with
+    # ``gateway.platforms._shared.apply_yaml_bridge`` — it writes env only when unset (env > YAML)
+    # and never under a multiplexed secondary's scope; a hand-rolled ``os.environ[...] =`` is
+    # first-profile-wins. Contract: docs/developer-guide/adding-platform-adapters.md.
     apply_yaml_config_fn: Optional[Callable[[dict, dict], Optional[dict]]] = None
     cron_deliver_env_var: str = ""  # home-channel env var read for cron ``deliver=<name>``
     # ``(target_ref) -> Optional[(chat_id, thread_id)]`` run before channel-directory

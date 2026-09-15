@@ -191,7 +191,7 @@ def _(rid, params: CompletePathParams) -> CompletionItemsResult | dict:
     word = params.word
     if not word:
         return CompletionItemsResult(items=[])
-    root = _completion_cwd(params)
+    root = _completion_cwd({"cwd": params.cwd, "session_id": params.session_id, "profile": params.profile})
     is_context = word.startswith("@")
     query = word[1:] if is_context else word
     if is_context and not query:

@@ -152,6 +152,9 @@ def _browser_controller_ws_sender(ws, loop, *, wait_timeout: float = 10.0):
     def send(frame: dict) -> None:
         if ws.closed:
             raise ConnectionError("browser-control websocket is closed")
+        params = frame.get("params")
+        if hasattr(params, "model_dump"):  # broker frames carry BrowserController*Payload models
+            frame = {**frame, "params": params.model_dump(mode="json")}
         try:
             on_loop = asyncio.get_running_loop() is loop
         except RuntimeError:

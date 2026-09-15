@@ -879,7 +879,8 @@ def _(rid, params: SessionResumeParams) -> SessionResumeResult | dict:
         _resume_follow_tip(ctx)
         if (resp := _resume_guard(ctx)) is not None:
             return resp
-        ctx.profile_resume_cwd = _str_param(ctx.found, "cwd") or _profile_configured_cwd(ctx.profile_home)
+        # ctx.found is the stored DB row (a dict), not a params model.
+        ctx.profile_resume_cwd = str((ctx.found or {}).get("cwd") or "").strip() or _profile_configured_cwd(ctx.profile_home)
         with _session_resume_lock:
             live = _find_live_session_by_key(ctx.target, ctx.profile_home)
         if live is not None:
@@ -1681,8 +1682,7 @@ def _(rid, params: SessionCompressParams) -> SessionCompressResult | dict:
     if err:
         return err
     if _session_uses_compute_host(session):
-        response = _compress_via_compute_host(rid, params, session)
-        return response if "error" in response else SessionCompressResult.model_validate(response["result"])
+        return _compress_via_compute_host(rid, params, session)
     session, err = _sess(params, rid)
     if err:
         return err

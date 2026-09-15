@@ -254,7 +254,7 @@ class ComputeHost:
             with session["history_lock"]:
                 meta = _history_meta(session)
                 interrupted = bool(session.get("_turn_cancel_requested"))
-            session_info = server._session_info(session.get("agent"), session)
+            session_info = server._session_info(session.get("agent"), session).model_dump(mode="json")
             with self._progress_lock:
                 self._progress_counter += 1
             self._reply(
@@ -443,7 +443,7 @@ class ComputeHost:
             with session["history_lock"]:
                 messages = server._history_to_messages(list(session.get("history") or []))
                 ack = {"output": output, **_history_meta(session), "messages": messages}
-        ack["session_info"] = server._session_info(session.get("agent"), session)
+        ack["session_info"] = server._session_info(session.get("agent"), session).model_dump(mode="json")
         return ack
 
     def _live_turns(self) -> list[concurrent.futures.Future]:

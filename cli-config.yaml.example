@@ -345,6 +345,10 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Optional route for workers assigned to this profile. Both keys must be set;
+  # per-task model/provider overrides take precedence.
+  # default_model: gpt-5.6-luna
+  # default_provider: openai-codex
 
 # =============================================================================
 # Terminal Tool Configuration

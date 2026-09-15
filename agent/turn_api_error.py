@@ -18,8 +18,8 @@ from typing import Any, Dict, Optional
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.turn_overflow import recover_from_overflow
 from agent.turn_recovery import (
-    _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, interruptible_backoff_sleep,
-    log_api_error_attempt,
+    _NONRETRYABLE_LABELS, _TRANSPORT_FAILURE_REASONS, abort_turn_on_interrupt,
+    compute_error_backoff, interruptible_backoff_sleep, log_api_error_attempt,
     max_retries_exhausted_result, nonretryable_client_error_result, recover_after_classification,
     recover_before_classification, route_classified_error,
 )
@@ -343,14 +343,26 @@ def settle_unrecovered_error(
             agent._fallback_index = 0
             agent._fallback_activated = False
             return _verdict("continue")
-        if agent._has_pending_fallback():
-            agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-        if agent._try_activate_fallback():
-            # Direct ``return _verdict("break")`` is load-bearing: the restart handler
-            # re-runs the pre-API preflight against the fallback's context window.
-            active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
-            retry_count = compression_attempts = 0
-            return _verdict("break")
+        # Try fallback before giving up entirely — except when
+        # transport-failure fallback is disabled (threshold 0):
+        # the retry window above is the only grace transport
+        # errors get, and after it exhausts the turn fails
+        # without switching models. Rate-limit/billing failover
+        # is untouched (it is gated by is_rate_limited, not
+        # this threshold).
+        _tft = getattr(agent, "_transport_fallback_threshold", 2)
+        _fallback_allowed = _tft > 0 or not (
+            classified.reason in _TRANSPORT_FAILURE_REASONS
+        )
+        if _fallback_allowed:
+            if agent._has_pending_fallback():
+                agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
+            if agent._try_activate_fallback():
+                # Direct ``return _verdict("break")`` is load-bearing: the restart handler
+                # re-runs the pre-API preflight against the fallback's context window.
+                active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
+                retry_count = compression_attempts = 0
+                return _verdict("break")
         return _verdict("return", max_retries_exhausted_result(
             agent, api_error, classified, max_retries=max_retries, is_rate_limited=is_rate_limited,
             error_msg=error_msg, api_kwargs=api_kwargs, api_messages=api_messages,

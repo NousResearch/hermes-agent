@@ -466,7 +466,7 @@ That progression keeps the debugging surface small.
 
 ## Where to read next
 
-- [Voice Mode feature reference](/user-guide/features/voice-mode)
+- [Voice Mode feature reference](/user-guide/features/voice-mode) — includes realtime duplex voice via the community hermes-talk plugin
 - [Messaging Gateway](/user-guide/messaging)
 - [Discord setup](/user-guide/messaging/discord)
 - [Telegram setup](/user-guide/messaging/telegram)

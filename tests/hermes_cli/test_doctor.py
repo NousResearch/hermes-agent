@@ -1800,3 +1800,35 @@ def test_docker_daemon_probe_uses_version_not_info(monkeypatch):
     doctor_tools._check_docker_backend("docker", False, [])
 
     assert calls and calls[0][:2] == ["docker", "version"]
+
+
+class TestApiConnectivityCrGating:
+    """``_check_api_connectivity`` must not emit ``\\r`` when stdout is not a TTY —
+    piped/redirected ``hermes doctor`` output stays free of control bytes, while a real
+    terminal keeps the in-place progress rewrite."""
+
+    def _run(self, monkeypatch, stdout):
+        from hermes_cli.doctor_connectivity import ProbeResult
+        probe = ProbeResult("OpenRouter API", [("✓", "OpenRouter API", "")], [])
+        monkeypatch.setattr(doctor, "build_probes", lambda: [("OpenRouter API", lambda: probe)])
+        monkeypatch.setattr(doctor, "run_probes", lambda probes: [probe])
+        monkeypatch.setattr(sys, "stdout", stdout)
+        return doctor._check_api_connectivity(False)
+
+    def test_non_tty_output_has_no_carriage_returns(self, monkeypatch):
+        buf = io.StringIO()  # isatty() is False — the piped/redirected case
+        finding = self._run(monkeypatch, buf)
+        out = buf.getvalue()
+        assert "\r" not in out
+        assert "Running 1 connectivity checks in parallel" in out
+        assert "OpenRouter API" in out
+        assert out.endswith("\n")
+        assert finding.issues == []
+
+    def test_tty_output_keeps_inline_progress_rewrite(self, monkeypatch):
+        class _Tty(io.StringIO):
+            def isatty(self):
+                return True
+        buf = _Tty()
+        self._run(monkeypatch, buf)
+        assert "\r" in buf.getvalue()  # in-place rewrite preserved on a real terminal

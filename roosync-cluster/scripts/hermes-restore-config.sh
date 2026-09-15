@@ -312,11 +312,23 @@ HOME=/opt/data
 XDG_STATE_HOME=/opt/data/.local/state
 
 # z.ai / GLM provider (still used by auxiliary tasks: compression, image, browser, web)
-GLM_API_KEY=${GLM_API_KEY:-}
-GLM_BASE_URL=${GLM_BASE_URL:-https://open.bigmodel.cn/api/coding/paas/v4}
+# Aux GLM traffic rides the claudish hub ingress (po-2025) with the fleet proxy key.
+# The legacy direct z.ai key in .env.secrets (GLM_API_KEY) was revoked 2026-09-15;
+# it is kept only as fallback when CLAUDISH_PROXY_KEY is absent. Ingress canary
+# validated 2026-09-15: /v1/chat/completions Bearer -> 200 (glm-4.5-air).
+# GLM_INGRESS_URL allows overriding the hub address without editing this script.
+if [ -n "$CLAUDISH_PROXY_KEY" ]; then
+    GLM_API_KEY="$CLAUDISH_PROXY_KEY"
+    GLM_BASE_URL="${GLM_INGRESS_URL:-http://192.168.0.50:3000/v1}"
+else
+    GLM_API_KEY=${GLM_API_KEY:-}
+    GLM_BASE_URL=${GLM_BASE_URL:-https://open.bigmodel.cn/api/coding/paas/v4}
+fi
 
 # Anthropic / claudish — VALIDATED WORKING 2026-08-07.
-# Gateway routes via claudish proxy (po-2023:3000), claude-sonnet-4-6 -> glm-5.2.
+# Gateway routes via the claudish hub (po-2025:3000 since 2026-09-15; the old
+# po-2023 relay .46 stays up but is no longer the canonical hop),
+# claude-sonnet-4-6 -> glm-5.2.
 # Auth: claudish accepts Hermes's native x-api-key header (a third-party anthropic
 # endpoint makes build_anthropic_client send api_key as x-api-key). x-proxy-key is
 # NOT required on /v1/messages — proven by a direct probe (HTTP 200 + glm-5.2 body)
@@ -324,9 +336,8 @@ GLM_BASE_URL=${GLM_BASE_URL:-https://open.bigmodel.cn/api/coding/paas/v4}
 # NOTE: ANTHROPIC_CUSTOM_HEADERS is NOT read by Hermes (grep across .py = 0 refs),
 # so x-proxy-key cannot be sent via env regardless; if claudish later enforces it,
 # a custom_providers block (transport: anthropic_messages + extra_headers) is the
-# only mechanism. CLAUDISH_PROXY_KEY stays provisioned in .env.secrets for that day;
-# it is unused now. NEVER log the key.
-ANTHROPIC_BASE_URL=http://192.168.0.46:3000
+# only mechanism. NEVER log the key.
+ANTHROPIC_BASE_URL=http://192.168.0.50:3000
 ANTHROPIC_TOKEN=placeholder
 
 # Telegram bot
@@ -779,15 +790,16 @@ fi
 PROV=$(grep '^  provider:' "$DATA/config.yaml" | head -1)
 [[ "$PROV" == *anthropic* ]] && check "Provider (main=anthropic)" "OK" || check "Provider" "got: $PROV"
 
-# ANTHROPIC_BASE_URL must point at claudish proxy (po-2023:3000).
-ANTH_URL=$(grep -c '^ANTHROPIC_BASE_URL=http://192.168.0.46:3000' "$DATA/.env" 2>/dev/null || true)
-[ "$ANTH_URL" = "1" ] && check "ANTHROPIC_BASE_URL (claudish)" "OK" || check "ANTHROPIC_BASE_URL" "missing/wrong (count=$ANTH_URL)"
+# ANTHROPIC_BASE_URL must point at the claudish hub (po-2025:3000 since 2026-09-15).
+ANTH_URL=$(grep -c '^ANTHROPIC_BASE_URL=http://192.168.0.50:3000' "$DATA/.env" 2>/dev/null || true)
+[ "$ANTH_URL" = "1" ] && check "ANTHROPIC_BASE_URL (claudish hub po-2025)" "OK" || check "ANTHROPIC_BASE_URL" "missing/wrong (count=$ANTH_URL)"
 
-# CLAUDISH_PROXY_KEY provisioned in .env.secrets for future use (if claudish ever
-# enforces x-proxy-key, a custom_providers block will send it). Verify presence
-# WITHOUT printing the value. Unused today — claudish accepts native x-api-key auth.
+# Aux GLM traffic must ride the hub ingress with the fleet proxy key (the legacy
+# direct z.ai key was revoked 2026-09-15). Verify presence WITHOUT printing values.
 KEY_LEN=$(grep -o '^CLAUDISH_PROXY_KEY=[0-9a-f]\{64\}$' "$DATA/.env.secrets" 2>/dev/null | head -1 | wc -c)
-[ "$KEY_LEN" -gt 0 ] && check "CLAUDISH_PROXY_KEY provisioned" "OK (unused, value masked)" || check "CLAUDISH_PROXY_KEY" "not provisioned (OK if claudish stays x-api-key)"
+[ "$KEY_LEN" -gt 0 ] && check "CLAUDISH_PROXY_KEY provisioned (aux GLM ingress auth)" "OK (value masked)" || check "CLAUDISH_PROXY_KEY" "not provisioned (aux GLM falls back to revoked direct key)"
+GLM_URL=$(grep -c '^GLM_BASE_URL=http://192.168.0.50:3000/v1$' "$DATA/.env" 2>/dev/null || true)
+[ "$GLM_URL" = "1" ] && check "GLM_BASE_URL (hub ingress)" "OK" || check "GLM_BASE_URL" "not on hub ingress (count=$GLM_URL)"
 
 # No duplicate provider: auto
 DUP=$(grep -c '^ *provider: "auto"' "$DATA/config.yaml" || true)

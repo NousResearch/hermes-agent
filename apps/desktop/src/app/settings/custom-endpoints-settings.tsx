@@ -101,12 +101,19 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
     }
   }, [])
 
-  const isForegroundOwner = () =>
-    mounted.current && $settingsOwner.get() === scope && $settingsScopeOverride.get() == null
+  const isCurrentOwner = () => mounted.current && $settingsOwner.get() === scope
+  const isForegroundOwner = () => isCurrentOwner() && $settingsScopeOverride.get() == null
 
   async function refresh() {
     const data = await getCustomEndpoints(scope)
+
+    if (!isCurrentOwner()) {
+      return false
+    }
+
     setEndpoints(data.endpoints)
+
+    return true
   }
 
   useEffect(() => {
@@ -147,6 +154,11 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
     try {
       setSaving(true)
       const response = await saveCustomEndpoint(toPayload(form, discoveredModels), scope)
+
+      if (!isCurrentOwner()) {
+        return
+      }
+
       setEndpoints(response.endpoints)
       const saved = response.endpoints.find(endpoint => endpoint.id === response.id)
 
@@ -167,9 +179,13 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
 
       notify({ kind: 'success', message: 'Custom endpoint saved.' })
     } catch (err) {
-      notifyError(err, 'Save failed')
+      if (isCurrentOwner()) {
+        notifyError(err, 'Save failed')
+      }
     } finally {
-      setSaving(false)
+      if (isCurrentOwner()) {
+        setSaving(false)
+      }
     }
   }
 
@@ -177,6 +193,11 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
     try {
       setTesting(true)
       const response = await validateCustomEndpoint(toPayload(form), scope)
+
+      if (!isCurrentOwner()) {
+        return
+      }
+
       setDiscoveredModels(response.models)
 
       if (response.ok) {
@@ -197,9 +218,13 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
         })
       }
     } catch (err) {
-      notifyError(err, 'Validation failed')
+      if (isCurrentOwner()) {
+        notifyError(err, 'Validation failed')
+      }
     } finally {
-      setTesting(false)
+      if (isCurrentOwner()) {
+        setTesting(false)
+      }
     }
   }
 
@@ -207,7 +232,10 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
     try {
       setActivating(endpoint.id)
       const response = await activateCustomEndpoint(endpoint.id, scope)
-      await refresh()
+
+      if (!isCurrentOwner() || !(await refresh())) {
+        return
+      }
 
       if (isForegroundOwner()) {
         onConfigSaved?.()
@@ -216,9 +244,13 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
 
       triggerHaptic('success')
     } catch (err) {
-      notifyError(err, 'Activation failed')
+      if (isCurrentOwner()) {
+        notifyError(err, 'Activation failed')
+      }
     } finally {
-      setActivating(null)
+      if (isCurrentOwner()) {
+        setActivating(null)
+      }
     }
   }
 
@@ -231,6 +263,11 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
     try {
       setDeleting(endpoint.id)
       const response = await deleteCustomEndpoint(endpoint.id, scope)
+
+      if (!isCurrentOwner()) {
+        return
+      }
+
       setEndpoints(response.endpoints)
 
       if (form.id === endpoint.id) {
@@ -244,9 +281,13 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
 
       triggerHaptic('success')
     } catch (err) {
-      notifyError(err, 'Delete failed')
+      if (isCurrentOwner()) {
+        notifyError(err, 'Delete failed')
+      }
     } finally {
-      setDeleting(null)
+      if (isCurrentOwner()) {
+        setDeleting(null)
+      }
     }
   }
 

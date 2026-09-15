@@ -5,6 +5,7 @@ import type * as HermesModule from '@/hermes'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
 import { $connection } from '@/store/session'
 import { $settingsOwner, $settingsScopeOverride } from '@/store/settings-scope'
+import type { CustomEndpoint } from '@/types/hermes'
 
 const api = vi.hoisted(() => ({
   activateCustomEndpoint: vi.fn(),
@@ -21,7 +22,7 @@ vi.mock('@/hermes', async importOriginal => ({
 
 import { CustomEndpointsSettings } from './custom-endpoints-settings'
 
-const endpoint = {
+const endpoint: CustomEndpoint = {
   api_key_preview: null,
   base_url: 'https://models.example/v1',
   context_length: null,
@@ -33,7 +34,7 @@ const endpoint = {
   models: ['fixture/model'],
   name: 'Fixture',
   source: 'managed'
-} as const
+}
 
 function profile(name: string, isDefault = false) {
   return {
@@ -107,6 +108,8 @@ describe('CustomEndpointsSettings owner isolation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(api.saveCustomEndpoint).toHaveBeenCalled())
 
+    const staleEndpoint = { ...endpoint, name: 'Stale response' }
+
     await act(async () => {
       $connection.set({
         authMode: 'token',
@@ -117,11 +120,13 @@ describe('CustomEndpointsSettings owner isolation', () => {
         remoteHost: 'operator@gateway-b',
         token: 'token-b'
       } as never)
-      resolveSave({ endpoints: [endpoint], id: endpoint.id })
+      resolveSave({ endpoints: [staleEndpoint], id: staleEndpoint.id })
     })
 
     expect(onConfigSaved).not.toHaveBeenCalled()
     expect(onMainModelChanged).not.toHaveBeenCalled()
+    expect(screen.getByDisplayValue('Fixture')).toBeTruthy()
+    expect(screen.queryByDisplayValue('Stale response')).toBeNull()
   })
 
   it('does not publish callbacks while editing a non-active profile owner', async () => {

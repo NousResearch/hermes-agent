@@ -51,6 +51,21 @@ afterEach(() => {
 })
 
 describe('useSettingsSearchCatalog owner isolation', () => {
+  it('does not fall back to ambient config when no Settings owner is available', () => {
+    $connection.set(null)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    )
+
+    renderHook(() => useSettingsSearchCatalog(true), { wrapper })
+
+    expect(api.getHermesConfigRecord).not.toHaveBeenCalled()
+    expect(api.getHermesConfigSchema).not.toHaveBeenCalled()
+    expect(api.getEnvVars).not.toHaveBeenCalled()
+  })
+
   it('scopes config, schema and env requests and cache rows to the selected Settings owner', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 

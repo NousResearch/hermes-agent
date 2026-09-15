@@ -55,6 +55,9 @@ async def test_terminal_hosted_image_retry_after_real_settlement(tmp_path, monke
         for retired in (False, True):
             if retired:
                 retire_metadata(db, row['admission_id'])
+                from hermes_state_mutation_retirement import RETIRED_PREFIX
+                db._execute_write(lambda conn: conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
+                    (RETIRED_PREFIX + rpc.ref.session_id, '{}')))
                 collect_working_copies(db, epoch=owner.epoch)
                 prepared = prepare_hosted_input(rpc, request_id=row['request_id'], prompt='read',
                     attachments=params['attachments'])

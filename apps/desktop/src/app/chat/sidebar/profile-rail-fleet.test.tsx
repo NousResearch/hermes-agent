@@ -3,7 +3,6 @@ import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopAgentRoster, DesktopConnectionsRegistry } from '@/global'
-import type * as ProfileStore from '@/store/profile'
 
 import { ProfileRail } from './profile-switcher'
 
@@ -67,11 +66,9 @@ vi.mock('@/i18n', () => ({
   })
 }))
 
-vi.mock('@/store/gateway', () => ({ $gateway: atom(null) }))
-vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
-vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
+const { sortByProfileOrder } = await import('@/lib/profile-order')
 
-vi.mock('@/store/profile', async importOriginal => ({
+vi.mock('@/store/profile', () => ({
   $activeGatewayProfile: atom('default'),
   $profileColors: atom({}),
   $profileCreateRequest: atom(0),
@@ -87,7 +84,8 @@ vi.mock('@/store/profile', async importOriginal => ({
   setProfileColor: vi.fn(),
   setProfileOrder: vi.fn(),
   setShowAllProfiles: vi.fn(),
-  sortByProfileOrder: (await importOriginal<typeof ProfileStore>()).sortByProfileOrder
+  sortByProfileOrder: (profiles: Array<{ name: string }>, order: string[]) =>
+    sortByProfileOrder(profiles, order, profile => profile.name)
 }))
 
 vi.mock('@/store/connections', () => ({
@@ -111,7 +109,6 @@ vi.mock('./use-profile-rail-refresh-on-active', () => ({
 }))
 
 vi.mock('@/hermes', () => ({
-  setApiRequestProfile: vi.fn(),
   getProfileSoul: vi.fn().mockResolvedValue({ content: '' }),
   updateProfileSoul: vi.fn()
 }))

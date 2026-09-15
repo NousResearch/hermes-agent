@@ -3,6 +3,7 @@ import { atom, batch, computed } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
 import { getProfiles, hermesApi, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
+import { sortByProfileOrder as sortProfilesByOrder } from '@/lib/profile-order'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import {
   arraysEqual,
@@ -65,8 +66,9 @@ export const $profiles = atom<ProfileInfo[]>(NO_PROFILES)
 // outgoing source's profiles nor blank a source we already know.
 export const $profilesByConnection = atom<ReadonlyMap<string, ProfileInfo[]>>(new Map())
 
-// Registry descriptors carry their connection id; legacy primaries are keyed
-// by endpoint. Null is a reconnect blip (see setConnection), not a source.
+// Registry descriptors carry their connection id (a slug, so it never contains
+// ':'); legacy primaries are keyed by endpoint. Null is a reconnect blip (see
+// setConnection), not a source.
 function profileListSource(connection: HermesConnection | null): null | string {
   if (!connection) {
     return null
@@ -208,18 +210,7 @@ export function setProfileOrder(names: string[]): void {
 
 // Sort items by the stored order; unordered names alphabetise at the tail.
 export function sortByProfileOrder<T extends { name: string }>(items: T[], order: string[]): T[] {
-  const rank = new Map(order.map((name, index) => [name, index]))
-
-  return [...items].sort((a, b) => {
-    const ra = rank.get(a.name)
-    const rb = rank.get(b.name)
-
-    if (ra != null && rb != null) {
-      return ra - rb
-    }
-
-    return ra != null ? -1 : rb != null ? 1 : a.name.localeCompare(b.name)
-  })
+  return sortProfilesByOrder(items, order, item => item.name)
 }
 
 // ── Rail colors ────────────────────────────────────────────────────────────

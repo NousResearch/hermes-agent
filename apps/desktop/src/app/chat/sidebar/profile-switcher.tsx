@@ -177,19 +177,9 @@ export function ProfileRail() {
 
   const connections = registry?.connections
 
-  // At-rest named squares follow the same user order as the active strip, so
-  // a gateway's squares do not rearrange when it becomes inactive.
   const restGroups = useMemo(
     () =>
-      multipleConnections
-        ? buildRestGroups({ activeConnectionId, connections: connections ?? [], roster }).map(group => ({
-            ...group,
-            named: sortByProfileOrder(
-              group.named.map(agent => ({ name: agent.profile, agent })),
-              order
-            ).map(({ agent }) => agent)
-          }))
-        : [],
+      multipleConnections ? buildRestGroups({ activeConnectionId, connections: connections ?? [], order, roster }) : [],
     [activeConnectionId, connections, multipleConnections, order, roster]
   )
 

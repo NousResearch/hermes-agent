@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
@@ -48,6 +48,23 @@ describe('MarkdownTextContent remote images', () => {
       path: '/api/fs/read-data-url?path=%2Fhome%2Fuser%2Fproject%2Fimages%2Fremote-preview.png',
       profile: 'remote-work'
     })
+  })
+
+  it('groups images from one response into a navigable lightbox', async () => {
+    render(
+      <MarkdownTextContent
+        isRunning={false}
+        text={`![First screenshot](${REMOTE_IMAGE_PATH})\n\n![Second screenshot](/home/user/project/images/second.png)`}
+      />
+    )
+
+    const first = await screen.findByRole('img', { name: 'First screenshot' })
+    await screen.findByRole('img', { name: 'Second screenshot' })
+    fireEvent.click(first)
+
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByRole('button', { name: 'Next image' })).toBeTruthy()
+    expect(within(dialog).getByText('1 / 2')).toBeTruthy()
   })
 })
 

@@ -285,10 +285,14 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
     if gateway_running and gateway_state is None and remote_health_body is not None:
         gateway_state = "running"
 
+    # ``liveness.runtime`` is set only when the shared multiplexer answered for a served profile: its
+    # gateway IS that process, so name every bot a restart would blip ("default, alpha, beta").
+    served = (liveness.runtime or {}).get("served_profiles")
     return {
         "runtime": runtime, "gateway_running": gateway_running, "gateway_pid": liveness.pid,
         "gateway_state": gateway_state, "gateway_platforms": gateway_platforms,
-        "gateway_exit_reason": gateway_exit_reason, "gateway_updated_at": gateway_updated_at}
+        "gateway_exit_reason": gateway_exit_reason, "gateway_updated_at": gateway_updated_at,
+        "gateway_shared_with": [str(p) for p in served] if isinstance(served, list) else None}
 
 
 def _auth_gate_status() -> Dict[str, Any]:
@@ -434,6 +438,8 @@ async def get_status(profile: Optional[str] = None):
             "gateway_platforms": gateway["gateway_platforms"],
             "gateway_exit_reason": gateway["gateway_exit_reason"],
             "gateway_updated_at": gateway["gateway_updated_at"],
+            # Non-null only for a profile served by the shared multiplexer: every profile that process carries.
+            "gateway_shared_with": gateway["gateway_shared_with"],
             "active_agents": active_agents,
             "gateway_busy": derive_gateway_busy(
                 gateway_running=gateway_running, gateway_state=gateway_state,

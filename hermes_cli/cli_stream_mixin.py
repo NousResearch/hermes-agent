@@ -17,11 +17,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from rich.markup import escape as _escape
 
+from agent.think_scrubber import THINK_CLOSE_TAGS, THINK_OPEN_TAGS
+
 # Model-generated reasoning tags: suppressed during streaming (they'd display as raw XML;
 # the agent strips them from final_response too) unless show_reasoning routes them to the box.
-_OPEN_TAGS = (
-    "<REASONING_SCRATCHPAD>", "<think>", "<reasoning>", "<THINKING>", "<thinking>", "<thought>")
-_CLOSE_TAGS = tuple("</" + t[1:] for t in _OPEN_TAGS)
+_OPEN_TAGS = THINK_OPEN_TAGS
+_CLOSE_TAGS = THINK_CLOSE_TAGS
 _MAX_CLOSE_TAG_LEN = max(len(t) for t in _CLOSE_TAGS)
 
 # Ordered (prefix, status) rows for _slow_command_status — first match wins.
@@ -209,8 +210,8 @@ class CLIStreamMixin:
     def _print_user_message_preview(self, user_input: str) -> None:
         """Render a user message using the normal chat scrollback style."""
         from cli import ChatConsole, _accent_hex
-        from tools.process_registry_notifications import SubagentNotification
-        if isinstance(user_input, SubagentNotification):
+        from tools.process_registry_notifications import TimelineNotification
+        if isinstance(user_input, TimelineNotification):
             ChatConsole().print(f"[dim]◈ {_escape(user_input.display_text)}[/dim]")
             return
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")

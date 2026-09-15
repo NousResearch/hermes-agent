@@ -1497,7 +1497,7 @@ platform_toolsets:
 
 # Optional sentence streaming through a separately running VOICEVOX Engine.
 # Merge under your existing tts section; preserve tts.provider for whole-file
-# fallback. See docs/streaming-tts.md for the streaming/attachment distinction.
+# fallback. See website/docs/developer-guide/streaming-tts.md for the streaming/attachment distinction.
 # tts:
 #   streaming:
 #     provider: "voicevox"

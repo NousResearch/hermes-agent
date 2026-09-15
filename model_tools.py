@@ -491,8 +491,11 @@ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disa
                               quiet_mode: bool = False, skip_tool_search_assembly: bool = False) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     tools_to_include = _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode)
-    # Registry returns only tools whose check_fn passes.
-    filtered_tools = _apply_dynamic_schemas(registry.get_definitions(tools_to_include, quiet=quiet_mode))
+    # Selection is per schema, not per process/profile. Kanban's local checks
+    # are uncached; the outer definitions cache already keys on this selection.
+    from tools.kanban_toolset_context import scoped_kanban_toolset_selection
+    with scoped_kanban_toolset_selection(enabled_toolsets):
+        filtered_tools = _apply_dynamic_schemas(registry.get_definitions(tools_to_include, quiet=quiet_mode))
     global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
 
@@ -814,9 +817,8 @@ def _execute_tool(function_name: str, function_args: Dict[str, Any], original_ar
         dispatch_kwargs["user_task"] = user_task
 
     def _dispatch(next_args: Dict[str, Any]) -> Any:
-        from tools.tool_gateway.names import is_connector_name
+        from tools.connectors import dispatch_connector_call, is_connector_name
         if is_connector_name(function_name):
-            from model_tools_connectors import dispatch_connector_call
             return dispatch_connector_call(function_name, next_args, ids.tool_call_id)
         return registry.dispatch(function_name, next_args, **dispatch_kwargs)
 
@@ -890,9 +892,8 @@ def handle_function_call(
         result, underlying = bridged
         if underlying is None:
             return _emit(result, duration_ms=_elapsed_ms(start))
-        from tools.tool_gateway.names import CONNECTOR_BATCH_SENTINEL
+        from tools.connectors import CONNECTOR_BATCH_SENTINEL, dispatch_connector_batch
         if underlying[0] == CONNECTOR_BATCH_SENTINEL:
-            from model_tools_connectors import dispatch_connector_batch
             return _emit(dispatch_connector_batch(
                 underlying[1]["calls"], ids, user_task=user_task,
                 enabled_tools=enabled_tools, middleware_trace=trace,
@@ -905,7 +906,8 @@ def handle_function_call(
             enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
         )
 
-    from tools.tool_gateway.names import is_connector_name, parse_connector_name
+    from tools.connectors import is_connector_name
+    from tools.connectors.gateway.names import parse_connector_name
     if function_name == "manage_connections" or is_connector_name(function_name):
         if "manage_connections" not in _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode=True):
             return _emit(tool_error("Connectors are not available in this session."))

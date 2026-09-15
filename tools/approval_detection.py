@@ -175,8 +175,11 @@ def detect_hardline_command(command: str) -> tuple:
     """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description)."""
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION)
-    normalized = _normalize_command_for_detection(command)
-    _, malformed_grep = _grep_safe_detection_variant(normalized)
+    # The malformed-quoting verdict needs the author's quote state. Normalization strips escapes
+    # (`\"` -> `"`), so a shell-valid pattern like `grep -o "[^\"]*"` lexed as unterminated and was
+    # reported as a hardline block (118 of 125 hardline blocks in one week of real use, every one a
+    # benign grep). Only quoted newlines are masked: they are data, and masking keeps quoting intact.
+    _, malformed_grep = _grep_safe_detection_variant(_mask_quoted_newlines(command))
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
     for command_variant in _command_detection_variants(command):
@@ -286,6 +289,19 @@ DANGEROUS_PATTERNS = [
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     # eval/source/. $(curl ...) — equivalent to piping remote content to a shell.
     (r'(?:\beval\b|\bsource\b|\.)\s*(?:\$\(\s*|`\s*)(?:curl|wget)\b', "execute remote content via command substitution"),
+    # Cloud instance-metadata (IMDS) credential endpoints — deterministic containment-escape
+    # detection. On a cloud VM these serve live IAM/service-account credentials to ANY local
+    # process with no auth, so a fetch is credential exfiltration unless the operator expects it.
+    # The host literals have no other use, so their appearance ANYWHERE in the command (any HTTP
+    # client, env assignment, or script argument) is the signal; lookarounds keep other 169.254.x.x
+    # link-local addresses and longer dotted strings out. This prompts for approval (legit uses
+    # exist on real cloud VMs) — it is NOT a hardline block. Covers the link-local IPv4 endpoint
+    # (AWS/Azure/GCP/OpenStack), its AWS IPv6 form fd00:ec2::254, the GCP hostname, and Alibaba
+    # Cloud's 100.100.100.200.
+    (r'(?<![\d.])(?:169\.254\.169\.254|100\.100\.100\.200)(?![\d.])'
+     r'|(?<![\w.-])metadata\.google\.internal(?![\w.-])'
+     r'|fd00:ec2::254',
+     "cloud metadata endpoint access (instance credentials)"),
     # Decode-and-execute: `echo <base64> | base64 -d | bash` carries no dangerous keywords in the
     # raw text yet runs arbitrary commands.
     (r'\b(base64|base32|base16)\s+(?:-[dD]|--decode)\b.*\|\s*\b(bash|sh|zsh|ksh|dash)\b', "pipe decoded content to shell (possible command obfuscation)"),
@@ -1074,7 +1090,9 @@ def _iter_shell_command_starts(command: str):
                 starts.append(inner)
                 scan(inner, end if j is None else j - 1)
             elif kind == "char" and quote is None and i != skip:
-                if command[i] in "({;\n":
+                # `${` opens a parameter expansion, not a brace group: a start marked inside it would
+                # split `${IFS}` and defeat the IFS collapse in normalization.
+                if command[i] in "({;\n" and not (command[i] == "{" and i > 0 and command[i - 1] == "$"):
                     starts.append(i + 1)
                 elif command[i] in "&|":
                     repeated = i + 1 < end and command[i + 1] == command[i]
@@ -1094,14 +1112,14 @@ def _iter_shell_command_starts(command: str):
             starts.append(end)
 
 
-def _mark_command_starts(command: str) -> str:
-    """Insert a newline before each real (quote-aware) command start.
+def _mark_command_starts(command: str, marker: str = "\n") -> str:
+    """Insert *marker* (a newline) before each real (quote-aware) command start.
     ``\\n`` is already a ``_CMDPOS`` separator, so this exposes subshell ``(cmd)`` and brace-group
     ``{ cmd; }`` openers — which the flat pattern class omits — to the anchored patterns WITHOUT the
     quoted-prose false positives that adding ``(`` / ``{`` to ``_CMDPOS`` would cause: starts inside
     quotes are never produced, so ``--title "block (reboot)"`` is left as-is."""
     offsets = sorted(o for o in _iter_shell_command_starts(command) if o > 0)
-    return _splice(command, [(o, o, "\n") for o in offsets]) if offsets else command
+    return _splice(command, [(o, o, marker) for o in offsets]) if offsets else command
 
 
 def _mask_quoted_newlines(command: str) -> str:
@@ -1363,6 +1381,14 @@ def _command_detection_variants(command: str):
     marked = _mark_command_starts(grep_safe)
     if marked != grep_safe and fresh(marked):
         yield marked
+    # Every variant above tracks quotes on NORMALIZED text, where `\"` has already become `"`. That
+    # flips quote parity, so in `cat "f\"n.txt"; rm -rf /` the `; rm` start sat "inside" a phantom
+    # quote, no start was marked, and the hardline floor let it through. Mark starts on the RAW
+    # command (only quoted newlines masked), then normalize; the leading space keeps the marker
+    # from being eaten as a `\<newline>` continuation when the preceding text ends in a backslash.
+    faithful = _normalize_command_for_detection(_mark_command_starts(_mask_quoted_newlines(command), marker=" \n"))
+    if fresh(faithful):
+        yield faithful
     # Quoting/escaping can spell an executable in pieces (r\m, r''m). Keep that deobfuscation scoped
     # to command words so arguments don't false-positive.
     for word_start, word_end, word in _iter_shell_command_word_spans(normalized):

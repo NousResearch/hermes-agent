@@ -230,6 +230,70 @@ describe('round lifecycle', () => {
     expect(posted.length).toBeLessThanOrEqual(room.chat.GROUP_CHAT_MAX_MESSAGES)
   })
 
+  it('does not retry ambiguous member admission in later rounds or continuations', async () => {
+    const room = await loadRoom({ turn: ({ profile }) => {
+      if (profile === 'builder') { throw new Error('Ambiguous admission failure') }
+
+      return '@builder please investigate'
+    } })
+
+    room.rounds.sendToGroupChat('Failure', MEMBERS.slice(0, 2), '@research start')
+    await settle(room, 'Failure')
+    expect(room.gateway.calls.filter(call => call.profile === 'builder')).toHaveLength(1)
+    expect(Object.keys(room.chat.$groupChats.get().Failure.watermarks).some(key => key.endsWith('::builder'))).toBe(false)
+  })
+
+  it('does not retry an ambiguous submit from prequeued same-thread or cross-thread sends', async () => {
+    let reject!: (error: Error) => void
+    const held = new Promise<string>((_resolve, fail) => { reject = fail })
+    const room = await loadRoom({ turn: ({ n }) => n === 1 ? held : '(pass)' })
+    const members = [MEMBERS[0]]
+    const thread = room.rounds.sendToGroupChat('Failure', members, 'first')!
+    await drain(() => room.gateway.calls.length < 1)
+    room.rounds.sendToGroupChat('Failure', members, 'queued same-thread', thread)
+    room.rounds.sendToGroupChat('Failure', members, 'queued other-thread')
+    reject(new Error('Ambiguous admission failure'))
+    await settle(room, 'Failure')
+    await drain(() => false)
+    expect(room.gateway.calls).toHaveLength(1)
+    expect(room.chat.$groupChats.get().Failure.watermarks).toEqual({})
+
+    room.rounds.sendToGroupChat('Failure', members, '@research explicitly retry', thread)
+    await settle(room, 'Failure')
+    expect(room.gateway.calls).toHaveLength(2)
+    expect(room.gateway.calls[1].prompt).toMatch(/first[\s\S]*queued same-thread[\s\S]*explicitly retry/)
+  })
+
+  it('attributes a queued drive failure to the thread whose harvest failed', async () => {
+    let finish!: (reply: string) => void
+    const held = new Promise<string>(resolve => { finish = resolve })
+    const room = await loadRoom({ turn: () => held })
+    const first = room.rounds.sendToGroupChat('Failure', MEMBERS.slice(0, 2), '@research first')!
+    await drain(() => room.gateway.calls.length < 1)
+    const queued = room.rounds.sendToGroupChat('Failure', MEMBERS.slice(0, 2), '@builder queued')!
+    const request = host.request as (...args: unknown[]) => Promise<unknown>
+
+    host.request = (...args: unknown[]) => {
+      const [method, params] = args as [string, { profile?: string }]
+
+      // JSON-shaped malformed reply text throws while harvesting, after RPC acceptance.
+      return method === 'session.resume' && params.profile === 'builder'
+        ? Promise.resolve({ messages: [{ role: 'assistant', text: { toString: 1 } }] })
+        : request(...args)
+    }
+
+    room.chat.updateGroupChat('Failure', state => ({
+      ...state, stranded: { builder: { before: 0, thread: first } }
+    }))
+    finish('(pass)')
+    await drain(() => !room.activity.currentGroupActivity('Failure').some(event => event.kind === 'failed'))
+    expect(first).not.toBe(queued)
+    expect(room.activity.currentGroupActivity('Failure').filter(event => event.kind === 'failed')).toEqual([
+      expect.objectContaining({ member: null, thread: queued })
+    ])
+    expect(room.chat.$groupChats.get().Failure.running).toBe(false)
+  })
+
   it('treats a failed member turn as a pass, not a room error', async () => {
     const room = await loadRoom({
       turn: ({ profile }) => {
@@ -292,6 +356,25 @@ describe('round lifecycle', () => {
 })
 
 describe('per-member delta', () => {
+  it('retained-log trimming cannot acknowledge messages appended during inference', async () => {
+    let release!: (reply: string) => void
+    const held = new Promise<string>(resolve => { release = resolve })
+    const room = await loadRoom({ turn: ({ n }) => n === 1 ? held : '(pass)' })
+    const members = [MEMBERS[0]]
+    const thread = room.rounds.sendToGroupChat('Trim', members, 'delivered')!
+    await drain(() => room.gateway.calls.length < 1)
+
+    for (let i = 0; i < 100; i++) {
+      room.chat.appendGroupChatEntry('Trim', { kind: 'user', name: 'You' }, `unseen-${i}`, thread)
+    }
+
+    release('(pass)')
+    await settle(room, 'Trim')
+    expect(room.chat.$groupChats.get().Trim.watermarks[`${thread}::research`]).toBe(0)
+    await room.rounds.runGroupChatRounds('Trim', members, thread)
+    expect(room.gateway.calls.at(-1)?.prompt).toContain('unseen-99')
+  })
+
   it('feeds a second send only the NEW messages', async () => {
     const room = await loadRoom()
     const member: GroupMember[] = [{ name: 'research', title: '' }]

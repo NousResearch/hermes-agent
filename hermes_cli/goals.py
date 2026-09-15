@@ -549,6 +549,14 @@ def _get_session_db() -> Optional[Any]:
         return None
 
     cached = _DB_CACHE.get(home)
+    if cached is not None and _registry_tore_down(cached):
+        # ``hermes profile delete`` force-closes every handle under the profile home
+        # (``hermes_state_registry.close_all_under``) before rmtree; a same-name recreate in this
+        # process must acquire a fresh handle, not keep writing into the torn-down one.
+        with _DB_BOOTSTRAP_LOCK:
+            if _DB_CACHE.get(home) is cached:
+                del _DB_CACHE[home]
+        cached = None
     if cached is not None:
         return cached
 
@@ -603,6 +611,13 @@ def _release_session_db(db) -> None:
         release_or_close(db)
     except Exception:
         pass
+
+
+def _registry_tore_down(db) -> bool:
+    """True once the registry force-closed *db* (``close_all`` / ``close_all_under`` clear the
+    shared-owned flag at teardown); every handle cached here was acquired through the registry, so a
+    cleared flag means the connection is gone and the cache entry is stale."""
+    return getattr(db, "_shared_registry_owned", True) is False
 
 
 def _warn_dropped_write(manager: str, kind: str, session_id: str) -> None:

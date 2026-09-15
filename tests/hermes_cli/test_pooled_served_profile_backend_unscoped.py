@@ -31,6 +31,10 @@ def pooled_served_process(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "alpha"))
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
     import hermes_constants
+    import gateway.status as status
+    # Liveness is a verified identity; this pytest process passes as the default gateway only by
+    # wearing a gateway command line.
+    monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
     from hermes_cli import profiles as profiles_mod
     monkeypatch.setattr(profiles_mod, "_check_gateway_running", lambda home: False)
@@ -43,7 +47,8 @@ def test_unscoped_liveness_in_a_served_profile_process_matches_the_scoped_answer
     scoped = resolve_gateway_liveness(profile_dir=alpha, health_probe=None, use_cache=False)
     unscoped = resolve_gateway_liveness(health_probe=None, use_cache=False)
     assert (unscoped.running, unscoped.pid, unscoped.source) == (scoped.running, scoped.pid, "multiplexer")
-    assert profile_platforms_from_multiplexer(unscoped.runtime, "alpha") == {"telegram": {"state": "connected"}}
+    plats = profile_platforms_from_multiplexer(unscoped.runtime, "alpha")
+    assert plats["telegram"] == {"state": "connected"} and plats["api_server"]["state"] == "connected"
 
 
 def test_unscoped_lifecycle_verbs_in_a_served_profile_process_address_the_multiplexer(pooled_served_process):

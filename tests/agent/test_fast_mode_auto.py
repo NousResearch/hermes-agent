@@ -141,3 +141,39 @@ def test_fast_auto_and_cold_parse_and_slash_command(monkeypatch):
     route_stub.base_url = "https://openrouter.ai/api/v1"
     route_stub.provider = "openrouter"
     assert cli_mod.HermesCLI._resolve_turn_agent_config(route_stub, "hi")["request_overrides"] is None
+
+
+def test_grok_46_priority_covers_the_supergrok_oauth_route():
+    """``xai-oauth`` is a distinct provider id from ``xai``; both are first-party api.x.ai.
+
+    ``normalize_provider`` folds ``grok-oauth`` / ``x-ai-oauth`` / ``xai-grok-oauth`` into
+    ``xai-oauth`` — never into ``xai`` — so allow-listing only ``xai`` withholds Priority
+    Processing from every SuperGrok OAuth session while ``model_supports_fast_mode`` still
+    reports the model as fast-capable. The toggle is then offered and silently does nothing.
+    """
+    from hermes_cli.models import normalize_provider, resolve_fast_mode_overrides
+
+    oauth_ids = ("xai-oauth", "grok-oauth", "x-ai-oauth", "xai-grok-oauth")
+    assert [normalize_provider(p) for p in oauth_ids] == ["xai-oauth"] * len(oauth_ids)
+
+    for provider in ("xai", *oauth_ids):
+        assert resolve_fast_mode_overrides(
+            "grok-4.6", provider=provider, base_url="https://api.x.ai/v1"
+        ) == {"service_tier": "priority"}, provider
+
+
+def test_grok_46_priority_stays_closed_off_the_first_party_host():
+    """Widening the provider allow-list must not widen the host check."""
+    from hermes_cli.models import resolve_fast_mode_overrides
+
+    for provider, base_url in (
+        ("xai-oauth", "http://127.0.0.1:8000/v1"),
+        ("xai-oauth", "https://proxy.example.com/v1"),
+        ("openrouter", "https://openrouter.ai/api/v1"),
+    ):
+        assert resolve_fast_mode_overrides("grok-4.6", provider=provider, base_url=base_url) is None, (
+            provider, base_url)
+
+    # Only the Grok 4.6 family bills Priority Processing.
+    assert resolve_fast_mode_overrides(
+        "grok-4.5", provider="xai-oauth", base_url="https://api.x.ai/v1") is None

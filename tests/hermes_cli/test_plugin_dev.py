@@ -259,3 +259,111 @@ def test_doctor_removes_temp_home_when_staging_copy_fails(
     # exact window where a stranded hermes-plugin-doctor-* dir was observed.
     leftovers = list(scratch.glob("hermes-plugin-doctor-*"))
     assert leftovers == [], f"stranded doctor temp dirs: {leftovers}"
+
+
+def _minimal_plugin(root: Path) -> Path:
+    plugin = root / "sample"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text("name: sample\n", encoding="utf-8")
+    (plugin / "__init__.py").write_text("def register(ctx):\n    pass\n", encoding="utf-8")
+    return plugin
+
+
+def test_sigterm_unwinds_the_staging_home(tmp_path: Path) -> None:
+    """SIGTERM must run the same cleanup as an exception, not strand the staging home.
+
+    The 15/09/2026 disk report found an 8 GB ``hermes-plugin-doctor-*`` directory whose owning
+    process was gone: the default SIGTERM disposition kills the interpreter before
+    ``TemporaryDirectory`` (or any ``finally``) can remove it. Run in a child process so a
+    regression fails the assertion instead of killing the test runner.
+    """
+    import os
+    import signal
+    import subprocess
+    import sys
+    import textwrap
+
+    plugin = _minimal_plugin(tmp_path)
+    scratch = tmp_path / "scratch-tmp"
+    scratch.mkdir()
+    child = tmp_path / "child.py"
+    child.write_text(textwrap.dedent(
+        """
+        import os, pathlib, signal, sys, threading, time
+        from hermes_cli import plugin_dev
+
+        scratch = pathlib.Path(os.environ["TMPDIR"])
+        plugin = pathlib.Path(sys.argv[1])
+
+        def killer():
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                if list(scratch.glob("hermes-plugin-doctor-*")):
+                    os.kill(os.getpid(), signal.SIGTERM)
+                    return
+                time.sleep(0.01)
+            raise SystemExit("the run never created its staging home")
+
+        threading.Thread(target=killer, daemon=True).start()
+        with plugin_dev._doctor_runtime(plugin):
+            time.sleep(5)
+        print("SURVIVED-WITHOUT-SIGNAL")
+        """
+    ), encoding="utf-8")
+
+    env = {**os.environ, "TMPDIR": str(scratch)}
+    proc = subprocess.run(
+        [sys.executable, str(child), str(plugin)], env=env, cwd=os.getcwd(),
+        capture_output=True, text=True, timeout=60)
+
+    assert proc.returncode == 128 + signal.SIGTERM, proc.stderr or proc.stdout
+    assert "SURVIVED-WITHOUT-SIGNAL" not in proc.stdout
+    leftovers = list(scratch.glob("hermes-plugin-doctor-*"))
+    assert leftovers == [], f"stranded doctor temp dirs: {leftovers}"
+
+
+def test_sweep_collects_a_dead_staging_home_only(tmp_path: Path, monkeypatch) -> None:
+    """The next run collects residue, but never a recent peer's staging home."""
+    import os
+    import tempfile
+    import time
+
+    from hermes_cli import plugin_dev
+
+    scratch = tmp_path / "scratch-tmp"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+
+    dead = scratch / "hermes-plugin-doctor-deadbeef"
+    (dead / "plugins").mkdir(parents=True)
+    stamp = time.time() - (plugin_dev._DOCTOR_STALE_SECONDS + 60)
+    os.utime(dead, (stamp, stamp))
+    recent = scratch / "hermes-plugin-doctor-recent"
+    (recent / "plugins").mkdir(parents=True)
+
+    removed = plugin_dev._sweep_stale_doctor_homes()
+
+    assert removed == [dead]
+    assert not dead.exists()
+    assert recent.exists(), "a staging home inside the age gate must survive"
+
+
+def test_doctor_refuses_to_stage_more_than_the_cap(tmp_path: Path, monkeypatch) -> None:
+    """A directory that merely *contains* a plugin must not be staged wholesale."""
+    from hermes_cli import plugin_dev
+
+    parent = tmp_path / "repo"
+    _minimal_plugin(parent)
+    payload = parent / "vendor"
+    payload.mkdir()
+    (payload / "blob.bin").write_bytes(b"x" * (3 * 1024 * 1024))
+    monkeypatch.setenv(plugin_dev._DOCTOR_STAGE_BUDGET_ENV, "1")
+
+    report = plugin_dev.doctor_plugin(parent)
+
+    assert report.ok is False
+    assert "refusing to stage" in "\n".join(f.message for f in report.findings)
+
+    # The cap is a guard rail, not a new limit: 0 lifts it for a legitimately large plugin.
+    monkeypatch.setenv(plugin_dev._DOCTOR_STAGE_BUDGET_ENV, "0")
+    assert plugin_dev.doctor_plugin(parent).ok is True

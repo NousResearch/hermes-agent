@@ -1,5 +1,6 @@
 // Public surface of the project/worktree sidebar, consumed by the sidebar root.
 export { EnteredProjectContent } from './entered-content'
+export { HomeOverviewRow } from './home-overview-row'
 export {
   orderProjectsByIds,
   PROJECT_PREVIEW_COUNT,
@@ -13,6 +14,7 @@ export { SidebarWorkspaceGroup } from './workspace-group'
 export {
   excludeProjectSessions,
   liveSessionProjectId,
+  NO_PROJECT_ID,
   overlayLiveLanes,
   overlayLivePreviews,
   reconcileEnteredProjectSessions,

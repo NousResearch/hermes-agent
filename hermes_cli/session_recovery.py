@@ -898,6 +898,9 @@ def _verify_recovered_database(
             orphan_cleanup=orphan_cleanup,
         )
         _verify_fts_indexes(conn, verification)
+        projection = _fts_projection_parity(conn)
+        verification["fts_projection"] = projection
+        verification["errors"].extend(projection["errors"])
     except sqlite3.DatabaseError as exc:
         verification["errors"].append(f"verification query failed: {exc}")
     finally:
@@ -905,6 +908,60 @@ def _verify_recovered_database(
     verification["healthy"] = not verification["errors"]
     verification["complete"] = bool(verification["healthy"] and not verification["loss_detected"])
     return verification
+
+
+def _fts_projection_parity(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Compare external-content FTS docsize tables to their source cohorts.
+
+    ``SELECT COUNT(*) FROM messages_fts_trigram`` on an external-content
+    table counts the content view, not the inverted index. A truncated
+    trigram projection can therefore pass FTS integrity-check and MATCH
+    probes while historical CJK/substring coverage is missing.
+    """
+
+    result: dict[str, Any] = {"errors": []}
+    try:
+        n_msg = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+        n_base = int(
+            conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
+        )
+    except sqlite3.DatabaseError as exc:
+        result["errors"].append(f"base FTS projection probe failed: {exc}")
+        return result
+    result["messages"] = n_msg
+    result["messages_fts_docsize"] = n_base
+    if n_base != n_msg:
+        result["errors"].append(
+            f"messages_fts_docsize count is {n_base}, expected {n_msg}"
+        )
+
+    trigram_present = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+        "AND name = 'messages_fts_trigram' LIMIT 1"
+    ).fetchone()
+    if trigram_present is None:
+        return result
+    try:
+        n_tri = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram_docsize"
+            ).fetchone()[0]
+        )
+        n_src = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram_src"
+            ).fetchone()[0]
+        )
+    except sqlite3.DatabaseError as exc:
+        result["errors"].append(f"trigram FTS projection probe failed: {exc}")
+        return result
+    result["messages_fts_trigram_docsize"] = n_tri
+    result["messages_fts_trigram_src"] = n_src
+    if n_tri != n_src:
+        result["errors"].append(
+            f"messages_fts_trigram_docsize count is {n_tri}, expected {n_src}"
+        )
+    return result
 
 
 def _finalize_derived_metadata(destination: sqlite3.Connection) -> dict[str, Any]:
@@ -918,6 +975,11 @@ def _finalize_derived_metadata(destination: sqlite3.Connection) -> dict[str, Any
     result: dict[str, Any] = {"fts_tables": sorted(fts_tables), "finalized": False}
     if fts_tables != {"messages_fts", "messages_fts_trigram"}:
         result["error"] = "fresh destination is missing required FTS tables"
+        return result
+    projection = _fts_projection_parity(destination)
+    result["fts_projection"] = projection
+    if projection["errors"]:
+        result["error"] = "; ".join(projection["errors"])
         return result
     fts_keys = tuple(key for key in _GENERATED_META_KEYS if key.startswith("fts_"))
     placeholders = ", ".join("?" for _ in fts_keys)
@@ -1154,6 +1216,11 @@ def recover_session_database(
                     progress_cb=progress_cb, source_rows=inspection["tables"][table].get("rows"),
                 )
             orphan_cleanup = _cleanup_partial_orphans(destination_conn) if allow_partial else None
+            if orphan_cleanup and orphan_cleanup["sessions_reconstructed"]:
+                # Trigram eligibility joins sessions. Messages copied before
+                # their missing owners were reconstructed were not indexed.
+                from hermes_cli.session_lost_and_found import rebuild_fts_indexes
+                orphan_cleanup["fts_rebuild"] = rebuild_fts_indexes(destination_conn)
             derived_metadata = _finalize_derived_metadata(destination_conn)
         finally:
             source_conn.close()

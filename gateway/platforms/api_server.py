@@ -3206,7 +3206,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     completed_payload["pending_steer"] = pending_steer
                 await queue.put(_event_payload("run.completed", completed_payload))
                 self._set_run_status(
-                    run_id, "completed", session_id=effective_session_id, usage=usage,
+                    run_id, "completed", session_id=effective_session_id,
+                    # `output` mirrors /v1/runs: a client whose stream died recovers the reply
+                    # from GET /v1/runs/{run_id} instead of paying for a second turn (#111728).
+                    output=final_response, usage=usage,
                     last_event="run.completed",
                     **({"pending_steer": pending_steer} if pending_steer else {}))
             except asyncio.CancelledError:

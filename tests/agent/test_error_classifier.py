@@ -844,17 +844,20 @@ class TestClassifyApiError:
         e = MockAPIError("Error code: 400 - " + body["message"], status_code=400, body=body)
         assert classify_api_error(e, provider=provider, model="gpt-5.5").reason == expected
 
-    def test_azure_conflicting_continuation_identities_is_invalid_encrypted_content(self):
-        """Azure Foundry's wording for a rejected encrypted-reasoning replay (#105369); ``code`` is the
-        generic ``invalid_value``, so the message decides."""
-        message = "Conflicting authenticated continuation identities."
+    @pytest.mark.parametrize(("provider", "model", "message", "code"), [
+        ("azure-foundry", "gpt-6-astra", "Conflicting authenticated continuation identities.", "invalid_value"),
+        # Custom Responses endpoint wraps the replay rejection in a generic bad_request (#95834).
+        ("custom", "gpt-5.6", "The encrypted content could not be decrypted or parsed.", "bad_request"),
+    ], ids=["azure-continuation-identities", "custom-decrypted-or-parsed"])
+    def test_message_only_replay_rejection_is_invalid_encrypted_content(self, provider, model, message, code):
+        """Endpoints whose ``code`` is generic; the message wording alone must decide."""
         e = MockAPIError(
             f"Error code: 400 - {{'error': {{'message': '{message}', 'type': 'invalid_request_error', "
-            "'param': 'input', 'code': 'invalid_value'}}",
+            f"'param': 'input', 'code': '{code}'}}",
             status_code=400,
-            body={"error": {"message": message, "type": "invalid_request_error", "param": "input", "code": "invalid_value"}},
+            body={"error": {"message": message, "type": "invalid_request_error", "param": "input", "code": code}},
         )
-        result = classify_api_error(e, provider="azure-foundry", model="gpt-6-astra")
+        result = classify_api_error(e, provider=provider, model=model)
         assert result.reason == FailoverReason.invalid_encrypted_content
         assert result.retryable is True
         assert result.should_fallback is False

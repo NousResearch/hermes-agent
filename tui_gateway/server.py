@@ -36,6 +36,7 @@ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX  # noqa: 
 from tui_gateway import git_probe
 from tui_gateway._env import env_float, env_int
 from tui_gateway.turn_marker import clear_turn_marker, read_turn_marker, record_turn_start  # noqa: F401
+from tui_gateway.contracts import registry as _contracts
 from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
                                    current_transport, reset_transport)
 
@@ -83,13 +84,6 @@ from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
-_pending: dict[str, tuple[str, threading.Event]] = {}
-_pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
-_answers: dict[str, str] = {}
-# Batch clarify accumulators: rid → {"qids": [...], "answers": {qid: answer}}. Written by
-# clarify.respond (per-question lock, update-in-place), read out by _block on resolution/timeout
-# so locked answers survive the deadline.
-_batch_clarify: dict[str, dict] = {}
 _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
@@ -98,7 +92,6 @@ _cfg_lock = threading.Lock()
 # compare/check/write transaction needs its own lock, not the unrelated config cache lock.
 _profile_ui_meta_lock = threading.Lock()
 _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run under callers that already hold it
-_prompt_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
 _cfg_path = None
@@ -432,9 +425,13 @@ def _open_profile_session_db(profile_home):
 
 
 @contextlib.contextmanager
-def _profile_db(params: dict | None = None):
+def _profile_db(params: dict | None = None, *, writer: bool = False):
     """Yield the SessionDB for ``params['profile']`` (None when unavailable); closes dedicated
-    profile handles, leaves the launch-profile shared handle open."""
+    profile handles, leaves the launch-profile shared handle open.
+
+    Foreign-profile handles are read-only unless ``writer=True``: that store belongs to ITS
+    gateway/dashboard, and a writer here would take its write lock per RPC. Mirrors
+    hermes_cli.web_routers.profiles._read_profile_db."""
     profile = (params.get("profile") or "").strip() or None if isinstance(params, dict) else None
     # Launch/own profile → the shared _get_db() handle (left open); another profile → a dedicated
     # handle closed below (app-global remote mode). db is None when unavailable.
@@ -442,8 +439,13 @@ def _profile_db(params: dict | None = None):
         db, owns = _get_db(), False
     else:
         try:
-            from hermes_state_registry import acquire
-            db, owns = acquire(Path(profile_home) / "state.db"), True
+            if writer:
+                from hermes_state_registry import acquire
+                db = acquire(Path(profile_home) / "state.db")
+            else:
+                from hermes_cli.web_server_sessions import _open_session_db_at_path
+                db = _open_session_db_at_path(Path(profile_home) / "state.db", read_only=True)
+            owns = True
         except Exception as exc:
             logger.warning("TUI profile session store unavailable for %s: %s", profile, exc)
             db, owns = None, False
@@ -600,10 +602,12 @@ def write_json(obj: dict) -> bool:
     from tui_gateway.event_replay import _stamp_event
     from tui_gateway.hosted_room_member_activity import project_room_member_activity
     _stamp_event(obj)
-    if obj.get("method") == "event":
-        # A room member's hidden session has no transport: its frames would die at stdio below.
+    params = obj.get("params")
+    if obj.get("method") == "event" or (isinstance(obj.get("id"), str) and "method" in obj):
+        # Event notifications AND server→client requests carry ``params.session_id``; both route to the
+        # owning session's transport. A room member's hidden session has no transport: its frames would
+        # die at stdio below.
         project_room_member_activity(obj, _sessions)
-        params = obj.get("params")
         sid = ((params or {}).get("session_id")) if isinstance(params, dict) else ""
         if sid and (t := (_sessions.get(sid) or {}).get("transport")) is not None:
             return t.write(obj)
@@ -611,12 +615,18 @@ def write_json(obj: dict) -> bool:
 
 
 def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
+    _contracts.check_payload(event, payload)
     params: dict = {"type": event, "session_id": sid, **({"payload": payload} if payload is not None else {})}
     return {"jsonrpc": "2.0", "method": "event", "params": params}
 
 
 def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
     return write_json(_event_frame(event, sid, payload))
+
+
+from tui_gateway import server_requests as _server_requests  # noqa: E402
+
+_server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload))
 
 
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background
@@ -669,25 +679,30 @@ def _approval_request_payload(data: dict | None) -> dict:
     return payload
 
 
-def _pending_clarify_request_payload(sid: str) -> dict | None:
-    """Read-only snapshot of the clarify prompt still blocking a session: a client detached when
-    `clarify.request` was emitted would otherwise never see it (agent parked until timeout). Same replay
-    contract as `pending_approval`: the registry stays authoritative; `clarify.respond` resolves by request_id."""
-    with _prompt_lock:
-        for rid, (owner_sid, _ev) in _pending.items():
-            event, prompt_payload = _pending_prompt_payloads.get(rid, ("", {}))
-            if owner_sid != sid or event != "clarify.request":
-                continue
-            snapshot = dict(prompt_payload)
-            # Batch clarify: replay the answers locked so far so a reconnecting client restores its ✓ state.
-            if (batch := _batch_clarify.get(rid)) is not None and batch["answers"]:
-                snapshot["answers"] = dict(batch["answers"])
-            return snapshot
+def _open_requests(sid: str) -> list[dict]:
+    """Server→client requests still waiting on *sid*'s renderer, for reconnect snapshots (``session.resume`` /
+    ``session.activate`` / ``session.events.since``). A client detached when the request frame was written would
+    otherwise never see it (agent parked until timeout). Under turn isolation the compute-host child owns the
+    request; the parent mirrors it from the relayed frame (compute_host_bridge)."""
+    from tui_gateway import server_requests
+    reqs = server_requests.open_requests(sid)
+    if reqs:
+        return reqs
     if (session := _sessions.get(sid)) is not None:
         with session.get("history_lock", threading.Lock()):
-            pending = session.get("_compute_host_pending_clarify")
-            return dict(pending) if isinstance(pending, dict) else None
-    return None
+            mirrored = session.get("_compute_host_open_request")
+            return [dict(mirrored)] if isinstance(mirrored, dict) else []
+    return []
+
+
+def _pending_connection_request_payload(sid: str) -> dict | None:
+    """The open connection operation on *sid* as its ``connection.request`` payload, so a client
+    that missed the event (or restarted) restores the card with the server's deadline."""
+    from tools.connectors import live
+
+    session = _sessions.get(sid)
+    operation = live.current(str(session.get("session_key") or "")) if session else None
+    return operation.request_payload() if operation is not None else None
 
 
 def _pending_approval_request_payload(session_key: str) -> dict | None:
@@ -702,12 +717,29 @@ def _pending_approval_request_payload(session_key: str) -> dict | None:
 
 
 def _emit_approval_request(sid: str, data: dict | None) -> None:
-    """Emit ``approval.request`` with the command redacted: a credential-shaped value Tirith flagged would
-    otherwise echo verbatim to the TUI (third egress alongside chat platforms and the SSE/API stream).
+    """Send an ``approval`` server request with the command redacted: a credential-shaped value Tirith flagged
+    would otherwise echo verbatim to the TUI (third egress alongside chat platforms and the SSE/API stream).
+    See #48456, #50767.
 
-    Reuse the shared gateway See #48456, #50767.
-    """
-    _emit("approval.request", sid, _approval_request_payload(data))
+    The wait is owned by ``tools.approval``'s queue (its own timeout, ``/approve all``, coalescing), so the request
+    is queue-backed: the response resolves the queue entry, and the entry's own resolution (any surface, timeout,
+    interrupt) withdraws the request with ``request.cancel``."""
+    from tui_gateway import server_requests
+    from tools import approval as _approval
+    payload = _approval_request_payload(data)
+    request_id = str(payload.get("request_id") or "")
+    session_key = str((_sessions.get(sid) or {}).get("session_key") or "")
+
+    def on_result(result: dict | None) -> None:
+        if result is None:  # withdrawn: the queue entry resolves on its own path
+            return
+        choice = str(result.get("choice") or "deny")
+        _approval.resolve_gateway_approval(session_key, choice, resolve_all=bool(result.get("all")),
+                                           request_id=request_id or None)
+
+    settle = server_requests.send_async("approval", sid, payload, on_result)
+    if request_id:
+        _approval.register_gateway_settle(session_key, request_id, settle)
 
 
 def _status_update(sid: str, kind: str, text: str | None = None):
@@ -745,9 +777,16 @@ def _err(rid, code: int, msg: str, data=None) -> dict:
     return {"jsonrpc": "2.0", "id": rid, "error": error}
 
 
+def register_method(name: str, fn) -> None:
+    """The ONE registration seam (``@method`` here and ``HandlerRegistry.install`` for the split
+    modules). ``tests/tui_gateway/contracts/test_generated.py::test_every_method_has_a_contract`` and the
+    generator's ``assert_complete`` fail when a registered name has no contract."""
+    _methods[name] = fn
+
+
 def method(name: str):
     def dec(fn):
-        _methods[name] = fn
+        register_method(name, fn)
         return fn
     return dec
 
@@ -772,13 +811,24 @@ def handle_request(req: dict) -> dict | None:
     rid, method, params = normalized
     if not (fn := _methods.get(method)):
         return _err(rid, -32601, f"unknown method: {method}")
+    # Test doubles register straight into ``_methods`` without a contract; every production
+    # handler comes through ``register_method`` and therefore has one.
+    contract = _contracts.METHODS.get(method)
+    if contract is not None:
+        params, problem = _contracts.validate_params(contract, params)
+        if problem is not None:
+            return _err(rid, 4000, problem)
     token = _current_rpc_method.set(method)
     try:
-        return fn(rid, params)
+        response = fn(rid, params)
     except ProfileUnavailableError as exc:
         return _err(rid, 4064, str(exc))
     finally:
         _current_rpc_method.reset(token)
+    if contract is not None and isinstance(response, dict) and isinstance(response.get("result"), dict):
+        _contracts.check_params_accepted(contract, params)
+        _contracts.check_result(contract, response["result"])
+    return response
 
 
 def _current_session_steer_authority(session_id: str) -> tuple[Transport | None, dict | None]:
@@ -809,6 +859,12 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
     t = transport or _stdio_transport
     token = bind_transport(t)
     try:
+        from tui_gateway import server_requests
+        if server_requests.is_response_frame(req):
+            # The renderer answering one of OUR requests (clarify, approval, …): no response frame goes back.
+            if not server_requests.resolve_response(req) and not _relay_compute_host_response(req):
+                logger.debug("dropping response for unknown server request id=%r", req.get("id"))
+            return None
         normalized = _normalize_request(req)
         if isinstance(normalized, dict):
             return normalized
@@ -1257,55 +1313,14 @@ def _enable_gateway_prompts() -> None:
 # ── Blocking prompt factory ──────────────────────────────────────────
 
 
-# Blocking bridges whose `*.respond` tolerates a late reply (allow_expired=True): on timeout the tool
-# returns empty, but a slow renderer could still answer and hit a raw 4009 — `.expire` tears the card down.
-_EXPIRING_REQUESTS = frozenset({
-    "secret.request", "sudo.request", "vault.unlock.request", "vault.save_login.request", "vault.code.request", "clarify.request",
-    "terminal.read.request",
-    "preview.read.request", "preview.act.request", "window.read.request", "mcp.setup.request",
-    "tour.request",
-})
+def _ask(method: str, sid: str, params: dict, timeout: float | None = 300) -> str:
+    """Server→client request whose answer is one string under ``value`` (sudo, secret, vault prompts, GUI reads,
+    MCP setup). Empty string when the renderer skipped, timed out, or was cancelled."""
+    from tui_gateway import server_requests
+    result = server_requests.send(method, sid, params, timeout=timeout)
+    value = (result or {}).get("value", "")
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 
-
-def _block(event: str, sid: str, payload: dict, timeout: float | None = 300, batch_qids: list[str] | None = None) -> str:
-    rid = uuid.uuid4().hex[:8]
-    ev = threading.Event()
-    with _prompt_lock:
-        _pending[rid] = (sid, ev)
-        payload["request_id"] = rid
-        _pending_prompt_payloads[rid] = (event, dict(payload))
-        if batch_qids:
-            # Multi-question clarify: per-question answers accumulate here (update-in-place until every
-            # qid is locked); locked answers survive a timeout — see the batch read-out below.
-            _batch_clarify[rid] = {"qids": list(batch_qids), "answers": {}}
-    answered, batch_answers = False, None
-    try:
-        _emit(event, sid, payload)
-        # Event semantics: None → wait forever (clarify_timeout <= 0; released only by a real answer or
-        # session.interrupt), 0 → return immediately, > 0 → bounded wait.
-        answered = ev.wait(timeout)
-    finally:
-        with _prompt_lock:
-            _pending.pop(rid, None)
-            _pending_prompt_payloads.pop(rid, None)
-            answer_present = rid in _answers
-            answer = _answers.pop(rid, "")
-            if (batch_state := _batch_clarify.pop(rid, None)) is not None:
-                batch_answers = dict(batch_state["answers"])
-    expire = lambda: _emit(f"{event.removesuffix('.request')}.expire", sid, {"request_id": rid})
-    if batch_qids is not None:
-        # Cancel-all (respond with no question_id) resolves via _answers with "" — a plain cancel, not a partial result.
-        if answer_present:
-            return answer
-        result: dict[str, object] = {"answers": batch_answers or {}}
-        if not answered:
-            # Deadline hit: keep what was locked, report the rest as absences (not skips), still expire live cards.
-            result["timed_out"] = True
-            expire()
-        return json.dumps(result, ensure_ascii=False)
-    if not answered and not answer_present and event in _EXPIRING_REQUESTS:
-        expire()
-    return answer
 
 
 def _clarify_timeout_seconds() -> float | None:
@@ -1319,16 +1334,23 @@ def _clarify_timeout_seconds() -> float | None:
 
 
 def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
-    """Bridge the clarify tool callback onto _block. Single-question payloads keep their historical shape
-    (``multi_select`` only when True — older renderers never see a new field); batch calls emit one
-    clarify.request with only the wire fields (the tool-side entries carry result-assembly keys too)."""
+    """Bridge the clarify tool callback onto a ``clarify`` server request. Single question: the response is
+    ``{"answer"}`` ("" = skip). Batch: one request with only the wire fields (tool-side entries carry
+    result-assembly keys too); answers lock one at a time through ``clarify.lock`` and the tool gets
+    ``{"answers", "timed_out"?}`` as JSON — a response with no ``answers`` is a cancel-all."""
+    from tui_gateway import server_requests
     if questions:
         wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
                 for e in questions]
-        return _block("clarify.request", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
-                      batch_qids=[e["qid"] for e in questions])
-    payload = {"question": q, "choices": c, "multi_select": True} if multi_select else {"question": q, "choices": c}
-    return _block("clarify.request", sid, payload, timeout=_clarify_timeout_seconds())
+        result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
+                                      qids=[e["qid"] for e in questions])
+        if not result or "answers" not in result:
+            return ""
+        return json.dumps(result, ensure_ascii=False)
+    params = {"question": q, "choices": c, "multi_select": True} if multi_select else {"question": q, "choices": c}
+    result = server_requests.send("clarify", sid, params, timeout=_clarify_timeout_seconds())
+    answer = (result or {}).get("answer", "")
+    return answer if isinstance(answer, str) else ""
 
 
 # A tour action is a DOM op the renderer answers in ms; the generous deadline exists only because a
@@ -1346,12 +1368,12 @@ _TOUR_BRIDGE_UNAVAILABLE = json.dumps({
 
 
 def _tour_request(sid: str, payload: dict) -> str:
-    """Bridge the tour tool callback onto _block without paying for a client that cannot answer: against
-    an older app nobody calls ``tour.respond`` and each action would block the full deadline, stacking per
+    """Bridge the tour tool callback onto a ``tour`` server request without paying for a client that cannot answer: against
+    an older app nobody answers ``tour`` and each action would block the full deadline, stacking per
     turn. First action per session gets the short probe deadline; unanswered → bridge marked unavailable
     for that session; once answered, the full deadline. Verdict lives on the record, so a new session re-probes.
 
-    The renderer's ``tour.request`` handler ships in the desktop bundle, but the tool is offered by this
+    The renderer's ``tour`` handler ships in the desktop bundle, but the tool is offered by this
     backend — and the two update on different clocks. The model then does what the schema tells it to and
     tries the next action, so a single "give me a tour" turn stacks those waits (the timeouts reported
     against #89620).
@@ -1362,8 +1384,8 @@ def _tour_request(sid: str, payload: dict) -> str:
     state = session.get("tour_bridge")
     if state == "unanswered":
         return _TOUR_BRIDGE_UNAVAILABLE
-    answer = _block("tour.request", sid, dict(payload),
-                    timeout=_TOUR_TIMEOUT_S if state == "answered" else _TOUR_PROBE_TIMEOUT_S)
+    answer = _ask("tour", sid, dict(payload),
+                  timeout=_TOUR_TIMEOUT_S if state == "answered" else _TOUR_PROBE_TIMEOUT_S)
     if answer:
         session["tour_bridge"] = "answered"
     elif state != "answered":
@@ -1372,13 +1394,10 @@ def _tour_request(sid: str, payload: dict) -> str:
 
 
 def _clear_pending(sid: str | None = None) -> None:
-    """Release pending prompts with an empty answer: only *sid*'s (session.interrupt must not cancel other
-    sessions' prompts), or every one when *sid* is None (shutdown)."""
-    with _prompt_lock:
-        for rid, (owner_sid, ev) in list(_pending.items()):
-            if sid is None or owner_sid == sid:
-                _answers[rid] = ""
-                ev.set()
+    """Withdraw open server→client requests: only *sid*'s (session.interrupt must not cancel other sessions'
+    prompts), or every one when *sid* is None (process exit). Each one gets a ``request.cancel``."""
+    from tui_gateway import server_requests
+    server_requests.cancel(sid, reason="interrupted" if sid else "shutdown")
 
 
 # ── Agent factory ────────────────────────────────────────────────────
@@ -1897,8 +1916,8 @@ def _tool_progress_enabled(sid: str) -> bool:
 
 
 def _tool_lifecycle_required_for_ui(name: str) -> bool:
-    """Interactive UI, not optional chrome: Desktop renders clarify / setup_mcp cards from the tool-call part."""
-    return name in ("clarify", "setup_mcp")
+    """Interactive UI, not optional chrome: Desktop renders clarify / connection cards from the tool-call part."""
+    return name in ("clarify", "manage_connections", "setup_mcp")
 
 
 def _restart_slash_worker(sid: str, session: dict):
@@ -2011,8 +2030,10 @@ def _current_profile_name() -> str:
 # Monotonic GUI<->backend contract version: the desktop refuses a backend reporting less (or none) with a
 # one-click "update to align" prompt; bump whenever the desktop's backend contract changes. v2 file.attach;
 # v3 approvals.mode RPCs + session.info reconciliation; v4 session.create fast=false = explicit normal tier;
-# v5 ws_max_size >16 MiB file.attach frames; v6 plugins.manage rows carry the canonical registry key.
-DESKTOP_BACKEND_CONTRACT = 6
+# v5 ws_max_size >16 MiB file.attach frames; v6 plugins.manage rows carry the canonical registry key;
+# v7 blocking prompts are JSON-RPC server->client requests (`srq-<n>` frames, `open_requests` replay) — a v6
+# backend still emits `<kind>.request` notifications the renderer no longer listens for.
+DESKTOP_BACKEND_CONTRACT = 7
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:
@@ -2624,8 +2645,9 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
 
 
 def _session_pending_kind(sid: str) -> str:
-    return next((str(_pending_prompt_payloads.get(rid, ("input.request", {}))[0]).removesuffix(".request")
-                 for rid, (owner_sid, _ev) in list(_pending.items()) if owner_sid == sid), "")
+    """Method of the server→client request *sid* is blocked on ("" when none)."""
+    from tui_gateway import server_requests
+    return server_requests.pending_kind(sid)
 
 
 def _session_live_status(sid: str, session: dict) -> str:
@@ -2775,7 +2797,8 @@ def _live_session_payload(
     }
     for key, value in (("inflight", inflight), ("queued", queued),
                        ("pending_approval", _pending_approval_request_payload(str(session.get("session_key") or ""))),
-                       ("pending_clarify", _pending_clarify_request_payload(sid))):
+                       ("open_requests", _open_requests(sid)),
+                       ("pending_connection", _pending_connection_request_payload(sid))):
         if value:
             payload[key] = value
     return _attach_todo_state(payload, session)
@@ -3075,31 +3098,6 @@ def _start_usage_ticker(sid: str, agent, interval: float = 1.0) -> tuple[threadi
     thread = _RealThread(target=_loop, daemon=True)
     thread.start()
     return stop, thread
-
-
-# ── Methods: respond ─────────────────────────────────────────────────
-
-
-def _respond(rid, params, key, *, allow_expired=False):
-    r = params.get("request_id", "")
-    question_id = str(params.get("question_id") or "")
-    with _prompt_lock:
-        entry = _pending.get(r)
-        if not entry:
-            return _ok(rid, {"status": "expired"}) if allow_expired and r else _err(rid, 4009, f"no pending {key} request")
-        _, ev = entry
-        batch = _batch_clarify.get(r)
-        if batch is not None and question_id:
-            # Per-question lock; update-in-place so an answer stays editable until every qid is locked (Confirm).
-            if question_id not in batch["qids"]:
-                return _err(rid, 4002, f"unknown question_id {question_id!r}")
-            batch["answers"][question_id] = params.get(key, "")
-            if not (remaining := [qid for qid in batch["qids"] if qid not in batch["answers"]]):
-                ev.set()
-            return _ok(rid, {"status": "ok", "remaining": remaining})
-        _answers[r] = params.get(key, "")
-        ev.set()
-    return _ok(rid, {"status": "ok"})
 
 
 # ── Methods: tools & system ──────────────────────────────────────────

@@ -300,3 +300,45 @@ class TestNFKCNormalisation:
 
     def test_benign_content_not_flagged_by_normalisation(self):
         assert scan_for_threats("Refactor the parser module.", scope="context") == []
+
+
+
+# =========================================================================
+# ssh_access — write-verb gated SSH path
+# =========================================================================
+
+
+class TestSshAccessWriteGate:
+    @pytest.mark.parametrize("text", [
+        "echo 'ssh-ed25519 AAAA' >> ~/.ssh/authorized_keys",
+        "cp /tmp/evil.sh $HOME/.ssh/id_rsa",
+        "cat stolen_key > ~/.ssh/id_ed25519",
+        "tee -a $HOME/.ssh/config <<EOF",
+        "mv -f /tmp/stolen ~/.ssh/config",
+        "install -m 600 /tmp/key ~/.ssh/id_ed25519",
+        "printf 'ssh-ed25519 AAAA' >> ~/.ssh/authorized_keys",
+        "dd if=/tmp/key of=$HOME/.ssh/id_rsa",
+        "scp evil.sh user@host:~/.ssh/",
+        "rsync -av --delete /tmp/keys/ ~/.ssh/",
+        "ln -sf /tmp/evil $HOME/.ssh/authorized_keys",
+        "> ~/.ssh/authorized_keys_backup",
+        "some-command\n> ~/.ssh/config",
+        "sed -i 's/^#Port/Port/' ~/.ssh/config",
+        "chmod 600 ~/.ssh/id_rsa",
+        "truncate -s0 ~/.ssh/known_hosts",
+        "curl -o ~/.ssh/authorized_keys http://x",
+        "wget -O $HOME/.ssh/id_rsa http://x",
+        "git clone http://x ~/.ssh",
+        "open(os.path.expanduser('~/.ssh/authorized_keys'), 'a').write(k)",
+    ])
+    def test_write_shapes_still_flag(self, text):
+        assert "ssh_access" in scan_for_threats(text, scope="strict")
+
+    @pytest.mark.parametrize("text", [
+        "Make sure $HOME/.ssh is chmod 700",
+        "The VPS recovery doc explains how to rotate keys in ~/.ssh/known_hosts",
+        "SSH config lives at ~/.ssh/config on every Unix",
+        "see the address in ~/.ssh/config",
+    ])
+    def test_read_only_mention_does_not_flag(self, text):
+        assert "ssh_access" not in scan_for_threats(text, scope="strict")

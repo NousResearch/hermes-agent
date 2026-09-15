@@ -513,6 +513,13 @@ export const ja = defineLocale({
       terminalFontPlaceholder: 'MesloLGS NF または CSS フォントスタック',
       terminalFontPreview: 'グリフのプレビュー',
       terminalFontReset: '既定値を使用',
+      chatFontTitle: 'チャットフォント',
+      chatFontDesc:
+        'チャットとアプリ全体に使うインストール済みフォントを選択します。OpenDyslexic などの読みやすいフォントに便利です。空欄ならテーマのフォントを使います。',
+      chatFontPlaceholder: 'OpenDyslexic または CSS フォントスタック',
+      chatFontPreview: 'プレビュー',
+      chatFontSample: 'いろはにほへと ちりぬるを 0123456789',
+      chatFontReset: 'テーマのフォントを使用',
       translucencyTitle: 'ウィンドウの透過',
       translucencyDesc: 'テキストも含めウィンドウ全体を透過させてデスクトップを表示します。',
       translucencyGlassDesc: 'マットガラス: デスクトップが滑らかなぼかしとして透け、テキストは鮮明なまま。',
@@ -1157,6 +1164,9 @@ export const ja = defineLocale({
         mcp: { label: 'MCP', hint: 'MCP ツールルーティング' },
         title_generation: { label: 'タイトル生成', hint: 'セッションタイトル' },
         review: { label: 'レビュー', hint: '/review レビューサブエージェント' },
+        triage_specifier: { label: 'トリアージ指定', hint: 'カンバン仕様の具体化' },
+        kanban_decomposer: { label: 'カンバン分解', hint: 'タスク分解' },
+        profile_describer: { label: 'プロファイル記述', hint: 'プロファイル概要の自動生成' },
         curator: { label: 'キュレーター', hint: 'スキル使用レビュー' }
       }
     },
@@ -1207,9 +1217,7 @@ export const ja = defineLocale({
       updateAction: 'エンジンを更新',
       updating: 'エンジンを更新中…',
       upToDateTitle: 'エンジンは最新です',
-      upToDateDetail: (tag, backend) => `llama.cpp ${tag}（${backend}）で動作中——Hermes が提供する最新ビルドです。`,
-      updateToast: next =>
-        `ローカルエンジンの新しいビルド（${next}）があります。設定 → ローカルモデル から更新できます。`,
+      upToDateDetail: (tag, backend) => `llama.cpp ${tag}（${backend}）で動作中——設定されたビルドです。`,
       activeDetail: '新しいチャットはこのモデルを使用——最初のメッセージ送信時に読み込みます',
       activeNotLoaded: '最初のメッセージで読み込みます',
       loadedPill: '読み込み済み',
@@ -3356,6 +3364,19 @@ export const ja = defineLocale({
       copyQuery: 'クエリをコピー',
       copyFile: 'ファイルをコピー',
       copyPath: 'パスをコピー',
+      failedCalls: (count: number) => `失敗したツール呼び出し: ${count}`,
+      skillActivity: {
+        loading: 'スキルを読み込み中',
+        loaded: 'スキルを読み込みました',
+        loadFailed: 'スキルの読み込みに失敗しました',
+        readingResource: 'スキルのリソースを読み込み中',
+        readResource: 'スキルのリソースを読み込みました',
+        resourceFailed: 'スキルのリソースの読み込みに失敗しました',
+        listing: 'スキル一覧を取得中',
+        listed: 'スキル一覧を取得しました',
+        listFailed: 'スキル一覧の取得に失敗しました',
+        unavailable: 'スキルの結果を取得できません'
+      },
       outputAlt: 'ツール出力',
       rawResponse: '生の応答',
       copyActivity: 'アクティビティをコピー',
@@ -3367,6 +3388,7 @@ export const ja = defineLocale({
       statusError: 'エラー',
       statusRecovered: '回復しました',
       statusDone: '完了',
+      resultUnavailable: '結果を取得できません',
       memoryWriteNoted: 'メモリへの書き込みを記録',
       actions: {
         read: '読み取り完了',
@@ -3610,6 +3632,11 @@ export const ja = defineLocale({
       'composer-mentions': {
         title: 'ファイルとコマンド',
         text: '@ でファイルを会話に取り込み、/ でコマンドを実行できます。'
+      },
+      'local-runtime-update': {
+        title: 'ローカルエンジンの更新があります',
+        text: 'ローカルモデルを実行するエンジンを更新します。実行中のローカルリクエストが中断される場合があります。',
+        action: '今すぐ更新'
       },
       'local-setup': {
         title: 'このマシンはローカルでモデルを実行できます',

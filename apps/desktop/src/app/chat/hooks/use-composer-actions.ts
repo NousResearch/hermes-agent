@@ -90,6 +90,8 @@ export interface DroppedFile {
   line?: number
   /** Last line number for line-range drags (`line..lineEnd` inclusive). */
   lineEnd?: number
+  /** A link dragged out of a browser (`text/uri-list`). Path-less; becomes an `@url:` chip. */
+  url?: string
 }
 
 /** MIME emitted by in-app drag sources (project tree, gutter line numbers).
@@ -110,6 +112,7 @@ export function extractDroppedFiles(transfer: DataTransfer): DroppedFile[] {
   const seenPaths = new Set<string>()
   const seenFiles = new Set<File>()
   const getPath = window.hermesDesktop?.getPathForFile
+  const urls = droppedLinkUrls(transfer)
 
   // In-app drags first — they carry richer metadata (isDirectory) than the
   // File-based fallback can provide, and produce no overlapping native files.
@@ -166,6 +169,20 @@ export function extractDroppedFiles(transfer: DataTransfer): DroppedFile[] {
         path = getPath(file) || ''
       } catch {
         path = ''
+      }
+    }
+
+    // A link dragged out of a browser rides along as a virtual shortcut File
+    // (`<title>.url` on Windows, `.webloc` on macOS) with no on-disk path. It
+    // is the same link `text/uri-list` already carries, so drop the stub and
+    // let the URL become a chip instead of toasting "Could not attach X.url".
+    // A path-less *image* (dragged off a web page) keeps its bytes and wins
+    // over the link to its own src.
+    if (!path && urls.length) {
+      if (isImagePath(file.name) || file.type.startsWith('image/')) {
+        urls.length = 0
+      } else {
+        return
       }
     }
 
@@ -238,7 +255,35 @@ export function extractDroppedFiles(transfer: DataTransfer): DroppedFile[] {
     }
   }
 
+  for (const url of urls) {
+    result.push({ path: '', url })
+  }
+
   return result
+}
+
+/** `http(s)` links from a `text/uri-list` payload (one per line, `#` comments
+ * skipped), deduped. Empty when the drag carried none. */
+function droppedLinkUrls(transfer: DataTransfer): string[] {
+  let raw = ''
+
+  try {
+    raw = transfer.getData('text/uri-list') || ''
+  } catch {
+    return []
+  }
+
+  const urls: string[] = []
+
+  for (const line of raw.split(/\r?\n/)) {
+    const url = line.trim()
+
+    if (/^https?:\/\/[^/\s]/i.test(url) && !urls.includes(url)) {
+      urls.push(url)
+    }
+  }
+
+  return urls
 }
 
 /**

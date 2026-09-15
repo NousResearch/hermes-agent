@@ -5,6 +5,7 @@ import pytest
 from agent.codex_responses_adapter import (
     _chat_content_to_responses_parts,
     _chat_messages_to_responses_input,
+    _classify_responses_issuer,
     _sanitize_replayed_fn_name,
     _format_responses_error,
     _normalize_codex_response,
@@ -310,6 +311,7 @@ def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
 
 _OVERSIZED_ITEM_ID = "x" * 408
 _VALID_ITEM_ID = "msg_abc123"
+_FOREIGN_ITEM_ID = "123e4567-e89b-12d3-a456-426614174000"
 
 
 # The codex app-server overflows the Responses 64-char call_id limit for
@@ -520,6 +522,116 @@ def test_preflight_codex_input_items_drops_short_id_for_github_responses():
     assert items[0]["status"] == "in_progress"
     assert items[0]["phase"] == "final_answer"
     assert items[0]["content"] == [{"type": "output_text", "text": "pong"}]
+
+
+def test_chat_messages_to_responses_input_drops_foreign_id_for_codex_backend():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "pong",
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "pong"}],
+                    "id": _FOREIGN_ITEM_ID,
+                    "phase": "final_answer",
+                }
+            ],
+        }
+    ]
+
+    codex_items = _chat_messages_to_responses_input(
+        messages, current_issuer_kind="codex_backend"
+    )
+    xai_items = _chat_messages_to_responses_input(
+        messages, current_issuer_kind="xai_responses"
+    )
+
+    codex_message = next(item for item in codex_items if item.get("type") == "message")
+    xai_message = next(item for item in xai_items if item.get("type") == "message")
+    assert "id" not in codex_message
+    assert codex_message["phase"] == "final_answer"
+    assert xai_message["id"] == _FOREIGN_ITEM_ID
+
+
+def _reasoning_history(item):
+    return [
+        {"role": "assistant", "content": "done", "codex_reasoning_items": [item]},
+        {"role": "user", "content": "next"},
+    ]
+
+
+def test_reasoning_replay_requires_matching_issuer_model_on_same_endpoint():
+    # Blobs are sealed to the minting model, not just the endpoint: same endpoint + other model must drop.
+    issuer = "other:https://responses.example.com/v1"
+    normalized, _ = _normalize_codex_response(
+        SimpleNamespace(
+            status="completed",
+            output=[
+                SimpleNamespace(type="reasoning", id="rs_a", encrypted_content="model-a-blob", summary=[]),
+                SimpleNamespace(
+                    type="message", role="assistant", status="completed", id="msg_a",
+                    content=[SimpleNamespace(type="output_text", text="done")],
+                ),
+            ],
+        ),
+        issuer_kind=issuer, issuer_model="gpt-5.6-sol",
+    )
+    captured = normalized.codex_reasoning_items[0]
+    assert captured["_issuer_model"] == "gpt-5.6-sol"
+
+    same = _chat_messages_to_responses_input(
+        _reasoning_history(captured), current_issuer_kind=issuer, current_issuer_model="gpt-5.6-sol"
+    )
+    other = _chat_messages_to_responses_input(
+        _reasoning_history(captured), current_issuer_kind=issuer, current_issuer_model="gpt-5.7-sol"
+    )
+    replayed = [i for i in same if i.get("type") == "reasoning"]
+    assert [i["encrypted_content"] for i in replayed] == ["model-a-blob"]
+    assert "_issuer_model" not in replayed[0] and "_issuer_kind" not in replayed[0]
+    assert not any(i.get("type") == "reasoning" for i in other)
+
+
+def test_legacy_endpoint_stamped_item_without_model_replays_on_same_issuer():
+    # WHY: native compaction checkpoints and reasoning persisted before model stamping carry only the
+    # endpoint stamp; dropping them would erase every existing session's context once after upgrade.
+    issuer = "other:https://responses.example.com/v1"
+    legacy = {"type": "reasoning", "encrypted_content": "legacy-blob", "_issuer_kind": issuer}
+    items = _chat_messages_to_responses_input(
+        _reasoning_history(legacy), current_issuer_kind=issuer, current_issuer_model="gpt-5.6-sol"
+    )
+    replayed = [i for i in items if i.get("type") == "reasoning"]
+    assert [i["encrypted_content"] for i in replayed] == ["legacy-blob"]
+    # A different endpoint stamp still drops.
+    foreign = _chat_messages_to_responses_input(
+        _reasoning_history(legacy), current_issuer_kind="codex_backend", current_issuer_model="gpt-5.6-sol"
+    )
+    assert not any(i.get("type") == "reasoning" for i in foreign)
+
+
+def test_issuer_kind_is_canonical_across_trailing_slash_and_host_case():
+    # The openai SDK stores ``client.base_url`` with a trailing slash; the aux adapter and the main
+    # transport must agree on one issuer kind or aux calls drop every main-minted blob.
+    canonical = _classify_responses_issuer(base_url="https://h/v1")
+    assert _classify_responses_issuer(base_url="https://h/v1/") == canonical
+    assert _classify_responses_issuer(base_url=" HTTPS://H/v1 ") == canonical
+    assert _classify_responses_issuer(base_url="https://other/v1") != canonical
+
+
+def test_legacy_raw_endpoint_stamp_replays_on_canonical_issuer():
+    # WHY: items persisted before issuer canonicalisation carry the raw ``agent.base_url`` (trailing slash,
+    # host case); they must still replay on the same endpoint instead of being dropped as foreign.
+    legacy = {"type": "reasoning", "encrypted_content": "legacy-blob", "_issuer_kind": "other:https://H/v1/"}
+    items = _chat_messages_to_responses_input(
+        _reasoning_history(legacy), current_issuer_kind="other:https://h/v1", current_issuer_model="gpt-5.6-sol"
+    )
+    assert [i["encrypted_content"] for i in items if i.get("type") == "reasoning"] == ["legacy-blob"]
+    foreign = _chat_messages_to_responses_input(
+        _reasoning_history(legacy), current_issuer_kind="other:https://other/v1", current_issuer_model="gpt-5.6-sol"
+    )
+    assert not any(i.get("type") == "reasoning" for i in foreign)
 
 
 def test_preflight_codex_api_kwargs_drops_oversized_message_id_end_to_end():

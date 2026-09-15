@@ -497,6 +497,12 @@ export const zhHant = defineLocale({
       terminalFontPlaceholder: 'MesloLGS NF 或 CSS 字型堆疊',
       terminalFontPreview: '字形預覽',
       terminalFontReset: '使用預設字型',
+      chatFontTitle: '聊天字型',
+      chatFontDesc: '為聊天與應用程式介面選擇已安裝的字型，適合 OpenDyslexic 等易讀字型；留空則使用主題字型。',
+      chatFontPlaceholder: 'OpenDyslexic 或 CSS 字型堆疊',
+      chatFontPreview: '預覽',
+      chatFontSample: '敏捷的棕色狐狸跳過懶狗。0123456789',
+      chatFontReset: '使用主題字型',
       translucencyTitle: '視窗透明',
       translucencyDesc: '讓整個視窗（包括文字）透出桌面。',
       translucencyGlassDesc: '霧面玻璃：桌面以柔和模糊透出，文字保持清晰。',
@@ -1182,6 +1188,9 @@ export const zhHant = defineLocale({
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '標題生成', hint: '工作階段標題' },
         review: { label: '評審', hint: '/review 評審子代理' },
+        triage_specifier: { label: '分類指定', hint: '看板任務規格補全' },
+        kanban_decomposer: { label: '看板分解', hint: '任務拆解' },
+        profile_describer: { label: '設定檔描述', hint: '自動生成設定檔描述' },
         curator: { label: '策展器', hint: '技能使用審查' }
       }
     },
@@ -1228,8 +1237,7 @@ export const zhHant = defineLocale({
       updateAction: '更新引擎',
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',
-      upToDateDetail: (tag, backend) => `正在執行 llama.cpp ${tag}（${backend}）——Hermes 提供的最新組建。`,
-      updateToast: next => `本地引擎有新組建（${next}）。可在 設定 → 本地模型 中更新。`,
+      upToDateDetail: (tag, backend) => `正在執行 llama.cpp ${tag}（${backend}）——已設定的組建。`,
       activeDetail: '新對話使用此模型——傳送首條訊息時載入',
       activeNotLoaded: '首條訊息時載入',
       loadedPill: '已載入',
@@ -3309,6 +3317,19 @@ export const zhHant = defineLocale({
       copyQuery: '複製查詢',
       copyFile: '複製檔案',
       copyPath: '複製路徑',
+      failedCalls: (count: number) => `${count} 次工具呼叫失敗`,
+      skillActivity: {
+        loading: '正在載入技能',
+        loaded: '已載入技能',
+        loadFailed: '技能載入失敗',
+        readingResource: '正在讀取技能資源',
+        readResource: '已讀取技能資源',
+        resourceFailed: '技能資源讀取失敗',
+        listing: '正在列出技能',
+        listed: '已列出技能',
+        listFailed: '技能清單取得失敗',
+        unavailable: '技能結果無法使用'
+      },
       outputAlt: '工具輸出',
       rawResponse: '原始回應',
       copyActivity: '複製活動',
@@ -3320,6 +3341,7 @@ export const zhHant = defineLocale({
       statusError: '錯誤',
       statusRecovered: '已復原',
       statusDone: '完成',
+      resultUnavailable: '結果無法使用',
       memoryWriteNoted: '已記下記憶寫入',
       actions: {
         read: '已讀取',
@@ -3538,6 +3560,11 @@ export const zhHant = defineLocale({
       'composer-mentions': {
         title: '附件與指令',
         text: '輸入 @ 把檔案帶入對話，輸入 / 執行指令。'
+      },
+      'local-runtime-update': {
+        title: '本機引擎有可用更新',
+        text: '更新執行本機模型的引擎。進行中的本機請求可能會中斷。',
+        action: '立即更新'
       },
       'local-setup': {
         title: '這台電腦可以本地執行模型',

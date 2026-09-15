@@ -23,6 +23,7 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
+from gateway.response_filters import display_kind_for_event, is_machinery_display_kind
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
@@ -49,6 +50,11 @@ _CONTEXT_OVERFLOW_ERROR_PHRASES = (
     "reduce the length", "exceeds the limit",
     "request entity too large", "prompt is too long",
     "payload too large", "input is too long",
+)
+
+_UNEXPECTED_SILENCE_REPLY = (
+    "⚠️ The model returned only a silence marker for a message that needed a reply. "
+    "Try again or rephrase."
 )
 
 
@@ -1362,6 +1368,7 @@ class GatewayTurnMixin:
     async def _hmwa_shape_agent_response(
         self, agent_result, source, history, session_entry, session_key,
         _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
+        persist_user_display_kind: Optional[str] = None,
     ):
         """Turn the raw agent result into the outbound text: sentinel/silence handling, response
         logging, resume-pending clear, empty-response normalization, and identity-guarded
@@ -1377,6 +1384,16 @@ class GatewayTurnMixin:
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
             response = ""
         _intentional_silence = self._is_intentional_silence(agent_result, response)
+        # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
+        # opened the chain: an internal follow-up may go silent, a human one must not.
+        _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
+        if _intentional_silence and not is_machinery_display_kind(_silence_kind):
+            logger.warning(
+                "silence marker rejected on a user turn: platform=%s chat=%s",
+                _platform_name, source.chat_id or "unknown",
+            )
+            _intentional_silence = False
+            response = _UNEXPECTED_SILENCE_REPLY
 
         # "(empty)" = the model produced no visible content after exhausting all retries.
         if response == "(empty)" and not _intentional_silence:
@@ -1889,7 +1906,7 @@ class GatewayTurnMixin:
         _session_env_tokens = self._set_session_env(context)
         # Self-injected turns (MessageEvent(internal=True)) persist with a DB-only display_kind so
         # UIs render timeline notices, not user bubbles; role/content untouched.
-        persist_user_display_kind = "internal_notification" if getattr(event, "internal", False) else None
+        persist_user_display_kind = display_kind_for_event(event)
         _redact_pii = False  # privacy.redact_pii, re-read per message
         with suppress(Exception):
             _redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
@@ -2046,6 +2063,7 @@ class GatewayTurnMixin:
             response, _intentional_silence, agent_messages = await self._hmwa_shape_agent_response(
                 agent_result, source, history, session_entry, session_key,
                 _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
+                persist_user_display_kind=prepared.persist_user_display_kind,
             )
             response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
@@ -2704,17 +2722,12 @@ class GatewayTurnMixin:
             _gateway_platform_value, _has_platform_display_override, _load_gateway_config,
             _platform_config_key,
         )
-        from gateway.display_config import resolve_display_setting
+        from gateway.display_config import resolve_display_setting, resolve_tool_progress
         from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
         enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
         adapter = self._adapter_for_source(source)
-        # display.platforms.<platform>.<key> → display.<key> → built-in platform defaults.
-        _display_cfg = user_config.get("display", {})
-        if not isinstance(_display_cfg, dict):
-            _display_cfg = {}
-
         # Tool preview length (0 = no limit) and friendly tool labels (default on), per-platform.
         for _setter, _setting, _default, _cast in (
             ("set_tool_preview_max_len", "tool_preview_length", 0, lambda v: int(v) if v else 0),
@@ -2725,16 +2738,10 @@ class GatewayTurnMixin:
                 _val = resolve_display_setting(user_config, platform_key, _setting, _default)
                 getattr(_agent_display, _setter)(_cast(_val))
 
-        # Tool progress mode; HERMES_TOOL_PROGRESS_MODE wins only when the config never set it.
-        _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
-        _env_tp = os.getenv("HERMES_TOOL_PROGRESS_MODE")
-        _platform_cfg = (_display_cfg.get("platforms") or {}).get(platform_key) or {}
-        _legacy_tp_overrides = _display_cfg.get("tool_progress_overrides") or {}
-        _tool_progress_configured = "tool_progress" in _display_cfg or any(
-            isinstance(cfg, dict) and key in cfg
-            for cfg, key in ((_platform_cfg, "tool_progress"), (_legacy_tp_overrides, platform_key))
+        # Resolve the mode and its provenance together: null inherits, tier off is not intent.
+        progress_mode, _tool_progress_explicit = resolve_tool_progress(
+            user_config, platform_key, os.getenv("HERMES_TOOL_PROGRESS_MODE"),
         )
-        progress_mode = _env_tp if _env_tp and not _tool_progress_configured else (_resolved_tp or _env_tp or "all")
         # "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
         _generic_status_recent: List[str] = []
@@ -2792,8 +2799,16 @@ class GatewayTurnMixin:
         # native plan/task cards via chat.startStream — the progress queue is needed even though Slack keeps
         # ordinary text tool_progress off by default (requiring both flags would silently leave the native
         # feature inactive).
+        # Cards are still tool progress. Slack's TIER default (``off``) only quiets the text lane so
+        # cards stay on for unconfigured installs, but an operator who WRITES ``tool_progress: off``
+        # (global, platform override, or legacy overrides) has asked for no tool progress at all and
+        # gets no cards either. Every other explicit mode keeps the card lane.
         _native_slack_task_cards = False
-        if source.platform == Platform.SLACK and hasattr(adapter, "native_task_cards_enabled"):
+        if (
+            source.platform == Platform.SLACK
+            and hasattr(adapter, "native_task_cards_enabled")
+            and not (_tool_progress_explicit and progress_mode == "off")
+        ):
             try:
                 _native_slack_task_cards = bool(adapter.native_task_cards_enabled())
             except Exception:
@@ -3490,11 +3505,20 @@ class GatewayTurnMixin:
         )
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
         if self._is_intentional_silence(_delivery_result, first_response):
-            logger.info(
-                "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
-                session_key or "?",
-            )
-        elif first_response:
+            if is_machinery_display_kind(turn_ctx.persist_user_display_kind):
+                logger.info(
+                    "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
+                    session_key or "?",
+                )
+                first_response = ""
+            else:
+                logger.warning(
+                    "Queued follow-up for session %s: replacing a human-turn silence marker.",
+                    session_key or "?",
+                )
+                first_response = _UNEXPECTED_SILENCE_REPLY
+                _already_streamed = False
+        if first_response:
             logger.info(
                 "Queued follow-up for session %s: final text delivery confirmed; delivering explicit media before continuing."
                 if _already_streamed else
@@ -3567,6 +3591,7 @@ class GatewayTurnMixin:
         # distinct from the reply anchor above (None in forum topics). Carry it or two chained
         # topic turns with the same text would collide on one obligation id (queued-final-ledger).
         next_inbound_id = None
+        next_display_kind = display_kind_for_event(pending_event)
         # See #60671.
         if pending_event is not None:
             next_source = getattr(pending_event, "source", None) or source
@@ -3639,6 +3664,7 @@ class GatewayTurnMixin:
                 run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,
                 channel_prompt=next_channel_prompt, message_type=next_message_type,
+                persist_user_display_kind=next_display_kind,
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(
@@ -3658,7 +3684,11 @@ class GatewayTurnMixin:
         # terminal reply, and is never redelivered. A deeper recursion has already set its own id,
         # so only fill the key while it is still absent: the innermost turn wins.
         if isinstance(merged, dict) and "queued_terminal_inbound_id" not in merged:
-            merged = {**merged, "queued_terminal_inbound_id": next_inbound_id}
+            merged = {
+                **merged,
+                "queued_terminal_inbound_id": next_inbound_id,
+                "queued_terminal_display_kind": next_display_kind,
+            }
         return merged
 
     async def _run_agent_cleanup_turn_tasks(

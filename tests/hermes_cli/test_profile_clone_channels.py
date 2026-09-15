@@ -56,7 +56,7 @@ def home(tmp_path, monkeypatch):
     (root / ".env").write_text(_SOURCE_ENV, encoding="utf-8")
     (root / "config.yaml").write_text(yaml.safe_dump(_SOURCE_CONFIG), encoding="utf-8")
     (root / "SOUL.md").write_text("Be helpful.", encoding="utf-8")
-    monkeypatch.setattr(gm, "_installed_service", lambda home: None)
+    monkeypatch.setattr(gm, "_installed_services", lambda home: [])
     monkeypatch.setattr(gm, "_live_gateway_pid", lambda home: None)
     return root
 

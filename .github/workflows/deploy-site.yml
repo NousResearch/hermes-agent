@@ -164,6 +164,14 @@ jobs:
       - name: Extract skill metadata for dashboard
         run: python3 website/scripts/extract-skills.py
 
+      # Star counts drive the catalog ranking. The script reuses the live site's cache when it
+      # is < 24h old (one CDN GET, zero API calls); only a stale cache triggers ~1 API call per
+      # catalog repo. Never touches the API on the many same-day deploys.
+      - name: Refresh plugin GitHub stars (daily cache)
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: python3 website/scripts/fetch-plugin-stars.py
+
       - name: Extract plugin catalog for the Plugins page
         run: python3 website/scripts/extract-plugins.py
 

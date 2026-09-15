@@ -1071,10 +1071,22 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._max_latency_seconds = self._finite_positive_config_float(
             "websocket_max_latency_seconds", 30.0,
         )
+        # Dispatch-side liveness bound (#109521; rationale on ``on_socket_event_type``).
+        # 0 disables this dimension alone; ack-age/latency still guard. Default 4h mirrors the
+        # field-proven operator bound from the incident report; quiet guilds can go hours
+        # without a single DISPATCH event, so a short bound would force reconnect loops on
+        # healthy-but-idle installs (#109782).
+        self._event_max_silence_seconds = self._finite_positive_config_float(
+            "websocket_event_max_silence_seconds", 14400.0,
+        )
         self._liveness_task: Optional[asyncio.Task] = None
         self._liveness_notification_task: Optional[asyncio.Task] = None
         # True while disconnect() intentionally closes discord.py (done callback: shutdown vs crash).
         self._disconnecting = False
+        # Last DISPATCH frame's monotonic stamp, ticked by ``on_socket_event_type`` (see its
+        # rationale) and read by ``_read_websocket_health``. ``None`` = no event yet on this
+        # connection, which is not silence.
+        self._last_dispatched_event_monotonic: Optional[float] = None
         self._missed_message_backfill_task: Optional[asyncio.Task] = None
         from hermes_constants import get_hermes_home
         from plugins.platforms.discord.recovery import DiscordRecoveryStore
@@ -1112,10 +1124,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         watchdog off with no log line — indistinguishable from "the watchdog missed it".
         An explicit ``0`` is an intentional opt-out and stays silent.
         """
+        # This knob gates one dimension inside the health check, not the probe's startup
+        # guard, so an unusable value leaves ack-age/latency guarding (see _read_websocket_health).
+        scope = (
+            "the event-silence dimension of the websocket liveness probe"
+            if key == "websocket_event_max_silence_seconds"
+            else "the websocket liveness probe"
+        )
         logger.warning(
             "[%s] Discord liveness knob %s=%r is not a usable positive number; "
-            "the websocket liveness probe is disabled by this value",
-            self.name, key, raw,
+            "%s is disabled by this value",
+            self.name, key, raw, scope,
         )
 
     def _liveness_knob(self, key: str, default: Any, cast: type, *, env_key: Optional[str] = None):
@@ -1241,6 +1260,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 allowed_mentions=_build_allowed_mentions(getattr(self.config, "extra", None)),
                 **proxy_kwargs_for_bot(proxy_url),
             )
+            # Fresh connection, fresh dispatch-side silence window: the previous client's last
+            # DISPATCH stamp must not leak into this connection's liveness samples (#109521).
+            # READY itself is a DISPATCH event, so a healthy connection stamps almost immediately.
+            self._last_dispatched_event_monotonic = None
             adapter_self = self  # capture for closure
 
             @self._client.event
@@ -1255,6 +1278,20 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 )
                 if adapter_self._missed_message_backfill_enabled():
                     adapter_self._ensure_missed_message_backfill_task()
+
+            @self._client.event
+            async def on_socket_event_type(event_type: str):
+                # Dispatch-side liveness stamp (#109521 incident 2): an ESTAB socket can keep
+                # ACKing heartbeats (op 11, no event type) while zero DISPATCH events are parsed,
+                # so every transport-side sample reads healthy for hours. discord.py dispatches
+                # ``socket_event_type`` for every parsed DISPATCH frame on every connection and it
+                # is NOT gated behind ``enable_debug_events`` (unlike ``on_socket_raw_receive`` —
+                # verified against discord.py 2.7.1 ``gateway.py``: ``received_message`` calls
+                # ``self._dispatch('socket_event_type', event)`` before the op-code switch, gated
+                # on a non-null ``t``). Heartbeat ACK frames carry ``t: null`` and skip that
+                # dispatch, so an ACKing-but-deaf socket leaves this stamp frozen while every
+                # transport-side check reads healthy.
+                adapter_self._last_dispatched_event_monotonic = time.perf_counter()
 
             @self._client.event
             async def on_message(message: DiscordMessage):
@@ -1650,6 +1687,20 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return False, "latency_non_finite"
         if latency > self._max_latency_seconds:
             return False, "latency_exceeded"
+        # Dispatch-side dimension (#109521 incident 2): transport-green + event-starved is the
+        # connected-but-deaf fingerprint. Gated HERE only — never in _start_liveness_probe — so an
+        # explicit 0 disables this dimension alone and ack-age/latency keep guarding (the #109782
+        # regression put the knob in the probe's all-or-nothing startup guard, killing the whole
+        # watchdog). ``None`` = no DISPATCH event yet on this connection: not silence (the
+        # not_ready check above still covers the pre-ready window). Why the stamp is trustworthy:
+        # see ``on_socket_event_type``. No finiteness guard here: both operands are our own
+        # perf_counter floats (``ack_age`` differs — ``_last_ack`` is discord.py's).
+        if self._event_max_silence_seconds > 0:
+            last_event = self._last_dispatched_event_monotonic
+            if last_event is not None:
+                event_silence = time.perf_counter() - last_event
+                if event_silence > self._event_max_silence_seconds:
+                    return False, "event_silence"
         return True, "healthy"
 
     async def _liveness_loop(self) -> None:
@@ -6942,6 +6993,7 @@ _YAML_WEBSOCKET_LIVENESS_KEYS = (
     ("websocket_liveness_failure_threshold", "liveness_failure_threshold", "HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD"),
     ("websocket_heartbeat_ack_max_age_seconds", None, None),
     ("websocket_max_latency_seconds", None, None),
+    ("websocket_event_max_silence_seconds", None, None),
 )
 
 

@@ -49,28 +49,35 @@ def _system_unit_uid(unit_path: Path) -> Optional[int]:
     return None
 
 
-def gateway_identity(home: Path, pid: Optional[int], service: Optional[tuple[str, bool]]) -> tuple[Optional[int], Path]:
+def gateway_identity(home: Path, pid: Optional[int], services: list[tuple[str, bool]]) -> tuple[Optional[int], Path]:
     """``(uid, runtime_home)`` of the gateway that serves ``home``.
 
-    uid: the live process owner, else the system unit's ``User=``, else the owner of the profile
-    directory (user-scope systemd / launchd / detached gateways run as the account that owns it).
-    None means unknown — never a different user. runtime_home: the HERMES_HOME the installed unit
-    pins, which is where the gateway really runs; ``home`` when there is no unit or no pin.
+    uid: the live process owner; else, for a system unit, its ``User=`` — and ONLY that: a system
+    unit's principal is whatever systemd will run, so an unresolvable ``User=`` stays None rather than
+    borrowing the profile directory's owner (a stopped unit pinned to an absent NSS user is not the
+    account that owns the files). Without a system unit (user-scope systemd / launchd / detached), the
+    profile directory owner is the account the gateway runs as. None means unknown. runtime_home: the
+    HERMES_HOME an installed unit pins, which is where the gateway really runs; ``home`` otherwise.
     """
     from hermes_cli.gateway import _hermes_home_pinned_by_unit, get_systemd_unit_path
     from hermes_cli.gateway_migrate import _home_env
 
     uid: Optional[int] = _pid_uid(pid) if pid is not None else None
     runtime_home = home
-    if service is not None and service[0] == "systemd":
+    has_system_unit = False
+    for kind, system in services:
+        if kind != "systemd":
+            continue
         with _home_env(home):
-            unit_path = get_systemd_unit_path(system=service[1])
+            unit_path = get_systemd_unit_path(system=system)
         pinned = _hermes_home_pinned_by_unit(unit_path)
-        if pinned:
+        if pinned and runtime_home == home:
             runtime_home = Path(pinned).expanduser()
-        if uid is None and service[1]:
-            uid = _system_unit_uid(unit_path)
-    if uid is None:
+        if system:
+            has_system_unit = True
+            if uid is None:
+                uid = _system_unit_uid(unit_path)
+    if uid is None and not has_system_unit:
         with contextlib.suppress(OSError):
             uid = home.stat().st_uid
     return uid, runtime_home
@@ -80,13 +87,17 @@ def gateway_identity(home: Path, pid: Optional[int], service: Optional[tuple[str
 
 
 def _service_label(profile: ProfileGateway) -> str:
-    return profile.service_label() if profile.service is not None else "no service manager (detached)"
+    return profile.service_label() if profile.services else "no service manager (detached)"
 
 
 def _guard_service_domain(plan: MigrationPlan, profile: ProfileGateway) -> Optional[str]:
     """Different manager or scope than the default gateway (system vs user systemd, launchd vs systemd,
-    or any service when the default is detached: the auto path never elects a secondary's manager)."""
-    if profile.service == plan.default.service:
+    or any service when the default is detached: the auto path never elects a secondary's manager).
+    Two units on one profile is an ambiguous topology the unattended path does not resolve either."""
+    if len(profile.services) > 1:
+        return (f"Profile '{profile.name}' has more than one installed service ({profile.service_label()}): "
+                f"an ambiguous service topology is not folded automatically.")
+    if set(profile.services) == set(plan.default.services):
         return None
     return (f"Profile '{profile.name}' runs under {_service_label(profile)} while the default gateway "
             f"runs under {_service_label(plan.default)}: a different service domain is not folded automatically.")
@@ -94,6 +105,10 @@ def _guard_service_domain(plan: MigrationPlan, profile: ProfileGateway) -> Optio
 
 def _guard_unix_user(plan: MigrationPlan, profile: ProfileGateway) -> Optional[str]:
     default_uid = plan.default.uid
+    if profile.uid is None and profile.has_system_unit:
+        # Unknown principal is not "same user": the unit names an account this host cannot resolve.
+        return (f"Profile '{profile.name}' runs a system unit whose User= cannot be resolved on this host: "
+                f"an unknown service principal is not folded automatically.")
     if default_uid is None or profile.uid is None or profile.uid == default_uid:
         return None
     return (f"Profile '{profile.name}' runs as uid {profile.uid} while the default gateway runs as uid "
@@ -131,15 +146,15 @@ def auto_migration_blockers(plan: MigrationPlan) -> list[str]:
 
 
 def auto_migration_opted_out(default_home: Path) -> bool:
-    """``gateway.auto_multiplex_migration: false`` in the DEFAULT profile's config.yaml. Absent means
-    opted in (the ``DEFAULT_CONFIG`` value); only the nested key counts, there is no top-level alias."""
-    cfg_path = default_home / "config.yaml"
-    if not cfg_path.exists():
-        return False
-    from hermes_cli.config import read_user_config_raw
-    cfg = read_user_config_raw(cfg_path) or {}
-    gateway_section = cfg.get("gateway")
+    """``gateway.auto_multiplex_migration: false`` in the DEFAULT profile's EFFECTIVE config: the same
+    ``load_config`` the rest of the CLI reads (``DEFAULT_CONFIG`` + config.yaml + the managed overlay), so
+    an administrator's managed ``false`` wins over a user's ``true`` and a YAML string ``"false"`` is
+    false, not truthy. Only the nested key counts, there is no top-level alias."""
+    from hermes_cli.config import load_config_readonly
+    from hermes_cli.gateway_migrate import _home_env
+    from utils import is_truthy_value
+    with _home_env(default_home):
+        gateway_section = load_config_readonly().get("gateway")
     if not isinstance(gateway_section, dict):
         return False
-    value = gateway_section.get("auto_multiplex_migration")
-    return value is not None and not bool(value)
+    return not is_truthy_value(gateway_section.get("auto_multiplex_migration"), default=True)

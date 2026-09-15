@@ -10,6 +10,7 @@ call time, so tests that monkeypatch ``hermes_state.<name>`` keep intercepting.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import logging
@@ -23,6 +24,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from hermes_state_holders import canonical_sqlite_path
 from hermes_state_common import (
     FTS_REBUILD_DEFERRAL_KEY, stat_db_file_identity as _stat_db_file_identity
 )
@@ -131,17 +133,22 @@ def _stat_sqlite_sidecar_identity(db_path: Path) -> Dict[str, tuple]:
     return {suffix: ident for suffix, ident in idents.items() if ident is not None}
 
 
-def _canonical_sqlite_path(path: str) -> str:
-    """Normalize a /proc fd target, stripping the Linux `` (deleted)`` suffix."""
-    return os.path.normcase(os.path.abspath(path.removesuffix(" (deleted)")))
-
-
 def _watched_sqlite_sidecar_paths(db_path) -> Dict[str, str]:
     """Map each sidecar's canonical (/proc-comparable) form to its literal, still-named path,
     so a canonical match can be re-``stat``'d for identity rather than trusted as text."""
     base = os.path.abspath(os.fspath(db_path))
     literal = (base + "-wal", base + "-shm")
-    return {_canonical_sqlite_path(path): path for path in literal}
+    return {canonical_sqlite_path(path): path for path in literal}
+
+
+def _identity_is_truly_unlinked(identity: "Tuple[int, int]", watched_path: str) -> bool:
+    """The shared verdict: does ``(st_dev, st_ino)`` name a generation the watched path no longer
+    holds?  See :func:`_fd_is_truly_unlinked` for why the test is identity and never link count."""
+    try:
+        watched_stat = os.stat(watched_path)
+    except OSError:
+        return True
+    return identity != (watched_stat.st_dev, watched_stat.st_ino)
 
 
 def _fd_is_truly_unlinked(fd_path: str, watched_path: str) -> bool:
@@ -159,13 +166,14 @@ def _fd_is_truly_unlinked(fd_path: str, watched_path: str) -> bool:
     names — the guard keeps failing closed."""
     try:
         fd_stat = os.stat(fd_path)
-    except OSError:
+    except OSError as exc:
+        # ENOENT: the descriptor was closed after /proc was read. ESRCH: the whole
+        # process exited mid-scan. Neither can keep a retired generation alive, so
+        # do not turn this scan race into a refusal (mirrors hermes_state_holders).
+        if exc.errno in (errno.ENOENT, errno.ESRCH):
+            return False
         return True
-    try:
-        watched_stat = os.stat(watched_path)
-    except OSError:
-        return True
-    return (fd_stat.st_dev, fd_stat.st_ino) != (watched_stat.st_dev, watched_stat.st_ino)
+    return _identity_is_truly_unlinked((fd_stat.st_dev, fd_stat.st_ino), watched_path)
 
 
 def _iter_proc_fd_targets():
@@ -184,21 +192,147 @@ def _iter_proc_fd_targets():
                 yield int(pid_str), os.readlink(fd_path), fd_path
 
 
+# ── macOS fd enumeration (libproc) ──────────────────────────────────────────────────────────────
+#
+# macOS has no ``/proc`` and never reports a `` (deleted)`` suffix, but libproc can still describe
+# ANOTHER process's descriptors: ``proc_listpids`` names the processes, ``proc_pidinfo
+# (PROC_PIDLISTFDS)`` lists one process's fds, and ``proc_pidfdinfo(PROC_PIDFDVNODEPATHINFO)``
+# returns, for a vnode fd, its ``(st_dev, st_ino)`` together with the vnode's last pathname.  Both
+# survive unlink (the path keeps its last name, ``st_nlink`` drops to 0), for same-user processes
+# without elevation — which is the darwin counterpart of the Linux readlink leg, and the reason
+# ``psutil.Process.open_files()`` cannot stand in for it (it hides unlinked descriptors).  The
+# identity judgement is shared (:func:`_identity_is_truly_unlinked`); only its source differs.
+_DARWIN_ALL_PIDS = 1
+_DARWIN_PIDLISTFDS = 1
+_DARWIN_PIDFDVNODEPATHINFO = 2
+_DARWIN_PROC_FD_INFO_SIZE = 8  # struct proc_fdinfo { int32 proc_fd; uint32 proc_fdtype; }
+_DARWIN_FD_RECORD_SIZE = 1200  # PROC_PIDFDVNODEPATHINFO_SIZE
+# Field offsets inside that 1200-byte record.  libproc does not lay the header's structs out
+# verbatim (it pads ``vnode_info`` and sizes the record to 1200, not to ``sizeof``'s 1192), so
+# these are pinned against live descriptors rather than derived from <libproc.h>.  ``vst_dev`` /
+# ``vst_ino`` are the same two fields the Linux leg compares; the path is the vnode's last
+# pathname, resolved by the kernel (``/private/var/...`` where the caller opened ``/var/...``).
+_DARWIN_FD_DEV_OFFSET = 24
+_DARWIN_FD_INO_OFFSET = 32
+_DARWIN_FD_PATH_OFFSET = 176
+_DARWIN_LIBPROC = None
+
+
+def _darwin_libproc():
+    """libproc's fd-enumeration entry points, loaded once per process.
+
+    macOS exports these from libSystem, so this process's own handle resolves them; a failure
+    here propagates to the caller's ``except Exception`` and keeps the guard fail-open."""
+    global _DARWIN_LIBPROC
+    lib = _DARWIN_LIBPROC
+    if lib is not None:
+        return lib
+    import ctypes
+
+    lib = ctypes.CDLL(None, use_errno=True)
+    lib.proc_listpids.restype = ctypes.c_int
+    lib.proc_listpids.argtypes = (ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32)
+    lib.proc_pidinfo.restype = ctypes.c_int
+    lib.proc_pidinfo.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int)
+    lib.proc_pidfdinfo.restype = ctypes.c_int
+    lib.proc_pidfdinfo.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int)
+    _DARWIN_LIBPROC = lib
+    return lib
+
+
+def _darwin_all_pids(lib) -> List[int]:
+    """Every pid ``proc_listpids`` will name (the kernel silently omits ones we may not inspect)."""
+    import ctypes
+
+    size = 4096 * 8
+    while True:
+        buffer = ctypes.create_string_buffer(size)
+        used = lib.proc_listpids(_DARWIN_ALL_PIDS, 0, buffer, size)
+        if used <= 0:
+            return []
+        if used < size:
+            return [pid for pid in struct.unpack_from(f"<{used // 4}i", buffer.raw) if pid > 0]
+        size *= 2
+
+
+def _iter_darwin_fd_targets():
+    """Yield ``(pid, fd, last pathname, (st_dev, st_ino))`` for every vnode fd libproc reports.
+
+    The pathname and the identity both stay readable after the path is unlinked, which is what
+    makes an orphaned WAL generation visible at all on macOS.  Processes that cannot be inspected
+    (gone, or not ours) and descriptors that are not vnodes are skipped silently."""
+    import ctypes
+
+    lib = _darwin_libproc()
+    for pid in _darwin_all_pids(lib):
+        size = 4096
+        while True:
+            listing = ctypes.create_string_buffer(size)
+            used = lib.proc_pidinfo(pid, _DARWIN_PIDLISTFDS, 0, listing, size)
+            if used <= 0:
+                break  # process gone, or not ours to inspect
+            if used < size:
+                break
+            size *= 2
+        else:
+            continue
+        for offset in range(0, used - _DARWIN_PROC_FD_INFO_SIZE + 1, _DARWIN_PROC_FD_INFO_SIZE):
+            fd = struct.unpack_from("<i", listing.raw, offset)[0]
+            record = ctypes.create_string_buffer(_DARWIN_FD_RECORD_SIZE)
+            if lib.proc_pidfdinfo(pid, fd, _DARWIN_PIDFDVNODEPATHINFO, record,
+                                  _DARWIN_FD_RECORD_SIZE) <= 0:
+                continue
+            raw = record.raw
+            identity = (struct.unpack_from("<I", raw, _DARWIN_FD_DEV_OFFSET)[0],
+                        struct.unpack_from("<Q", raw, _DARWIN_FD_INO_OFFSET)[0])
+            target = raw[_DARWIN_FD_PATH_OFFSET:].split(b"\x00", 1)[0].decode("utf-8", "replace")
+            yield pid, fd, target, identity
+
+
+def _iter_darwin_sidecar_holders(db_path) -> List[Tuple[int, str]]:
+    """The macOS leg of :func:`iter_deleted_sqlite_sidecar_holders`: libproc enumeration matched
+    against the watched sidecar paths, judged by identity.
+
+    The watched side is resolved with ``os.path.realpath`` because libproc reports the kernel's
+    path for the vnode, while ``os.path.abspath`` does not resolve symlinks -- a textual compare
+    of the two silently misses every sidecar under a symlinked prefix (on macOS ``/var`` itself)."""
+    base = os.path.realpath(os.path.abspath(os.fspath(db_path)))
+    # APFS/HFS+ are case-insensitive by default and libproc reports the pathname as the opener
+    # spelled it; ``os.path.normcase`` is the identity on darwin, so fold case here.
+    watched = {path.casefold(): path for path in (base + "-wal", base + "-shm")}
+    holders: List[Tuple[int, str]] = []
+    for pid, _fd, target, identity in _iter_darwin_fd_targets():
+        literal = watched.get(target.casefold())
+        if literal is not None and _identity_is_truly_unlinked(identity, literal):
+            holders.append((pid, target))
+    return holders
+
+
 def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
-    """Return processes holding an unlinked ``state.db-wal`` / ``-shm``.  Linux-only; ``[]``
-    elsewhere (Windows cannot unlink a held sidecar, macOS has no `` (deleted)`` suffix).
+    """Return processes holding an unlinked ``state.db-wal`` / ``-shm`` sidecar for *db_path*.
+
+    Linux enumerates ``/proc/<pid>/fd`` (using the `` (deleted)`` suffix as a cheap pre-filter);
+    macOS enumerates descriptors through libproc, because a retired generation there keeps its
+    last pathname and no suffix marks it.  Either way the verdict is the same identity comparison:
+    the fd must name a watched sidecar path while its ``(st_dev, st_ino)`` no longer matches what
+    that path holds.  Windows returns ``[]`` -- it cannot unlink a held sidecar, so no retired
+    generation can exist; any other platform returns ``[]`` as before.
+
     Includes this process: on the open/write refuse path the in-process writer holding the orphan
     inode must not mint a replacement WAL (``_foreign_state_db_holders`` skips this PID)."""
-    if not sys.platform.startswith("linux"):
+    if sys.platform == "win32":
         return []
     holders: List[Tuple[int, str]] = []
-    watched = _watched_sqlite_sidecar_paths(db_path)
     try:
-        for pid, target, fd_path in _iter_proc_fd_targets():
-            canonical = _canonical_sqlite_path(target)
-            if (" (deleted)" in target and canonical in watched
-                    and _fd_is_truly_unlinked(fd_path, watched[canonical])):
-                holders.append((pid, target))
+        if sys.platform == "darwin":
+            holders = _iter_darwin_sidecar_holders(db_path)
+        elif sys.platform.startswith("linux"):
+            watched = _watched_sqlite_sidecar_paths(db_path)
+            for pid, target, fd_path in _iter_proc_fd_targets():
+                canonical = canonical_sqlite_path(target)
+                if (" (deleted)" in target and canonical in watched
+                        and _fd_is_truly_unlinked(fd_path, watched[canonical])):
+                    holders.append((pid, target))
     except Exception as exc:
         logger.debug("deleted-WAL holder scan failed for %s: %s", db_path, exc)
     return holders
@@ -637,13 +771,19 @@ def collect_state_db_stats(db_path: Path) -> Dict[str, Any]:
 
 
 def count_db_holders(db_path: Path) -> Optional[int]:
-    """Best-effort count of distinct PIDs holding ``db_path`` open (``/proc/*/fd`` scan); ``None``
-    on any error or non-Linux host, never raises.  Unreadable fd dirs (other users' processes
-    without root) are skipped, so this is a lower bound."""
+    """Best-effort count of distinct PIDs holding ``db_path`` open (``/proc/*/fd`` on Linux, libproc
+    on macOS); ``None`` on any error or other host, never raises.  Uninspectable processes (other
+    users' without root) are skipped, so this is a lower bound."""
     try:
+        target = os.path.realpath(str(db_path))
+        if sys.platform == "darwin":
+            # Identity, not pathname: libproc reports the vnode's last name as the opener spelled it
+            # (case, symlinked prefix), which is exactly what the sidecar leg had to case-fold around.
+            st = os.stat(target)
+            identity = (st.st_dev, st.st_ino)
+            return len({pid for pid, _fd, _path, ident in _iter_darwin_fd_targets() if ident == identity})
         if not sys.platform.startswith("linux"):
             return None
-        target = os.path.realpath(str(db_path))
         return len({pid for pid, link, _fd_path in _iter_proc_fd_targets() if link == target})
     except Exception:
         return None
@@ -661,4 +801,4 @@ def _concrete_state_db_holder_pids(db_path: Path, holders: List[Tuple[int, str]]
     canonical_db = os.path.normcase(os.path.abspath(os.fspath(db_path)))
     watched = {canonical_db, canonical_db + "-wal", canonical_db + "-shm"}
     return list(dict.fromkeys(
-        pid for pid, path in holders if pid > 0 and _canonical_sqlite_path(path) in watched))
+        pid for pid, path in holders if pid > 0 and canonical_sqlite_path(path) in watched))

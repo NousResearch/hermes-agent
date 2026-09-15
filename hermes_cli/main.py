@@ -961,14 +961,25 @@ def _dotenv_has_provider_key(env_file: Path, provider_env_vars: set) -> bool:
 
 
 def _auth_store_logged_in(auth_file: Path, registry, strict_profile_scope: bool) -> bool:
-    """True if auth.json's active provider is logged in (api_key providers ignored under strict scope)."""
+    """True if the active auth store (or its shared root) is logged in.
+
+    Named profiles created with ``share_auth`` intentionally have no local
+    ``auth.json``. Their runtime resolver reads the root store as a fallback,
+    so readiness must use that same fallback rather than reporting a healthy
+    inherited route as unconfigured.
+    """
     from hermes_cli.auth import get_auth_status
 
-    if not auth_file.exists():
-        return False
     try:
-        auth = json.loads(auth_file.read_text(encoding="utf-8-sig"))
-        active = auth.get("active_provider")
+        auth = json.loads(auth_file.read_text(encoding="utf-8-sig")) if auth_file.exists() else {}
+        active = auth.get("active_provider") if isinstance(auth, dict) else None
+        if not active:
+            from hermes_constants import get_default_hermes_root
+
+            shared_auth_file = get_default_hermes_root() / "auth.json"
+            if shared_auth_file != auth_file and shared_auth_file.exists():
+                shared_auth = json.loads(shared_auth_file.read_text(encoding="utf-8-sig"))
+                active = shared_auth.get("active_provider") if isinstance(shared_auth, dict) else None
         active_config = registry.get(str(active or "").strip().lower())
         if active and not (
             strict_profile_scope and active_config and active_config.auth_type == "api_key"

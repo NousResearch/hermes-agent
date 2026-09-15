@@ -663,6 +663,21 @@ class TestHasAnyProviderConfigured:
             f"provider registry sweep ran before auth.json short-circuit: {calls}"
         )
 
+    def test_shared_root_auth_counts_for_a_strict_profile(self, monkeypatch, tmp_path):
+        """A Bot profile with share_auth inherits the root OAuth identity."""
+        root = tmp_path / ".hermes"
+        profile = root / "profiles" / "bot"
+        profile.mkdir(parents=True)
+        (root / "auth.json").write_text(json.dumps({"active_provider": "nous"}))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        self._clear_provider_env(monkeypatch)
+        monkeypatch.setattr("hermes_cli.auth.get_auth_status", lambda provider: {"logged_in": provider == "nous"})
+
+        from hermes_cli.main import _has_any_provider_configured
+
+        assert _has_any_provider_configured(strict_profile_scope=True) is True
+
 
 # =============================================================================
 # Kimi Code auto-detection tests

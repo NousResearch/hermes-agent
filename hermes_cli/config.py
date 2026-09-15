@@ -2420,9 +2420,21 @@ def load_env() -> Dict[str, str]:
 
 
 def invalidate_env_cache() -> None:
-    """Clear the load_env() memo so the next call sees a write even on coarse-mtime filesystems."""
+    """Clear the load_env() memo so the next call sees a write even on coarse-mtime filesystems.
+
+    Also clears ``agent.secret_scope``'s per-path ``.env`` memo, so every writer
+    that already calls this (save_env_value / remove_env_value /
+    sanitize_env_file) invalidates the profile-scoped view too and no writer
+    needs to know about both caches. The import remains lazy and fail-soft so
+    an import failure cannot break a credential write.
+    """
     global _env_cache
     _env_cache = None
+    try:
+        from agent.secret_scope import invalidate_env_file_cache
+    except Exception:
+        return
+    invalidate_env_file_cache()
 
 
 def _sanitize_env_lines(lines: list) -> list:

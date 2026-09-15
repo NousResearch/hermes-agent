@@ -14,9 +14,11 @@ from __future__ import annotations
 import codecs
 import os
 import re
+import threading
+from collections import OrderedDict
 from contextvars import ContextVar, Token
 from pathlib import Path
-from typing import Dict, Mapping, Optional
+from typing import Dict, Mapping, Optional, Tuple
 
 
 # Process-global (describes the deployment mode, not a per-task value): set once
@@ -219,27 +221,89 @@ def _parse_env_value(raw_value: str) -> str:
     return value
 
 
-def load_env_file(env_path: Path) -> Dict[str, str]:
-    """THE ``.env`` tokenizer: every reader (profile scope, ``hermes_cli.config.load_env``, the dashboard
-    scrub, skill secret capture, managed .env, setup prompts) parses through here so no two boundaries
-    disagree on which keys/values a file defines. Dict only — never touches ``os.environ``. ``export``
-    prefix, ``#`` comments, quote escapes reversed; ``utf-8-sig`` so a BOM doesn't prefix the first key.
-    Invalid UTF-8 decodes as latin-1, exactly like ``env_loader._load_dotenv_with_fallback`` installs it
-    into ``os.environ``. Absent/unreadable → ``{}``."""
-    secrets: Dict[str, str] = {}
+# Per-path memo of parsed ``.env`` files. ``load_env_file()`` is THE tokenizer:
+# the profile scope, ``hermes_cli.config.load_env``, the dashboard scrub, skill
+# secret capture, managed .env and the setup prompts all parse through it, and
+# ``build_profile_secret_scope()`` puts it on the gateway's hottest paths -
+# every turn, every cron job, every MCP/browser lifecycle adoption and the 60s
+# housekeeping delivery drain each re-read and re-parsed the whole file.
+#
+# FRESHNESS CONTRACT. Every call still OPENS the file, and the cache key is the
+# ``fstat`` of that descriptor, not a ``stat`` of the path. That matters three
+# ways, each of which a path-stat design gets wrong:
+#   * the open is what drives close-to-open revalidation on NFS, so a rotation
+#     on another client is seen here exactly as often as it was before;
+#   * an unreadable or vanished file fails the open, so it can never be cached
+#     (a transient EACCES used to be memoised as "this profile has no secrets");
+#   * the descriptor pins one inode, so a symlink repointed mid-read cannot get
+#     its contents filed under the original file's identity.
+# The key is (mtime_ns, size, inode, device), re-checked after the read so a
+# rewrite through the same inode is not stored under the pre-read fingerprint.
+# What remains uncovered, and is accepted: a writer that changes contents while
+# keeping length, inode AND nanosecond mtime identical.
+# ``invalidate_env_file_cache()`` is the explicit knob for that, and
+# ``hermes_cli.config.invalidate_env_cache()`` calls it, so the writers that
+# already invalidate (save_env_value / remove_env_value / sanitize_env_file)
+# clear both memos.
+_ENV_FILE_CACHE: "OrderedDict[str, Tuple[tuple, Dict[str, str]]]" = OrderedDict()
+_ENV_FILE_CACHE_LOCK = threading.Lock()
+# Bumped by every invalidation. A reader captures it before opening and stores
+# only if it has not moved, so an invalidation cannot be undone by a slow reader
+# that started earlier and is still holding the previous contents.
+_ENV_FILE_CACHE_GENERATION = 0
+# One entry per profile home in practice; the cap only bounds a pathological
+# caller that walks arbitrary paths.
+_ENV_FILE_CACHE_MAX = 64
+
+
+def _fd_fingerprint(fileno: int) -> tuple:
+    """Identity of the bytes behind an OPEN descriptor."""
+    st = os.fstat(fileno)
+    return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_dev)
+
+
+def _fd_fingerprint_or_none(fileno: int) -> Optional[tuple]:
+    """Fingerprint, or None when the metadata is unavailable.
+
+    Unreadable metadata means "cannot cache", never "cannot read": CPython
+    tolerates fstat failures on some filesystems (VirtualBox shared folders,
+    for one), and a file whose bytes we can read must still be parsed and
+    returned rather than downgraded to an empty credential map.
+    """
     try:
-        raw = env_path.read_bytes()
+        return _fd_fingerprint(fileno)
     except OSError:
-        return secrets
+        return None
+
+
+def invalidate_env_file_cache(env_path: Optional[Path] = None) -> None:
+    """Drop one path from the ``load_env_file()`` memo, or all of them."""
+    global _ENV_FILE_CACHE_GENERATION
+    with _ENV_FILE_CACHE_LOCK:
+        _ENV_FILE_CACHE_GENERATION += 1
+        if env_path is None:
+            _ENV_FILE_CACHE.clear()
+        else:
+            _ENV_FILE_CACHE.pop(str(env_path), None)
+
+
+def _decode_env_bytes(raw: bytes) -> str:
+    """Decode ``.env`` bytes: BOM stripped, invalid UTF-8 falls back to latin-1
+    exactly as ``env_loader._load_dotenv_with_fallback`` installs it into
+    ``os.environ``. Never raises, so a decode can't be mistaken for "no file"."""
     if raw.startswith(codecs.BOM_UTF8):
         raw = raw[len(codecs.BOM_UTF8):]
     try:
-        text = raw.decode("utf-8")
+        return raw.decode("utf-8")
     except UnicodeDecodeError:
-        text = raw.decode("latin-1")
+        return raw.decode("latin-1")
 
-    for raw in text.splitlines():
-        line = raw.strip()
+
+def _parse_env_text(text: str) -> Dict[str, str]:
+    """Tokenize already-read ``.env`` text. See :func:`load_env_file`."""
+    secrets: Dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
         if line.startswith("export "):
@@ -248,6 +312,76 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
         key = key.strip()
         if sep and key:
             secrets[key] = _parse_env_value(_strip_inline_comment(value))
+    return secrets
+
+
+def _parse_env_file(env_path: Path) -> Dict[str, str]:
+    """Uncached read plus parse, preserved as the fail-soft reference path."""
+    try:
+        raw = env_path.read_bytes()
+    except OSError:
+        return {}
+    return _parse_env_text(_decode_env_bytes(raw))
+
+
+def load_env_file(env_path: Path) -> Dict[str, str]:
+    """THE ``.env`` tokenizer: every reader (profile scope, ``hermes_cli.config.load_env``, the dashboard
+    scrub, skill secret capture, managed .env, setup prompts) parses through here so no two boundaries
+    disagree on which keys/values a file defines. Dict only — never touches ``os.environ``. ``export``
+    prefix, ``#`` comments, quote escapes reversed; a BOM is stripped so it doesn't prefix the first key.
+    Invalid UTF-8 decodes as latin-1, exactly like ``env_loader._load_dotenv_with_fallback`` installs it
+    into ``os.environ``. Absent/unreadable → ``{}``.
+
+    Memoised per path on the open descriptor's stat identity, so an unchanged
+    ``.env`` costs an open and an fstat instead of a full read and parse. A file
+    that cannot be opened or read yields ``{}`` and is never cached, so a
+    permission blip or a deletion cannot be remembered as "no secrets". Always
+    returns a fresh dict: callers mutate what they get back
+    (``build_profile_secret_scope`` layers external secrets over it).
+    """
+    key = str(env_path)
+    generation = _ENV_FILE_CACHE_GENERATION
+    try:
+        handle = open(env_path, "rb")
+    except OSError:
+        # Gone or unreadable: drop any entry so a stale map cannot outlive the
+        # file, and leave the caller on the old fail-soft empty result.
+        invalidate_env_file_cache(env_path)
+        return {}
+
+    try:
+        with handle:
+            fingerprint = _fd_fingerprint_or_none(handle.fileno())
+            if fingerprint is not None:
+                with _ENV_FILE_CACHE_LOCK:
+                    cached = _ENV_FILE_CACHE.get(key)
+                    if cached is not None and cached[0] == fingerprint:
+                        _ENV_FILE_CACHE.move_to_end(key)
+                    else:
+                        cached = None
+                if cached is not None:
+                    # Copied outside the lock: a cached entry is never mutated
+                    # in place, so readers hold only the reference under it.
+                    return dict(cached[1])
+            raw = handle.read()
+            # Same descriptor, so this compares the bytes actually parsed. No
+            # fingerprint at all means this read is served but not stored.
+            settled = (
+                fingerprint is not None
+                and _fd_fingerprint_or_none(handle.fileno()) == fingerprint
+            )
+    except OSError:
+        invalidate_env_file_cache(env_path)
+        return {}
+
+    secrets = _parse_env_text(_decode_env_bytes(raw))
+    if settled:
+        with _ENV_FILE_CACHE_LOCK:
+            if _ENV_FILE_CACHE_GENERATION == generation:
+                _ENV_FILE_CACHE[key] = (fingerprint, dict(secrets))
+                _ENV_FILE_CACHE.move_to_end(key)
+                while len(_ENV_FILE_CACHE) > _ENV_FILE_CACHE_MAX:
+                    _ENV_FILE_CACHE.popitem(last=False)
     return secrets
 
 

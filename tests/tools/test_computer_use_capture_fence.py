@@ -48,7 +48,7 @@ def _spy_sinks(monkeypatch, tool):
 
 @pytest.mark.parametrize("args", [{"action": "capture"}, {"action": "click", "coordinate": [1, 1], "capture_after": True}])
 def test_frame_captured_across_a_takeover_is_dropped_before_any_sink(monkeypatch, args):
-    monkeypatch.setattr(tool, "_new_backend", lambda mode: _TakeoverBackend())
+    monkeypatch.setattr(tool, "_new_backend", lambda sid, mode, provider: _TakeoverBackend())
     monkeypatch.setattr(tool, "_request_approval", lambda *a, **k: None)
     leaked = _spy_sinks(monkeypatch, tool)
     res = json.loads(tool.handle_computer_use(args))

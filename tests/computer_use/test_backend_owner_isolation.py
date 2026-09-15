@@ -25,39 +25,66 @@ def _profile(home):
         reset_hermes_home_override(token)
 
 
-@pytest.mark.parametrize("grant", ["approve_session", "always_approve"])
+@contextmanager
+def _profile_and_session(home, session_key):
+    """Bind both HERMES_HOME and the approval session key, the way a served profile is bound in
+    production (the CLI ties ``set_current_session_key`` to its own session id; the gateway ties a
+    profile-namespaced session key to the profile it routes to — see ``build_session_key``). Backend
+    identity is qualified purely by HERMES_HOME (``_backend_owner_key``); approval-grant identity is
+    qualified purely by this session key (``tools.approval.get_current_session_key``), so isolating
+    both across two "owners" requires binding both together."""
+    from tools.approval_context import reset_current_session_key, set_current_session_key
+
+    home_token = set_hermes_home_override(home)
+    session_token = set_current_session_key(session_key)
+    try:
+        yield
+    finally:
+        reset_current_session_key(session_token)
+        reset_hermes_home_override(home_token)
+
+
+@pytest.mark.parametrize("grant", ["session", "always"])
 @pytest.mark.parametrize("release_index", [0, 1])
 def test_collision_pair_grants_do_not_cross(monkeypatch, grant, release_index):
+    """Backend owner keys are structural ``(home, session_id)`` tuples that cannot collide even when
+    their string forms would concatenate identically (see test_collision_pair_backends_do_not_cross).
+    Approval grants are scoped by the approval session key a caller binds around the call — the way
+    the CLI and gateway bind one per served profile — so the same historically collision-prone
+    (home, session_id) pair must not cross there either. A "session" grant is retired by
+    ``approval.clear_session()``; an "always" grant is permanent and home-qualified, so it outlives it."""
+    from tools import approval
     from tools.computer_use import tool as cu
     from tools.computer_use_tool import registry
 
     owners = [("/tmp/astra-owner", "segment:session"),
               ("/tmp/astra-owner:segment", "session")]
     prompts = []
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setattr(approval, "save_permanent_allowlist", lambda patterns: None)
     monkeypatch.setattr(cu, "_new_backend", lambda sid, mode, provider: cu._NoopBackend())
-
-    def approve(*args):
-        prompts.append(args[0])
-        return grant
-
-    monkeypatch.setattr(cu, "_approval_callback", approve)
+    monkeypatch.setattr(cu, "_approval_callback", lambda command, description, **kw: prompts.append(command) or grant)
 
     def click(index):
         home, sid = owners[index]
-        with _profile(home):
+        with _profile_and_session(home, sid):
             result = registry.dispatch("computer_use", {"action": "click", "x": 1, "y": 1}, session_id=sid)
             assert "error" not in json.loads(result)
 
     click(0)
     click(0)
     click(1)
-    assert prompts == ["click", "click"]
-    with _profile(owners[release_index][0]):
-        assert cu.release_computer_use_session(owners[release_index][1])
+    assert len(prompts) == 2
+
+    released_home, released_sid = owners[release_index]
+    with _profile(released_home):
+        approval.clear_session(released_sid)
+
     click(1 - release_index)
-    assert prompts == ["click", "click"]
+    assert len(prompts) == 2, "the untouched owner's grant must survive the other owner's release"
+
     click(release_index)
-    assert prompts == ["click", "click", "click"]
+    assert len(prompts) == (2 if grant == "always" else 3)
 
 
 @pytest.mark.parametrize("release_index", [0, 1])
@@ -240,16 +267,27 @@ def test_queued_waiter_keeps_revoked_generation(monkeypatch):
 @pytest.fixture(autouse=True)
 def _reset_computer_use_state():
     from hermes_constants import reset_hermes_home_key_cache
+    from tools import approval
     from tools.computer_use.tool import reset_backend_for_tests
+
+    def _reset_approval_state():
+        # Module-global grant stores outlive a single test within this file's subprocess
+        # (tests/conftest.py: "within a single file, ordering is the author's responsibility").
+        with approval._lock:
+            approval._session_approved.clear()
+            approval._permanent_approved.clear()
+            approval._permanent_approved_by_home.clear()
 
     reset_backend_for_tests()
     reset_hermes_home_key_cache()
+    _reset_approval_state()
     _SlowStartBackend.started.clear()
     _SlowStartBackend.release.clear()
     yield
     _SlowStartBackend.release.set()
     reset_backend_for_tests()
     reset_hermes_home_key_cache()
+    _reset_approval_state()
 
 
 class _InstantBackend:
@@ -334,33 +372,42 @@ def lifecycle_session(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("profile", ["named", "default", "missing-record"])
 def test_session_close_releases_its_profile_owner(monkeypatch, tmp_path, lifecycle_session, profile):
+    """Closing one TUI session's backend must not affect another profile's same-ID backend. Approval
+    grants are untouched by it either way: ``release_computer_use_session`` and
+    ``tools.approval.clear_session`` are separate teardown steps (see the former's docstring), so a
+    grant obtained before close is still honored after — for BOTH profiles, not just the one left open."""
+    from tools import approval
     from tools.computer_use import tool as cu
 
     server, launch_home, create = lifecycle_session
     home = tmp_path / ".hermes" if profile == "default" else tmp_path / "profile-b"
     agent = create(home, record_home=profile != "missing-record")
     monkeypatch.setattr(cu, "_new_backend", lambda sid, mode, provider: _InstantBackend(mode))
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setattr(approval, "save_permanent_allowlist", lambda patterns: None)
     prompts = []
-    monkeypatch.setattr(cu, "_approval_callback", lambda *args: prompts.append(args[0]) or "approve_session")
+    monkeypatch.setattr(cu, "_approval_callback", lambda command, description, **kw: prompts.append(command) or "session")
     args = {"action": "click", "x": 1, "y": 1}
-    with _profile(launch_home):
+    with _profile_and_session(launch_home, "launch-session"):
         backend_a = cu._get_backend(agent.session_id)
-        cu._request_approval("click", args, agent.session_id)
-    with _profile(home):
+        cu._request_approval("click", args)
+    with _profile_and_session(home, "profile-b-session"):
         backend_b = cu._get_backend(agent.session_id)
-        cu._request_approval("click", args, agent.session_id)
+        cu._request_approval("click", args)
+    assert len(prompts) == 2
 
     # The reaper has no B scope; HERMES_HOME still belongs to launch profile A.
     assert server._close_session_by_id("ui-b", end_reason="idle_timeout")
     assert backend_b.stopped, "closing B must stop B's backend"
     assert not backend_a.stopped, "closing B must preserve A's same-ID backend"
-    with _profile(launch_home):
+
+    with _profile_and_session(launch_home, "launch-session"):
         assert cu._get_backend(agent.session_id) is backend_a
-        cu._request_approval("click", args, agent.session_id)
-    assert prompts == ["click", "click"]
-    with _profile(home):
-        cu._request_approval("click", args, agent.session_id)
-    assert prompts == ["click", "click", "click"]
+        cu._request_approval("click", args)
+    assert len(prompts) == 2, "A's grant is untouched by B's backend close"
+    with _profile_and_session(home, "profile-b-session"):
+        cu._request_approval("click", args)
+    assert len(prompts) == 2, "B's own grant survives its own backend close too"
 
 
 def test_session_timer_close_fences_its_profile_blocked_start(monkeypatch, tmp_path, lifecycle_session):
@@ -511,40 +558,47 @@ def test_release_fences_inflight_start_before_same_owner_reacquires(monkeypatch)
         assert replacement.stopped
 
 
-@pytest.mark.parametrize("grant", ["approve_session", "always_approve"])
+@pytest.mark.parametrize("grant", ["session", "always"])
 def test_approval_grants_and_release_are_profile_qualified(monkeypatch, tmp_path, grant):
+    """A "session" grant is scoped by the caller's approval session key, bound per served profile the
+    way the CLI and gateway do; an "always" grant is scoped by HERMES_HOME via ``tools.approval``'s
+    per-home permanent allowlist. Both stay isolated between two profiles serving the same computer_use
+    session id, and ``approval.clear_session`` (the shared store's release primitive) only ever retires
+    the "session" grant — an "always" grant is permanent and outlives it."""
+    from tools import approval
     from tools.computer_use import tool as computer_use
 
     profile_a, profile_b = tmp_path / "profile-a", tmp_path / "profile-b"
     profile_a.mkdir()
     profile_b.mkdir()
-    session_id = "same-session"
     args = {"action": "click", "x": 1, "y": 1}
     prompts = []
 
-    def approve(action, args, summary):
-        prompts.append(action)
-        return grant
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setattr(approval, "save_permanent_allowlist", lambda patterns: None)
+    monkeypatch.setattr(computer_use, "_approval_callback",
+                        lambda command, description, **kw: prompts.append(command) or grant)
 
-    monkeypatch.setattr(computer_use, "_approval_callback", approve)
-    monkeypatch.setenv("HERMES_HOME", str(profile_a))
-    assert computer_use._request_approval("click", args, session_id) is None
-    assert computer_use._request_approval("click", args, session_id) is None
-    assert prompts == ["click"]
+    with _profile_and_session(profile_a, "profile-a-session"):
+        assert computer_use._request_approval("click", args) is None
+        assert computer_use._request_approval("click", args) is None
+    assert len(prompts) == 1
 
-    monkeypatch.setenv("HERMES_HOME", str(profile_b))
-    assert computer_use._request_approval("click", args, session_id) is None
-    assert prompts == ["click", "click"]
-    computer_use.release_computer_use_session(session_id)  # no backend is required to clear a grant
-    assert computer_use._request_approval("click", args, session_id) is None
-    assert prompts == ["click", "click", "click"]
+    with _profile_and_session(profile_b, "profile-b-session"):
+        assert computer_use._request_approval("click", args) is None
+    assert len(prompts) == 2
+    approval.clear_session("profile-b-session")  # no backend is required to clear a grant
+    with _profile_and_session(profile_b, "profile-b-session"):
+        assert computer_use._request_approval("click", args) is None
+    assert len(prompts) == (2 if grant == "always" else 3)
 
-    monkeypatch.setenv("HERMES_HOME", str(profile_a))
-    assert computer_use._request_approval("click", args, session_id) is None
-    assert prompts == ["click", "click", "click"]  # B's release preserved A's grant
-    computer_use.release_computer_use_session(session_id)
-    assert computer_use._request_approval("click", args, session_id) is None
-    assert prompts == ["click", "click", "click", "click"]
+    with _profile_and_session(profile_a, "profile-a-session"):
+        assert computer_use._request_approval("click", args) is None
+    assert len(prompts) == (2 if grant == "always" else 3), "B's release preserved A's grant"
+    approval.clear_session("profile-a-session")
+    with _profile_and_session(profile_a, "profile-a-session"):
+        assert computer_use._request_approval("click", args) is None
+    assert len(prompts) == (2 if grant == "always" else 4)
 
 
 def test_slow_start_for_one_owner_does_not_pin_unrelated_owner(monkeypatch):

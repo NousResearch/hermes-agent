@@ -4317,9 +4317,10 @@ class GatewayRunner(
                     "Rejecting profile route %r because the served-profile set could not be resolved",
                     matched.name, exc_info=True)
                 raise ProfileRouteRejected(matched.name) from exc
-            if matched.profile not in served:
+            from hermes_cli.profiles import profile_exists
+            if matched.profile not in served or not profile_exists(matched.profile):
                 logger.warning(
-                    "Rejecting profile route %r: target profile %r is not served",
+                    "Rejecting profile route %r: target profile %r is not served or has no directory",
                     matched.name, matched.profile)
                 raise ProfileRouteRejected(matched.name)
             return matched.profile

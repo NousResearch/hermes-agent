@@ -169,7 +169,7 @@ class TestNonDiscordProfileRouting:
         ]
         telegram_source.profile = None
 
-        with patch(
+        with patch("hermes_cli.profiles.profile_exists", return_value=True), patch(
             "hermes_cli.profiles.profiles_to_serve",
             return_value=[("default", Path("/profiles/default")),
                           ("tg-profile", Path("/profiles/tg-profile"))],
@@ -187,7 +187,7 @@ class TestNonDiscordProfileRouting:
         ]
         telegram_source.chat_id = "route-chat"
 
-        with patch(
+        with patch("hermes_cli.profiles.profile_exists", return_value=True), patch(
             "hermes_cli.profiles.profiles_to_serve",
             return_value=[("default", Path("/profiles/default")),
                           ("worker", Path("/profiles/worker"))],
@@ -207,7 +207,7 @@ class TestNonDiscordProfileRouting:
         ]
         telegram_source.chat_id = "route-chat"
 
-        with patch(
+        with patch("hermes_cli.profiles.profile_exists", return_value=True), patch(
             "hermes_cli.profiles.profiles_to_serve",
             return_value=[("default", Path("/profiles/default")),
                           ("worker", Path("/profiles/worker"))],
@@ -291,7 +291,7 @@ class TestGatewayRunnerInjection:
             captured["event"] = event
 
         adapter.handle_message = capture_event
-        with patch(
+        with patch("hermes_cli.profiles.profile_exists", return_value=True), patch(
             "hermes_cli.profiles.profiles_to_serve",
             return_value=[("default", Path("/profiles/default")), ("ops", Path("/profiles/ops"))],
         ):
@@ -355,7 +355,7 @@ class TestAdapterToSessionKeyIntegration:
         mock_runner.config.profile_routes = self._routes()
         adapter = _stub_adapter(Platform.DISCORD, mock_runner)
 
-        with patch(
+        with patch("hermes_cli.profiles.profile_exists", return_value=True), patch(
             "hermes_cli.profiles.profiles_to_serve",
             return_value=[("default", Path("/profiles/default")),
                           ("coder", Path("/profiles/coder"))],
@@ -376,7 +376,7 @@ class TestAdapterToSessionKeyIntegration:
         ]
         adapter = _stub_adapter(Platform.DISCORD, mock_runner)
 
-        with patch(
+        with patch("hermes_cli.profiles.profile_exists", return_value=True), patch(
             "hermes_cli.profiles.profiles_to_serve",
             return_value=[("default", Path("/profiles/default")), ("zero", Path("/profiles/zero"))],
         ):
@@ -396,7 +396,7 @@ class TestAdapterToSessionKeyIntegration:
         ]
         adapter = _stub_adapter(Platform.TELEGRAM, mock_runner)
 
-        with patch(
+        with patch("hermes_cli.profiles.profile_exists", return_value=True), patch(
             "hermes_cli.profiles.profiles_to_serve",
             return_value=[("default", Path("/profiles/default"))],
         ):
@@ -424,6 +424,19 @@ class TestAdapterToSessionKeyIntegration:
                     SessionSource(platform=Platform.DISCORD, chat_id="c")
                 )
 
+    def test_route_to_a_missing_profile_directory_is_rejected_at_ingress(self, mock_runner):
+        mock_runner.config.multiplex_profiles = True
+        mock_runner.config.profile_routes = [
+            ProfileRoute(name="r", platform="discord", profile="deleted", chat_id="c")
+        ]
+        with patch("gateway.run._multiplex_profile_homes",
+                   return_value=[("default", None), ("deleted", None)]):
+            with patch("hermes_cli.profiles.profile_exists", return_value=False):
+                with pytest.raises(ProfileRouteRejected):
+                    mock_runner._profile_name_for_source(
+                        SessionSource(platform=Platform.DISCORD, chat_id="c")
+                    )
+
     def test_plain_no_match_still_serves_the_active_profile(self, mock_runner):
         # Only failures fail closed; an ordinary unrouted sender keeps the historical behaviour.
         mock_runner.config.multiplex_profiles = True
@@ -447,7 +460,7 @@ class TestAdapterToSessionKeyIntegration:
         ]
         source = SessionSource(platform=Platform.TELEGRAM, chat_id="route-chat")
 
-        with patch(
+        with patch("hermes_cli.profiles.profile_exists", return_value=True), patch(
             "hermes_cli.profiles.profiles_to_serve",
             return_value=[("default", Path("/profiles/default"))],
         ):

@@ -543,6 +543,7 @@ class TestTeamsMessageHandling:
             "gateway.run._multiplex_profile_homes",
             lambda _config: [("owner", None), ("other", None)],
         )
+        monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _name: True)
 
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id", client_secret="secret", tenant_id="tenant",

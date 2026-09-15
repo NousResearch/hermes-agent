@@ -648,6 +648,7 @@ class TestVoiceChannelCommands:
             "gateway.run._multiplex_profile_homes",
             lambda _config: [("team-bot", None), ("first", None), ("second", None)],
         )
+        monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _name: True)
         mock_adapter = AsyncMock()
         mock_adapter._owner_profile = "team-bot"
         mock_adapter._voice_text_channels = {111: 123}

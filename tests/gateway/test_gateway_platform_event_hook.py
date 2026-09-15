@@ -560,7 +560,7 @@ class TestProfileScopedPlatformEventHandler:
         # Main now rejects routes to unserved profiles (_profile_name_for_source
         # checks _multiplex_profile_homes); declare "work" as served so the
         # route stamps rather than fail-closing to profile=None.
-        with patch(
+        with patch("hermes_cli.profiles.profile_exists", return_value=True), patch(
             "gateway.run._multiplex_profile_homes",
             return_value=[("work", Path("/profiles/work"))],
         ):

@@ -1092,6 +1092,17 @@ test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#11
   )
   assert.ok(REMOTE_PROBE_TIMEOUT_SECS * 1000 < 20_000, 'remote watchdog fires before the local exec timeout')
 
+  // SSH runs the remote command through the account's login shell. In
+  // non-interactive zsh, a bare `set -m` is fatal, so the wrapper must still
+  // run a healthy probe rather than reporting the remote as unsupported.
+  const zsh = await execFileAsync('sh', ['-c', 'command -v zsh || true']).then(r => r.stdout.trim())
+
+  if (zsh) {
+    const { stdout: zshStdout } = await execFileAsync(zsh, ['-fc', withRemoteTimeout('echo zsh-ok', 5)])
+
+    assert.equal(zshStdout, 'zsh-ok\n')
+  }
+
   // Behavior through a real POSIX shell: healthy output passes through …
   const healthyStart = Date.now()
   const { stdout } = await execFileAsync('sh', ['-c', withRemoteTimeout('echo hello', 5)])

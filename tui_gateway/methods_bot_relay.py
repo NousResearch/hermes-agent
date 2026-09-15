@@ -150,7 +150,7 @@ def _(rid, params: BotRelayReplyParams, _root=_relay_root) -> OkResult | dict:
 
 
 def register(server) -> None:
-    _registry.install(server)
+    _registry.install(server, globals())
     from . import methods_groups
     server._LONG_HANDLERS = server._LONG_HANDLERS | methods_groups.LONG_HANDLERS
     for name in (

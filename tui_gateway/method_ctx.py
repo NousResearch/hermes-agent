@@ -59,9 +59,15 @@ class HandlerRegistry:
         fn._hermes_profile_scoped = True
         return fn
 
-    def install(self, server) -> None:
-        """Rebind pending handlers onto ``server``'s globals and register them."""
+    def install(self, server, module_globals: dict | None = None) -> None:
+        """Rebind pending handlers onto ``server``'s globals and register them. Modules that skip
+        ``bind_module`` pass their ``globals()`` so the contract models their handlers name are
+        published too — a rebound body resolves ``FooResult`` through ``server``, not its own module."""
         g = vars(server)
+        if module_globals is not None:
+            for name, obj in module_globals.items():
+                if isinstance(obj, type) and obj.__module__ != module_globals["__name__"]:
+                    publish_imported_class(server, module_globals["__name__"], name, obj)
         for name, fn in self._pending:
             real = rebind(fn, g)
             if getattr(fn, "_hermes_profile_scoped", False):
@@ -70,6 +76,16 @@ class HandlerRegistry:
 
 
 _PLUMBING = {"HandlerRegistry", "method", "_profile_scoped", "register", "rebind", "logger"}
+
+
+def publish_imported_class(server, mod_name: str, name: str, obj: type) -> None:
+    """Publish a class a split module imported (a contract model) onto ``server``: rebound handler
+    bodies resolve it through ``server``'s globals. Contract class names are package-unique, so a
+    different object under the same name is a real collision."""
+    prev = vars(server).get(name)
+    if prev is not None and prev is not obj:
+        raise RuntimeError(f"split-module class collision: {mod_name}.{name} vs {prev!r}")
+    setattr(server, name, obj)
 
 
 def bind_module(module_globals: dict, server, *, skip=()) -> None:
@@ -110,12 +126,7 @@ def bind_module(module_globals: dict, server, *, skip=()) -> None:
             obj = module_globals[name] = _rebind_in(obj)  # keep the split module's own view in sync
         elif isinstance(obj, type):
             if obj.__module__ != mod_name:
-                # Rebound handlers resolve contract models through ``server``'s globals, so an
-                # imported model must be published too; contract class names are package-unique.
-                prev = g.get(name)
-                if prev is not None and prev is not obj:
-                    raise RuntimeError(f"split-module class collision: {mod_name}.{name} vs {prev!r}")
-                setattr(server, name, obj)
+                publish_imported_class(server, mod_name, name, obj)
                 continue
             for attr, val in list(vars(obj).items()):
                 if isinstance(val, types.FunctionType):

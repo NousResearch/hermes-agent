@@ -2514,8 +2514,31 @@ class _StreamingCall(StreamingWaitMonitor):
         self.managed_stream_holder = {"stream": None}
         # Per-attempt: single-writer token, request-local client, raw HTTP response (chat wire).
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
+        # The route ``api_kwargs`` was assembled for; a retry must not replay it on another one.
+        self._request_route = self._live_route()
 
     # ── shared small helpers ────────────────────────────────────────────
+
+    def _live_route(self) -> tuple:
+        agent = self.agent
+        return tuple(str(getattr(agent, attr, "") or "") for attr in ("model", "provider", "base_url", "api_mode"))
+
+    def _route_switched_under_request(self) -> bool:
+        """True once ``/model`` (``switch_model``) re-pointed the agent while this request was in
+        flight. The captured payload names the OLD model and is shaped for the OLD provider, but
+        every (re)open builds its client from the LIVE agent, so a retry would send a foreign model
+        slug to the new base_url (404 + a rate-limit hold, #112121). The turn loop rebuilds the
+        request for the current route on its own next attempt, so hand the error back to it.
+        """
+        live = self._live_route()
+        if live == self._request_route:
+            return False
+        logger.warning(
+            "Stream retry skipped: model/provider switched mid-request (%s via %s -> %s via %s); "
+            "handing back to the turn loop to rebuild the request for the current route.",
+            self._request_route[0], self._request_route[1] or self._request_route[2], live[0], live[1] or live[2],
+        )
+        return True
 
     @staticmethod
     def _quiet(fn, *args) -> None:
@@ -3201,6 +3224,9 @@ class _StreamingCall(StreamingWaitMonitor):
                 except Exception as e:
                     self._close_managed_stream()
                     if not self._handle_stream_error(e, _stream_attempt, _max_stream_retries):
+                        return
+                    if self._route_switched_under_request():
+                        self.result["error"] = e
                         return
         except InterruptedError as e:
             # Fast pre-retry interrupt surfaces through the normal result channel.

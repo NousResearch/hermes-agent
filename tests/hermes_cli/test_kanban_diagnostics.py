@@ -199,6 +199,28 @@ def test_stranded_in_ready_fires_when_age_exceeds_threshold():
     assert stranded[0].data["assignee"] == "demo"
 
 
+def test_stranded_in_ready_uses_latest_dashboard_ready_transition():
+    old_ready_at = 10_000
+    latest_ready_at = 250_000
+    events = [
+        _event("created", ts=old_ready_at, status="ready"),
+        _event("status", ts=200_000, status="triage", requested_status="triage"),
+        _event("status", ts=latest_ready_at, status="ready", requested_status="ready"),
+    ]
+    task = _task(status="ready", assignee="demo", claim_lock=None)
+
+    assert not [
+        d for d in kd.compute_task_diagnostics(task, events, [], now=latest_ready_at + 55)
+        if d.kind == "stranded_in_ready"
+    ]
+
+    stranded = [
+        d for d in kd.compute_task_diagnostics(task, events, [], now=latest_ready_at + 31 * 60)
+        if d.kind == "stranded_in_ready"
+    ]
+    assert len(stranded) == 1
+    assert stranded[0].data["ready_since"] == latest_ready_at
+    assert stranded[0].data["age_seconds"] == 31 * 60
 
 
 # ---------------------------------------------------------------------------

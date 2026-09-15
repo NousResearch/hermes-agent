@@ -853,6 +853,9 @@ DEFAULT_CONFIG = {
         # Gateway: natural mid-turn assistant status messages. Desktop: keep mid-turn narration
         # between tool calls instead of collapsing to the final message.
         "interim_assistant_messages": True,
+        # Gateway engine warnings stay visible unless an operator opts out.
+        # Does not suppress task results, manual commands, or existing logs.
+        "warning_notifications": True,
         # Codex Responses commentary channel: true delivers completed commentary as mid-turn interim
         # updates; false routes it to reasoning (visible only with show_reasoning).
         "show_commentary": True,

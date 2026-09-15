@@ -787,6 +787,9 @@ class GatewayTurnMixin:
 
     async def _hmwa_hygiene_notify(self, source, meta, message, what):
         """Best-effort user notice on the hygiene thread; failure is logged, never raised."""
+        from gateway.warning_notifications import warning_notifications_enabled
+        if not warning_notifications_enabled(source.platform):
+            return
         try:
             _adapter = self._adapter_for_source(source)
             if _adapter and source.chat_id:
@@ -3295,6 +3298,9 @@ class GatewayTurnMixin:
     async def _run_agent_inactivity_warning(self, worker, source, _status_thread_metadata) -> None:
         """Staged one-shot warning before the inactivity timeout escalates."""
         from gateway.run import _interim_metadata
+        from gateway.warning_notifications import warning_notifications_enabled
+        if not warning_notifications_enabled(source.platform):
+            return
         _warn_adapter = self._adapter_for_source(source)
         if not _warn_adapter:
             return

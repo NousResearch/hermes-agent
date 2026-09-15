@@ -805,6 +805,38 @@ display:
       long_running_notifications: false
 ```
 
+### Engine warning notifications
+
+Engine warnings are delivered by default. Operators can suppress these extra
+notifications globally or per platform without hiding the assistant's answer:
+
+```yaml
+display:
+  warning_notifications: false
+  platforms:
+    telegram:
+      warning_notifications: true
+```
+
+This controls automatic compression failure/blocked notices, retry and model
+fallback diagnostics, credit-service notices, subagent failure notices, inactivity
+warnings, and startup session-database warnings. Existing logs, retry decisions,
+failure state, and credit/delegation bookkeeping are unchanged. Suppressing a
+notification does not repair its cause or add another logging destination.
+
+Normal assistant messages, tool progress, working heartbeats, final failed-task
+responses, manual command responses (including `/compress`), and approval or
+clarification prompts remain visible. Setup and security notices, restart
+notifications, requested background-process results, and asynchronous delegation
+results retain their own delivery rules. Cron jobs still use `failure_deliver`.
+Local and programmatic API/webhook surfaces keep their diagnostic stream.
+
+Platform overrides take precedence; `null` inherits. Boolean `false` and the
+strings `false`, `off`, `no`, or `0` suppress delivery; invalid values leave it
+enabled. Agent callbacks use the configuration loaded for that turn; automatic
+hygiene, inactivity and startup warnings read the active profile's configuration
+when they are sent. Already delivered messages are not removed.
+
 ### Progress bubble cleanup (opt-in)
 
 Tool-progress messages, the "still working…" heartbeat, and status-callback bubbles can also be auto-deleted after the final response lands. Enable per-platform via `display.platforms.<platform>.cleanup_progress`:

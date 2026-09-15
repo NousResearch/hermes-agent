@@ -175,6 +175,9 @@ class TurnRunner:
     def _progress_subagent_notice(self, preview, kwargs: dict) -> None:
         """Only terminal failure statuses render (same notice rail as credit warnings)."""
         ctx = self._ctx
+        from gateway.warning_notifications import warning_notifications_enabled
+        if not warning_notifications_enabled(ctx.source.platform, ctx.user_config):
+            return
         status = kwargs.get("status")
         try:
             from tools.delegate_tool import SUBAGENT_FAILURE_STATUSES, format_subagent_failure_line
@@ -876,6 +879,7 @@ class TurnRunner:
 
     def _status_callback_sync(self, event_type: str, message: str) -> None:
         from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
+        from gateway.warning_notifications import is_warning_status, warning_notifications_enabled
         ctx = self._ctx
         if not self._status_live():
             return
@@ -886,6 +890,8 @@ class TurnRunner:
                 ctx.source.platform.value if ctx.source.platform else "unknown", event_type,
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
+            return
+        if is_warning_status(event_type, message) and not warning_notifications_enabled(ctx.source.platform, ctx.user_config):
             return
         fut = self._schedule(
             _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),
@@ -1147,8 +1153,13 @@ class TurnRunner:
         """Credits / out-of-band notices (usage bands, depletion, restored) fire from the agent's
         sync worker thread; hop onto the gateway loop. Fired-once latch lives on the cached agent."""
         from gateway.run import render_notice_line
+        from gateway.warning_notifications import warning_notifications_enabled
         if not self._status_live():
             return
+        if (getattr(notice, "level", None) in {"warn", "error"}
+                or str(getattr(notice, "key", "") or "").startswith("credits.")):
+            if not warning_notifications_enabled(self._ctx.source.platform, self._ctx.user_config):
+                return
         try:
             line = render_notice_line(notice)
         except Exception:

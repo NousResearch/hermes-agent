@@ -19,9 +19,10 @@ from urllib.parse import urljoin
 from utils import is_truthy_value
 from tools.transcription_audio import _transcode_audio_for_stt
 from tools.transcription_common import (
-    DEFAULT_GROQ_STT_MODEL, DEFAULT_STT_MODEL, ELEVENLABS_STT_BASE_URL, GROQ_BASE_URL, GROQ_MODELS,
-    OPENAI_BASE_URL, OPENAI_MODELS, XAI_STT_BASE_URL, _error_result, _get_stt_section,
-    _lazy_ensure_quietly, _log_prompt_unsupported, _ok_result)
+    DEFAULT_GROQ_STT_MODEL, DEFAULT_OPENROUTER_STT_MODEL, DEFAULT_STT_MODEL, ELEVENLABS_STT_BASE_URL,
+    GROQ_BASE_URL, GROQ_MODELS, OPENAI_BASE_URL, OPENAI_MODELS, STT_WAV_TARGET_SAMPLE_RATE,
+    XAI_STT_BASE_URL, _error_result, _get_stt_section, _lazy_ensure_quietly,
+    _log_prompt_unsupported, _ok_result, openrouter_stt_base_url, stt_requires_wav)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.transcription_tools")
@@ -104,6 +105,49 @@ def _transcribe_groq(
     return _with_openai_client(api_key, GROQ_BASE_URL, file_path, "Groq", _run)
 
 
+def _stt_retry_target(error_text: str) -> Optional[str]:
+    """Container to retry a rejected upload with: ``"wav"``, ``"m4a"``, or None (don't retry).
+
+    Endpoints state the container they want, so read it instead of keeping a model list here:
+    Meta answers "requires WAV audio (input is not a RIFF/WAVE container)" (HTTP 400), while newer
+    OpenAI models reject containers ``whisper-1`` accepted with "unsupported"/"corrupted" wording.
+    """
+    lowered = (error_text or "").lower()
+    if "wav" in lowered or "riff" in lowered or "wave" in lowered:
+        return "wav"
+    if any(keyword in lowered for keyword in ("unsupported", "corrupted", "invalid file")):
+        return "m4a"
+    return None
+
+
+def _transcribe_openrouter(
+    file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
+) -> Dict[str, Any]:
+    """Transcribe via OpenRouter's OpenAI-compatible ``/audio/transcriptions``; requires
+    ``OPENROUTER_API_KEY`` (the same key the chat provider uses).
+
+    OpenRouter multiplexes every vendor (OpenAI Whisper, Mistral Voxtral, Deepgram, …), so the model
+    must be a vendor-prefixed catalog slug — a native-provider name like ``whisper-1`` cannot resolve
+    there and is swapped for the default instead of being sent as a guaranteed failure.
+    """
+    from tools.transcription_tools import _load_stt_config, _resolve_provider_key
+    api_key = _resolve_provider_key("OPENROUTER_API_KEY", "openrouter")
+    if not api_key:
+        return _error_result("OPENROUTER_API_KEY not set")
+    if not model_name or "/" not in model_name:
+        logger.info("Model %s is not a vendor-prefixed OpenRouter slug, using %s",
+                    model_name or "(unset)", DEFAULT_OPENROUTER_STT_MODEL)
+        model_name = DEFAULT_OPENROUTER_STT_MODEL
+    # ``stt.openrouter.base_url`` overrides the env-resolved default, like every other cloud provider
+    # (``stt.deepinfra.base_url`` goes through deepinfra_base_url, ``stt.openai.base_url`` the config
+    # key) — the shipped DEFAULT_CONFIG comment documents this key, so read it here and in the
+    # client-direct resolver below.
+    base_url = openrouter_stt_base_url(_get_stt_section(_load_stt_config(), "openrouter"))
+    return _transcribe_openai(file_path, model_name, api_key=api_key,
+                              base_url=base_url, provider_label="openrouter",
+                              language=language, prompt=prompt)
+
+
 def _transcribe_openai(
     file_path: str, model_name: str, *, api_key: Optional[str] = None,
     base_url: Optional[str] = None, provider_label: str = "openai", language: Optional[str] = None,
@@ -146,17 +190,33 @@ def _transcribe_openai(
             with open(path, "rb") as audio_file:
                 return client.audio.transcriptions.create(file=audio_file, **create_kwargs)
         with tempfile.TemporaryDirectory(prefix="hermes-stt-") as work_dir:
+            send_path = file_path
+            if stt_requires_wav(model_name):
+                # This model refuses every other container outright, so convert before the first
+                # request instead of burning a 400 on it.
+                converted_path, transcode_error = _transcode_audio_for_stt(
+                    file_path, work_dir, target="wav", sample_rate=STT_WAV_TARGET_SAMPLE_RATE)
+                if transcode_error:
+                    return _error_result(
+                        f"{model_name} requires WAV audio ({transcode_error}). "
+                        "Install ffmpeg, or choose a model that accepts the recorded container.")
+                send_path = converted_path
+                logger.info("Transcoded %s to WAV for %s (%s requires a RIFF/WAVE container)",
+                            Path(file_path).name, provider_label, model_name)
             try:
-                transcription = _create_transcription(file_path)
+                transcription = _create_transcription(send_path)
             except BadRequestError as exc:
-                if not any(k in str(exc).lower() for k in ("unsupported", "corrupted", "invalid file")):
+                retry_target = _stt_retry_target(str(exc))
+                if retry_target is None:
                     raise
-                # Newer models reject containers whisper-1 accepted (Ogg/Opus voice notes): transcode, retry once.
-                converted_path, transcode_error = _transcode_audio_for_stt(file_path, work_dir)
+                # The endpoint named a container it wants (WAV) or rejected the one sent: transcode, retry once.
+                converted_path, transcode_error = _transcode_audio_for_stt(
+                    file_path, work_dir, target=retry_target,
+                    sample_rate=STT_WAV_TARGET_SAMPLE_RATE if retry_target == "wav" else None)
                 if transcode_error:
                     return _error_result(transcode_error)
-                logger.info("Retrying %s STT after transcoding %s to m4a (API rejected the original container)",
-                            provider_label, Path(file_path).name)
+                logger.info("Retrying %s STT after transcoding %s to %s (API rejected the original container)",
+                            provider_label, Path(file_path).name, retry_target)
                 transcription = _create_transcription(converted_path)
         transcript_text = _extract_transcript_text(transcription)
         logger.info("Transcribed %s via %s (%s, %d chars)",

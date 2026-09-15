@@ -61,16 +61,41 @@ def _run_ffmpeg_stt_encode(ffmpeg: str, input_path: str, output_path: str, *, au
                timeout=120)
 
 
-def _transcode_audio_for_stt(file_path: str, work_dir: str) -> tuple[Optional[str], Optional[str]]:
-    """Transcode to a compact 16 kHz mono AAC/m4a for STT upload; ``(converted_path, None)`` or ``(None, error)``.
-    Newer OpenAI models reject containers ``whisper-1`` accepted (notably Ogg/Opus voice notes) and
-    gateway downloads may carry a misleading extension."""
+# Shared encode profile for every STT-bound mono PCM WAV (models that require a RIFF/WAVE
+# container and a 16 kHz or 24 kHz rate — e.g. Meta's transcription endpoint).
+_STT_WAV_ENCODE_ARGS = ("-vn", "-ac", "1", "-c:a", "pcm_s16le")
+
+
+def _run_ffmpeg_wav_encode(ffmpeg: str, input_path: str, output_path: str, *, sample_rate: int) -> None:
+    """Run the shared STT WAV encode (mono 16-bit PCM at *sample_rate*). Raises on failure."""
+    _run_quiet([ffmpeg, "-y", "-i", input_path, *_STT_WAV_ENCODE_ARGS, "-ar", str(int(sample_rate)),
+                output_path], timeout=120)
+
+
+def _transcode_audio_for_stt(
+    file_path: str, work_dir: str, target: str = "m4a", *, sample_rate: Optional[int] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Transcode for STT upload; ``(converted_path, None)`` or ``(None, error)``.
+
+    ``target="m4a"`` is the compact 16 kHz mono AAC used when newer OpenAI models reject containers
+    ``whisper-1`` accepted (notably Ogg/Opus voice notes); ``target="wav"`` is mono 16-bit PCM at
+    *sample_rate* for endpoints that demand a RIFF/WAVE container. Gateway downloads may also carry
+    a misleading extension, which is why callers transcode rather than trust the filename.
+    """
     ffmpeg = _find_ffmpeg_binary()
     if not ffmpeg:
         return None, "audio needs transcoding for the STT API, but ffmpeg was not found"
-    converted_path = os.path.join(work_dir, f"{Path(file_path).stem or 'audio'}-stt.m4a")
+    if target == "wav":
+        suffix = "wav"
+    else:
+        suffix, target = "m4a", "m4a"
+    converted_path = os.path.join(work_dir, f"{Path(file_path).stem or 'audio'}-stt.{suffix}")
     try:
-        _run_ffmpeg_stt_encode(ffmpeg, file_path, converted_path)
+        if target == "wav":
+            _run_ffmpeg_wav_encode(ffmpeg, file_path, converted_path,
+                                   sample_rate=int(sample_rate or 16000))
+        else:
+            _run_ffmpeg_stt_encode(ffmpeg, file_path, converted_path)
         return converted_path, None
     except subprocess.CalledProcessError as exc:
         details = _process_error_detail(exc)

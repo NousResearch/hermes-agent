@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+import re
 from typing import Any, Dict, Optional
 
 from agent.message_metadata import append_message
@@ -35,6 +36,13 @@ _DEGENERATE_FINAL_NUDGE_CONTENT = (
     "task was still in progress. Resume the task and finish it, then give a complete user-facing "
     "answer. If you believe the task IS finished, say so explicitly and summarize what was done "
     "and verified."
+)
+
+#: Nudge for the second arm: the model described work in flight as if it were the answer.
+_MID_TASK_STALL_NUDGE_CONTENT = (
+    "Your previous message ended the turn by describing work in progress without doing it, so the "
+    "task stopped mid-flight. Issue the next tool call now and continue. If the task IS finished, "
+    "give the complete user-facing answer instead of a status line."
 )
 
 #: Above this length a reply is treated as a real (if terse) answer, never a collapse.
@@ -77,14 +85,54 @@ def _looks_like_degenerate_final(text: Any) -> bool:
     return len(tokens) <= _DEGENERATE_FINAL_MAX_TOKENS and not t.endswith((".", "!", "?", ":"))
 
 
+# Second collapse shape from the same report: a short-to-medium NON-answer that announces work in
+# flight without issuing a tool call ("a final response of 57 to 1039 chars where the task was
+# clearly unfinished"). Observed live: a 57-char final, `technical check in progress, pulling the
+# term definitions`, ending a turn after seven tool results. Length alone cannot separate this from
+# a real answer, so the signal is an announced-work tail with no terminating punctuation.
+_DEGENERATE_FINAL_STALL_MAX_CHARS = 300
+#: Announced in-flight work. Deliberately covers the present-participle tails the existing
+#: ``agent_runtime_helpers.trailing_continue_intent`` regex misses (it matches only "let me now",
+#: "i['’]ll now", "i will now", "now i'll", "next, i"), which is why this shape escapes the
+#: stall guard that otherwise owns it.
+_DEGENERATE_FINAL_STALL_RE = re.compile(
+    r"(?:\b(?:check|work|task|step|run|process|search|review|analysis|inspection|generation|"
+    r"verification|lookup)\b[^.!?\n]{0,40}\bin progress\b"
+    r"|\b(?:pulling|checking|running|re-?running|generating|verifying|cross-checking|loading|"
+    r"reading|gathering|searching|inspecting|mapping|reviewing|analyzing|computing|collecting|"
+    r"working)\b[^.!?\n]{0,90})$",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_mid_task_stall(text: Any) -> bool:
+    """Whether a text stop is an in-flight progress note passed off as the answer.
+
+    Complements :func:`_looks_like_degenerate_final`: that one catches the tiny fragment, this one
+    the longer non-answer. A terminating ``.``/``!``/``?`` is treated as a finished sentence and
+    therefore a real (if terse) answer, which keeps ordinary closing lines out of the guard.
+    """
+    t = str(text or "").strip()
+    if not t or len(t) > _DEGENERATE_FINAL_STALL_MAX_CHARS:
+        return False
+    if t.endswith((".", "!", "?")):
+        return False
+    return bool(_DEGENERATE_FINAL_STALL_RE.search(t[-200:]))
+
+
 def _tool_results_since_last_user(messages: Any) -> int:
-    """Tool-result rows after the most recent user row — the turn's mid-task evidence."""
+    """Tool-result rows after the most recent REAL user row — the turn's mid-task evidence.
+
+    The re-prompt nudge rides ``role: "user"``, so a plain boundary scan would reset the window on
+    the pass after the first nudge and the guard could never fire twice in a turn (the bound would
+    be silently one). Flagged scaffolding therefore does not end the scan.
+    """
     count = 0
     for msg in reversed(messages or ()):
         if not isinstance(msg, dict):
             continue
         role = msg.get("role")
-        if role == "user":
+        if role == "user" and not any(msg.get(flag) for flag in _EPHEMERAL_SCAFFOLDING_FLAGS):
             break
         if role == "tool":
             count += 1
@@ -308,29 +356,36 @@ def finish_text_response(
         final_response = None
         return _verdict("continue")
 
-    # Degenerate-final recovery (see _DEGENERATE_FINAL_NUDGE_CONTENT above): a text stop whose
-    # whole answer is a fragment after real tool work is a provider-side collapse. Bounded to one
-    # re-prompt per turn (the counter clears on the next genuine turn end), scoped by
-    # _degenerate_final_guard_mode, and gated on the turn having actually run tool work — a terse
-    # answer from a chat-only turn is a legitimate answer, not a collapse.
+    # Degenerate-final recovery (see the constants above): a text stop whose whole answer is a
+    # fragment, or a progress note announcing work it never did, after real tool work is a
+    # provider-side collapse. Bounded to two re-prompts per turn (the counter clears on the next
+    # genuine turn end) because the two arms compose in practice — a fragment retry can come back as
+    # a stall note, which is the sequence observed live. Scoped by _degenerate_final_guard_mode and
+    # gated on the turn having actually run tool work: a terse answer from a chat-only turn is a
+    # legitimate answer, not a collapse.
+    _degenerate_arm = ""
     if (
         bool(getattr(agent, "_stall_guards", True))
         and _degenerate_final_guard_mode(agent) != "off"
         and not assistant_message.tool_calls
-        and getattr(agent, "_degenerate_final_nudges", 0) < 1
+        and getattr(agent, "_degenerate_final_nudges", 0) < 2
         and _tool_results_since_last_user(messages) >= 2
-        and _looks_like_degenerate_final(final_response)
     ):
+        if _looks_like_degenerate_final(final_response):
+            _degenerate_arm = "fragment"
+        elif _looks_like_mid_task_stall(final_response):
+            _degenerate_arm = "mid-task stall note"
+    if _degenerate_arm:
         agent._degenerate_final_nudges = getattr(agent, "_degenerate_final_nudges", 0) + 1
         logger.warning(
-            "Degenerate final: text stop ended the turn with a %d-char fragment after %d "
-            "tool result(s) — re-prompting once (model=%s provider=%s api_mode=%s): %r",
-            len(final_response or ""), _tool_results_since_last_user(messages),
-            agent.model, agent.provider, getattr(agent, "api_mode", ""),
-            (final_response or "")[:40],
+            "Degenerate final (%s): text stop ended the turn with a %d-char non-answer after %d "
+            "tool result(s) — re-prompting %d/2 (model=%s provider=%s api_mode=%s): %r",
+            _degenerate_arm, len(final_response or ""), _tool_results_since_last_user(messages),
+            agent._degenerate_final_nudges, agent.model, agent.provider,
+            getattr(agent, "api_mode", ""), (final_response or "")[:40],
         )
         agent._emit_status(
-            "↻ Model ended the turn on a fragment — re-prompting once to finish"
+            "↻ Model ended the turn without an answer — re-prompting to finish"
         )
         # Both halves of the re-prompt pair are ephemeral scaffolding: never persisted, and the
         # finalization pop strips an unanswered tail pair.
@@ -338,7 +393,10 @@ def finish_text_response(
         append_message(messages, final_msg)
         append_message(messages, {
             "role": "user",
-            "content": _DEGENERATE_FINAL_NUDGE_CONTENT,
+            "content": (
+                _DEGENERATE_FINAL_NUDGE_CONTENT if _degenerate_arm == "fragment"
+                else _MID_TASK_STALL_NUDGE_CONTENT
+            ),
             "_degenerate_final_nudge": True,
         })
         agent._session_messages = messages

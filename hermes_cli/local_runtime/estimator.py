@@ -19,6 +19,24 @@ _F16_BYTES_PER_ELEM = 2.0
 # sliding-window. Unknown SWA archs treat every layer as full attention (overestimate; safe).
 _SWA_LAYER_FRACTION = {"gemma3": 5 / 6, "gemma2": 1 / 2}
 
+# Architectures whose llama.cpp loader expands a scalar `sliding_window_pattern` period with
+# dense_first=True (the full-attention layer opens each period-length cycle instead of closing
+# it). Confirmed against llama.cpp's per-arch hparams.set_swa_pattern() calls; every other
+# architecture — including the whole Gemma family — uses the dense_first=False default.
+_SWA_DENSE_FIRST_ARCHS = {"cohere2moe", "modern-bert", "smallthinker", "laguna"}
+
+
+def _expand_swa_period(period: int, n_layer: int, dense_first: bool) -> list[int]:
+    """Per-layer SWA/full split from a scalar period, matching llama.cpp's
+    `llama_hparams::set_swa_pattern()`: one full-attention layer per `period`-length cycle, the
+    rest sliding-window."""
+    if period <= 0:
+        return []
+    if dense_first:
+        return [0 if i % period == 0 else 1 for i in range(n_layer)]
+    return [1 if i % period < period - 1 else 0 for i in range(n_layer)]
+
+
 # Per-recurrent-layer state allowance (bytes/seq). Deliberately generous: an entire measured
 # hybrid slot state is ~99 MB including 8K tokens of full-attn KV, so tens of MiB total is the
 # right order; unknown SSM shapes must never underestimate.
@@ -76,22 +94,39 @@ class HardwareBudget:
 def profile_from_gguf(header: GGUFHeader) -> ModelProfile:
     kv_heads = header.head_counts_kv()
     dk, dv = header.head_dim_k, header.head_dim_v
+    dk_swa = header.key_length_swa or dk
+    dv_swa = header.value_length_swa or dv
+
+    # Priority ladder, highest first: (1) the file's own per-layer pattern, array or scalar-period
+    # form — architecture-agnostic and exact; (2) a known-architecture fraction, for older files
+    # that declare `sliding_window` but no per-layer pattern; (3) no signal at all -> every layer
+    # priced as full attention (overestimate; safe).
+    pattern = header.sliding_window_pattern
+    if pattern is None and header.sliding_window_pattern_period > 0:
+        pattern = _expand_swa_period(header.sliding_window_pattern_period, header.n_layer,
+                                      header.architecture in _SWA_DENSE_FIRST_ARCHS)
+    has_pattern = (pattern is not None and header.sliding_window > 0
+                  and len(pattern) == len(kv_heads))
     swa_fraction = _SWA_LAYER_FRACTION.get(header.architecture, 0.0)
-    has_swa = header.sliding_window > 0 and swa_fraction > 0
+    has_fraction = not has_pattern and header.sliding_window > 0 and swa_fraction > 0
+    n_attn_total = sum(1 for h in kv_heads if h > 0)
+    n_swa = round(n_attn_total * swa_fraction) if has_fraction else 0
 
     layers: list[tuple[LayerKind, int]] = []
     n_attn_seen = 0
-    n_attn_total = sum(1 for h in kv_heads if h > 0)
-    n_swa = round(n_attn_total * swa_fraction) if has_swa else 0
-    for heads in kv_heads:
+    for i, heads in enumerate(kv_heads):
         if heads == 0:
             layers.append((LayerKind.RECURRENT, 0))
             continue
-        per_token = round(heads * (dk + dv) * _F16_BYTES_PER_ELEM)
-        # Distribute the SWA share across the first n_swa attention layers; only the full/SWA
-        # SPLIT matters to the totals, not which indexes.
-        kind = LayerKind.SWA if n_attn_seen < n_swa else LayerKind.FULL
-        layers.append((kind, per_token))
+        if has_pattern:
+            is_swa = bool(pattern[i])
+        else:
+            # Distribute the SWA share across the first n_swa attention layers; only the
+            # full/SWA split matters to the totals, not which indexes.
+            is_swa = n_attn_seen < n_swa
+        layer_dk, layer_dv = (dk_swa, dv_swa) if is_swa else (dk, dv)
+        per_token = round(heads * (layer_dk + layer_dv) * _F16_BYTES_PER_ELEM)
+        layers.append((LayerKind.SWA if is_swa else LayerKind.FULL, per_token))
         n_attn_seen += 1
 
     return ModelProfile(

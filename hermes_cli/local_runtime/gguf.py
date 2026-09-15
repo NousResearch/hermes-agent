@@ -79,7 +79,33 @@ class GGUFHeader:
         "full_attention_interval",
         "GDN-hybrid discriminator (qwen35 family): every Nth layer is full attention, the rest "
         "are linear/recurrent. 0 = not present.")
+    key_length_swa = _arch_int(
+        "attention.key_length_swa",
+        "Per-token key size for sliding-window layers when it differs from the global "
+        "attention.key_length (e.g. gemma3/gemma4). 0 = not present.")
+    value_length_swa = _arch_int(
+        "attention.value_length_swa",
+        "Per-token value size for sliding-window layers when it differs from the global "
+        "attention.value_length. 0 = not present.")
     del _arch_int
+
+    @property
+    def sliding_window_pattern(self) -> list[int] | None:
+        """Per-layer SWA pattern declared by the file itself: a truthy entry marks a
+        sliding-window layer, falsy marks global. None when the file doesn't declare the per-layer
+        array form (older GGUFs, architectures without per-layer SWA metadata, or files that use
+        the scalar period form instead — see `sliding_window_pattern_period`)."""
+        v = self._arch_key("attention.sliding_window_pattern")
+        return [int(x) for x in v] if isinstance(v, list) else None
+
+    @property
+    def sliding_window_pattern_period(self) -> int:
+        """Scalar SWA period declared by the file: llama.cpp also permits
+        `attention.sliding_window_pattern` as a single integer N (every Nth layer is full
+        attention, e.g. Gemma-family writers) rather than a per-layer array. 0 when absent or when
+        the file uses the array form instead — callers should fall back to a coarser signal."""
+        v = self._arch_key("attention.sliding_window_pattern")
+        return int(v) if isinstance(v, int) and not isinstance(v, bool) else 0
 
     @property
     def n_vocab(self) -> int:

@@ -35,7 +35,9 @@ import {
   ensureDefaultWorkspaceCwd,
   forgetSessionOwnerHintsForConnection,
   forgetSessionOwnerHintsForSession,
+  getComposerSelectionGeneration,
   getConfiguredDefaultProjectDir,
+  getCurrentModelSource,
   getRememberedRoute,
   getRememberedSessionId,
   getRememberedWorkspaceCwd,
@@ -46,6 +48,7 @@ import {
   knownSessionOwner,
   knownSessionProfile,
   lineageAliases,
+  markComposerSelectionManual,
   mergeSessionPage,
   rememberedSessionProfile,
   resolveComposerSessionKey,
@@ -67,6 +70,7 @@ import {
   setSessions,
   shouldMigrateComposerScope,
   touchSessionActivity,
+  unpinComposerSelection,
   workspaceCwdForNewSession
 } from './session'
 import {
@@ -152,6 +156,71 @@ describe('composer model persistence scope', () => {
     setComposerSelectionOwner('aibox', 'fred-work')
     expect($currentModel.get()).toBe('local/model')
     expect($currentProvider.get()).toBe('custom:local')
+  })
+})
+
+describe('composer unpin / use profile default', () => {
+  const local = { baseUrl: '', connectionId: 'local', mode: 'local' } as never
+  const sourceKey = 'hermes.desktop.composer.model-source'
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    setConnection(local)
+    setCurrentModel('')
+    setCurrentProvider('')
+    setCurrentModelSource('')
+  })
+
+  afterEach(() => {
+    setConnection(local)
+    window.localStorage.clear()
+  })
+
+  it('clears the scoped source pin without rewriting model or provider', () => {
+    setCurrentModel('openrouter/glm-4.7')
+    setCurrentProvider('openrouter')
+    markComposerSelectionManual()
+
+    expect(getCurrentModelSource()).toBe('manual')
+    expect(window.localStorage.getItem(sourceKey)).toBe('manual')
+
+    const generation = getComposerSelectionGeneration()
+
+    unpinComposerSelection()
+
+    expect(getCurrentModelSource()).toBe('')
+    expect(window.localStorage.getItem(sourceKey)).toBeNull()
+    expect($currentModel.get()).toBe('openrouter/glm-4.7')
+    expect($currentProvider.get()).toBe('openrouter')
+    expect(getComposerSelectionGeneration()).toBe(generation + 1)
+  })
+
+  it('does not clear another remote profile scoped manual pin', () => {
+    const remote = (profile: string) =>
+      ({ baseUrl: 'https://aibox.example', connectionId: 'aibox', mode: 'remote', profile }) as never
+
+    setConnection(remote('alpha'))
+    setCurrentModel('grok-4')
+    setCurrentProvider('xai-oauth')
+    markComposerSelectionManual()
+    expect(getCurrentModelSource()).toBe('manual')
+    expect(window.localStorage.getItem(`${sourceKey}.registry.aibox.alpha`)).toBe('manual')
+
+    setConnection(remote('beta'))
+    setCurrentModel('local/model')
+    setCurrentProvider('custom:local')
+    markComposerSelectionManual()
+    expect(window.localStorage.getItem(`${sourceKey}.registry.aibox.beta`)).toBe('manual')
+
+    setConnection(remote('alpha'))
+    unpinComposerSelection()
+
+    expect(getCurrentModelSource()).toBe('')
+    expect(window.localStorage.getItem(`${sourceKey}.registry.aibox.alpha`)).toBeNull()
+    expect(window.localStorage.getItem(`${sourceKey}.registry.aibox.beta`)).toBe('manual')
+
+    setConnection(remote('beta'))
+    expect(getCurrentModelSource()).toBe('manual')
   })
 })
 

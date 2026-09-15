@@ -3055,6 +3055,7 @@ export interface Translations {
       noModels: string
       editModels: string
       refreshModels: string
+      useProfileDefault: string
       fast: string
     }
     modelOptions: {

@@ -4,7 +4,15 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
-import { $activeSessionId, $currentModel, $currentProvider } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentModel,
+  $currentProvider,
+  getCurrentModelSource,
+  setCurrentModel,
+  setCurrentModelSource,
+  setCurrentProvider
+} from '@/store/session'
 
 import { ModelMenuPanel } from './model-menu-panel'
 
@@ -16,8 +24,10 @@ beforeAll(() => {
 })
 
 const getGlobalModelOptions = vi.fn()
+const getGlobalModelInfo = vi.fn()
 
 vi.mock('@/hermes', () => ({
+  getGlobalModelInfo: (...args: unknown[]) => getGlobalModelInfo(...args),
   getGlobalModelOptions: (...args: unknown[]) => getGlobalModelOptions(...args),
   setApiRequestProfile: vi.fn()
 }))
@@ -512,5 +522,68 @@ describe('ModelMenuPanel provider collapse', () => {
     const input = screen.getByRole('textbox', { name: 'Search models' })
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(onSelectModel).not.toHaveBeenCalled()
+  })
+})
+
+describe('ModelMenuPanel use profile default', () => {
+  afterEach(() => {
+    setCurrentModel('')
+    setCurrentProvider('')
+    setCurrentModelSource('')
+    $activeSessionId.set(null)
+  })
+
+  it('shows Use profile default on a primary draft with a manual pin', async () => {
+    $activeSessionId.set(null)
+    setCurrentModel('openrouter/glm-4.7')
+    setCurrentProvider('openrouter')
+    setCurrentModelSource('manual')
+
+    const { content } = renderPanel()
+
+    const item = await content.findByRole('menuitem', { name: /Use profile default/i })
+
+    expect(item.getAttribute('data-testid')).toBe('composer-use-profile-default')
+    expect(item.textContent).toMatch(/Use profile default/i)
+  })
+
+  it('clears the manual source when Use profile default is clicked', async () => {
+    $activeSessionId.set(null)
+    setCurrentModel('openrouter/glm-4.7')
+    setCurrentProvider('openrouter')
+    setCurrentModelSource('manual')
+    getGlobalModelInfo.mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
+
+    const { content } = renderPanel()
+    const item = await content.findByTestId('composer-use-profile-default')
+
+    fireEvent.click(item)
+
+    await vi.waitFor(() => {
+      expect(getCurrentModelSource()).toBe('default')
+      expect($currentModel.get()).toBe('openai/gpt-5.5')
+      expect($currentProvider.get()).toBe('openai-codex')
+    })
+  })
+
+  it('hides Use profile default when the source is default or empty', async () => {
+    $activeSessionId.set(null)
+    setCurrentModel('openai/gpt-5.5')
+    setCurrentProvider('openai-codex')
+    setCurrentModelSource('default')
+
+    const defaultPanel = renderPanel()
+
+    await defaultPanel.content.findByText('Refresh models')
+    expect(defaultPanel.content.queryByTestId('composer-use-profile-default')).toBeNull()
+    expect(defaultPanel.content.queryByRole('menuitem', { name: /Use profile default/i })).toBeNull()
+    defaultPanel.content.unmount()
+
+    setCurrentModelSource('')
+    const emptyPanel = renderPanel()
+
+    await emptyPanel.content.findByText('Refresh models')
+    expect(emptyPanel.content.queryByTestId('composer-use-profile-default')).toBeNull()
+    expect(emptyPanel.content.queryByRole('menuitem', { name: /Use profile default/i })).toBeNull()
   })
 })

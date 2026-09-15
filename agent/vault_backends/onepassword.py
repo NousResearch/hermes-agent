@@ -118,14 +118,21 @@ class OnePasswordLoginBackend(LoginBackend):
     def get_meta(self, handle: str) -> Optional[VaultItemMeta]:
         return next((m for m in self.list_items() if m.id == handle), None)
 
+    def _vault_args(self) -> List[str]:
+        # A service-account token has no default vault, so `op item get` rejects it with
+        # "a vault query must be provided" unless --vault is given explicitly (item list is unaffected).
+        vault = str(self.cfg.get("vault") or "")
+        return ["--vault", vault] if vault else []
+
     def resolve_password(self, handle: str) -> str:
         item_id = handle[len(self.prefix):]
-        return self._run("item", "get", item_id, "--fields", "label=password", "--reveal").rstrip("\r\n")
+        return self._run("item", "get", item_id, *self._vault_args(),
+                          "--fields", "label=password", "--reveal").rstrip("\r\n")
 
     def resolve_otp(self, handle: str) -> Optional[str]:
         # `--otp` mints the current TOTP from the item's one-time-password field; items without one error out.
         try:
-            code = self._run("item", "get", handle[len(self.prefix):], "--otp").strip()
+            code = self._run("item", "get", handle[len(self.prefix):], *self._vault_args(), "--otp").strip()
         except Exception:
             return None
         return code if code.isdigit() else None

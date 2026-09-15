@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -168,3 +169,52 @@ def test_lock_during_unlock_wins_and_only_the_owning_session_release_drops_a_tok
         unlock_mod.release_session("sess-A")
         assert not backend.is_unlocked()
         unlock_mod.set_current_session_id(None)
+
+
+class TestOnePasswordServiceAccountVault:
+    """A service-account token has no default vault: `op item get` rejects it with
+    'a vault query must be provided ...' unless --vault is given explicitly (unlike `item list`,
+    which succeeds without one). vault.onepassword.vault must reach both item-get reads."""
+
+    @pytest.fixture
+    def backend(self, monkeypatch):
+        from pathlib import Path
+
+        from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+        monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "svc-token")
+        monkeypatch.setattr("agent.vault_backends.onepassword.find_op", lambda *_a, **_kw: Path("/usr/bin/op"))
+
+        def make(cfg):
+            return OnePasswordLoginBackend(cfg)
+
+        return make
+
+    def _fake_run_cli(self, monkeypatch, stdout="the-password\n"):
+        calls = []
+
+        def fake(argv, **_kwargs):
+            calls.append(list(argv))
+            return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr("agent.vault_backends.onepassword.run_cli", fake)
+        return calls
+
+    def test_resolve_password_passes_configured_vault(self, backend, monkeypatch):
+        calls = self._fake_run_cli(monkeypatch)
+        result = backend({"vault": "Shared Website Logins"}).resolve_password("op:item1")
+        assert result == "the-password"
+        assert calls[-1][1:] == ["item", "get", "item1", "--vault", "Shared Website Logins",
+                                 "--fields", "label=password", "--reveal"]
+
+    def test_resolve_otp_passes_configured_vault(self, backend, monkeypatch):
+        calls = self._fake_run_cli(monkeypatch, stdout="123456\n")
+        result = backend({"vault": "Shared Website Logins"}).resolve_otp("op:item1")
+        assert result == "123456"
+        assert calls[-1][1:] == ["item", "get", "item1", "--vault", "Shared Website Logins", "--otp"]
+
+    def test_no_vault_configured_omits_the_flag(self, backend, monkeypatch):
+        calls = self._fake_run_cli(monkeypatch)
+        backend({}).resolve_password("op:item1")
+        assert calls[-1][1:] == ["item", "get", "item1", "--fields", "label=password", "--reveal"]
+        assert "--vault" not in calls[-1]

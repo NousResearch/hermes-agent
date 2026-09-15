@@ -1,13 +1,15 @@
 """Tests for cmd_update — branch fallback when remote branch doesn't exist."""
 
+import atexit
 import hashlib
 import subprocess
 from types import SimpleNamespace
-from unittest.mock import ANY, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
 from hermes_cli.main import cmd_update, PROJECT_ROOT
+from hermes_cli import main as hermes_main
 from hermes_cli import main_web_build
 from hermes_cli import main_install_repair
 from hermes_cli import update_cmd
@@ -80,7 +82,61 @@ def _patch_managed_uv(request):
 
 @pytest.fixture(autouse=True)
 def _patch_gateway_discovery(isolated_update_runtime):
-    pass
+    """Keep cmd_update's gateway auto-restart phase off this machine's gateways.
+
+    The restart phase used to swallow every exception at debug level, so these
+    end-to-end tests never noticed it touching real gateway discovery. Since
+    the phase is surfaced (#78574: an aborted restart now fails the update),
+    an unmocked ``find_gateway_pids`` on a box with a live gateway reaches the
+    conftest live-system guard and turns into a spurious ``sys.exit(1)``.
+    Discovery returning nothing is enough on POSIX; on Windows
+    ``_pause_windows_gateways_for_update`` still cold-starts when
+    ``is_installed()`` is true. These tests mock ``subprocess.run`` for git,
+    so ``schtasks /Query`` also returns 0 and looks installed — then
+    ``find_gateway_pids`` stays mocked-empty, the cold-start wait never
+    sees the spawned PID, and fleet verify ``sys.exit(1)``. Stub the
+    pause/resume/dashboard seams the same way sibling update tests do
+    (``test_update_head_moved_gate``, ``test_update_parked_branch_guard``).
+    None of the tests here assert on gateway restarts.
+
+    ``_purge_stale_hermes_modules`` has to be stubbed too: a live purge
+    drops ``hermes_cli.gateway`` from ``sys.modules`` mid-update, so the
+    restart phase's later ``from hermes_cli.gateway import ...`` binds an
+    unpatched module and real discovery (and ``os.kill``) runs on this box.
+
+    Nested with ``isolated_update_runtime`` (conftest): that fixture isolates
+    PROJECT_ROOT and the shared runtime-fleet seams; the patches here keep
+    the Windows/update stubs that fixture does not cover, including
+    ``_fleet_probe_expected_runtimes`` and ``report_unaccounted_runtimes``.
+    """
+    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
+         patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
+         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
+         patch.object(hermes_main, "_pause_windows_gateways_for_update", lambda: None), \
+         patch.object(
+             hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
+         ), \
+         patch.object(hermes_main, "_purge_stale_hermes_modules", lambda *a, **kw: None), \
+         patch.object(
+             hermes_main, "_fleet_probe_expected_runtimes", lambda *a, **kw: False
+         ), \
+         patch.object(
+             hermes_main, "_restore_active_tool_dependencies", lambda *a, **kw: None
+         ), \
+         patch.object(
+             update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None
+         ), \
+         patch.object(
+             update_cmd, "_apply_pending_fleet_restart_catchup", lambda *a, **k: None
+         ), \
+         patch.object(
+             update_cmd, "_clear_windows_venv_holders_or_exit", lambda *a, **k: None
+         ), \
+         patch.object(hermes_main, "_detect_venv_python_processes", lambda: []), \
+         patch("hermes_cli.update_inventory.collect_runtime_inventory", return_value=None), \
+         patch("hermes_cli.update_inventory.report_unaccounted_runtimes", return_value=False), \
+         patch("hermes_cli.update_receipt.collect_fleet_versions", return_value=[]):
+        yield
 
 
 class TestCmdUpdateNpmLockfileCache:
@@ -545,6 +601,115 @@ class TestCmdUpdateBranchFallback:
             captured = capsys.readouterr()
             assert "applying safe config migrations" in captured.out
             assert "API keys require manual entry" in captured.out
+
+    @pytest.mark.windows_only
+    def test_full_flow_update_does_not_touch_live_windows_processes(
+        self, mock_args, tmp_path, monkeypatch
+    ):
+        """Mocked ``subprocess.run`` makes ``schtasks /Query`` look installed.
+
+        Empty ``find_gateway_pids`` then cold-starts via
+        ``gateway_windows._spawn_detached`` (``Popen``, not ``run`` — the git
+        mock does not catch it). The conftest live-system guard also misses
+        that Popen and ``taskkill /PID n /T /F`` (no ``hermes``/``update``
+        in argv). Recorders sit on those primitives so removing the autouse
+        fixture stubs fails here with the captured calls instead of
+        silently spawning a gateway.
+
+        ``_wait_for_gateway_ready`` is stubbed to raise immediately so a red
+        base run does not sit on the empty-PID poll.
+
+        The test itself no-ops ``_purge_stale_hermes_modules`` so recorders
+        stay bound when the fixture stubs are absent: a real purge would
+        drop patched ``hermes_cli.*`` modules and the restart-phase import
+        would call live ``_spawn_detached``.
+
+        A real pause registers ``_resume_windows_gateways_after_update``
+        with ``atexit``; that callback runs after this test's patches
+        unwind and would spawn a gateway the ``_spawn_detached`` recorder
+        no longer wraps. Swallowing that registration records the attempt
+        without deferred execution.
+
+        ``subprocess.Popen`` is the catch-all spawn guard: the conftest
+        live-system guard ignores ``python -m hermes_cli.main gateway run``
+        (argv has neither ``update`` nor a ``hermes`` form it blocks).
+
+        ``PROJECT_ROOT`` is a temp checkout: ``_resolve_node_runtime_npm``
+        bypasses ``shutil.which`` via ``find_node_executable``, and a real
+        ``package.json`` would run npx/npm ``Popen`` on the host tree.
+        """
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+
+        captured = []
+
+        def _record(name, result=None):
+            def _fake(*args, **kwargs):
+                captured.append((name, args, kwargs))
+                return result
+
+            return _fake
+
+        def _fail_ready(*_args, **_kwargs):
+            raise RuntimeError("sentinel: skip _wait_for_gateway_ready")
+
+        def _fake_popen(cmd, *args, **kwargs):
+            captured.append(("Popen", (cmd,) + args, kwargs))
+            return MagicMock(pid=4242, returncode=0)
+
+        _real_atexit_register = atexit.register
+
+        def _fake_atexit_register(func, *args, **kwargs):
+            if getattr(func, "__name__", "") == "_resume_windows_gateways_after_update":
+                captured.append(("atexit.register", (func,) + args, kwargs))
+                return None
+            return _real_atexit_register(func, *args, **kwargs)
+
+        spawn_fake = _record("_spawn_detached", 4242)
+        terminate_fake = _record("terminate_pid")
+        stop_fake = _record("_stop_process_trees")
+        kill_fake = _record(
+            "_kill_stale_dashboard_processes",
+            {"matched": [], "killed": [], "failed": [], "unrecovered": []},
+        )
+
+        with (
+            patch("shutil.which", return_value=None),
+            patch("subprocess.run") as mock_run,
+            patch("subprocess.Popen", _fake_popen),
+            patch("atexit.register", _fake_atexit_register),
+            patch("hermes_cli.gateway_windows._spawn_detached", spawn_fake),
+            patch("gateway.status.terminate_pid", terminate_fake),
+            patch("hermes_cli.update_cmd_windows._stop_process_trees", stop_fake),
+            patch("hermes_cli.update_cmd._stop_process_trees", stop_fake),
+            patch.object(hermes_main, "_stop_process_trees", stop_fake, create=True),
+            patch(
+                "hermes_cli.dashboard_procs._kill_stale_dashboard_processes",
+                kill_fake,
+            ),
+            patch.object(
+                hermes_main, "_kill_stale_dashboard_processes", kill_fake, create=True
+            ),
+            patch.object(
+                hermes_main, "_purge_stale_hermes_modules", lambda *a, **kw: None
+            ),
+            patch("hermes_cli.gateway_windows._wait_for_gateway_ready", _fail_ready),
+        ):
+            mock_run.side_effect = _make_run_side_effect(
+                branch="main", verify_ok=True, commit_count="1"
+            )
+            caught_exit = None
+            try:
+                cmd_update(mock_args)
+            except SystemExit as exc:
+                caught_exit = exc.code
+
+        assert not captured and caught_exit is None, (
+            "full-flow update reached live Windows process primitives "
+            "(fixture stubs missing?): calls={0!r}, SystemExit={1!r}".format(
+                captured, caught_exit
+            )
+        )
 
 
 class TestCmdUpdateMigrationPrompt:

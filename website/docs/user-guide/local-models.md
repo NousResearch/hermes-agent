@@ -120,6 +120,8 @@ local_runtime:
   backend: auto      # auto | cuda | metal | vulkan | hip | cpu
   tag: b10362        # pinned llama.cpp release; Hermes updates it with
                      # each release after re-validation
+  context_window: null  # optional positive token cap; null keeps the
+                        # automatic window (values above native clamp to native)
 ```
 
 Models and runtime builds live under the Hermes home directory

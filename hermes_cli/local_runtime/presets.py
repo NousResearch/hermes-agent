@@ -77,7 +77,8 @@ def _draft_fits(path: Path, profile, budget: HardwareBudget, window: int, overhe
 
 
 def preset_for_model(gguf: Path, budget: HardwareBudget,
-                     mtp_capable: set[str], *, requested_window: int | None = None) -> PresetEntry | None:
+                     mtp_capable: set[str], *, requested_window: int | None = None,
+                     context_window: int | None = None) -> PresetEntry | None:
     """The launch decision for one staged model, or None when its header is unreadable."""
     from hermes_cli.local_runtime.catalog import entry_for_model
     from hermes_cli.local_runtime.growth import load_window_overrides
@@ -97,7 +98,8 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
         entry.mmproj.size_bytes if entry is not None and mmproj_path is not None else 0)
     plan = plan_launch(profile, budget, mtp_capable=is_mtp, fixed_overhead=fixed_overhead,
                        requested_window=(load_window_overrides().get(model_id)
-                                         if requested_window is None else requested_window))
+                                         if requested_window is None else requested_window),
+                       context_window=context_window)
     decision = plan.decision
     if isinstance(decision, PhysicsRefusal):
         return PresetEntry(model_id=model_id, window=0, spilled=False, refusal=decision.message)
@@ -135,7 +137,8 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
 
 
 def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path,
-                     mtp_capable: set[str] | None = None) -> list[PresetEntry]:
+                     mtp_capable: set[str] | None = None, *,
+                     context_window: int | None = None) -> list[PresetEntry]:
     """Walk the staged models, run the launch decision per model, and write one INI. Refused
     models get no section (the picker surfaces the refusal from the returned entries)."""
     from hermes_cli.local_runtime.bootstrap import staged_in
@@ -143,7 +146,8 @@ def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path
     entries: list[PresetEntry] = []
     sections: list[str] = []
     for gguf in staged_in(models_dir):
-        entry = preset_for_model(gguf, budget, mtp_capable or set())
+        entry = preset_for_model(
+            gguf, budget, mtp_capable or set(), context_window=context_window)
         if entry is None:
             continue
         entries.append(entry)

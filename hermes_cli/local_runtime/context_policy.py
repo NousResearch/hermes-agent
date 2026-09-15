@@ -1,8 +1,9 @@
 """Context policy — the window ladder for managed local models.
 
 One contract: any model runs at any window up to its native max; hardware and session depth only
-change tokens/s. Constants, not knobs — nothing in this module reads config. The policy encodes
-behavior measured on real hardware (llama.cpp, discrete NVIDIA on Windows/WDDM, unified-memory).
+change tokens/s. Policy internals stay constant; an upstream-validated user cap may bound the
+selected window. This module does not read config. The policy encodes behavior measured on real
+hardware (llama.cpp, discrete NVIDIA on Windows/WDDM, unified-memory).
 """
 
 from __future__ import annotations
@@ -117,7 +118,8 @@ class LaunchPlan:
 
 def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: bool = False,
                 fixed_overhead: int = RUNTIME_OVERHEAD_BYTES,
-                requested_window: int | None = None) -> LaunchPlan:
+                requested_window: int | None = None,
+                context_window: int | None = None) -> LaunchPlan:
     """Window first, then prefill; price both postures at the effective window.
 
     A restored window may fit only under lean MTP. Evaluate it before discarding it because
@@ -142,6 +144,14 @@ def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: b
                     window=target, spill_bytes=max(0, need - budget.usable_vram_bytes),
                     kv_on_gpu=ctx_bytes(profile, target) + overhead <= budget.usable_vram_bytes,
                     reasons=[f"grown window restored ({target // 1024}K)"])
+        if isinstance(decision, WindowDecision) and context_window is not None:
+            target = min(decision.window, context_window, profile.n_ctx_train or context_window)
+            if target < decision.window:
+                need = footprint_bytes(profile, target, overhead_bytes=overhead)
+                decision = WindowDecision(
+                    window=target, spill_bytes=max(0, need - budget.usable_vram_bytes),
+                    kv_on_gpu=ctx_bytes(profile, target) + overhead <= budget.usable_vram_bytes,
+                    reasons=[f"configured context cap ({target} tokens)"])
         return LaunchPlan(decision, stacked, overhead)
 
     lean = candidate(False)

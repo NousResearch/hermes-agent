@@ -2342,14 +2342,19 @@ def clear_preflight_alerted(job_id: str) -> None:
     _set_alert_flag(job_id, "preflight_alerted", False)
 
 
+def _fire_error_stamp(detail: str) -> Dict[str, Any]:
+    """The stored ``last_fire_error`` shape, in one place for direct persist callers."""
+    return {"at": _hermes_now().isoformat(), "detail": str(detail or "")[:500]}
+
+
 def note_fire_forward_failure(job_id: str, detail: str) -> bool:
     """Durably record (as ``last_fire_error``) that a scheduled fire could not be handed to the
-    runner — written by the dashboard fire webhook when the loopback forward fails. Without it
-    the miss is invisible (no execution row, last_status only covers started runs); mark_job_run
-    clears it."""
+    runner — the dashboard fire webhook when the loopback forward fails, and the
+    completed-occurrence dedup when it consumes a slot on a stale-stamped identity (#111414).
+    Without it the miss is invisible (no execution row, last_status only covers started runs);
+    mark_job_run clears it."""
     def apply(jobs, _i, job):
-        job["last_fire_error"] = {
-            "at": _hermes_now().isoformat(), "detail": str(detail or "")[:500]}
+        job["last_fire_error"] = _fire_error_stamp(detail)
         save_jobs(jobs)
         return True
 
@@ -2724,7 +2729,8 @@ def claim_job_for_fire(
         now = _hermes_now()
         if _claim_is_live(job.get("fire_claim"), now, claim_ttl_seconds):
             return False  # someone holds a fresh claim
-        from cron.occurrences import completed_occurrence, scheduled_instant
+        from cron.occurrences import (
+            completed_occurrence_row, note_completed_occurrence_skip, scheduled_instant)
 
         # ``manual`` (an off-tick run-now) must NOT stamp an occurrence identity: outside a
         # scheduler tick ``next_run_at`` is the NEXT occurrence, not the one being run, so
@@ -2746,12 +2752,16 @@ def claim_job_for_fire(
         if (instant is not None
                 and datetime.fromisoformat(instant) - now >= timedelta(seconds=FIRE_CLAIM_SKEW_SECONDS)):
             instant = None
-        if instant and completed_occurrence(job, instant):
+        occurrence_row = completed_occurrence_row(job, instant) if instant else None
+        if occurrence_row is not None:
             if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
                 nxt = compute_next_run(job["schedule"], now.isoformat())
                 if nxt:
                     job["next_run_at"] = nxt
                     save_jobs(jobs)
+            detail = note_completed_occurrence_skip(job, instant, occurrence_row)
+            if detail:
+                note_fire_forward_failure(job["id"], detail)
             return False
         if force:
             _activate_job_record(job)
@@ -3200,13 +3210,20 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     # into both fields, and any rewrite of next_run_at (edit, re-anchor, fire-claim advance) must
     # invalidate the marker. Do not "fix" this with _ensure_aware normalization.
     manual_run = job.get("manual_run_at") == next_run
-    from cron.occurrences import completed_occurrence, scheduled_instant
+    from cron.occurrences import (
+        completed_occurrence_row, note_completed_occurrence_skip, scheduled_instant)
 
-    if not manual_run and completed_occurrence(job, next_run):
-        new_next = d.recompute_next() if recurring else None
-        if new_next:
-            scan.persist(job["id"], next_run_at=new_next)
-        return False
+    if not manual_run:
+        occurrence_row = completed_occurrence_row(job, next_run)
+        if occurrence_row is not None:
+            new_next = d.recompute_next() if recurring else None
+            if new_next:
+                scan.persist(job["id"], next_run_at=new_next)
+            detail = note_completed_occurrence_skip(
+                job, scheduled_instant(next_run), occurrence_row)
+            if detail:
+                scan.persist(job["id"], last_fire_error=_fire_error_stamp(detail))
+            return False
     if kind == "cron" and not manual_run and _repair_timezone_shifted_cron(d):
         return False
     d.next_run_dt = _rearm_stale_error_recurring(d)

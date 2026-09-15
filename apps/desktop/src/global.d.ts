@@ -493,11 +493,19 @@ declare global {
          *  only; null on Windows or when unavailable). Used to reopen a tab
          *  where the user last `cd`'d. */
         cwd: (id: string) => Promise<string | null>
-        dispose: (id: string) => Promise<boolean>
+        dispose: (id: string, options?: { keepRemote?: boolean }) => Promise<boolean>
+        killPersist: (persistKey: string) => Promise<boolean>
         onData: (id: string, callback: (payload: string) => void) => () => void
         onExit: (id: string, callback: (payload: HermesTerminalExit) => void) => () => void
         resize: (id: string, size: { cols: number; rows: number }) => Promise<boolean>
-        start: (options?: { cols?: number; cwd?: string; rows?: number }) => Promise<HermesTerminalSession>
+        start: (options?: {
+          cols?: number
+          cwd?: string
+          cursorChatId?: string
+          persistKey?: string
+          resumeOnCreate?: boolean
+          rows?: number
+        }) => Promise<HermesTerminalSession>
         write: (id: string, data: string) => Promise<boolean>
       }
       reachPreviewUrl?: (url: string) => Promise<string>

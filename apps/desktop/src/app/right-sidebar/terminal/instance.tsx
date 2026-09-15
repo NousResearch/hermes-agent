@@ -17,8 +17,10 @@ const INSTANCE_CLASS = 'absolute inset-0 flex flex-col bg-(--ui-terminal-surface
 // xterm host. The screen/viewport overrides matter for the DOM renderer (the
 // WebGL fast-path paints the canvas from ITheme.background instead) — both
 // resolve to the same token, so the two renderers can't disagree.
+// Hide xterm's native scrollbar: Cursor Ink scroll is Page Up/Down to the PTY,
+// not xterm history. The custom rail below is the only scroll affordance on TUI.
 const HOST_CLASS =
-  'h-full min-h-0 overflow-hidden text-(--ui-text-secondary) [&_.xterm]:h-full [&_.xterm-screen]:bg-(--ui-terminal-surface-background)! [&_.xterm-viewport]:bg-(--ui-terminal-surface-background)!'
+  'h-full min-h-0 overflow-hidden text-(--ui-text-secondary) [&_.xterm]:h-full [&_.xterm-screen]:bg-(--ui-terminal-surface-background)! [&_.xterm-viewport]:bg-(--ui-terminal-surface-background)! [&_.xterm-viewport]:overflow-hidden!'
 
 interface TerminalInstanceProps {
   id: string
@@ -27,6 +29,8 @@ interface TerminalInstanceProps {
   onAddSelectionToChat: (text: string, label?: string) => void
   restoreCwd?: string
   reviveBuffer?: string
+  cursorChatId?: string
+  resumeOnCreate?: boolean
 }
 
 /** One persistent xterm+PTY. Every open tab stays mounted (so its shell and
@@ -37,17 +41,22 @@ export function TerminalInstance({
   cwd,
   onAddSelectionToChat,
   restoreCwd,
-  reviveBuffer
+  reviveBuffer,
+  cursorChatId,
+  resumeOnCreate
 }: TerminalInstanceProps) {
   const { t } = useI18n()
 
-  const { addSelectionToChat, hostRef, selection, selectionStyle, status } = useTerminalSession({
+  const { addSelectionToChat, hostRef, scrollConversation, selection, selectionStyle, showConversationScrollbar, status } =
+    useTerminalSession({
     id,
     cwd,
     active,
     onAddSelectionToChat,
     restoreCwd,
     reviveBuffer,
+    cursorChatId,
+    resumeOnCreate,
     onShell: shell => reportTerminalShell(id, shell)
   })
 
@@ -88,6 +97,30 @@ export function TerminalInstance({
       {/* Outer div paints the terminal inset; inner div is the xterm host so the
           canvas sizes to the content area and p-2 stays as terminal padding. */}
       <div className={HOST_CLASS} ref={hostRef} />
+      {showConversationScrollbar && (
+        <div
+          aria-label="Scroll conversation"
+          className="absolute inset-y-1 right-0 z-40 flex w-5 cursor-ns-resize flex-col items-center justify-center gap-0"
+          data-no-tui-wheel=""
+          data-tui-scrollbar=""
+          onPointerDown={event => {
+            event.preventDefault()
+            event.stopPropagation()
+            const rect = event.currentTarget.getBoundingClientRect()
+            const mid = rect.top + rect.height / 2
+            scrollConversation(event.clientY < mid ? -1 : 1)
+          }}
+          onWheel={event => {
+            event.preventDefault()
+            event.stopPropagation()
+            if (event.deltaY) {
+              scrollConversation(event.deltaY < 0 ? -1 : 1)
+            }
+          }}
+        >
+          <div className="h-full w-2.5 rounded-full border border-white/25 bg-white/45 shadow-md hover:bg-white/70 dark:border-white/30 dark:bg-white/40 dark:hover:bg-white/65" />
+        </div>
+      )}
     </div>
   )
 }

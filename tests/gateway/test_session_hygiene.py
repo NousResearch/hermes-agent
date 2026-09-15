@@ -243,6 +243,7 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
 
     class NonRotatingCompressAgent:
         last_instance = None
+        compress_kwargs = None
 
         def __init__(self, **kwargs):
             self.model = kwargs.get("model")
@@ -254,6 +255,7 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
             type(self).last_instance = self
 
         def _compress_context(self, messages, *_args, **_kwargs):
+            type(self).compress_kwargs = dict(_kwargs)
             # No session_db → cannot rotate: session_id is UNCHANGED, and this
             # is a failure-to-rotate, not an in-place success.
             return ([{"role": "assistant", "content": "summary only"}], None)
@@ -339,6 +341,9 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
     result = await runner._handle_message(event)
 
     assert result == "ok"
+    assert NonRotatingCompressAgent.compress_kwargs["task_id"] == (
+        "agent:main:telegram:group:-1001:17585"
+    )
     # The transcript must NOT be rewritten — the original is preserved.
     runner.session_store.rewrite_transcript.assert_not_called()
 

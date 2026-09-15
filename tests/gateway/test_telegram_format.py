@@ -289,6 +289,32 @@ class TestFormatMessageBlockquote:
         assert "\\>" not in result
 
 
+class TestExpandableBlockquote:
+    """Multi-line expandable quotes: **> opens the quote, the closing line's || survives."""
+
+    def test_multiline_expandable_keeps_terminator(self, adapter):
+        result = adapter.format_message("**> c1\n> c2\n> c3||")
+        assert "**> c1" in result
+        assert "> c2" in result
+        assert "> c3||" in result  # terminator not escaped
+        assert "c3\\|" not in result
+
+    def test_terminator_resets_outside_quote_run(self, adapter):
+        # A ||-ending quote line AFTER the run closed keeps literal pipes (escaped).
+        result = adapter.format_message("**> open\n> still open\ngap\n> literal||")
+        assert "> still open" in result
+        assert "literal\\|\\|" in result
+
+    def test_single_line_expandable(self, adapter):
+        result = adapter.format_message("**> one||")
+        assert "**> one||" in result
+
+
+class TestStripExpandableMarks:
+    def test_strip_expandable_quote_markers(self):
+        assert _strip_mdv2("**> c1\n> c2\n> c3||") == "c1\nc2\nc3"
+
+
 # =========================================================================
 # format_message - mixed/complex
 # =========================================================================

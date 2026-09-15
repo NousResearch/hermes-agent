@@ -14,6 +14,7 @@ import { useCompletion } from '../hooks/useCompletion.js'
 import { useInputHistory } from '../hooks/useInputHistory.js'
 import { useQueue } from '../hooks/useQueue.js'
 import { isUsableClipboardText, readClipboardText } from '../lib/clipboard.js'
+import { createClipProbeLatch } from '../lib/clipboardProbeLatch.js'
 import { resolveEditor } from '../lib/editor.js'
 import { readOsc52Clipboard } from '../lib/osc52.js'
 import { isRemoteShellSession } from '../lib/terminalSetup.js'
@@ -114,6 +115,13 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   // of truth for "what is in the composer right now".
   const inputRef = useRef('')
   const tokensRef = useRef<ComposerToken[]>([])
+  // Persistent false-stream suppression (#75637): once a speculative
+  // empty-bracketed-paste probe fires, suppress all further probes until a
+  // meaningful stream boundary (non-empty paste, explicit hotkey, or /paste)
+  // resets it.  Unlike a timer-based debounce this does not re-open after
+  // elapsed time, so mouse-tracking fragments cannot cause a recurring probe
+  // storm.
+  const clipProbeLatch = useMemo(() => createClipProbeLatch(), [])
 
   const setInput = useCallback<StateSetter<string>>(next => {
     inputRef.current = typeof next === 'function' ? next(inputRef.current) : next
@@ -235,8 +243,25 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       const cleanedText = stripTrailingPasteNewlines(text)
 
       if (!cleanedText || !/[^\n]/.test(cleanedText)) {
-        return bracketed ? pasteClipboardImage(value, cursor, true) : null
+        if (!bracketed) {
+          return null
+        }
+        // Persistent false-stream suppression (#75637): a continuing sequence
+        // of speculative empty bracketed-paste events may trigger at most one
+        // automatic clipboard probe.  The latch is reset only by a meaningful
+        // stream boundary (non-empty paste below, explicit hotkey, or /paste),
+        // never by elapsed time — so mouse-tracking fragments cannot re-arm it.
+
+        if (!clipProbeLatch.tryProbe()) {
+          return null
+        }
+
+        return pasteClipboardImage(value, cursor, true)
       }
+
+      // Non-empty paste is a meaningful stream boundary — reset the
+      // speculative-probe latch so a future clipboard paste can be detected.
+      clipProbeLatch.reset()
 
       const sid = getUiState().sid
 
@@ -305,12 +330,16 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
       return inserted
     },
-    [attachImageToken, gw, pasteClipboardImage, setComposerTokens]
+    [attachImageToken, clipProbeLatch, gw, pasteClipboardImage, setComposerTokens]
   )
 
   const handleTextPaste = useCallback(
     ({ bracketed, cursor, hotkey, text, value }: PasteEvent): MaybePromise<ComposerPasteResult | null> => {
       if (hotkey) {
+        // An explicit paste hotkey is a meaningful stream boundary — reset
+        // the speculative-probe latch so the path always works.  (#75637)
+        clipProbeLatch.reset()
+
         const preferOsc52 = isRemoteShellSession(process.env)
 
         const readPreferredText = preferOsc52
@@ -341,7 +370,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
       return handleResolvedPaste({ bracketed: !!bracketed, cursor, text, value })
     },
-    [handleResolvedPaste, pasteClipboardImage, querier]
+    [clipProbeLatch, handleResolvedPaste, pasteClipboardImage, querier]
   )
 
   /**
@@ -362,8 +391,14 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   )
 
   const attachClipboardImage = useCallback(
-    () => appendAttachment((value, cursor) => pasteClipboardImage(value, cursor, false)),
-    [appendAttachment, pasteClipboardImage]
+    () => {
+      // An explicit /paste command is a meaningful stream boundary — reset
+      // the speculative-probe latch so /paste always works.  (#75637)
+      clipProbeLatch.reset()
+
+      appendAttachment((value, cursor) => pasteClipboardImage(value, cursor, false))
+    },
+    [appendAttachment, clipProbeLatch, pasteClipboardImage]
   )
 
   const attachImagePath = useCallback(

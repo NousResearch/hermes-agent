@@ -74,6 +74,38 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
     assert build_kanban_stop_nudge(messages=messages) is None
 
 
+def _review_handoff_messages(tool_name: str) -> list:
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "1",
+                    "type": "function",
+                    "function": {"name": tool_name, "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "name": tool_name, "tool_call_id": "1", "content": "done"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ["kanban_request_review", "kanban_request_changes"],
+)
+def test_no_nudge_after_review_handoff_tool(clear_kanban_env, tool_name):
+    """Invariant: kanban_request_review / kanban_request_changes are terminal
+    board transitions (review handoff). A worker that ends after one of them
+    finished its run legally — the stop guard must NOT fire a
+    'still running, call complete/block' nudge."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_ef71e643")
+    messages = _review_handoff_messages(tool_name)
+    assert session_called_kanban_terminal(messages) is True
+    assert build_kanban_stop_nudge(messages=messages) is None
+
+
 
 
 

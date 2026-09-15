@@ -354,6 +354,42 @@ async def _wait_for_ready_or_bot_exit(
         await cancel_task(ready_task)
 
 
+_DISCORD_GATEWAY_HANDSHAKE_RETRIES = 8
+_DISCORD_GATEWAY_HANDSHAKE_RETRY_CAP_SECS = 20.0
+
+
+def _is_pre_ready_ws_sequence_error(exc: BaseException, ws: Any) -> bool:
+    """discord.py 2.7.x: a failed first `from_client` leaves `Client.ws` as None, then
+    the `aiohttp.ClientError` reconnect branch reads `self.ws.sequence` and crashes."""
+    return isinstance(exc, AttributeError) and "sequence" in str(exc) and ws is None
+
+
+async def _connect_with_handshake_retries(
+    connect,
+    *,
+    is_closed,
+    get_ws,
+    label: str,
+):
+    """Retry Discord IDENTIFY when the gateway handshake 503s before READY."""
+    attempt = 0
+    while True:
+        try:
+            return await connect()
+        except AttributeError as exc:
+            if not _is_pre_ready_ws_sequence_error(exc, get_ws()) or is_closed():
+                raise
+            attempt += 1
+            if attempt >= _DISCORD_GATEWAY_HANDSHAKE_RETRIES:
+                raise
+            delay = min(2 ** attempt, _DISCORD_GATEWAY_HANDSHAKE_RETRY_CAP_SECS)
+            logger.warning(
+                "[%s] Discord gateway handshake failed before READY; retry %d/%d in %.1fs",
+                label, attempt, _DISCORD_GATEWAY_HANDSHAKE_RETRIES, delay,
+            )
+            await asyncio.sleep(delay)
+
+
 def _needs_server_members_intent(
     allowed_user_ids: set[str] | list[str] | None, allowed_role_ids: set[str] | list[str] | None,
 ) -> bool:
@@ -1358,6 +1394,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 # Registration walks the skill catalog on disk (#110707); keep the loop free.
                 await asyncio.to_thread(self._register_slash_commands)
             self._disconnecting = False
+            _orig_connect = getattr(self._client, "connect", None)
+            if callable(_orig_connect):
+                async def _connect(*args, **kwargs):
+                    return await _connect_with_handshake_retries(
+                        lambda: _orig_connect(*args, **kwargs),
+                        is_closed=getattr(self._client, "is_closed", lambda: False),
+                        get_ws=lambda: getattr(self._client, "ws", None),
+                        label=self.name,
+                    )
+
+                self._client.connect = _connect  # type: ignore[method-assign]
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
             self._bot_task.add_done_callback(self._handle_bot_task_done)
             ready_timeout = _discord_ready_timeout_seconds()

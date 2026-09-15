@@ -787,3 +787,35 @@ async def test_skill_catalog_scan_runs_off_the_event_loop(monkeypatch):
     adapter._skill_entries = []
     assert await _scan_leaves_loop_free(adapter.refresh_skill_group)
     await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_connect_with_handshake_retries_recovers_from_none_ws_sequence_error(monkeypatch):
+    """discord.py 2.7.x crashes on gateway 503 before READY; retry instead of dying."""
+    monkeypatch.setattr(discord_platform.asyncio, "sleep", AsyncMock())
+    calls = {"n": 0}
+
+    async def connect():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise AttributeError("'NoneType' object has no attribute 'sequence'")
+        return "ready"
+
+    result = await discord_platform._connect_with_handshake_retries(
+        connect, is_closed=lambda: False, get_ws=lambda: None, label="Discord",
+    )
+    assert result == "ready"
+    assert calls["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_connect_with_handshake_retries_does_not_mask_other_errors(monkeypatch):
+    monkeypatch.setattr(discord_platform.asyncio, "sleep", AsyncMock())
+
+    async def connect():
+        raise AttributeError("other")
+
+    with pytest.raises(AttributeError, match="other"):
+        await discord_platform._connect_with_handshake_retries(
+            connect, is_closed=lambda: False, get_ws=lambda: None, label="Discord",
+        )

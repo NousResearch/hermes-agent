@@ -159,8 +159,18 @@ def _external_holds(conn, db, copy, path, now):
         return True
     try:
         identity = _file_identity(path)
-        if path.stat(follow_symlinks=False).st_nlink != 1:
-            return True  # Extra physical owners are not deletion authority.
+        links = path.stat(follow_symlinks=False).st_nlink
+        if links != 1:
+            if copy['namespace'] not in {'v2', 'alias'}:
+                return True
+            known = set()
+            for other in conn.execute("SELECT * FROM input_custody_copies WHERE namespace IN ('v2','alias') AND state!='removed' AND device=? AND inode=?",
+                    (str(identity[0]), str(identity[1]))):
+                other_path = copy_path(db, other)
+                if _file_identity(other_path) == identity:
+                    known.add(str(other_path))
+            if links != len(known):
+                return True  # A physical owner outside the inventoried pair.
     except FileNotFoundError:
         return False
     if identity in identities or _legacy_holds(conn, path, copy):

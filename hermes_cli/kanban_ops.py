@@ -66,9 +66,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         _cfg = load_config()
         _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
         default_assignee = (_kanban_cfg.get("default_assignee") or "").strip() or None
-        max_in_progress_per_profile = kbd._positive_int(
-            _kanban_cfg.get("max_in_progress_per_profile"), None
+        max_in_progress_per_profile = kbd.parse_max_in_progress_per_profile(
+            _kanban_cfg.get("max_in_progress_per_profile")
         )
+        auto_assign = kbd.parse_auto_assign(_kanban_cfg.get("auto_assign"))
         # Memory-derived default when unset — same fallback the gateway applies.
         max_in_progress = kbd.resolve_max_in_progress(
             kbd._positive_int(_kanban_cfg.get("max_in_progress"), None)
@@ -80,6 +81,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         )
     except Exception:
         default_assignee = max_in_progress_per_profile = max_in_progress = None
+        auto_assign = None
         max_spawn = getattr(args, "max", None)
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(
@@ -90,6 +92,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            auto_assign=auto_assign,
         )
     if getattr(args, "json", False):
         _print_json({
@@ -123,10 +126,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     for tid, who, ws in res.spawned:
         print(f"  - {tid}  ->  {who}  @ {ws or '-'}{tag}")
     if res.auto_assigned_default:
-        print(
-            f"Auto-assigned to kanban.default_assignee={default_assignee!r}: "
-            f"{', '.join(res.auto_assigned_default)}"
-        )
+        print(f"Auto-assigned: {', '.join(res.auto_assigned_default)}")
     if res.skipped_unassigned:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
     for tid, who, current in res.skipped_per_profile_capped:

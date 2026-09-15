@@ -21,6 +21,7 @@ test runner at ``scripts/run_tests.sh``.
 
 import asyncio
 import atexit
+import hashlib
 import importlib
 import os
 import shutil
@@ -113,6 +114,28 @@ os.environ["HERMES_TEST_ISOLATION"] = os.environ.get("HERMES_HOME", "") or "1"
 #: `_isolate_env` fixture has sandboxed it by then, so the check would pass
 #: even with this block removed.
 HERMES_HOME_AT_CONFTEST_IMPORT = os.environ.get("HERMES_HOME", "")
+
+#: The operator's PLATFORM-NATIVE Hermes home (``%LOCALAPPDATA%\hermes`` on Windows, ``~/.hermes``
+#: elsewhere), captured before any fixture can redirect it.
+#:
+#: ``hermes_constants.get_default_hermes_root()`` prefers this path whenever ``HERMES_HOME`` is
+#: empty **or sits under it** (only Docker/custom roots escape). The per-test HERMES_HOME is
+#: ``<basetemp>/hermes_test``, so as soon as pytest's basetemp lives inside the operator's Hermes
+#: home, that sandbox counts as "under the native home" and the resolver hands the REAL root back —
+#: isolation silently inverts. Tests that resolve the default profile directory then write into the
+#: live install: ``tests/hermes_cli/test_profiles.py`` replaced ``config.yaml`` with ``"ok"``,
+#: ``.env`` with ``KEY=val`` and ``MEMORY.md`` with ``remember this``. The autouse
+#: ``_bind_platform_native_home`` fixture below closes that class of bug for every test.
+def _read_platform_native_home() -> "Path | None":
+    try:
+        from hermes_constants import _get_platform_default_hermes_home
+
+        return Path(_get_platform_default_hermes_home()).resolve()
+    except Exception:
+        return None
+
+
+_OPERATOR_PLATFORM_HOME = _read_platform_native_home()
 
 
 # ── Per-file process isolation ──────────────────────────────────────────────
@@ -564,6 +587,136 @@ def _hermetic_environment(tmp_path, monkeypatch):
     # the generic credential-shaped env-var filter above.
     monkeypatch.delenv("GMI_API_KEY", raising=False)
     monkeypatch.delenv("GMI_BASE_URL", raising=False)
+
+
+# ── Keep every test out of the operator's REAL Hermes home ──────────────────
+# Watched = the root continuity docs AND the memory store the agent actually writes
+# (`memories/MEMORY.md` / `memories/USER.md`). Both layouts exist, and the clobbered install lost
+# the populated one, so a tripwire that only looks at the home root misses the real overwrite.
+_HOME_WATCHED_FILES = (
+    "config.yaml",
+    ".env",
+    "SOUL.md",
+    "MEMORY.md",
+    "USER.md",
+    "memories/MEMORY.md",
+    "memories/USER.md",
+)
+_STUB_BYTES = 64          # a placeholder: "remember this" is 13 bytes, "Be nice." is 8
+_MIN_CONFIG_BYTES = 1024  # a real user config; the stub that clobbered one was 2 bytes
+_MIN_ENV_KEYS = 3
+
+
+def _home_snapshot(home: "Path | None") -> dict:
+    """size + digest (and .env key count) per watched file; None when unreadable/absent."""
+    snapshot = {}
+    if home is None:
+        return snapshot
+    for rel in _HOME_WATCHED_FILES:
+        try:
+            raw = (home / rel).read_bytes()
+        except OSError:
+            snapshot[rel] = None
+            continue
+        entry = {"size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+        if rel == ".env":
+            entry["keys"] = len([
+                ln for ln in raw.decode("utf-8", "replace").splitlines()
+                if "=" in ln and not ln.strip().startswith("#")
+            ])
+        snapshot[rel] = entry
+    return snapshot
+
+
+def detect_home_damage(before: dict, after: dict) -> list:
+    """Report files a run CLOBBERED — changed during the run AND now a stub.
+
+    Neither half is sufficient on its own. A bare size check false-positives on synthetic homes
+    whose config/env legitimately IS small (an autouse fixture in every per-file session would then
+    fail the whole suite). A bare change check false-positives on the operator's own running agent,
+    which legitimately rewrites these files while the suite runs. Damage is the transition.
+    """
+    findings = []
+
+    def changed(rel: str) -> bool:
+        return before.get(rel) != after.get(rel)
+
+    cfg = after.get("config.yaml")
+    if changed("config.yaml") and cfg and cfg["size"] < _MIN_CONFIG_BYTES:
+        findings.append(f"config.yaml became {cfg['size']} bytes")
+
+    env, before_env = after.get(".env"), before.get(".env")
+    if (changed(".env") and env and before_env
+            and before_env.get("keys", 0) >= _MIN_ENV_KEYS and env.get("keys", 0) < _MIN_ENV_KEYS):
+        findings.append(f".env lost its keys ({before_env['keys']} -> {env['keys']})")
+
+    for rel in ("SOUL.md", "MEMORY.md", "USER.md", "memories/MEMORY.md", "memories/USER.md"):
+        prev, now = before.get(rel), after.get(rel)
+        if prev and now and changed(rel) and prev["size"] >= _STUB_BYTES and now["size"] < _STUB_BYTES:
+            findings.append(f"{rel} was replaced by a {now['size']}-byte placeholder")
+    return findings
+
+
+@pytest.fixture(scope="session")
+def home_damage_detector():
+    """The pure before/after damage predicate, exposed so contract tests can drive it directly."""
+    return detect_home_damage
+
+
+@pytest.fixture(autouse=True)
+def _bind_platform_native_home(_hermetic_environment, request, tmp_path_factory, monkeypatch):
+    """Redirect the native-home FALLBACK, but only in the shape where it would leak.
+
+    ``get_default_hermes_root()`` returns the platform-native home whenever HERMES_HOME is empty or
+    sits *under* it. The per-test HERMES_HOME is ``<basetemp>/hermes_test``, so when basetemp is
+    inside the operator's home that sandbox resolves back to the LIVE root — the inversion this
+    guards. Redirect the native base only then: tests that deliberately unset HERMES_HOME and patch
+    ``Path.home()`` to exercise native/profile resolution keep the real resolver (they assert
+    resolution, not isolation), and a custom or already-isolated HERMES_HOME is left untouched.
+    Opt out explicitly with ``@pytest.mark.real_platform_home``.
+    """
+    if request.node.get_closest_marker("real_platform_home"):
+        return
+    try:
+        import hermes_constants
+    except Exception:
+        return
+    real_native = hermes_constants._get_platform_default_hermes_home()
+    env_home = os.environ.get("HERMES_HOME", "").strip()
+    if not env_home:
+        return
+    try:
+        inverted = Path(env_home).resolve().is_relative_to(Path(real_native).resolve())
+    except Exception:
+        return
+    if not inverted:
+        return
+    native = tmp_path_factory.mktemp("platform-native-home")
+    monkeypatch.setattr(
+        hermes_constants, "_get_platform_default_hermes_home", lambda: native, raising=False
+    )
+
+
+@pytest.fixture(scope="session")
+def operator_platform_home():
+    """The operator's real platform-native Hermes home, captured at conftest import."""
+    return _OPERATOR_PLATFORM_HOME
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _operator_home_tripwire():
+    """Fail the suite if a test run clobbered the operator's live Hermes home."""
+    home = _OPERATOR_PLATFORM_HOME
+    before = _home_snapshot(home)
+    yield
+    after = _home_snapshot(home)
+    findings = detect_home_damage(before, after)
+    if findings:
+        raise AssertionError(
+            f"this test run damaged the operator's Hermes home at {home}: {findings}. "
+            "A test resolved the real home — keep pytest's basetemp outside it, and write through "
+            "tmp_path instead of the default profile directory."
+        )
 
 
 # Backward-compat alias — old tests reference this fixture name. Keep it

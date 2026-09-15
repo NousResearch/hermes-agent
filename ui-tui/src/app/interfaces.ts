@@ -349,9 +349,14 @@ export interface UiState {
   status: string
   statusBar: StatusBarMode
   // display.status_bar.fields — visibility filter for status-rule segments,
-  // shared with the classic CLI bar. null = user has not customized (show
-  // the default set).
-  statusBarFields: null | ReadonlySet<string>
+  // shared with the classic CLI bar. Three states, which MUST stay distinct:
+  //   undefined = config not hydrated yet → no filter (show the default set)
+  //   null      = hydrated, user has not customized → no filter (default set)
+  //   Set       = filtered to exactly these segments
+  // `undefined` vs `null` is load-bearing: collapsing them made the boot
+  // default ("no data yet") indistinguishable from "show everything", so a
+  // configured filter never won the race against the first render.
+  statusBarFields: undefined | null | ReadonlySet<string>
   streaming: boolean
   theme: Theme
   // `display.timestamps` — dim [HH:MM] labels on user/assistant transcript

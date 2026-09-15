@@ -90,10 +90,27 @@ class StreamFallbackMixin:
                 "declined this destination for this run"
             )
             return
+        # When the adapter opts in (e.g. Telegram guest mode / answerGuestQuery),
+        # deliver ONLY the last segment's text so inter-tool commentary from
+        # earlier segments does not appear in the reply.  The adapter is then
+        # signalled via "guest_segment_start": True on the first chunk to REPLACE
+        # its buffer (rather than append) so any stale preamble is discarded.
+        _deliver_last_segment_only = (
+            self._had_no_edit_segment_break
+            and getattr(self.adapter, "GUEST_MODE_DROPS_PRIOR_SEGMENTS", False) is True
+        )
         # Balance fences BEFORE computing the continuation so the closing fence
         # reaches the user even when only the tail is delivered.
         final_text = ensure_closed_code_fences(self._clean_for_display(text))
-        continuation = self._continuation_text(final_text)
+        if _deliver_last_segment_only:
+            continuation = self._clean_for_display(
+                text[self._no_edit_segment_text_start:]
+            ).strip()
+            if not continuation:
+                continuation = final_text  # fallback to full text if last segment empty
+        else:
+            continuation = self._continuation_text(final_text)
+        self._had_no_edit_segment_break = False
         self._fallback_final_send = False
         if not continuation.strip():
             continuation = await self._fallback_when_nothing_unseen(final_text)
@@ -107,9 +124,16 @@ class StreamFallbackMixin:
         last_message_id: Optional[str] = None
         last_successful_chunk = ""
         sent_any_chunk = False
+        # Signal the first chunk as a "segment start" so adapters that buffer
+        # replies (e.g. Telegram guest mode / answerGuestQuery) replace their
+        # stale inter-tool preamble instead of appending to it.
+        _tag_segment_start = _deliver_last_segment_only
         for chunk in chunks:
+            _extra_meta = {"guest_segment_start": True} if _tag_segment_start else None
+            _tag_segment_start = False  # only the first chunk gets this flag
             result = await self._send_with_flood_retry(
-                content=chunk, retry_log="Flood control on fallback send, retrying in %.1fs")
+                content=chunk, retry_log="Flood control on fallback send, retrying in %.1fs",
+                extra_metadata=_extra_meta)
             if not result or not result.success:
                 # Partial continuation landed: do NOT set _final_response_sent (the
                 # gateway must still deliver the full answer); _already_sent only
@@ -201,11 +225,14 @@ class StreamFallbackMixin:
                 logger.debug("per-chat limit resolution failed: %s", e)
         return _len_fn, raw_limit
 
-    async def _send_with_flood_retry(self, *, content: str, retry_log: str, reply_to=None):
+    async def _send_with_flood_retry(self, *, content: str, retry_log: str, reply_to=None, extra_metadata=None):
         """adapter.send(final metadata) with ONE bounded flood retry; returns the last
         SendResult.  Exceptions propagate (callers decide whether a raise is "ambiguous")."""
-        kwargs = dict(chat_id=self.chat_id, content=content,
-                      metadata=self._metadata_for_send(final=True))
+        _metadata = self._metadata_for_send(final=True)
+        if extra_metadata:
+            _metadata = dict(_metadata or {})
+            _metadata.update(extra_metadata)
+        kwargs = dict(chat_id=self.chat_id, content=content, metadata=_metadata)
         if reply_to is not None:
             kwargs["reply_to"] = reply_to
         result = None

@@ -62,6 +62,11 @@ import {
 } from "@/lib/pty-resume-loading";
 import { computeKeyboardInset, keyboardRevealScrollDelta } from "@/lib/keyboard-inset";
 import {
+  composerTextareaBox,
+  preparePtyTextareaForDictation,
+  watchPtyTextareaLayout,
+} from "@/lib/pty-ios-textarea";
+import {
   resolvePtyKeyboardShortcut,
   sendPtyShortcutSequence,
 } from "@/lib/pty-keyboard-shortcuts";
@@ -851,11 +856,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     const textarea = term.textarea;
     if (textarea) {
-      textarea.setAttribute("autocomplete", "off");
-      textarea.setAttribute("autocorrect", "off");
-      textarea.setAttribute("autocapitalize", "off");
-      textarea.setAttribute("spellcheck", "false");
+      preparePtyTextareaForDictation(textarea);
     }
+
+    // xterm re-positions the helper on every render; re-apply the composer box
+    // each time so Safari's autocorrect overlay cannot drift across the screen.
+    const stopWatchingTextarea = textarea
+      ? watchPtyTextareaLayout(textarea, () => {
+          const screen = term.element?.querySelector<HTMLElement>(".xterm-screen");
+          return composerTextareaBox(term.rows, screen?.clientHeight ?? host.clientHeight);
+        })
+      : () => {};
 
     // WebGL draws from a texture atlas sized with device pixels. On phones and
     // in DevTools device mode that often produces *visually* much larger cells
@@ -1461,6 +1472,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       onResizeDisposable?.dispose();
       onScrollDisposable?.dispose();
       browserInput.dispose();
+      stopWatchingTextarea();
       host.removeEventListener("paste", handleBrowserPaste, true);
       host.removeEventListener("dragover", handleBrowserDragOver, true);
       host.removeEventListener("drop", handleBrowserDrop, true);

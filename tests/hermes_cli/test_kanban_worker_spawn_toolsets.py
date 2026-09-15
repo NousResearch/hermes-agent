@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 
 def _make_task(kb, *, assignee: str):
     return kb.Task(
@@ -22,6 +24,20 @@ def _make_task(kb, *, assignee: str):
         tenant=None,
         current_run_id=7,
     )
+
+
+@pytest.mark.parametrize("goal_mode", [False, True])
+def test_worker_argv_always_uses_quiet_exit_contract(monkeypatch, tmp_path, goal_mode):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    task = _make_task(kb, assignee="elias")
+    task.goal_mode = goal_mode
+
+    cmd = kbd._worker_argv(task, "elias", str(tmp_path))
+
+    assert "-Q" in cmd
 
 
 def test_default_spawn_pins_assignee_profile_cli_toolsets(monkeypatch, tmp_path):

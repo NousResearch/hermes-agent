@@ -1386,6 +1386,216 @@ def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
 
 
 
+# ---------------------------------------------------------------------------
+# Dispatcher crash diagnosis — a nonzero-exit crash's error text should carry
+# the REAL reason from the worker's own log, not just "pid N exited with code
+# C", when the log contains a recognizable terminal-failure marker.
+# ---------------------------------------------------------------------------
+
+
+def test_nonzero_crash_extracts_real_reason_from_historical_verbose_log(kanban_home):
+    """A nonzero exit whose log has a non-retryable-client-error block gets that
+    reason recorded on the crash — not the bare generic message.
+
+    This is the OLD (pre-PR-#104351) verbose log shape, kept only because real
+    historical logs on this exact repo's ecosym board were captured in it before
+    ``-Q`` became unconditional. See
+    ``test_nonzero_crash_extracts_real_reason_from_quiet_mode_log`` for the shape a
+    genuinely quiet-mode (``-Q``) worker log actually has going forward — that one
+    is the regression test for the common case.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="model mismatch", assignee="worker")
+        log_path = _kb.worker_log_path(tid, board=None)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            "some banner\n"
+            "⚠️  API call failed (attempt 1/3): BadRequestError [HTTP 400]\n"
+            "   🔌 Provider: openai-codex  Model: claude-sonnet-5\n"
+            "   🌐 Endpoint: https://chatgpt.com/backend-api/codex\n"
+            "   📝 Error: claude-sonnet-5 not supported when using Codex with a ChatGPT account\n"
+            "❌ Non-retryable client error (HTTP 400). Aborting.\n"
+            "   🔌 Provider: openai-codex  Model: claude-sonnet-5\n"
+            "   🌐 Endpoint: https://chatgpt.com/backend-api/codex\n"
+            "\nsession_id: abc123\n",
+            encoding="utf-8",
+        )
+
+        events = _drive_nonzero_crash(conn, tid, 992001)
+        assert events == [tid]
+
+        run = kb.list_runs(conn, tid, include_active=False)[-1]
+        assert "400" in run.error
+        assert "claude-sonnet-5 not supported when using Codex" in run.error
+        assert run.error != f"pid 992001 exited with code 1"
+
+        task = kb.get_task(conn, tid)
+        assert "claude-sonnet-5 not supported when using Codex" in (task.last_failure_error or "")
+    finally:
+        conn.close()
+
+
+def test_nonzero_crash_extracts_real_reason_from_quiet_mode_log(kanban_home):
+    """A nonzero exit whose log has the REAL ``-Q`` (quiet-mode) shape gets the
+    printed ``Error: ...`` reason recorded — not the bare generic message.
+
+    Every kanban worker runs with ``-Q`` unconditionally (PR #104351), which sets
+    ``suppress_status_output=True``. That makes ``_vprint(force=True)`` — and every
+    ``agent/turn_recovery.py`` diagnostic line built on it (the verbose
+    "Non-retryable client error" block the other test's log fixture uses) — a
+    silent no-op. A REAL quiet-mode worker log for this failure instead contains
+    only ``cli.py._run_quiet_single_query``'s own ``Error: <summary>`` stderr line
+    followed by ``session_id: <id>``. This is the actual log shape every FUTURE
+    early crash produces; the other (historical-verbose) test's fixture shape is
+    unreachable once ``-Q`` is unconditional.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="quiet-mode model mismatch", assignee="worker")
+        log_path = _kb.worker_log_path(tid, board=None)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            "Query: work kanban task t_quiet\n"
+            "Error: HTTP 400: The 'claude-sonnet-5' model is not supported when "
+            "using Codex with a ChatGPT account.\n"
+            "\n"
+            "session_id: 20260907_000000_abc123\n",
+            encoding="utf-8",
+        )
+
+        events = _drive_nonzero_crash(conn, tid, 992004)
+        assert events == [tid]
+
+        run = kb.list_runs(conn, tid, include_active=False)[-1]
+        assert "400" in run.error
+        assert "claude-sonnet-5" in run.error
+        assert "not supported when using Codex" in run.error
+        assert run.error != "pid 992004 exited with code 1"
+
+        task = kb.get_task(conn, tid)
+        assert "not supported when using Codex" in (task.last_failure_error or "")
+    finally:
+        conn.close()
+
+
+def test_nonzero_crash_ignores_stale_error_from_a_prior_attempt(kanban_home):
+    """A crash extraction must never fall through to an OLDER attempt's
+    ``Error:`` line when the CURRENT attempt crashed before printing anything.
+
+    CodeRabbit finding on PR #104643: worker logs are append-only across
+    re-runs (``_open_worker_log`` opens ``"ab"`` by design — an unblock/retry
+    must not destroy prior-attempt history for `hermes kanban log`). Before
+    the attempt-boundary fix, the scan-from-the-end loops had no way to tell
+    where the CURRENT attempt's output starts, so a fresh worker that died
+    with zero output (e.g. an immediate OOM-kill or `hermes` binary missing)
+    would report the PREVIOUS, already-resolved attempt's error as if it were
+    the current failure — misleading exactly the way this whole feature was
+    built to stop.
+    """
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli import kanban_db_dispatch as _kbd
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="stale prior attempt", assignee="worker")
+        log_path = _kb.worker_log_path(tid, board=None)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        # Attempt 1: a real, now-resolved error (e.g. the old codex mismatch).
+        log_path.write_text(
+            _kbd._attempt_boundary_line(1).decode("utf-8")
+            + "Error: HTTP 400: The 'claude-sonnet-5' model is not supported "
+            "when using Codex with a ChatGPT account.\n"
+            "\nsession_id: 20260907_000000_attempt1\n",
+            encoding="utf-8",
+        )
+        # Attempt 2 (the CURRENT one): boundary written, then the process died
+        # before printing a single byte of its own — e.g. a signal on launch.
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(_kbd._attempt_boundary_line(2).decode("utf-8"))
+
+        events = _drive_nonzero_crash(conn, tid, 992005)
+        assert events == [tid]
+
+        run = kb.list_runs(conn, tid, include_active=False)[-1]
+        # Must NOT resurrect attempt 1's resolved error as the current reason.
+        assert "claude-sonnet-5" not in (run.error or "")
+        assert run.error == "pid 992005 exited with code 1"
+    finally:
+        conn.close()
+
+
+def test_nonzero_crash_falls_back_to_generic_message_without_a_marker(kanban_home):
+    """A nonzero exit whose log has no recognizable marker (or no log file at
+    all) keeps the existing generic message — the extraction path must degrade
+    gracefully and never raise, never return empty text.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    conn = kbc.connect()
+    try:
+        # Case 1: log file exists but is unrecognizable garbage.
+        tid1 = kb.create_task(conn, title="garbage log", assignee="worker")
+        log_path = _kb.worker_log_path(tid1, board=None)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("some unrelated banner\nnothing useful here\n", encoding="utf-8")
+        events1 = _drive_nonzero_crash(conn, tid1, 992002)
+        assert events1 == [tid1]
+        run1 = kb.list_runs(conn, tid1, include_active=False)[-1]
+        assert run1.error == "pid 992002 exited with code 1"
+
+        # Case 2: no log file at all.
+        tid2 = kb.create_task(conn, title="missing log", assignee="worker")
+        events2 = _drive_nonzero_crash(conn, tid2, 992003)
+        assert events2 == [tid2]
+        run2 = kb.list_runs(conn, tid2, include_active=False)[-1]
+        assert run2.error == "pid 992003 exited with code 1"
+    finally:
+        conn.close()
+
+
+def test_codex_model_mismatch_refused_before_spawn(kanban_home, monkeypatch):
+    """A task whose ``model_override`` isn't in the openai-codex OAuth allowlist,
+    with ``provider_override`` unset and the assignee's profile pinning
+    ``model.provider: openai-codex``, must be refused BEFORE ``spawn_fn`` is
+    ever called.
+    """
+    from hermes_cli import profiles as _profiles
+
+    profile_dir = _profiles.get_profile_dir("worker")
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    (profile_dir / "config.yaml").write_text(
+        "model:\n  provider: openai-codex\n  default: claude-sonnet-5\n", encoding="utf-8",
+    )
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="bad override", assignee="worker",
+            model_override="claude-sonnet-5", provider_override=None,
+        )
+
+        spawn_calls = []
+
+        def _fake_spawn(task, workspace, board):
+            spawn_calls.append(task.id)
+            return 12345
+
+        result = kbd.dispatch_once(conn, spawn_fn=_fake_spawn)
+
+        assert spawn_calls == [], "spawn_fn must never be called for a doomed codex override"
+        task = kb.get_task(conn, tid)
+        assert task.status in ("ready", "blocked")
+        assert "openai-codex" in (task.last_failure_error or "")
+        assert "claude-sonnet-5" in (task.last_failure_error or "")
+    finally:
+        conn.close()
+
+
 def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
     """A new subscription must NOT replay historical terminal events.
 

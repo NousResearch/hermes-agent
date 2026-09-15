@@ -16,16 +16,31 @@ import pytest
 
 @pytest.fixture()
 def isolated_kanban_home_with_profiles(monkeypatch):
-    """Spin up a fresh HERMES_HOME with kanban DB + alpha/beta profiles."""
+    """Spin up a fresh HERMES_HOME with kanban DB + alpha/beta profiles.
+
+    Restore the pre-test Hermes module graph after the fresh import so later
+    tests keep using the same module singletons as their fixtures.
+    """
     test_home = tempfile.mkdtemp(prefix="kanban_per_profile_cap_test_")
     for prof in ("alpha", "beta", "default"):
         os.makedirs(os.path.join(test_home, "profiles", prof), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", test_home)
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
-    from hermes_cli import kanban_db
-    yield kanban_db
+    module_prefixes = ("hermes_cli", "hermes_state")
+    saved_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if name.startswith(module_prefixes) or name == "hermes_constants"
+    }
+    for name in saved_modules:
+        del sys.modules[name]
+    try:
+        from hermes_cli import kanban_db
+        yield kanban_db
+    finally:
+        for name in list(sys.modules):
+            if name.startswith(module_prefixes) or name == "hermes_constants":
+                del sys.modules[name]
+        sys.modules.update(saved_modules)
 
 
 def _fake_spawn(*args, **kwargs):

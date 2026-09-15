@@ -47,6 +47,9 @@ class TestNormalizeUrlForRequest:
         ("https://wttr.in/K%C3%B6ln", "https://wttr.in/K%C3%B6ln"),
         # hostname is IDNA-encoded
         ("https://münich.example/Köln", "https://xn--mnich-kva.example/K%C3%B6ln"),
+        # mixed- and upper-case IDN hostnames are IDNA-encoded too
+        ("https://München.de/path", "https://xn--mnchen-3ya.de/path"),
+        ("https://MÜNCHEN.de/path", "https://xn--mnchen-3ya.de/path"),
     ])
     def test_encodes_url_parts(self, raw, expected):
         assert normalize_url_for_request(raw) == expected

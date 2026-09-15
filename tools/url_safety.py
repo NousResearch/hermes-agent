@@ -58,7 +58,11 @@ def normalize_url_for_request(url: str) -> str:
         except UnicodeError:
             ascii_host = hostname
         if ascii_host != hostname:
-            netloc = netloc.replace(hostname, ascii_host, 1)
+            # ``parsed.hostname`` is lowercased but ``netloc`` keeps its case; splice
+            # case-insensitively so ``München.de`` encodes, not just ``münchen.de``.
+            idx = netloc.lower().find(hostname)
+            if idx >= 0:
+                netloc = netloc[:idx] + ascii_host + netloc[idx + len(hostname):]
     safe = "/%:@!$&'()*+,;="
     return urlunsplit((parsed.scheme, netloc, quote(parsed.path, safe=safe),
                        quote(parsed.query, safe=safe + "?"), quote(parsed.fragment, safe=safe + "?")))

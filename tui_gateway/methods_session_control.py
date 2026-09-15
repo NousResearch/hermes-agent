@@ -331,7 +331,7 @@ def _validate_action_args(rid, action: str, args: SessionControlArgs | None):
 def _dispatch_command(rid, *, session_id: str, name: str, arg: str) -> dict:
     """Delegate a fixed intent to the existing TUI command dispatcher."""
     try:
-        response = invoke("command.dispatch", CommandDispatchParams(
+        response = invoke("command.dispatch", rid=rid, params=CommandDispatchParams(
             session_id=session_id, name=name, arg=arg))
     except Exception as exc:
         logger.debug("command.dispatch %s %s failed: %s", name, arg, exc, exc_info=True)

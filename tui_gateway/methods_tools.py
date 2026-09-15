@@ -339,7 +339,7 @@ def _(rid, params) -> ReloadMcpResult | dict:
                     _mcp_agent.refresh_agent_mcp_tools(agent, enabled_override=_load_enabled_toolsets(), quiet_mode=True)
             except Exception as _exc:
                 logger.warning("Failed to refresh cached agent tools after /reload-mcp (session %s): %s", sid, _exc)
-            _emit("session.info", sid, SessionInfoPayload(**_session_info(agent, sess).model_dump(mode="json")))
+            _emit("session.info", sid, SessionInfoPayload.of(_session_info(agent, sess)))
 
     def _do_full_reload() -> None:
         """shutdown+discover+refresh under the lock, then mark a completed generation. Config
@@ -696,7 +696,7 @@ def _cmd_focus(rid, params, session, name, arg):
     if action == "status":
         saved = display.get("focus_saved_tool_progress") or _load_tool_progress_mode()
         return _exec_out(rid, fv.format_focus_status(cur, saved))
-    res = invoke("config.set", ConfigSetParams(
+    res = invoke("config.set", rid=rid, params=ConfigSetParams(
         key="focus", value="on" if target else "off", session_id=params.session_id))
     if isinstance(res, dict):
         return res  # config.set's own error frame (4001/4002/5001/5032)
@@ -912,7 +912,7 @@ def _(rid, params) -> SlashExecResult | dict:
     with _session_home_scope(session):  # a secondary-only bundle must route too (#110695)
         target = base if base in _PENDING_INPUT_COMMANDS else _bundle_key_for(base)
     if target is not None:
-        dispatched = invoke("command.dispatch", CommandDispatchParams(
+        dispatched = invoke("command.dispatch", rid=rid, params=CommandDispatchParams(
             name=target.lstrip("/"), arg=arg, session_id=sid))
         if isinstance(dispatched, dict):
             return dispatched  # command.dispatch's own error frame

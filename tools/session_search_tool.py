@@ -115,14 +115,14 @@ def _resolve_lineage(db, session_id: str) -> str:
     return _resolve_to_parent(db, session_id)[0]
 
 
-def _parse_iso_bound(value: Optional[str], *, as_exclusive_end: bool = False) -> Optional[int]:
+def _parse_iso_bound(value: Optional[str]) -> Optional[int]:
     """Parse an ISO date/datetime OR a relative duration into a UTC unix timestamp.
 
-    ISO: a date-only value (``YYYY-MM-DD``) is midnight UTC on that day; with
-    ``as_exclusive_end`` that midnight is the exclusive upper bound
-    (``before=2026-07-01`` keeps June, drops July 1 00:00). Relative: ``"7d"``,
-    ``"24h"``, ``"2w"`` = now minus N hours/days/weeks, so ``after="7d"`` is the
-    last week and ``before="7d"`` is everything older than a week.
+    ISO: a date-only value (``YYYY-MM-DD``) is midnight UTC on that day (the SQL
+    ``before`` predicate is exclusive, so ``before=2026-07-01`` keeps June and drops
+    July 1 00:00). Relative: ``"7d"``, ``"24h"``, ``"2w"`` = now minus N
+    hours/days/weeks, so ``after="7d"`` is the last week and ``before="7d"`` is
+    everything older than a week.
     """
     if value is None:
         return None
@@ -347,6 +347,8 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
     excluded_roots = _excluded_lineage_roots(db, exclude_session_ids or [])
     title_result = _title_match_result(db, query, current_lineage_root)
+    # FTS rows are time-bounded in SQL (_search_filter_clauses); the title match bypasses that
+    # query, so it is the one place the window is re-checked in Python.
     if title_result:
         title_sid, title_root = title_result["session_id"], title_result.get("_lineage_root") or title_result["session_id"]
         title_started = _coerce_started_ts((_get_session_meta(db, title_root) or _get_session_meta(db, title_sid)).get("started_at"))
@@ -382,11 +384,6 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
             break
         raw_sid, resolved_sid = r["session_id"], _resolve_lineage(db, r["session_id"])
         if raw_sid in excluded_roots or resolved_sid in excluded_roots:
-            continue
-        started_ts = _coerce_started_ts(r.get("session_started"))
-        if started_ts is None:
-            started_ts = _coerce_started_ts(_get_session_meta(db, raw_sid).get("started_at"))
-        if not _in_time_window(started_ts, after_ts, before_ts):
             continue
         # Skip the current session lineage — UNLESS the hit's transcript has left live context. Three
         # sub-cases: Legacy compression rotation: the FTS hit lives in a session that itself ended with
@@ -596,7 +593,7 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
         return _list_recent_sessions(db, limit, current_session_id, link_profile=profile)
     sort_norm = sort.strip().lower() if isinstance(sort, str) else None
     try:
-        after_ts, before_ts = _parse_iso_bound(after), _parse_iso_bound(before, as_exclusive_end=True)
+        after_ts, before_ts = _parse_iso_bound(after), _parse_iso_bound(before)
     except ValueError as e:
         return tool_error(str(e), success=False)
     return _discover(

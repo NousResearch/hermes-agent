@@ -1705,27 +1705,29 @@ class TestDedupTTL(unittest.TestCase):
         # The class-level env wipe drops the per-test HERMES_HOME, so the adapter resolves
         # its dedup store under the operator's real ~/.hermes and every id a live gateway
         # persisted leaks into writes[-1]. Pin the store to a scratch path instead.
+        # Kept open for the whole test: _persist_seen_message_ids mkdirs the store's
+        # parent back, so closing it early leaks an empty scratch dir per run.
         with tempfile.TemporaryDirectory() as scratch:
             with patch("plugins.platforms.feishu.adapter.get_hermes_home", return_value=Path(scratch)):
                 adapter = FeishuAdapter(PlatformConfig())
-        writes = []
-        calls = [0]
+            writes = []
+            calls = [0]
 
-        def slow_first_write(path, data, *args, **kwargs):
-            idx = calls[0]
-            calls[0] += 1
-            if idx == 0:
-                time.sleep(0.05)
-            writes.append(sorted(data["message_ids"]))
+            def slow_first_write(path, data, *args, **kwargs):
+                idx = calls[0]
+                calls[0] += 1
+                if idx == 0:
+                    time.sleep(0.05)
+                writes.append(sorted(data["message_ids"]))
 
-        async def run():
-            first = asyncio.create_task(adapter._is_duplicate("om_a"))
-            await asyncio.sleep(0.005)
-            second = asyncio.create_task(adapter._is_duplicate("om_b"))
-            await asyncio.gather(first, second)
+            async def run():
+                first = asyncio.create_task(adapter._is_duplicate("om_a"))
+                await asyncio.sleep(0.005)
+                second = asyncio.create_task(adapter._is_duplicate("om_b"))
+                await asyncio.gather(first, second)
 
-        with patch("plugins.platforms.feishu.adapter.atomic_json_write", side_effect=slow_first_write):
-            asyncio.run(run())
+            with patch("plugins.platforms.feishu.adapter.atomic_json_write", side_effect=slow_first_write):
+                asyncio.run(run())
 
         self.assertEqual(writes[-1], ["om_a", "om_b"])
 

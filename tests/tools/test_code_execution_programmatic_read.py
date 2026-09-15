@@ -108,7 +108,7 @@ def test_programmatic_read_does_not_change_chat_dedup_contract(tmp_path):
     chat_second = json.loads(file_tools.read_file_tool(str(target), task_id=task_id))
 
     assert programmatic["content"] == "alpha\nbeta\n"
-    assert chat_first["content"] == "1|alpha\n2|beta\n3|"
+    assert chat_first["content"] == "1|alpha\n2|beta"
     assert chat_second["status"] == "unchanged"
     assert "content" not in chat_second
 

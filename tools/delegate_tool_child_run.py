@@ -1007,7 +1007,14 @@ class _ChildRun:
             "files_read": _files_read,
             "files_written": sorted({p for tid, paths in _files_written_map.items() if tid == self.child_task_id for p in paths})[:40],
             "output_tail": _extract_output_tail(result, max_entries=8, max_chars=600),
+            # Truncation is a core completion field, including for schema-less
+            # children. Schema verdict fields below remain opt-in.
+            "truncated": entry["truncated"],
         }
+        if "schema_valid" in entry:
+            complete_kwargs.update(
+                {key: entry[key] for key in ("schema_valid", "schema_retries") if key in entry}
+            )
         if entry.get("failure_reason"):
             # Classified verdict rides the event so every surface glosses the failure the same way.
             complete_kwargs["failure_reason"] = entry["failure_reason"]

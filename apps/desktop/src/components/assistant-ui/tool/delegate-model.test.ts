@@ -53,6 +53,36 @@ describe('delegateRowsFromCall', () => {
     expect(rows[0]).toMatchObject({ activity: ['found it'], durationSeconds: 12, model: 'anthropic/claude-opus-5' })
   })
 
+  it('preserves optional structured observability fields from terminal results', () => {
+    const [row] = delegateRowsFromCall(
+      { goal: 'A' },
+      {
+        results: [
+          {
+            status: 'completed',
+            cost_usd: 0.012345,
+            input_tokens: 1200,
+            output_tokens: 300,
+            tool_trace: [{ tool: 'read_file' }, { tool: 'search_files' }],
+            schema_valid: false,
+            schema_retries: 1,
+            truncated: true
+          }
+        ]
+      }
+    )
+
+    expect(row).toMatchObject({
+      costUsd: 0.012345,
+      inputTokens: 1200,
+      outputTokens: 300,
+      toolCount: 2,
+      schemaValid: false,
+      schemaRetries: 1,
+      truncated: true
+    })
+  })
+
   // #73728 / #85492: the delegate tool settles rows with 'ok', 'error' or
   // 'timeout' — anything that is not a success must render as failed instead
   // of hiding behind a green 'completed' check.
@@ -121,7 +151,18 @@ describe('mergeDelegateRows', () => {
     })
   })
 
-  it('never lets a second delegation claim another call\u2019s workers', () => {
+  it('projects live structured metadata, including truncation', () => {
+    const rows = delegateRowsFromCall({ tasks: [{ goal: 'Research Cursor' }] }, undefined, 'call-live')
+    const merged = mergeDelegateRows(
+      rows,
+      [subagent({ goal: 'Research Cursor', schemaRetries: 1, schemaValid: false, truncated: true })],
+      'call-live'
+    )
+
+    expect(merged[0]).toMatchObject({ schemaRetries: 1, schemaValid: false, truncated: true })
+  })
+
+  it('never lets a second delegation claim another call’s workers', () => {
     const rows = delegateRowsFromCall({ tasks: [{ goal: 'C' }] }, undefined, 'call-2')
 
     // Two unrelated children in the session, neither matching this call's goal.

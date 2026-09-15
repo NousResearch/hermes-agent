@@ -77,6 +77,26 @@ def test_snapshot_projects_only_this_sessions_runtime_records(runtime):
         assert finished.wait(10)
 
 
+def test_progress_updates_registry_replaced_after_progress_module_import(monkeypatch):
+    """The progress relay must follow the registry module's current map.
+
+    Tests and profile lifecycles replace the registry map; importing the dict
+    by value leaves snapshots with a stale ``last_tool`` record.
+    """
+    from tools import delegate_tool_progress as progress_module
+    from tools import delegate_tool_registry as registry
+
+    active = {}
+    monkeypatch.setattr(registry, "_active_subagents", active)
+    registry._register_subagent({"subagent_id": "child", "tool_count": 0})
+    relay = progress_module._build_child_progress_callback(
+        0, "owned task", SimpleNamespace(tool_progress_callback=lambda *a, **kw: None), subagent_id="child"
+    )
+    assert relay is not None
+    relay("tool.started", "read_file")
+    assert active["child"]["last_tool"] == "read_file"
+
+
 def test_live_tail_and_steer_share_exact_owner_and_end_with_child(runtime):
     from run_agent import AIAgent
     from tools.delegate_tool_child_run import _register_child

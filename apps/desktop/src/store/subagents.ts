@@ -31,6 +31,9 @@ export interface SubagentProgress {
   costUsd?: number
   inputTokens?: number
   outputTokens?: number
+  schemaRetries?: number
+  schemaValid?: boolean
+  truncated?: boolean
   toolCount?: number
   filesRead: string[]
   filesWritten: string[]
@@ -224,6 +227,9 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
     costUsd: num(payload.cost_usd) ?? prev?.costUsd,
     inputTokens: num(payload.input_tokens) ?? prev?.inputTokens,
     outputTokens: num(payload.output_tokens) ?? prev?.outputTokens,
+    schemaRetries: num(payload.schema_retries) ?? prev?.schemaRetries,
+    schemaValid: typeof payload.schema_valid === 'boolean' ? payload.schema_valid : prev?.schemaValid,
+    truncated: typeof payload.truncated === 'boolean' ? payload.truncated : prev?.truncated,
     toolCount: num(payload.tool_count) ?? prev?.toolCount,
     filesRead: filesRead.length ? filesRead : (prev?.filesRead ?? []),
     filesWritten: filesWritten.length ? filesWritten : (prev?.filesWritten ?? []),

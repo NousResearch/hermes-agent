@@ -4,6 +4,7 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaBoot } from './ja_boot'
 import { jaCatalog, jaSkillDeepLink } from './ja_catalog'
+import { jaChrome } from './ja_chrome'
 import { jaClarify } from './ja_clarify'
 import { jaConnectors } from './ja_connectors'
 import { jaFirstRun } from './ja_first_run'
@@ -75,25 +76,7 @@ export const jaOverrides = {
     off: 'オフ'
   },
 
-  fileMenu: {
-    revealFinder: 'Finder で表示',
-    revealExplorer: 'エクスプローラーで表示',
-    revealFileManager: '格納フォルダーを開く',
-    revealInSidebar: 'ファイルツリーで表示',
-    copyPath: 'パスをコピー',
-    copyRelativePath: '相対パスをコピー',
-    download: 'ダウンロード',
-    downloadSaved: '保存しました',
-    downloadFailed: 'ダウンロードに失敗しました',
-    rename: '名前を変更…',
-    delete: '削除',
-    renameTitle: '名前を変更',
-    renameLabel: '新しい名前',
-    deleteTitle: name => `${name} を削除しますか？`,
-    deleteBody: 'ゴミ箱に移動します。そこから復元できます。',
-    pathCopied: 'パスをコピーしました',
-    revealMissing: 'そのフォルダーはこのコンピューターにありません'
-  },
+  fileMenu: jaChrome.fileMenu,
 
   boot: jaBoot.boot,
 

@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { frBoot } from './fr_boot'
+import { frChrome } from './fr_chrome'
 import { frClarify } from './fr_clarify'
 import { frConnectorAccounts } from './fr_connector_accounts'
 import { frConnectorCard } from './fr_connector_card'
@@ -370,27 +371,7 @@ export const frOverrides = {
     on: 'Activé',
     off: 'Désactivé'
   },
-  fileMenu: {
-    revealFinder: 'Afficher dans le Finder',
-    revealExplorer: "Afficher dans l'Explorateur de fichiers",
-    revealFileManager: 'Ouvrir le dossier parent',
-    revealInSidebar: "Afficher dans l'arborescence",
-    copyPath: 'Copier le chemin',
-    copyRelativePath: 'Copier le chemin relatif',
-    download: 'Télécharger',
-    downloadSaved: 'Enregistré',
-    downloadFailed: 'Échec du téléchargement',
-    rename: 'Renommer…',
-    delete: 'Supprimer',
-    renameTitle: 'Renommer',
-    renameLabel: 'Nouveau nom',
-    deleteTitle: name => `Supprimer ${name} ?`,
-    deleteBody: 'Il sera déplacé dans la Corbeille — vous pourrez le restaurer depuis là.',
-    pathCopied: 'Chemin copié',
-    revealMissing: "Ce dossier n'est pas sur cet ordinateur",
-    revealUnavailable:
-      "Ce chemin n'est pas sur cet ordinateur : il se trouve sur la machine du backend. Utilisez « Afficher dans l'arborescence »."
-  },
+  fileMenu: frChrome.fileMenu,
   boot: frBoot.boot,
   notifications: {
     region: 'Notifications',

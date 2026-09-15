@@ -13,6 +13,7 @@ import type { BillingTranslations } from './types_billing'
 import type { BootTranslations } from './types_boot'
 import type { CatalogTranslations } from './types_catalog'
 import type { CatalogInstallTranslations } from './types_catalog_install'
+import type { FileMenuTranslations } from './types_chrome'
 import type { ClarifyCopy } from './types_clarify'
 import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from './types_connectors'
 import type { GatewayGroupOpenCopy, SkillDeepLinkCopy } from './types_deep_links'
@@ -391,26 +392,7 @@ catalog: CatalogTranslations
     off: string
   }
 
-  fileMenu: {
-    revealFinder: string
-    revealExplorer: string
-    revealFileManager: string
-    revealInSidebar: string
-    copyPath: string
-    copyRelativePath: string
-    download: string
-    downloadSaved: string
-    downloadFailed: string
-    rename: string
-    delete: string
-    renameTitle: string
-    renameLabel: string
-    deleteTitle: (name: string) => string
-    deleteBody: string
-    pathCopied: string
-    revealMissing: string
-    revealUnavailable: string
-  }
+  fileMenu: FileMenuTranslations
 
   boot: BootTranslations
 

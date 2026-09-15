@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { readDesktopFileDataUrl } = vi.hoisted(() => ({ readDesktopFileDataUrl: vi.fn() }))
 
-vi.mock('@/lib/desktop-fs', () => ({
+vi.mock('@/lib/desktop-fs', async importOriginal => ({
+  ...(await (importOriginal() as Promise<Record<string, unknown>>)),
   isDesktopFsRemoteMode: () => true,
   readDesktopFileDataUrl,
   readDesktopFileText: vi.fn()
@@ -58,7 +59,8 @@ describe('remote HTML previews', () => {
 
     await expect(normalizeOrLocalPreviewTarget('/srv/report.html')).resolves.toEqual({
       ...remoteTarget,
-      dataUrl
+      dataUrl,
+      filesystemOrigin: 'remote'
     })
     expect(readDesktopFileDataUrl).toHaveBeenCalledWith('/srv/report.html')
   })
@@ -163,6 +165,13 @@ describe('remote HTML previews', () => {
 
   it('preserves POSIX double-slash file paths', () => {
     expect(localPreviewTarget('//srv/share/report #1?.html')?.url).toBe('file:////srv/share/report%20%231%3F.html')
+  })
+
+  it('preserves UNC hosts when normalizing file URLs', () => {
+    expect(localPreviewTarget('file://server/share/report%20%231.html')).toMatchObject({
+      path: '\\\\server\\share\\report #1.html',
+      url: 'file://server/share/report%20%231.html'
+    })
   })
 
   it('opens ordinary targets without staging them', async () => {

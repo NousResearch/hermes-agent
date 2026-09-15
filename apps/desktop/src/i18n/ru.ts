@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { ruBoot } from './ru_boot'
 import { ruCatalog, ruSkillDeepLink } from './ru_catalog'
+import { ruChrome } from './ru_chrome'
 import { ruClarify } from './ru_clarify'
 import { ruConnectors } from './ru_connectors'
 import { ruFirstRun } from './ru_first_run'
@@ -86,25 +87,7 @@ export const ruOverrides = {
     on: 'Вкл',
     off: 'Выкл'
   },
-  fileMenu: {
-    revealFinder: 'Показать в Finder',
-    revealExplorer: 'Показать в Проводнике',
-    revealFileManager: 'Открыть содержащую папку',
-    revealInSidebar: 'Показать в дереве файлов',
-    copyPath: 'Копировать путь',
-    copyRelativePath: 'Копировать относительный путь',
-    download: 'Скачать',
-    downloadSaved: 'Сохранено',
-    downloadFailed: 'Не удалось скачать',
-    rename: 'Переименовать…',
-    delete: 'Удалить',
-    renameTitle: 'Переименование',
-    renameLabel: 'Новое имя',
-    deleteTitle: name => `Удалить ${name}?`,
-    deleteBody: 'Элемент будет перемещён в корзину — его можно восстановить оттуда.',
-    pathCopied: 'Путь скопирован',
-    revealMissing: 'Этой папки нет на этом компьютере'
-  },
+  fileMenu: ruChrome.fileMenu,
   boot: ruBoot.boot,
   notifications: {
     sharedProfileWarning:

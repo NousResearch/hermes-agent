@@ -1,23 +1,26 @@
 """The mem0 config schema must agree with is_available(): a self-hosted server needs a host, not a key."""
 
+import pytest
+
 import plugins.memory.mem0 as mem0
 
 
-def _required(monkeypatch, config):
+@pytest.mark.parametrize(
+    ("config", "required"),
+    [
+        ({"mode": "platform", "host": "http://mem0.local:8888"}, False),  # an AUTH_DISABLED server has no key
+        ({"mode": "platform"}, True),  # the Platform always needs one
+        ({"mode": "oss", "oss": {"vector_store": {"provider": "qdrant"}}}, False),
+    ],
+    ids=["self-hosted", "platform", "oss"],
+)
+def test_the_api_key_is_required_only_where_is_available_needs_one(monkeypatch, config, required):
+    """A key marked required with a host configured left a self-hosted server "needs config" in the
+    dashboard, and activation refuses anything that is not "ready"."""
     monkeypatch.setattr(mem0, "_load_config", lambda: config)
-    field = next(f for f in mem0.Mem0MemoryProvider().get_config_schema() if f["key"] == "api_key")
-    return field["required"]
+    provider = mem0.Mem0MemoryProvider()
+    field = next(f for f in provider.get_config_schema() if f["key"] == "api_key")
 
-
-def test_platform_mode_requires_the_api_key(monkeypatch):
-    assert _required(monkeypatch, {"mode": "platform"}) is True
-
-
-def test_self_hosted_server_does_not_require_the_api_key(monkeypatch):
-    # AUTH_DISABLED deployments have no key; the dashboard must not hold activation hostage to one.
-    assert _required(monkeypatch, {"mode": "platform", "host": "http://mem0.local:8888"}) is False
-    assert mem0.Mem0MemoryProvider().is_available() is True, "is_available already treats the host as enough"
-
-
-def test_oss_mode_does_not_require_the_api_key(monkeypatch):
-    assert _required(monkeypatch, {"mode": "oss", "oss": {"vector_store": {"provider": "qdrant"}}}) is False
+    assert field["required"] is required
+    if "host" in config:
+        assert provider.is_available() is True

@@ -153,10 +153,8 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def get_config_schema(self):
         cfg = _load_config()
-        # The Platform needs a key; a self-hosted server takes one only when it enforces auth (the
-        # README documents AUTH_DISABLED deployments) — the same rule is_available() applies. Marking
-        # the key required with a host configured left such a server "needs config" in the dashboard,
-        # and _require_memory_provider_ready refuses to activate anything that is not "ready".
+        # A self-hosted server takes a key only when it enforces auth (AUTH_DISABLED deployments have
+        # none), the rule is_available() applies; only the Platform always needs one.
         api_key_required = cfg.get("mode", "platform") != "oss" and not cfg.get("host")
         return [
             {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": api_key_required, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},

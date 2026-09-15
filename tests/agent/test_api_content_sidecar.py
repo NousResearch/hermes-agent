@@ -48,6 +48,23 @@ class TestComposeUserApiContent:
         fenced = build_memory_context_block("likes tea")
         assert out == "hello" + "\n\n" + fenced + "\n\n" + "PLUGIN-CTX"
 
+    def test_memory_block_is_advisory_and_live_sources_take_precedence(self):
+        out = compose_user_api_content(
+            "The live source says the current value is LIVE.",
+            "A remembered observation says the value is OLD.",
+            "",
+        )
+
+        assert out is not None
+        assert "It is advisory and may be incomplete or outdated" in out
+        assert "MUST NOT be treated as proof of external communication" in out
+        assert "calendar state, payment state, transactional state" in out
+        assert "The latest user instruction and live direct sources always take precedence" in out
+        assert "Verify consequential facts against live direct sources" in out
+        assert "Treat as authoritative reference data" not in out
+        assert "LIVE" in out
+        assert "OLD" in out
+
 
 
 

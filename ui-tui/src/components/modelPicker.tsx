@@ -63,9 +63,32 @@ export function hopCurrentIndex(rows: ModelHopRow[], current: string) {
   return i < 0 ? 0 : i
 }
 
-/** Printable paste or a single typed char; skip controls (Tab/Esc). */
+/** Printable paste (or one typed char). Drops controls so Tab/Esc/newlines never enter the filter. */
 export function searchAppend(prev: string, ch: string) {
-  return ch && ch[0] >= ' ' ? prev + ch : prev
+  let add = ''
+  for (const c of ch) {
+    if (c >= ' ') add += c
+  }
+  return add ? prev + add : prev
+}
+
+/** Rank/paint query after a `nous/` provider scope. `nous/` → empty (no fake hits on the slug). */
+export function hopPaintQuery(q: string) {
+  const t = q.trim()
+  const i = t.indexOf('/')
+  return i < 0 ? t : t.slice(i + 1).trim()
+}
+
+export function keepReasoningLabel(current: string) {
+  const v = current.trim().toLowerCase()
+  if (!v || v === 'hide' || v === 'show') return 'Keep current effort'
+  return `Keep current effort (${v})`
+}
+
+/** Clamp a list index. Empty list stays 0; page/home/end use a large |delta|. */
+export function listStep(sel: number, n: number, delta: number) {
+  if (n <= 0) return 0
+  return Math.max(0, Math.min(n - 1, sel + delta))
 }
 
 /** Consecutive runs of `text` whose indices fuzzy-matched `q` (OMP /switch). */
@@ -186,6 +209,7 @@ export function ModelPicker({
 }: ModelPickerProps) {
   const [providers, setProviders] = useState<ModelOptionProvider[]>([])
   const [currentModel, setCurrentModel] = useState('')
+  const [currentReasoning, setCurrentReasoning] = useState('')
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(true)
   const [persistGlobal, setPersistGlobal] = useState(false)
@@ -236,6 +260,15 @@ export function ModelPicker({
         const next = r.providers ?? []
         setProviders(next)
         setCurrentModel(String(r.model ?? ''))
+        gw.request<{ value?: string }>('config.get', {
+          key: 'reasoning',
+          ...(sessionId ? { session_id: sessionId } : {})
+        })
+          .then(raw => {
+            const effort = asRpcResult<{ value?: string }>(raw)
+            setCurrentReasoning(String(effort?.value ?? ''))
+          })
+          .catch(() => setCurrentReasoning(''))
         setProviderIdx(
           Math.max(
             0,
@@ -376,6 +409,12 @@ export function ModelPicker({
   useOverlayKeys({ disabled: listStage, onBack: back, onClose: onCancel })
 
   useInput((ch, key) => {
+    // Loading/error/empty: Esc/q close. Never absorb type/Enter into a hidden hop filter.
+    if (loading || err || !providers.length) {
+      if (key.escape || ch === 'q') onCancel()
+      return
+    }
+
     // Key entry stage handles its own input
     if (stage === 'key') {
       if (keySaving) {
@@ -519,6 +558,24 @@ export function ModelPicker({
         return
       }
 
+      const rn = REASONING_PICKER_ROWS.length
+      if (key.pageUp || key.wheelUp) {
+        setReasoningIdx(v => listStep(v, rn, key.pageUp ? -VISIBLE : -1))
+        return
+      }
+      if (key.pageDown || key.wheelDown) {
+        setReasoningIdx(v => listStep(v, rn, key.pageDown ? VISIBLE : 1))
+        return
+      }
+      if (key.home) {
+        setReasoningIdx(0)
+        return
+      }
+      if (key.end) {
+        setReasoningIdx(KEEP_REASONING_IDX)
+        return
+      }
+
       if (allowPersistGlobal && key.ctrl && ch === 'g') {
         setPersistGlobal(v => !v)
 
@@ -567,6 +624,23 @@ export function ModelPicker({
     if (key.downArrow && sel < count - 1) {
       setSel(v => v + 1)
 
+      return
+    }
+
+    if (key.pageUp || key.wheelUp) {
+      setSel(v => listStep(v, count, key.pageUp ? -VISIBLE : -1))
+      return
+    }
+    if (key.pageDown || key.wheelDown) {
+      setSel(v => listStep(v, count, key.pageDown ? VISIBLE : 1))
+      return
+    }
+    if (key.home) {
+      setSel(0)
+      return
+    }
+    if (key.end) {
+      setSel(v => listStep(v, count, count))
       return
     }
 
@@ -692,7 +766,17 @@ export function ModelPicker({
       return
     }
 
-    if (!key.ctrl && !key.meta && searchAppend('', ch)) {
+    const nav =
+      key.tab ||
+      key.return ||
+      key.escape ||
+      key.home ||
+      key.end ||
+      key.pageUp ||
+      key.pageDown ||
+      key.upArrow ||
+      key.downArrow
+    if (!key.ctrl && !key.meta && !nav && searchAppend('', ch)) {
       setFilter(v => searchAppend(v, ch))
       setSel(0)
     }
@@ -851,7 +935,7 @@ export function ModelPicker({
                 wrap="truncate-end"
               >
                 {modelIdx === idx ? '▸ ' : current ? '* ' : '  '}
-                {idx + 1}. <HitLabel q={filter} t={t} text={row} />
+                {idx + 1}. <HitLabel q={hopPaintQuery(filter)} t={t} text={row} />
               </Text>
             ) : (
               <Text color={t.color.muted} key={`pad-${i}`} wrap="truncate-end">
@@ -974,7 +1058,7 @@ export function ModelPicker({
             wrap="truncate-end"
           >
             {reasoningIdx === idx ? '▸ ' : '  '}
-            {idx + 1}. {row.label}
+            {idx + 1}. {row.value === '' ? keepReasoningLabel(currentReasoning) : row.label}
           </Text>
         ))}
 

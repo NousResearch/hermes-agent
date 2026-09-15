@@ -6,6 +6,9 @@ import {
   filterModelHopRows,
   hopCurrentIndex,
   hopIsCurrent,
+  hopPaintQuery,
+  keepReasoningLabel,
+  listStep,
   paintHits,
   providerIndexAfterClearingFilter,
   searchAppend
@@ -132,3 +135,54 @@ describe('paintHits', () => {
   })
 })
 
+describe('hopPaintQuery', () => {
+  it('uses the model side of nous/ so paint matches rank', () => {
+    expect(hopPaintQuery('son4')).toBe('son4')
+    expect(hopPaintQuery('nous/son4')).toBe('son4')
+    expect(hopPaintQuery('  nous/ ')).toBe('')
+    expect(hopPaintQuery('openrouter/anthropic/claude')).toBe('anthropic/claude')
+    expect(
+      paintHits('nous/claude-sonnet-4.6', hopPaintQuery('nous/son4'))
+        .filter(p => p.hit)
+        .map(p => p.t)
+        .join('')
+    ).toBe('son4')
+  })
+})
+
+describe('searchAppend', () => {
+  it('strips controls out of a paste', () => {
+    expect(searchAppend('', 'nous/\nhermes-4')).toBe('nous/hermes-4')
+    expect(searchAppend('n', '')).toBe('n')
+    expect(searchAppend('', '\t')).toBe('')
+  })
+})
+
+describe('listStep', () => {
+  it('clamps page/home/end on empty and last row', () => {
+    expect(listStep(0, 0, 12)).toBe(0)
+    expect(listStep(3, 5, 12)).toBe(4)
+    expect(listStep(3, 5, -12)).toBe(0)
+    expect(listStep(0, 5, 5)).toBe(4)
+  })
+})
+
+describe('keepReasoningLabel', () => {
+  it('shows the live effort, not hide/show display flags', () => {
+    expect(keepReasoningLabel('')).toBe('Keep current effort')
+    expect(keepReasoningLabel('high')).toBe('Keep current effort (high)')
+    expect(keepReasoningLabel('HIDE')).toBe('Keep current effort')
+  })
+})
+
+describe('hop current edges', () => {
+  it('does not star a row when current is empty', () => {
+    const nous = provider('nous')
+    nous.is_current = true
+    nous.models = ['hermes-4']
+    const rows = buildModelHopRows([nous], ['n'])
+    expect(rows.filter(r => hopIsCurrent(r, ''))).toEqual([])
+    expect(hopCurrentIndex(rows, '')).toBe(0)
+    expect(hopCurrentIndex([], 'nous/hermes-4')).toBe(0)
+  })
+})

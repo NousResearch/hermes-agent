@@ -1226,6 +1226,22 @@ def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
     return profile_exists
 
 
+def _profile_matches_current_home(assignee: str) -> bool:
+    """Whether a dispatcher may spawn *assignee* from its current home.
+
+    ``profile_exists`` deliberately treats ``default`` as globally available
+    for profile-management callers. A dispatcher is different: it must only
+    start workers for the profile served by this Hermes home, even when several
+    homes mount the same board. Preserve the historical fail-open behavior if
+    profile inspection cannot be imported or queried.
+    """
+    try:
+        from hermes_cli.profiles import profile_matches_home
+        return profile_matches_home(assignee)
+    except Exception:
+        return True
+
+
 def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
@@ -1238,7 +1254,11 @@ def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     if profile_exists is None:
         # Can't introspect — assume spawnable, preserve legacy behavior.
         return True
-    return any(profile_exists(row["assignee"]) for row in rows)
+    return any(
+        profile_exists(row["assignee"])
+        and _profile_matches_current_home(row["assignee"])
+        for row in rows
+    )
 
 
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
@@ -1512,9 +1532,10 @@ def _dispatch_lane_task(
     # forever. Bucketed apart from skipped_unassigned: the operator cannot fix
     # it by assigning a profile, and health telemetry suppresses "stuck" for it.
     profile_exists = _profile_exists_fn()
-    if profile_exists is not None and not profile_exists(assignee):
-        result.skipped_nonspawnable.append(task_id)
-        return False
+    if profile_exists is not None:
+        if not profile_exists(assignee) or not _profile_matches_current_home(assignee):
+            result.skipped_nonspawnable.append(task_id)
+            return False
     # Per-profile cap: one profile's local model / API quota / browser pool
     # must not be overwhelmed by a fan-out even with global headroom.
     if per_profile_cap is not None:
@@ -1725,7 +1746,12 @@ def _any_spawnable_review(review_rows: list[sqlite3.Row]) -> bool:
     profile_exists = _profile_exists_fn()
     if profile_exists is None:
         return any(row["assignee"] for row in review_rows)
-    return any(row["assignee"] and profile_exists(row["assignee"]) for row in review_rows)
+    return any(
+        row["assignee"]
+        and profile_exists(row["assignee"])
+        and _profile_matches_current_home(row["assignee"])
+        for row in review_rows
+    )
 
 
 def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
@@ -1737,7 +1763,7 @@ def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
     if name:
         try:
             from hermes_cli.profiles import profile_exists
-            if not profile_exists(name):
+            if not profile_exists(name) or not _profile_matches_current_home(name):
                 return None
         except Exception:
             pass

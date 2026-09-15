@@ -397,6 +397,7 @@ def test_review_dispatch_gate_prevents_phantom_reviewer(
         # The assignee profile is spawnable — so ONLY the gate can stop the
         # review-column dispatch from claiming it.
         monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+        monkeypatch.setattr(profmod, "profile_matches_home", lambda name: True)
 
         # Gate OFF -> review task is left alone.
         monkeypatch.setattr(
@@ -432,6 +433,7 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
     import hermes_cli.profiles as profmod
 
     monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(profmod, "profile_matches_home", lambda name: True)
     monkeypatch.setattr(
         cfgmod, "load_config",
         lambda *a, **k: {"kanban": {"review_dispatch": True}},
@@ -485,6 +487,7 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
     import hermes_cli.profiles as profmod
 
     monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(profmod, "profile_matches_home", lambda name: True)
     monkeypatch.setattr(
         cfgmod,
         "load_config",
@@ -538,6 +541,7 @@ def test_review_dispatch_honors_global_and_per_profile_caps(
     import hermes_cli.profiles as profmod
 
     monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    monkeypatch.setattr(profmod, "profile_matches_home", lambda _name: True)
     monkeypatch.setattr(
         cfgmod,
         "load_config",

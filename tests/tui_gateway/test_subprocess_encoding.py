@@ -57,12 +57,29 @@ def test_slash_worker_popen_uses_utf8_replace():
             )
 
             assert mock_popen.called, "Popen was not invoked"
-            kwargs = mock_popen.call_args[1]
-            assert kwargs.get("encoding") == "utf-8", (
-                f"slash-worker Popen must set encoding='utf-8' (got {kwargs.get('encoding')!r})"
+            # tui_gateway.server starts a background prefetch_update_check()
+            # daemon thread at import time. That thread calls subprocess.run
+            # (→ Popen) without encoding= for a git-fetch probe. On CI (Linux,
+            # real network) that Popen can land AFTER the slash-worker spawn,
+            # shadowing call_args. Find the slash-worker call explicitly by
+            # its argv instead of relying on the last call.
+            slash_worker_kwargs = None
+            for c in mock_popen.call_args_list:
+                args, kwargs = c
+                argv = args[0] if args else kwargs.get("args")
+                if argv and isinstance(argv, (list, tuple)) and any(
+                    "slash_worker" in str(a) for a in argv
+                ):
+                    slash_worker_kwargs = kwargs
+                    break
+            assert slash_worker_kwargs is not None, (
+                "slash-worker Popen was not invoked"
             )
-            assert kwargs.get("errors") == "replace", (
-                f"slash-worker Popen must set errors='replace' (got {kwargs.get('errors')!r})"
+            assert slash_worker_kwargs.get("encoding") == "utf-8", (
+                f"slash-worker Popen must set encoding='utf-8' (got {slash_worker_kwargs.get('encoding')!r})"
+            )
+            assert slash_worker_kwargs.get("errors") == "replace", (
+                f"slash-worker Popen must set errors='replace' (got {slash_worker_kwargs.get('errors')!r})"
             )
 
 

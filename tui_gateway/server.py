@@ -1483,11 +1483,7 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     overrides: dict = {}
     field = lambda k: str(model_config.get(k) or "").strip()
     model = str(row.get("model") or model_config.get("model") or "").strip()
-    # A cross-provider fallback persists the active model in ``sessions.model``
-    # but the fallback provider only inside ``model_config.gateway_runtime``
-    # (gateway/run_turn.py::_sync_session_model_from_agent). Reading the
-    # provider from the top-level config would combine the fallback model with
-    # the primary provider on resume — restore one consistent identity (#110279).
+    # One consistent identity (#110279): the fallback provider lives in model_config.gateway_runtime, not the top-level config.
     gateway_runtime = model_config.get("gateway_runtime")
     fallback_source = (
         gateway_runtime

@@ -1420,6 +1420,256 @@ class TestValueAwareGatingCorpus:
         assert "A9f3kZq7Lm2Xw8Rt4Yv6" not in result
 
 
+class TestSecretNamePattern:
+    """``security.secret_name_pattern`` override with fallback on error."""
+
+    def test_default_when_unset(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+        from agent.redact import _secret_name_pattern, _SECRET_NAME_RE
+        assert _secret_name_pattern() == _SECRET_NAME_RE
+
+    def test_default_when_none(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"security": {"secret_name_pattern": None}},
+        )
+        from agent.redact import _secret_name_pattern, _SECRET_NAME_RE
+        assert _secret_name_pattern() == _SECRET_NAME_RE
+
+    def test_empty_string_falls_back_silently(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"security": {"secret_name_pattern": ""}},
+        )
+        from agent.redact import _secret_name_pattern, _SECRET_NAME_RE
+        assert _secret_name_pattern() == _SECRET_NAME_RE
+
+    def test_valid_override_compiles(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"security": {"secret_name_pattern": r"MY_(?:TOKEN|PASSWORD)"}},
+        )
+        from agent.redact import _secret_name_pattern, _SECRET_NAME_RE
+        pat = _secret_name_pattern()
+        assert pat is not _SECRET_NAME_RE
+        assert pat.search("MY_TOKEN")
+        assert pat.search("my_password")  # case-insensitive
+        assert not pat.search("OTHER_SECRET")
+
+    def test_invalid_regex_falls_back_with_warning(self, monkeypatch, caplog):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"security": {"secret_name_pattern": "(unclosed"}},
+        )
+        from agent.redact import _secret_name_pattern, _SECRET_NAME_RE
+        with caplog.at_level(logging.WARNING):
+            pat = _secret_name_pattern()
+        assert pat == _SECRET_NAME_RE
+        assert "secret_name_pattern" in caplog.text
+
+    def test_non_string_falls_back_with_warning(self, monkeypatch, caplog):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"security": {"secret_name_pattern": 42}},
+        )
+        from agent.redact import _secret_name_pattern, _SECRET_NAME_RE
+        with caplog.at_level(logging.WARNING):
+            pat = _secret_name_pattern()
+        assert pat == _SECRET_NAME_RE
+        assert "secret_name_pattern" in caplog.text
+
+    def test_override_applied_to_loading(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / ".env").write_text(
+            "\n".join([
+                "MY_TOKEN=custom_secret_alpha",
+                "MY_PASSWORD=custom_secret_beta",
+                "MASTODON_ACCESS_TOKEN=default_secret_gamma",
+            ]),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"security": {"secret_name_pattern": r"MY_(?:TOKEN|PASSWORD)"}},
+        )
+        from agent.redact import _load_env_secret_values, _clear_env_secret_values_cache
+        _clear_env_secret_values_cache()
+        vals = _load_env_secret_values()
+        assert "custom_secret_alpha" in vals
+        assert "custom_secret_beta" in vals
+        assert "default_secret_gamma" not in vals  # outside the override
+
+
+class TestExactValueEnvRedaction:
+    """Exact-value masking of .env secrets loaded via ``_load_env_secret_values``."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_cache(self, monkeypatch):
+        """Clear the .env secret-values cache so every test starts fresh."""
+        from agent.redact import _clear_env_secret_values_cache
+        _clear_env_secret_values_cache()
+
+    def _write_env(self, tmp_path, monkeypatch, lines):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / ".env").write_text("\n".join(lines), encoding="utf-8")
+        # Invalidate the cache so the next call reads our temp .env
+        from agent.redact import _clear_env_secret_values_cache
+        _clear_env_secret_values_cache()
+        return hermes_home
+
+    # -- _load_env_secret_values -----------------------------------------------
+
+    def test_loads_secret_named_values_only(self, tmp_path, monkeypatch):
+        self._write_env(tmp_path, monkeypatch, [
+            "MASTODON_ACCESS_TOKEN=secret_mastodon_abc",
+            "KUCOIN_API_SECRET=secret_kucoin_def",
+            "EMAIL_ADDRESS=hermes@example.org",
+            "FRESHRSS_API_USER=superadmin",
+            "BAIKAL_HERMES_URL=https://dav.example.org",
+        ])
+        from agent.redact import _load_env_secret_values
+        vals = _load_env_secret_values()
+        assert "secret_mastodon_abc" in vals
+        assert "secret_kucoin_def" in vals
+        assert "hermes@example.org" not in vals
+        assert "superadmin" not in vals
+        assert "https://dav.example.org" not in vals
+
+    def test_any_value_shape_loaded_under_secret_name(self, tmp_path, monkeypatch):
+        self._write_env(tmp_path, monkeypatch, [
+            "POSTGRES_PASSWORD=user:secret_psql@db.example.org:5432",
+            "REDIS_PASSWORD=redis://:secret@cache.example.org:6379",
+        ])
+        from agent.redact import _load_env_secret_values
+        vals = _load_env_secret_values()
+        assert len(vals) == 2
+        assert "user:secret_psql@db.example.org:5432" in vals
+        assert "redis://:secret@cache.example.org:6379" in vals
+
+    def test_empty_env_returns_empty(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # No .env file at all
+        from agent.redact import _load_env_secret_values, _clear_env_secret_values_cache
+        _clear_env_secret_values_cache()
+        assert _load_env_secret_values() == []
+
+    def test_cache_is_stable_across_calls(self, tmp_path, monkeypatch):
+        self._write_env(tmp_path, monkeypatch, [
+            "GITHUB_TOKEN=gh_token_value_123",
+        ])
+        from agent.redact import _load_env_secret_values, _env_secret_values_cache
+        vals1 = _load_env_secret_values()
+        vals2 = _load_env_secret_values()
+        assert vals1 is vals2  # same list object = cache hit
+        assert "gh_token_value_123" in vals1
+
+    def test_values_below_min_length_are_not_loaded(self, tmp_path, monkeypatch):
+        self._write_env(tmp_path, monkeypatch, [
+            "API_KEY=shortvalue",
+            "API_SECRET=long_enough_secret_value",
+        ])
+        from agent.redact import _load_env_secret_values
+        vals = _load_env_secret_values()
+        assert "shortvalue" not in vals
+        assert "long_enough_secret_value" in vals
+
+    # -- _redact_env_secret_values ---------------------------------------------
+
+    def test_masks_exact_value(self, tmp_path, monkeypatch):
+        self._write_env(tmp_path, monkeypatch, [
+            "GITHUB_TOKEN=gh_token_value_123",
+        ])
+        from agent.redact import _redact_env_secret_values
+        out = _redact_env_secret_values("prefix gh_token_value_123 suffix")
+        assert "gh_token_value_123" not in out
+        assert "«redacted-secret»" in out
+        assert out == "prefix «redacted-secret» suffix"
+
+    def test_does_not_mask_different_value(self, tmp_path, monkeypatch):
+        self._write_env(tmp_path, monkeypatch, [
+            "GITHUB_TOKEN=gh_token_value_123",
+        ])
+        from agent.redact import _redact_env_secret_values
+        # One character CHANGED, not appended — so the original value is not a
+        # substring of the similar one.
+        similar = "gh_token_value_12X"
+        out = _redact_env_secret_values(f"prefix {similar} suffix")
+        assert similar in out
+        assert "«redacted-secret»" not in out
+
+    def test_longest_first_prevents_prefix_residue(self, tmp_path, monkeypatch):
+        self._write_env(tmp_path, monkeypatch, [
+            "API_KEY=abcdefghijklmnop",
+            "API_SECRET=abcdefghijkl",
+        ])
+        from agent.redact import _redact_env_secret_values
+        out = _redact_env_secret_values("value abcdefghijklmnop end")
+        assert out == "value «redacted-secret» end"
+        # "abcdefghijkl" is a prefix of "abcdefghijklmnop": longest-first
+        # replaces the longer value whole, leaving no residual suffix.
+
+    def test_empty_text_returns_unchanged(self, tmp_path, monkeypatch):
+        self._write_env(tmp_path, monkeypatch, [
+            "GITHUB_TOKEN=gh_token_value_123",
+        ])
+        from agent.redact import _redact_env_secret_values
+        assert _redact_env_secret_values("") == ""
+
+    # -- Integration: redact_sensitive_text ------------------------------------
+
+    def test_exact_value_redacted_in_sensitive_text(self, tmp_path, monkeypatch):
+        self._write_env(tmp_path, monkeypatch, [
+            "GITHUB_TOKEN=gh_token_value_123",
+            "EMAIL_ADDRESS=hermes@example.org",
+        ])
+        out = redact_sensitive_text(
+            "Using gh_token_value_123 for auth, contact hermes@example.org",
+            force=True,
+        )
+        assert "gh_token_value_123" not in out
+        assert "«redacted-secret»" in out
+        assert "hermes@example.org" in out  # non-secret name not loaded
+
+    def test_exact_value_redacted_even_with_code_file(self, tmp_path, monkeypatch):
+        """Exact-value redaction is immune to false positives on source code."""
+        self._write_env(tmp_path, monkeypatch, [
+            "API_KEY=opaque_secret_abc123",
+        ])
+        out = redact_sensitive_text(
+            'MAX_TOKENS=100\nexport API_KEY=opaque_secret_abc123',
+            force=True, code_file=True,
+        )
+        assert "opaque_secret_abc123" not in out
+        assert "MAX_TOKENS=100" in out  # code_file: ENV pass skipped, exact pass still runs
+
+    def test_exact_value_respects_redact_secrets_disabled(self, tmp_path, monkeypatch):
+        self._write_env(tmp_path, monkeypatch, [
+            "GITHUB_TOKEN=gh_token_value_123",
+        ])
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        out = redact_sensitive_text("Using gh_token_value_123 for auth")
+        assert "gh_token_value_123" in out  # redaction off, exact pass skipped
+        assert "«redacted-secret»" not in out
+
+    # -- _clear_env_secret_values_cache ----------------------------------------
+
+    def test_clear_cache_drops_all_entries(self, tmp_path, monkeypatch):
+        self._write_env(tmp_path, monkeypatch, [
+            "GITHUB_TOKEN=gh_token_value_123",
+        ])
+        from agent.redact import _load_env_secret_values, _clear_env_secret_values_cache
+        _load_env_secret_values()  # populate cache
+        _clear_env_secret_values_cache()
+        from agent.redact import _env_secret_values_cache
+        assert _env_secret_values_cache == {}
+
+
 class TestRedactForEgress:
     """``redact_for_egress`` is the single scrub every remote-reader surface (gateway chat, A2A, monitoring)
     calls; there is no second pattern list to keep in sync."""

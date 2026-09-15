@@ -75,6 +75,149 @@ def redact_registered_vault_values(text: str) -> str:
             text = text.replace(value, "«redacted-vault-secret»")
     return text
 
+# ---------------------------------------------------------------------------
+# Exact-value redaction of .env secrets (complements the prefix patterns above).
+# ---------------------------------------------------------------------------
+# The prefix-pattern engine (sk-*, ghp_*, ...) catches known vendor key shapes
+# and KEY=VALUE assignments where the KEY carries a secret keyword.  It cannot
+# catch an opaque value whose vendor prefix is unknown or whose env-var name
+# lacks a secret keyword (issue #80966, #72925).  This pass closes that gap:
+# it loads the exact values of .env variables whose NAME matches a secret
+# keyword (TOKEN, PASSWORD, SECRET, KEY, CREDENTIAL, AUTH, ...), then replaces
+# every occurrence with a label-free sentinel.  Because the match is an exact
+# literal, a source-code fixture (``MAX_TOKENS=100``) is masked only when that
+# exact value is itself stored in .env under a secret name; the length floor
+# below excludes short values, so the pass runs independently of the
+# ``code_file`` gate.
+
+# Keyword-matching regex for env-var NAMES that identify a secret.
+# Delimited by underscores so bare USER / ADDRESS / URL / HOST / INSTANCE /
+# CHANNEL / TIMEOUT never match.  Case-insensitive.
+_SECRET_NAME_RE = re.compile(
+    r"(?:^|_)(?:API_|ACCESS_|REFRESH_)?"
+    r"(?:TOKEN|TOKENS|PASSWORD|PASSWD|PASS|PW|SECRET|CREDENTIAL|CREDENTIALS|KEY|KEYS)"
+    r"(?:_|$)",
+    re.IGNORECASE,
+)
+
+# Values shorter than this are not loaded: a short value is a common substring
+# (e.g. "100", "abc") that would mask unrelated text everywhere it appears.
+# 12 mirrors the floor in mask_secret; a real secret is almost always longer.
+_MIN_SECRET_VALUE_LENGTH = 12
+
+
+def _secret_name_pattern() -> "re.Pattern[str]":
+    """Return the compiled secret-name matcher.
+
+    Defaults to ``_SECRET_NAME_RE``.  A user may override it via
+    ``security.secret_name_pattern`` in ``config.yaml`` (a regex, matched
+    case-insensitively).  An invalid regex, a non-string value, or an empty
+    string falls back to ``_SECRET_NAME_RE`` and logs a warning — a bad
+    override must never silently disable secret masking or break redaction.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        override = (load_config_readonly().get("security") or {}).get("secret_name_pattern")
+    except Exception:
+        return _SECRET_NAME_RE
+    if override is None or override == "":
+        return _SECRET_NAME_RE
+    if not isinstance(override, str):
+        logger.warning(
+            "security.secret_name_pattern must be a string (got %r); using the default secret-name matcher",
+            override,
+        )
+        return _SECRET_NAME_RE
+    try:
+        return re.compile(override, re.IGNORECASE)
+    except re.error as exc:
+        logger.warning(
+            "security.secret_name_pattern %r is not a valid regex (%s); using the default secret-name matcher",
+            override,
+            exc,
+        )
+        return _SECRET_NAME_RE
+
+# Cached per profile home: parsing .env on every redact_sensitive_text call
+# would be wasteful.  The cache is invalidated when the profile changes.
+_env_secret_values_cache: dict = {}  # profile home → list[str]
+_env_secret_values_lock = threading.Lock()
+
+
+def _load_env_secret_values() -> list[str]:
+    """Return the exact values of .env secrets for the active profile.
+
+    Reads ``<HERMES_HOME>/.env`` through the official parser
+    (``agent.secret_scope.load_env_file``) and keeps every value whose NAME
+    matches the secret-name matcher (``_secret_name_pattern()``, which honors
+    the ``security.secret_name_pattern`` config override).  Values shorter than
+    ``_MIN_SECRET_VALUE_LENGTH`` are skipped.  Values are never logged or
+    displayed.  Results are cached per profile home.
+    """
+    from hermes_constants import get_hermes_home
+    home = str(get_hermes_home())
+    with _env_secret_values_lock:
+        cached = _env_secret_values_cache.get(home)
+        if cached is not None:
+            return cached
+    try:
+        from agent.secret_scope import load_env_file
+    except Exception:
+        with _env_secret_values_lock:
+            _env_secret_values_cache[home] = []
+        return []
+    try:
+        env = load_env_file(get_hermes_home() / ".env")
+    except Exception:
+        env = {}
+    values = []
+    pattern = _secret_name_pattern()
+    for name, value in env.items():
+        if not value or not isinstance(value, str):
+            continue
+        if len(value) < _MIN_SECRET_VALUE_LENGTH:
+            logger.debug(
+                "exact-value redaction: skipping %s (shorter than %d chars)",
+                name,
+                _MIN_SECRET_VALUE_LENGTH,
+            )
+            continue
+        if pattern.search(name):
+            values.append(value)
+    with _env_secret_values_lock:
+        _env_secret_values_cache[home] = values
+    return values
+
+
+def _redact_env_secret_values(text: str) -> str:
+    """Exact-substring scrub of every .env secret value for the active profile.
+
+    Longest-first ordering guarantees that when one secret value is a prefix
+    of another (e.g. "abc" vs "abcdef"), the longer one is replaced whole
+    rather than leaving a residual suffix.
+
+    Only the WHOLE value is masked: a deliberate slice (``${VAR:0:4}``,
+    ``cut -c1-4``) or a truncated fragment is not the full value and passes
+    through unmasked. Like every content redactor, this guards against
+    ACCIDENTAL leakage, not deliberate exfiltration by an agent that already
+    holds the value in its environment.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    values = _load_env_secret_values()
+    if not values:
+        return text
+    for value in sorted(values, key=len, reverse=True):
+        if value in text:
+            text = text.replace(value, "«redacted-secret»")
+    return text
+
+
+def _clear_env_secret_values_cache() -> None:
+    """Drop the cached .env secret values (tests/teardown only)."""
+    with _env_secret_values_lock:
+        _env_secret_values_cache.clear()
+
 # Sensitive query-string param names (case-insensitive): opaque tokens / OAuth
 # codes / pre-signed signatures with no vendor prefix.
 # Ported from nearai/ironclaw#2529 — catches tokens whose values don't match any known vendor prefix regex
@@ -832,6 +975,13 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     text = redact_registered_vault_values(text)
     if not (force or _redact_enabled()):
         return text
+
+    # Exact-value redaction of .env secrets runs regardless of the code_file
+    # gate: it matches literal secret values, and the length floor excludes
+    # short values that would otherwise over-match code fixtures such as
+    # ``MAX_TOKENS=100``.
+    text = _redact_env_secret_values(text)
+
     code_file = code_file or file_read
 
     # Control/zero-width chars can split a token body so _PREFIX_RE alone misses it.

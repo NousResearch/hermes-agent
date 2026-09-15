@@ -1015,9 +1015,11 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
         return None
 
 
-def backfill_profile_envs(quiet: bool = False) -> List[str]:
-    """Give every named profile predating per-profile ``.env`` one (copy of the default's, or
-    the placeholder header). Never overwrites an existing profile ``.env``.
+def backfill_profile_envs(
+    quiet: bool = False, stripped: Optional[Dict[str, List[str]]] = None
+) -> List[str]:
+    """Give every named profile predating per-profile ``.env`` one (copy of the default's, minus its
+    messaging-channel credentials, or the placeholder header). Never overwrites an existing profile ``.env``.
 
     Profiles created before the dashboard/CLI started seeding a ``.env`` (PR #44792) have none, so once the
     Channels/Keys endpoints became profile-scoped those profiles stopped inheriting the root install's
@@ -1025,9 +1027,17 @@ def backfill_profile_envs(quiet: bool = False) -> List[str]:
     install's ``.env`` into each named profile that lacks one — that preserves the effective credentials
     those profiles were already running with (they previously read the root ``.env`` via the process
     environment). Users can then diverge per profile from there.
+
+    The copy is channel-stripped for the same reason ``create_profile`` strips clones: a duplicated bot
+    token or client identity makes two gateways fight over one account (``MATRIX_DEVICE_ID`` shared by two
+    processes corrupts the Olm session state; a shared Slack/Telegram bot token parks the duplicate). Model
+    and provider keys — the credentials this backfill exists to preserve — are untouched. ``stripped``, when
+    supplied, receives ``{profile: [platform, ...]}`` for the profiles that had channel keys removed.
     """
+    from hermes_cli.profile_channels import ChannelKeyIndex, strip_channel_env_file
     backfilled: List[str] = []
     default_env = _get_default_hermes_home() / ".env"
+    index = ChannelKeyIndex() if default_env.is_file() else None
     for entry in _iter_named_profile_dirs():
         env_path = entry / ".env"
         if env_path.exists():
@@ -1035,6 +1045,18 @@ def backfill_profile_envs(quiet: bool = False) -> List[str]:
         try:
             if default_env.is_file():
                 shutil.copy2(default_env, env_path)
+                # Strip before the profile is ever loaded: the multiplexer rescans profiles/ every 30 s
+                # and would start an adapter on the copied identity.
+                removed = strip_channel_env_file(env_path, index)
+                if removed:
+                    platforms = sorted(removed)
+                    if stripped is not None:
+                        stripped[entry.name] = platforms
+                    if not quiet:
+                        print(
+                            f"  '{entry.name}': messaging credentials NOT copied ({', '.join(platforms)}) — "
+                            f"a shared bot token or device id makes two gateways fight over one account."
+                        )
             else:
                 env_path.write_text(_PLACEHOLDER_ENV, encoding="utf-8")
             os.chmod(str(env_path), 0o600)

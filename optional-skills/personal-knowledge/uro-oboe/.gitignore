@@ -1,0 +1,15 @@
+# Runtime data (generated per user)
+data/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Distribution package
+*.zip
+
+# OS files
+.DS_Store
+Thumbs.db

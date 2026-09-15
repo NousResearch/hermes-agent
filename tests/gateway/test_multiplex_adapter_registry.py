@@ -303,7 +303,7 @@ class TestSecondaryProfileFatalRecovery:
         monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", connect)
         monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
         monkeypatch.setattr(runner, "_snapshot_profile_busy_modes", lambda *a, **k: None)
-        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda *args, **kwargs: None)
         if entry == "startup":
             coro = runner._start_one_profile_adapters(
                 "reviewer", Path("/profiles/reviewer"), {}
@@ -337,7 +337,7 @@ class TestSecondaryProfileFatalRecovery:
         monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda h: {})
         monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
         monkeypatch.setattr(runner, "_snapshot_profile_busy_modes", lambda *a, **k: None)
-        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda *args, **kwargs: None)
 
         async def connect(a, platform):
             return True

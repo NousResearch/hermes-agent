@@ -441,7 +441,7 @@ def _enable_plugin_platforms_from_env(config: GatewayConfig) -> None:
     """
     try:
         from hermes_cli.plugins import discover_plugins
-        discover_plugins()  # idempotent
+        discover_plugins(defer_platforms=False)  # idempotent; gateway adapters must be ready for config
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
             _enable_plugin_platform(config, entry)

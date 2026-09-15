@@ -412,7 +412,7 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
 
     try:
         from hermes_cli.plugins import discover_plugins
-        discover_plugins()  # idempotent
+        discover_plugins(defer_platforms=False)  # idempotent; gateway adapters must be ready for config
         from gateway.platform_registry import platform_registry as registry
     except Exception as e:
         logger.debug("plugin discovery skipped: %s", e)

@@ -215,6 +215,23 @@ class SSHEnvironment(BaseEnvironment):
                 tar_proc.wait()
                 raise
             tar_proc.stdout.close()  # let tar_proc receive SIGPIPE if ssh_proc exits early
+            # Detach the pipe we just closed. `communicate()` below drains
+            # tar's stderr, and on Windows CPython starts one reader thread per
+            # non-None stream without checking whether it is closed
+            # (`subprocess.py::_readerthread` -> `fh.read()`), which raises
+            # `ValueError: read of closed file` inside that thread. The POSIX
+            # branch guards with `not self.stdout.closed`; the Windows branch
+            # has no such check. That is why this never surfaces on macOS or
+            # Linux.
+            #
+            # Scope of the damage: the exception does not reach the caller. It
+            # kills only the reader thread, and the upload itself still
+            # succeeds (tar exits 0). What it does is print a traceback on
+            # every bulk upload and leave a dead thread behind. Measured on a
+            # Windows host driving a macOS peer, 2026-09-07: nine tracebacks in
+            # one run, none of them fatal, all of them noise that buries the
+            # real failure when something else goes wrong.
+            tar_proc.stdout = None
             try:
                 _, ssh_stderr = ssh_proc.communicate(timeout=120)
                 # communicate() (not wait()) drains stderr so tar can't deadlock on >PIPE_BUF errors.

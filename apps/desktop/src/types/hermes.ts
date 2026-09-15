@@ -681,6 +681,16 @@ export interface SessionResumeResult {
   // handlers before this response resolves; listed here so resume can tell an
   // authoritative "nothing pending" from a request the handler declined.
   open_requests?: Array<{ id: string; method: string; params: Record<string, unknown> & { session_id?: string } }>
+  // Backwards compat: v0.21.2 backends predate `open_requests` and report a
+  // still-pending clarify here instead. restorePendingClarifyFromSnapshot
+  // synthesizes an `open_requests` entry from it when `open_requests` is absent.
+  pending_clarify?: {
+    request_id?: string
+    question?: string
+    choices?: string[]
+    multi_select?: boolean
+    questions?: unknown[]
+  }
   // The connection operation still blocking this session; resume restores the backend-owned card projection.
   pending_connection?: ConnectionRequestPayload
   info?: SessionRuntimeInfo

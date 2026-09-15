@@ -184,7 +184,7 @@ class MCPServerRunMixin:
         # effective URL once so validation, preflight and the SDK all see
         # the same request target.
         _url_with_token = _errors._mcp_url_with_token(
-            config.get("url"), config.get("token"),
+            config["url"], config.get("token"),
         )
         try:
             _errors._validate_remote_mcp_url(self.name, _url_with_token)

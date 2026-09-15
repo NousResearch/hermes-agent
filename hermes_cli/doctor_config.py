@@ -362,6 +362,122 @@ def _drift_max_iterations_ghost(f: Finding, should_fix: bool, config_path) -> No
         f.manual_issues.append(f"Manually delete the HERMES_MAX_ITERATIONS line from {_DHH}/.env — config.yaml agent.max_turns is authoritative.")
 
 
+# The three mode strings are the whole documented surface: any other value that still resolves to a
+# mode is a legacy write (the installer seeded a boolean; `hermes config set` writes the raw string
+# for this string-typed key; a blank value stringifies to "none" in the resolver).
+_DOCUMENTED_PRE_UPDATE_BACKUP_MODES = ("quick", "off", "full")
+
+
+def _pre_update_backup_scalar_node(config_text: str):
+    """The YAML node for ``updates.pre_update_backup`` as written, or ``None``.
+
+    The parsed value cannot tell the documented ``off`` from the legacy boolean — YAML folds both to
+    ``False`` — so the check needs the scalar *as written*. That has to be the node at the key's own
+    path: a text search over the file is satisfied by any matching line (another section, a block
+    scalar, a duplicate key) while missing the forms a real value takes (flow style, a quoted key, an
+    anchored alias). The walk mirrors PyYAML's loader, duplicates included, so the last ``updates:``
+    block wins exactly like the loaded config does.
+    """
+    import yaml
+
+    try:
+        root = yaml.compose(config_text)
+    except yaml.YAMLError:
+        return None
+    if not isinstance(root, yaml.MappingNode):
+        return None
+    node = None
+    for key_node, value_node in root.value:
+        if getattr(key_node, "value", None) == "updates" and isinstance(value_node, yaml.MappingNode):
+            for inner_key, inner_value in value_node.value:
+                if getattr(inner_key, "value", None) == "pre_update_backup":
+                    node = inner_value
+    return node
+
+
+def _pre_update_backup_legacy_form(value, scalar_node):
+    """``(kind, written_form, mode)`` when *value* is a form the docs do not describe, else ``None``.
+
+    ``kind`` is ``"bool"``, ``"alias"`` or ``"empty"``. The value is read from the raw file, so the
+    documented mode strings are the whole supported surface: every other form that still resolves to
+    a mode is a legacy write whose effect is only discoverable by reading the alias mapping in
+    ``update_cmd_maint`` — which is imported rather than duplicated, so the two cannot drift apart.
+    """
+    from hermes_cli.update_cmd_maint import _BACKUP_MODE_ALIASES
+
+    if isinstance(value, bool):
+        # ``off`` is documented and YAML folds it to False as well, so the parsed value cannot tell
+        # it from the legacy boolean: the scalar's own spelling can. A documented mode spelling
+        # (case-insensitively) is never drift, or doctor would rewrite a deliberate opt-out on every
+        # run. No readable scalar (alias to a non-scalar, or a file doctor cannot parse twice) is
+        # left alone rather than guessed at.
+        token = (getattr(scalar_node, "value", None) or "").strip()
+        if not token or token.lower() in _DOCUMENTED_PRE_UPDATE_BACKUP_MODES:
+            return None
+        return "bool", token.lower(), ("full" if value else "off")
+    if value is None:
+        # A blank value (`pre_update_backup:`) is not "unset": the resolver stringifies it to
+        # "none", which the alias map sends to "off" — no snapshot, and nothing says so.
+        return "empty", "empty", "off"
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in _DOCUMENTED_PRE_UPDATE_BACKUP_MODES:
+            return None
+        # An unknown string falls back to "quick" with a runtime warning (backups stay ON), so only
+        # the aliases the resolver actually accepts are legacy writes here.
+        mode = _BACKUP_MODE_ALIASES.get(token)
+        return ("alias", repr(value), mode) if mode else None
+    return None
+
+
+def _drift_pre_update_backup_legacy_form(f: Finding, should_fix: bool, config_path) -> None:
+    """``updates.pre_update_backup`` written in a form the docs do not describe.
+
+    The installer/setup wizard seeded ``false`` (meaning "off"), which switches the pre-update state
+    snapshot off — the #48200 wipe safety net — with nothing on the receipt to distinguish "you
+    opted out" from "the backup broke". ``true`` means "full": a zip of the whole home on every
+    update. ``hermes config set updates.pre_update_backup false`` writes the *string* ``'false'``
+    (this key's default is a string, so the value is written verbatim) and the resolver's alias map
+    turns that into "off" as well. All of them are rewritten to the equivalent mode string, so the
+    behaviour does not change but the value becomes auditable and lands on the docs' surface.
+    """
+    from hermes_cli.config import atomic_config_write, read_user_config_raw
+
+    if config_path is None:
+        return
+    raw_config = read_user_config_raw(config_path)
+    updates_cfg = raw_config.get("updates")
+    if not isinstance(updates_cfg, dict) or "pre_update_backup" not in updates_cfg:
+        return
+    legacy = _pre_update_backup_legacy_form(
+        updates_cfg["pre_update_backup"],
+        _pre_update_backup_scalar_node(config_path.read_text(encoding="utf-8")))
+    if legacy is None:
+        return
+    kind, written_form, mode = legacy
+    described = {
+        "bool": f"the legacy boolean {written_form}",
+        "alias": f"the legacy alias {written_form}",
+        "empty": "empty",
+    }[kind]
+    check_warn(f"updates.pre_update_backup is {described} (equivalent to '{mode}')",
+               "(supported values: quick (default), off, full)")
+    if kind == "empty":
+        check_info("A blank value is not 'unset': it resolves to 'off'. Use 'quick' for the default "
+                   "snapshot, or 'off' to opt out deliberately")
+    if mode == "off":
+        check_info("As 'off', `hermes update` takes no pre-update snapshot: state lost to a failed "
+                   "update cannot be recovered")
+    if not should_fix:
+        f.issues.append(f"Legacy updates.pre_update_backup value ({written_form}) — "
+                        "run 'hermes doctor --fix' to write the mode string")
+        return
+    updates_cfg["pre_update_backup"] = mode
+    atomic_config_write(config_path, raw_config)
+    check_ok(f"Rewrote updates.pre_update_backup: {written_form} -> '{mode}'")
+    f.fixed += 1
+
+
 def _drift_deprecations(f: Finding, should_fix: bool, config_path) -> None:
     """Warn-only deprecation sweep over the raw file + on-disk .env (process env would false-positive)."""
     from hermes_cli.config import load_env, read_user_config_raw
@@ -387,13 +503,14 @@ def _drift_structure(f: Finding, should_fix: bool, config_path) -> None:
 
 
 _CONFIG_DRIFT_STEPS = (
-    _drift_config_version, _drift_stale_root_keys, _drift_max_iterations_ghost, _drift_deprecations, _drift_structure,
+    _drift_config_version, _drift_stale_root_keys, _drift_pre_update_backup_legacy_form,
+    _drift_max_iterations_ghost, _drift_deprecations, _drift_structure,
 )
 
 
 @doctor_check()
 def _check_config_drift(should_fix: bool, f: Finding) -> None:
-    """Config version, stale root keys, HERMES_MAX_ITERATIONS ghost, deprecations, structure.
+    """Config version, stale root keys, legacy pre-update backup form, HERMES_MAX_ITERATIONS ghost, deprecations, structure.
 
     Each step is independent and best-effort: a failure in one never hides the next.
     """

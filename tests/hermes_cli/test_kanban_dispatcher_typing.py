@@ -46,3 +46,40 @@ def test_spawn_failure_breaker_sets_infrastructure_block_kind(conn) -> None:
     assert conn.execute(
         "SELECT count(*) FROM tasks WHERE status='blocked' AND block_kind IS NULL"
     ).fetchone()[0] == 0
+
+
+def test_gave_up_breaker_sets_infrastructure_block_kind(conn) -> None:
+    task_id = kb.create_task(conn, title="dispatcher gave up", assignee="builder")
+
+    assert kbd._record_task_failure(
+        conn,
+        task_id,
+        "dispatcher retry budget exhausted",
+        outcome="gave_up",
+        failure_limit=1,
+    )
+
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.status == "blocked"
+    assert task.block_kind == "infrastructure"
+
+
+@pytest.mark.parametrize("outcome", ["crashed", "timed_out"])
+def test_worker_failure_breaker_does_not_set_infrastructure_block_kind(
+    conn, outcome: str
+) -> None:
+    task_id = kb.create_task(conn, title=f"worker {outcome}", assignee="builder")
+
+    assert kbd._record_task_failure(
+        conn,
+        task_id,
+        f"worker {outcome}",
+        outcome=outcome,
+        failure_limit=1,
+    )
+
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.status == "blocked"
+    assert task.block_kind is None

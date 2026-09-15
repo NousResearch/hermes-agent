@@ -386,6 +386,10 @@ def _profile_action_environment(
         apply_subprocess_home_env(action_env)
 
     action_env["HERMES_NONINTERACTIVE"] = "1"
+    # A config.yaml allow_all_users grant bridged into os.environ must not outlive the config that
+    # produced it: drop it so the restarted child re-derives the posture from its own config.yaml.
+    from gateway.config_loader import drop_bridged_env
+    drop_bridged_env(action_env)
     # The dashboard runs inside the gateway process, so os.environ carries _HERMES_GATEWAY=1;
     # inheriting it trips the child's in-process restart-loop guard (exit 1). Drop it, like
     # the gateway's own restart watcher does (gateway/run.py, #52470).

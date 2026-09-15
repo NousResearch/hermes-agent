@@ -1280,8 +1280,9 @@ class GatewayShutdownMixin:
     @staticmethod
     def _restart_watcher_env() -> dict:
         """Watcher env minus ``_HERMES_GATEWAY`` (else the CLI's self-restart guard refuses; gateway stays down)."""
+        from gateway.config_loader import drop_bridged_env
         from tools.environments.local import build_subprocess_env
-        watcher_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
+        watcher_env = drop_bridged_env(build_subprocess_env(scrub_secrets=False, inherit_profile_home=True))
         watcher_env.pop("_HERMES_GATEWAY", None)
         return watcher_env
 

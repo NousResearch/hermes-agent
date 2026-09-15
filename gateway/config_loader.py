@@ -11,7 +11,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from gateway.config import Platform, PlatformConfig, _coerce_dict, _dict_slot, _normalize_choice
 
@@ -47,6 +47,23 @@ def load_legacy_gateway_json(home: Path) -> Any:
 #   "none":     top-level VALUE is None → nested value.
 #   "dict":     top-level value is not a mapping → nested value; accepted only if a mapping.
 #   "nested":   nested form only (no top-level spelling is bridged).
+
+# True while GATEWAY_ALLOW_ALL_USERS in os.environ is the bridge's own write (from config.yaml), not an
+# operator's env var: only then may a reload overwrite/clear it, and restart env builders drop it so a
+# child gateway re-derives the grant from its config.yaml instead of inheriting a stale open posture.
+_BRIDGED_ALLOW_ALL_USERS = False
+
+
+def bridged_allow_all_users() -> Optional[str]:
+    """``os.environ['GATEWAY_ALLOW_ALL_USERS']`` when it is the bridge's own write, else None."""
+    return os.environ.get("GATEWAY_ALLOW_ALL_USERS") if _BRIDGED_ALLOW_ALL_USERS else None
+
+
+def drop_bridged_env(env: dict) -> dict:
+    """Remove the bridge-owned ``GATEWAY_ALLOW_ALL_USERS`` from a child-process env (operator-set stays)."""
+    if bridged_allow_all_users() is not None:
+        env.pop("GATEWAY_ALLOW_ALL_USERS", None)
+    return env
 
 def _quick_commands_ok(value: Any) -> bool:
     if isinstance(value, dict):
@@ -311,6 +328,7 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     there would make the secondary's policy the DEFAULT profile's (#80099 class). A secondary profile
     sets ``GATEWAY_ALLOW_ALL_USERS`` in its own ``.env`` like every other scoped authorization gate.
     """
+    global _BRIDGED_ALLOW_ALL_USERS
     from gateway.platforms._shared import profile_scoped
 
     skip_env_bridge = profile_scoped()
@@ -318,15 +336,21 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     allow_all = yaml_cfg.get("allow_all_users")
     if allow_all is None and isinstance(gateway_section, dict):
         allow_all = gateway_section.get("allow_all_users")
-    if allow_all is not None and not skip_env_bridge and not os.getenv("GATEWAY_ALLOW_ALL_USERS"):
-        os.environ["GATEWAY_ALLOW_ALL_USERS"] = str(allow_all).lower()
-        if os.environ["GATEWAY_ALLOW_ALL_USERS"] in {"true", "1", "yes"}:
+    # Only a value this bridge wrote may be overwritten/cleared by a later load (config flipped to
+    # false + reload); an operator's explicit env var still wins. Only a truthy grant is exported:
+    # presence-based readers treat any non-empty value as "auth configured".
+    if not skip_env_bridge and (_BRIDGED_ALLOW_ALL_USERS or not os.getenv("GATEWAY_ALLOW_ALL_USERS")):
+        _BRIDGED_ALLOW_ALL_USERS = str(allow_all).lower() in {"true", "1", "yes"}
+        if _BRIDGED_ALLOW_ALL_USERS:
+            os.environ["GATEWAY_ALLOW_ALL_USERS"] = "true"
             # The key was inert before it was bridged, so a forgotten line silently flips the
             # posture to open — name the grant source at startup.
             logger.warning(
                 "config.yaml allow_all_users: true grants every sender on every platform access "
                 "(bridged to GATEWAY_ALLOW_ALL_USERS; an explicit env var wins)."
             )
+        else:
+            os.environ.pop("GATEWAY_ALLOW_ALL_USERS", None)
     tl_require_mention = yaml_cfg.get("require_mention")
     if tl_require_mention is not None and "require_mention" not in (yaml_cfg.get("telegram") or {}):
         tg_plat = platforms_data.setdefault(Platform.TELEGRAM.value, {})

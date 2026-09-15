@@ -24,10 +24,46 @@ from hermes_time import now as _hermes_now
 # home.
 EXECUTIONS_FILE: Optional[Path] = None
 MAX_TERMINAL_EXECUTIONS = 1000
+# Failure text is diagnostic, and retention bounds ROWS, not bytes. A script-only job that dumps a
+# large payload to stdout can therefore store that payload on every attempt and fill the disk (one
+# 70 MB-per-run job grew this ledger to 20 GB in about 30 hours). Keep the head and tail, which is
+# where the cause and the final error live, and elide the middle.
+MAX_STORED_ERROR_CHARS = 8192
+_ERROR_ELISION_TEMPLATE = "\n...[{omitted} chars omitted]...\n"
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
+
+
+def clip_error_text(text: Optional[str], limit: int = MAX_STORED_ERROR_CHARS) -> Optional[str]:
+    """Bound stored failure text to *limit* characters, keeping the head and the tail.
+
+    Values at or under the limit are returned unchanged (the common case), so this is a no-op for
+    ordinary failures. ``None`` passes through, which terminal ledger rows rely on.
+    """
+    if text is None:
+        return None
+    text = str(text)
+    if limit <= 0 or len(text) <= limit:
+        return text
+    omitted = len(text) - limit
+    while True:
+        marker = _ERROR_ELISION_TEMPLATE.format(omitted=omitted)
+        kept = max(0, limit - len(marker))
+        updated_omitted = len(text) - kept
+        if updated_omitted == omitted:
+            break
+        omitted = updated_omitted
+    if not kept:
+        return marker[:limit]
+    head = kept // 2
+    tail = kept - head
+    return (
+        text[:head]
+        + marker
+        + text[len(text) - tail:]
+    )
 
 
 # --- executions ledger --------------------------------------------------------------------------
@@ -251,7 +287,7 @@ def finish_execution(
     """Write a terminal result once; terminal attempts cannot be rewritten."""
     now = _hermes_now().isoformat()
     status = "completed" if success else "failed"
-    detail = None if success else (str(error) if error else "unknown failure")
+    detail = None if success else clip_error_text(str(error) if error else "unknown failure")
     with _transaction() as conn:
         cur = conn.execute(
             """UPDATE executions

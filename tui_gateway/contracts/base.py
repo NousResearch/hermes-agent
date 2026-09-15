@@ -27,10 +27,15 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, JsonValue
 
 
+# Aliases are the wire names (``_lineage_root_id``, ``from``): the generated TypeScript and the clients
+# read them, so every dump — result frame, event payload, server-request params — leaves by alias.
+_WIRE = ConfigDict(extra="forbid", serialize_by_alias=True)
+
+
 class Params(BaseModel):
     """Inbound client→server method params / outbound server-request params; unknown keys reject."""
 
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = _WIRE | ConfigDict(populate_by_name=True)
 
 
 class MethodParams(Params):
@@ -45,13 +50,13 @@ class MethodParams(Params):
 class Result(BaseModel):
     """Outbound method / inbound server-request result; ``None`` serializes as wire ``null``."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = _WIRE
 
 
 class Payload(BaseModel):
     """Outbound notification payload (``event`` frame ``params.payload``)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = _WIRE
 
 
 class WireEnum(StrEnum):

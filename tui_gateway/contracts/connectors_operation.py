@@ -106,9 +106,6 @@ class ConnectionUpdatePayload(ConnectionOperationStatus, Payload):
     """``methods_connectors._connection_update``: one target transition (``target``/``from``/``to``/
     ``actor``) or the settlement (none of those), with the full snapshot."""
 
-    # ``from_`` must leave as ``from``: the generated TypeScript names the alias.
-    model_config = Payload.model_config | {"serialize_by_alias": True}
-
     target: str | None = None
     from_: ConnectionTargetState | None = Field(default=None, alias="from")  # ``from`` is a keyword
     to: ConnectionTargetState | None = None

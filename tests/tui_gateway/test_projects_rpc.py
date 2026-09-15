@@ -797,6 +797,32 @@ def test_projects_tree_is_scoped_to_the_requested_profile(monkeypatch, tmp_path)
     assert launch_tree["scoped_session_ids"] == ["tree-launch-session"]
 
 
+def test_projects_tree_rows_keep_their_lineage_wire_names(monkeypatch, tmp_path):
+    """``_lineage_root_id`` / ``_lineage_ids`` are aliases on the row model; the sidebar reads those
+    names, so the result frame must dump by alias (a field-name dump silently dropped lineage)."""
+    home = _profile_dir(tmp_path, "launch")
+    repo = tmp_path / "repos" / "lineage"
+    repo.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": home})
+    _create_project(home, "Launch", repo, use=True)
+    _create_session(home, "root", repo)
+    from hermes_state import SessionDB
+    db = SessionDB(db_path=home / "state.db")
+    try:  # a compression rotation: the tile shows the tip under the root's lineage
+        db.end_session("root", "compression")
+        db.create_session("tip", "cli", cwd=str(repo), parent_session_id="root")
+        db.append_message("tip", "user", "hello from tip")
+    finally:
+        db.close()
+
+    with _serving_launch_profile(home):
+        tree = _call("projects.tree")
+
+    (row,) = tree["projects"][0]["previewSessions"]
+    assert (row["id"], row["_lineage_root_id"], row["_lineage_ids"]) == ("tip", "root", ["root", "tip"])
+    assert "lineage_root_id" not in row
+
+
 def test_project_sessions_is_scoped_to_the_requested_profile(monkeypatch, tmp_path):
     """``projects.project_sessions`` on its own hydrates from the requested profile."""
     launch_home = _profile_dir(tmp_path, "launch")

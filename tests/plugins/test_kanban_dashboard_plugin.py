@@ -1069,6 +1069,107 @@ def test_home_channels_lists_only_platforms_with_home(client, with_home_channels
 
 
 # ---------------------------------------------------------------------------
+# POST /tasks honors kanban.auto_subscribe_on_create via home channels
+# ---------------------------------------------------------------------------
+
+
+def _notify_subs(task_id: str) -> list[tuple[str, str]]:
+    conn = kbc.connect()
+    try:
+        rows = conn.execute(
+            "SELECT platform, chat_id FROM kanban_notify_subs WHERE task_id = ?",
+            (task_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [(p, c) for p, c in rows]
+
+
+@pytest.fixture
+def auto_subscribe_enabled(tmp_path, monkeypatch):
+    (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
+        "kanban:\n  auto_subscribe_on_create: true\n"
+    )
+    yield
+    (Path(os.environ["HERMES_HOME"]) / "config.yaml").unlink(missing_ok=True)
+
+
+def test_create_task_auto_subscribes_home_channels(
+    client, with_home_channels, auto_subscribe_enabled
+):
+    r = client.post("/api/plugins/kanban/tasks", json={"title": "notify me"})
+    assert r.status_code == 200, r.text
+    task_id = r.json()["task"]["id"]
+    assert sorted(r.json().get("subscribed_platforms", [])) == ["discord", "telegram"]
+    assert sorted(_notify_subs(task_id)) == [
+        ("discord", "9999999"),
+        ("telegram", "1234567"),
+    ]
+
+
+def test_create_task_subscribe_platforms_filter(
+    client, with_home_channels, auto_subscribe_enabled
+):
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "tg only", "subscribe_platforms": ["telegram"]},
+    )
+    assert r.status_code == 200, r.text
+    task_id = r.json()["task"]["id"]
+    assert r.json()["subscribed_platforms"] == ["telegram"]
+    assert _notify_subs(task_id) == [("telegram", "1234567")]
+
+
+def test_create_task_subscribe_platforms_opt_out(
+    client, with_home_channels, auto_subscribe_enabled
+):
+    r = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "quiet", "subscribe_platforms": []}
+    )
+    assert r.status_code == 200, r.text
+    task_id = r.json()["task"]["id"]
+    assert "subscribed_platforms" not in r.json()
+    assert _notify_subs(task_id) == []
+
+
+def test_create_task_auto_subscribe_disabled_by_config(
+    client, with_home_channels, tmp_path
+):
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text("kanban:\n  auto_subscribe_on_create: false\n")
+    try:
+        r = client.post("/api/plugins/kanban/tasks", json={"title": "gated"})
+        assert r.status_code == 200, r.text
+        task_id = r.json()["task"]["id"]
+        assert "subscribed_platforms" not in r.json()
+        assert _notify_subs(task_id) == []
+    finally:
+        (home / "config.yaml").unlink(missing_ok=True)
+
+
+def test_create_task_subscribe_platforms_unknown_400(
+    client, with_home_channels, auto_subscribe_enabled
+):
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "bad", "subscribe_platforms": ["telegram", "irc"]},
+    )
+    assert r.status_code == 400
+    assert "irc" in r.json()["detail"]
+
+
+def test_create_task_auto_subscribes_without_config_file(client, with_home_channels):
+    """No config.yaml at all: the flag defaults to True, so homes still subscribe."""
+    r = client.post("/api/plugins/kanban/tasks", json={"title": "default on"})
+    assert r.status_code == 200, r.text
+    task_id = r.json()["task"]["id"]
+    assert sorted(_notify_subs(task_id)) == [
+        ("discord", "9999999"),
+        ("telegram", "1234567"),
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Recovery endpoints (reclaim + reassign) and warnings field
 # ---------------------------------------------------------------------------
 

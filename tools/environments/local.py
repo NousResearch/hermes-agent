@@ -19,7 +19,7 @@ from pathlib import Path
 from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _pipe_stdin
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import fork_safe_popen, windows_hide_flags
 from tools.environments.local_env_policy import (
     _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
     _is_hermes_internal_secret, _is_terminal_first_party_env,
@@ -667,21 +667,50 @@ def _sweep_escaped_descendants(descendants: list, pgid: int) -> None:
             continue
 
 
+def _kill_tree_by_pid(proc, descendants: list) -> None:
+    """TERM the child and its snapshotted descendants by PID, allow the group path's
+    grace, then KILL survivors — never ``killpg``: this is the path for a child that
+    does not lead its process group, which it may share with the caller. psutil's
+    identity-aware Process skips recycled PIDs and ``Popen`` never signals a reaped
+    child. POSIX-only (see _IS_WINDOWS gate in caller)."""
+    for method, grace in (("terminate", 1.0), ("kill", 2.0)):
+        for target in (*descendants, proc):
+            with contextlib.suppress(Exception):  # already gone
+                getattr(target, method)()
+        deadline = time.monotonic() + grace
+        with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+            proc.wait(timeout=grace)
+        with contextlib.suppress(Exception):
+            import psutil
+            descendants = psutil.wait_procs(
+                descendants, timeout=max(0.0, deadline - time.monotonic()))[1]
+        if proc.returncode is not None and not descendants:
+            return
+
+
 def _kill_process_group_posix(proc) -> None:
     """TERM the group, wait, KILL, then sweep setsid escapees. Descendants are
     snapshotted BEFORE the first signal — once the wrapper dies they reparent to
     init — and we wait on the group, not the wrapper, which can exit before
-    grandchildren under load. POSIX-only (_IS_WINDOWS handled by the caller)."""
+    grandchildren under load. Only a group the child LEADS is signalled: a child
+    in a group it does not lead (a spawner that skipped setsid) shares it with
+    its caller — on Desktop, Electron and the backend (#97296) — and goes to
+    _kill_tree_by_pid instead, as does one whose group is no longer known.
+    POSIX-only (_IS_WINDOWS handled by the caller)."""
     try:
         pgid = os.getpgid(proc.pid)
     except ProcessLookupError:
-        if (pgid := getattr(proc, "_hermes_pgid", None)) is None:
-            raise
+        # Gone — or exited but unreaped on macOS, where getpgid() fails with ESRCH
+        # for a zombie: only a group cached at spawn is still known.
+        pgid = getattr(proc, "_hermes_pgid", None)
     try:  # psutil children snapshot; empty on any failure (must never break the kill)
         import psutil
         descendants = psutil.Process(proc.pid).children(recursive=True)
     except Exception:
         descendants = []
+    if pgid != proc.pid:
+        _kill_tree_by_pid(proc, descendants)
+        return
     try:
         os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
         if not _wait_for_group_exit(proc, pgid, 1.0):
@@ -689,8 +718,8 @@ def _kill_process_group_posix(proc) -> None:
             _wait_for_group_exit(proc, pgid, 2.0)
             with contextlib.suppress(subprocess.TimeoutExpired, OSError):
                 proc.wait(timeout=0.2)
-    except ProcessLookupError:
-        pass
+    except (ProcessLookupError, PermissionError):
+        pass  # gone — or only zombies left, which macOS answers with EPERM
     _sweep_escaped_descendants(descendants, pgid)
 
 
@@ -803,7 +832,7 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
-        proc = subprocess.Popen(
+        proc = fork_safe_popen(
             args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,

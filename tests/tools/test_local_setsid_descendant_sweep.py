@@ -117,7 +117,7 @@ def test_kill_process_survives_psutil_snapshot_failure(monkeypatch):
 
     env = object.__new__(LocalEnvironment)
     proc = SimpleNamespace(
-        pid=12345,
+        pid=67890,  # the wrapper leads its own group (start_new_session)
         _hermes_pgid=67890,
         poll=lambda: 0,
         wait=lambda timeout=None: 0,

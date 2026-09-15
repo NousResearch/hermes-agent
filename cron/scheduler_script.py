@@ -23,7 +23,7 @@ from cron.jobs import _ensure_cron_dir
 from pathlib import Path
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import fork_safe_popen, windows_hide_flags
 
 if TYPE_CHECKING:
     from cron.scheduler import _CancelEventLike
@@ -170,9 +170,14 @@ def _terminate_cron_script_process(proc: subprocess.Popen) -> None:
 
 def _terminate_process_group(proc: subprocess.Popen) -> None:
     """POSIX: TERM the script's process group, then KILL if ANY member survived (a survivor holds
-    the pipe write ends open and the caller's communicate() would block on EOF forever)."""
+    the pipe write ends open and the caller's communicate() would block on EOF forever). A script
+    that does not lead its group shares it, possibly with the scheduler itself (#97296): only the
+    script is signalled then, and the caller escalates to KILL."""
     try:
         process_group = os.getpgid(proc.pid)
+        if process_group != proc.pid:
+            proc.terminate()
+            return
         os.killpg(process_group, signal.SIGTERM)  # windows-footgun: ok — POSIX-only branch
     except (ProcessLookupError, PermissionError, OSError):
         return
@@ -355,7 +360,7 @@ def _run_job_script(
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir
         # parent (back-compat). NEVER mutate the Python process cwd — that would leak into concurrent
         # gateway sessions (#69396).
-        proc = subprocess.Popen(
+        proc = fork_safe_popen(
             argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             cwd=workdir or str(path.parent), env=env, **popen_kwargs)
         deadline = time.monotonic() + script_timeout

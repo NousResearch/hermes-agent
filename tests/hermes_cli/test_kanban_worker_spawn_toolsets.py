@@ -76,6 +76,7 @@ agent:
         return FakeProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr("hermes_cli._subprocess_compat.fork_safe_popen", fake_popen)
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -117,6 +118,7 @@ def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_p
         return FakeProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr("hermes_cli._subprocess_compat.fork_safe_popen", fake_popen)
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -167,6 +169,7 @@ def test_default_spawn_resolves_env_passthrough_under_multiplex(monkeypatch, tmp
         return FakeProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr("hermes_cli._subprocess_compat.fork_safe_popen", fake_popen)
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()

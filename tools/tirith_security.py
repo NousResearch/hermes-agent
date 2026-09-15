@@ -517,7 +517,11 @@ def check_command_security(command: str) -> dict:
         result = subprocess.run(
             [tirith_path, "check", "--json", "--non-interactive", "--shell", "posix", "--", command],
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
-            stdin=subprocess.DEVNULL)
+            stdin=subprocess.DEVNULL,
+            # No fds to hand over (Python's are non-inheritable), and close_fds=True would take
+            # macOS off posix_spawn: a fork() from the threaded gateway / Desktop backend can
+            # crash tirith before exec there (-11 trips the circuit breaker, #97296).
+            close_fds=platform.system() != "Darwin")
     except OSError as exc:
         # FileNotFoundError / PermissionError / exec format error: dedupe by (class, errno)
         # so each failure mode surfaces once, not per command.

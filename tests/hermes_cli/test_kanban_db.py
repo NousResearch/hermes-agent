@@ -884,6 +884,7 @@ class TestSharedBoardPaths:
                 self.pid = 4242
 
         monkeypatch.setattr("subprocess.Popen", _FakePopen)
+        monkeypatch.setattr("hermes_cli._subprocess_compat.fork_safe_popen", _FakePopen)
 
         task = kb.Task(
             id="t_dispatch_env",

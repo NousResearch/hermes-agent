@@ -11,6 +11,8 @@ instead of rebuilding).  Covers:
       - Row has system_prompt=NULL → WARNING + fresh build
       - Row has system_prompt="" → WARNING + fresh build
       - DB write fails → WARNING (subsequent turns will miss cache)
+      - Skills-index eviction fails during a Bot Chat capability refresh → the rebuild
+        still happens and the failure shows at DEBUG (#50459)
 """
 
 from __future__ import annotations
@@ -614,6 +616,63 @@ class TestPerResponseSessionWritePath:
             assert second._cached_system_prompt == "GROUP_PROMPT"
             second._build_system_prompt.assert_not_called()
             assert "is null" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Bot Chat capability refresh — skills-cache eviction is best-effort (#50459)
+# ---------------------------------------------------------------------------
+
+
+class TestCapabilityRefreshEvictionFailure:
+    def test_eviction_failure_still_rebuilds_and_logs_debug(self, monkeypatch, caplog):
+        """A failing skills-index eviction must not skip the rebuild — but must show at DEBUG.
+
+        The capability-refresh branch clears the skills-system-prompt cache before
+        rebuilding; the clear is best-effort, so when it raises the rebuild still
+        proceeds (newly available skills may be missing from the rebuilt prompt) and
+        the swallowed failure is logged at DEBUG with the exception attached.
+        """
+        # Drive the capability-refresh branch: the helper consults the staleness
+        # check as a module global, so patching the module attribute is the seam.
+        monkeypatch.setattr(
+            "agent.conversation_loop._bot_chat_prompt_stale", lambda *a, **k: True
+        )
+
+        def _raiser(*args, **kwargs):
+            raise RuntimeError("skills cache lock held")
+
+        # The eviction is a lazy ``from agent.prompt_builder import ...`` inside the
+        # function, so the defining module is the seam to patch.
+        monkeypatch.setattr(
+            "agent.prompt_builder.clear_skills_system_prompt_cache", _raiser
+        )
+
+        stored = (
+            "You are Hermes Agent.\n\n"
+            "Conversation started: Tuesday, June 16, 2026\n"
+            "Session ID: test-session-id\n"
+            "Model: test-model\n"
+            "Provider: openrouter"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+
+        with caplog.at_level(logging.DEBUG, logger="agent.conversation_loop"):
+            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        # Behavior unchanged: the rebuild still happened despite the failed eviction.
+        agent._build_system_prompt.assert_called_once_with(None)
+        assert agent._cached_system_prompt == "BUILT_PROMPT"
+        # Visibility contract: the swallowed failure reaches the log at DEBUG, carrying
+        # the exception (not the exact wording, which is free to change).
+        debug_messages = [
+            r.getMessage() + (r.exc_text or "")
+            for r in caplog.records
+            if r.levelno == logging.DEBUG and r.name == "agent.conversation_loop"
+        ]
+        assert debug_messages, f"Expected a DEBUG record from the module, got: {caplog.text!r}"
+        assert any("skills cache lock held" in m for m in debug_messages)
 
 
 if __name__ == "__main__":

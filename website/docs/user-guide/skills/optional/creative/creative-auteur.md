@@ -17,9 +17,9 @@ Design and build cinematic, award-level web pages.
 | Source | Optional — install with `hermes skills install official/creative/auteur` |
 | Path | `optional-skills/creative/auteur` |
 | Version | `1.3.1` |
-| Author | agiwhitelist (upstream) / Hermes port |
+| Author | agiwhitelist (https://github.com/agiwhitelist, upstream agiwhitelist/auteur), ported by Hermes Agent |
 | License | MIT |
-| Platforms | linux, macos |
+| Platforms | linux, macos, windows |
 | Tags | `web-design`, `cinematic`, `scroll-animation`, `design-system`, `anti-slop`, `frontend` |
 | Related skills | [`popular-web-designs`](/docs/user-guide/skills/bundled/creative/creative-popular-web-designs), [`design-md`](/docs/user-guide/skills/bundled/creative/creative-design-md), [`p5js`](/docs/user-guide/skills/bundled/creative/creative-p5js) |
 
@@ -29,8 +29,12 @@ Design and build cinematic, award-level web pages.
 The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
-Ported from agiwhitelist/auteur (MIT), snapshot 9bca227df9877e60dc45d49783c8cbd885eccd9b.
+# Auteur Skill
 
+> Ported from [agiwhitelist/auteur](https://github.com/agiwhitelist/auteur) (MIT), snapshot
+> commit [`9bca227d`](https://github.com/agiwhitelist/auteur/commit/9bca227df9877e60dc45d49783c8cbd885eccd9b)
+> — see `LICENSE`. Scripts, templates and references are the upstream files (CRLF→LF), with
+> Hermes adaptation notes and `references/` path fixes as the only edits.
 
 Auteur designs and builds web experiences the way a film director makes a film: script first, then assets, then the shoot, then the cut. It has three registers — **build** (an excellent conventional site), **direct** (a cinematic scroll-directed site) and **system** (a multi-screen product as one design system) — on one shared core of taste. Nothing ships until the page passes an executable anti-slop gate and the skill has looked at its own output.
 
@@ -104,9 +108,9 @@ Read the argument / brief and route:
 2. **`build`** or the brief is ONE conventional surface — a marketing page, a landing, a single product page → load `references/build.md`.
 3. **`system`** or the brief has **more than one screen that must feel like one product** — app, dashboard, admin, settings, onboarding, a docs or content site with real navigation → load `references/system.md`. The unit of design becomes the component × state, the failure mode becomes drift rather than boredom, and there is deliberately **no peak**. If you are already in `build` and a second screen appears, stop and switch: half a system is worse than either.
 4. **`edit`** or the request modifies a page this skill built (the project contains `design/DESIGN.md`) — "add a section", "change the pricing", "swap the hero copy" → read `design/DESIGN.md` FIRST and follow its Editing protocol: reuse its tokens, section-opening patterns, and motion families; after the change run slopscan and re-shoot the affected viewports. An edit that ignores DESIGN.md is a regression even if it looks good in isolation.
-5. **`recon <brief>`** or the ask is only for reference material — "найди референсы", "собери мудборд", "what's the state of the art for X sites" → load `references/recon.md` and run just that phase: scout live sites, build the moodboard, hand back `design/refs/REFERENCES.md` (with the `steal:` lines filled) and `design/moodboard/contact-sheet.png` (with the read filled). No commit-sheet, no build.
+5. **`recon <brief>`** or the ask is only for reference material — "find references", "put together a moodboard", "what's the state of the art for X sites" → load `references/recon.md` and run just that phase: scout live sites, build the moodboard, hand back `design/refs/REFERENCES.md` (with the `steal:` lines filled) and `design/moodboard/contact-sheet.png` (with the read filled). No commit-sheet, no build.
 6. **`audit <path-or-url>`** → load `references/verify.md` and run the verification pipeline on an auteur-built page. If the target is an existing UI auteur didn't build and the user wants it *polished* rather than *rebuilt*, say that a dedicated UI-polish/critique pass (upstream paired auteur with a separate 'impeccable' skill, not vendored here) is the right tool and offer to continue only if they want a rebuild.
-7. **Ambiguous** (e.g. plain "сделай лендинг") → ask exactly one question: "Обычный отличный лендинг или кино-режим со scroll-режиссурой и генерацией ассетов?" Then route. (Multi-screen briefs are not ambiguous — they are `system`.) Don't ask anything else yet — each register runs its own intake.
+7. **Ambiguous** (e.g. plain "make a landing page") → ask exactly one question: "A great conventional landing page, or cinema mode with scroll direction and generated assets?" (upstream phrased these example briefs in Russian; translated here.) Then route. (Multi-screen briefs are not ambiguous — they are `system`.) Don't ask anything else yet — each register runs its own intake.
 
 All three registers share phase zero, and its centre of gravity is the commit-sheet. Order differs: **build** runs recon → commit-sheet → mockup; **direct** runs recon → storyboard → commit-sheet → mockup, because the film's scenes are what the six decisions get made *about*; **system** runs recon → system-sheet (route map + component inventory) → commit-sheet → mockup, because the six decisions get made about a product, not a page. Either way nothing is coded before the sheet is full.
 

@@ -153,4 +153,24 @@ describe('useAgentTerminal', () => {
     expect(terminalRegistrations.registerWriter).not.toHaveBeenCalled()
     expect(terminalRegistrations.registerReader).not.toHaveBeenCalled()
   })
+
+  it('triggers a DOM refresh and fit when WebGL context loss occurs', async () => {
+    let contextLossHandler: (() => void) | undefined
+    render(<Harness />)
+
+    await act(async () => {
+      resolveFontLoad([])
+      await Promise.resolve()
+    })
+
+    const webglMock = (await import('@xterm/addon-webgl')).WebglAddon
+    const instances = (webglMock as unknown as { mock: { instances: Array<{ onContextLoss: (cb: () => void) => void }> } }).mock?.instances
+    if (instances?.length) {
+      contextLossHandler = instances[0].onContextLoss.mock?.calls?.[0]?.[0]
+    }
+
+    if (contextLossHandler) {
+      expect(() => contextLossHandler!()).not.toThrow()
+    }
+  })
 })

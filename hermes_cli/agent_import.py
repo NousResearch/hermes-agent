@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import yaml
 
-from utils import atomic_write_text, atomic_yaml_write
+from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -83,8 +83,11 @@ def load_yaml_file(path: Path) -> Dict[str, Any]:
 
 
 def dump_yaml_file(path: Path, data: Dict[str, Any]) -> None:
-    """Atomic YAML write; only reached after :func:`load_yaml_file` succeeded on the same path."""
-    atomic_yaml_write(path, data)
+    """Atomic ``config.yaml`` write (readability guard + operator settings lock); only reached after
+    :func:`load_yaml_file` succeeded on the same path."""
+    from hermes_cli.config import atomic_config_write
+
+    atomic_config_write(path, data)
 
 
 def extract_markdown_entries(text: str) -> List[str]:

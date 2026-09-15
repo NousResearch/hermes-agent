@@ -45,7 +45,7 @@ class TestSaveModelChoiceAlwaysDict:
         _save_model_choice("kimi-k2.5")
 
         import yaml
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict), (
             f"Expected model to be a dict after save, got {type(model)}: {model}"
@@ -54,8 +54,9 @@ class TestSaveModelChoiceAlwaysDict:
 
 
 class TestProviderPersistsAfterModelSave:
-    def test_update_config_for_provider_uses_atomic_yaml_write(self, config_home):
-        """Provider switches should delegate config writes to atomic_yaml_write."""
+    def test_update_config_for_provider_uses_atomic_config_write(self, config_home):
+        """Provider switches delegate config writes to atomic_config_write (the guarded
+        config.yaml primitive), which lands in utils.atomic_yaml_write."""
         from hermes_cli.auth import _update_config_for_provider
 
         config_path = config_home / "config.yaml"
@@ -69,7 +70,7 @@ class TestProviderPersistsAfterModelSave:
             assert kwargs["sort_keys"] is False
             raise OSError("simulated atomic write failure")
 
-        with patch("hermes_cli.auth.atomic_yaml_write", side_effect=_boom) as mock_write:
+        with patch("hermes_cli.config.atomic_yaml_write", side_effect=_boom) as mock_write:
             with pytest.raises(OSError, match="simulated atomic write failure"):
                 _update_config_for_provider(
                     "nous",
@@ -103,7 +104,7 @@ class TestProviderPersistsAfterModelSave:
             _model_flow_api_key_provider(load_config(), "kimi-coding", "old-model")
 
         import yaml
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict), f"model should be dict, got {type(model)}"
         assert model.get("provider") == "kimi-coding", (

@@ -251,6 +251,22 @@ class DeliveryRouter:
         logger.info("Cron output truncated (%d chars) — full output: %s", len(content), saved_path)
         return content[:max(0, MAX_PLATFORM_OUTPUT - len(footer))] + footer
 
+    async def _apply_delivery_guards(self, target: "DeliveryTarget", content: str) -> Optional[str]:
+        """Run outbound cron content through the shared output-guard pipeline.
+
+        Returns the (possibly rewritten) content, or ``None`` if a guard dropped the message.
+        Falls back to the legacy silence-only check if the pipeline can't be imported, so
+        delivery never breaks on a bad import."""
+        try:
+            from gateway.output_guards import apply_output_guards, GuardContext
+            ctx = GuardContext(platform=target.platform.value, chat_id=target.chat_id, is_final_response=False)
+            return await apply_output_guards(content, ctx)
+        except Exception:
+            logger.debug("output-guard pipeline failed in delivery; using legacy check", exc_info=True)
+            if _is_silence_narration(content):
+                return None
+            return content
+
     async def _deliver_to_platform(self, target: DeliveryTarget, content: str,
                                    metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Deliver content to a messaging platform."""
@@ -262,19 +278,28 @@ class DeliveryRouter:
         adapter = transport.adapter
         content = self._cap_oversized_output(adapter, content, (metadata or {}).get("job_id", "unknown"))
 
-        # Substrate-level anti-loop guard: drop hallucinated "silence narration" (*(silent)*, 🔇, a bare ".")
-        # before it reaches any adapter — in bot-to-bot channels these mirror back and forth until a model
-        # crashes with "no content after all retries"; prompt rules drift across providers, so this single
-        # chokepoint covers every platform. Local/file delivery is never filtered (saved silence has no loop
-        # risk). Cron output is an ARTIFACT, not model chatter: a legitimately terse job ("...", a single 🔇)
-        # has no mirror loop, and dropping it while returning success is how a cron gets logged as delivered
-        # with nothing on the wire. Cron sends carry job_id in metadata; everything else is filtered.
+        # Substrate-level outbound guard pipeline. Historically this chokepoint only dropped
+        # hallucinated "silence narration" (*(silent)*, 🔇, a bare "."). It now threads content
+        # through the composable guard chain (gateway.output_guards) so secret redaction,
+        # provider-error rewriting, and opt-in guards (em-dash stripping, link verification) all
+        # apply to scheduled deliveries too — the same rules the agent's live replies get. The
+        # silence drop is one guard in that chain; the legacy single-check path (in
+        # _apply_delivery_guards' except branch) is kept as a fallback so a pipeline
+        # import/runtime error can never block a delivery. Local/file delivery is a separate path
+        # and is intentionally never filtered (saved silence has no loop risk). Cron output is an
+        # ARTIFACT, not model chatter: a legitimately terse job ("...", a single 🔇) has no mirror
+        # loop, and dropping it while returning success is how a cron gets logged as delivered
+        # with nothing on the wire — so cron sends (job_id in metadata) skip the silence guard.
         # See #77763.
         is_cron_artifact = "job_id" in (metadata or {})
-        if self._filter_silence_narration_enabled() and not is_cron_artifact and _is_silence_narration(content):
-            logger.warning("Dropped silence-narration outbound to %s (chat=%s): %r",
-                           target.platform.value, target.chat_id, content[:40])
-            return {"success": True, "filtered": "silence_narration", "delivered": False}
+        if self._filter_silence_narration_enabled() and not is_cron_artifact:
+            guarded = await self._apply_delivery_guards(target, content)
+            if guarded is None:
+                filtered_reason = "silence_narration" if _is_silence_narration(content) else "output_guard"
+                logger.warning("Dropped outbound to %s (chat=%s) by output guard [%s]: %r",
+                               target.platform.value, target.chat_id, filtered_reason, content[:40])
+                return {"success": True, "filtered": filtered_reason, "delivered": False}
+            content = guarded
 
         send_metadata = dict(metadata or {})
         home = self.config.get_home_channel(target.platform) if transport.is_relay else None

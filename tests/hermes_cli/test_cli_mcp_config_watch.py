@@ -3,6 +3,8 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from utils import file_signature
+
 
 def _make_cli(tmp_path, mcp_servers=None, extra_config=None):
     """Create a minimal HermesCLI instance with mocked config."""
@@ -18,7 +20,7 @@ def _make_cli(tmp_path, mcp_servers=None, extra_config=None):
 
     cfg_file = tmp_path / "config.yaml"
     cfg_file.write_text("mcp_servers: {}\n")
-    obj._config_mtime = cfg_file.stat().st_mtime
+    obj._config_sig = file_signature(cfg_file.stat())
 
     obj._reload_mcp = MagicMock()
     obj._busy_command = MagicMock()
@@ -40,7 +42,7 @@ class TestMCPConfigWatch:
 
         # Simulate user adding a new MCP server to config.yaml
         cfg_file.write_text(yaml.dump({"mcp_servers": {"github": {"url": "https://mcp.github.com"}}}))
-        obj._config_mtime = 0.0  # force stale mtime
+        obj._config_sig = None  # force stale mtime
 
         with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
             obj._check_config_mcp_changes()
@@ -54,7 +56,7 @@ class TestMCPConfigWatch:
 
         # Simulate user removing the server
         cfg_file.write_text(yaml.dump({"mcp_servers": {}}))
-        obj._config_mtime = 0.0
+        obj._config_sig = None
 
         with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
             obj._check_config_mcp_changes()
@@ -87,7 +89,7 @@ class TestMCPConfigWatch:
             "mcp": {"auto_reload_on_config_change": False},
             "mcp_servers": {"github": {"url": "https://mcp.github.com"}},
         }))
-        obj._config_mtime = 0.0  # force stale mtime
+        obj._config_sig = None  # force stale mtime
 
         with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
             obj._check_config_mcp_changes()
@@ -110,13 +112,13 @@ class TestMCPConfigWatch:
             "mcp": {"auto_reload_on_config_change": False},
             "mcp_servers": {"github": {"url": "https://mcp.github.com"}},
         }))
-        obj._config_mtime = 0.0
+        obj._config_sig = None
 
         with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
             obj._check_config_mcp_changes()
             # Second pass: same file content, new mtime — no reload, no change.
             obj._last_config_check = 0.0
-            obj._config_mtime = 0.0
+            obj._config_sig = None
             obj._check_config_mcp_changes()
 
         obj._reload_mcp.assert_not_called()
@@ -139,7 +141,7 @@ class TestMCPConfigWatch:
             "auxiliary": {"mcp": {"auto_reload_on_config_change": False}},
             "mcp_servers": {"github": {"url": "https://mcp.github.com"}},
         }))
-        obj._config_mtime = 0.0
+        obj._config_sig = None
 
         with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
             obj._check_config_mcp_changes()
@@ -184,10 +186,30 @@ class TestMCPConfigWatch:
             "agent": {"reasoning_effort": "high"},
             "mcp_servers": raw_servers,
         }))
-        obj._config_mtime = 0.0
+        obj._config_sig = None
 
         with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
             obj._check_config_mcp_changes()
 
         obj._reload_mcp.assert_not_called()
         assert "MCP server config changed" not in capsys.readouterr().out
+
+
+def test_pinned_mtime_same_size_replacement_triggers_reload(tmp_path):
+    """#111105: cp -p / rsync -t style replacement (same mtime, same size) must still reload."""
+    import os
+    import shutil
+
+    obj, cfg_file = _make_cli(tmp_path, mcp_servers={"bb": {"command": "b"}})
+    cfg_file.write_text("mcp_servers:\n  bb: {command: b}\n")
+    obj._config_sig = file_signature(cfg_file.stat())
+    other = tmp_path / "other.yaml"
+    other.write_text("mcp_servers:\n  aa: {command: a}\n")
+    shutil.copy2(other, cfg_file)
+    os.utime(cfg_file, ns=(obj._config_sig[0], obj._config_sig[0]))
+
+    with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
+        obj._check_config_mcp_changes()
+
+    obj._reload_mcp.assert_called_once()
+    assert obj._config_mcp_servers == {"aa": {"command": "a"}}

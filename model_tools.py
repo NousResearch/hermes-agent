@@ -22,6 +22,7 @@ from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
 from tools.arg_coercion import coerce_tool_args
+from utils import file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -257,7 +258,7 @@ def _tool_defs_cache_key(
     """Memo key for get_tool_definitions, or None when caching must be bypassed.
 
     Covers every argument plus everything that changes the result without one:
-    registry generation, config.yaml mtime/size (dynamic schemas), kanban
+    registry generation, config.yaml stat signature (dynamic schemas), kanban
     context, profile scope. check_fn results are TTL-cached in the registry.
     """
     profile_scope = check_fn_cache_scope()
@@ -266,7 +267,7 @@ def _tool_defs_cache_key(
     try:
         from hermes_cli.config import get_config_path
         cfg_stat = get_config_path().stat()
-        cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
+        cfg_fp = file_signature(cfg_stat)
     except (FileNotFoundError, OSError, ImportError):
         cfg_fp = None
     return (

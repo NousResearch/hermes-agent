@@ -337,7 +337,7 @@ def _ensure_tui_node() -> None:
     if not helper.is_file():
         return
 
-    from hermes_constants import get_hermes_home
+    from hermes_constants import get_hermes_home, iter_hermes_node_dirs
     hermes_home = str(get_hermes_home())
     try:
         # Helper logs to stderr; stdout carries `command -v node` — subshell PATH
@@ -352,7 +352,7 @@ def _ensure_tui_node() -> None:
     parts = os.environ.get("PATH", "").split(os.pathsep)
     resolved = (result.stdout or "").strip()
     extras = [Path(resolved).resolve().parent] if resolved else []
-    extras += [Path(hermes_home) / "node" / "bin", Path.home() / ".local" / "bin"]
+    extras += [*iter_hermes_node_dirs(Path(hermes_home)), Path.home() / ".local" / "bin"]
     for extra in extras:
         s = str(extra)
         if extra.is_dir() and s not in parts:

@@ -1,5 +1,6 @@
 import asyncio
 import os
+import shutil
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -23,11 +24,18 @@ if not _MCP_AVAILABLE:
 def test_resolve_stdio_command_falls_back_to_hermes_node_bin(tmp_path):
     node_bin = tmp_path / "node" / "bin"
     node_bin.mkdir(parents=True)
-    npx_path = node_bin / "npx"
+    # shutil.which resolves through PATHEXT on Windows, so the shim needs its real name there.
+    npx_path = node_bin / ("npx.cmd" if sys.platform == "win32" else "npx")
     npx_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     npx_path.chmod(0o755)
 
-    with patch("tools.mcp_tool_config.shutil.which", return_value=None), \
+    real_which = shutil.which
+
+    def _filtered_config_path(cmd, path=None):
+        """Only the server's configured PATH is filtered here; the managed-dir lookup stays real."""
+        return None if path == "/usr/bin" else real_which(cmd, path=path)
+
+    with patch("tools.mcp_tool_config.shutil.which", side_effect=_filtered_config_path), \
          patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}, clear=False):
         command, env = _resolve_stdio_command("npx", {"PATH": "/usr/bin"})
 
@@ -66,6 +74,45 @@ def test_resolve_stdio_command_falls_back_to_usr_local_bin():
     # /usr/local/bin must be prepended so npx's shebang (`/usr/bin/env node`)
     # can find node in the same directory.
     assert env["PATH"].split(os.pathsep)[0] == os.path.dirname(target)
+
+
+def test_resolve_stdio_command_node_fallback_uses_resolved_hermes_home(tmp_path, monkeypatch):
+    """The managed-node fallback follows get_hermes_home(), not a literal ~/.hermes.
+
+    Without HERMES_HOME in the environment the two disagree (context-local override vs
+    expanduser("~/.hermes")), so the old probe reports "not installed" on a machine
+    that has a working managed npx.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    # Both managed layouts get a shim: POSIX <home>/node/bin, Windows <home>/node (node.exe/npx.cmd).
+    for directory in (tmp_path / "node", tmp_path / "node" / "bin"):
+        directory.mkdir(parents=True, exist_ok=True)
+        for name in ("npx", "npx.cmd"):
+            shim = directory / name
+            shim.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            shim.chmod(0o755)
+
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    empty_home = tmp_path / "empty-home"
+    empty_home.mkdir()
+    monkeypatch.setenv("HOME", str(empty_home))
+
+    real_which = shutil.which
+
+    def _which_without_config_path(cmd, path=None):
+        """The server's configured PATH is a filtered env; leave every other lookup real."""
+        return None if path == "/usr/bin" else real_which(cmd, path=path)
+
+    token = set_hermes_home_override(tmp_path)
+    try:
+        with patch("tools.mcp_tool_config.shutil.which", side_effect=_which_without_config_path):
+            command, _env = _resolve_stdio_command("npx", {"PATH": "/usr/bin"})
+    finally:
+        reset_hermes_home_override(token)
+
+    assert command != "npx"
+    assert command.startswith(str(tmp_path / "node"))
 
 
 # ---------------------------------------------------------------------------

@@ -812,3 +812,26 @@ class TestPersistentNpmUserconfig:
         monkeypatch.delenv("NPM_CONFIG_USERCONFIG")
         env = main_tui_launch._npm_lifecycle_env({"NPM_CONFIG_USERCONFIG": "/from-caller/npmrc"})
         assert env["NPM_CONFIG_USERCONFIG"] == "/from-caller/npmrc"
+
+
+def test_ensure_tui_node_adds_canonical_managed_dirs_to_path(tmp_path, monkeypatch):
+    """After a bootstrap, PATH gains the canonical managed dirs, not a POSIX-only node/bin guess."""
+    import subprocess as _subprocess
+
+    managed_root = tmp_path / "hermes-home" / "node"
+    (managed_root / "bin").mkdir(parents=True)
+
+    def _fake_run(argv, *args, **kwargs):
+        return _subprocess.CompletedProcess(argv, 0, str(tmp_path / "elsewhere" / "node"), "")
+
+    monkeypatch.delenv("HERMES_SKIP_NODE_BOOTSTRAP", raising=False)
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setattr(main_tui_launch.shutil, "which", lambda *a, **k: None)
+    monkeypatch.setattr(main_tui_launch.subprocess, "run", _fake_run)
+    monkeypatch.setattr("hermes_constants.iter_hermes_node_dirs", lambda home=None: [managed_root, managed_root / "bin"])
+
+    main_tui_launch._ensure_tui_node()
+
+    parts = os.environ["PATH"].split(os.pathsep)
+    assert str(managed_root) in parts
+    assert str(managed_root / "bin") in parts

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_constants import agent_browser_runnable, get_hermes_home, is_termux as _is_termux_environment, node_tool_runnable
+from hermes_constants import agent_browser_runnable, get_hermes_home, is_termux as _is_termux_environment, iter_hermes_node_dirs, node_tool_runnable
 from tools.browser_tool_origin import origin_module as _origin
 from tools import browser_tool_cdp as _cdp
 from tools import browser_tool_cloud as _cloud
@@ -40,7 +40,7 @@ def _browser_candidate_path_dirs() -> list[str]:
     """Return ordered browser CLI PATH candidates shared by discovery and execution."""
     _bt = _origin()
     home = get_hermes_home()
-    managed = (home / "node" / "bin", home / "node", home / "node_modules" / ".bin")
+    managed = (*iter_hermes_node_dirs(), home / "node_modules" / ".bin")
     return [*map(str, managed), *_discover_homebrew_node_dirs(), *_bt._SANE_PATH_DIRS]
 
 
@@ -147,7 +147,9 @@ def _find_agent_browser(*, validate: bool = True) -> str:
         from hermes_cli.dep_ensure import ensure_dependency
         if ensure_dependency("browser"):
             home = get_hermes_home()
-            managed = (home / "node_modules" / ".bin", home / "node" / "bin", home / "node")
+            # node_modules/.bin first: the install above lands the binary there, so it must outrank
+            # the managed runtime's global bin — the reverse of _browser_candidate_path_dirs().
+            managed = (home / "node_modules" / ".bin", *iter_hermes_node_dirs())
             for path in (None, *([extended_path] if extended_path else []), *map(str, managed)):
                 recheck = shutil.which("agent-browser", path=path)
                 if recheck and agent_browser_runnable(recheck):

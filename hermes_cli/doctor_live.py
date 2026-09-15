@@ -53,9 +53,10 @@ def _browser_available() -> bool:
         return True
     try:
         from hermes_cli.doctor import HERMES_HOME, PROJECT_ROOT
+        from hermes_constants import iter_hermes_node_dirs
         if (PROJECT_ROOT / "node_modules" / "agent-browser").exists():
             return True
-        for candidate in (HERMES_HOME / "node" / "bin", HERMES_HOME / "node", HERMES_HOME / "node_modules" / ".bin"):
+        for candidate in (*iter_hermes_node_dirs(HERMES_HOME), HERMES_HOME / "node_modules" / ".bin"):
             if shutil.which("agent-browser", path=str(candidate)):
                 return True
     except Exception:

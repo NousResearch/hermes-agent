@@ -150,12 +150,23 @@ def _which_with_config_pathext(command: str, path_arg, env: dict):
 
 
 def _node_fallback(command: str) -> str:
-    """Well-known Node install locations for bare ``npx``/``npm``/``node``; *command* unchanged when none exists."""
+    """Well-known Node install locations for bare ``npx``/``npm``/``node``; *command* unchanged when none exists.
+
+    Managed dirs come from ``iter_hermes_node_dirs()`` (profile/override-aware, and the Windows portable
+    layout whose shims live in ``<home>/node``) but are probed with a plain PATH lookup rather than
+    ``find_hermes_node_executable()``: this runs while an MCP stdio server is starting, and that helper
+    heals a broken tree by shelling out for up to 300s — long past the client's handshake timeout, on a
+    machine that usually has a working system Node to fall back to.
+    """
+    from hermes_constants import iter_hermes_node_dirs
+    managed = os.pathsep.join(str(directory) for directory in iter_hermes_node_dirs())
+    managed_hit = shutil.which(command, path=managed)
+    if managed_hit:
+        return managed_hit
     home = os.path.expanduser("~")
-    hermes_home = os.path.expanduser(os.getenv("HERMES_HOME", os.path.join(home, ".hermes")))
     # /usr/local/bin: canonical Node location (from-source Linux, Hermes Docker image, Intel Homebrew),
     # needed when a hand-authored env.PATH omits it — npx's shebang re-execs /usr/bin/env node.
-    candidates = (os.path.join(hermes_home, "node", "bin", command), os.path.join(home, ".local", "bin", command),
+    candidates = (os.path.join(home, ".local", "bin", command),
                   os.path.join(os.sep, "usr", "local", "bin", command))
     return next((c for c in candidates if os.path.isfile(c) and os.access(c, os.X_OK)), command)
 

@@ -118,3 +118,33 @@ def test_cli_promote_bulk_ids_promotes_all(kanban_home, capsys):
             assert kb.get_task(conn, c).status == "ready"
 
 
+# ---------------------------------------------------------------------------
+# Regression for #110339 — a card created with `--triage` had no exit path:
+# promote refused it, claim requires ready, the dispatcher skips triage.
+# promote must accept triage (guards preserved: unsatisfied parents still
+# refuse).
+# ---------------------------------------------------------------------------
+
+
+def _triage_task(conn, **kwargs):
+    tid = kb.create_task(conn, title="triage card", triage=True, **kwargs)
+    assert kb.get_task(conn, tid).status == "triage"
+    return tid
+
+
+def test_promote_triage_task_succeeds(conn):
+    tid = _triage_task(conn)
+    ok, err = kb.promote_task(conn, tid, actor="tester")
+    assert ok and err is None
+    assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_promote_triage_task_with_undone_parent_still_refused(conn):
+    parent = kb.create_task(conn, title="parent")
+    tid = _triage_task(conn, parents=[parent])
+    ok, err = kb.promote_task(conn, tid, actor="tester", reason="recovery")
+    assert not ok
+    assert parent in err
+    assert kb.get_task(conn, tid).status == "triage"
+
+

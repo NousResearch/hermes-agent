@@ -1809,6 +1809,13 @@ DEFAULT_CONFIG = {
         # On boards that never archive, the notifier GC purges subscriptions for tasks done with no
         # activity for this many days so stale rows aren't scanned forever. 0 = off.
         "done_sub_retention_days": 30,
+        # Wave2/2c: deterministic dispatch-time gate precheck
+        # (hermes_cli/kanban_gate_precheck.py::gate_precheck) re-implementing the
+        # mechanically-checkable subset of the atomic-task-gate / ears-sensibility-gate
+        # skills' discriminants. False (default) = no precheck at all — this is a new,
+        # unproven heuristic with a materially different risk profile than other
+        # dispatch guards, so it stays fully opt-in until an operator turns it on.
+        "gate_precheck_enabled": False,
     },
     # Bot Mode cross-connection relay (tools/bot_relay.py): envelopes queued by message_agent for
     # agents on other connections wait in an on-disk outbox until the Desktop drains them.

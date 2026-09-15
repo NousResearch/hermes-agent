@@ -110,6 +110,12 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    skipped_gate_precheck: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, reason)`` blocked by the Wave2/2c deterministic gate
+    precheck (``kanban_gate_precheck.gate_precheck``) when
+    ``kanban.gate_precheck_enabled`` is set in ``config.yaml``. Distinct from
+    ``respawn_guarded`` (a different, always-on mechanism) so telemetry can
+    tell them apart."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -1633,6 +1639,19 @@ def _dispatch_lane_task(
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
         return False
 
+    # Wave2/2c: deterministic gate precheck, opt-in via kanban.gate_precheck_enabled
+    # in config.yaml (default False — a new, unproven heuristic with a materially
+    # different risk profile than the always-on respawn guard above, so it stays
+    # opt-in). Distinct bucket (skipped_gate_precheck) from respawn_guarded so
+    # telemetry can tell the two mechanisms apart.
+    if gate_precheck_enabled():
+        task_for_precheck = _kb.get_task(conn, task_id)
+        if task_for_precheck is not None:
+            precheck = _gate_precheck.gate_precheck(task_for_precheck)
+            if precheck["status"] == _gate_precheck.STATUS_BLOCKED:
+                result.skipped_gate_precheck.append((task_id, precheck["reason"]))
+                return False
+
     def _count_spawn(name: str) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent
         # ticks re-query from the DB.
@@ -1986,6 +2005,24 @@ def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
     except (TypeError, ValueError):
         return default
     return parsed if parsed >= minimum else default
+
+
+def gate_precheck_enabled(kanban_cfg: Optional[dict] = None) -> bool:
+    """Return whether the Wave2/2c deterministic gate precheck
+    (``hermes_cli.kanban_gate_precheck.gate_precheck``) should run before a
+    task is spawned. Opt-in: ``kanban.gate_precheck_enabled`` in
+    ``config.yaml``, default ``False`` — same ``load_config().get("kanban")``
+    pattern as :func:`worker_log_rotation_config`, NOT an env var.
+    """
+    if kanban_cfg is None:
+        try:
+            from hermes_cli.config import load_config
+
+            kanban_cfg = (load_config().get("kanban") or {})
+        except Exception:
+            kanban_cfg = {}
+    kanban_cfg = kanban_cfg or {}
+    return bool(kanban_cfg.get("gate_precheck_enabled", False))
 
 
 def worker_log_rotation_config(kanban_cfg: Optional[dict] = None) -> tuple[int, int]:
@@ -2518,3 +2555,4 @@ def run_daemon(
 from hermes_cli import kanban_db as _kb  # noqa: E402
 from hermes_cli import kanban_db_connect as _kbc  # noqa: E402
 from hermes_cli import kanban_db_workspace as _kbw  # noqa: E402
+from hermes_cli import kanban_gate_precheck as _gate_precheck  # noqa: E402

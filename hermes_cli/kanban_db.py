@@ -713,12 +713,19 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    # Wave2/2c gate precheck (hermes_cli/kanban_gate_precheck.py). Column
+    # semantics: see SCHEMA_SQL. None = not populated; scope_paths follows
+    # the same None-vs-[] convention as ``skills``.
+    ears_sentence: Optional[str] = None
+    scope_paths: Optional[list] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
         g = lambda col, default=None: _row_get(row, col, default)  # noqa: E731
         parsed = _json_or(g("skills"))
         skills_value = [str(s) for s in parsed if s] if isinstance(parsed, list) else None
+        scope_parsed = _json_or(g("scope_paths"))
+        scope_paths_value = list(scope_parsed) if isinstance(scope_parsed, list) else None
         return cls(
             **{col: row[col] for col in _TASK_REQUIRED_COLUMNS},
             **{col: g(col) for col in _TASK_OPTIONAL_COLUMNS},
@@ -728,6 +735,7 @@ class Task:
             consecutive_failures=g("consecutive_failures", g("spawn_failures", 0)),
             last_failure_error=g("last_failure_error", g("last_spawn_error")),
             skills=skills_value,
+            scope_paths=scope_paths_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
         )
@@ -743,6 +751,7 @@ _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
+    "ears_sentence",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -943,7 +952,17 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Wave2/2c gate precheck: single EARS-shaped requirement sentence for
+    -- this task, populated by the ears-sensibility-gate skill (or manually).
+    -- NULL = not yet routed through the EARS gate; gate_precheck() treats
+    -- that as not_gated (dispatchable), never forced.
+    ears_sentence         TEXT,
+    -- Wave2/2c gate precheck: JSON array of file paths this task is
+    -- declared to touch, populated by the atomic-task-gate skill (or
+    -- manually). NULL = no declared scope (not the same as an empty list);
+    -- matches the skills column's None-vs-[] semantics.
+    scope_paths           TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1234,6 +1253,8 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    ears_sentence: Optional[str] = None,
+    scope_paths: Optional[Iterable[str]] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1287,6 +1308,7 @@ def create_task(
     )
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
+    scope_paths_list = list(scope_paths) if scope_paths is not None else None
 
     # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
     # race may insert twice, the next lookup stabilises on the newest.
@@ -1333,8 +1355,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        ears_sentence, scope_paths
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1344,6 +1367,8 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        ears_sentence,
+                        json.dumps(scope_paths_list) if scope_paths_list is not None else None,
                     ),
                 )
                 for pid in parents:

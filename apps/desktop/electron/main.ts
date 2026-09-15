@@ -291,6 +291,9 @@ import {
 import { evictPoolEntries } from './pool-eviction'
 import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
 import {
+  BackgroundSlotRetryBackoff,
+  BackgroundSlotRetryDeferredError,
+  isBackgroundSlotRetryDeferred,
   isBackgroundSlotWaitTimeout,
   LocalBackendSpawnCoordinator,
   type LocalBackendSpawnPriority,
@@ -1523,6 +1526,7 @@ let poolLimits = readPersistedPoolLimits()
 // above is soft — it spares keepalive-fresh entries). Follows the live
 // preference: setPoolLimits() pushes a new max into the coordinator.
 const localBackendSpawnCoordinator = new LocalBackendSpawnCoordinator(poolLimits.maxBackends)
+const backgroundSlotRetryBackoff = new BackgroundSlotRetryBackoff()
 // How long a spawn may wait for a free local slot. Must stay under the
 // renderer's BACKEND_BOOT_WAIT_TIMEOUT_MS (45s, src/lib/with-timeout.ts) so
 // the queued ticket fails before the renderer does and the user sees why.
@@ -1570,12 +1574,16 @@ function assertNotPassiveSpawn(passive: boolean, poolKey: string): void {
   }
 }
 
-// Land a spawn failure in desktop.log. A background slot-wait timeout is
-// routine under a saturated pool (the next hydration pass retries), so it is
-// logged as such instead of as a backend-start failure.
+// Land a spawn failure in desktop.log. Background slot waits back off per
+// profile under a saturated pool, so a roster refresh cannot create a retry
+// storm while a user-triggered foreground open still gets its reserved slot.
 function logPoolSpawnFailure(label: string, error: unknown): void {
+  if (isBackgroundSlotRetryDeferred(error)) {
+    return
+  }
+
   if (isBackgroundSlotWaitTimeout(error)) {
-    rememberLog(`Profile backend ${label} slot wait timed out (background); will retry on the next hydration`)
+    rememberLog(`Profile backend ${label} slot wait timed out (background); retry is backing off`)
   } else {
     rememberLog(
       `Hermes backend for profile ${label} failed to start: ${error instanceof Error ? error.message : String(error)}`
@@ -12472,6 +12480,10 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
 
   assertPoolEntryStillOwned(poolKey, entry)
 
+  if (spawnPriority === 'background' && !backgroundSlotRetryBackoff.canAttempt(poolKey)) {
+    throw new BackgroundSlotRetryDeferredError(profile)
+  }
+
   const spawnRequest = localBackendSpawnCoordinator.request(poolKey, {
     timeoutMs: POOL_SLOT_WAIT_MS,
     priority: spawnPriority
@@ -12491,6 +12503,13 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
 
   try {
     entry.releaseLocalBackendSlot = await spawnRequest.acquired
+    backgroundSlotRetryBackoff.clear(poolKey)
+  } catch (error) {
+    if (isBackgroundSlotWaitTimeout(error)) {
+      backgroundSlotRetryBackoff.recordFailure(poolKey)
+    }
+
+    throw error
   } finally {
     localBackendLifecycle.signal.removeEventListener('abort', cancelRequest)
   }

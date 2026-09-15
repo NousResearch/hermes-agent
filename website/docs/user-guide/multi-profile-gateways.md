@@ -462,8 +462,10 @@ turn, the cron ticker or log routing.
 
 The served set controls `/p/<profile>/` API and webhook prefixes, runtime
 status, profile-route eligibility, and which profiles the in-process cron
-scheduler ticks (the Desktop backend's ticker enumerates the same set and stands
-down for any profile a running multiplexer or its own gateway already serves). A
+scheduler ticks (the Desktop backend's ticker re-enumerates the same set on
+every cycle — a profile created or deleted while Desktop runs joins or leaves
+the ticked set without a restart — and stands down for any profile a running
+multiplexer or its own gateway already serves). A
 multiplexer started as `hermes -p <name> gateway run` always ticks its own
 profile's cron store as well.
 

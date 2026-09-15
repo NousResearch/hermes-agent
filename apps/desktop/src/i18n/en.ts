@@ -702,6 +702,11 @@ export const en: Translations = {
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
       reasoningCollapsedTitle: 'Collapse thinking by default',
       reasoningCollapsedDesc: 'Keep streamed reasoning available without expanding it until you open it.',
+      turnAnchorTitle: 'Turn-end View',
+      turnAnchorDesc:
+        'Where the view lands when a turn finishes. Start of my prompt settles at the beginning of your last message so the exchange reads top-down; if you scrolled up during the turn, the view stays where you left it.',
+      turnAnchorBottom: 'End of answer',
+      turnAnchorPrompt: 'Start of my prompt',
       uiScaleTitle: 'UI Scale',
       uiScaleDesc: (percent: number) =>
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,

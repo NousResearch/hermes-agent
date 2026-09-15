@@ -489,6 +489,11 @@ export const ja = defineLocale({
       toolViewDesc: 'プロダクト表示は生のツールペイロードを隠し、テクニカル表示は入出力をすべて表示します。',
       reasoningCollapsedTitle: '思考ブロックをデフォルトで折りたたむ',
       reasoningCollapsedDesc: 'ストリーミング中の推論を、開くまで折りたたんだまま利用できるようにします。',
+      turnAnchorTitle: 'ターン終了時の表示位置',
+      turnAnchorDesc:
+        'ターンが終わったときに表示位置をどこへ合わせるかを選びます。「自分のプロンプトの先頭」は最後のメッセージの先頭に合わせ、やり取りを上から順に読めます。ターン中に上へスクロールしていた場合は、その読書位置を保ちます。',
+      turnAnchorBottom: '回答の末尾',
+      turnAnchorPrompt: '自分のプロンプトの先頭',
       uiScaleTitle: 'UI スケール',
       uiScaleDesc: (percent: number) =>
         `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。現在: ${percent}%`,

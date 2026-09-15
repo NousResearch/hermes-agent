@@ -678,6 +678,11 @@ export const zh = defineLocale({
       toolViewDesc: '产品模式隐藏原始工具数据；技术模式显示完整输入/输出。',
       reasoningCollapsedTitle: '默认折叠推理过程',
       reasoningCollapsedDesc: '保留流式推理内容，但在您打开前保持折叠。',
+      turnAnchorTitle: '回合结束视图',
+      turnAnchorDesc:
+        '回合结束时视口停在哪里。「我的提问开头」会停在您上一条消息的起始处，方便从上往下读完整段问答；若回合中您已向上滚动，则保持您的阅读位置。',
+      turnAnchorBottom: '回答末尾',
+      turnAnchorPrompt: '我的提问开头',
       uiScaleTitle: '界面缩放',
       uiScaleDesc: (percent: number) =>
         `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,

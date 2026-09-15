@@ -38,20 +38,29 @@ def test_existing_database_migrates_total_runs_to_zero(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     path = kb.kanban_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    legacy_schema = kb.SCHEMA_SQL.replace(
-        "    block_recurrences    INTEGER NOT NULL DEFAULT 0,\n"
-        "    -- Lifetime total of worker spawns (claim -> running). Incremented exactly\n"
-        "    -- once per real worker spawn in the same txn as ``_claim_and_open_run``;\n"
-        "    -- preserved across unblock/reassign/reopen (resets of ``consecutive_failures``\n"
-        "    -- and ``block_recurrences`` are explicit operators' concerns, NOT this\n"
-        "    -- counter's). The dispatcher's lifetime cap (``kanban.lifetime_run_limit``)\n"
-        "    -- moves the task to ``triage`` when ``total_runs`` reaches the limit; the\n"
-        "    -- counter is intentionally NEVER reset, only archived or deleted with the row.\n"
-        "    total_runs           INTEGER NOT NULL DEFAULT 0\n",
-        "    block_recurrences    INTEGER NOT NULL DEFAULT 0\n",
-    )
     legacy = sqlite3.connect(path)
-    legacy.executescript(legacy_schema)
+    # A minimal pre-column tasks table: connect() must add total_runs without
+    # relying on the current SCHEMA_SQL's comments or formatting.
+    legacy.executescript(
+        """
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT,
+            assignee TEXT,
+            status TEXT NOT NULL,
+            priority INTEGER DEFAULT 0,
+            created_by TEXT,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+            workspace_path TEXT,
+            claim_lock TEXT,
+            claim_expires INTEGER
+        );
+        """
+    )
     legacy.execute(
         "INSERT INTO tasks (id, title, status, created_at) VALUES ('old', 'old', 'ready', 1)"
     )
@@ -97,29 +106,39 @@ def test_total_runs_survives_unblock_reassign_and_ancestor_reopen(kanban_home):
 
 def test_repeated_unblocks_cannot_bypass_lifetime_cap(kanban_home, all_assignees_spawnable):
     limit = 3
+    spawns = []
+
+    def spawn(task, _workspace):
+        spawns.append(task.id)
+        return 12345
+
     with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="loop", assignee="default")
-        for total_runs in range(1, limit + 3):
-            _set_total_runs(conn, task_id, total_runs)
-            # Model the incident's external re-spec/re-block seam without
-            # exercising the independent block-recurrence breaker.
-            with kb.write_txn(conn):
-                conn.execute("UPDATE tasks SET status = 'blocked' WHERE id = ?", (task_id,))
-            assert kb.unblock_task(conn, task_id)
-            # The auto-decomposer's re-spec step may re-promote a dependency-
-            # gated card after unblock; model that seam before the next tick.
-            with kb.write_txn(conn):
-                conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (task_id,))
+        for attempt in range(limit):
+            result = kbd.dispatch_once(conn, spawn_fn=spawn, lifetime_run_limit=limit)
+            assert [entry[0] for entry in result.spawned] == [task_id]
+            task = kb.get_task(conn, task_id)
+            assert task is not None
+            assert task.total_runs == attempt + 1
 
-        result = kbd.dispatch_once(conn, spawn_fn=_fake_spawn, lifetime_run_limit=limit)
+            # Simulate the incident's worker block -> external unblock/re-spec
+            # loop through public transitions. Alternate kinds so the separate
+            # block-recurrence breaker does not mask the lifetime-cap invariant.
+            assert kb.block_task(
+                conn, task_id, reason="retry", kind=("transient" if attempt % 2 else "needs_input"),
+            )
+            assert kb.unblock_task(conn, task_id)
+
+        result = kbd.dispatch_once(conn, spawn_fn=spawn, lifetime_run_limit=limit)
         assert result.spawned == []
         assert result.run_capped == [task_id]
+        assert spawns == [task_id] * limit
         task = kb.get_task(conn, task_id)
         assert task is not None
         assert task.status == "triage"
         event = next(event for event in kb.list_events(conn, task_id) if event.kind == "lifetime_run_capped")
         assert event.payload is not None
-        assert event.payload["total_runs"] == limit + 2
+        assert event.payload["total_runs"] == limit
         assert event.payload["limit"] == limit
 
 

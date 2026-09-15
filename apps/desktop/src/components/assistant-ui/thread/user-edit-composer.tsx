@@ -24,7 +24,7 @@ import {
   releaseActiveComposer
 } from '@/app/chat/composer/focus'
 import { useAtCompletions } from '@/app/chat/composer/hooks/use-at-completions'
-import { rebuildAroundCaret, triggerKeyUpHandler } from '@/app/chat/composer/hooks/use-composer-trigger'
+import { collapseSelectionOntoTrigger, rebuildAroundCaret, triggerKeyUpHandler } from '@/app/chat/composer/hooks/use-composer-trigger'
 import { useComposerUndo } from '@/app/chat/composer/hooks/use-composer-undo'
 import { useEmojiCompletions } from '@/app/chat/composer/hooks/use-emoji-completions'
 import { useSlashCompletions } from '@/app/chat/composer/hooks/use-slash-completions'
@@ -383,6 +383,11 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       directive
         ? fragment.append(refChipElement(directive[1], directive[2]), document.createTextNode(' '))
         : fragment.append(document.createTextNode(text))
+
+      // Same select-all normalization as the main composer: a selection
+      // spanning the token is not caret context — collapse it onto the token
+      // before the replacement math runs.
+      collapseSelectionOntoTrigger(editor, trigger.kind, trigger.query)
 
       if (!replaceBeforeCaret(editor, trigger.tokenLength, fragment)) {
         rebuildAroundCaret(editor, trigger.tokenLength, text)

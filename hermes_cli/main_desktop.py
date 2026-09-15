@@ -1245,6 +1245,67 @@ def _register_linux_desktop_entry() -> None:
         print(f"⚠ Could not install the desktop launcher entry: {exc}")
 
 
+class _ProcessFileLock:
+    """Small fcntl-based process lock serializing a cross-process critical section."""
+
+    def __init__(self, path: Path, label: str, *, wait: bool = False):
+        self.path = path
+        self.label = label
+        self.wait = wait
+        self._fh = None
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._fh = self.path.open("a+", encoding="utf-8")
+        try:
+            import fcntl
+
+            try:
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                if not self.wait:
+                    print(f"✗ Another Hermes {self.label} is already running.")
+                    print(f"  Lock: {self.path}")
+                    sys.exit(2)
+                # Blocking mode queues behind the holder; say so instead of
+                # appearing to hang with no output.
+                print(f"→ Waiting for another Hermes {self.label} to finish...")
+                print(f"  Lock: {self.path}")
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+        except ImportError:
+            # Windows lacks fcntl; existing executable-lock guards still apply.
+            pass
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._fh is not None:
+            try:
+                import fcntl
+
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            self._fh.close()
+        return False
+
+
+def _hermes_root_for_process_locks() -> Path:
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        return Path(get_default_hermes_root())
+    except Exception:
+        return Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
+
+
+def _desktop_build_process_lock(*, wait: bool = True) -> _ProcessFileLock:
+    return _ProcessFileLock(
+        _hermes_root_for_process_locks() / ".desktop-build.lock",
+        "desktop build",
+        wait=wait,
+    )
+
+
 def _install_desktop_workspace_deps(npm: str, env: dict) -> None:
     """npm-install the desktop workspace; exits on a failure that isn't a repairable missing Electron dist."""
     from hermes_cli.main import PROJECT_ROOT
@@ -1352,55 +1413,61 @@ def _promote_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Path:
 
 def _build_desktop_app(desktop_dir: Path, *, source_mode: bool, npm: str, env: dict) -> Optional[Path]:
     """npm-install + build the desktop app, stage-and-swapping the packaged tree. Returns the new
-    packaged exe (None in source mode). Exits on unrecoverable failure with the previous app kept."""
+    packaged exe (None in source mode). Exits on unrecoverable failure with the previous app kept.
+
+    The whole critical section runs under a cross-process file lock: two
+    ``hermes desktop`` invocations (or the installer's headless --update rebuild
+    racing a manual run) would otherwise build into apps/desktop concurrently
+    and trip over each other's npm install and electron-builder output."""
     from hermes_cli.main import PROJECT_ROOT
-    _install_desktop_workspace_deps(npm, env)
+    with _desktop_build_process_lock(wait=True):
+        _install_desktop_workspace_deps(npm, env)
 
-    build_label = "source build" if source_mode else "packaged app"
-    print(f"→ Building desktop {build_label}...")
-    build_script = "build" if source_mode else "pack"
-    if _force_adhoc_macos_signing(env, source_mode=source_mode):
-        print("  → No Developer ID configured; ad-hoc signing this local rebuild "
-              "(CSC_IDENTITY_AUTO_DISCOVERY=false)")
-    npm_build_env = _npm_lifecycle_env(env)
-    # Stage-and-swap: electron-builder packs IN PLACE and before-pack.mjs wipes
-    # release/<unpacked> first, so a pack that fails afterwards used to leave
-    # the user with NO app. Build into a staging dir; the live release/ tree is
-    # only replaced — by rename — after the staged result verifies.
-    # See #86443.
-    staging_dir: Optional[Path] = None
-    build_cmd = [npm, "run", build_script]
-    if not source_mode:
-        staging_dir = _desktop_staging_dir(desktop_dir)
-        build_cmd += ["--", f"-c.directories.output={staging_dir}"]
-        # A running desktop instance holds Hermes.exe locked on Windows, so the
-        # pack can't replace it ("Access is denied"). Stop it first.
-        stopped = _stop_desktop_processes_locking_build(desktop_dir)
-        if stopped:
-            print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
+        build_label = "source build" if source_mode else "packaged app"
+        print(f"→ Building desktop {build_label}...")
+        build_script = "build" if source_mode else "pack"
+        if _force_adhoc_macos_signing(env, source_mode=source_mode):
+            print("  → No Developer ID configured; ad-hoc signing this local rebuild "
+                  "(CSC_IDENTITY_AUTO_DISCOVERY=false)")
+        npm_build_env = _npm_lifecycle_env(env)
+        # Stage-and-swap: electron-builder packs IN PLACE and before-pack.mjs wipes
+        # release/<unpacked> first, so a pack that fails afterwards used to leave
+        # the user with NO app. Build into a staging dir; the live release/ tree is
+        # only replaced — by rename — after the staged result verifies.
+        # See #86443.
+        staging_dir: Optional[Path] = None
+        build_cmd = [npm, "run", build_script]
+        if not source_mode:
+            staging_dir = _desktop_staging_dir(desktop_dir)
+            build_cmd += ["--", f"-c.directories.output={staging_dir}"]
+            # A running desktop instance holds Hermes.exe locked on Windows, so the
+            # pack can't replace it ("Access is denied"). Stop it first.
+            stopped = _stop_desktop_processes_locking_build(desktop_dir)
+            if stopped:
+                print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
 
-    build_result = _run_desktop_pack_with_recovery(desktop_dir, build_cmd, npm_build_env, env, staging_dir)
-    if build_result.returncode != 0:
-        print("✗ Desktop GUI build failed")
+        build_result = _run_desktop_pack_with_recovery(desktop_dir, build_cmd, npm_build_env, env, staging_dir)
+        if build_result.returncode != 0:
+            print("✗ Desktop GUI build failed")
+            if staging_dir is not None:
+                _discard_desktop_staging(staging_dir)
+                if _desktop_packaged_executable(desktop_dir) is not None:
+                    print(_PREVIOUS_APP_KEPT)
+            print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
+            if sys.platform == "win32":
+                print("  If this says \"Access is denied\" on Hermes.exe, close any")
+                print("  running Hermes desktop window and retry.")
+            print("  If the log shows Electron download retries, rebuild via a mirror:")
+            print("    ELECTRON_MIRROR=<mirror-base-url> hermes desktop --force-build")
+            sys.exit(build_result.returncode or 1)
+
+        packaged_executable = None
         if staging_dir is not None:
-            _discard_desktop_staging(staging_dir)
-            if _desktop_packaged_executable(desktop_dir) is not None:
-                print(_PREVIOUS_APP_KEPT)
-        print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
-        if sys.platform == "win32":
-            print("  If this says \"Access is denied\" on Hermes.exe, close any")
-            print("  running Hermes desktop window and retry.")
-        print("  If the log shows Electron download retries, rebuild via a mirror:")
-        print("    ELECTRON_MIRROR=<mirror-base-url> hermes desktop --force-build")
-        sys.exit(build_result.returncode or 1)
+            packaged_executable = _promote_staged_desktop_app(desktop_dir, staging_dir)
 
-    packaged_executable = None
-    if staging_dir is not None:
-        packaged_executable = _promote_staged_desktop_app(desktop_dir, staging_dir)
-
-    # Build succeeded — write the stamp so next run can skip
-    _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)
-    return packaged_executable
+        # Build succeeded — write the stamp so next run can skip
+        _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)
+        return packaged_executable
 
 
 _WSL_DXG_DEVICE = Path("/dev/dxg")

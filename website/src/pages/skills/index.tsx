@@ -564,8 +564,27 @@ export default function SkillsDashboard() {
         ]);
         if (cancelled) return;
         const skillsArr = Array.isArray(sk) ? (sk as Skill[]) : [];
-        // Stamp the precomputed search haystack onto each row.
-        for (const s of skillsArr) s._search = buildSearchHaystack(s);
+        // Only stamp the precomputed search haystack onto rows that don't
+        // already carry one. Since #96029 extract-skills.py ships the
+        // haystack on every row (and stripped the always-empty
+        // community fields to keep the wire payload small), the rebuild
+        // is a no-op on modern catalogs and the page skips it entirely.
+        let missingHaystack = 0;
+        for (const s of skillsArr) {
+          if (typeof s._search !== "string") {
+            s._search = buildSearchHaystack(s);
+            missingHaystack++;
+          }
+        }
+        if (missingHaystack > 0) {
+          // Older catalogs without the precomputed haystack fall back to
+          // building it client-side. Log once so we can spot if a future
+          // extract-skills.py regresses and stops shipping the field.
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[skills-hub] Rebuilt search haystack for ${missingHaystack}/${skillsArr.length} rows; extract-skills.py may have regressed.`,
+          );
+        }
         setData({ skills: skillsArr, meta: mt || {} });
       } catch (err) {
         if (cancelled) return;

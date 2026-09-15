@@ -29,6 +29,23 @@ class TestHandleFunctionCall:
         assert "error" in result
         assert "totally_fake_tool_xyz" in result["error"]
 
+    def test_shell_alias_dispatches_to_terminal(self):
+        """Regression for #111256: models call the nonexistent 'shell' tool
+        expecting the registered 'terminal' tool; handle_function_call must
+        route it there via the legacy alias table instead of returning
+        'Unknown tool: shell' on every retry."""
+        with (
+            patch(
+                "model_tools.registry.dispatch",
+                return_value=json.dumps({"output": "ok", "exit_code": 0, "error": None}),
+            ) as mock_dispatch,
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook"),
+        ):
+            handle_function_call("shell", {"command": "true"})
+
+        assert mock_dispatch.call_args.args[0] == "terminal"
+
 
 
     def test_post_tool_call_receives_non_negative_integer_duration_ms(self):

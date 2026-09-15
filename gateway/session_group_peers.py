@@ -241,7 +241,7 @@ def _revoke(operation, params, *, exact):
 
                 conn.execute('SAVEPOINT native_revoke')
                 try:
-                    revoke(path, claims=claims, expires_at=claims['status_expires_at'],
+                    revoke(path, claims=claims, expires_at=claims.get('status_expires_at', claims['expires_at']),
                            _connection=conn, _authorize_write=authorize)
                 except Exception as exc:
                     conn.execute('ROLLBACK TO native_revoke')

@@ -418,9 +418,28 @@ def _lmstudio_raw_models_or_none(api_key, base_url, timeout) -> Optional[list[di
         return None
 
 
+def _lmstudio_entry_is_embedding(entry: dict) -> bool:
+    """Discovery and cleanup agree: untyped entries remain chat-capable."""
+    return str(entry.get("type") or "").strip().lower() == "embedding"
+
+
+def _lmstudio_identifier(value: Any) -> str:
+    return str(value).strip() if value else ""
+
+
+def _lmstudio_entry_identifiers(entry: dict) -> set[str]:
+    """Catalog aliases identify a model; runtime instance IDs never do."""
+    return {identifier for field in ("key", "id")
+            if (identifier := _lmstudio_identifier(entry.get(field)))}
+
+
+def _lmstudio_preferred_identifier(entry: dict) -> str:
+    return _lmstudio_identifier(entry.get("key")) or _lmstudio_identifier(entry.get("id"))
+
+
 def _lmstudio_entry_for(raw_models: list, model: str) -> Optional[dict]:
     for raw in raw_models:
-        if isinstance(raw, dict) and (raw.get("key") == model or raw.get("id") == model):
+        if isinstance(raw, dict) and model in _lmstudio_entry_identifiers(raw):
             return raw
     return None
 
@@ -439,9 +458,9 @@ def probe_lmstudio_models(
 
     keys: list[str] = []
     for raw in raw_models:
-        if not isinstance(raw, dict) or str(raw.get("type") or "").strip().lower() == "embedding":
+        if not isinstance(raw, dict) or _lmstudio_entry_is_embedding(raw):
             continue
-        key = str(raw.get("key") or raw.get("id") or "").strip()
+        key = _lmstudio_preferred_identifier(raw)
         if key and key not in keys:
             keys.append(key)
     return keys
@@ -497,7 +516,8 @@ def ensure_lmstudio_model_loaded(
 
     Existing loaded-instance context is authoritative. Cold loads omit ``context_length`` unless the
     caller supplied an explicit override; the returned context comes from LM Studio's echoed or
-    refreshed state."""
+    refreshed state. Unload competing chat models (not embeddings) before a dirty-state reload;
+    without an explicit context override, retain LM Studio's own load settings."""
     from hermes_cli.models import _urlopen_model_catalog_request
 
     def _result(context_length: Optional[int], *, load_attempted: bool = False, rejected: bool = False):
@@ -511,7 +531,8 @@ def ensure_lmstudio_model_loaded(
     explicit_context = _positive_int(target_context_length)
     if target_context_length is not None and explicit_context is None:
         return _result(None)
-    target_entry = _lmstudio_entry_for(_lmstudio_raw_models_or_none(api_key, base_url, 10) or [], model)
+    raw_models = _lmstudio_raw_models_or_none(api_key, base_url, 10) or []
+    target_entry = _lmstudio_entry_for(raw_models, model)
     if target_entry is None:
         return _result(None)
 
@@ -519,13 +540,56 @@ def ensure_lmstudio_model_loaded(
     if explicit_context is not None and max_ctx is not None and explicit_context > max_ctx:
         return _result(None, rejected=True)
 
-    current_context = _lmstudio_loaded_context(target_entry)
-    if current_context is not None:
-        return _result(current_context)
+    target_aliases = {model} | _lmstudio_entry_identifiers(target_entry)
+    loaded_llm_instances: list[dict[str, Any]] = []
+    for raw in raw_models:
+        if not isinstance(raw, dict):
+            continue
+        is_target = bool(_lmstudio_entry_identifiers(raw) & target_aliases)
+        if _lmstudio_entry_is_embedding(raw) and not is_target:
+            continue
+        instances = raw.get("loaded_instances")
+        if not isinstance(instances, list):
+            continue
+        for instance in instances:
+            if not isinstance(instance, dict):
+                continue
+            instance_id = instance.get("id") or instance.get("instance_id")
+            if not isinstance(instance_id, str) or not instance_id:
+                continue
+            config = instance.get("config")
+            loaded_llm_instances.append({
+                "instance_id": instance_id,
+                "is_target": is_target,
+                "loaded_ctx": _positive_int(config.get("context_length")) if isinstance(config, dict) else None,
+            })
 
-    loaded_instances = target_entry.get("loaded_instances")
-    if not isinstance(loaded_instances, list) or loaded_instances:
-        return _result(None)
+    if len(loaded_llm_instances) == 1 and loaded_llm_instances[0]["is_target"]:
+        loaded_ctx = loaded_llm_instances[0]["loaded_ctx"]
+        if explicit_context is None or (loaded_ctx is not None and loaded_ctx >= explicit_context):
+            return _result(loaded_ctx)
+
+    if loaded_llm_instances:
+        # Reload the target too: its original GPU allocation may have been constrained by competitors.
+        for item in loaded_llm_instances:
+            try:
+                request = urllib.request.Request(
+                    server_root + "/api/v1/models/unload",
+                    data=json.dumps({"instance_id": item["instance_id"]}).encode(),
+                    headers={**_lmstudio_request_headers(api_key), "Content-Type": "application/json"},
+                    method="POST",
+                )
+                with _urlopen_model_catalog_request(request, timeout=timeout) as response:
+                    response.read()
+            except Exception:
+                return _result(None)
+    else:
+        current_context = _lmstudio_loaded_context(target_entry)
+        if current_context is not None:
+            return _result(current_context)
+        loaded_instances = target_entry.get("loaded_instances")
+        if not isinstance(loaded_instances, list) or loaded_instances:
+            return _result(None)
 
     load_payload: dict[str, Any] = {"model": model, "echo_load_config": True}
     if explicit_context is not None:

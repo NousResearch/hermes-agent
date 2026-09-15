@@ -461,6 +461,12 @@ class _ToolCancelledResult(str):
     post_tool_call was already emitted, so a late-finishing abandoned worker must not report."""
 
 
+class _ToolShutdownResult(str):
+    """Marker for a synthesized sequential-tool result when interpreter finalization refused the
+    worker submission (teardown mid-turn, e.g. cron/gateway shutdown): no worker was ever started and
+    its terminal post_tool_call was already emitted, so the publish path must not emit a second one."""
+
+
 class _ConcurrentToolAuthorizationGate:
     """Serialize policy prompts and exclude human approval waits from batch deadlines.
 
@@ -861,7 +867,23 @@ def _run_sequential_tool_execution_middleware(
     if ref.trace is None:
         ref.trace = []
     executor = DaemonThreadPoolExecutor(max_workers=1)
-    future = executor.submit(propagate_context_to_thread(_run))
+    try:
+        future = executor.submit(propagate_context_to_thread(_run))
+    except RuntimeError as submit_error:
+        if not _is_interpreter_shutdown_submit_error(submit_error):
+            raise
+        # Interpreter finalization refuses new work (CPython's module-global flag); the concurrent
+        # batch path guards its submits the same way via the shared predicate. No worker was started,
+        # so synthesize the sibling shutdown result instead of letting the RuntimeError abort this
+        # call with a per-session traceback ("handle_function_call raised for <tool>: cannot schedule
+        # new futures after interpreter shutdown").
+        executor.shutdown(wait=False)
+        message = f"Error executing tool '{function_name}': Python interpreter is shutting down; tool was not started"
+        logger.warning("interpreter shutdown while scheduling sequential tool %s; tool was not started", function_name)
+        return _abandoned_sequential_result(
+            agent, ref, message, _ToolShutdownResult,
+            duration_ms=0, status="error", error_type="interpreter_shutdown", error_message=message,
+        )
     deadline = time.monotonic() + timeout_s if timeout_s is not None else None
     started = time.monotonic()
     abandoned = False
@@ -1639,7 +1661,7 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
     """Terminal hook → observe → commit → completion callbacks/print for one sequential
     result; False when the incremental flush failed (the caller must stop the batch)."""
     ref.args, ref.trace, function_result = managed.args, managed.middleware_trace, managed.result
-    _execution_timed_out = isinstance(function_result, (_ToolTimeoutResult, _ToolCancelledResult))
+    _execution_timed_out = isinstance(function_result, (_ToolTimeoutResult, _ToolCancelledResult, _ToolShutdownResult))
     # Multimodal dict results (_multimodal=True) are not sliceable as strings.
     _result_len = len(function_result) if isinstance(function_result, str) else len(str(function_result))
     _is_error_result, _ = _detect_tool_failure(ref.name, function_result)

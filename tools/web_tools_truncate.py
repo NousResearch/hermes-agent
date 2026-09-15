@@ -110,8 +110,8 @@ def _truncate_with_footer(content: str, url: str, char_limit: int) -> tuple[str,
         f"of {len(content):,} total clean characters.",
     ]
     if stored_path:
-        # read_file is 1-indexed; +2 lands on the first line after the shown head.
-        middle_start_line = head.count("\n") + 2
+        # Skip a newline at the cut, but reread a partially shown line so its remainder is not lost.
+        middle_start_line = content.count("\n", 0, len(head) + 1) + 1
         footer_lines += [
             f"Full text saved to: {stored_path}",
             f'To read the omitted middle: read_file path="{stored_path}" '

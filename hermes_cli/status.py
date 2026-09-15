@@ -148,6 +148,18 @@ def _render_environment(ctx):
     _section("Environment")
     _kv("Project:", PROJECT_ROOT)
     _kv("Python:", sys.version.split()[0])
+    # Show the resolved profile + config/log paths so users know which
+    # files are live (#32624 Trap 2 — sticky profile silently overrides
+    # root config.yaml).
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        _kv("Profile:", get_active_profile_name() or "default")
+        _resolved_home = get_hermes_home()
+        _kv("Config:", _resolved_home / "config.yaml")
+        _kv("Logs:", f"{_resolved_home / 'logs' / 'gateway.log'}, "
+                     f"{_resolved_home / 'logs' / 'agent.log'}")
+    except Exception:
+        pass
     _kv_flag(".env file:", get_env_path().exists(), "exists", "not found")
     try:
         ctx.config = load_config()
@@ -375,7 +387,6 @@ def show_status(args):
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
 # The whole block is removed by reverting the commit that added it.
 import subprocess  # noqa: F401,E402
-
 
 _PLUGIN_COMPAT_LAZY = {
     'format_nous_portal_entitlement_message': ('hermes_cli.nous_account', 'format_nous_portal_entitlement_message'),

@@ -50,6 +50,37 @@ export function modelPickerCommand(
   return `${model} --provider ${providerSlug}${effort} ${scope}`
 }
 
+export type SessionModelHopRow = { model: string; providerName: string; providerSlug: string }
+
+/** Flatten only usable provider inventories for the temporary session model hop. */
+export function sessionModelHopRows(providers: ModelOptionProvider[]): SessionModelHopRow[] {
+  const names = providerDisplayNames(providers)
+
+  return providers.flatMap((provider, index) =>
+    provider.authenticated === false
+      ? []
+      : (provider.models ?? []).map(model => ({
+          model,
+          providerName: names[index] ?? provider.name ?? provider.slug,
+          providerSlug: provider.slug
+        }))
+  )
+}
+
+export function sessionModelHopSelection({ model, providerSlug }: SessionModelHopRow): string {
+  return `${model} --provider ${providerSlug} ${TUI_SESSION_MODEL_FLAG}`
+}
+
+export function filterSessionModelHopRows(rows: readonly SessionModelHopRow[], filter: string): SessionModelHopRow[] {
+  if (!filter.trim()) {
+    return [...rows]
+  }
+
+  return fuzzyRank(rows, filter, row => `${row.providerName} ${row.providerSlug} ${modelSearchText(row.model)}`).map(
+    result => result.item
+  )
+}
+
 export function providerIndexAfterClearingFilter(
   providerRows: ProviderRow[],
   provider: ModelOptionProvider | undefined
@@ -62,6 +93,13 @@ export function providerIndexAfterClearingFilter(
 }
 
 export function ModelPicker({
+  sessionOnly = false,
+  ...props
+}: ModelPickerProps) {
+  return sessionOnly ? <SessionModelHop {...props} /> : <ProviderModelPicker {...props} />
+}
+
+function ProviderModelPicker({
   allowPersistGlobal = true,
   gw,
   initialRefresh = false,
@@ -70,7 +108,7 @@ export function ModelPicker({
   onSelect,
   sessionId,
   t
-}: ModelPickerProps) {
+}: Omit<ModelPickerProps, 'sessionOnly'>) {
   const [providers, setProviders] = useState<ModelOptionProvider[]>([])
   const [currentModel, setCurrentModel] = useState('')
   const [err, setErr] = useState('')
@@ -822,6 +860,174 @@ export function ModelPicker({
   )
 }
 
+function SessionModelHop({ gw, initialRefresh = false, maxWidth, onCancel, onSelect, sessionId, t }: Omit<ModelPickerProps, 'sessionOnly'>) {
+  const [currentModel, setCurrentModel] = useState('')
+  const [err, setErr] = useState('')
+  const [filter, setFilter] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [modelIdx, setModelIdx] = useState(0)
+  const [rows, setRows] = useState<SessionModelHopRow[]>([])
+  const { stdout } = useStdout()
+  const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  const width = clampOverlayWidth(preferredWidth, maxWidth)
+
+  useEffect(() => {
+    gw.request<ModelOptionsResponse>('model.options', {
+      ...(sessionId ? { session_id: sessionId } : {}),
+      ...(initialRefresh ? { refresh: true } : {})
+    })
+      .then(raw => {
+        const result = asRpcResult<ModelOptionsResponse>(raw)
+
+        if (!result) {
+          setErr('invalid response: model.options')
+        } else {
+          setRows(sessionModelHopRows(result.providers ?? []))
+          setCurrentModel(String(result.model ?? ''))
+        }
+
+        setLoading(false)
+      })
+      .catch((e: unknown) => {
+        setErr(rpcErrorMessage(e))
+        setLoading(false)
+      })
+  }, [gw, initialRefresh, sessionId])
+
+  const models = useMemo(() => filterSessionModelHopRows(rows, filter), [filter, rows])
+
+  useEffect(() => {
+    if (modelIdx >= models.length && models.length > 0) {
+      setModelIdx(0)
+    }
+  }, [modelIdx, models.length])
+
+  useInput((ch, key) => {
+    if (key.escape) {
+      if (filter) {
+        setFilter('')
+        setModelIdx(0)
+      } else {
+        onCancel()
+      }
+
+      return
+    }
+
+    if (ch === 'q' && !filter) {
+      onCancel()
+
+      return
+    }
+
+    if (key.upArrow && modelIdx > 0) {
+      setModelIdx(value => value - 1)
+
+      return
+    }
+
+    if (key.downArrow && modelIdx < models.length - 1) {
+      setModelIdx(value => value + 1)
+
+      return
+    }
+
+    if (key.return) {
+      const selected = models[modelIdx]
+
+      if (selected) {
+        onSelect(sessionModelHopSelection(selected))
+      }
+
+      return
+    }
+
+    if (key.backspace || key.delete) {
+      setFilter(value => value.slice(0, -1))
+      setModelIdx(0)
+
+      return
+    }
+
+    if (key.ctrl && ch === 'u') {
+      setFilter('')
+      setModelIdx(0)
+
+      return
+    }
+
+    if (ch && !key.ctrl && !key.meta && ch.length === 1 && ch >= ' ') {
+      setFilter(value => value + ch)
+      setModelIdx(0)
+    }
+  })
+
+  if (loading) {
+    return <Text color={t.color.muted}>loading models…</Text>
+  }
+
+  if (err) {
+    return (
+      <Box flexDirection="column">
+        <Text color={t.color.label}>error: {err}</Text>
+        <OverlayHint t={t}>Esc/q cancel</OverlayHint>
+      </Box>
+    )
+  }
+
+  const { items, offset } = windowItems(models, modelIdx, VISIBLE)
+  const noMatches = !!filter.trim() && models.length === 0
+
+  return (
+    <Box flexDirection="column" width={width}>
+      <Text bold color={t.color.accent} wrap="truncate-end">
+        Session model hop
+      </Text>
+      <Text color={t.color.muted} wrap="truncate-end">
+        Current: {currentModel || '(unknown)'} · applies to this session only
+      </Text>
+      <Text color={filter ? t.color.accent : t.color.muted} wrap="truncate-end">
+        {filter ? `filter: ${filter}▎` : 'type to filter · ↑/↓ select'}
+      </Text>
+      <Text color={t.color.muted} wrap="truncate-end">
+        {offset > 0 ? ` ↑ ${offset} more` : ' '}
+      </Text>
+      {noMatches ? (
+        <Text color={t.color.muted} wrap="truncate-end">
+          no models match filter
+        </Text>
+      ) : (
+        Array.from({ length: VISIBLE }, (_, index) => {
+          const row = items[index]
+          const idx = offset + index
+
+          return row ? (
+            <Text
+              color={t.color.muted}
+              {...chipRowProps(t, modelIdx === idx)}
+              key={`${row.providerSlug}:${row.model}`}
+              wrap="truncate-end"
+            >
+              {modelIdx === idx ? '▸ ' : row.model === currentModel ? '* ' : '  '}
+              {idx + 1}. {row.providerName} · {row.model}
+            </Text>
+          ) : (
+            <Text color={t.color.muted} key={`pad-${index}`} wrap="truncate-end">
+              {' '}
+            </Text>
+          )
+        })
+      )}
+      <Text color={t.color.muted} wrap="truncate-end">
+        {offset + VISIBLE < models.length ? ` ↓ ${models.length - offset - VISIBLE} more` : ' '}
+      </Text>
+      <OverlayHint t={t}>
+        {models.length ? '↑/↓ select · Enter switch · Esc clear/close · q close' : 'Esc/q close'}
+      </OverlayHint>
+    </Box>
+  )
+}
+
 interface ModelPickerProps {
   allowPersistGlobal?: boolean
   gw: GatewayClient
@@ -829,6 +1035,7 @@ interface ModelPickerProps {
   maxWidth?: number
   onCancel: () => void
   onSelect: (value: string) => void
+  sessionOnly?: boolean
   sessionId: string | null
   t: Theme
 }

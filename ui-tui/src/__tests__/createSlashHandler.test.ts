@@ -75,6 +75,14 @@ describe('createSlashHandler', () => {
     expect(getOverlayState().sessions).toBe(true)
   })
 
+  it('keeps /switch as the live sessions switcher', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/switch')).toBe(true)
+    expect(getOverlayState().sessions).toBe(true)
+    expect(getOverlayState().modelPicker).toBe(false)
+  })
+
   it('opens the grid-test overlay locally', () => {
     const ctx = buildCtx()
 
@@ -212,6 +220,24 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)('/model --refresh')).toBe(true)
     expect(getOverlayState().modelPicker).toEqual({ refresh: true })
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
+  it('opens the flat session-only model hop for /model --session', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/model --session')).toBe(true)
+    expect(getOverlayState().modelPicker).toEqual({ sessionOnly: true })
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
+  it('does not open a session-only model hop without a live session', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/model --session')).toBe(true)
+    expect(getOverlayState().modelPicker).toBe(false)
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('error: /model --session requires an active session')
   })
 
   it('honors TUI picker session scope without adding --global', async () => {

@@ -293,7 +293,7 @@ export interface OverlayState {
   /** Modal widget app — owns input, blocks the composer. */
   widget: ActiveWidget | null
   journey: boolean
-  modelPicker: boolean | { refresh?: boolean }
+  modelPicker: boolean | { refresh?: boolean; sessionOnly?: boolean }
   pager: null | PagerState
   petPicker: boolean
   pluginsHub: boolean

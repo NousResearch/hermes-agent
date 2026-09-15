@@ -15,15 +15,35 @@ export const MIME_MAP = {
 
 export function normalizeWhatsAppId(value) {
   if (!value) return '';
-  return String(value).replace(':', '@');
+  // Baileys reports the bot's own ids device-qualified (`<user>:<device>@lid`), while
+  // inbound mentionedJid / contextInfo.participant are not. Drop the suffix so both
+  // forms compare equal; the old `':' -> '@'` swap produced `<user>@<device>@lid`,
+  // which never matched and silently broke @mention / reply-to-bot gating in groups.
+  return String(value).replace(/:\d+(?=@)/, '').replace(/:\d+$/, '');
+}
+
+function unwrapMessageEnvelopes(content) {
+  let cur = content;
+  // Envelopes nest (ephemeral wrapping viewOnce wrapping the payload); peel
+  // until an inner message is reached so nested quotes resolve too.
+  for (let i = 0; i < 8 && cur; i++) {
+    const next =
+      cur.ephemeralMessage?.message ??
+      cur.viewOnceMessage?.message ??
+      cur.viewOnceMessageV2?.message ??
+      cur.documentWithCaptionMessage?.message;
+    if (next === undefined) break;
+    cur = next;
+  }
+  return cur;
 }
 
 export function getMessageContent(msg) {
-  const content = msg?.message || {};
-  if (content.ephemeralMessage?.message) return content.ephemeralMessage.message;
-  if (content.viewOnceMessage?.message) return content.viewOnceMessage.message;
-  if (content.viewOnceMessageV2?.message) return content.viewOnceMessageV2.message;
-  if (content.documentWithCaptionMessage?.message) return content.documentWithCaptionMessage.message;
+  const raw = msg?.message || {};
+  const content = unwrapMessageEnvelopes(raw);
+  // A peeled envelope returns its inner message immediately: the payload
+  // shape (template/buttons/list/etc.) applies to unenveloped messages.
+  if (content !== raw) return content;
   if (content.templateMessage?.hydratedTemplate) return content.templateMessage.hydratedTemplate;
   if (content.buttonsMessage) return content.buttonsMessage;
   if (content.listMessage) return content.listMessage;
@@ -60,6 +80,45 @@ export function createBoundedMessageStore(limit = 512) {
     byId.delete(id);
     byId.set(id, msg);
     return msg;
+  }
+
+  return { remember, get };
+}
+
+/**
+ * Bounded cache of the already-downloaded media (and plain text) for
+ * recently seen inbound messages, keyed by "chatId:messageId".
+ *
+ * When a user replies to an earlier message, Baileys' contextInfo.quotedMessage
+ * only carries a thumbnail-sized stub for media (or nothing at all for an
+ * uncaptioned attachment) — never a way to re-fetch the full original file.
+ * Without this cache, replying to a photo/video/document/voice note with no
+ * caption gives the agent no text and no media reference: it looks like the
+ * message never had an attachment. Since extractBridgeEvent already downloads
+ * and caches the media for every inbound message as it arrives, remembering
+ * that outcome here lets a later reply resolve the original file path.
+ */
+export function createQuotedMediaCache(limit = 512) {
+  const byKey = new Map();
+
+  function key(chatId, messageId) {
+    return `${chatId || ''}:${messageId || ''}`;
+  }
+
+  function remember(chatId, messageId, payload) {
+    if (!messageId) return;
+    const k = key(chatId, messageId);
+    byKey.delete(k);
+    byKey.set(k, payload);
+    while (byKey.size > limit) {
+      const oldest = byKey.keys().next().value;
+      byKey.delete(oldest);
+    }
+  }
+
+  function get(chatId, messageId) {
+    if (!messageId) return null;
+    return byKey.get(key(chatId, messageId)) || null;
   }
 
   return { remember, get };
@@ -190,16 +249,17 @@ export function buildLocationPayload({ latitude, longitude, name, address } = {}
 }
 
 function textFromQuotedMessage(quotedMessage) {
-  if (!quotedMessage) return '';
-  if (quotedMessage.conversation) return quotedMessage.conversation;
-  if (quotedMessage.extendedTextMessage?.text) return quotedMessage.extendedTextMessage.text;
-  if (quotedMessage.imageMessage?.caption) return quotedMessage.imageMessage.caption;
-  if (quotedMessage.videoMessage?.caption) return quotedMessage.videoMessage.caption;
-  if (quotedMessage.documentMessage?.caption) return quotedMessage.documentMessage.caption;
-  if (quotedMessage.documentMessage?.fileName) return `[Document: ${quotedMessage.documentMessage.fileName}]`;
-  if (quotedMessage.locationMessage) return formatLocationText(quotedMessage.locationMessage, false);
-  if (quotedMessage.contactMessage) return formatContactText(quotedMessage.contactMessage);
-  if (quotedMessage.pollCreationMessage) return formatPollText(quotedMessage.pollCreationMessage);
+  const content = unwrapMessageEnvelopes(quotedMessage);
+  if (!content) return '';
+  if (content.conversation) return content.conversation;
+  if (content.extendedTextMessage?.text) return content.extendedTextMessage.text;
+  if (content.imageMessage?.caption) return content.imageMessage.caption;
+  if (content.videoMessage?.caption) return content.videoMessage.caption;
+  if (content.documentMessage?.caption) return content.documentMessage.caption;
+  if (content.documentMessage?.fileName) return `[Document: ${content.documentMessage.fileName}]`;
+  if (content.locationMessage) return formatLocationText(content.locationMessage, false);
+  if (content.contactMessage) return formatContactText(content.contactMessage);
+  if (content.pollCreationMessage) return formatPollText(content.pollCreationMessage);
   return '';
 }
 
@@ -306,6 +366,7 @@ export async function extractBridgeEvent({
   downloadMedia,
   writeMediaFile,
   cacheDirs = {},
+  lookupQuotedMedia,
 }) {
   const messageContent = getMessageContent(msg);
   const contextInfo = getContextInfo(messageContent);
@@ -314,7 +375,38 @@ export async function extractBridgeEvent({
   const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || '') || null;
   const quotedRemoteJid = normalizeWhatsAppId(contextInfo?.remoteJid || '') || null;
   const hasQuotedMessage = !!contextInfo?.quotedMessage;
-  const quotedText = textFromQuotedMessage(contextInfo?.quotedMessage);
+  let quotedText = textFromQuotedMessage(contextInfo?.quotedMessage);
+  let quotedMediaUrls = [];
+  let quotedMediaType = '';
+
+  // contextInfo.quotedMessage only ever carries a thumbnail-sized stub for
+  // media (or nothing for an uncaptioned attachment) — never a way to
+  // re-fetch the original file. Resolve the quoted message's already-cached
+  // media (downloaded when it first arrived) via lookupQuotedMedia so a
+  // reply to an uncaptioned photo/video/document/voice note still gives the
+  // agent the original file, not just silence.
+  if (quotedMessageId && typeof lookupQuotedMedia === 'function') {
+    const original = lookupQuotedMedia(quotedRemoteJid || chatId, quotedMessageId);
+    if (original) {
+      if (original.hasMedia && original.mediaUrls?.length) {
+        quotedMediaUrls = original.mediaUrls;
+        quotedMediaType = original.mediaType || '';
+        if (!quotedText) {
+          quotedText = {
+            image: 'sent an image',
+            video: 'sent a video',
+            gif: 'sent a GIF',
+            audio: 'sent an audio message',
+            ptt: 'sent a voice message',
+            document: 'sent a document',
+            sticker: 'sent a sticker',
+          }[original.mediaType] || 'sent media';
+        }
+      } else if (original.body && !quotedText) {
+        quotedText = original.body;
+      }
+    }
+  }
 
   let body = '';
   let hasMedia = false;
@@ -481,8 +573,16 @@ export async function extractBridgeEvent({
     quotedParticipant,
     quotedRemoteJid,
     quotedText,
+    quotedMediaUrls,
+    quotedMediaType,
     hasQuotedMessage,
     botIds,
+    readReceiptKey: {
+      remoteJid: msg.key.remoteJid || chatId,
+      id: msg.key.id,
+      participant: msg.key.participant || senderId,
+      fromMe: Boolean(msg.key.fromMe),
+    },
     timestamp: msg.messageTimestamp,
   };
 }
@@ -492,6 +592,12 @@ export function inferMediaType(ext) {
   if (['mp4', 'mov', 'avi', 'mkv', '3gp'].includes(ext)) return 'video';
   if (['ogg', 'opus', 'mp3', 'wav', 'm4a'].includes(ext)) return 'audio';
   return 'document';
+}
+
+export function inboundReadReceiptKeys({ key, enabled }) {
+  if (!enabled || !key || key.fromMe || !key.id || !key.remoteJid) return [];
+  // Preserve participant for group messages: Baileys needs the original key.
+  return [key];
 }
 
 export function mediaPayloadForFile({ buffer, filePath, mediaType, caption, fileName }) {
@@ -554,4 +660,61 @@ export function pollCreationMessageFromPayload(payload) {
     selectableOptionsCount,
   };
   return message;
+}
+
+/**
+ * Reconnect scheduling guard. startSocket() awaits network I/O before it
+ * creates a socket or registers event handlers, so a bare
+ * `setTimeout(startSocket, ...)` has two unrecoverable failure modes: a
+ * rejection is unhandled (crashes the process on modern Node), and a hang
+ * leaves the bridge permanently disconnected with nothing left to retry.
+ * Every (re)connect must go through the scheduler this returns.
+ */
+export function createReconnectScheduler(startFn, {
+  retryDelayMs = 5000,
+  log = console.log,
+  setTimeoutFn = setTimeout,
+} = {}) {
+  function scheduleReconnect(delayMs) {
+    setTimeoutFn(() => {
+      Promise.resolve()
+        .then(startFn)
+        .catch((err) => {
+          log(`⚠️  Reconnect failed (${err?.message || err}). Retrying in ${Math.round(retryDelayMs / 1000)}s...`);
+          scheduleReconnect(retryDelayMs);
+        });
+    }, delayMs);
+  }
+  return scheduleReconnect;
+}
+
+/**
+ * Version resolution guard. fetchLatestBaileysVersion() is a plain fetch to
+ * raw.githubusercontent.com with no AbortSignal; a stalled connection can
+ * pend forever and wedge the reconnect path (the scheduler above cannot
+ * retry past an await that never settles). Bound the fetch and fall back to
+ * the last known-good version, or the Baileys default before first success.
+ */
+export function createVersionResolver(fetchVersionFn, {
+  timeoutMs = 15000,
+  log = console.log,
+} = {}) {
+  let cachedVersion = null;
+  return async function resolveVersion() {
+    let timer = null;
+    try {
+      const { version } = await Promise.race([
+        fetchVersionFn(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('version fetch timed out')), timeoutMs);
+        }),
+      ]);
+      cachedVersion = version;
+    } catch (err) {
+      log(`⚠️  Baileys version fetch failed (${err?.message || err}); using ${cachedVersion ? 'cached version' : 'library default'}.`);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    return cachedVersion;
+  };
 }

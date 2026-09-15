@@ -1,237 +1,220 @@
 ---
 name: powerpoint
-description: "Create, read, edit .pptx decks, slides, notes, templates."
-license: Proprietary. LICENSE.txt has complete terms
+description: Create, read, edit .pptx decks with python-pptx.
+version: 1.1.0
+author: Nous Research
+license: MIT
 platforms: [linux, macos, windows]
+metadata:
+  hermes:
+    tags: [pptx, powerpoint, presentations, slides, office, python-pptx]
+    category: productivity
+    related_skills: [docx, xlsx, pdf]
 ---
 
 # Powerpoint Skill
 
-## When to use
+Create, inspect, and edit PowerPoint (.pptx) presentations using the
+python-pptx library. Five helper scripts cover deck creation from a JSON
+spec, structured read-back, in-place edits, template-driven brand decks,
+and slide rendering — all offline, no PowerPoint installation required.
 
-Use this skill any time a .pptx file is involved in any way — as input, output, or both. This includes: creating slide decks, pitch decks, or presentations; reading, parsing, or extracting text from any .pptx file (even if the extracted content will be used elsewhere, like in an email or summary); editing, modifying, or updating existing presentations; combining or splitting slide files; working with templates, layouts, speaker notes, or comments. Trigger whenever the user mentions "deck," "slides," "presentation," or references a .pptx filename, regardless of what they plan to do with the content afterward. If a .pptx file needs to be opened, created, or touched, use this skill.
+## When to Use
+
+- The user asks to build a slide deck, report presentation, or pitch deck.
+- You need to extract text, notes, tables, chart data, or images from a
+  .pptx someone shared.
+- You need to update an existing deck: replace text, refresh or patch
+  chart data, swap a logo, duplicate/remove/reorder slides, set
+  backgrounds, footers, hyperlinks, or speaker notes.
+- You must produce an on-brand deck from a company .pptx template.
+- Do NOT use this for .ppt (legacy binary) files — convert them first with
+  `soffice --convert-to pptx old.ppt` if LibreOffice is available.
+
+## Prerequisites
+
+- Python 3.10+ with `python-pptx` installed
+  (`pip install python-pptx`).
+- Optional: LibreOffice (`soffice`) plus poppler (`pdftoppm` or
+  `pdftocairo`) for rendering slides to PNGs and for PDF export.
+  `pptx_render.py` detects both with `shutil.which` and degrades
+  gracefully (reports `{"rendered": false, "missing": [...]}`, exit 0)
+  when absent — all create/read/edit operations work without them.
+- Check availability via `terminal`:
+  `python -c "import pptx; print(pptx.__version__)"` and `which soffice pdftoppm`.
+
+## How to Run
+
+All scripts live in `scripts/`, take `--help`, print JSON to stdout, and
+exit non-zero on failure. Run them with `terminal`:
+
+```bash
+python scripts/pptx_create.py deck.json out.pptx
+python scripts/pptx_read.py deck.pptx --outline      # full JSON outline
+python scripts/pptx_read.py deck.pptx --notes        # speaker notes
+python scripts/pptx_read.py deck.pptx --images ./img # export pictures
+python scripts/pptx_edit.py deck.pptx --replace-text "Old Corp" "New Corp"
+python scripts/pptx_edit.py deck.pptx --chart-data update.json
+python scripts/pptx_edit.py deck.pptx --duplicate-slide 2
+python scripts/pptx_edit.py deck.pptx --remove-slide 3 --move-slide 2 0
+python scripts/pptx_from_template.py brand.pptx out.pptx --values vals.json
+python scripts/pptx_render.py deck.pptx --outdir ./render  # slide PNGs
+```
+
+Author JSON specs with `write_file`; inspect script output and generated
+JSON with `read_file`.
 
 ## Quick Reference
 
-| Task | Guide |
-|------|-------|
-| Read/analyze content | `python -m markitdown presentation.pptx` |
-| Edit or create from template | Read [editing.md](editing.md) |
-| Create from scratch | Read [pptxgenjs.md](pptxgenjs.md) |
+| Task | Command |
+|---|---|
+| New deck from spec | `pptx_create.py spec.json out.pptx` |
+| 16:9 vs 4:3 | `"slide_size": "16:9"` or `"4:3"` in the spec |
+| Outline as JSON | `pptx_read.py deck.pptx --outline` |
+| Export images | `pptx_read.py deck.pptx --images DIR` |
+| Replace text | `pptx_edit.py deck.pptx --replace-text OLD NEW` |
+| Replace chart data | `pptx_edit.py deck.pptx --chart-data spec.json` |
+| Patch one series | same flag, spec with `"ops"` (see below) |
+| Swap picture | `pptx_edit.py deck.pptx --swap-image N NAME new.png` |
+| Duplicate slide | `pptx_edit.py deck.pptx --duplicate-slide N` |
+| Remove slide | `pptx_edit.py deck.pptx --remove-slide N` |
+| Reorder slide | `pptx_edit.py deck.pptx --move-slide FROM TO` |
+| Slide background | `pptx_edit.py deck.pptx --set-background N RRGGBB` |
+| Hyperlink runs | `pptx_edit.py deck.pptx --hyperlink N TEXT URL` |
+| Slide number on | `pptx_edit.py deck.pptx --enable-slide-number N` |
+| Footer text | `pptx_edit.py deck.pptx --set-footer N TEXT` |
+| Set notes | `pptx_edit.py deck.pptx --set-notes N TEXT` |
+| Append notes | `pptx_edit.py deck.pptx --append-notes N TEXT` |
+| Fill template | `pptx_from_template.py tpl.pptx out.pptx --values v.json` |
+| Render slide PNGs | `pptx_render.py deck.pptx --outdir DIR` |
 
----
+## Procedure
 
-## Reading Content
+### 1. Create a deck
 
-```bash
-# Text extraction
-python -m markitdown presentation.pptx
+Write a JSON spec (see `pptx_create.py --help` for the full format), then
+run `pptx_create.py`. Per slide you can set: `layout` (title,
+title_content, section, two_content, title_only, blank), `title`,
+`subtitle`, `bullets` (strings, or dicts with `level` 0-4, `size` pt,
+`bold`, `italic`, `font`, `color` hex, `link` URL for a hyperlink),
+`background` (solid hex), `footer` (text; enables the layout's footer
+placeholder), `slide_number` (true; enables the layout's slide-number
+placeholder), `images` (path + left/top/width/height in inches), `tables`
+(`rows` as list-of-lists), `shapes` (rectangle, rounded_rectangle, oval,
+diamond, right_arrow, chevron, with `fill` hex + optional `text`),
+`charts` (bar, bar_h, line, pie with `categories` + `series`), and
+`notes` (speaker notes).
 
-# Visual overview
-python scripts/thumbnail.py presentation.pptx
+### 2. Read a deck
 
-# Raw XML
-python scripts/office/unpack.py presentation.pptx unpacked/
-```
+`pptx_read.py deck.pptx --outline` returns slide size, layout inventory,
+and per slide: layout name, all shape texts, table cells, image inventory
+(filename/ext/bytes), chart categories/series/values, and speaker notes.
+Use `--images DIR` to dump embedded pictures to files, then
+`vision_analyze` on any exported image if you need to see its content.
 
----
+### 3. Edit a deck
 
-## Editing Workflow
+`pptx_edit.py` combines operations in one pass; use `--output` to keep the
+original. Text replacement scans slide shapes, table cells, and notes.
+Image swap retargets the picture's relationship id so position and size
+are preserved. Slide removal drops the relationship and the `<p:sldId>`
+entry; reorder moves the `<p:sldId>` element within `<p:sldIdLst>`
+(python-pptx has no public API for either — the script does the XML-level
+work). `--duplicate-slide N` appends an independent deep copy of slide N:
+shape XML plus image/media/hyperlink relationships are cloned and rIds
+remapped, so editing the copy never touches the original. Chart slides
+are refused (see Pitfalls). `--set-notes`/`--append-notes` edit speaker
+notes; `--set-background`, `--hyperlink`, `--enable-slide-number`, and
+`--set-footer` handle deck polish.
 
-**Read [editing.md](editing.md) for full details.**
+Chart updates take a JSON spec via `--chart-data`. Full replace:
+`{"slide": 0, "chart": 0, "categories": [...], "series": {...}}`. For
+surgical edits, pass `"ops"` instead — a list of
+`{"op": "update_series", "name": ..., "values": [...]}`,
+`add_series`, `remove_series`, `rename_category` (`from`/`to` or
+`index`), and `set_title`. python-pptx can only swap a chart's entire
+dataset (`replace_data`), so ops are implemented as read-existing →
+modify → replace; the per-part UX is a wrapper, and any chart data not
+expressible as categories + numeric series will be normalized by the
+round-trip.
 
-1. Analyze template with `thumbnail.py`
-2. Unpack → manipulate slides → edit content → clean → pack
+### 4. Build from a template
 
----
+`pptx_from_template.py` opens a brand .pptx, replaces every
+`{{token}}` from a values JSON across slides/tables/notes, and can append
+new slides that use the template's own layouts (by layout name or index)
+so they inherit the master's fonts and colors. Tip: to start from a
+template with zero slides, delete existing ones afterward with
+`pptx_edit.py --remove-slide`.
 
-## Creating from Scratch
+### 5. Visual verification
 
-**Read [pptxgenjs.md](pptxgenjs.md) for full details.**
+`pptx_render.py deck.pptx --outdir ./render` converts the deck to PDF
+with `soffice --headless` and splits it into one PNG per slide with
+`pdftoppm` (or `pdftocairo`). Output JSON lists the PNG paths — review
+each with `vision_analyze`. When either tool is missing the script exits
+0 with `{"rendered": false, "missing": [...]}` and guidance; fall back to
+the JSON outline from `pptx_read.py`, which verifies content and
+structure, just not visuals.
 
-Use when no template or reference presentation is available.
+## Converting to PDF
 
----
-
-## Design Ideas
-
-**Don't create boring slides.** Plain bullets on a white background won't impress anyone. Consider ideas from this list for each slide.
-
-### Before Starting
-
-- **Pick a bold, content-informed color palette**: The palette should feel designed for THIS topic. If swapping your colors into a completely different presentation would still "work," you haven't made specific enough choices.
-- **Dominance over equality**: One color should dominate (60-70% visual weight), with 1-2 supporting tones and one sharp accent. Never give all colors equal weight.
-- **Dark/light contrast**: Dark backgrounds for title + conclusion slides, light for content ("sandwich" structure). Or commit to dark throughout for a premium feel.
-- **Commit to a visual motif**: Pick ONE distinctive element and repeat it — rounded image frames, icons in colored circles, thick single-side borders. Carry it across every slide.
-
-### Color Palettes
-
-Choose colors that match your topic — don't default to generic blue. Use these palettes as inspiration:
-
-| Theme | Primary | Secondary | Accent |
-|-------|---------|-----------|--------|
-| **Midnight Executive** | `1E2761` (navy) | `CADCFC` (ice blue) | `FFFFFF` (white) |
-| **Forest & Moss** | `2C5F2D` (forest) | `97BC62` (moss) | `F5F5F5` (cream) |
-| **Coral Energy** | `F96167` (coral) | `F9E795` (gold) | `2F3C7E` (navy) |
-| **Warm Terracotta** | `B85042` (terracotta) | `E7E8D1` (sand) | `A7BEAE` (sage) |
-| **Ocean Gradient** | `065A82` (deep blue) | `1C7293` (teal) | `21295C` (midnight) |
-| **Charcoal Minimal** | `36454F` (charcoal) | `F2F2F2` (off-white) | `212121` (black) |
-| **Teal Trust** | `028090` (teal) | `00A896` (seafoam) | `02C39A` (mint) |
-| **Berry & Cream** | `6D2E46` (berry) | `A26769` (dusty rose) | `ECE2D0` (cream) |
-| **Sage Calm** | `84B59F` (sage) | `69A297` (eucalyptus) | `50808E` (slate) |
-| **Cherry Bold** | `990011` (cherry) | `FCF6F5` (off-white) | `2F3C7E` (navy) |
-
-### For Each Slide
-
-**Every slide needs a visual element** — image, chart, icon, or shape. Text-only slides are forgettable.
-
-**Layout options:**
-- Two-column (text left, illustration on right)
-- Icon + text rows (icon in colored circle, bold header, description below)
-- 2x2 or 2x3 grid (image on one side, grid of content blocks on other)
-- Half-bleed image (full left or right side) with content overlay
-
-**Data display:**
-- Large stat callouts (big numbers 60-72pt with small labels below)
-- Comparison columns (before/after, pros/cons, side-by-side options)
-- Timeline or process flow (numbered steps, arrows)
-
-**Visual polish:**
-- Icons in small colored circles next to section headers
-- Italic accent text for key stats or taglines
-
-### Typography
-
-**Choose an interesting font pairing** — don't default to Arial. Pick a header font with personality and pair it with a clean body font.
-
-| Header Font | Body Font |
-|-------------|-----------|
-| Georgia | Calibri |
-| Arial Black | Arial |
-| Calibri | Calibri Light |
-| Cambria | Calibri |
-| Trebuchet MS | Calibri |
-| Impact | Arial |
-| Palatino | Garamond |
-| Consolas | Calibri |
-
-| Element | Size |
-|---------|------|
-| Slide title | 36-44pt bold |
-| Section header | 20-24pt bold |
-| Body text | 14-16pt |
-| Captions | 10-12pt muted |
-
-### Spacing
-
-- 0.5" minimum margins
-- 0.3-0.5" between content blocks
-- Leave breathing room—don't fill every inch
-
-### Avoid (Common Mistakes)
-
-- **Don't repeat the same layout** — vary columns, cards, and callouts across slides
-- **Don't center body text** — left-align paragraphs and lists; center only titles
-- **Don't skimp on size contrast** — titles need 36pt+ to stand out from 14-16pt body
-- **Don't default to blue** — pick colors that reflect the specific topic
-- **Don't mix spacing randomly** — choose 0.3" or 0.5" gaps and use consistently
-- **Don't style one slide and leave the rest plain** — commit fully or keep it simple throughout
-- **Don't create text-only slides** — add images, icons, charts, or visual elements; avoid plain title + bullets
-- **Don't forget text box padding** — when aligning lines or shapes with text edges, set `margin: 0` on the text box or offset the shape to account for padding
-- **Don't use low-contrast elements** — icons AND text need strong contrast against the background; avoid light text on light backgrounds or dark text on dark backgrounds
-- **NEVER use accent lines under titles** — these are a hallmark of AI-generated slides; use whitespace or background color instead
-
----
-
-## QA (Required)
-
-**Assume there are problems. Your job is to find them.**
-
-Your first render is almost never correct. Approach QA as a bug hunt, not a confirmation step. If you found zero issues on first inspection, you weren't looking hard enough.
-
-### Content QA
+If LibreOffice is installed, export the finished deck to PDF directly:
 
 ```bash
-python -m markitdown output.pptx
+soffice --headless --convert-to pdf --outdir ./out deck.pptx
 ```
 
-Check for missing content, typos, wrong order.
+The output lands at `./out/deck.pdf`. Fonts not installed on the host are
+substituted, so render-verify (Procedure step 5) before shipping the PDF.
+There is no offline pure-Python .pptx→PDF path; if `soffice` is absent,
+say so rather than approximating.
 
-**When using templates, check for leftover placeholder text:**
+## Pitfalls
 
-```bash
-python -m markitdown output.pptx | grep -iE "xxxx|lorem|ipsum|this.*(page|slide).*layout"
-```
+- **Run splitting**: PowerPoint fragments paragraph text into runs at
+  spell-check and edit boundaries. `--replace-text` first merges adjacent
+  runs whose formatting is identical, so matches split across such runs
+  are replaced with formatting fully preserved. Only when a match spans
+  *genuinely differently-formatted* runs is the paragraph rewritten with
+  the first run's formatting — verify those slides after replacement.
+- **Chart slides cannot be duplicated**: each chart relationship embeds a
+  separate XLSX workbook part; cloning that graph reliably is not
+  supported, so `--duplicate-slide` refuses chart slides cleanly instead
+  of corrupting the deck. Rebuild the chart on a new slide instead.
+  External-hyperlink and image/media rels are carried over; layout and
+  notes rels are recreated fresh.
+- **Chart ops are a wrapper**: python-pptx replaces the whole dataset;
+  `"ops"` round-trips existing plot data through `replace_data`, and
+  changing chart *type* is not possible.
+- **Reordering is XML-level**: python-pptx has no supported reorder API.
+  `--move-slide` manipulates `<p:sldIdLst>` directly; safe for ordinary
+  decks but re-read the deck afterward to confirm.
+- **Copying slides between decks is unsupported** — duplication works
+  only within one deck, where layouts and masters are shared.
+- Footer/slide-number enablement copies the placeholder from the slide's
+  layout; on layouts without those placeholders, `--set-footer` fails
+  with a clear message (add a textbox instead).
+- Hyperlinks apply to whole runs; `--hyperlink` links every run
+  containing the given text on that slide.
+- The default python-pptx template is 4:3; the create script sets 16:9
+  unless the spec says otherwise. Custom templates keep their own size.
+- Layout indexes vary by template. For brand templates, list layout names
+  first: `pptx_read.py template.pptx --outline` (`layouts_available`).
+- `slide.shapes.title` is None on blank layouts — the create script
+  handles this, but remember it when writing ad-hoc python-pptx code.
+- Always pass `encoding="utf-8"` when writing spec files; tokens like
+  `{{city}}` may be filled with non-ASCII values.
 
-If grep returns results, fix them before declaring success.
+## Verification
 
-### Visual QA
-
-**⚠️ USE SUBAGENTS** — even for 2-3 slides. You've been staring at the code and will see what you expect, not what's there. Subagents have fresh eyes.
-
-Convert slides to images (see [Converting to Images](#converting-to-images)), then use this prompt:
-
-```
-Visually inspect these slides. Assume there are issues — find them.
-
-Look for:
-- Overlapping elements (text through shapes, lines through words, stacked elements)
-- Text overflow or cut off at edges/box boundaries
-- Decorative lines positioned for single-line text but title wrapped to two lines
-- Source citations or footers colliding with content above
-- Elements too close (< 0.3" gaps) or cards/sections nearly touching
-- Uneven gaps (large empty area in one place, cramped in another)
-- Insufficient margin from slide edges (< 0.5")
-- Columns or similar elements not aligned consistently
-- Low-contrast text (e.g., light gray text on cream-colored background)
-- Low-contrast icons (e.g., dark icons on dark backgrounds without a contrasting circle)
-- Text boxes too narrow causing excessive wrapping
-- Leftover placeholder content
-
-For each slide, list issues or areas of concern, even if minor.
-
-Read and analyze these images:
-1. /path/to/slide-01.jpg (Expected: [brief description])
-2. /path/to/slide-02.jpg (Expected: [brief description])
-
-Report ALL issues found, including minor ones.
-```
-
-### Verification Loop
-
-1. Generate slides → Convert to images → Inspect
-2. **List issues found** (if none found, look again more critically)
-3. Fix issues
-4. **Re-verify affected slides** — one fix often creates another problem
-5. Repeat until a full pass reveals no new issues
-
-**Do not declare success until you've completed at least one fix-and-verify cycle.**
-
----
-
-## Converting to Images
-
-Convert presentations to individual slide images for visual inspection:
-
-```bash
-python scripts/office/soffice.py --headless --convert-to pdf output.pptx
-pdftoppm -jpeg -r 150 output.pdf slide
-```
-
-This creates `slide-01.jpg`, `slide-02.jpg`, etc.
-
-To re-render specific slides after fixes:
-
-```bash
-pdftoppm -jpeg -r 150 -f N -l N output.pdf slide-fixed
-```
-
----
-
-## Dependencies
-
-- `pip install "markitdown[pptx]"` - text extraction
-- `pip install Pillow` - thumbnail grids
-- `npm install -g pptxgenjs` - creating from scratch
-- LibreOffice (`soffice`) - PDF conversion (auto-configured for sandboxed environments via `scripts/office/soffice.py`)
-- Poppler (`pdftoppm`) - PDF to images
+1. After any create/edit, run `pptx_read.py OUT.pptx --outline` and check
+   slide count, texts, tables, notes, and chart values match intent.
+2. `--images DIR` then file-size check confirms pictures embedded.
+3. Render every slide with `pptx_render.py deck.pptx --outdir ./render`
+   and review each PNG with `vision_analyze` — this catches overlapping
+   shapes, truncated text, and color problems the outline cannot. If the
+   render tools are missing, the script says so; rely on the outline.
+4. The bundled test suite is the full contract:
+   `python -m pytest tests/ -q` (requires python-pptx + pytest).

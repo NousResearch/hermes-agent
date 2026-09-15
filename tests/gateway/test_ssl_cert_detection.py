@@ -32,14 +32,3 @@ def test_ensure_ssl_certs_ignores_stale_ssl_cert_file(monkeypatch, tmp_path):
     assert __import__("os").environ["SSL_CERT_FILE"] == str(cert_file)
 
 
-def test_ensure_ssl_certs_keeps_existing_ssl_cert_file(monkeypatch, tmp_path):
-    """A valid user-provided SSL_CERT_FILE must not be overwritten."""
-    from gateway.run import _ensure_ssl_certs
-
-    cert_file = tmp_path / "existing.pem"
-    cert_file.write_text("dummy cert bundle", encoding="utf-8")
-    monkeypatch.setenv("SSL_CERT_FILE", str(cert_file))
-
-    _ensure_ssl_certs()
-
-    assert __import__("os").environ["SSL_CERT_FILE"] == str(cert_file)

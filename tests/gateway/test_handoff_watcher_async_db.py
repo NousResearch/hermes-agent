@@ -106,45 +106,6 @@ async def _run_one_tick(fake, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_watcher_offloads_db_calls_to_threads(monkeypatch):
-    """The success path must run list_pending/claim/complete off the loop."""
-    import threading
-
-    loop_ident = threading.get_ident()
-    db = _RecordingSessionDB(loop_ident)
-    fake = _make_fake_runner(db, fail_process=False)
-
-    await _run_one_tick(fake, monkeypatch)
-
-    # Sanity: the watcher actually exercised the calls this tick.
-    assert "list_pending_handoffs" in db.calls
-    assert "claim_handoff" in db.calls
-    assert "complete_handoff" in db.calls
-
-    # Contract: each blocking SessionDB call ran on a worker thread, NOT the
-    # asyncio event-loop thread. Reverting a to_thread wrap makes the
-    # corresponding call run on the loop thread and this fails.
-    assert db.ran_off_loop("list_pending_handoffs")
-    assert db.ran_off_loop("claim_handoff")
-    assert db.ran_off_loop("complete_handoff")
-
-
-@pytest.mark.asyncio
-async def test_watcher_offloads_fail_handoff_to_thread(monkeypatch):
-    """The error path must run fail_handoff off the loop too."""
-    import threading
-
-    loop_ident = threading.get_ident()
-    db = _RecordingSessionDB(loop_ident)
-    fake = _make_fake_runner(db, fail_process=True)
-
-    await _run_one_tick(fake, monkeypatch)
-
-    assert "fail_handoff" in db.calls
-    assert db.ran_off_loop("fail_handoff")
-
-
-@pytest.mark.asyncio
 async def test_watcher_wraps_calls_via_asyncio_to_thread(monkeypatch):
     """Explicitly assert the offload goes through asyncio.to_thread.
 

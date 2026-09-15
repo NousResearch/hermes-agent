@@ -1,49 +1,16 @@
-import type { CommandDispatchResponse } from '../gatewayTypes.js'
+import { describeRpcError } from '../app/userMessages.js'
 
 export type RpcResult = Record<string, any>
 
 export const asRpcResult = <T extends RpcResult = RpcResult>(value: unknown): T | null =>
   !value || typeof value !== 'object' || Array.isArray(value) ? null : (value as T)
 
-export const asCommandDispatch = (value: unknown): CommandDispatchResponse | null => {
-  const o = asRpcResult(value)
-
-  if (!o || typeof o.type !== 'string') {
-    return null
-  }
-
-  const t = o.type
-
-  if (t === 'exec' || t === 'plugin') {
-    return { type: t, output: typeof o.output === 'string' ? o.output : undefined }
-  }
-
-  if (t === 'alias' && typeof o.target === 'string') {
-    return { type: 'alias', target: o.target }
-  }
-
-  if (t === 'skill' && typeof o.name === 'string') {
-    return { type: 'skill', name: o.name, message: typeof o.message === 'string' ? o.message : undefined }
-  }
-
-  if (t === 'send' && typeof o.message === 'string') {
-    return {
-      type: 'send',
-      message: o.message,
-      notice: typeof o.notice === 'string' ? o.notice : undefined
-    }
-  }
-
-  if (t === 'prefill' && typeof o.message === 'string') {
-    return {
-      type: 'prefill',
-      message: o.message,
-      notice: typeof o.notice === 'string' ? o.notice : undefined
-    }
-  }
-
-  return null
-}
-
+// Every `error: …` line the TUI prints for a failed RPC goes through here, so
+// transport-level failures (backend down, stale session id, version skew,
+// timeouts) read as what happened + what to do instead of the wire text.
 export const rpcErrorMessage = (err: unknown) =>
-  err instanceof Error && err.message ? err.message : typeof err === 'string' && err.trim() ? err : 'request failed'
+  err instanceof Error && err.message
+    ? describeRpcError(err)
+    : typeof err === 'string' && err.trim()
+      ? describeRpcError(err)
+      : 'request failed'

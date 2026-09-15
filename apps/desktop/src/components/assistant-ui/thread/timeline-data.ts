@@ -46,6 +46,20 @@ export function deriveTimelineEntries(messages: readonly TimelineSourceMessage[]
   return entries
 }
 
+/** Do two derivations describe the same rail? Lets a rebuild hand back the
+ *  PREVIOUS array so an unchanged transcript costs zero re-renders. */
+export function sameTimelineEntries(a: readonly TimelineEntry[], b: readonly TimelineEntry[]): boolean {
+  if (a === b) {
+    return true
+  }
+
+  if (a.length !== b.length) {
+    return false
+  }
+
+  return a.every((entry, index) => entry.id === b[index].id && entry.preview === b[index].preview)
+}
+
 /** Last user prompt at/above the viewport top (with slack); else first rendered. */
 export function activeTimelineIndex(offsets: readonly (number | null)[], slack: number = 8): number {
   let active = -1

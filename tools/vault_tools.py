@@ -10,7 +10,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from tools.registry import registry, tool_error
-from workstation.vault import VaultManager
+from workstation.vault import VaultManager, get_default_vault_manager
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ _vault_manager: Optional[VaultManager] = None
 def get_vault_manager() -> VaultManager:
     global _vault_manager
     if _vault_manager is None:
-        _vault_manager = VaultManager()
+        _vault_manager = get_default_vault_manager()
     return _vault_manager
 
 

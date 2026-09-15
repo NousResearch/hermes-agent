@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from workstation.vault import VaultManager
+from workstation.vault import VaultManager, get_default_vault_manager
 
 _log = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ _vault_manager: Optional[VaultManager] = None
 def _get_vault() -> VaultManager:
     global _vault_manager
     if _vault_manager is None:
-        _vault_manager = VaultManager()
+        _vault_manager = get_default_vault_manager()
     return _vault_manager
 
 

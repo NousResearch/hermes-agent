@@ -1,6 +1,9 @@
 import os
 import shutil
 import tempfile
+import threading
+import time
+from pathlib import Path
 import pytest
 
 from workstation.vault import (
@@ -136,3 +139,103 @@ def test_vault_lifecycle_and_bidirectional_links(temp_vault: VaultManager):
     assert temp_vault.get_note("Note A") is None
     data_b_post_delete = temp_vault.get_note("Note B")
     assert "Note A" not in data_b_post_delete["backlinks"]
+
+
+@pytest.mark.parametrize("subfolder", ["../outside", "C:\\outside", "\\\\server\\share", "/tmp/outside"])
+def test_write_rejects_escaping_subfolders_without_side_effect(tmp_path: Path, subfolder: str):
+    vault = tmp_path / "vault"
+    outside = tmp_path / "outside"
+    manager = VaultManager(str(vault))
+
+    with pytest.raises(ValueError):
+        manager.write_note("escaped", "must stay inside", subfolder=subfolder)
+
+    assert not outside.exists()
+    assert list(vault.rglob("*.md")) == []
+
+
+@pytest.mark.parametrize("title", ["", "   ", "../escape", "folder/note", "folder\\note", "bad:name"])
+def test_write_rejects_malformed_titles(tmp_path: Path, title: str):
+    manager = VaultManager(str(tmp_path / "vault"))
+    with pytest.raises(ValueError):
+        manager.write_note(title, "unsafe")
+    assert list((tmp_path / "vault").rglob("*.md")) == []
+
+
+def test_custom_vault_root_accepts_normal_nested_note(tmp_path: Path):
+    custom = tmp_path / "existing-obsidian"
+    custom.mkdir()
+    (custom / ".obsidian").mkdir()
+    manager = VaultManager(str(custom))
+
+    note = manager.write_note("Safe Note", "hello", subfolder="Projects/Hermes")
+
+    assert note["rel_path"] == "Projects/Hermes/Safe Note.md"
+    assert (custom / "Projects" / "Hermes" / "Safe Note.md").is_file()
+
+
+def test_scan_and_mutations_ignore_file_symlink_escape(tmp_path: Path):
+    vault = tmp_path / "vault"
+    outside = tmp_path / "outside.md"
+    vault.mkdir()
+    outside.write_text("external secret", encoding="utf-8")
+    link = vault / "linked.md"
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("file symlinks are not supported on this host")
+
+    manager = VaultManager(str(vault))
+    assert manager.get_note("linked") is None
+    assert manager.delete_note("linked") is False
+    with pytest.raises(ValueError):
+        manager.write_note("linked", "overwrite attempt")
+    assert outside.read_text(encoding="utf-8") == "external secret"
+
+
+def test_scan_ignores_directory_symlink_escape(tmp_path: Path):
+    vault = tmp_path / "vault"
+    outside = tmp_path / "outside"
+    vault.mkdir()
+    outside.mkdir()
+    (outside / "secret.md").write_text("external secret", encoding="utf-8")
+    link = vault / "linked-dir"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("directory symlinks are not supported on this host")
+
+    manager = VaultManager(str(vault))
+    assert manager.list_notes() == []
+    with pytest.raises(ValueError):
+        manager.write_note("escape", "unsafe", subfolder="linked-dir")
+    assert not (outside / "escape.md").exists()
+
+
+def test_external_change_watcher_coalesces_and_stops(tmp_path: Path):
+    vault = tmp_path / "vault"
+    manager = VaultManager(str(vault))
+    changed = threading.Event()
+    manager.start_watcher(interval=0.01, debounce=0.03, on_change=lambda _result: changed.set())
+    try:
+        note = vault / "External.md"
+        note.write_text("first", encoding="utf-8")
+        note.write_text("second #updated", encoding="utf-8")
+        assert changed.wait(2)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and manager.get_note("External") is None:
+            time.sleep(0.01)
+        assert manager.get_note("External")["tags"] == ["updated"]
+
+        changed.clear()
+        note.rename(vault / "Renamed.md")
+        assert changed.wait(2)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and manager.get_note("Renamed") is None:
+            time.sleep(0.01)
+        assert manager.get_note("External") is None
+        assert manager.get_note("Renamed") is not None
+    finally:
+        manager.stop_watcher()
+
+    assert manager._watch_thread is None

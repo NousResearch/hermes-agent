@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import re
+import tempfile
+import threading
+import time
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from pathlib import Path, PureWindowsPath
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import yaml
 
@@ -243,22 +247,110 @@ class VaultManager:
         else:
             self.vault_dir = Path(get_hermes_home()) / "vault"
         self.vault_dir.mkdir(parents=True, exist_ok=True)
+        self.vault_dir = self.vault_dir.resolve(strict=True)
         self.index = VaultIndex()
+        self._lock = threading.RLock()
+        self._watch_stop = threading.Event()
+        self._watch_thread: Optional[threading.Thread] = None
         self.scan()
+
+    def _relative_parts(self, value: str, *, field_name: str) -> Tuple[str, ...]:
+        """Validate path text using both host and Windows grammar.
+
+        Checking Windows grammar even on POSIX prevents a value such as
+        ``C:\\outside`` or a UNC path from becoming an innocent-looking local
+        filename during tests or remote execution.
+        """
+        if not isinstance(value, str) or not value.strip() or "\x00" in value:
+            raise ValueError(f"{field_name} must not be empty")
+        value = value.strip()
+        win = PureWindowsPath(value)
+        if Path(value).is_absolute() or win.is_absolute() or bool(win.drive) or value.startswith(("\\\\", "//")):
+            raise ValueError(f"{field_name} must be relative to the vault")
+        normalized = value.replace("\\", "/")
+        parts = tuple(normalized.split("/"))
+        if any(part in ("", ".", "..") for part in parts):
+            raise ValueError(f"{field_name} contains an unsafe path component")
+        return parts
+
+    def _assert_contained(self, path: Path, *, must_exist: bool = False) -> Path:
+        resolved = path.resolve(strict=must_exist)
+        try:
+            resolved.relative_to(self.vault_dir)
+        except (ValueError, OSError) as exc:
+            raise ValueError("path escapes the configured vault root") from exc
+        return resolved
+
+    def _safe_note_path(self, title: str, subfolder: Optional[str] = None) -> Path:
+        clean_title = canonicalize_title(title)
+        if (
+            not clean_title
+            or clean_title in (".", "..")
+            or clean_title != title.removesuffix(".md").strip()
+            or any(ch in clean_title for ch in "/\\:\x00")
+            or any(ord(ch) < 32 for ch in clean_title)
+            or clean_title.endswith((" ", "."))
+        ):
+            raise ValueError("title must be a non-empty filename without path components")
+        target_dir = self.vault_dir
+        if subfolder is not None:
+            target_dir = self.vault_dir.joinpath(*self._relative_parts(subfolder, field_name="subfolder"))
+        self._assert_contained(target_dir)
+        return target_dir / f"{clean_title}.md"
+
+    def _safe_indexed_path(self, path: str) -> Path:
+        candidate = Path(path)
+        if candidate.is_symlink():
+            raise ValueError("vault notes must not be symbolic links")
+        return self._assert_contained(candidate, must_exist=True)
+
+    def _atomic_write(self, file_path: Path, text: str) -> None:
+        parent = file_path.parent
+        self._assert_contained(parent)
+        parent.mkdir(parents=True, exist_ok=True)
+        safe_parent = self._assert_contained(parent, must_exist=True)
+        if safe_parent != parent.resolve(strict=True):
+            raise ValueError("vault directory changed during write")
+        if file_path.is_symlink():
+            raise ValueError("vault notes must not be symbolic links")
+        fd, tmp_name = tempfile.mkstemp(prefix=".hermes-vault-", suffix=".tmp", dir=safe_parent)
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            self._assert_contained(safe_parent, must_exist=True)
+            if file_path.is_symlink():
+                raise ValueError("vault note changed to a symbolic link during write")
+            os.replace(tmp_path, file_path)
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def scan(self) -> Dict[str, Any]:
         """Scan all markdown files in the vault and rebuild the index."""
+        with self._lock:
+            return self._scan_locked()
+
+    def _scan_locked(self) -> Dict[str, Any]:
         self.index.clear()
         count = 0
 
-        for root, _, files in os.walk(self.vault_dir):
+        for root, dirs, files in os.walk(self.vault_dir, followlinks=False):
+            dirs[:] = [name for name in dirs if not (Path(root) / name).is_symlink()]
             for file in files:
                 if file.lower().endswith(".md"):
                     full_path = Path(root) / file
                     try:
-                        rel_path = str(full_path.relative_to(self.vault_dir)).replace("\\", "/")
-                        stat = full_path.stat()
-                        raw_text = full_path.read_text(encoding="utf-8", errors="replace")
+                        if full_path.is_symlink():
+                            continue
+                        safe_path = self._assert_contained(full_path, must_exist=True)
+                        rel_path = str(safe_path.relative_to(self.vault_dir)).replace("\\", "/")
+                        stat = safe_path.stat()
+                        raw_text = safe_path.read_text(encoding="utf-8", errors="replace")
 
                         fm, body = parse_frontmatter_and_content(raw_text)
                         title = fm.get("title") or canonicalize_title(file)
@@ -266,7 +358,7 @@ class VaultManager:
                         tags = extract_tags(body, fm.get("tags"))
 
                         note = VaultNote(
-                            path=str(full_path),
+                            path=str(safe_path),
                             rel_path=rel_path,
                             title=title,
                             content=raw_text,
@@ -283,6 +375,63 @@ class VaultManager:
 
         _log.info("Vault scanned %d notes in %s", count, self.vault_dir)
         return {"notes_count": count, "vault_dir": str(self.vault_dir)}
+
+    def _snapshot(self) -> Tuple[Tuple[str, int, int], ...]:
+        entries: List[Tuple[str, int, int]] = []
+        for root, dirs, files in os.walk(self.vault_dir, followlinks=False):
+            dirs[:] = [name for name in dirs if not (Path(root) / name).is_symlink()]
+            for name in files:
+                path = Path(root) / name
+                if not name.lower().endswith(".md") or path.is_symlink():
+                    continue
+                try:
+                    safe = self._assert_contained(path, must_exist=True)
+                    stat = safe.stat()
+                    entries.append((str(safe.relative_to(self.vault_dir)), stat.st_mtime_ns, stat.st_size))
+                except (OSError, ValueError):
+                    continue
+        return tuple(sorted(entries))
+
+    def start_watcher(
+        self,
+        *,
+        interval: float = 0.5,
+        debounce: float = 0.2,
+        on_change: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> None:
+        """Start one bounded polling watcher for external Markdown changes."""
+        if interval <= 0 or debounce < 0:
+            raise ValueError("watcher interval must be positive and debounce non-negative")
+        if self._watch_thread and self._watch_thread.is_alive():
+            return
+        self._watch_stop.clear()
+
+        def watch() -> None:
+            previous = self._snapshot()
+            pending_since: Optional[float] = None
+            while not self._watch_stop.wait(interval):
+                current = self._snapshot()
+                if current != previous:
+                    previous = current
+                    pending_since = time.monotonic()
+                if pending_since is not None and time.monotonic() - pending_since >= debounce:
+                    result = self.scan()
+                    pending_since = None
+                    if on_change:
+                        try:
+                            on_change(result)
+                        except Exception:
+                            _log.exception("Vault watcher callback failed")
+
+        self._watch_thread = threading.Thread(target=watch, name="hermes-vault-watcher", daemon=True)
+        self._watch_thread.start()
+
+    def stop_watcher(self, timeout: float = 2.0) -> None:
+        self._watch_stop.set()
+        thread = self._watch_thread
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=max(0.0, timeout))
+        self._watch_thread = None
 
     def list_notes(self) -> List[Dict[str, Any]]:
         """List all notes with their metadata."""
@@ -324,14 +473,7 @@ class VaultManager:
     ) -> Dict[str, Any]:
         """Create or update a markdown note."""
         clean_title = canonicalize_title(title)
-        filename = f"{clean_title}.md"
-
-        target_dir = self.vault_dir
-        if subfolder:
-            target_dir = (self.vault_dir / subfolder).resolve()
-            target_dir.mkdir(parents=True, exist_ok=True)
-
-        file_path = target_dir / filename
+        file_path = self._safe_note_path(title, subfolder)
 
         # Prepare frontmatter
         fm = dict(frontmatter or {})
@@ -352,7 +494,7 @@ class VaultManager:
         else:
             full_text = f"{body}\n"
 
-        file_path.write_text(full_text, encoding="utf-8")
+        self._atomic_write(file_path, full_text)
         stat = file_path.stat()
 
         rel_path = str(file_path.relative_to(self.vault_dir)).replace("\\", "/")
@@ -386,8 +528,8 @@ class VaultManager:
         if existing:
             current_body = existing["content"]
             updated = f"{current_body.rstrip()}\n\n{append_content.strip()}\n"
-            file_path = Path(existing["path"])
-            file_path.write_text(updated, encoding="utf-8")
+            file_path = self._safe_indexed_path(existing["path"])
+            self._atomic_write(file_path, updated)
             stat = file_path.stat()
 
             fm, body = parse_frontmatter_and_content(updated)
@@ -422,7 +564,7 @@ class VaultManager:
             return False
 
         note = self.index.notes[resolved]
-        file_path = Path(note.path)
+        file_path = self._safe_indexed_path(note.path)
         if file_path.exists():
             file_path.unlink()
 
@@ -513,3 +655,29 @@ class VaultManager:
                 suggestions.append({"title": title, "alias": alias, "path": self.index.notes[title].rel_path})
 
         return sorted(suggestions, key=lambda x: x["title"].lower())
+
+
+_default_vault_manager: Optional[VaultManager] = None
+_default_vault_lock = threading.Lock()
+
+
+def get_default_vault_manager() -> VaultManager:
+    """Return the process-wide canonical Vault owner used by tools and UI RPC."""
+    global _default_vault_manager
+    with _default_vault_lock:
+        if _default_vault_manager is None:
+            _default_vault_manager = VaultManager()
+            _default_vault_manager.start_watcher()
+        return _default_vault_manager
+
+
+def stop_default_vault_manager() -> None:
+    global _default_vault_manager
+    with _default_vault_lock:
+        manager = _default_vault_manager
+        _default_vault_manager = None
+    if manager is not None:
+        manager.stop_watcher()
+
+
+atexit.register(stop_default_vault_manager)

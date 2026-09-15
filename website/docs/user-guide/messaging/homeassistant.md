@@ -180,6 +180,34 @@ State changes are formatted as human-readable messages based on domain:
 
 Outbound messages from the agent are delivered as **Home Assistant persistent notifications** (via `persistent_notification.create`). These appear in the HA notification panel with the title "Hermes Agent".
 
+### Routing Watch Alerts to Another Platform
+
+By default, all watch events forwarded by the gateway are delivered as HA persistent notifications. You can reroute alerts to another connected messaging platform (e.g., Telegram, WhatsApp, Signal, Discord) by adding a `deliver` target.
+
+Configure routing at three levels — per-entity, per-domain, or a top-level default:
+
+```yaml
+platforms:
+  homeassistant:
+    enabled: true
+    extra:
+      watch_entities:
+        - sensor.example_pet_camera              # uses top-level deliver (or homeassistant)
+        - alarm_control_panel.example_alarm:
+            deliver: whatsapp                     # per-entity override
+      watch_domains:
+        - person: {deliver: whatsapp}             # per-domain override
+      deliver: whatsapp                           # top-level default for plain entries
+      # `default_deliver` is accepted as an alias for `deliver` — set one, not both
+```
+
+**Precedence** (highest to lowest):
+1. Per-entry `deliver` key (on a specific entity or domain)
+2. Top-level `deliver` / `default_deliver` key in the `extra` section
+3. `homeassistant` — the built-in fallback (persistent notification)
+
+The `deliver` value is the name of any connected platform: `telegram`, `whatsapp`, `signal`, `discord`, `slack`, or any other platform configured and connected to the gateway. If the target platform is unknown or not currently connected, the alert falls back to an HA persistent notification and a warning is logged.
+
 ### Connection Management
 
 - **WebSocket** with 30-second heartbeat for real-time events

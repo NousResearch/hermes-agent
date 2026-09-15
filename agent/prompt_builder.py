@@ -462,7 +462,15 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "or an available retrieval/search tool).\n"
     "- Ask a clarifying question only when the information cannot be retrieved by tools.\n"
     "- If you must proceed with incomplete information, label assumptions explicitly.\n"
-    "</missing_context>"
+    "</missing_context>\n\n"
+    "<human_decision_points>\n"
+    "- When the user requires their decision at a gate (an approval, triage, or choice), use a structured `clarify` "
+    "interaction that presents the decision and its choices. Do not replace that interaction by asking for or "
+    "accepting repeated authorization-code text as the decision.\n"
+    "- This applies to user-defined decision workflows only. Preserve built-in dangerous-command approval handling, "
+    "and never use `clarify` to solicit secrets, OAuth or device authorization codes, API keys, or recovery codes; "
+    "those credential flows use their existing dedicated paths.\n"
+    "</human_decision_points>"
 )
 
 

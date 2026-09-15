@@ -262,6 +262,12 @@ class TestExecutionGuidanceInjection:
         assert "Execution discipline" in stable
         assert "<external_state_verification>" in stable
 
+    def test_deepseek_flash_preserves_structured_human_decisions(self):
+        stable = self._prompt("deepseek/deepseek-v4-flash")
+        assert "<human_decision_points>" in stable
+        assert "structured `clarify` interaction" in stable
+        assert "authorization-code text" in stable
+
     def test_kimi_gets_guidance_by_default(self):
         assert "Execution discipline" in self._prompt("moonshotai/kimi-k3")
 

@@ -29,7 +29,14 @@ jobs:
           echo "bootstrap_sha=$(git rev-parse HEAD)"
 
       - name: Apply audited red-team patch
-        run: python scripts/redteam_hardening_once.py
+        run: |
+          python scripts/redteam_hardening_once.py
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("tools/tool_result_storage.py")
+          text = path.read_text(encoding="utf-8")
+          path.write_text(text.rstrip() + "\n", encoding="utf-8")
+          PY
 
       - name: Python syntax gate
         run: |
@@ -115,4 +122,4 @@ jobs:
           git push origin HEAD:main
           echo "validated_commit=$(git rev-parse HEAD)"
 
-# redteam bootstrap revision 8
+# redteam bootstrap revision 9

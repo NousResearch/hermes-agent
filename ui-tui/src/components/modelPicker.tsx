@@ -1,5 +1,5 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
-import { fuzzyRank } from '@hermes/shared/fuzzy'
+import { fuzzyRank, fuzzyScoreMulti } from '@hermes/shared/fuzzy'
 import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared/gateway-events'
 import { modelSearchText } from '@hermes/shared/model-search-text'
 import { REASONING_EFFORTS } from '@hermes/shared/reasoning-effort'
@@ -66,6 +66,25 @@ export function hopCurrentIndex(rows: ModelHopRow[], current: string) {
 /** Printable paste or a single typed char; skip controls (Tab/Esc). */
 export function searchAppend(prev: string, ch: string) {
   return ch && ch[0] >= ' ' ? prev + ch : prev
+}
+
+/** Consecutive runs of `text` whose indices fuzzy-matched `q` (OMP /switch). */
+export function paintHits(text: string, q: string): { t: string; hit: boolean }[] {
+  const hits = new Set(fuzzyScoreMulti(text, q.trim())?.positions ?? [])
+  const out: { t: string; hit: boolean }[] = []
+
+  for (let i = 0; i < text.length; i++) {
+    const hit = hits.has(i)
+    const last = out.at(-1)
+
+    if (last && last.hit === hit) {
+      last.t += text[i]
+    } else {
+      out.push({ t: text[i]!, hit })
+    }
+  }
+
+  return out
 }
 
 export function filterModelHopRows(rows: ModelHopRow[], query: string): ModelHopRow[] {
@@ -136,6 +155,22 @@ export function providerIndexAfterClearingFilter(
   }
 
   return providerRows.findIndex(row => row.provider.slug === provider.slug)
+}
+
+function HitLabel({ q, t, text }: { q: string; t: Theme; text: string }) {
+  return (
+    <>
+      {paintHits(text, q).map((p, i) =>
+        p.hit ? (
+          <Text key={i} color={t.color.accent}>
+            {p.t}
+          </Text>
+        ) : (
+          p.t
+        )
+      )}
+    </>
+  )
 }
 
 export function ModelPicker({
@@ -816,7 +851,7 @@ export function ModelPicker({
                 wrap="truncate-end"
               >
                 {modelIdx === idx ? '▸ ' : current ? '* ' : '  '}
-                {idx + 1}. {row}
+                {idx + 1}. <HitLabel q={filter} t={t} text={row} />
               </Text>
             ) : (
               <Text color={t.color.muted} key={`pad-${i}`} wrap="truncate-end">
@@ -896,7 +931,7 @@ export function ModelPicker({
                 wrap="truncate-end"
               >
                 {providerIdx === idx ? '▸ ' : '  '}
-                {idx + 1}. {row}
+                {idx + 1}. <HitLabel q={filter} t={t} text={row} />
               </Text>
             ) : (
               <Text color={t.color.muted} key={`pad-${i}`} wrap="truncate-end">
@@ -1001,7 +1036,7 @@ export function ModelPicker({
             wrap="truncate-end"
           >
             {prefix}
-            {idx + 1}. {row}
+            {idx + 1}. <HitLabel q={filter} t={t} text={row} />
           </Text>
         )
       })}

@@ -6,6 +6,7 @@ import {
   filterModelHopRows,
   hopCurrentIndex,
   hopIsCurrent,
+  paintHits,
   providerIndexAfterClearingFilter,
   searchAppend
 } from '../components/modelPicker.js'
@@ -118,6 +119,16 @@ describe('hop current + paste', () => {
   it('appends paste, ignores controls', () => {
     expect(searchAppend('', 'nous/hermes-4')).toBe('nous/hermes-4')
     expect(searchAppend('n', '\t')).toBe('n')
+  })
+})
+
+describe('paintHits', () => {
+  it('marks typed subsequence chars', () => {
+    expect(paintHits('claude-sonnet-4.6', 'son4').filter(p => p.hit).map(p => p.t)).toEqual(['son', '4'])
+  })
+
+  it('is a no-op for an empty query', () => {
+    expect(paintHits('nous/hermes-4', '')).toEqual([{ t: 'nous/hermes-4', hit: false }])
   })
 })
 

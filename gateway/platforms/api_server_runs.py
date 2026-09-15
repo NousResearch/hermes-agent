@@ -746,7 +746,8 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
     try:
         while True:
             try:
-                event = await asyncio.wait_for(q.get(), timeout=30.0)
+                event = await asyncio.wait_for(
+                    q.get(), timeout=_api_server.CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS)
             except asyncio.TimeoutError:
                 await response.write(b": keepalive\n\n")
                 continue

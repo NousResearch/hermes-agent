@@ -201,7 +201,9 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
-CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
+# Send a comment before remote API clients' common 20-second idle deadline.
+# This constant is shared by OpenAI chat/Responses and native session SSE.
+CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 10.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT = 100

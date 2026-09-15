@@ -263,6 +263,43 @@ class TestCautionPolicy:
         assert result.verdict == "caution"
 
 
+class TestRuntimeSelfTestTokens:
+    def test_main_guard_sample_token_is_reviewable_caution(self, tmp_path):
+        files = dict(BASE_FILES)
+        files["runtime.py"] = (
+            "def request():\n"
+            "    return None\n\n"
+            "if __name__ == '__main__':\n"
+            "    token = 'sampletokenvalue1234567890abcdef'\n"
+            "    assert token.startswith('sample')\n"
+        )
+        result = scan_plugin(_mk_plugin(tmp_path, files))
+        finding = next(f for f in result.findings if f.pattern_id == "hardcoded_secret")
+        assert finding.severity == "high"
+        assert result.verdict == "caution"
+
+    def test_runtime_token_outside_main_guard_stays_dangerous(self, tmp_path):
+        files = dict(BASE_FILES)
+        files["runtime.py"] = "token = 'sampletokenvalue1234567890abcdef'\n"
+        result = scan_plugin(_mk_plugin(tmp_path, files))
+        finding = next(f for f in result.findings if f.pattern_id == "hardcoded_secret")
+        assert finding.severity == "critical"
+        assert result.verdict == "dangerous"
+
+    def test_dedicated_token_signature_stays_critical_inside_main_guard(self, tmp_path):
+        files = dict(BASE_FILES)
+        files["runtime.py"] = (
+            "if __name__ == '__main__':\n"
+            "    token = 'sk-abcdefghijklmnopqrstuvwxyz'\n"
+        )
+        result = scan_plugin(_mk_plugin(tmp_path, files))
+        assert any(
+            f.pattern_id == "openai_key_leaked" and f.severity == "critical"
+            for f in result.findings
+        )
+        assert result.verdict == "dangerous"
+
+
 class TestInstallIntegration:
     """E2E through _install_plugin_core with a real git clone."""
 

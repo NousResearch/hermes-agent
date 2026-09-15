@@ -10,6 +10,7 @@ needs confirmation, ``dangerous`` is blocked and ``--force`` does NOT override.
 
 from __future__ import annotations
 
+import ast
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
@@ -108,9 +109,46 @@ def _finding(pattern_id: str, severity: str, category: str, file: str, match: st
     return Finding(pattern_id, severity, category, file, 0, match, description)
 
 
-def _filter_findings(findings: List[Finding], rel_path: str) -> List[Finding]:
+def _is_main_guard(node: ast.If) -> bool:
+    """Return whether an ``if`` node is the conventional module self-test guard."""
+    test = node.test
+    if not isinstance(test, ast.Compare) or len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq):
+        return False
+    if len(test.comparators) != 1:
+        return False
+    left, right = test.left, test.comparators[0]
+    return (
+        isinstance(left, ast.Name) and left.id == "__name__"
+        and isinstance(right, ast.Constant) and right.value == "__main__"
+    ) or (
+        isinstance(right, ast.Name) and right.id == "__name__"
+        and isinstance(left, ast.Constant) and left.value == "__main__"
+    )
+
+
+def _main_guard_body_lines(file_path: Path) -> set[int]:
+    """Return lines executed only by ``if __name__ == '__main__'`` blocks.
+
+    Invalid Python deliberately returns no lines so its findings retain the
+    conservative severity.
+    """
+    try:
+        tree = ast.parse(file_path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return set()
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If) or not _is_main_guard(node):
+            continue
+        for statement in node.body:
+            lines.update(range(statement.lineno, getattr(statement, "end_lineno", statement.lineno) + 1))
+    return lines
+
+
+def _filter_findings(findings: List[Finding], rel_path: str, file_path: Path) -> List[Finding]:
     """Apply plugin-specific exemptions and severity remaps to raw findings."""
     is_code = Path(rel_path).suffix.lower() in CODE_FILE_EXTENSIONS
+    main_guard_lines = _main_guard_body_lines(file_path) if file_path.suffix.lower() == ".py" else set()
     in_test_tree = Path(rel_path).parts[0] in TEST_TREE_DIRS
     is_js = Path(rel_path).suffix.lower() in {".js", ".ts"}
     is_doc_prose = Path(rel_path).suffix.lower() in DOC_PROSE_EXTENSIONS
@@ -124,6 +162,8 @@ def _filter_findings(findings: List[Finding], rel_path: str) -> List[Finding]:
         )
         if is_doc_prose and f.pattern_id in DOC_PROSE_DEMOTIONS:
             f.severity = DOC_PROSE_DEMOTIONS[f.pattern_id]
+        if f.pattern_id == "hardcoded_secret" and f.line in main_guard_lines:
+            f.severity = "high"
         if in_test_tree and f.severity == "critical":
             f.severity = "high"
         if (
@@ -212,7 +252,7 @@ def scan_plugin(plugin_dir: Path, source: str = "") -> ScanResult:
         all_findings.extend(_check_plugin_structure(plugin_dir))
         for f, rel in sorted(_walk(plugin_dir)):
             if f.is_file() and not f.is_symlink():
-                all_findings.extend(_filter_findings(scan_file(f, rel_path=rel), rel))
+                all_findings.extend(_filter_findings(scan_file(f, rel_path=rel), rel, f))
     verdict = _determine_verdict(all_findings)
     if all_findings:
         categories = sorted({f.category for f in all_findings})

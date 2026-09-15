@@ -345,6 +345,21 @@ User message → AIAgent._run_agent_loop()
 
 ---
 
+## Integration Boundaries Must Not Fail Silently
+
+An integration boundary — credentials/config, a write path, a version pin, a wait or retry — must
+either **work, or say so loudly**: raise, disable the adapter, or log at `warning`/`error` with the
+offending value, its legal range and the effective default. Never accept a value, key or state and
+then ignore it, and never let a wait or retry run without a visible state and an escape hatch —
+silent misbehavior turns every incident into a debugging session instead of an error message. The
+existing precedent is `gateway/config.py::_validate_gateway_config`, which rejects placeholder bot
+tokens at load and disables the platform, so a copied `.env.example` yields a clear startup error
+instead of a confusing "auth failed" from the platform API; a reader that only *reports* a value
+(the CLI `/config` pane, a prompt, a status line) resolves it through the same rule as the code
+that consumes it, so the reported value is the one actually in force.
+
+---
+
 ## Adding a New Tool
 
 Before writing a tool, ask: [should this be a skill instead?](#should-it-be-a-skill-or-a-tool)

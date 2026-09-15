@@ -3714,10 +3714,16 @@ def _ctx_header(lines: list[str], task: Task) -> None:
         terminal_timeout = _worker_terminal_timeout_env(
             task.max_runtime_seconds, os.environ.get("TERMINAL_TIMEOUT"),
         )
-        effective_terminal_timeout = terminal_timeout or os.environ.get("TERMINAL_TIMEOUT")
+        # Report the timeout the worker will actually enforce: an invalid TERMINAL_TIMEOUT (0 or
+        # garbage) resolves to the tool's default, loudly logged, rather than being echoed here as
+        # an effective "Terminal timeout: 0s" (#85809).
+        from tools.terminal_tool_config import effective_terminal_timeout
+
+        effective_terminal_timeout_seconds = (
+            int(terminal_timeout) if terminal_timeout else effective_terminal_timeout()
+        )
         lines.append(f"Max runtime: {task.max_runtime_seconds}s")
-        if effective_terminal_timeout:
-            lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
+        lines.append(f"Terminal timeout: {effective_terminal_timeout_seconds}s")
     if task.branch_name:
         lines.append(f"Branch:   {task.branch_name}")
     lines.append("")

@@ -290,9 +290,18 @@ def admit_durable_turn_lease(
             if latest_session_id:
                 agent.session_id = latest_session_id
                 task_context["session_id"] = latest_session_id
-            admission.conversation_history = db.get_messages_as_conversation(
+            reloaded = db.get_messages_as_conversation(
                 agent.session_id, repair_alternation=True, include_row_ids=True
             )
+            # A follow-up that aborted an earlier wait carries that turn's never-persisted input
+            # only in memory (see carry_unadmitted_user_message); the reload would drop it.
+            from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+            reloaded.extend(
+                m for m in (conversation_history or [])
+                if isinstance(m, dict) and m.get(_PERSIST_AFTER_ADMISSION_INTERRUPT)
+                and "_row_id" not in m
+            )
+            admission.conversation_history = reloaded
         lease.build_threads()
     except BaseException:
         # The façade never saw this lease; release here so an admitted row is not leaked.

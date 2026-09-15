@@ -357,6 +357,43 @@ def test_run_conversation_second_turn_after_lease_wait_abort(monkeypatch):
     assert agent._interrupt_requested is False
 
 
+def test_carried_input_survives_waited_reload_on_follow_up_turn(monkeypatch):
+    db = _DB()
+    agent = _agent_with_db(db)
+    turns = {"n": 0}
+
+    def acquire_false_then_true_after_wait(session_id, holder, **kwargs):
+        db.events.append(("acquire", session_id, holder))
+        if turns["n"] == 0:
+            agent._interrupt_requested = True
+            agent._interrupt_message = "follow-up while waiting"
+            return False
+        kwargs["on_wait"](0.0)  # the follow-up also has to wait before admission
+        return True
+
+    db.acquire_session_turn_lease = acquire_false_then_true_after_wait
+    observed = {}
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        observed["history"] = history
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    first = AIAgent.run_conversation(
+        agent, "original", conversation_history=[{"role": "user", "content": "stale"}]
+    )
+    assert first.get("interrupted") is True
+    carried = first["messages"][-1]
+    assert carried["_persist_after_admission_interrupt"] is True
+    turns["n"] = 1
+    AIAgent.run_conversation(agent, "follow-up", conversation_history=first["messages"])
+
+    assert observed["history"] == [
+        {"role": "user", "content": "durable latest"},
+        carried,
+    ]
+
+
 def test_run_conversation_interrupts_when_lease_refresh_lost(monkeypatch):
     db = _DB()
     agent = _agent_with_db(db)

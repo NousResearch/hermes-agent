@@ -30,7 +30,6 @@ import {
   setApiRequestConnection,
   setApiRequestProfile,
   speakText,
-  STARTUP_REQUEST_TIMEOUT_MS,
   transcribeAudio,
   triggerCronJob
 } from './hermes'
@@ -179,18 +178,29 @@ describe('Hermes REST helpers', () => {
     )
   })
 
-  it('pins profile-list reads only when explicitly scoped, without changing unscoped requests', async () => {
-    setApiRequestConnection('remote-a')
+  it('does not stamp ambient profile onto unscoped helpers', async () => {
     setApiRequestProfile('iris')
 
     await getProfiles()
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/profiles'
+      })
+    )
+    expect(api.mock.calls[0][0]).not.toHaveProperty('profile')
+  })
+
+  it('pins the profile list to an explicit (connection, profile) scope', async () => {
+    setApiRequestConnection('remote-a')
+    setApiRequestProfile('iris')
+
     await getProfiles({ connectionId: 'remote-b', profile: 'scout' })
     await getProfiles({ connectionId: 'local', profile: 'default' })
 
-    expect(api.mock.calls).toEqual([
-      [{ connectionId: 'remote-a', path: '/api/profiles', timeoutMs: STARTUP_REQUEST_TIMEOUT_MS }],
-      [{ connectionId: 'remote-b', profile: 'scout', path: '/api/profiles', timeoutMs: STARTUP_REQUEST_TIMEOUT_MS }],
-      [{ connectionId: 'local', profile: 'default', path: '/api/profiles', timeoutMs: STARTUP_REQUEST_TIMEOUT_MS }]
+    expect(api.mock.calls.map(([request]) => request)).toEqual([
+      expect.objectContaining({ connectionId: 'remote-b', profile: 'scout', path: '/api/profiles' }),
+      expect.objectContaining({ connectionId: 'local', profile: 'default', path: '/api/profiles' })
     ])
   })
 

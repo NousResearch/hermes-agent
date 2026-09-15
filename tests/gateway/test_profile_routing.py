@@ -1,6 +1,7 @@
 """Tests for gateway/profile_routing.py — profile-based routing."""
 
 import json
+from unittest.mock import patch
 
 import pytest
 from gateway.profile_routing import (
@@ -8,6 +9,15 @@ from gateway.profile_routing import (
     parse_profile_routes,
     match_profile_route,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_channel_directory(tmp_path_factory):
+    """Name resolution must never read the real ~/.hermes channel directory / alias overlay."""
+    missing = tmp_path_factory.mktemp("directory") / "none.json"
+    with patch("gateway.channel_directory.DIRECTORY_PATH", missing), \
+         patch("gateway.channel_directory.CHANNEL_ALIASES_PATH", missing):
+        yield
 
 
 class TestProfileRoute:
@@ -45,6 +55,85 @@ class TestProfileRouteMatching:
         assert not r.matches("discord", guild_id="999", chat_id="222")
         # guild matches but chat differs -> NO match
         assert not r.matches("discord", guild_id="111", chat_id="333")
+
+
+class TestNameAndPatternDiscriminators:
+    """#109676: a discriminator may be a channel/guild NAME or a regex pattern over names.
+
+    Names/patterns resolve only AFTER the exact-id compare misses, from the gateway's cached
+    channel directory.
+    """
+
+    CHANNEL_ID = "1543849479231246416"
+
+    def _directory(self, tmp_path, channels):
+        path = tmp_path / "channel_directory.json"
+        path.write_text(json.dumps({"updated_at": "2026-01-01T00:00:00", "platforms": {"discord": channels}}))
+        return patch("gateway.channel_directory.DIRECTORY_PATH", path)
+
+    def test_chat_id_name_matches_numeric_inbound_id(self, tmp_path):
+        route = ProfileRoute(name="work", platform="discord", profile="work", chat_id="work-evs_root")
+        channels = [{"id": self.CHANNEL_ID, "name": "work-evs_root", "guild": "EVS", "type": "channel"}]
+        with self._directory(tmp_path, channels):
+            assert route.matches("discord", guild_id="999", chat_id=self.CHANNEL_ID)
+            assert not route.matches("discord", chat_id="1234567890123456789")
+
+    def test_chat_id_pattern_matches_resolved_name(self, tmp_path):
+        route = ProfileRoute(name="work", platform="discord", profile="work", chat_id="^work-.*_project-")
+        channels = [
+            {"id": "111", "name": "work-evs_project-core", "guild": "EVS", "type": "channel"},
+            {"id": "222", "name": "work-evs_general", "guild": "EVS", "type": "channel"},
+        ]
+        with self._directory(tmp_path, channels):
+            assert route.matches("discord", chat_id="111")
+            assert not route.matches("discord", chat_id="222")
+
+    def test_chat_id_name_matches_via_parent_channel(self, tmp_path):
+        route = ProfileRoute(name="work", platform="discord", profile="work", chat_id="work-evs_root")
+        channels = [{"id": "111", "name": "work-evs_root", "guild": "EVS", "type": "channel"}]
+        with self._directory(tmp_path, channels):
+            assert route.matches("discord", chat_id="thread-1", parent_chat_id="111")
+
+    def test_guild_id_name_and_pattern_match(self, tmp_path):
+        channels = [{"id": self.CHANNEL_ID, "name": "work-evs_root", "guild": "EVS HQ", "type": "channel"}]
+        by_name = ProfileRoute(name="g", platform="discord", profile="work", guild_id="EVS HQ")
+        by_pattern = ProfileRoute(name="p", platform="discord", profile="work", guild_id="^EVS")
+        with self._directory(tmp_path, channels):
+            assert by_name.matches("discord", guild_id="999", chat_id=self.CHANNEL_ID)
+            assert by_pattern.matches("discord", guild_id="999", chat_id=self.CHANNEL_ID)
+            # An unknown inbound channel carries no guild name, so the route stays unmatched.
+            assert not by_name.matches("discord", guild_id="999", chat_id="42")
+
+    def test_exact_id_discriminators_never_read_the_directory(self):
+        route = ProfileRoute(name="t", platform="discord", profile="trader",
+                             guild_id="111", chat_id="222", thread_id="333")
+        with patch("gateway.channel_directory.load_directory") as load_directory:
+            assert route.matches("discord", guild_id="111", chat_id="222", thread_id="333")
+        load_directory.assert_not_called()
+
+    def test_unresolvable_name_keeps_the_route_unmatched(self):
+        """No directory (fresh home, unknown channel, DM) → a name route simply never matches."""
+        route = ProfileRoute(name="work", platform="discord", profile="work", chat_id="work-evs_root")
+        assert not route.matches("discord", chat_id=self.CHANNEL_ID)
+
+    def test_match_profile_route_resolves_names(self, tmp_path):
+        routes = parse_profile_routes([
+            {"name": "work", "platform": "discord", "profile": "work", "chat_id": "work-evs_root"},
+        ])
+        channels = [{"id": self.CHANNEL_ID, "name": "work-evs_root", "guild": "EVS", "type": "channel"}]
+        with self._directory(tmp_path, channels):
+            matched = match_profile_route(routes, "discord", chat_id=self.CHANNEL_ID)
+        assert matched is not None and matched.profile == "work"
+
+    def test_invalid_pattern_warns_at_load_and_never_matches(self, tmp_path, caplog):
+        with caplog.at_level("WARNING", logger="gateway.profile_routing"):
+            routes = parse_profile_routes([
+                {"name": "broken", "platform": "discord", "profile": "work", "chat_id": "^work-("},
+            ])
+        assert sum("not a valid regex" in rec.message for rec in caplog.records) == 1
+        channels = [{"id": "111", "name": "work-evs", "guild": "EVS", "type": "channel"}]
+        with self._directory(tmp_path, channels):
+            assert match_profile_route(routes, "discord", chat_id="111") is None
 
 
 class TestParseProfileRoutes:

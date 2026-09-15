@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from gateway.config import Platform
 from gateway.channel_directory import (
     build_channel_directory,
+    lookup_channel_entries,
     lookup_channel_type,
     resolve_channel_name,
     format_directory_for_display,
@@ -401,4 +402,32 @@ class TestChannelAliases:
         names = [e["name"] for e in on_disk["platforms"]["whatsapp"]
                  if e["id"] == "120363@g.us"]
         assert names == ["general"]
+
+
+class TestLookupChannelEntries:
+    """#109676: one directory read resolves several id slots to their entries (id → name/guild)."""
+
+    def test_returns_entries_by_id_and_skips_unknown(self, tmp_path):
+        cache_file = _write_directory(tmp_path, {
+            "discord": [
+                {"id": "111", "name": "bot-home", "guild": "MyServer", "type": "channel"},
+                {"id": "222", "name": "general", "guild": "MyServer", "type": "channel"},
+            ]
+        })
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            entries = lookup_channel_entries("discord", ["111", "999"])
+            assert entries["111"]["name"] == "bot-home"
+            assert entries["111"]["guild"] == "MyServer"
+            assert "999" not in entries
+
+    def test_empty_and_unknown_platforms(self, tmp_path):
+        cache_file = _write_directory(tmp_path, {"discord": [{"id": "111", "name": "bot-home"}]})
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            assert lookup_channel_entries("discord", []) == {}
+            assert lookup_channel_entries("discord", [None]) == {}
+            assert lookup_channel_entries("slack", ["111"]) == {}
+
+    def test_absent_directory_file_is_empty(self, tmp_path):
+        with patch("gateway.channel_directory.DIRECTORY_PATH", tmp_path / "nope.json"):
+            assert lookup_channel_entries("discord", ["111"]) == {}
 

@@ -5,6 +5,10 @@ platform + chat_id + thread_id (14) → platform + chat_id (6) → platform + gu
 → default profile. For Discord threads/forum posts ``parent_chat_id`` carries the
 direct parent, so a channel route also matches any thread/post under it.
 
+A discriminator may be declared as an exact id, a channel/guild NAME, or a regex pattern
+anchored at the name start (implicit ``^``); names and patterns resolve AFTER the exact-id
+compare misses, from the gateway's cached channel directory (#109676).
+
 A route applies only to messages received by the bot of its ``bot_profile`` (default: the
 default profile's shared bot). Telegram DM ``chat_id == user_id`` for EVERY bot, so without
 this a ``chat_id`` route meant for the shared bot would re-home the same user's DM with a
@@ -14,8 +18,9 @@ dedicated secondary bot into another profile (#104933).
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +57,64 @@ class ProfileRouteRejected(RuntimeError):
     """An explicit route matched a profile this gateway does not serve."""
 
 
+# A discriminator holding any of these is a regex PATTERN over channel/guild names, anchored at the
+# name start (implicit ``^``); every other value stays a literal id/name, so existing configs are
+# untouched (#109676).
+_PATTERN_METACHARS = frozenset("^$+?[](){}|\\")
+
+
+def _is_pattern(value: str) -> bool:
+    """True when a route discriminator holds regex metacharacters (opt-in pattern matching)."""
+    return any(char in _PATTERN_METACHARS for char in value)
+
+
+def _compile_pattern(value: str):
+    """Compiled pattern for *value*; None when it does not compile (such a value never matches)."""
+    try:
+        return re.compile(value)
+    except re.error:
+        return None
+
+
+def _matches_name_or_pattern(value: str, names: Iterable[str]) -> bool:
+    """True when a route discriminator *value* equals a resolved NAME, or (pattern-shaped) matches one."""
+    names = list(names)
+    if value in names:
+        return True
+    pattern = _compile_pattern(value) if _is_pattern(value) else None
+    return pattern is not None and any(pattern.match(name) for name in names)
+
+
+def _directory_scope(platform: str, ids: Iterable[Optional[str]]) -> Tuple[List[str], List[str]]:
+    """``(channel_names, guild_names)`` for inbound *ids*, from the gateway's cached channel directory.
+
+    Lets a route declare a channel/guild NAME instead of an opaque id (#109676). One directory read
+    per call; unknown ids, an absent directory, or a DM resolve to empty lists — never an exception
+    into the routing path, so an unresolvable name simply does not match.
+    """
+    try:
+        from gateway.channel_directory import lookup_channel_entries
+        platform_name = str(getattr(platform, "value", platform))
+        entries = list(lookup_channel_entries(platform_name, ids).values())
+    except Exception:
+        logger.debug("Profile route name resolution unavailable for platform %s", platform, exc_info=True)
+        return [], []
+    return (
+        [str(e["name"]) for e in entries if e.get("name")],
+        [str(e["guild"]) for e in entries if e.get("guild")],
+    )
+
+
+def _discriminator_holds(value: str, platform: str, ids: Iterable[Optional[str]], *, guild: bool = False) -> bool:
+    """NAME/pattern match for a route discriminator, after the caller's exact-id compare missed.
+
+    *ids* are the inbound ids whose scope names the discriminator may match: the channel name for
+    ``chat_id``/``thread_id``, the enclosing guild name for ``guild_id``.
+    """
+    names, guild_names = _directory_scope(platform, ids)
+    return _matches_name_or_pattern(value, guild_names if guild else names)
+
+
 @dataclass(frozen=True)
 class ProfileRoute:
     """A single routing rule that maps a platform scope to a profile."""
@@ -81,21 +144,29 @@ class ProfileRoute:
         ``chat_id`` also matches across number/JID/LID after the exact check (groups/broadcasts stay exact-only).
         ``adapter_profile`` is the profile owning the receiving bot (``None`` = default); it must equal
         the route's ``bot_profile``.
+
+        A discriminator declared as a channel/guild NAME or regex pattern resolves from the cached
+        channel directory only AFTER its exact-id compare misses (#109676) — id routes read nothing —
+        and a pattern is anchored at the name start.
         """
         if not self.enabled or self.platform != platform:
             return False
         if _bot_profile_key(self.bot_profile) != _bot_profile_key(adapter_profile):
             return False
         if self.thread_id and self.thread_id != thread_id:
-            return False
-        if (
-            self.chat_id
-            and self.chat_id not in (chat_id, parent_chat_id)
-            and not _whatsapp_user_chat_ids_match(platform, self.chat_id, chat_id)
-            and not _whatsapp_user_chat_ids_match(platform, self.chat_id, parent_chat_id)
-        ):
-            return False
-        return not (self.guild_id and self.guild_id != guild_id)
+            if not _discriminator_holds(self.thread_id, platform, (thread_id,)):
+                return False
+        if self.chat_id and self.chat_id not in (chat_id, parent_chat_id):
+            if not (
+                _whatsapp_user_chat_ids_match(platform, self.chat_id, chat_id)
+                or _whatsapp_user_chat_ids_match(platform, self.chat_id, parent_chat_id)
+                or _discriminator_holds(self.chat_id, platform, (chat_id, parent_chat_id))
+            ):
+                return False
+        if self.guild_id and self.guild_id != guild_id:
+            if not _discriminator_holds(self.guild_id, platform, (chat_id, parent_chat_id), guild=True):
+                return False
+        return True
 
 
 def _bot_profile_key(name: Optional[str]) -> Optional[str]:
@@ -125,6 +196,19 @@ def _coerce_route_id(value: Any) -> Optional[str]:
         value, type(value).__name__, value,
     )
     return str(value)
+
+
+def _warn_unmatchable_patterns(route: ProfileRoute) -> None:
+    """Load-time warning for a pattern-shaped discriminator that cannot compile — it never matches.
+
+    Match-time failures stay silent (a typo must not log per message); a literal value of the same
+    text still matches normally, so only a genuine broken pattern warns (#109676).
+    """
+    for field, value in (("guild_id", route.guild_id), ("chat_id", route.chat_id), ("thread_id", route.thread_id)):
+        if value and _is_pattern(value) and _compile_pattern(value) is None:
+            logger.warning(
+                "Profile route %s: %s %r is not a valid regex; it can never match", route.name, field, value
+            )
 
 
 def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRoute]:
@@ -158,6 +242,7 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
             enabled=entry.get("enabled", True),
             bot_profile=_bot_profile_key(entry.get("bot_profile")),
         ))
+        _warn_unmatchable_patterns(routes[-1])
     routes.sort(key=lambda r: r.specificity, reverse=True)
     logger.debug("Loaded %d profile routes (most-specific-first)", len(routes))
     return routes

@@ -404,6 +404,21 @@ def lookup_channel_type(platform_name: str, chat_id: str) -> Optional[str]:
     return next((ch.get("type") for ch in channels if ch.get("id") == chat_id), None)
 
 
+def lookup_channel_entries(platform_name: str, chat_ids: Iterable[str]) -> Dict[str, Dict[str, Any]]:
+    """Cached-directory entries for *chat_ids*, keyed by id (ids not in the directory are omitted).
+
+    One directory read per call, so a caller resolving several id slots (channel / thread / parent
+    channel) pays for a single read. Used to resolve inbound ids to channel/guild NAMES for
+    ``channel_overrides`` name keys and ``profile_routes`` name/pattern discriminators (#109676).
+    """
+    channels = load_directory().get("platforms", {}).get(platform_name, [])
+    wanted = {str(chat_id) for chat_id in chat_ids if chat_id}
+    return {
+        str(ch["id"]): ch for ch in channels
+        if isinstance(ch, dict) and ch.get("id") is not None and str(ch["id"]) in wanted
+    }
+
+
 def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     """Resolve a friendly channel name (e.g. "bot-home", "#bot-home", "GuildName/bot-home",
     Slack "#engineering") to an ID; case-insensitive, first match wins."""

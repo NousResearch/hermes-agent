@@ -32,6 +32,7 @@ from tools.code_execution_env import (
     _WINDOWS_ESSENTIAL_ENV_VARS,
     _scrub_child_env,
 )
+from tools import code_execution_env
 
 
 def _no_passthrough(_name):
@@ -654,3 +655,28 @@ class TestChildStdioIsUtf8:
             )
         # Otherwise: crash OR garbled output — both count as proving the
         # bug is real on this system.
+
+
+def _configured_timezone_child_env():
+    return code_execution_env._build_child_env(
+        rpc_endpoint="socket",
+        rpc_token="token",
+        tmpdir="/tmp/hermes-code-execution-test",
+        child_python=sys.executable,
+    )
+
+
+def test_windows_child_keeps_os_local_timezone_when_timezone_is_configured(monkeypatch):
+    """Windows CPython cannot interpret an IANA zone name in ``TZ``."""
+    monkeypatch.setattr(code_execution_env, "_IS_WINDOWS", True)
+    monkeypatch.setattr("hermes_time.get_timezone_name", lambda: "America/Los_Angeles")
+
+    assert "TZ" not in _configured_timezone_child_env()
+
+
+def test_posix_child_receives_configured_timezone(monkeypatch):
+    """POSIX children retain the configured IANA timezone behavior."""
+    monkeypatch.setattr(code_execution_env, "_IS_WINDOWS", False)
+    monkeypatch.setattr("hermes_time.get_timezone_name", lambda: "America/Los_Angeles")
+
+    assert _configured_timezone_child_env()["TZ"] == "America/Los_Angeles"

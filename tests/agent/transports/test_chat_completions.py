@@ -672,6 +672,33 @@ class TestChatCompletionsNormalize:
         assert nr.reasoning_content == ""
 
 
+    @pytest.mark.parametrize(
+        ("reasoning", "reasoning_content", "source"),
+        [
+            ("parser answer", None, "reasoning"),
+            (None, "private thought", "reasoning_content"),
+            ("private thought", "private thought", "mixed"),
+        ],
+    )
+    def test_reasoning_wire_source_preserved(self, transport, reasoning, reasoning_content, source):
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None,
+                    tool_calls=None,
+                    reasoning=reasoning,
+                    reasoning_content=reasoning_content,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+
+        nr = transport.normalize_response(r)
+
+        assert nr.provider_data["reasoning_source"] == source
+
+
 
     def test_refusal_none_is_noop(self, transport):
         """The common case: ``refusal`` is None → behavior unchanged."""

@@ -3563,7 +3563,7 @@ class TestRunConversation:
         empty_resp = _mock_response(
             content=None,
             finish_reason="stop",
-            reasoning_content="reasoning only",
+            reasoning="reasoning only",
         )
         prefill = [
             {"role": "user", "content": "old question"},
@@ -3591,7 +3591,7 @@ class TestRunConversation:
         empty_resp = _mock_response(
             content=None,
             finish_reason="stop",
-            reasoning_content="structured reasoning answer",
+            reasoning="structured reasoning answer",
         )
         agent.client.chat.completions.create.side_effect = [empty_resp] * 6
         with (

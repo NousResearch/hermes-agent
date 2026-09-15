@@ -34,6 +34,7 @@ class RelayChatAccumulator:
     def __init__(self) -> None:
         self._content: list[str] = []
         self._reasoning: list[str] = []
+        self._reasoning_source: str | None = None
         self._refusal: list[str] = []  # OpenAI ``delta.refusal`` — a refusal is content, not an empty stream
         self._tool_calls = _ToolCallAccumulator()
         self._model = self._usage = self._finish_reason = None
@@ -58,8 +59,14 @@ class RelayChatAccumulator:
         text = flatten_message_text(delta.get("content"), sep="")
         if text:
             self._content.append(text)
-        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+        reasoning_content = delta.get("reasoning_content")
+        reasoning = reasoning_content or delta.get("reasoning")
         if reasoning:
+            source = "reasoning_content" if reasoning_content else "reasoning"
+            if self._reasoning_source is None:
+                self._reasoning_source = source
+            elif self._reasoning_source != source:
+                self._reasoning_source = "mixed"
             self._reasoning.append(separate_glued_reasoning_blocks(
                 self._reasoning[-1] if self._reasoning else "", reasoning))
         refusal = delta.get("refusal")
@@ -70,8 +77,10 @@ class RelayChatAccumulator:
 
     def finalize(self) -> dict[str, Any]:
         acc = self._tool_calls.materialize()
+        full_reasoning = "".join(self._reasoning) or None
         message = {"role": self._role, "content": "".join(self._content) or None,
-            "reasoning_content": "".join(self._reasoning) or None,
+            "reasoning": full_reasoning if self._reasoning_source == "reasoning" else None,
+            "reasoning_content": full_reasoning if self._reasoning_source != "reasoning" else None,
             "refusal": "".join(self._refusal) or None,
             "tool_calls": [acc[i] for i in sorted(acc)] or None}
         # "stop" also covers Nous Portal ``lastOne`` usage frames, which carry no finish_reason.

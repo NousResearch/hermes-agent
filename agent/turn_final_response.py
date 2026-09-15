@@ -91,8 +91,18 @@ def finish_text_response(
         and not assistant_message.tool_calls
         and (_content is None or (isinstance(_content, str) and not _content.strip()))
     ):
-        _promoted = agent._extract_reasoning(assistant_message) or None
-        if _promoted:
+        _provider_data = getattr(assistant_message, "provider_data", None)
+        _reasoning_source = (
+            _provider_data.get("reasoning_source")
+            if isinstance(_provider_data, dict)
+            else None
+        )
+        _promoted = (
+            getattr(assistant_message, "reasoning", None)
+            if _reasoning_source == "reasoning"
+            else None
+        )
+        if isinstance(_promoted, str) and _promoted.strip():
             # WARNING, not INFO: a model that keeps ending turns this way is stalled
             # (planning monologue, zero tool calls) while the turn reports "complete".
             logger.warning(

@@ -7,6 +7,8 @@ persisted as assistant content without entering the empty-response recovery ladd
 
 Invariants pinned here:
 - Clean-stop reasoning-only → returned and persisted after ONE API call.
+- Separate-field ``reasoning_content`` → private; it enters empty recovery and is never
+  promoted or persisted as assistant content.
 - ``finish_reason == "length"`` reasoning is unfinished: never promoted, the
   continuation path still owns it.
 - A truly empty response (no reasoning either) still reaches the ladder terminal.
@@ -79,6 +81,58 @@ def _truly_empty_response():
     )
 
 
+def _reasoning_content_only_response():
+    return SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(
+                content="",
+                reasoning=None,
+                reasoning_content="Private chain of thought that must not become content.",
+                reasoning_details=None,
+                tool_calls=None,
+            ),
+            finish_reason="stop",
+        )],
+        usage=None,
+        model="test-model",
+    )
+
+
+def _mirrored_private_reasoning_response():
+    private = "Private chain of thought mirrored into both fields."
+    return SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(
+                content="",
+                reasoning=private,
+                reasoning_content=private,
+                reasoning_details=None,
+                tool_calls=None,
+            ),
+            finish_reason="stop",
+        )],
+        usage=None,
+        model="test-model",
+    )
+
+
+def _visible_response():
+    return SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(
+                content="Visible answer.",
+                reasoning=None,
+                reasoning_content=None,
+                reasoning_details=None,
+                tool_calls=None,
+            ),
+            finish_reason="stop",
+        )],
+        usage=None,
+        model="test-model",
+    )
+
+
 def test_clean_stop_reasoning_only_returns_on_first_call(tmp_path, monkeypatch):
     """A clean stop promotes structured reasoning without a recovery call."""
     agent = _build_agent(tmp_path, monkeypatch)
@@ -97,6 +151,41 @@ def test_clean_stop_reasoning_only_returns_on_first_call(tmp_path, monkeypatch):
     assert row["role"] == "assistant"
     assert not row.get("content")
     assert row["api_content"] == "The answer is 42 because of the calculation above."
+
+
+def test_reasoning_content_only_uses_empty_recovery_without_promotion(tmp_path, monkeypatch):
+    """A provider's separate reasoning field remains private and is not replayed as content."""
+    agent = _build_agent(tmp_path, monkeypatch)
+    responses = [_reasoning_content_only_response(), _visible_response()]
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: responses.pop(0),
+    )
+    monkeypatch.setattr("agent.retry_utils.jittered_backoff", lambda *_a, **_kw: 0.0)
+
+    result = agent.run_conversation("what is the answer?")
+
+    assert result["final_response"] == "Visible answer."
+    assert result["api_calls"] == 2
+    assert all(
+        message.get("content") != "Private chain of thought that must not become content."
+        for message in result["messages"]
+    )
+
+
+def test_mirrored_private_reasoning_uses_empty_recovery_without_promotion(tmp_path, monkeypatch):
+    """Adapters mirroring private reasoning into both fields must not make it visible."""
+    agent = _build_agent(tmp_path, monkeypatch)
+    responses = [_mirrored_private_reasoning_response(), _visible_response()]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+    monkeypatch.setattr("agent.retry_utils.jittered_backoff", lambda *_a, **_kw: 0.0)
+
+    result = agent.run_conversation("what is the answer?")
+
+    assert result["final_response"] == "Visible answer."
+    assert result["api_calls"] == 2
+    assert all("mirrored into both fields" not in str(message.get("content")) for message in result["messages"])
 
 
 def test_exhausted_truly_empty_keeps_existing_behavior(tmp_path, monkeypatch):

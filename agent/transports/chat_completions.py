@@ -598,10 +598,24 @@ class ChatCompletionsTransport(ProviderTransport):
         usage = Usage.from_openai(response.usage) if hasattr(response, "usage") and response.usage else None
 
         # Fields some SDKs park in pydantic ``model_extra`` rather than as attributes.
+        reasoning = _attr_or_model_extra(msg, "reasoning")
         reasoning_content = _attr_or_model_extra(msg, "reasoning_content")
         provider_data: dict[str, Any] = {}
         if reasoning_content is not None:
             provider_data["reasoning_content"] = reasoning_content
+        # Preserve which wire field carried a reasoning-only payload. The generic
+        # ``reasoning`` field is used by parser compatibility paths (for example
+        # vLLM's nemotron_v3 parser can file the completed answer there), while
+        # ``reasoning_content`` is a provider-owned private-reasoning channel. Some
+        # adapters populate both, so treat that shape as private/ambiguous.
+        has_reasoning = isinstance(reasoning, str) and bool(reasoning.strip())
+        has_reasoning_content = isinstance(reasoning_content, str) and bool(reasoning_content.strip())
+        if has_reasoning or has_reasoning_content:
+            provider_data["reasoning_source"] = (
+                "mixed" if has_reasoning and has_reasoning_content
+                else "reasoning" if has_reasoning
+                else "reasoning_content"
+            )
         if getattr(msg, "reasoning_details", None):
             provider_data["reasoning_details"] = msg.reasoning_details
 
@@ -619,7 +633,7 @@ class ChatCompletionsTransport(ProviderTransport):
 
         return NormalizedResponse(
             content=content, tool_calls=tool_calls, finish_reason=finish_reason,
-            reasoning=getattr(msg, "reasoning", None), usage=usage, provider_data=provider_data or None,
+            reasoning=reasoning, usage=usage, provider_data=provider_data or None,
         )
 
     def _normalize_tool_call(self, tc: Any) -> ToolCall | None:

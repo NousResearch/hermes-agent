@@ -627,6 +627,16 @@ def test_fd_headroom_guard_fails_open_where_it_cannot_measure(monkeypatch):
     assert readpool._fd_headroom_ok() is False
 
 
+def test_fd_soft_limit_fails_open_for_windows_resource_stub(monkeypatch):
+    """Windows can import ``resource`` even when its POSIX attributes are absent."""
+    import sys
+    from types import SimpleNamespace
+
+    monkeypatch.setitem(sys.modules, "resource", SimpleNamespace())
+
+    assert hermes_state_readpool._fd_soft_limit() is None
+
+
 @pytest.mark.requires_wal
 def test_duplicate_handles_on_one_path_are_reported(db, caplog):
     """Writer connections cannot be capped, so duplicates must be visible."""

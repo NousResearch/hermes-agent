@@ -165,6 +165,13 @@ def test_getrlimit_failure_is_a_safe_noop(monkeypatch):
     assert fake_resource.set_calls == []
 
 
+def test_windows_resource_stub_without_getrlimit_is_a_safe_noop(monkeypatch):
+    """An importable Windows ``resource`` stub must not block startup."""
+    monkeypatch.setattr(resource_limits, "_resource", SimpleNamespace())
+
+    assert resource_limits.apply_nofile_soft_limit({}) is False
+
+
 def test_never_lowers_an_unlimited_soft_limit(monkeypatch):
     fake_resource = _FakeResource(soft=-1, hard=-1)
     fake_resource.RLIM_INFINITY = -1

@@ -711,3 +711,34 @@ def test_reviewer_reassigns_for_autonomous_dispatch(kanban_home: Path) -> None:
         ev = _events(conn, tid, kind="review_requested")[0][1]
         assert ev["reviewer"] == "lead-reviewer"
         assert ev["implementer"] == "worker"
+
+
+def test_review_handoff_without_live_run_attributes_run_to_implementer(kanban_home: Path) -> None:
+    """#111064: ``request_review`` reassigns the card to the reviewer in the same
+    UPDATE that flips the status, so the zero-duration run synthesized for a
+    never-claimed card must be stamped with the implementer captured before
+    the rewrite, not the reviewer read back off the mutated row."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="handoff attribution", assignee="worker")
+        assert kb.request_review(conn, tid, summary="ready", reviewer="lead-reviewer") is True
+        assert kb.get_task(conn, tid).assignee == "lead-reviewer"
+        run = conn.execute(
+            "SELECT profile, outcome, step_key FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert (run["outcome"], run["profile"]) == ("review_requested", "worker")
+        assert run["step_key"] == kb.get_task(conn, tid).current_step_key
+        assert _events(conn, tid, kind="review_requested")[0][1]["implementer"] == "worker"
+
+
+def test_synthesized_run_for_unassigned_card_keeps_null_profile(kanban_home: Path) -> None:
+    """A transition that does not name an actor still reads the card: an
+    unassigned card's synthesized run carries ``profile=NULL`` (the actor
+    sentinel must not turn "unassigned" into a re-read of the row)."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="unassigned handoff")
+        assert kb.block_task(conn, tid, reason="waiting on upstream") is True
+        run = conn.execute(
+            "SELECT profile, outcome FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1", (tid,),
+        ).fetchone()
+        assert (run["outcome"], run["profile"]) == ("blocked", None)

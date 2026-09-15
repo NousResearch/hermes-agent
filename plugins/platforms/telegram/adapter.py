@@ -29,7 +29,9 @@ def _redact_telegram_error_text(error: object) -> str:
     """Redact secrets from Telegram transport errors before logging or returning them."""
     text = "" if error is None else str(error)
     if not text:
-        return text
+        # httpx timeout exceptions (ConnectTimeout, ReadTimeout, ...) stringify to "" — keep the
+        # class name so failure lines never log an empty reason (#111211).
+        return f"<{type(error).__name__}>" if error is not None else text
     try:
         from agent.redact import redact_sensitive_text
         return redact_sensitive_text(text, force=True)
@@ -131,11 +133,16 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.authz_mixin import _coerce_allow_set
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
-    BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error, unauthorized_action_notice,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
 )
+
+# Every refused button tap answers with the same sentence.
+_UNAUTHORIZED = unauthorized_action_notice(Platform.TELEGRAM)
+
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
@@ -441,6 +448,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # separate opt-in (Desktop can leave rich draft frames overlaid): off keeps native draft transport
         # but skips rich draft rendering; the final reply still lands via sendRichMessage.
         self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
+        # CJK stays on legacy MarkdownV2 by default (Desktop/macOS garble, #47653); opt-in for unaffected clients.
+        self._allow_cjk_rich_messages: bool = self._coerce_bool_extra("allow_cjk_rich_messages", False)
         self._rich_drafts_enabled: bool = self._coerce_bool_extra("rich_drafts", False)
         self._rich_send_disabled = self._rich_draft_disabled = False  # latched after a capability failure
         # Transient sendChatAction failures recur on every keep-typing tick; back off per chat.
@@ -842,8 +851,9 @@ class TelegramAdapter(BasePlatformAdapter):
         return any(_scoped_gate_env(key).strip() for key in keys)
 
     def _should_pass_unauthorized_dm_for_pairing(self, source) -> bool:
-        """True when an unauthorized DM must still reach gateway pairing (``unauthorized_dm_behavior``
-        resolves to ``pair``, incl. an allowlist plus an explicit platform override)."""
+        """True when an unauthorized DM must still reach the gateway for an outbound reply
+        (``unauthorized_dm_behavior`` resolves to anything but ``ignore`` — a pairing code or a
+        one-time decline — incl. an allowlist plus an explicit platform override)."""
         if source.chat_type != "dm":
             return False
         # Bound-handler ``__self__`` is None under multiplex; ``gateway_runner`` survives that wrapping.
@@ -852,11 +862,11 @@ class TelegramAdapter(BasePlatformAdapter):
         if callable(behavior_fn):
             try:
                 profile = getattr(source, "profile", None) or getattr(self, "_owner_profile", None)
-                return behavior_fn(Platform.TELEGRAM, profile=profile) == "pair"
+                return behavior_fn(Platform.TELEGRAM, profile=profile) != "ignore"
             except Exception:
                 logger.debug("[Telegram] Failed to resolve unauthorized DM behavior; falling back to adapter-local override", exc_info=True)
         extra = getattr(getattr(self, "config", None), "extra", None) or {}
-        return str(extra.get("unauthorized_dm_behavior", "")).strip().lower() == "pair"
+        return str(extra.get("unauthorized_dm_behavior", "")).strip().lower() in ("pair", "decline")
 
     def _is_user_authorized_from_message(self, message: Message) -> bool:
         """Intake auth prefilter, run BEFORE batching/event construction/group observation.
@@ -1277,7 +1287,10 @@ class TelegramAdapter(BasePlatformAdapter):
         return bool(
             content and content.strip()
             and not self._has_telegram_desktop_details_math_crash_shape(content)
-            and not self._has_telegram_desktop_cjk_rich_garble_shape(content)
+            and (
+                getattr(self, "_allow_cjk_rich_messages", False)
+                or not self._has_telegram_desktop_cjk_rich_garble_shape(content)
+            )
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich())
 
@@ -1614,7 +1627,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         if not self._polling_progress_event.is_set():
             # First confirmed round-trip resolves the "health pending" line both reconnect paths end on.
-            logger.info("[%s] Telegram polling confirmed healthy: getUpdates progressing (generation %d)", self.name, generation)
+            # After network-error WARNINGs the line must read as the matching recovery event (#111211).
+            state = "recovered" if self._polling_network_error_count else "confirmed healthy"
+            logger.info("[%s] Telegram polling %s: getUpdates progressing (generation %d)", self.name, state, generation)
         self._polling_progress_event.set()
         self._polling_last_progress_monotonic = time.monotonic()
         self._polling_network_error_count = 0
@@ -2576,7 +2591,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         # Telegram allows 100 commands but has an undocumented ~4KB payload limit; default cap 60.
         max_commands = telegram_menu_max_commands()
-        menu_commands, hidden_count = telegram_menu_commands(max_commands=max_commands)
+        # Skill discovery resolves every skill path on disk; a slow filesystem after a reconnect must
+        # not hold the gateway loop past the liveness watchdog (#110707). Only the Bot API call stays here.
+        menu_commands, hidden_count = await asyncio.to_thread(telegram_menu_commands, max_commands=max_commands)
         bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
         for scope_cls in (BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats):
             scope_name = getattr(scope_cls, "__name__", str(scope_cls))
@@ -2943,10 +2960,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._disarm_ptb_retry_loop()
                 self._spawn_polling_recovery(loop, self._handle_polling_conflict(error))
             elif self._looks_like_network_error(error):
-                logger.warning("[%s] Telegram network _redact_telegram_error_text(error), scheduling reconnect: %s", self.name, error)
+                logger.warning(
+                    "[%s] Telegram network error, scheduling reconnect: %s", self.name, _redact_telegram_error_text(error))
                 self._spawn_polling_recovery(loop, self._handle_polling_network_error(error))
             else:
-                logger.error("[%s] Telegram polling _redact_telegram_error_text(error): %s", self.name, error, exc_info=True)
+                logger.error("[%s] Telegram polling error: %s", self.name, _redact_telegram_error_text(error), exc_info=True)
 
         self._polling_error_callback_ref = _polling_error_callback  # reused by _handle_polling_conflict
         polling_started = await self._start_polling_resilient(
@@ -3833,7 +3851,7 @@ class TelegramAdapter(BasePlatformAdapter):
             "send_update_prompt", chat_id, metadata, build, thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)
 
     # Template attrs for the shared _format_exec_approval core (HTML mode).
-    _EA_HEADER = "⚠️ <b>Command Approval Required</b>\n\n"
+    _EA_HEADER = f"⚠️ <b>{EA_HEADER_TEXT}</b>\n\n"
     _EA_CODE_OPEN = "<pre>"
     _EA_CODE_CLOSE = "</pre>\n\n"
     _EA_SMART_DENY_LINE = "\n\n<b>Smart DENY:</b> owner override applies to this one operation only."
@@ -3965,7 +3983,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer(text="Picker expired — run the command again.")
             return
         # Same auth gate as approval buttons: strangers in a shared group must not flip session state.
-        if not await self._callback_authorized(query, self._callback_ctx(query), "⛔ You are not authorized to change this setting."):
+        if not await self._callback_authorized(query, self._callback_ctx(query), _UNAUTHORIZED):
             return
         try:
             choice = state["choices"][int(data[3:])]
@@ -4249,7 +4267,9 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             from telegram import InlineQueryResultArticle, InputTextMessageContent
             from plugins.platforms.telegram.inline_picker import CACHE_TIME_SECONDS as _CACHE, build_inline_results
-            results, next_offset = build_inline_results(
+            # Per-keystroke catalog build resolves every skill path; keep it off the loop (#110707).
+            results, next_offset = await asyncio.to_thread(
+                build_inline_results,
                 getattr(inline_query, "query", "") or "", offset=getattr(inline_query, "offset", "") or "")
             articles = [
                 InlineQueryResultArticle(
@@ -4326,7 +4346,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer(text="Invalid approval data.")
             return
         session_key = await self._claim_callback_state(
-            query, cb, self._approval_state, approval_id, "⛔ You are not authorized to approve commands.",
+            query, cb, self._approval_state, approval_id, _UNAUTHORIZED,
             "This approval has already been resolved.")
         if not session_key:
             return
@@ -4367,7 +4387,7 @@ class TelegramAdapter(BasePlatformAdapter):
         choice = parts[1]  # once, always, cancel
         confirm_id = parts[2]
         session_key = await self._claim_callback_state(
-            query, cb, self._slash_confirm_state, confirm_id, "⛔ You are not authorized to answer this prompt.",
+            query, cb, self._slash_confirm_state, confirm_id, _UNAUTHORIZED,
             "This prompt has already been resolved.")
         if not session_key:
             return
@@ -4413,7 +4433,7 @@ class TelegramAdapter(BasePlatformAdapter):
         clarify_id = parts[1]
         choice_token = parts[2]
         session_key = await self._claim_callback_state(
-            query, cb, self._clarify_state, clarify_id, "⛔ You are not authorized to answer this prompt.",
+            query, cb, self._clarify_state, clarify_id, _UNAUTHORIZED,
             "This prompt has already been resolved.", pop=False)
         if not session_key:
             return
@@ -4473,7 +4493,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _handle_update_prompt_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
         """``update_prompt:<y|n>`` — forward the answer to the update process."""
         answer = data.split(":", 1)[1]  # "y" or "n"
-        if not await self._callback_authorized(query, cb, "⛔ You are not authorized to answer update prompts."):
+        if not await self._callback_authorized(query, cb, _UNAUTHORIZED):
             return
         await query.answer(text=f"Sent '{answer}' to the update process.")
         await self._edit_md_quiet(query, f"☤ Update prompt answered: *{'Yes' if answer == 'y' else 'No'}*")
@@ -4509,7 +4529,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer(text="Invalid gmail-triage data.")
             return
         verb, arg = parts[1], parts[2]
-        if not await self._callback_authorized(query, cb, "⛔ You are not authorized to act on this email."):
+        if not await self._callback_authorized(query, cb, _UNAUTHORIZED):
             return
         entry = self._GT_VERB_DISPATCH.get(verb)
         if not entry:
@@ -5868,7 +5888,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
                 from telegram import BotCommand, BotCommandScopeChat
                 from hermes_cli.commands_platforms import telegram_menu_commands, telegram_menu_max_commands
-                menu_commands, _ = telegram_menu_commands(max_commands=telegram_menu_max_commands())
+                menu_commands, _ = await asyncio.to_thread(
+                    telegram_menu_commands, max_commands=telegram_menu_max_commands())
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
                 await self._bot.set_my_commands(bot_commands, scope=BotCommandScopeChat(chat_id=chat_id))
                 self._forum_command_registered.add(chat_id)

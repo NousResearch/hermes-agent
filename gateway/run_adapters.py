@@ -955,6 +955,45 @@ class GatewayAdapterLifecycleMixin:
         )
         return True
 
+    def _note_unserved_secondary_platform(self, profile_name: str, platform: Platform) -> None:
+        """A secondary enabled a shared-ingress platform (Relay, WhatsApp) the multiplexer only runs on
+        the default profile. Log the reason + remedy once per (profile, platform) and stamp a
+        ``<profile>:<platform>`` status entry so ``hermes gateway status --profile X`` and the
+        dashboard show *why* the channel is dead instead of nothing at all."""
+        noted = getattr(self, "_unserved_secondary_platforms", None)
+        if noted is None:
+            noted = self._unserved_secondary_platforms = set()
+        if (profile_name, platform) in noted:
+            return
+        noted.add((profile_name, platform))
+        pv = platform.value
+        logger.info(
+            "[MULTIPLEX] Profile '%s': %s is enabled but not served — %s is process-level shared ingress "
+            "owned by the default profile under multiplex. Enable and configure %s on the default profile "
+            "(it serves every profile), or disable it in profile '%s'.",
+            profile_name, pv, pv, pv, profile_name,
+        )
+        self._update_platform_runtime_status(
+            f"{profile_name}:{pv}", platform_state="disabled", error_code="multiplex_shared_ingress",
+            error_message="not served under multiplex (shared ingress owned by default)",
+        )
+
+    def _unserved_shared_ingress_warnings(self) -> list:
+        """Loud ``not being served`` lines for shared-ingress platforms secondaries enabled while
+        NO profile (default included) actually runs them; empty when the default serves the platform."""
+        noted = getattr(self, "_unserved_secondary_platforms", None) or ()
+        lines = []
+        for platform in sorted({p for _n, p in noted}, key=lambda p: p.value):
+            if platform in self.adapters or platform in (getattr(self, "_failed_platforms", None) or {}):
+                continue  # the default owns it: secondaries ARE served through the shared adapter
+            profiles = sorted(n for n, p in noted if p is platform)
+            lines.append(
+                f"{platform.value} is enabled in profile(s) {', '.join(profiles)} but not on the default "
+                f"profile — the platform is not being served. Under multiplex {platform.value} is shared "
+                "ingress: enable and configure it on the default profile, or disable it in those profiles."
+            )
+        return lines
+
     async def _start_one_profile_adapters(
         self, profile_name: str, profile_home: "Path", claimed: Dict[tuple, str]
     ) -> int:
@@ -980,7 +1019,9 @@ class GatewayAdapterLifecycleMixin:
                 )
                 continue
             # Relay/WhatsApp are shared process-level ingress under multiplex; a secondary would retry-loop.
+            # Say so: four profiles with WHATSAPP_ENABLED=true and nothing in the log is a silent dead channel.
             if multiplex and platform in (Platform.RELAY, Platform.WHATSAPP):
+                self._note_unserved_secondary_platform(profile_name, platform)
                 continue
             # api_server / webhook: the default's listener already mirrors them at /p/<profile>/; a second
             # instance here would fight the default for the port (#100397).

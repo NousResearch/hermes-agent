@@ -231,7 +231,7 @@ def native_preparation_capture(authority, handle):
     Collection of native aliases remains exclusive/pre-ingress, never online.
     """
     from gateway.session_ingress_media import _preparation_capture
-    from hermes_state_input_custody import PreparedInputHandle, native_preparation_holds
+    from hermes_state_input_custody import PreparedInputHandle, copy_is_held
     if handle is None:
         yield
         return
@@ -259,7 +259,7 @@ def native_preparation_capture(authority, handle):
                     if row['state'] == 'sealed' or row['size'] != reference['size']:
                         raise RuntimeStoreError('input_preparation_busy')
                     if row['state'] == 'removed' or (row['device'], row['inode']) != identity:
-                        if native_preparation_holds(conn, copy_id, generation, time.time()):
+                        if copy_is_held(conn, row, time.time()):
                             raise RuntimeStoreError('input_preparation_busy')
                         generation += 1
                         conn.execute("UPDATE input_custody_copies SET generation=?,state='ready',device=?,inode=? WHERE copy_id=?",

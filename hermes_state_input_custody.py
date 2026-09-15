@@ -233,7 +233,13 @@ def copy_branch_input_refs(conn, source_session, child_session, *, physical_sess
     """Branch copies content ownership in its own transaction, without parsing text."""
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='input_custody_refs'").fetchone():
         return
+    native_items = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='input_custody_native_items'").fetchone()
     for source in {source_session, physical_session or source_session}:
+        if native_items:
+            conn.execute('''INSERT OR IGNORE INTO input_custody_branch_refs
+                SELECT ?,i.copy_id,i.generation FROM input_custody_native_items i
+                JOIN input_custody_preparations p USING(preparation_id)
+                WHERE p.target_session_id=? AND p.state='consumed' ''', (child_session, source))
         conn.execute('''INSERT OR IGNORE INTO input_custody_branch_refs
             SELECT ?,copy_id,generation FROM input_custody_refs WHERE target_session_id=?''',
             (child_session, source))

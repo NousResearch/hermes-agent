@@ -187,10 +187,11 @@ def _held_media_paths(conn):
         held.update(reference['path'] for reference in references)
     if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='input_custody_native_items'").fetchone():
         import time
-        held.update(str(_media_root() / row[0] / row[1]) for row in conn.execute('''SELECT c.digest,c.name
-            FROM input_custody_native_items i JOIN input_custody_copies c USING(copy_id)
-            JOIN input_custody_preparations p USING(preparation_id)
-            WHERE c.generation=i.generation AND p.state IN ('preparing','ready') AND p.expires_at>?''', (time.time(),)))
+        from hermes_state_input_custody import copy_is_held
+        now = time.time()
+        for copy in conn.execute("SELECT * FROM input_custody_copies WHERE namespace='native' AND state!='removed'"):
+            if copy_is_held(conn, copy, now):
+                held.add(str(_media_root() / copy['digest'] / copy['name']))
     return held
 
 

@@ -11,6 +11,8 @@
 
 import {
   atom,
+  computed,
+  host,
   type PluginOs,
   type PluginRestOptions,
   type PluginStorage,
@@ -55,32 +57,42 @@ export const $lanesByProfile = atom<boolean>(false)
  *  auto: empty lanes collapse to a rail, occupied lanes expand. Persisted. */
 export const $collapsedLanes = atom<Record<string, boolean>>({})
 
+/** Connection + profile own separate Kanban databases. Keep that server-side
+ *  ownership in every client cache key and live-event subscription too. */
+export const $kanbanScope = computed(
+  [host.state.connectionId, host.state.profile],
+  (connectionId, profile) => `${connectionId ?? 'local'}::${profile || 'default'}`
+)
+
 const BOARD_SLUG_KEY = 'boardSlug'
+const BOARD_SLUGS_KEY = 'boardSlugsByScope'
 const INTRO_KEY = 'introDismissed'
 const LANES_KEY = 'lanesByProfile'
 const COLLAPSED_KEY = 'collapsedLanes'
 
 /** One live `task_events` frame → precise cache invalidation: the board, plus
- *  each touched task's detail. The polls (8s board / 4s drawer) stay as the
- *  fallback — the socket just makes the board feel instant. */
-function onEventsFrame(slug: string, data: unknown): void {
+ *  each touched task's detail. Slow polls stay as the fallback — the socket
+ *  just makes the board feel instant. */
+function onEventsFrame(scope: string, slug: string, data: unknown): void {
   const events = (data as { events?: CompletionEvent[] })?.events
 
   if (!events?.length) {
     return
   }
 
-  void queryClient.invalidateQueries({ queryKey: ['kanban', 'board'] })
+  void queryClient.invalidateQueries({ queryKey: ['kanban', 'board', scope, slug] })
   // Any event can change a board's card count — keep the switcher badge honest.
-  void queryClient.invalidateQueries({ queryKey: BOARDS_KEY })
+  void queryClient.invalidateQueries({ queryKey: boardsKey(scope) })
 
   for (const taskId of new Set(events.map(event => event.task_id).filter(Boolean))) {
-    void queryClient.invalidateQueries({ queryKey: taskKey(slug, taskId!) })
+    void queryClient.invalidateQueries({ queryKey: taskKey(slug, taskId!, scope) })
   }
 
   // Completion notification (after invalidation so notify failure
   // never interferes with cache invalidation).
-  void onKanbanEventsFrame(slug, events).catch(() => undefined)
+  if (scope === $kanbanScope.get()) {
+    void onKanbanEventsFrame(slug, events, scope).catch(() => undefined)
+  }
 }
 
 // A persisted, subscribable atom (the structural slice we need — avoids
@@ -112,20 +124,51 @@ export function bindApi(
     unsubs.push(atom.listen(value => storage.set(key, value)))
   }
 
-  persist($boardSlug, BOARD_SLUG_KEY, '')
   persist($introDismissed, INTRO_KEY, false)
   persist($lanesByProfile, LANES_KEY, false)
   persist($collapsedLanes, COLLAPSED_KEY, {})
 
-  let close: (() => void) | null = null
+  // A profile owns its own boards, so its selected slug cannot be shared with
+  // another profile. Seed the active scope from the legacy single value once.
+  let boardSlugs = storage.get<Record<string, string>>(BOARD_SLUGS_KEY, {})
+  const initialScope = $kanbanScope.get()
 
-  const open = (slug: string) => {
-    close?.()
-    close = socket(slug ? `/events?board=${encodeURIComponent(slug)}` : '/events', data => onEventsFrame(slug, data))
+  if (!(initialScope in boardSlugs)) {
+    boardSlugs = { ...boardSlugs, [initialScope]: storage.get(BOARD_SLUG_KEY, '') }
+    storage.set(BOARD_SLUGS_KEY, boardSlugs)
   }
 
-  open($boardSlug.get())
-  unsubs.push($boardSlug.listen(open))
+  $boardSlug.set(boardSlugs[initialScope] ?? '')
+  unsubs.push(
+    $kanbanScope.listen(scope => $boardSlug.set(boardSlugs[scope] ?? '')),
+    $boardSlug.listen(slug => {
+      const scope = $kanbanScope.get()
+      boardSlugs = { ...boardSlugs, [scope]: slug }
+      storage.set(BOARD_SLUGS_KEY, boardSlugs)
+    })
+  )
+
+  let close: (() => void) | null = null
+  let activeRoute = ''
+
+  const open = () => {
+    const scope = $kanbanScope.get()
+    const slug = $boardSlug.get()
+    const route = `${scope}\0${slug}`
+
+    if (route === activeRoute) {
+      return
+    }
+
+    activeRoute = route
+    close?.()
+    close = socket(slug ? `/events?board=${encodeURIComponent(slug)}` : '/events', data =>
+      onEventsFrame(scope, slug, data)
+    )
+  }
+
+  open()
+  unsubs.push($boardSlug.listen(open), $kanbanScope.listen(open))
 
   return () => {
     unsubs.forEach(unsub => unsub())
@@ -143,6 +186,23 @@ function call<T>(path: string, opts?: PluginRestOptions): Promise<T> {
   return rest ? rest<T>(path, opts) : Promise.reject(new Error('kanban api not ready'))
 }
 
+/** A query key captures its server scope during render. Refuse to start or
+ *  commit a read after that scope changes, so a request can never populate a
+ *  cache entry owned by a different connection/profile. */
+async function scopedRead<T>(scope: string, path: string): Promise<T> {
+  if (scope !== currentScope()) {
+    throw new Error('Kanban server scope changed before the request started')
+  }
+
+  const value = await call<T>(path)
+
+  if (scope !== currentScope()) {
+    throw new Error('Kanban server scope changed before the response arrived')
+  }
+
+  return value
+}
+
 /** Append the selected board (and other params) to a path. */
 function withBoard(path: string, params: Record<string, string> = {}): string {
   const search = new URLSearchParams(params)
@@ -157,34 +217,40 @@ function withBoard(path: string, params: Record<string, string> = {}): string {
   return qs ? `${path}?${qs}` : path
 }
 
-// ── query keys (all board-scoped so switching boards is a clean cache miss) ──
+// ── query keys (server + board scoped, so either switch is a clean miss) ─────
 
-export const boardKey = (slug: string, archived: boolean) => ['kanban', 'board', slug, archived] as const
-export const taskKey = (slug: string, id: string) => ['kanban', 'task', slug, id] as const
-export const logKey = (slug: string, id: string) => ['kanban', 'log', slug, id] as const
-export const BOARDS_KEY = ['kanban', 'boards'] as const
-export const PROFILES_KEY = ['kanban', 'profiles'] as const
-export const PROJECTS_KEY = ['kanban', 'projects'] as const
-export const ORCHESTRATION_KEY = ['kanban', 'orchestration'] as const
+const currentScope = () => $kanbanScope.get()
+
+export const boardKey = (slug: string, archived: boolean, scope = currentScope()) =>
+  ['kanban', 'board', scope, slug, archived] as const
+export const taskKey = (slug: string, id: string, scope = currentScope()) =>
+  ['kanban', 'task', scope, slug, id] as const
+export const logKey = (slug: string, id: string, scope = currentScope()) =>
+  ['kanban', 'log', scope, slug, id] as const
+export const boardsKey = (scope = currentScope()) => ['kanban', 'boards', scope] as const
+export const profilesKey = (scope = currentScope()) => ['kanban', 'profiles', scope] as const
+export const projectsKey = (scope = currentScope()) => ['kanban', 'projects', scope] as const
+export const orchestrationKey = (scope = currentScope()) => ['kanban', 'orchestration', scope] as const
 
 // ── reads ─────────────────────────────────────────────────────────────────────
 
-export const fetchBoard = (archived: boolean) =>
-  call<KanbanBoard>(withBoard('/board', archived ? { include_archived: 'true' } : {}))
+export const fetchBoard = (archived: boolean, scope: string) =>
+  scopedRead<KanbanBoard>(scope, withBoard('/board', archived ? { include_archived: 'true' } : {}))
 
-export const fetchTask = (id: string) => call<KanbanTaskDetail>(withBoard(`/tasks/${id}`))
+export const fetchTask = (id: string, scope: string) => scopedRead<KanbanTaskDetail>(scope, withBoard(`/tasks/${id}`))
 
 /** Worker stdout/stderr tail (last 16 KiB — plenty for the drawer). */
-export const fetchLog = (id: string) => call<WorkerLog>(withBoard(`/tasks/${id}/log`, { tail: '16384' }))
+export const fetchLog = (id: string, scope: string) =>
+  scopedRead<WorkerLog>(scope, withBoard(`/tasks/${id}/log`, { tail: '16384' }))
 
-export const fetchBoards = () => call<BoardsResponse>('/boards')
+export const fetchBoards = (scope: string) => scopedRead<BoardsResponse>(scope, '/boards')
 
-export const fetchProfiles = () => call<{ profiles: KanbanProfile[] }>('/profiles')
+export const fetchProfiles = (scope: string) => scopedRead<{ profiles: KanbanProfile[] }>(scope, '/profiles')
 
 /** First-class Hermes projects, for scoping a board's default workspace. */
-export const fetchProjects = () => call<{ projects: KanbanProject[] }>('/projects')
+export const fetchProjects = (scope: string) => scopedRead<{ projects: KanbanProject[] }>(scope, '/projects')
 
-export const fetchOrchestration = () => call<OrchestrationSettings>('/orchestration')
+export const fetchOrchestration = (scope: string) => scopedRead<OrchestrationSettings>(scope, '/orchestration')
 
 // ── writes ────────────────────────────────────────────────────────────────────
 

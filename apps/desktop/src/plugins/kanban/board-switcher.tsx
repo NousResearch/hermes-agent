@@ -37,13 +37,14 @@ import { type ReactNode, useEffect, useState } from 'react'
 
 import {
   $boardSlug,
-  BOARDS_KEY,
+  $kanbanScope,
+  boardsKey,
   createBoard,
   deleteBoard,
   fetchBoards,
   fetchProjects,
   pluginOs,
-  PROJECTS_KEY,
+  projectsKey,
   updateBoard
 } from './api'
 import { runExportBoardFlow, runImportBoardFlow } from './transfer'
@@ -59,7 +60,14 @@ const DEFAULT_BOARD = 'default'
  *  deterministic branch. "No project" falls back to scratch sandboxes. */
 function ProjectPicker({ onChange, value }: { onChange: (id: string) => void; value: string }) {
   const k = useKanban()
-  const { data } = useQuery({ queryKey: PROJECTS_KEY, queryFn: fetchProjects, staleTime: 30_000 })
+  const scope = useValue($kanbanScope)
+
+  const { data } = useQuery({
+    queryKey: projectsKey(scope),
+    queryFn: () => fetchProjects(scope),
+    staleTime: 30_000
+  })
+
   const projects = data?.projects ?? []
 
   return (
@@ -95,7 +103,7 @@ function useBoardWrite<T>(mutationFn: () => Promise<T>, onDone: (result: T) => v
     mutationFn,
     onError: err => host.notify({ kind: 'error', message: errText(err) }),
     onSuccess: result => {
-      void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+      void qc.invalidateQueries({ queryKey: boardsKey() })
       onDone(result)
     }
   })
@@ -285,7 +293,14 @@ export function BoardSwitcher() {
   const { t } = useI18n()
   const qc = useQueryClient()
   const slug = useValue($boardSlug)
-  const { data: boards } = useQuery({ queryFn: fetchBoards, queryKey: BOARDS_KEY, staleTime: 30_000 })
+  const scope = useValue($kanbanScope)
+
+  const { data: boards } = useQuery({
+    queryFn: () => fetchBoards(scope),
+    queryKey: boardsKey(scope),
+    staleTime: 30_000
+  })
+
   const [adding, setAdding] = useState(false)
   const [settingsFor, setSettingsFor] = useState<BoardMeta | null>(null)
   const [renameFor, setRenameFor] = useState<BoardMeta | null>(null)
@@ -297,7 +312,7 @@ export function BoardSwitcher() {
     const { result } = await deleteBoard(target.slug)
 
     $boardSlug.set('')
-    void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+    void qc.invalidateQueries({ queryKey: boardsKey() })
     host.notify({ kind: 'success', message: k.boardArchived(result.new_path) })
   }
 
@@ -322,7 +337,7 @@ export function BoardSwitcher() {
 
     if (imported) {
       $boardSlug.set(imported)
-      void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+      void qc.invalidateQueries({ queryKey: boardsKey() })
     }
   }
 

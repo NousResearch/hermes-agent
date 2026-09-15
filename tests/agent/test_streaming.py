@@ -766,6 +766,72 @@ class TestStreamingFallback:
         assert agent._disable_streaming is True
         assert deltas == ["Hello from ACP"]
 
+    # ── Contentless SSE keepalive frames ─────────────────────────────────
+    #
+    # A degraded gateway answers *every* streaming request with contentless frames
+    # (``data:`` / ``event: ping`` / ``id:`` with no payload). Per the SSE spec those are
+    # legal keepalives, but the OpenAI SDK still hands them to ``json.loads`` →
+    # ``JSONDecodeError(doc='')`` → a fatal ProviderStreamError. Re-streaming therefore
+    # repeats the identical failure (3 retries into the same window) and killed the turn.
+    # An empty frame must instead flip the session to non-streaming, like 'stream not
+    # supported'. A *malformed* (non-empty) payload keeps its previous behaviour.
+
+    @staticmethod
+    def _wire_agent(mock_create, content: bytes):
+        """Agent whose streaming client replays ``content`` as the provider's raw SSE body
+        through a REAL ``openai.Stream`` — the same decoder that runs in production."""
+        import httpx
+        from openai import OpenAI, Stream
+        from openai.types.chat import ChatCompletionChunk
+        from run_agent import AIAgent
+
+        request = httpx.Request("POST", "https://gw.example/v1/chat/completions")
+        response = httpx.Response(
+            200, request=request, headers={"x-request-id": "req-empty-frame"}, content=content
+        )
+        stream = Stream(
+            cast_to=ChatCompletionChunk,
+            response=response,
+            client=OpenAI(api_key="test-key", max_retries=0),
+        )
+
+        wire = MagicMock()
+        wire.chat.completions.create.return_value = stream
+        mock_create.return_value = wire
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://gw.example/v1",
+            provider="custom",
+            model="deepseek-v4-flash",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        agent.status_callback = MagicMock()
+        agent.stream_delta_callback = MagicMock()
+        return agent
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_non_json_sse_frame_stays_a_fatal_provider_error(self, mock_close, mock_create):
+        """A real malformed payload is NOT a keepalive: unchanged behaviour (#65147)."""
+        from agent.error_classifier import PROVIDER_STREAM_NON_JSON_ERROR_CODE
+
+        agent = self._wire_agent(
+            mock_create, b"event: error\ndata: upstream sent opaque plain-text stream data\n\n"
+        )
+
+        with pytest.raises(Exception) as exc_info:
+            agent._interruptible_streaming_api_call({})
+
+        exc = exc_info.value
+        assert exc.body["error"]["code"] == PROVIDER_STREAM_NON_JSON_ERROR_CODE
+        assert exc.raw_text == "upstream sent opaque plain-text stream data"
+        assert agent._disable_streaming is False
+        assert agent.status_callback.call_args_list == []
 
     @patch("run_agent.AIAgent._abort_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")

@@ -20,6 +20,13 @@ logger = logging.getLogger(__name__)
 # before any completion chunk arrives; distinct from generic JSON parse errors.
 PROVIDER_STREAM_NON_JSON_ERROR_CODE = "provider_stream_non_json_data"
 
+# Same rejection with an EMPTY payload: the frame carried no ``data`` at all (``data:`` /
+# ``event: ping`` / ``id:`` with no content). Per the SSE spec those are legal keepalives /
+# no-ops, not malformed payloads — a degraded gateway answers every streaming request with
+# them, so the session switches to non-streaming instead of re-streaming into the same
+# window. See ``chat_completion_helpers._maybe_disable_streaming``.
+PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE = "provider_stream_empty_frame"
+
 
 # ── Error taxonomy ──────────────────────────────────────────────────────
 
@@ -480,6 +487,9 @@ _ERROR_CODE_VERDICTS: Dict[str, Verdict] = {
     **dict.fromkeys(("context_length_exceeded", "max_tokens_exceeded"), _V_CONTEXT_OVERFLOW),
     **dict.fromkeys(_MEMORY_CEILING_ERROR_CODES, _V_OVERLOADED),
     "invalid_encrypted_content": _V_INVALID_ENCRYPTED,
+    # An empty SSE keepalive frame: the retry it triggers is issued non-streaming
+    # (``_maybe_disable_streaming``), so the turn can still complete — never a format error.
+    PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE: _V_UNKNOWN,
 }
 
 # Generic ``invalid_request_error`` is deliberately NOT a 400 validation

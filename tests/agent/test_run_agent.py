@@ -6789,6 +6789,58 @@ class TestAnthropicInterruptHandler:
         )
 
 
+# ---------------------------------------------------------------------------
+# A contentless SSE keepalive frame must not kill the turn
+# ---------------------------------------------------------------------------
+
+
+class TestEmptySSEFrameTurnRecovery:
+    """A degraded gateway answers every streaming request with a contentless ``data:``
+    frame. The SDK turns that into ``JSONDecodeError(doc='')`` → ``Provider stream returned
+    non-JSON SSE data`` and the turn died after 3 identical streaming retries. The turn must
+    instead complete on the automatic non-streaming retry."""
+
+    def test_turn_completes_on_the_non_streaming_retry(self, agent):
+        import httpx
+        from openai import OpenAI, Stream
+        from openai.types.chat import ChatCompletionChunk
+
+        request = httpx.Request("POST", "https://gw.example/v1/chat/completions")
+        empty_frame = httpx.Response(
+            200, request=request, headers={"x-request-id": "req-empty"}, content=b"data:\n\n"
+        )
+        # The real SDK decoder, so the test exercises the exact production rejection.
+        agent.client.chat.completions.create.return_value = Stream(
+            cast_to=ChatCompletionChunk,
+            response=empty_frame,
+            client=OpenAI(api_key="test-key", max_retries=0),
+        )
+        agent.stream_delta_callback = MagicMock()  # a consumer: the loop prefers streaming
+
+        attempts = []
+
+        def _non_streaming(api_kwargs):
+            attempts.append("non_streaming")
+            return _mock_response(content="Recovered")
+
+        agent._interruptible_api_call = _non_streaming
+        agent._persist_session = lambda *args, **kwargs: None
+        agent._save_trajectory = lambda *args, **kwargs: None
+        warnings = []
+        agent.status_callback = lambda kind, message: warnings.append((kind, message))
+
+        with patch("run_agent.time.sleep", return_value=None):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered"
+        assert agent._disable_streaming is True
+        # Exactly one retry, and it went out on the non-streaming channel: the stream was
+        # attempted once and never re-entered (the old behaviour retried it 3 times).
+        assert attempts == ["non_streaming"]
+        assert agent.client.chat.completions.create.call_count == 1
+        assert any(kind == "warn" and "keepalive" in msg for kind, msg in warnings)
+
 
 # ---------------------------------------------------------------------------
 # Bugfix: stream_callback forwarding for non-streaming providers

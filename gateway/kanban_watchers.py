@@ -272,7 +272,7 @@ class GatewayKanbanWatchersMixin:
         # broken PATH, missing venv, or credential loss.
         bad_ticks = 0
         last_warn_at = 0
-        dispatcher = _KanbanDispatcher(_kb, settings)
+        dispatcher = _KanbanDispatcher(_kb, settings, _load_config)
 
         logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
         while self._running:

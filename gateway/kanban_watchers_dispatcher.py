@@ -32,7 +32,8 @@ _CORRUPT_DB_MARKERS = ("file is not a database", "database disk image is malform
 
 @dataclass
 class _DispatcherSettings:
-    """``kanban.*`` dispatch settings, read once at boot (restart to apply)."""
+    """``kanban.*`` dispatch settings, read once at boot (restart to apply;
+    ``default_assignee`` is the exception — re-read per tick, see #55446)."""
 
     interval: float
     max_spawn: Any
@@ -129,10 +130,28 @@ class _KanbanDispatcher:
 
     CORRUPT_BOARD_RETRY_AFTER_SECONDS = 300
 
-    def __init__(self, kb: Any, settings: _DispatcherSettings) -> None:
+    def __init__(self, kb: Any, settings: _DispatcherSettings, load_config: Any = None) -> None:
         self.kb = kb
         self.settings = settings
+        self._load_config = load_config
         self.disabled_corrupt_boards: dict[str, tuple[tuple[str, int | None, int | None], float]] = {}
+
+    def _current_default_assignee(self) -> Optional[str]:
+        """Re-read ``kanban.default_assignee`` from config on each tick (#55446).
+
+        Unlike the other dispatcher settings (restart to apply),
+        ``default_assignee`` is a lightweight operational knob that operators
+        expect to take effect without bouncing the gateway. Falls back to the
+        boot-time value on config-load failure.
+        """
+        if self._load_config is None:
+            return self.settings.default_assignee
+        try:
+            cfg = self._load_config()
+            kcfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+            return (kcfg.get("default_assignee") or "").strip() or None
+        except Exception:
+            return self.settings.default_assignee
 
     def _board_slugs(self) -> list:
         return _board_slugs(self.kb)
@@ -182,6 +201,7 @@ class _KanbanDispatcher:
         if not self._quarantine_lifted(slug, fingerprint):
             return None
         kwargs = {k: v for k, v in asdict(self.settings).items() if k != "interval"}
+        kwargs["default_assignee"] = self._current_default_assignee()
         try:
             # No explicit init_db(): connect() runs the migration once per
             # process (see the matching note in the notifier collector).

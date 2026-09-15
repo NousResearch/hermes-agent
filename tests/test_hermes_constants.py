@@ -1,6 +1,7 @@
 """Tests for hermes_constants module."""
 
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,6 +29,35 @@ from hermes_constants import (
     set_hermes_home_override,
     with_hermes_node_path,
 )
+
+
+class TestGetUserHome:
+    def test_get_user_home_non_root_fallback(self, monkeypatch):
+        from hermes_constants import _get_user_home
+        monkeypatch.setattr(hermes_constants.sys, "platform", "linux")
+        monkeypatch.setattr(os, "getuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(Path, "home", lambda: Path("/root"))
+
+        class FakePwd:
+            pw_dir = "/home/hermes"
+        monkeypatch.setitem(sys.modules, "pwd", SimpleNamespace(getpwuid=lambda uid: FakePwd()))
+        monkeypatch.setattr(os, "access", lambda path, mode: True)
+
+        home = _get_user_home()
+        assert home == Path("/home/hermes")
+
+    def test_get_user_home_fallback_to_tmp(self, monkeypatch):
+        from hermes_constants import _get_user_home
+        monkeypatch.setattr(hermes_constants.sys, "platform", "linux")
+        monkeypatch.setattr(os, "getuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(Path, "home", lambda: Path("/root"))
+
+        def fake_getpwuid(uid):
+            raise KeyError("no user entry")
+        monkeypatch.setitem(sys.modules, "pwd", SimpleNamespace(getpwuid=fake_getpwuid))
+
+        home = _get_user_home()
+        assert home == Path("/tmp")
 
 
 class TestGetDefaultHermesRoot:

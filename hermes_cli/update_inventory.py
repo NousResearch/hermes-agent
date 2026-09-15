@@ -312,6 +312,7 @@ def _gateway_named_in(r: RuntimeRecord, names: set) -> bool:
 def match_runtime_outcomes(
     plan: "UpdatePlan", *, restarted_services: list, relaunched_profiles: list,
     externally_supervised_profiles: list, killed_pids: set, failed_units: list,
+    externally_supervised_serve_pids: set | None = None,
     stale_serve_pids: "set | None" = None,
 ) -> list[dict[str, Any]]:
     """Reconcile the plan's runtimes against what the restart phase DID.
@@ -326,13 +327,17 @@ def match_runtime_outcomes(
 
     See #91277.
     They never borrow the gateway's outcome: ``relaunched_profiles`` and ``hermes-gateway*`` name a
-    different process that shares the profile, nothing more. See #100479.
+    different process that shares the profile, nothing more. The exception is a ``desktop``-supervised
+    serve whose exact PID was handed back to its Desktop supervisor. See #100479/#111494.
     """
     outcomes: list[dict[str, Any]] = []
     try:
         failed_set = {str(u) for u in (failed_units or [])}
         restarted_set = {str(s) for s in (restarted_services or [])}
         relaunched = set(relaunched_profiles or []) | set(externally_supervised_profiles or [])
+        desktop_handoff_pids = {
+            int(pid) for pid in (externally_supervised_serve_pids or set())
+        }
         killed = {int(p) for p in (killed_pids or set())}
         stale_serves = {int(p) for p in stale_serve_pids} if stale_serve_pids is not None else None
 
@@ -343,6 +348,8 @@ def match_runtime_outcomes(
                     return "stopped"
                 if any(_serve_unit_matches_profile(r.profile, u) for u in failed_set):
                     return "failed"
+                if r.supervisor == "desktop" and r.pid in desktop_handoff_pids:
+                    return "restarted"
                 if stale_serves is not None:
                     # Incarnation-verified: the pre-update process is gone (replaced by its unit / the
                     # dashboard cleanup respawn / the Desktop app) or it is still alive on pre-update code.

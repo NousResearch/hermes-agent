@@ -9,6 +9,8 @@ Pins:
   rows — the silent-miss tripwire.
 """
 
+from types import SimpleNamespace
+
 from hermes_cli.update_inventory import (
     RuntimeRecord,
     UpdatePlan,
@@ -17,6 +19,7 @@ from hermes_cli.update_inventory import (
     match_runtime_outcomes,
     report_unaccounted_runtimes,
 )
+from hermes_cli.update_cmd_fleet import _record_desktop_serve_handoffs
 
 
 def _plan(*runtimes: RuntimeRecord) -> UpdatePlan:
@@ -188,6 +191,51 @@ def test_external_supervisor_counts_as_restarted():
         failed_units=[],
     )
     assert outcomes[0]["outcome"] == "restarted"
+
+
+def test_desktop_supervised_serve_is_accounted_by_external_handoff():
+    """#111494: Desktop owns this backend, so the restart phase must record
+    its handoff without crediting another serve that merely shares a profile."""
+    desktop_serve = RuntimeRecord(
+        kind="serve", profile="default", pid=601, supervisor="desktop",
+        restart_via=_restart_mechanism("desktop", "default"),
+    )
+    manual_serve = _serve("default", 602)
+
+    outcomes = match_runtime_outcomes(
+        _plan(desktop_serve, manual_serve),
+        restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], externally_supervised_serve_pids={601},
+        killed_pids=set(), failed_units=[],
+    )
+
+    assert [outcome["outcome"] for outcome in outcomes] == ["restarted", "unaccounted"]
+    assert report_unaccounted_runtimes(outcomes) is True
+
+    # A gateway's same-profile external handoff is not evidence that this
+    # distinct Desktop backend was handed off.
+    outcomes = match_runtime_outcomes(
+        _plan(desktop_serve),
+        restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=["default"],
+        killed_pids=set(), failed_units=[],
+    )
+    assert outcomes[0]["outcome"] == "unaccounted"
+
+
+def test_desktop_handoff_bookkeeping_ignores_manual_same_profile_serve():
+    plan = _plan(
+        RuntimeRecord(
+            kind="serve", profile="default", pid=601, supervisor="desktop",
+            restart_via=_restart_mechanism("desktop", "default"),
+        ),
+        _serve("default", 602),
+    )
+    outcome = SimpleNamespace(externally_supervised_serve_pids=set())
+
+    _record_desktop_serve_handoffs(plan, outcome)
+
+    assert outcome.externally_supervised_serve_pids == {601}
 
 
 def test_unmanaged_serve_runtime_under_default_profile_is_unaccounted():

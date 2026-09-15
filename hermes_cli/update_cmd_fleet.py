@@ -1060,6 +1060,10 @@ class _GatewayRestartOutcome:
     relaunched_profiles: list
     externally_supervised_profiles: list
     killed_pids: set
+    #: Exact Desktop-supervised serve/dashboard PIDs handed back to the app.
+    #: Keep this separate from gateway profile bookkeeping: another process can
+    #: legitimately share a profile without sharing a lifecycle supervisor.
+    externally_supervised_serve_pids: set = field(default_factory=set)
     #: Gateways stopped with NO successor (no profile mapping / relaunch could not be armed);
     #: the summary tells the user to restart them by hand, so the fleet probe must not expect
     #: a row for them.
@@ -1160,6 +1164,24 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
             print("    Restart manually: hermes gateway run")
             if unmapped_count > 1:
                 print("    (or: hermes -p <profile> gateway run  for each profile)")
+
+
+def _record_desktop_serve_handoffs(plan, out: _GatewayRestartOutcome) -> None:
+    """Credit only Desktop-owned serve/dashboard runtimes to their supervisor.
+
+    The update process must not restart these children itself: the Desktop app owns
+    their lifecycle and respawns them after its update handoff.  Record that explicit
+    handoff so reconciliation does not demand a gateway/unit restart for the same
+    backend.  Manual and systemd serves remain uncredited and therefore fail closed.
+    """
+    for runtime in getattr(plan, "runtimes", ()) or ():
+        if (
+            getattr(runtime, "kind", None) in ("serve", "dashboard")
+            and getattr(runtime, "supervisor", None) == "desktop"
+            and isinstance(getattr(runtime, "pid", None), int)
+            and runtime.pid > 0
+        ):
+            out.externally_supervised_serve_pids.add(runtime.pid)
 
 
 def _force_kill_stuck_gateways(killed_pids) -> None:
@@ -1328,6 +1350,7 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
                 _restart_macos_launchd_gateways(out.restarted_services, out.failed_or_stale_units, _drain_budget)
 
         _restart_manual_gateways(out, _drain_budget)
+        _record_desktop_serve_handoffs(_pre_update_plan, out)
 
         if out.failed_or_stale_units:
             out.incomplete = True
@@ -1476,6 +1499,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 externally_supervised_profiles=restart.externally_supervised_profiles,
                 killed_pids=restart.killed_pids,
                 failed_units=restart.failed_or_stale_units,
+                externally_supervised_serve_pids=restart.externally_supervised_serve_pids,
                 # Serve/dashboard reconcile by incarnation liveness, not unit names.
                 # See #100479.
                 stale_serve_pids=(

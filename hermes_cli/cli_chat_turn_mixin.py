@@ -40,6 +40,10 @@ class CLIChatTurnMixin:
         set_secret_capture_callback(self._secret_capture_callback)
         # Reset per turn; only a real interrupt flips it, so early returns leave it False.
         self._last_turn_interrupted = False
+        # Same lifecycle for the turn outcome: clear it now so a turn that returns early
+        # (credential refresh failure, blocked @ context reference) can never report the
+        # PREVIOUS turn's failure to the -q exit path.
+        self._last_turn_result = None
 
         if not self._ensure_runtime_credentials():
             return None
@@ -92,6 +96,14 @@ class CLIChatTurnMixin:
             print(f"Error: {e}")
             return None
         finally:
+            # Expose this turn's outcome to callers of chat(), which returns only the
+            # response text. The -q single-query path derives its exit code from it
+            # (_single_query_exit_code) — without this a kanban worker killed by a
+            # provider quota wall exits 0 and the dispatcher counts a protocol
+            # violation instead of requeueing the card. Set in the finally so BOTH
+            # _chat_run_agent's normal result and its except fallback dict are
+            # captured, on every exit path out of the turn.
+            self._last_turn_result = turn.result
             self._chat_release_turn_audio(turn)
 
     def _chat_release_turn_audio(self, turn):

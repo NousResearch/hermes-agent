@@ -121,8 +121,13 @@ def test_human_single_query_main_finalizes_after_query(monkeypatch):
         lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
     )
 
-    cli_mod.main(query="hello", quiet=False, toolsets="terminal")
+    # The -q branch now exits explicitly like -Q does (see
+    # tests/hermes_cli/test_single_query_exit_code.py); a clean turn is exit 0, and
+    # finalize must still run from the finally while SystemExit propagates.
+    with pytest.raises(SystemExit) as exc_info:
+        cli_mod.main(query="hello", quiet=False, toolsets="terminal")
 
+    assert exc_info.value.code == 0
     assert calls == [
         ("claim", "cli", False),
         "query-label",

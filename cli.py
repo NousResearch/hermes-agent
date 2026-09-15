@@ -1001,6 +1001,32 @@ def _finalize_single_query(cli) -> None:
         cli._release_active_session()
 
 
+def _single_query_exit_code(result) -> int:
+    """Exit-code contract shared by the ``-q`` and ``-Q`` single-query paths.
+
+    0 = the turn completed. 1 = the turn failed. ``KANBAN_RATE_LIMIT_EXIT_CODE``
+    (75, EX_TEMPFAIL) = a kanban worker failed *purely* because the provider
+    rate-limited / exhausted quota, which the dispatcher's reap classifier turns
+    into a requeue WITHOUT counting a failure, so a quota window cannot trip the
+    circuit breaker. Non-kanban runs keep the plain 0/1 contract wrappers expect.
+
+    Both branches route through this one helper so their exit contracts cannot
+    drift apart again: ``-q`` previously had no ``sys.exit()`` at all, so a worker
+    killed by a 5-hour quota wall reported rc=0 with its card still ``running`` —
+    read by the dispatcher as a clean exit that never touched its task, i.e. a
+    protocol violation counted against the breaker instead of a requeue.
+    """
+    if not (isinstance(result, dict) and result.get("failed")):
+        return 0
+    if os.environ.get("HERMES_KANBAN_TASK") and result.get("failure_reason") in ("rate_limit", "billing"):
+        try:
+            from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+            return KANBAN_RATE_LIMIT_EXIT_CODE
+        except Exception:
+            return 1
+    return 1
+
+
 def _reset_terminal_input_modes_on_exit() -> None:
     """Disable focus reporting + mouse tracking on TUI exit (best-effort).
 
@@ -2885,6 +2911,11 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._interrupt_queue = queue.Queue()
         self._agent_running = self._should_exit = False
         self._last_turn_interrupted = False  # /goal never auto-queues on a Ctrl+C'd turn
+        # Outcome dict of the turn that just finished. chat() returns only the response
+        # text, so without this stash the -q single-query path cannot tell a completed
+        # turn from one the provider killed — see _single_query_exit_code(). Owned here
+        # because -q never goes through run().
+        self._last_turn_result = None
         self._terminal_io_broken = False  # stdout EIO: freeze UI paints instead of spinning
         self._delete_session_on_exit = False  # /exit --delete
         # /update: relaunch() runs from run() after prompt_toolkit restored terminal modes.
@@ -4186,18 +4217,12 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     if emitter is None:
         print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
 
-    # Exit code 0/1 for automation wrappers. Kanban workers that failed purely on
-    # rate-limit/billing exit with the EX_TEMPFAIL sentinel so the dispatcher releases
-    # the task without counting a failure (a quota window must not trip the breaker).
-    _exit_code = 0
-    if isinstance(result, dict) and result.get("failed"):
-        _exit_code = 1
-        if os.environ.get("HERMES_KANBAN_TASK") and result.get("failure_reason") in ("rate_limit", "billing"):
-            try:
-                from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE
-                _exit_code = _RL_CODE
-            except Exception:
-                _exit_code = 1
+    # Exit code 0/1 for automation wrappers, plus the EX_TEMPFAIL sentinel for a kanban
+    # worker that failed purely on rate-limit/billing (the dispatcher then releases the
+    # task without counting a failure, so a quota window cannot trip the breaker).
+    # Shared with the -q branch in _run_single_query_mode so the two cannot drift —
+    # see _single_query_exit_code for the full contract.
+    _exit_code = _single_query_exit_code(result)
     if emitter is not None:
         _exit_code = emitter.emit_result(result, session_id=cli.session_id or "", exit_code=_exit_code)
     sys.exit(_exit_code)
@@ -4541,6 +4566,13 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
         cli._show_security_advisories()
         cli.chat(query, images=single_query_images or None)
         cli._print_exit_summary(clear_screen=False)
+        # Same exit-code contract as the -Q branch (_run_quiet_single_query). chat()
+        # returns only the response text, so the turn outcome comes from the stash it
+        # leaves on the CLI. Without this, -q exited 0 no matter what: a kanban worker
+        # killed by a provider quota wall looked like a clean exit that never touched
+        # its card, and the dispatcher counted a protocol violation against the circuit
+        # breaker instead of requeueing the task (incident t_4081a982).
+        sys.exit(_single_query_exit_code(getattr(cli, "_last_turn_result", None)))
     finally:
         _finalize_single_query(cli)
 

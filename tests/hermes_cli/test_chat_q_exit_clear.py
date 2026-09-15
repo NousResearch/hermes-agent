@@ -101,8 +101,13 @@ def test_single_query_main_skips_clear_on_exit_summary(monkeypatch):
         lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
     )
 
-    cli_mod.main(query="hello", quiet=False, toolsets="terminal")
+    # The -q branch now exits explicitly like -Q does, so the automation exit code
+    # reaches the shell (see tests/hermes_cli/test_single_query_exit_code.py); a clean
+    # turn is exit 0.
+    with pytest.raises(SystemExit) as exc_info:
+        cli_mod.main(query="hello", quiet=False, toolsets="terminal")
 
+    assert exc_info.value.code == 0
     assert calls == [
         ("claim", "cli", False),
         "query-label",

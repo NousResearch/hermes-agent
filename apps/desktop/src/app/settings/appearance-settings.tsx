@@ -22,6 +22,7 @@ import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
+import { $pickerStyle, setPickerStyle, type PickerStyle } from '@/store/picker-style'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
 import { $spentTipCount, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
@@ -403,6 +404,7 @@ export function AppearanceSettings() {
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
+  const pickerStyle = useStore($pickerStyle)
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
   const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
@@ -483,6 +485,12 @@ export function AppearanceSettings() {
     { id: 'technical', label: a.technical }
   ] as const
 
+  const pickerStyleOptions: { id: PickerStyle; label: string }[] = [
+    { id: 'classic', label: a.pickerStyleClassic },
+    { id: 'split', label: a.pickerStyleSplit },
+    { id: 'unified', label: a.pickerStyleUnified },
+    { id: 'separated', label: a.pickerStyleSeparated }
+  ]
   const sessionDensityOptions = [
     { id: 'compact', label: a.sessionDensityCompact },
     { id: 'comfortable', label: a.sessionDensityComfortable },
@@ -660,6 +668,20 @@ export function AppearanceSettings() {
             }
             description={a.sessionDensityDesc}
             title={a.sessionDensityTitle}
+          />
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setPickerStyle(id)
+                }}
+                options={pickerStyleOptions}
+                value={pickerStyle}
+              />
+            }
+            description={a.pickerStyleDesc}
+            title={a.pickerStyleTitle}
           />
 
           <ListRow

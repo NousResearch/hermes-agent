@@ -238,7 +238,13 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
     liveness = await run_in_threadpool(lambda: resolve_gateway_liveness(
         profile_dir=profile_dir, runtime=local_runtime,
         health_probe=_bounded_health_probe if health_url else None,
-        pid_probe=get_running_pid_cached, runtime_reader=read_runtime_status,
+        # cleanup_stale=False: this is a status probe of ANOTHER profile's home. The scoped
+        # branch of get_running_pid() hard-codes runtime_pid=None, so with the default
+        # cleanup_stale=True a non-active lock always unlinks that profile's
+        # gateway.pid/gateway.lock — destroying the rung-1 liveness signal the cron ticker
+        # gate depends on. Polling must never delete another home's identity files (#106406).
+        pid_probe=lambda path: get_running_pid_cached(path, cleanup_stale=False),
+        runtime_reader=read_runtime_status,
         runtime_pid_probe=get_runtime_status_running_pid))
     gateway_running = liveness.running
     remote_health_body: dict | None = liveness.health_body

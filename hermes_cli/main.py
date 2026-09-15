@@ -594,6 +594,21 @@ def _apply_profile_override() -> None:
 
 _apply_profile_override()
 
+# The restricted implementer profile is only meaningful as a dispatcher-owned
+# Kanban worker.  Keep this before CLI fast paths and agent/tool startup: a
+# direct `hermes -p implementer chat ...` must never initialize write-capable
+# agent machinery.
+try:
+    from agent.implementer_workspace import (
+        ImplementerWorkspaceError,
+        require_attested_workspace,
+    )
+
+    require_attested_workspace()
+except ImplementerWorkspaceError as exc:
+    print(f"Error: {exc}", file=sys.stderr)
+    sys.exit(2)
+
 # Windows launcher self-heal — the ``hermes`` command is a COPY of the venv
 # console script staged into the managed bin dir (outside the checkout, since
 # ``hermes update``'s autostash once swept ``<checkout>\bin`` copies off disk;

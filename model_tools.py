@@ -22,6 +22,7 @@ from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
 from tools.arg_coercion import coerce_tool_args
+from agent.implementer_workspace import is_implementer_profile
 
 logger = logging.getLogger(__name__)
 
@@ -331,6 +332,11 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
     # disabled toolset are strictly stripped out. See issue #17309.
     if disabled_toolsets:
         _apply_toolset_selection(tools, disabled_toolsets, quiet_mode, disable=True)
+    # A dispatcher-attested implementer is a bounded executor, not an
+    # orchestrator.  Hide these even if a stale profile config reintroduced
+    # their containing toolsets; handlers independently reject direct calls.
+    if is_implementer_profile() and os.environ.get("HERMES_KANBAN_TASK"):
+        tools.difference_update({"delegate_task", "kanban_create", "kanban_link"})
     return tools
 
 

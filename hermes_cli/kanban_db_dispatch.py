@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import secrets
 import signal
 import sqlite3
 import subprocess
@@ -2328,6 +2329,20 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    # Random per-spawn marker: this is an explicit dispatcher grant, not a
+    # profile-name or task-env inference made by the worker itself.
+    env["HERMES_KANBAN_DISPATCH_GRANT"] = secrets.token_urlsafe(32)
+    if profile_arg == "implementer":
+        # File mutators resolve this guard after task-relative path expansion;
+        # the macOS sandbox below remains the authoritative terminal/code fence.
+        env["HERMES_WRITE_SAFE_ROOT"] = str(Path(workspace).resolve())
+        from agent.implementer_workspace import capture_original_baseline
+
+        env["HERMES_KANBAN_ORIGINAL_BASELINE"] = capture_original_baseline(workspace)
+        if env.get("HERMES_HOME"):
+            runtime_tmp = Path(env["HERMES_HOME"]) / "cache" / "kanban-runtime" / task.id
+            runtime_tmp.mkdir(parents=True, exist_ok=True)
+            env["TMPDIR"] = str(runtime_tmp.resolve())
     # Tag the session `kanban` so session-browsing surfaces filter it out by
     # source instead of rendering one sidebar row per attempt.
     env["HERMES_SESSION_SOURCE"] = "kanban"
@@ -2383,6 +2398,15 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.
     cmd = _restart_safe_worker_argv(task, cmd)
+    if profile_arg == "implementer":
+        from hermes_cli.kanban_implementer_sandbox import sandboxed_implementer_argv
+
+        cmd = sandboxed_implementer_argv(
+            cmd,
+            workspace=workspace,
+            hermes_home=env.get("HERMES_HOME"),
+            board_db=env["HERMES_KANBAN_DB"],
+        )
     from tools.process_registry import systemd_user_bus_env
     env = systemd_user_bus_env(env)
     log_f = _open_worker_log(task, board)

@@ -51,6 +51,7 @@ def main() -> int:
     parser.add_argument("--python", default=sys.executable, help="Python executable used for the stdio fixture")
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--output", type=Path, help="receipt path; defaults under outputs/")
+    parser.add_argument("--legacy", action="store_true", help="exercise envelopes without cache hints")
     args = parser.parse_args()
 
     fixture_root = Path(__file__).resolve().parent
@@ -82,7 +83,8 @@ def main() -> int:
     label = "public-fixture"
     server_config = {
         "command": args.python,
-        "args": ["-B", str(fixture_root / "fixture_server.py"), "--events", str(events_path)],
+        "args": ["-B", str(fixture_root / "fixture_server.py"), "--events", str(events_path),
+                 *(["--legacy"] if args.legacy else [])],
         "skills": {"enabled": True},
         "protocol": "stateless",
         "connect_timeout": min(args.timeout, 15.0),
@@ -323,6 +325,17 @@ def main() -> int:
         read_uris = [event["uri"] for event in all_events if event["method"] == "resources/read"]
         check("skill://portable-demo/references/GUIDE.md" in read_uris, "guide was not read over MCP")
         check("skill://portable-demo/assets/pixel.png" in read_uris, "binary was not read over MCP")
+        hint_events = [event for event in all_events if event["method"] in {"skills/list", "skills/get"}]
+        if args.legacy:
+            check(all("ttlMs" not in event and "cacheScope" not in event for event in hint_events),
+                  "legacy fixture unexpectedly advertised cache hints")
+        else:
+            check(all(event["ttlMs"] == (0.25 if event.get("cursor", "not-list") is None else 0)
+                      for event in hint_events), "modern list/get hints were not exercised")
+            check(all(event["cacheScope"] in {"public", "private"} for event in hint_events),
+                  "modern cache scopes missing")
+        check(methods.count("skills/list") == 3, "cache hints triggered an unsolicited catalog refresh")
+        receipt["checks"]["cache_hint_envelopes"] = "legacy" if args.legacy else "modern"
         receipt["checks"]["actual_wire_events"] = {
             "count": len(all_events),
             "methods": methods,

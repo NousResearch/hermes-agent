@@ -7,7 +7,9 @@ from typing import Any
 
 from agent.skill_utils import parse_frontmatter
 from hermes_constants import get_hermes_home
-from tools.mcp_skills_cache import get_verified_resource, materialize_resource, register_skill_uri
+from tools.mcp_skills_cache import (
+    get_verified_resource, materialize_resource, register_skill_uri, require_skill_eligibility,
+)
 from tools.mcp_skills_registry import (
     is_active, mark_active, qualified_name, relative_resource_path, resolve_remote_skill, resource_for_path,
 )
@@ -66,6 +68,8 @@ def serve_remote_skill(name: str, *, file_path: str | None, task_id: str | None,
     sid = session_id or task_id
     home = get_hermes_home()
     record, error = resolve_remote_skill(name, home, sid)
+    if error == "MCP skill authorization context or source is unavailable; reconnect and start a new session":
+        return json.dumps({"success": False, "error": error})
     if record is None and isinstance(name, str):
         try:
             _prefix, server, target = name.split(":", 2)
@@ -83,6 +87,10 @@ def serve_remote_skill(name: str, *, file_path: str | None, task_id: str | None,
                          if isinstance(exc, RemoteSkillSecurityError) else str(exc))
     if error or record is None:
         return json.dumps({"success": False, "error": error}, ensure_ascii=False)
+    try:
+        require_skill_eligibility(record, home)
+    except (RuntimeError, ValueError, OSError):
+        return json.dumps({"success": False, "error": "MCP skill authorization context or source is unavailable; reconnect and start a new session"})
     if destination and not materialize:
         return json.dumps({"success": False, "error": "destination requires materialize=true"})
     if file_path and not is_active(record, home, sid):
@@ -102,11 +110,13 @@ def serve_remote_skill(name: str, *, file_path: str | None, task_id: str | None,
             from tools.mcp_skills_consent import enforce_skill_activation_gate
             already_active = is_active(record, home, sid)
             blocked = enforce_skill_activation_gate(record, home=home, session_id=str(sid))
+            require_skill_eligibility(record, home)
             if blocked is not None:
                 return blocked
         if file_path or already_active:
             from tools.mcp_skills_consent import enforce_native_skill_read_gate
             blocked = enforce_native_skill_read_gate(record, resource, session_id=str(sid))
+            require_skill_eligibility(record, home)
             if blocked is not None:
                 return blocked
         raw, mime, is_text, _cache_path, scan = get_verified_resource(record, resource, home, sid)
@@ -124,6 +134,7 @@ def serve_remote_skill(name: str, *, file_path: str | None, task_id: str | None,
         public_scan = _public_scan(scan)
         if materialized is not None and isinstance(materialized.get("scan"), dict):
             materialized["scan"] = _public_scan(materialized["scan"])
+        require_skill_eligibility(record, home)
         if file_path:
             if not is_text:
                 if not materialized:
@@ -164,8 +175,13 @@ def serve_remote_skill(name: str, *, file_path: str | None, task_id: str | None,
             response["usage_hint"] = (
                 "Load a remote supporting file with skill_view using the same qualified MCP name and file_path. "
                 "Use materialize=true for binary or editable workspace copies.")
+        require_skill_eligibility(record, home)
         return json.dumps(response, ensure_ascii=False)
     except Exception as exc:
+        try:
+            require_skill_eligibility(record, home)
+        except (RuntimeError, ValueError, OSError):
+            return json.dumps({"success": False, "error": "MCP skill authorization context or source is unavailable; reconnect and start a new session"})
         from tools.mcp_skills_scan import RemoteSkillSecurityError
         error = ("Remote MCP skill content was blocked by Skills Guard"
                  if isinstance(exc, RemoteSkillSecurityError) else str(exc))

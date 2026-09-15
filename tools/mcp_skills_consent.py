@@ -13,15 +13,28 @@ from tools.registry import tool_error
 _EXECUTION_TOOLS = {"terminal", "execute_code", "browser_exec"}
 
 
+def _ineligible_origin_error(records, home) -> str | None:
+    from tools.mcp_skills_cache import require_skill_eligibility
+    try:
+        for record in records:
+            require_skill_eligibility(record, home)
+    except (RuntimeError, ValueError, OSError):
+        return tool_error("BLOCKED: MCP skill authorization context or source is unavailable; reconnect and start a new session")
+    return None
+
+
 def enforce_skill_activation_gate(record: dict[str, Any], *, home, session_id: str) -> str | None:
     """Require first-use consent for one exact remote manifest."""
     from tools.mcp_skills_registry import is_active
+    origins = active_skills(home, session_id)
+    blocked = _ineligible_origin_error([record, *origins], home)
+    if blocked is not None:
+        return blocked
     if is_active(record, home, session_id):
         return None
     try:
         from tools.approval_prompt import request_elicitation_consent
         frontmatter = record["frontmatter"]
-        origins = active_skills(home, session_id)
         active_note = ""
         if origins:
             active_note = " Active remote origins: " + ", ".join(
@@ -37,6 +50,9 @@ def enforce_skill_activation_gate(record: dict[str, Any], *, home, session_id: s
             surface="mcp-skill-activation")
     except Exception:
         answer = "decline"
+    blocked = _ineligible_origin_error([record, *origins], home)
+    if blocked is not None:
+        return blocked
     if answer != "accept":
         return tool_error(
             f"BLOCKED: activation was not approved for remote MCP skill {record['uri']!r} "
@@ -88,6 +104,12 @@ def enforce_remote_skill_gate(tool_name: str, args: dict[str, Any], *,
     if not records:
         return None
 
+    if (_is_host_execution(tool_name, args) or _is_delegate_execution(tool_name, args)
+            or tool_name.endswith("__read_resource")):
+        blocked = _ineligible_origin_error(records, get_hermes_home())
+        if blocked is not None:
+            return blocked
+
     if _is_host_execution(tool_name, args) or _is_delegate_execution(tool_name, args):
         from tools.approval_prompt import request_elicitation_consent
         from tools.mcp_skills_registry import scan_materialized_targets
@@ -99,6 +121,9 @@ def enforce_remote_skill_gate(tool_name: str, args: dict[str, Any], *,
             except (RemoteSkillSecurityError, OSError, ValueError):
                 return tool_error(
                     "BLOCKED: a provenance-owned materialized remote skill file failed current-byte Skills Guard scanning.")
+            blocked = _ineligible_origin_error(records, get_hermes_home())
+            if blocked is not None:
+                return blocked
             if has_execution_consent(record, get_hermes_home(), sid):
                 continue
             message = (
@@ -110,6 +135,9 @@ def enforce_remote_skill_gate(tool_name: str, args: dict[str, Any], *,
                 "Approve once to allow host execution for this exact skill manifest for the remainder of this session. "
                 "Normal command and tool guards still apply independently.")
             answer = request_elicitation_consent(message, description, surface="mcp-skill-execution")
+            blocked = _ineligible_origin_error(records, get_hermes_home())
+            if blocked is not None:
+                return blocked
             if answer != "accept":
                 return tool_error(
                     f"BLOCKED: host execution was not approved for remote MCP skill {record['uri']!r} "
@@ -132,6 +160,9 @@ def enforce_remote_skill_gate(tool_name: str, args: dict[str, Any], *,
                 f"Active origins: {origins}. Target: server={target_server!r}, uri={target_uri!r}.",
                 "Approve this resource read once. The approval is not cached and does not extend the pinned manifest.",
                 surface="mcp-skill-cross-origin-read")
+            blocked = _ineligible_origin_error(records, get_hermes_home())
+            if blocked is not None:
+                return blocked
             if answer != "accept":
                 return tool_error("BLOCKED: cross-origin MCP resource read was not explicitly approved for this call.")
     return None
@@ -157,6 +188,9 @@ def enforce_native_skill_read_gate(record: dict[str, Any], resource: dict[str, A
                                    session_id: str) -> str | None:
     """Per-call consent when native skill_view crosses any active remote origin."""
     records = active_skills(get_hermes_home(), session_id)
+    blocked = _ineligible_origin_error([record, *records], get_hermes_home())
+    if blocked is not None:
+        return blocked
     if not records:
         return None
     same_unambiguous_origin = len(records) == 1 and (
@@ -173,6 +207,9 @@ def enforce_native_skill_read_gate(record: dict[str, Any], resource: dict[str, A
         "Approve this skill_view resource read once. Multiple active manifests are treated as ambiguous; "
         "the approval is not cached.",
         surface="mcp-skill-cross-origin-read")
+    blocked = _ineligible_origin_error([record, *records], get_hermes_home())
+    if blocked is not None:
+        return blocked
     if answer != "accept":
         return tool_error("BLOCKED: cross-origin native MCP skill read was not explicitly approved for this call.")
     return None

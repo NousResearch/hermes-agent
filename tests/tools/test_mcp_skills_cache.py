@@ -368,7 +368,8 @@ def test_materialization_is_collision_free_and_sidecar_owned(_state, monkeypatch
             "skill://fixture/remote-demo", "skill://fixture/team-b/remote-demo")
     second_entry = SkillEntry.model_validate(second_raw)
     from tools.mcp_skills_registry import _entry_record
-    second = _entry_record("fixture", "config-a", second_entry, connected=True, get_verified=True)
+    second = _entry_record("fixture", "config-a", second_entry, connected=True, get_verified=True,
+                           auth_context=first["authorization_context"])
     a = cache.materialize_resource(first, first["resources"][1], support)
     b = cache.materialize_resource(second, second["resources"][1], support)
     assert a["path"] != b["path"]

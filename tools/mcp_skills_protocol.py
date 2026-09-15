@@ -46,17 +46,40 @@ class SkillEntry(BaseModel):
     resources: list[SkillResource] | Literal["dynamic"]
 
 
-class SkillsListResult(BaseModel):
+class _SkillsCacheHints(BaseModel):
+    """Tolerate omitted legacy hints, not malformed advertised hints.
+
+    These envelope hints do not establish manifest identity or cache authority.
+    """
     model_config = ConfigDict(extra="allow", populate_by_name=True)
+    ttl_ms: int | float | None = Field(default=None, alias="ttlMs", ge=0)
+    cache_scope: Literal["public", "private"] | None = Field(default=None, alias="cacheScope")
+
+    @field_validator("ttl_ms", mode="before")
+    @classmethod
+    def valid_ttl(cls, value: Any) -> int | float:
+        import math
+        # Check ints separately: converting arbitrarily large JSON integers to
+        # float would overflow or lose precision. bool is not a JSON number.
+        if type(value) not in (int, float) or (type(value) is float and not math.isfinite(value)):
+            raise ValueError("ttlMs must be a finite nonnegative JSON number")
+        return value
+
+    @field_validator("cache_scope", mode="before")
+    @classmethod
+    def nonnull_scope(cls, value: Any) -> Any:
+        if value is None:
+            raise ValueError("cacheScope must be public or private, not null")
+        return value
+
+
+class SkillsListResult(_SkillsCacheHints):
     result_type: str = Field(default="complete", alias="resultType")
     skills: list[SkillEntry]
     next_cursor: str | None = Field(default=None, alias="nextCursor")
-    ttl_ms: int | None = Field(default=None, alias="ttlMs", ge=0)
-    cache_scope: str | None = Field(default=None, alias="cacheScope")
 
 
-class SkillsGetResult(BaseModel):
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
+class SkillsGetResult(_SkillsCacheHints):
     result_type: str = Field(default="complete", alias="resultType")
     skill: SkillEntry
 
@@ -183,6 +206,7 @@ def manifest_fingerprint(entry: SkillEntry | dict[str, Any]) -> str:
 
 
 async def list_skills(session: Any, server_name: str) -> tuple[list[SkillEntry], dict[str, Any]]:
+    """Return entries and first-page diagnostics, not aggregate cache authority."""
     import mcp.types as types
     entries: list[SkillEntry] = []
     cursor: str | None = None

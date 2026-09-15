@@ -11,6 +11,7 @@ from typing import Any
 
 from agent.runtime_cwd import resolve_agent_cwd
 from hermes_constants import get_hermes_home
+from tools.mcp_skills_auth import require_authorization_context, source_authorization_context
 from tools.mcp_skills_fs import (
     secure_atomic_bytes, secure_atomic_json, secure_read_bytes, secure_read_json, validate_managed_root,
 )
@@ -29,7 +30,8 @@ def _sha256(raw: bytes) -> str:
 
 
 def _cache_rel_dir(record: dict[str, Any], resource: dict[str, Any]) -> Path:
-    server_key = hashlib.sha256((record["server"] + ":" + record["config_fingerprint"]).encode()).hexdigest()
+    server_key = hashlib.sha256((record["server"] + ":" + record["config_fingerprint"]
+                                + ":" + str(record.get("authorization_context"))).encode()).hexdigest()
     uri_key = hashlib.sha256(resource["uri"].encode()).hexdigest()
     digest = resource["digest"].removeprefix("sha256:")
     return Path("cache") / "mcp-skills" / "content" / server_key / uri_key / digest
@@ -57,6 +59,7 @@ def _read_cached(record: dict[str, Any], resource: dict[str, Any], home=None) ->
         _verify(raw, resource)
         expected = {
             "server": record["server"], "config_fingerprint": record["config_fingerprint"],
+            "authorization_context": record.get("authorization_context"),
             "uri": resource["uri"], "digest": resource["digest"], "size": resource["size"],
         }
         if any(meta.get(key) != value for key, value in expected.items()):
@@ -71,6 +74,7 @@ class _SourceToken:
     server_name: str
     home: str
     config_fingerprint: str
+    authorization_context: str
     epoch: int
     server: Any
     session: Any
@@ -99,6 +103,7 @@ def _capture_source(server_name: str, server: Any, home=None,
         server_name=server_name,
         home=str(validate_managed_root(Path(home or get_hermes_home()).expanduser()).absolute()),
         config_fingerprint=server._skills_config_fingerprint,
+        authorization_context=source_authorization_context(server_name, server, home),
         epoch=epoch,
         server=server,
         session=session,
@@ -107,12 +112,15 @@ def _capture_source(server_name: str, server: Any, home=None,
 
 
 def _require_source_token(token: _SourceToken) -> None:
+    require_authorization_context(token.server_name, token.authorization_context, token.home)
     from tools import mcp_tool_discovery as discovery
     current = discovery._get_connected_server_for_call(token.server_name)
     if current is not token.server or getattr(current, "session", None) is not token.session:
         raise RuntimeError("MCP skill source changed while the remote operation was in flight; result discarded")
     _require_live_source(
         current, token.home, expected_session=token.session, expected_epoch=token.epoch)
+    if source_authorization_context(token.server_name, current, token.home) != token.authorization_context:
+        raise RuntimeError("MCP skill authorization context changed during the remote operation; result discarded")
     if (getattr(current, "_skills_config_fingerprint", "") != token.config_fingerprint
             or int(getattr(current, "_skills_epoch", 0)) != token.epoch):
         raise RuntimeError("MCP skill source changed while the remote operation was in flight; result discarded")
@@ -130,20 +138,55 @@ def register_skill_uri(server_name: str, uri: str, home=None,
     if server is None or server.session is None:
         raise RuntimeError(f"MCP server {server_name!r} is not connected")
     token = _capture_source(server_name, server, home)
-    result = mcp_tool_loop._run_on_mcp_loop(
-        lambda: _get_on_session(token.rpc_lock, token.session, uri),
-        timeout=float(getattr(server, "tool_timeout", 300)))
-    _require_source_token(token)
-    record = register_lazy_entry(
-        home, session_id, server_name, token.config_fingerprint,
-        validate_skill_entry(result))
-    if record.get("metadata_allowed") is not True:
-        from tools.mcp_skills_scan import RemoteSkillSecurityError
-        raise RemoteSkillSecurityError("catalog metadata")
-    return record
+    try:
+        result = mcp_tool_loop._run_on_mcp_loop(
+            lambda: _get_on_session(token.rpc_lock, token.session, uri),
+            timeout=float(getattr(server, "tool_timeout", 300)))
+        _require_source_token(token)
+        record = register_lazy_entry(
+            home, session_id, server_name, token.config_fingerprint,
+            validate_skill_entry(result), auth_context=token.authorization_context)
+        if record.get("metadata_allowed") is not True:
+            from tools.mcp_skills_scan import RemoteSkillSecurityError
+            raise RemoteSkillSecurityError("catalog metadata")
+        return record
+    finally:
+        # Lazy registration has no held record for the view's exception guard.
+        # Fence errors as well as success after RPC, validation, and scanning.
+        _require_source_token(token)
+
+
+def require_skill_eligibility(record: dict[str, Any], home=None) -> None:
+    require_authorization_context(record["server"], record.get("authorization_context"), home)
+    from tools import mcp_tool_discovery as discovery
+    server = discovery._get_connected_server_for_call(record["server"])
+    if server is not None and getattr(server, "session", None) is not None:
+        _require_live_origin(server, record, home)
+        if source_authorization_context(record["server"], server, home) != record.get("authorization_context"):
+            raise RuntimeError("MCP skill authorization context changed; start a new session after reconnect")
+
+
+def eligible_skill_records(records, home=None) -> tuple[dict[str, Any], ...]:
+    """Discard every row sharing an authority observed invalid during projection.
+
+    A later check can observe a changed source after an earlier row passed.
+    Merely checking each row once more repeats that accumulation bug.
+    """
+    checked = []
+    denied = set()
+    for record in records:
+        authority = (record["server"], record["config_fingerprint"],
+                     str(record.get("authorization_context")))
+        checked.append((record, authority))
+        try:
+            require_skill_eligibility(record, home)
+        except (RuntimeError, ValueError, OSError):
+            denied.add(authority)
+    return tuple(record for record, authority in checked if authority not in denied)
 
 
 def _ensure_get_verified(record: dict[str, Any], home=None, session_id: str | None = None) -> None:
+    require_skill_eligibility(record, home)
     if record.get("get_verified"):
         return
     from tools import mcp_tool_discovery as discovery
@@ -153,10 +196,14 @@ def _ensure_get_verified(record: dict[str, Any], home=None, session_id: str | No
         raise RuntimeError(
             f"MCP server {record['server']!r} is not connected and skills/get identity has not been verified")
     token = _capture_source(record["server"], server, home, record["config_fingerprint"])
-    result = mcp_tool_loop._run_on_mcp_loop(
-        lambda: _get_on_session(token.rpc_lock, token.session, record["uri"]),
-        timeout=float(getattr(server, "tool_timeout", 300)))
-    _require_source_token(token)
+    if token.authorization_context != record.get("authorization_context"):
+        raise RuntimeError("MCP skill authorization context changed; start a new session after reconnect")
+    try:
+        result = mcp_tool_loop._run_on_mcp_loop(
+            lambda: _get_on_session(token.rpc_lock, token.session, record["uri"]),
+            timeout=float(getattr(server, "tool_timeout", 300)))
+    finally:
+        _require_source_token(token)
     current = validate_skill_entry(result)
     if manifest_fingerprint(current) != record["manifest_fingerprint"]:
         raise ValueError("skills/get manifest does not match the session-pinned skills/list manifest")
@@ -200,10 +247,14 @@ def _fetch(record: dict[str, Any], resource: dict[str, Any], home=None) -> tuple
     if server is None or server.session is None:
         raise RuntimeError(f"MCP server {record['server']!r} is not connected and the resource is not cached")
     token = _capture_source(record["server"], server, home, record["config_fingerprint"])
-    result = mcp_tool_loop._run_on_mcp_loop(
-        lambda: _read_on_session(token.rpc_lock, token.session, resource["uri"]),
-        timeout=float(getattr(server, "tool_timeout", 300)))
-    _require_source_token(token)
+    if token.authorization_context != record.get("authorization_context"):
+        raise RuntimeError("MCP skill authorization context changed; start a new session after reconnect")
+    try:
+        result = mcp_tool_loop._run_on_mcp_loop(
+            lambda: _read_on_session(token.rpc_lock, token.session, resource["uri"]),
+            timeout=float(getattr(server, "tool_timeout", 300)))
+    finally:
+        _require_source_token(token)
     return decode_read_resource_result(result, resource["uri"])
 
 
@@ -219,9 +270,11 @@ def get_verified_resource(
         scan = scan_resource_bytes(
             raw, record=record, resource=resource, is_text=is_text,
             mime_type=str(meta.get("mime_type") or ""))
+        require_skill_eligibility(record, home)
         if meta.get("content_scan") != scan:
             secure_atomic_json(Path(home or get_hermes_home()), _cache_rel_dir(record, resource) / "metadata.json",
                                {**meta, "content_scan": scan}, mode=0o600)
+        require_skill_eligibility(record, home)
         return raw, str(meta.get("mime_type") or "application/octet-stream"), is_text, directory / "content", scan
     raw, mime, is_text = _fetch(record, resource, home)
     _verify(raw, resource)
@@ -229,15 +282,19 @@ def get_verified_resource(
         raw, record=record, resource=resource, is_text=is_text, mime_type=mime)
     root = Path(home or get_hermes_home())
     relative = _cache_rel_dir(record, resource)
+    require_skill_eligibility(record, home)
     secure_atomic_bytes(root, relative / "content", raw, mode=0o600)
+    require_skill_eligibility(record, home)
     secure_atomic_json(root, relative / "metadata.json", {
         "schema_version": 1, "server": record["server"], "config_fingerprint": record["config_fingerprint"],
+        "authorization_context": record.get("authorization_context"),
         "skill_uri": record["uri"], "uri": resource["uri"], "digest": resource["digest"],
         "size": resource["size"], "mime_type": mime, "is_text": is_text, "fetched_at": time.time(),
         "content_scan": scan,
     }, mode=0o600)
     # Re-read and rehash: a successful write is not the trust decision.
     verified = _read_cached(record, resource, home)
+    require_skill_eligibility(record, home)
     if verified is None:
         raise ValueError("verified cache write disappeared")
     return verified[0], mime, is_text, directory / "content", scan
@@ -272,6 +329,7 @@ def _collision(parent: Path, name: str) -> bool:
 def materialize_resource(record: dict[str, Any], resource: dict[str, Any], raw: bytes,
                          destination: str | None = None, *, is_text: bool | None = None,
                          session_id: str | None = None, mime_type: str = "") -> dict[str, Any]:
+    require_skill_eligibility(record)
     _verify(raw, resource)
     workspace = _ensure_local_workspace()
     server_component = str(record["server"])
@@ -349,10 +407,12 @@ def materialize_resource(record: dict[str, Any], resource: dict[str, Any], raw: 
             pass
         else:
             raise ValueError("orphaned materialization provenance sidecar already exists")
+        require_skill_eligibility(record)
         provenance = {**expected, "materialized_at": time.time()}
         secure_atomic_bytes(workspace, target_rel, raw, mode=0o600)
         secure_atomic_json(workspace, sidecar_rel, provenance, mode=0o600)
         status = "created"
+    require_skill_eligibility(record)
     if session_id:
         from tools.mcp_skills_registry import record_materialization
         record_materialization(record, resource, home=get_hermes_home(), session_id=session_id,

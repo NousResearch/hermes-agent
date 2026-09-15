@@ -74,6 +74,42 @@ mcp_servers:
 
 ## Skills over MCP
 
+Hermes implements a bounded static subset of the [Final SEP-2640](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/seps/2640-skills-extension.md).
+The [stable Skills specification](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/stable/skills.mdx)
+targets base protocol **2026-07-28 or later** and requires servers to include
+`ttlMs` and `cacheScope` on both `skills/list` and `skills/get`. The Final SEP
+itself still leaves get-result caching fields open; these sources differ.
+
+Hermes validates these hints on both results, including every list page:
+`ttlMs` must be a finite nonnegative JSON number (fractional values are allowed),
+and `cacheScope` must be `public` or `private`. Explicit nulls, booleans, numeric
+strings, and other malformed hints are rejected. Omitted fields remain accepted
+on legacy and modern connections as a tolerant-client interoperability policy,
+not a certification of server conformance. Unknown envelope extensions remain
+allowed.
+
+These hints add no TTL-driven refresh or shared response cache. The list helper's
+first-page metadata is diagnostic, not a cache policy for the combined catalog.
+Zero TTL does not repin active instructions, trigger content reads, or revoke
+approval; public scope does not relax origin or consent checks. Held entries,
+verified content, and approvals remain bound to their existing manifest and
+source identities, not freshness hints. Existing profile-local storage is not
+claimed to implement private-cache isolation across changing authorization contexts.
+
+Independently of these hints, held Skills verification and content-cache eligibility
+are bound to a digest of the profile's actual stored OAuth context. Live operations
+also require that the transport's OAuth provider adopted that same context. Missing
+token files cannot relabel a stale provider's authorized bytes. Reauthorization,
+scope changes, credential removal, and token rotation invalidate that eligibility,
+including for restored conversations and already cached bytes. Because opaque tokens
+do not prove principal continuity, even an ordinary same-account refresh that rotates
+a token conservatively requires reconnecting and starting a new conversation. An
+unchanged credential context (including expiry bookkeeping alone) retains cached/offline
+use. Older held snapshots without this binding fail closed. No credentials are copied
+into Skills metadata or prompts; manifests and existing prompt prefixes are not
+repinned or rewritten. This is a local credential-change fence, not remote token
+introspection or a promise to detect server-side revocations invisible to the client.
+
 When `skills.enabled: true`, Hermes calls `skills/list` at startup and adds only
 the returned names and descriptions to the session's initial skill index. It
 does not fetch `SKILL.md` or support files during discovery. Each remote skill
@@ -120,7 +156,10 @@ Hermes auto-discovers manifested skills from `skills/list`. On the first native
 manifest to match the session-pinned list manifest before reading any resource.
 A list-only server can contribute startup descriptions, but skill loading fails
 closed; that compatibility mode is not SEP-2640 conformance. A get-only server
-has no automatic discovery path. Dynamic resource manifests are also declined.
+has no automatic discovery path. An opted-in, advertising server with a successful
+empty `skills/list` can still serve an exact URI through `skills/get` and native
+`skill_view`; this does not promise support for a nonconforming get-only server.
+Dynamic resource manifests are also declined.
 These are bounded host capabilities, not a claim of support for every SEP-2640
 server profile.
 

@@ -148,8 +148,9 @@ def skill_entry(uri: str) -> dict[str, Any]:
 
 
 class Fixture:
-    def __init__(self, events_path: str | None) -> None:
+    def __init__(self, events_path: str | None, *, legacy: bool = False) -> None:
         self.events_path = events_path
+        self.legacy = legacy
         self.server = Server(
             "public-skills-interop-fixture",
             version="1.0.0",
@@ -169,17 +170,23 @@ class Fixture:
         with open(self.events_path, "a", encoding="utf-8") as handle:
             handle.write(json.dumps({"method": method, **details}, sort_keys=True) + "\n")
 
+    def cache_hints(self, *, first_page: bool = False) -> dict[str, Any]:
+        if self.legacy:
+            return {}
+        return {"ttlMs": 0.25 if first_page else 0,
+                "cacheScope": "public" if first_page else "private"}
+
     async def list_skills(self, _ctx: Any, params: SkillsListParams) -> ExtensionResult:
-        self.event("skills/list", cursor=params.cursor)
+        self.event("skills/list", cursor=params.cursor, **self.cache_hints(first_page=params.cursor is None))
         if params.cursor is None:
-            return ExtensionResult(skills=[skill_entry("skill://portable-demo/SKILL.md")], nextCursor="page-2")
+            return ExtensionResult(skills=[skill_entry("skill://portable-demo/SKILL.md")], nextCursor="page-2", **self.cache_hints(first_page=True))
         if params.cursor == "page-2":
             return ExtensionResult(
-                skills=[skill_entry("skill://catalog-b/portable-demo/SKILL.md")], nextCursor="page-3")
+                skills=[skill_entry("skill://catalog-b/portable-demo/SKILL.md")], nextCursor="page-3", **self.cache_hints())
         if params.cursor == "page-3":
             bad_child = skill_entry("skill://bad/bad-parent/bad-child/SKILL.md")
             bad_child["resources"][0]["digest"] = "sha256:" + "0" * 64
-            return ExtensionResult.model_validate({"skills": [
+            return ExtensionResult.model_validate({**self.cache_hints(), "skills": [
                     skill_entry("fixture-skill://catalog-c/portable-alt/SKILL.md"),
                     skill_entry("skill://nested/parent/SKILL.md"),
                     skill_entry("skill://nested/parent/child/SKILL.md"),
@@ -189,10 +196,10 @@ class Fixture:
         raise MCPError(code=-32602, message="Invalid params")
 
     async def get_skill(self, _ctx: Any, params: SkillsGetParams) -> ExtensionResult:
-        self.event("skills/get", uri=params.uri)
+        self.event("skills/get", uri=params.uri, **self.cache_hints())
         if params.uri not in FRONTMATTER:
             raise MCPError(code=-32602, message="Invalid params")
-        return ExtensionResult(skill=skill_entry(params.uri))
+        return ExtensionResult(skill=skill_entry(params.uri), **self.cache_hints())
 
     async def list_resources(self, _ctx: Any, _params: Any) -> types.ListResourcesResult:
         self.event("resources/list")
@@ -246,8 +253,9 @@ class Fixture:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--events", help="append JSONL request observations to this runtime path")
+    parser.add_argument("--legacy", action="store_true", help="omit cache hints for legacy compatibility")
     args = parser.parse_args()
-    anyio.run(Fixture(args.events).run)
+    anyio.run(Fixture(args.events, legacy=args.legacy).run)
 
 
 if __name__ == "__main__":

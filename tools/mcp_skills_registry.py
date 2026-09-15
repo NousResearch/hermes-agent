@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from hermes_constants import get_hermes_home
+from tools.mcp_skills_auth import authorization_context, require_authorization_context
 from tools.mcp_skills_fs import (
     _descriptor_safety_available, _require_descriptor_safety,
     secure_atomic_json, secure_file_lock, secure_read_json,
@@ -72,7 +73,7 @@ def server_config_fingerprint(config: dict[str, Any]) -> str:
 
 def _entry_record(
     server: str, config_fingerprint: str, entry: SkillEntry | dict[str, Any], *,
-    connected: bool, get_verified: bool = False,
+    connected: bool, get_verified: bool = False, auth_context: str | None = None,
 ) -> dict[str, Any]:
     item = validate_skill_entry(entry)
     from tools.mcp_skills_scan import RemoteSkillSecurityError, scan_catalog_metadata
@@ -96,6 +97,7 @@ def _entry_record(
         "metadata_allowed": metadata_allowed,
         "metadata_scan": metadata_scan,
         "get_verified": get_verified,
+        "authorization_context": auth_context,
         "connected": connected,
     }
 
@@ -172,12 +174,15 @@ def _classify_overlaps(records: tuple[dict[str, Any], ...] | list[dict[str, Any]
 
 
 def publish_live_catalog(home: Path | str, server: str, config_fingerprint: str,
-                         entries: list[SkillEntry]) -> None:
+                         entries: list[SkillEntry], *, auth_context: str | None = None) -> None:
     if not isinstance(server, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", server) is None:
         raise ValueError("MCP server label is not a safe qualified-name/path component")
-    records_list = [_entry_record(server, config_fingerprint, entry, connected=True) for entry in entries]
+    bound_context = auth_context or authorization_context(server, home)
+    records_list = [_entry_record(server, config_fingerprint, entry, connected=True,
+                                 auth_context=bound_context) for entry in entries]
     records = _classify_overlaps(records_list)
     with _lock:
+        require_authorization_context(server, bound_context, home)
         _live[(_home_key(home), server)] = {"entries": records}
 
 
@@ -192,7 +197,8 @@ def _validate_record(raw: Any, *, connected: bool) -> dict[str, Any]:
     entry = validate_skill_entry({"uri": raw.get("uri"), "frontmatter": raw.get("frontmatter"),
                                   "resources": raw.get("resources")})
     record = _entry_record(str(raw.get("server") or ""), str(raw.get("config_fingerprint") or ""),
-                           entry, connected=connected, get_verified=bool(raw.get("get_verified")))
+                           entry, connected=connected, get_verified=bool(raw.get("get_verified")),
+                           auth_context=raw.get("authorization_context"))
     if not record["server"] or not record["config_fingerprint"]:
         raise ValueError("snapshot entry lacks origin identity")
     if raw.get("manifest_fingerprint") != record["manifest_fingerprint"]:
@@ -272,6 +278,8 @@ def _merge_snapshot_locked(home: str, session_id: str, additions: list[dict[str,
         key = (addition["server"], addition["uri"])
         existing = by_uri.get(key)
         if existing is not None:
+            if existing.get("authorization_context") != addition.get("authorization_context"):
+                raise RuntimeError("MCP skill authorization context changed; start a new session after reconnect")
             if existing["manifest_fingerprint"] != addition["manifest_fingerprint"]:
                 raise ValueError(
                     "remote skill manifest changed for this session-pinned server and URI; start a new session")
@@ -291,13 +299,17 @@ def _merge_snapshot_locked(home: str, session_id: str, additions: list[dict[str,
 
 
 def register_lazy_entry(home: Path | str | None, session_id: str | None, server: str,
-                        config_fingerprint: str, entry: SkillEntry | dict[str, Any]) -> dict[str, Any]:
+                        config_fingerprint: str, entry: SkillEntry | dict[str, Any], *,
+                        auth_context: str | None = None) -> dict[str, Any]:
     """Atomically append a point-fetched entry without replacing a held identity."""
     if not session_id:
         raise ValueError("URI-only remote skill registration requires a session id")
     home_key = _home_key(home)
-    record = _entry_record(server, config_fingerprint, entry, connected=True, get_verified=True)
+    bound_context = auth_context or authorization_context(server, home)
+    record = _entry_record(server, config_fingerprint, entry, connected=True, get_verified=True,
+                           auth_context=bound_context)
     with _lock, secure_file_lock(home_key, _snapshot_lock_rel(session_id)):
+        require_authorization_context(server, bound_context, home_key)
         held = _merge_snapshot_locked(home_key, session_id, [record])
         match = next(row for row in held if row["server"] == server and row["uri"] == record["uri"])
         record.update(json.loads(json.dumps(match)))
@@ -305,8 +317,10 @@ def register_lazy_entry(home: Path | str | None, session_id: str | None, server:
 
 
 def pin_session(home: Path | str | None, session_id: str | None) -> tuple[dict[str, Any], ...]:
-    """Return only Skills-Guard-approved metadata for a profile/session."""
-    return tuple(row for row in _pin_session_all(home, session_id) if row.get("metadata_allowed") is True)
+    """Project currently eligible metadata without changing the held ownership pins."""
+    from tools.mcp_skills_cache import eligible_skill_records
+    return tuple(row for row in eligible_skill_records(_pin_session_all(home, session_id), home)
+                 if row.get("metadata_allowed") is True)
 
 
 def resolve_remote_skill(identifier: str, home: Path | str | None, session_id: str | None) -> tuple[dict[str, Any] | None, str | None]:
@@ -328,6 +342,10 @@ def resolve_remote_skill(identifier: str, home: Path | str | None, session_id: s
     if len(named) > 1:
         matches = [qualified_name(r) for r in named]
         return None, f"Remote skill name {target!r} is ambiguous; use one of: {', '.join(matches)}"
+    held = _pin_session_all(home, session_id)
+    if any(r["server"] == server and (r["uri"] == target or r["frontmatter"].get("name") == target)
+           for r in held):
+        return None, "MCP skill authorization context or source is unavailable; reconnect and start a new session"
     return None, f"Remote skill {identifier!r} is not in this session's pinned catalog."
 
 
@@ -424,6 +442,7 @@ def mark_active(record: dict[str, Any], home: Path | str | None, session_id: str
         raise ValueError("remote skill activation requires a session id")
     home_key = _home_key(home)
     with _lock, secure_file_lock(home_key, _active_lock_rel(session_id)):
+        require_authorization_context(record["server"], record.get("authorization_context"), home_key)
         # A sibling process may have committed after our in-memory publication.
         # Reload under the kernel lock before every load/merge/write transaction.
         _active.pop((home_key, session_id), None)
@@ -440,6 +459,7 @@ def mark_get_verified(record: dict[str, Any], home: Path | str | None, session_i
     update = json.loads(json.dumps(record))
     update["get_verified"] = True
     with _lock, secure_file_lock(home_key, _snapshot_lock_rel(session_id)):
+        require_authorization_context(record["server"], record.get("authorization_context"), home_key)
         _merge_snapshot_locked(home_key, session_id, [update], allow_new=False)
     record["get_verified"] = True
 

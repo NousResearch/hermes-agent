@@ -9,13 +9,14 @@ import sys
 import pytest
 
 
-def _run_independent_stdio_fixture(tmp_path):
+def _run_independent_stdio_fixture(tmp_path, legacy):
     pytest.importorskip("mcp")
     root = Path(__file__).resolve().parents[2]
     runner = root / "tests" / "fixtures" / "mcp_skills_interop" / "run_interop.py"
     output = tmp_path / "interop.json"
     result = subprocess.run(
-        [sys.executable, "-B", str(runner), "--hermes", str(root), "--output", str(output)],
+        [sys.executable, "-B", str(runner), "--hermes", str(root), "--output", str(output),
+         *(["--legacy"] if legacy else [])],
         cwd=tmp_path,
         text=True,
         capture_output=True,
@@ -26,6 +27,7 @@ def _run_independent_stdio_fixture(tmp_path):
     receipt = json.loads(output.read_text(encoding="utf-8"))
     assert receipt["status"] == "PASS"
     checks = receipt["checks"]
+    assert checks["cache_hint_envelopes"] == ("legacy" if legacy else "modern")
     assert checks["shutdown_returned"] is True
     assert checks["alternate_uri_scheme"] is True
     assert checks["real_stdio_discovery"]["catalog_entries"] == 7
@@ -39,10 +41,12 @@ def _run_independent_stdio_fixture(tmp_path):
 
 
 @pytest.mark.linux_only
-def test_independent_stdio_skills_fixture_linux(tmp_path):
-    _run_independent_stdio_fixture(tmp_path)
+@pytest.mark.parametrize("legacy", [False, True], ids=["modern", "legacy"])
+def test_independent_stdio_skills_fixture_linux(tmp_path, legacy):
+    _run_independent_stdio_fixture(tmp_path, legacy)
 
 
 @pytest.mark.macos_only
-def test_independent_stdio_skills_fixture_macos(tmp_path):
-    _run_independent_stdio_fixture(tmp_path)
+@pytest.mark.parametrize("legacy", [False, True], ids=["modern", "legacy"])
+def test_independent_stdio_skills_fixture_macos(tmp_path, legacy):
+    _run_independent_stdio_fixture(tmp_path, legacy)

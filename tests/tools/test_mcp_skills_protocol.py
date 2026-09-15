@@ -14,6 +14,7 @@ from tools.mcp_skills_protocol import (
     decode_read_resource_result,
     get_skill,
     list_skills,
+    manifest_fingerprint,
     read_directory,
     skills_opted_in,
     validate_skill_entry,
@@ -161,3 +162,93 @@ def test_malformed_get_uri_is_rejected_before_request(uri):
 
     with pytest.raises(ValueError):
         asyncio.run(get_skill(Session(), uri))
+
+
+class _WireSession:
+    def __init__(self, *results):
+        self.results = iter(results)
+        self.requests = []
+        self.parsed = []
+
+    async def send_request(self, request, adapter):
+        self.requests.append(request)
+        result = adapter.validate_python(next(self.results))
+        self.parsed.append(result)
+        return result
+
+    async def read_resource(self, uri):
+        raise AssertionError("cache hints must not prefetch content")
+
+
+def _envelope(method, **hints):
+    return {("skills" if method == "list" else "skill"):
+            ([_entry()] if method == "list" else _entry()), **hints}
+
+
+def _call(method, session):
+    return asyncio.run(list_skills(session, "fixture") if method == "list"
+                       else get_skill(session, _entry()["uri"]))
+
+
+@pytest.mark.parametrize("method", ["list", "get"])
+@pytest.mark.parametrize("hints", [
+    {}, {"ttlMs": 0, "cacheScope": "private"},
+    {"ttlMs": 30, "cacheScope": "public"},
+    {"ttlMs": 0.25, "cacheScope": "private"},
+    {"ttlMs": 10**400, "cacheScope": "public"},
+    {"ttl_ms": 0.25, "cache_scope": "public"},
+])
+def test_cache_hints_preserve_entry_identity_and_legacy_omission(method, hints):
+    session = _WireSession(_envelope(method, vendorExtra={"opaque": True}, **hints))
+    returned = _call(method, session)
+    entry = returned[0][0] if isinstance(returned, tuple) else returned
+    assert entry == validate_skill_entry(_entry())
+    assert manifest_fingerprint(entry) == manifest_fingerprint(_entry())
+    parsed = session.parsed[0]
+    assert parsed.ttl_ms == hints.get("ttlMs", hints.get("ttl_ms"))
+    assert parsed.cache_scope == hints.get("cacheScope", hints.get("cache_scope"))
+    assert parsed.model_dump(by_alias=True)["vendorExtra"] == {"opaque": True}
+    assert len(session.requests) == 1
+
+
+@pytest.mark.parametrize("method", ["list", "get"])
+@pytest.mark.parametrize("hints", [
+    {"ttlMs": value} for value in [-1, -0.25, "1", True, False, None,
+                                  float("nan"), float("inf"), -float("inf")]
+] + [{"cacheScope": value} for value in ["shared", "PUBLIC", 1, True, None, [], {}]])
+def test_malformed_advertised_cache_hints_fail_adapter_validation(method, hints):
+    with pytest.raises(ValueError):
+        _call(method, _WireSession(_envelope(method, **hints)))
+
+
+@pytest.mark.parametrize("method", ["list", "get"])
+def test_explicit_result_type_must_be_complete(method):
+    _call(method, _WireSession(_envelope(method, resultType="complete")))
+    with pytest.raises(ValueError, match="incomplete"):
+        _call(method, _WireSession(_envelope(method, resultType="partial")))
+
+
+@pytest.mark.parametrize("later_hints", [
+    {"ttlMs": -1}, {"cacheScope": "shared"}, {"ttlMs": None},
+])
+def test_later_page_malformed_hints_reject_whole_listing(later_hints):
+    session = _WireSession(
+        {"skills": [], "nextCursor": "second", "ttlMs": 1000, "cacheScope": "public"},
+        _envelope("list", **later_hints))
+    with pytest.raises(ValueError):
+        _call("list", session)
+    assert session.requests[1].params == {"cursor": "second"}
+
+
+def test_paginated_hints_are_diagnostics_not_response_reuse_or_prefetch():
+    pages = [{"skills": [], "nextCursor": "second", "ttlMs": 1000, "cacheScope": "public"},
+             _envelope("list", ttlMs=0, cacheScope="private")]
+    session = _WireSession(*pages, *pages)
+    first = _call("list", session)
+    second = _call("list", session)
+    assert first == second
+    assert isinstance(first, tuple)
+    assert first[1] == {"ttl_ms": 1000, "cache_scope": "public"}
+    assert [request.method for request in session.requests] == ["skills/list"] * 4
+    assert session.parsed[1].ttl_ms == 0
+    assert session.parsed[1].cache_scope == "private"

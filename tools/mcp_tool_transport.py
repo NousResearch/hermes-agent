@@ -110,6 +110,7 @@ class MCPServerTransportMixin:
             advertised_skills_settings, directory_read_advertised, list_skills, skills_opted_in,
         )
         from tools.mcp_skills_registry import publish_live_catalog, server_config_fingerprint
+        from tools.mcp_skills_auth import source_authorization_context
         config = getattr(self, "_config", {})
         name = getattr(self, "name", "")
         current_home = str(get_hermes_home())
@@ -124,13 +125,16 @@ class MCPServerTransportMixin:
             return
         self._skills_advertised = True
         try:
+            auth_context = source_authorization_context(name, self, current_home)
             async with getattr(self, "_rpc_lock"):
                 entries, _metadata = await list_skills(generation_session, name)
             if self.session is not generation_session or self._skills_epoch != generation_epoch:
                 raise RuntimeError("MCP Skills connection generation changed during skills/list")
+            if source_authorization_context(name, self, current_home) != auth_context:
+                raise RuntimeError("MCP skill authorization context changed during skills/list; result discarded")
             fingerprint = server_config_fingerprint(config)
             directory_read = directory_read_advertised(self.initialize_result)
-            publish_live_catalog(current_home, name, fingerprint, entries)
+            publish_live_catalog(current_home, name, fingerprint, entries, auth_context=auth_context)
             self._skills_catalog = tuple(entries)
             self._skills_config_fingerprint = fingerprint
             self._skills_directory_read = directory_read
@@ -412,11 +416,13 @@ class MCPServerTransportMixin:
     def _build_oauth_auth(self, url: str, config: dict):
         """OAuth 2.1 PKCE via the central MCPOAuthManager (one provider reused across reconnects and
         CLI paths). Setup failures re-raise (after a warning) so only this server is reported failed."""
+        self._oauth_provider = None
         if self._auth_type != "oauth":
             return None
         try:
             from tools.mcp_oauth_manager import get_manager
-            return get_manager().get_or_build_provider(self.name, url, config.get("oauth"))
+            self._oauth_provider = get_manager().get_or_build_provider(self.name, url, config.get("oauth"))
+            return self._oauth_provider
         except Exception as exc:
             logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
             raise

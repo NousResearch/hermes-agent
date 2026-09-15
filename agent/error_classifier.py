@@ -97,6 +97,7 @@ _BILLING_PATTERNS = (
     # limit" free text is NOT matched: substring rules can't negate the
     # "non-terminal billing limit" wording, and the structured code covers it.
     "hard billing limit",
+    "budget limit exceeded",
 )
 
 # Not proof of exhaustion: Anthropic returns the same "out of extra usage" body

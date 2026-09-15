@@ -166,6 +166,22 @@ def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[st
     return cleaned.rstrip("/")
 
 
+def _scoped_operator_override(name: str) -> Optional[str]:
+    """An operator routing override (``NOUS_INFERENCE_BASE_URL``, ``HERMES_PORTAL_BASE_URL``)
+    resolved through the profile secret scope, or None.
+
+    ``get_secret`` already reads ``os.environ`` for a single-profile process, so the only time it
+    raises is a multi-profile call that has lost its profile scope. That call has no authority to
+    route on the launch profile's value — returning the ambient env there would send a secondary's
+    tokens to the launch profile's Portal or inference host — so the override is simply absent.
+    """
+    from agent.secret_scope import UnscopedSecretError, get_secret
+    try:
+        return get_secret(name)
+    except UnscopedSecretError:
+        return None
+
+
 def _nous_inference_env_override() -> Optional[str]:
     """User-set ``NOUS_INFERENCE_BASE_URL`` override (trailing slash stripped) or None.
 
@@ -175,12 +191,7 @@ def _nous_inference_env_override() -> Optional[str]:
     profile's process-wide value (#65941).
     """
     from hermes_cli.auth import _optional_base_url
-    from agent.secret_scope import UnscopedSecretError, get_secret
-    try:
-        override = get_secret("NOUS_INFERENCE_BASE_URL")
-    except UnscopedSecretError:
-        override = os.getenv("NOUS_INFERENCE_BASE_URL")  # unscoped default-profile/CLI path: environ IS its own value
-    return _optional_base_url(override)
+    return _optional_base_url(_scoped_operator_override("NOUS_INFERENCE_BASE_URL"))
 
 
 def _nous_portal_env_override() -> Optional[str]:
@@ -194,12 +205,8 @@ def _nous_portal_env_override() -> Optional[str]:
     secondary's refresh token to the DEFAULT profile's Portal.
     """
     from hermes_cli.auth import _optional_base_url
-    from agent.secret_scope import UnscopedSecretError, get_secret
-    try:
-        override = get_secret("HERMES_PORTAL_BASE_URL") or get_secret("NOUS_PORTAL_BASE_URL")
-    except UnscopedSecretError:
-        override = os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL")  # unscoped default-profile/CLI path: environ IS its own value
-    return _optional_base_url(override)
+    return _optional_base_url(
+        _scoped_operator_override("HERMES_PORTAL_BASE_URL") or _scoped_operator_override("NOUS_PORTAL_BASE_URL"))
 
 
 def _scope_values(raw_scope: Any) -> set[str]:

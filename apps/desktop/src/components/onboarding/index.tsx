@@ -142,7 +142,14 @@ function useApiKeyCatalog(ctx: OnboardingContext): ApiKeyOption[] {
     // Promise.resolve().then so a synchronous throw (e.g. no desktop bridge in
     // tests) is funneled into the same .catch instead of escaping.
     void Promise.resolve()
-      .then(() => requestModelOptions({ explicitOnly: false, profile: ctx.profile, request: ctx.requestGateway }))
+      .then(() =>
+        requestModelOptions({
+          explicitOnly: false,
+          profile: ctx.profile,
+          request: ctx.requestGateway,
+          scope: ctx.scope ?? ctx.profile
+        })
+      )
       .then(res => {
         if (!cancelled) {
           setRows(res.providers ?? [])
@@ -221,8 +228,13 @@ export function DesktopOnboardingOverlay({
       scope: targetScope,
       requestGateway:
         targetScope && typeof targetScope === 'object' && targetScope.connectionId
-          ? (method, params) =>
-              requestGatewayForAgent(targetScope.connectionId ?? null, targetProfile, method, params)
+          ? async (method, params) => {
+              if (targetScope.connectionOwner && $settingsOwner.get() !== targetScope) {
+                throw new Error('The Settings gateway changed during provider setup. Reopen setup and try again.')
+              }
+
+              return requestGatewayForAgent(targetScope.connectionId ?? null, targetProfile, method, params)
+            }
           : targetScope && typeof targetScope === 'object' && targetScope.legacyConnection
             ? async (method, params) => {
                 const currentOwner = $settingsOwner.get()

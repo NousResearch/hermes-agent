@@ -1,11 +1,22 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as ModelOptionsModule from '@/lib/model-options'
 import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
 import { $connection } from '@/store/session'
 import { $settingsOwner } from '@/store/settings-scope'
 import { makeOAuthProvider } from '@/test/oauth-provider'
 import type { OAuthProvider } from '@/types/hermes'
+
+const requestModelOptions = vi.hoisted(() => vi.fn())
+
+vi.mock('@/lib/model-options', async importOriginal => ({
+  ...(await importOriginal<typeof ModelOptionsModule>()),
+  requestModelOptions
+}))
+
+import { FlowPanel } from './flow'
 
 import { DesktopOnboardingOverlay, Picker } from '.'
 
@@ -25,6 +36,10 @@ function setProviders(providers: OAuthProvider[]) {
 }
 
 const ctx: OnboardingContext = { requestGateway: async () => undefined as never }
+
+beforeEach(() => {
+  requestModelOptions.mockResolvedValue({ model: '', provider: '', providers: [] })
+})
 
 afterEach(() => {
   cleanup()
@@ -48,9 +63,32 @@ afterEach(() => {
     freeTierReady: false
   })
   $connection.set(null)
+  vi.clearAllMocks()
 })
 
 describe('onboarding Picker', () => {
+  it('uses the captured owner for catalog REST recovery', async () => {
+    const scope = {
+      connectionId: null,
+      profile: 'remote-profile',
+      legacyConnection: {
+        baseUrl: 'https://legacy.example',
+        headers: { 'Cf-Access-Client-Id': 'private-client' },
+        mode: 'remote',
+        token: 'private-token'
+      }
+    } as const
+
+    setProviders([makeOAuthProvider('nous', 'Nous Portal')])
+    render(<Picker ctx={{ profile: 'remote-profile', requestGateway: vi.fn(), scope }} />)
+
+    await waitFor(() =>
+      expect(requestModelOptions).toHaveBeenCalledWith(
+        expect.objectContaining({ explicitOnly: false, profile: 'remote-profile', scope })
+      )
+    )
+  })
+
   it('features Nous Portal and hides other providers behind a disclosure', () => {
     setProviders([makeOAuthProvider('anthropic', 'Anthropic Claude'), makeOAuthProvider('nous', 'Nous Portal')])
     render(<Picker ctx={ctx} />)
@@ -122,6 +160,50 @@ describe('onboarding Picker', () => {
     render(<Picker ctx={ctx} />)
 
     expect(screen.queryByRole('button', { name: "I'll choose a provider later" })).toBeNull()
+  })
+})
+
+describe('onboarding model confirmation owner routing', () => {
+  it('uses an opaque cache key and the captured owner for REST recovery', async () => {
+    const scope = {
+      connectionId: null,
+      profile: 'remote-profile',
+      legacyConnection: {
+        baseUrl: 'https://legacy.example',
+        headers: { 'Cf-Access-Client-Id': 'private-client' },
+        mode: 'remote',
+        token: 'private-token'
+      }
+    } as const
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    render(
+      <QueryClientProvider client={client}>
+        <FlowPanel
+          ctx={{ profile: 'remote-profile', requestGateway: vi.fn(), scope }}
+          flow={{
+            currentModel: 'fixture/model',
+            label: 'Fixture',
+            providerSlug: 'fixture',
+            saving: false,
+            status: 'confirming_model'
+          }}
+          leaving={false}
+          onBegin={vi.fn()}
+        />
+      </QueryClientProvider>
+    )
+
+    await waitFor(() =>
+      expect(requestModelOptions).toHaveBeenCalledWith(
+        expect.objectContaining({ explicitOnly: false, profile: 'remote-profile', scope })
+      )
+    )
+    const serializedKeys = JSON.stringify(client.getQueryCache().getAll().map(query => query.queryKey))
+    expect(serializedKeys).not.toContain('private-token')
+    expect(serializedKeys).not.toContain('private-client')
+    expect(serializedKeys).toContain('legacy:')
   })
 })
 

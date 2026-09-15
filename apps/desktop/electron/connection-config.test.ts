@@ -46,6 +46,7 @@ import {
   resolveLegacyApiConnection,
   resolveProfileApiRequest,
   resolveProfileBackendRoute,
+  resolveRegistryApiConnection,
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
@@ -125,6 +126,36 @@ test('legacy Settings resolution retains its HTTP origin across awaits and rejec
   } finally {
     server.closeAllConnections()
     await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+})
+
+test('registered writes fail closed when the same id resolves to a replaced descriptor', async () => {
+  const original = {
+    mode: 'remote',
+    baseUrl: 'https://original.example',
+    token: 'original-token',
+    headers: { 'Cf-Access-Client-Id': 'original-client' },
+    remoteKind: 'ssh',
+    remoteHost: 'operator@original-host'
+  }
+
+  for (const replacement of [
+    { ...original, baseUrl: 'https://replacement.example' },
+    { ...original, token: 'replacement-token' },
+    { ...original, headers: { 'Cf-Access-Client-Id': 'replacement-client' } },
+    { ...original, remoteHost: 'operator@replacement-host' }
+  ]) {
+    let release!: () => void
+
+    const pending = new Promise<typeof replacement>(resolve => {
+      release = () => resolve(replacement)
+    })
+
+    const request = { connectionId: 'same-id', connectionOwner: original, method: 'PUT', path: '/api/config' }
+    const write = resolveRegistryApiConnection(request, 'same-id', () => pending)
+
+    release()
+    await assert.rejects(write, /Backend changed/)
   }
 })
 

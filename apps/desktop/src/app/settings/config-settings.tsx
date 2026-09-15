@@ -488,6 +488,7 @@ function ConfigSettingsInner({
                 optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
                 schema={field}
                 schemaKey={key}
+                scope={scopeProfile}
                 value={getNested(config, key)}
               />
               {key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (

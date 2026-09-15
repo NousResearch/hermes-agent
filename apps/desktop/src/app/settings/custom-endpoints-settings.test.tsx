@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ProfileScope } from '@/hermes'
 import type { CustomEndpointsResponse } from '@/types/hermes'
 
 const getCustomEndpoints = vi.fn()
@@ -11,6 +12,7 @@ const validateCustomEndpoint = vi.fn()
 const notify = vi.fn()
 const notifyError = vi.fn()
 const triggerHaptic = vi.fn()
+const scope = { connectionId: 'local', profile: 'default' } satisfies ProfileScope
 
 vi.mock('@/store/profile', () => ({
   $activeGatewayProfile: atom('default'),
@@ -30,6 +32,7 @@ vi.mock('@/hermes', async importOriginal => ({
   setApiRequestProfile: vi.fn(),
   validateCustomEndpoint: (...args: unknown[]) => validateCustomEndpoint(...args)
 }))
+vi.mock('./profile-scope', () => ({ SettingsProfileScope: () => null }))
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: (...args: unknown[]) => triggerHaptic(...args) }))
 vi.mock('@/store/notifications', () => ({
   notify: (...args: unknown[]) => notify(...args),
@@ -91,7 +94,7 @@ describe('CustomEndpointsSettings', () => {
     saveCustomEndpoint.mockResolvedValue(savedResponse)
     const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
 
-    render(<CustomEndpointsSettings />)
+    render(<CustomEndpointsSettings scope={scope} />)
 
     await screen.findByText('No custom endpoints')
     fireEvent.change(screen.getByPlaceholderText('Axet Proxy'), { target: { value: 'Responses gateway' } })
@@ -107,7 +110,7 @@ describe('CustomEndpointsSettings', () => {
 
     expect(validateCustomEndpoint).toHaveBeenCalledWith(
       expect.objectContaining({ api_mode: 'codex_responses' }),
-      undefined
+      scope
     )
     expect(notify).toHaveBeenCalledWith({
       kind: 'success',
@@ -122,45 +125,7 @@ describe('CustomEndpointsSettings', () => {
         ]),
         models: ['gpt-5.6-sol', 'gpt-5.6-sol-high']
       }),
-      undefined
-    )
-  })
-
-  it('loads and saves endpoints for the Settings Applies-to profile, not only the active bot', async () => {
-    const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
-    const { $settingsScopeOverride } = await import('@/store/settings-scope')
-    $activeGatewayProfile.set('carousel-director')
-    $settingsScopeOverride.set('content-studio')
-    $profiles.set(
-      ['carousel-director', 'content-studio'].map(name => ({
-        name,
-        has_env: false,
-        is_default: false,
-        model: null,
-        path: '',
-        provider: null,
-        skill_count: 0
-      }))
-    )
-    getCustomEndpoints.mockResolvedValue(emptyResponse)
-    saveCustomEndpoint.mockResolvedValue(savedResponse)
-    const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
-
-    render(<CustomEndpointsSettings />)
-
-    await waitFor(() => expect(getCustomEndpoints).toHaveBeenCalledWith('content-studio'))
-    expect(screen.getByText('Applies to')).toBeTruthy()
-
-    fireEvent.change(screen.getByPlaceholderText('Axet Proxy'), { target: { value: 'Studio gateway' } })
-    fireEvent.change(screen.getByPlaceholderText('http://127.0.0.1:8081/v1'), {
-      target: { value: 'https://studio.example.com/v1' }
-    })
-    fireEvent.change(screen.getByPlaceholderText('gpt-5.4'), { target: { value: 'studio-model' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-
-    expect(saveCustomEndpoint).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'Studio gateway' }),
-      'content-studio'
+      scope
     )
   })
 
@@ -171,7 +136,7 @@ describe('CustomEndpointsSettings', () => {
     })
     const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
 
-    render(<CustomEndpointsSettings />)
+    render(<CustomEndpointsSettings scope={scope} />)
 
     await screen.findByText('Profile A')
     expect(screen.getByRole('button', { name: 'Anthropic Messages' }).getAttribute('aria-pressed')).toBe('true')
@@ -186,7 +151,11 @@ describe('CustomEndpointsSettings', () => {
     const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
 
     const view = render(
-      <CustomEndpointsSettings onConfigSaved={onConfigSaved} onMainModelChanged={onMainModelChanged} />
+      <CustomEndpointsSettings
+        onConfigSaved={onConfigSaved}
+        onMainModelChanged={onMainModelChanged}
+        scope={scope}
+      />
     )
 
     await screen.findByText('No custom endpoints')
@@ -219,7 +188,13 @@ describe('CustomEndpointsSettings', () => {
       resolved_base_url: 'http://h.test/v1'
     })
     const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
-    render(<CustomEndpointsSettings onConfigSaved={vi.fn()} onMainModelChanged={vi.fn()} />)
+    render(
+      <CustomEndpointsSettings
+        onConfigSaved={vi.fn()}
+        onMainModelChanged={vi.fn()}
+        scope={scope}
+      />
+    )
 
     await screen.findByText('No custom endpoints')
     const urlInput = screen.getByPlaceholderText<HTMLInputElement>('http://127.0.0.1:8081/v1')

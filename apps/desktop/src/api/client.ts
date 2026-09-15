@@ -1,6 +1,6 @@
 import { JsonRpcGatewayClient } from '@hermes/shared'
 
-import type { HermesApiRequest, LegacyConnectionOwner } from '@/global'
+import type { ConnectionOwner, HermesApiRequest, LegacyConnectionOwner } from '@/global'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a
@@ -181,6 +181,7 @@ export type ProfileScope =
   | {
       connectionId?: null | string
       profile?: null | string
+      connectionOwner?: ConnectionOwner
       legacyConnection?: LegacyConnectionOwner
     }
 
@@ -188,6 +189,7 @@ export function capabilityScoped(scope?: ProfileScope): {
   connectionId?: string
   priority?: 'foreground'
   profile?: string
+  connectionOwner?: ConnectionOwner
   legacyConnection?: LegacyConnectionOwner
 } {
   if (scope && typeof scope === 'object') {
@@ -198,6 +200,7 @@ export function capabilityScoped(scope?: ProfileScope): {
       ...(profile ? { profile } : {}),
       // An explicit legacy pin must also override hermesApi's ambient registry tag.
       ...(connectionId ? { connectionId } : scope.connectionId === null ? { connectionId: undefined } : {}),
+      ...(scope.connectionOwner ? { connectionOwner: scope.connectionOwner } : {}),
       ...(scope.legacyConnection ? { legacyConnection: scope.legacyConnection } : {}),
       priority: 'foreground'
     }
@@ -212,9 +215,17 @@ export function capabilityScoped(scope?: ProfileScope): {
  *  to hit the same backend (a remote registry PRIMARY makes the ambient path
  *  remote), so sharing the bare-profile cache row between them painted one
  *  machine's config under the other's scope (AGENTS.md scope-in-key rule). */
-// Descriptor lifetime isolates legacy caches without storing credentials in query keys.
-const legacyScopeGenerations = new WeakMap<LegacyConnectionOwner, number>()
-let legacyScopeGeneration = 0
+// Descriptor lifetime isolates owner caches without storing credentials in query keys.
+const ownerScopeGenerations = new WeakMap<ConnectionOwner, number>()
+let ownerScopeGeneration = 0
+
+function ownerScopeKey(owner: ConnectionOwner): number {
+  if (!ownerScopeGenerations.has(owner)) {
+    ownerScopeGenerations.set(owner, ++ownerScopeGeneration)
+  }
+
+  return ownerScopeGenerations.get(owner)!
+}
 
 export function profileScopeKey(scope?: ProfileScope): string {
   if (scope && typeof scope === 'object') {
@@ -222,11 +233,11 @@ export function profileScopeKey(scope?: ProfileScope): string {
     const connectionId = (scope.connectionId ?? '').trim()
 
     if (!connectionId && scope.legacyConnection) {
-      if (!legacyScopeGenerations.has(scope.legacyConnection)) {
-        legacyScopeGenerations.set(scope.legacyConnection, ++legacyScopeGeneration)
-      }
+      return `legacy:${ownerScopeKey(scope.legacyConnection)}::${profile}`
+    }
 
-      return `legacy:${legacyScopeGenerations.get(scope.legacyConnection)}::${profile}`
+    if (connectionId && scope.connectionOwner) {
+      return `${connectionId}:${ownerScopeKey(scope.connectionOwner)}::${profile}`
     }
 
     return connectionId ? `${connectionId}::${profile}` : profile

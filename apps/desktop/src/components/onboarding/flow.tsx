@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { ErrorIcon } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
 import { Loader } from '@/components/ui/loader'
+import { profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { ExternalLink, Loader2 } from '@/lib/icons'
 import { requestModelOptions } from '@/lib/model-options'
@@ -257,15 +258,14 @@ function ConfirmingModelPanel({
   // Pull pricing + tier for the just-picked default so the confirm card
   // shows the same $/Mtok + Free/Pro info the picker and CLI do.
   const options = useQuery({
-    queryKey: [
-      'onboarding-model-options',
-      flow.providerSlug,
-      ctx.profile,
-      ctx.scope && typeof ctx.scope === 'object'
-        ? (ctx.scope.connectionId ?? JSON.stringify(ctx.scope.legacyConnection))
-        : ctx.profile
-    ],
-    queryFn: () => requestModelOptions({ explicitOnly: false, profile: ctx.profile, request: ctx.requestGateway })
+    queryKey: ['onboarding-model-options', flow.providerSlug, profileScopeKey(ctx.scope ?? ctx.profile)],
+    queryFn: () =>
+      requestModelOptions({
+        explicitOnly: false,
+        profile: ctx.profile,
+        request: ctx.requestGateway,
+        scope: ctx.scope ?? ctx.profile
+      })
   })
 
   const providerRow = options.data?.providers?.find(

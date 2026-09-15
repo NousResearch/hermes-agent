@@ -137,6 +137,7 @@ import {
   resolveLegacyApiConnection,
   resolveProfileApiRequest,
   resolveProfileBackendRoute,
+  resolveRegistryApiConnection,
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
   sanitizeRemoteHeaderValue,
@@ -17131,12 +17132,13 @@ async function dispatchRegistryApiRequest(
   // OUT of the claim: an interactive open coalescing onto an in-flight
   // passive read would otherwise inherit its "no warm backend" rejection.
   const spawnPriority = spawnPriorityFrom(request?.priority)
-
-  const connection: any = request?.passive
-    ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
-    : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
-        ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })
-      )
+  const connection: any = await resolveRegistryApiConnection(request, registryConnectionId, () =>
+    request?.passive
+      ? ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
+      : backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
+          ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })
+        )
+  )
 
   const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
 

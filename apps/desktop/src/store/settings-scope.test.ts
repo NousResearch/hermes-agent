@@ -19,8 +19,10 @@ vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
 
 const { $activeGatewayProfile, $profiles } = await import('./profile')
+const { $connection } = await import('./session')
 
 const {
+  $settingsOwner,
   $settingsRequestProfile,
   $settingsScopeEditsNonDefault,
   $settingsScopeOverride,
@@ -32,9 +34,47 @@ beforeEach(() => {
   $activeGatewayProfile.set('default')
   $settingsScopeOverride.set(null)
   $profiles.set([])
+  $connection.set(null)
 })
 
 describe('settings scope store', () => {
+  it('captures a new registered owner descriptor when the same id is replaced', () => {
+    const original = {
+      authMode: 'token',
+      baseUrl: 'https://original.example',
+      connectionId: 'same-id',
+      headers: { 'Cf-Access-Client-Id': 'original-client' },
+      mode: 'remote',
+      remoteHost: 'operator@original-host',
+      token: 'original-token'
+    }
+
+    $connection.set(original as never)
+    const captured = $settingsOwner.get()
+
+    expect(captured).toMatchObject({ connectionId: 'same-id' })
+    expect(captured?.connectionOwner).toMatchObject({
+      authMode: original.authMode,
+      baseUrl: original.baseUrl,
+      headers: original.headers,
+      mode: original.mode,
+      remoteHost: original.remoteHost,
+      token: original.token
+    })
+
+    for (const replacement of [
+      { ...original, baseUrl: 'https://replacement.example' },
+      { ...original, token: 'replacement-token' },
+      { ...original, headers: { 'Cf-Access-Client-Id': 'replacement-client' } },
+      { ...original, remoteHost: 'operator@replacement-host' }
+    ]) {
+      $connection.set(original as never)
+      const beforeReplacement = $settingsOwner.get()?.connectionOwner
+      $connection.set(replacement as never)
+      expect($settingsOwner.get()?.connectionOwner).not.toBe(beforeReplacement)
+    }
+  })
+
   it('defaults to following the active gateway profile (no override)', () => {
     expect($settingsScopeOverride.get()).toBeNull()
     expect($settingsScopeProfile.get()).toBe('default')

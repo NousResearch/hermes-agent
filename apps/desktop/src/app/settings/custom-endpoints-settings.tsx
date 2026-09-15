@@ -18,7 +18,7 @@ import { Check, Globe, Loader2, Plus, Save, Trash2, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
-
+import { $settingsOwner, $settingsScopeOverride } from '@/store/settings-scope'
 import type {
   CustomEndpoint,
   CustomEndpointApiMode,
@@ -120,6 +120,9 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
   // canonical model + reasoning effort on Save (#93622).
   const [discoveredDetails, setDiscoveredDetails] = useState<CustomEndpointModelDetail[]>([])
 
+  const isForegroundOwner = () =>
+    mounted.current && $settingsOwner.get() === scope && $settingsScopeOverride.get() == null
+
   async function refresh() {
     const data = await getCustomEndpoints(scope)
 
@@ -187,12 +190,16 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
         setDiscoveredModels(saved.models)
       }
 
-      if (saved && saved.is_current) {
+      if (saved?.is_current && isForegroundOwner()) {
         onMainModelChanged?.(saved.id, saved.model)
       }
 
       triggerHaptic('success')
-      onConfigSaved?.()
+
+      if (isForegroundOwner()) {
+        onConfigSaved?.()
+      }
+
       notify({ kind: 'success', message: 'Custom endpoint saved.' })
     } catch (err) {
       if (mounted.current) {
@@ -271,8 +278,11 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
         return
       }
 
-      onConfigSaved?.()
-      onMainModelChanged?.(response.provider, response.model)
+      if (isForegroundOwner()) {
+        onConfigSaved?.()
+        onMainModelChanged?.(response.provider, response.model)
+      }
+
       triggerHaptic('success')
     } catch (err) {
       if (mounted.current) {
@@ -307,7 +317,10 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
         setDiscoveredDetails([])
       }
 
-      onConfigSaved?.()
+      if (isForegroundOwner()) {
+        onConfigSaved?.()
+      }
+
       triggerHaptic('success')
     } catch (err) {
       if (mounted.current) {

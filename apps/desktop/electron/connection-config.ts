@@ -996,18 +996,34 @@ function sameStringRecord(left?: Record<string, string>, right?: Record<string, 
   return entries.length === Object.keys(right ?? {}).length && entries.every(([key, value]) => right?.[key] === value)
 }
 
-export function assertLegacyConnectionOwner(expected, connection): void {
+export function assertConnectionOwner(expected, connection): void {
   if (
     !expected ||
-    expected.mode !== 'remote' ||
-    !expected.baseUrl ||
-    ['mode', 'baseUrl', 'token', 'authMode', 'remoteIdentity', 'remoteKind'].some(
+    ['mode', 'baseUrl', 'token', 'authMode', 'remoteHost', 'remoteIdentity', 'remoteKind'].some(
       key => expected[key] !== connection?.[key]
     ) ||
     !sameStringRecord(expected.headers, connection?.headers)
   ) {
     throw new Error('Backend changed. Reopen Settings for the current connection.')
   }
+}
+
+export function assertLegacyConnectionOwner(expected, connection): void {
+  if (!expected || expected.mode !== 'remote' || !expected.baseUrl) {
+    throw new Error('Backend changed. Reopen Settings for the current connection.')
+  }
+
+  assertConnectionOwner(expected, connection)
+}
+
+export async function resolveRegistryApiConnection(request, connectionId, ensureBackend) {
+  const connection = await ensureBackend(connectionId, request?.profile, request?.passive)
+
+  if (Object.hasOwn(request, 'connectionOwner')) {
+    assertConnectionOwner(request.connectionOwner, connection)
+  }
+
+  return connection
 }
 
 export async function resolveLegacyApiConnection(request, routeProfile, ensureBackend, options = {}) {

@@ -51,6 +51,7 @@ import { sortConnectionsForDisplay } from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2 } from '@/lib/icons'
 import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
+import { profileShortLabel } from '@/lib/profile-short-label'
 import {
   REORDER_DRAG_TRANSITION_CSS,
   REORDER_RAIL_TRANSITION,
@@ -1104,7 +1105,7 @@ function RestSquare({
                   <button
                     aria-busy={pending || undefined}
                     aria-label={label}
-                    className="relative grid size-5 shrink-0 select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none opacity-35 transition-opacity hover:opacity-100 aria-busy:opacity-100"
+                    className="relative grid h-5 w-9 shrink-0 select-none place-items-center whitespace-nowrap rounded-[3px] px-1 text-[0.5625rem] font-semibold uppercase leading-none opacity-35 transition-opacity hover:opacity-100 aria-busy:opacity-100"
                     data-connection-id={agent.connectionId}
                     data-profile={agent.profile}
                     data-slot="profile-rail-rest-square"
@@ -1115,7 +1116,7 @@ function RestSquare({
                     {pending ? (
                       <Loader2 aria-hidden="true" className="size-3 animate-spin" />
                     ) : (
-                      agent.profile.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'
+                      profileShortLabel(agent.profile, 3)
                     )}
                   </button>
                 </TooltipTrigger>
@@ -1273,7 +1274,7 @@ function ProfileSquare({
                 <TooltipTrigger asChild>
                   <button
                     className={cn(
-                      'relative grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
+                      'relative grid h-5 w-9 shrink-0 cursor-grab touch-none select-none place-items-center whitespace-nowrap rounded-[3px] px-1 text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
                       active ? 'opacity-100' : 'opacity-55',
                       isDragging && 'z-10 cursor-grabbing opacity-100'
                     )}
@@ -1328,7 +1329,7 @@ function ProfileSquare({
                     onPointerMove={notePointerMove}
                     onPointerUp={clearPress}
                   >
-                    {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
+                    {profileShortLabel(label, 3)}
                     {/* The "remote" badge: a tiny globe pinned to the corner of an
                         overridden profile's square, so which profiles leave this
                         machine is visible at a glance (#91349). */}

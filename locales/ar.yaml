@@ -202,7 +202,7 @@ gateway:
       blocked:             "محجوبة؛ تحتاج إلى انتباه"
       review_requested:    "أُحيلت للمراجعة؛ اكتمل التنفيذ"
       changes_requested:   "طلبت المراجعة تغييرات (BLOCK)؛ التنفيذ غير معتمد"
-      block_loop_detected: "أُحيلت إلى الفرز بعد تكرار الحجب؛ تحتاج إلى قرار"
+      block_loop_detected: "أُحيلت إلى الفرز بعد تكرار الحجب؛ تحتاج إلى اهتمام بالتنسيق"
       status_default:      "تغيّرت الحالة"
       status_joiner:       "، "
       message:             "[kanban] المهمة {task_id} {status}.\nالعنوان: {title}\nالمُكلَّف: @{assignee}\nاللوحة: {board}\n\nراجع النتيجة أو قرّر الخطوة التالية."

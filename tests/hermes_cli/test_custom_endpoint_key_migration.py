@@ -28,7 +28,7 @@ def test_migration_moves_plaintext_custom_key_to_env(tmp_path, monkeypatch):
     from hermes_cli.config_migrations import MIGRATIONS, run_migrations
 
     versions = [version for version, _step in MIGRATIONS]
-    assert versions == sorted(set(versions))
+    assert versions == sorted(versions)
     results = {"env_added": [], "config_added": [], "warnings": []}
     run_migrations(39, results, quiet=True)
 

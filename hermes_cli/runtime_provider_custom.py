@@ -661,7 +661,7 @@ def _resolve_declared_key_env(
         return "", False
     if rp.has_usable_secret((explicit_api_key or "").strip()):
         return "", True
-    value = rp._getenv(env_var, "").strip()
+    value = get_secret_str(env_var, "").strip()
     if not rp.has_usable_secret(value):
         raise rp.AuthError(
             f"Custom endpoint declares key_env {env_var!r}, but it has no usable value",

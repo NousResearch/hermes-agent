@@ -1,66 +1,55 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { StatusDot, type StatusTone } from '@/components/status-dot'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
+import { ErrorBanner } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
+import { Tip } from '@/components/ui/tooltip'
 import {
+  approvePairing,
   getMessagingPlatforms,
+  getPairing,
   type MessagingEnvVarInfo,
   type MessagingPlatformInfo,
+  type PairingUser,
+  revokePairing,
+  type TelegramOnboardingApplyResponse,
   updateMessagingPlatform
 } from '@/hermes'
-import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
+import { type Translations, useI18n } from '@/i18n'
+import { openExternalLink } from '@/lib/external-link'
+import { AlertTriangle, ExternalLink, RefreshCw, Save, Trash2 } from '@/lib/icons'
+import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
+import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
+import { $settingsRequestProfile } from '@/store/settings-scope'
+import { $gatewayRestarting, runGatewayRestart, watchGatewayRestartOutcome } from '@/store/system-actions'
 
+import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
+import { DetailColumn, ListColumn, MasterDetail } from '../master-detail'
 import { PageSearchShell } from '../page-search-shell'
+import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
+import { ListRow } from '../settings/primitives'
+import { SettingsProfileScope } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
+
+import { PlatformAvatar } from './platform-icon'
+import { TelegramQrSetup } from './telegram-qr-setup'
 
 interface MessagingViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
 
 type EditMap = Record<string, Record<string, string>>
-
-const STATE_LABELS: Record<string, string> = {
-  connected: 'Connected',
-  connecting: 'Connecting',
-  disabled: 'Disabled',
-  fatal: 'Error',
-  gateway_stopped: 'Messaging gateway stopped',
-  not_configured: 'Needs setup',
-  pending_restart: 'Restart needed',
-  retrying: 'Retrying',
-  startup_failed: 'Startup failed'
-}
-
-const PLATFORM_TINTS: Record<string, string> = {
-  telegram: 'bg-sky-500/15 text-sky-600 dark:text-sky-300',
-  discord: 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-300',
-  slack: 'bg-violet-500/15 text-violet-600 dark:text-violet-300',
-  mattermost: 'bg-blue-500/15 text-blue-600 dark:text-blue-300',
-  matrix: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300',
-  signal: 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-300',
-  whatsapp: 'bg-green-500/15 text-green-600 dark:text-green-300',
-  bluebubbles: 'bg-blue-500/15 text-blue-600 dark:text-blue-300',
-  homeassistant: 'bg-teal-500/15 text-teal-600 dark:text-teal-300',
-  email: 'bg-amber-500/15 text-amber-600 dark:text-amber-300',
-  sms: 'bg-rose-500/15 text-rose-600 dark:text-rose-300',
-  dingtalk: 'bg-blue-500/15 text-blue-600 dark:text-blue-300',
-  feishu: 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-300',
-  wecom: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300',
-  wecom_callback: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300',
-  weixin: 'bg-green-500/15 text-green-600 dark:text-green-300',
-  qqbot: 'bg-amber-500/15 text-amber-600 dark:text-amber-300',
-  yuanbao: 'bg-orange-500/15 text-orange-600 dark:text-orange-300',
-  api_server: 'bg-slate-500/15 text-slate-600 dark:text-slate-300',
-  webhook: 'bg-zinc-500/15 text-zinc-600 dark:text-zinc-300'
-}
 
 const PILL_TONE: Record<StatusTone, string> = {
   good: 'bg-primary/10 text-primary',
@@ -69,12 +58,8 @@ const PILL_TONE: Record<StatusTone, string> = {
   bad: 'bg-destructive/10 text-destructive'
 }
 
-const HINT_BY_STATE: Record<string, string> = {
-  pending_restart: 'Restart the gateway from the status bar to apply this change.',
-  gateway_stopped: 'Start the gateway from the status bar to connect.'
-}
-
-const stateLabel = (state?: null | string) => (state ? STATE_LABELS[state] || state.replace(/_/g, ' ') : 'Unknown')
+const stateLabel = (state: null | string | undefined, m: Translations['messaging']) =>
+  state ? m.states[state] || state.replace(/_/g, ' ') : m.unknown
 
 function stateTone({ enabled, state }: MessagingPlatformInfo): StatusTone {
   if (!enabled) {
@@ -99,115 +84,70 @@ const trimEdits = (edits: Record<string, string>): Record<string, string> =>
       .filter(([, v]) => v)
   )
 
-const FIELD_COPY: Record<string, { advanced?: boolean; help?: string; label: string; placeholder?: string }> = {
-  TELEGRAM_BOT_TOKEN: {
-    label: 'Bot token',
-    help: 'Create a bot with @BotFather, then paste the token it gives you.',
-    placeholder: '123456:ABC...'
-  },
-  TELEGRAM_ALLOWED_USERS: {
-    label: 'Allowed Telegram user IDs',
-    help: 'Recommended. Comma-separated numeric IDs from @userinfobot. Without this, anyone can DM your bot.'
-  },
-  TELEGRAM_PROXY: {
-    label: 'Proxy URL',
-    help: 'Only needed on networks where Telegram is blocked.',
-    advanced: true
-  },
-  DISCORD_BOT_TOKEN: {
-    label: 'Bot token',
-    help: 'Create an application in the Discord Developer Portal, add a bot, then paste its token.'
-  },
-  DISCORD_ALLOWED_USERS: {
-    label: 'Allowed Discord user IDs',
-    help: 'Recommended. Comma-separated Discord user IDs.'
-  },
-  DISCORD_REPLY_TO_MODE: {
-    label: 'Reply style',
-    help: 'first, all, or off.',
-    advanced: true
-  },
-  SLACK_BOT_TOKEN: {
-    label: 'Slack bot token',
-    help: 'Starts with xoxb-. Found under OAuth & Permissions after installing your Slack app.',
-    placeholder: 'xoxb-...'
-  },
-  SLACK_APP_TOKEN: {
-    label: 'Slack app token',
-    help: 'Starts with xapp-. Required for Socket Mode.',
-    placeholder: 'xapp-...'
-  },
-  SLACK_ALLOWED_USERS: {
-    label: 'Allowed Slack user IDs',
-    help: 'Recommended. Comma-separated Slack user IDs.'
-  },
-  MATTERMOST_URL: {
-    label: 'Server URL',
-    placeholder: 'https://mattermost.example.com'
-  },
-  MATTERMOST_TOKEN: {
-    label: 'Bot token'
-  },
-  MATTERMOST_ALLOWED_USERS: {
-    label: 'Allowed user IDs',
-    help: 'Recommended. Comma-separated Mattermost user IDs.'
-  },
-  MATRIX_HOMESERVER: {
-    label: 'Homeserver URL',
-    placeholder: 'https://matrix.org'
-  },
-  MATRIX_ACCESS_TOKEN: {
-    label: 'Access token'
-  },
-  MATRIX_USER_ID: {
-    label: 'Bot user ID',
-    placeholder: '@hermes:example.org'
-  },
-  MATRIX_ALLOWED_USERS: {
-    label: 'Allowed Matrix user IDs',
-    help: 'Recommended. Comma-separated user IDs in @user:server format.'
-  },
-  SIGNAL_HTTP_URL: {
-    label: 'Signal bridge URL',
-    placeholder: 'http://127.0.0.1:8080',
-    help: 'URL of a running signal-cli REST bridge.'
-  },
-  SIGNAL_ACCOUNT: {
-    label: 'Phone number',
-    help: 'The number registered with your signal-cli bridge.'
-  },
-  SIGNAL_ALLOWED_USERS: {
-    label: 'Allowed Signal users',
-    help: 'Recommended. Comma-separated Signal identifiers.'
-  },
-  WHATSAPP_ENABLED: {
-    label: 'Enable WhatsApp bridge',
-    help: 'Set automatically by the toggle below. Leave alone unless you know you need it.',
-    advanced: true
-  },
-  WHATSAPP_MODE: {
-    label: 'Bridge mode',
-    advanced: true
-  },
-  WHATSAPP_ALLOWED_USERS: {
-    label: 'Allowed WhatsApp users',
-    help: 'Recommended. Comma-separated phone numbers or WhatsApp IDs.'
+/** Stable row identity: a user id is only unique within its platform. */
+const pairingKey = (user: PairingUser) => `${user.platform}:${user.user_id}`
+
+const pairingLabel = (user: PairingUser) => user.user_name || user.user_id
+
+/** Group pairing rows by platform id so a detail pane can slice its own. */
+function byPlatform(rows: PairingUser[]): Record<string, PairingUser[]> {
+  const grouped: Record<string, PairingUser[]> = {}
+
+  for (const row of rows) {
+    ;(grouped[row.platform] ||= []).push(row)
   }
+
+  return grouped
 }
 
-function fieldCopy(field: MessagingEnvVarInfo) {
+const FIELD_COPY: Record<string, { advanced?: boolean }> = {
+  TELEGRAM_PROXY: { advanced: true },
+  DISCORD_REPLY_TO_MODE: { advanced: true },
+  DISCORD_ALLOW_ALL_USERS: { advanced: true },
+  DISCORD_HOME_CHANNEL: { advanced: true },
+  DISCORD_HOME_CHANNEL_NAME: { advanced: true },
+  BLUEBUBBLES_ALLOW_ALL_USERS: { advanced: true },
+  MATTERMOST_ALLOW_ALL_USERS: { advanced: true },
+  MATTERMOST_HOME_CHANNEL: { advanced: true },
+  QQ_ALLOW_ALL_USERS: { advanced: true },
+  QQBOT_HOME_CHANNEL: { advanced: true },
+  QQBOT_HOME_CHANNEL_NAME: { advanced: true },
+  WHATSAPP_ENABLED: { advanced: true },
+  WHATSAPP_MODE: { advanced: true }
+}
+
+function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
   const copy = FIELD_COPY[field.key] || {}
+  const localized = m.fieldCopy[field.key] || {}
 
   return {
-    label: copy.label || field.prompt || field.key,
-    help: copy.help || field.description,
-    placeholder: copy.placeholder || field.prompt,
+    label: localized.label || field.prompt || field.key,
+    help: localized.help || field.description,
+    placeholder: localized.placeholder || field.prompt,
     advanced: Boolean(copy.advanced || field.advanced)
   }
 }
 
 export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
+  const { t } = useI18n()
+  const m = t.messaging
+  // Shared settings "Applies to" scope, request-shaped (undefined → follow
+  // the active profile; the API helpers treat null as "target primary").
+  const scopeProfile = useStore($settingsRequestProfile)
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
+  // A saved credential/toggle only takes effect on the next gateway start, so a
+  // vanishing toast is not enough: the page keeps a banner up until a restart
+  // actually happens (dashboard parity). Cleared on a completed restart.
+  const [restartNeeded, setRestartNeeded] = useState(false)
+  const gatewayRestarting = useStore($gatewayRestarting)
+
+  const [pairing, setPairing] = useState<{ approved: PairingUser[]; pending: PairingUser[] }>({
+    approved: [],
+    pending: []
+  })
+
+  const [approving, setApproving] = useState<null | string>(null)
+  const [pendingRevoke, setPendingRevoke] = useState<null | PairingUser>(null)
   const [edits, setEdits] = useState<EditMap>({})
   const [query, setQuery] = useState('')
   const [refreshing, setRefreshing] = useState(false)
@@ -215,32 +155,132 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const platformIds = useMemo(() => platforms?.map(p => p.id) ?? [], [platforms])
   const [selectedId, setSelectedId] = useRouteEnumParam('platform', platformIds, platformIds[0] ?? '')
 
-  const refreshPlatforms = useCallback(async (silent = false) => {
-    if (!silent) {
-      setRefreshing(true)
-    }
+  const restartGatewayNow = useCallback(async () => {
+    // runGatewayRestart never rejects: it toasts the failure and settles the
+    // statusbar indicator; the banner stays if the restart did not complete.
+    const ok = await runGatewayRestart()
 
-    try {
-      const result = await getMessagingPlatforms()
-      setPlatforms(result.platforms)
-    } catch (err) {
-      if (!silent) {
-        notifyError(err, 'Messaging platforms failed to load')
-      }
-    } finally {
-      if (!silent) {
-        setRefreshing(false)
-      }
+    if (ok) {
+      setRestartNeeded(false)
+      window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
     }
   }, [])
 
-  useEffect(() => {
-    void refreshPlatforms()
-  }, [refreshPlatforms])
+  // A multiplexed named profile is re-served from its new config at once (`hot_served`): no restart
+  // banner; re-read status once the adapter had a moment to connect. Anything else needs a restart.
+  const settleAfterUpdate = useCallback((hotServed: boolean | undefined) => {
+    if (hotServed) {
+      window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
 
-  // Auto-poll while the user is on the messaging page so connection status
-  // updates without a manual "check" click. Pause when the tab is hidden.
+      return
+    }
+
+    setRestartNeeded(true)
+  }, [])
+
+  const refreshPlatforms = useCallback(
+    async (silent = false) => {
+      if (!silent) {
+        setRefreshing(true)
+      }
+
+      try {
+        const result = await getMessagingPlatforms(scopeProfile)
+        setPlatforms(result.platforms)
+      } catch (err) {
+        if (!silent) {
+          notifyError(err, m.loadFailed)
+        }
+      } finally {
+        if (!silent) {
+          setRefreshing(false)
+        }
+      }
+    },
+    [m, scopeProfile]
+  )
+
+  // Latest-callback ref: the deferred post-restart refresh must not capture a
+  // stale scope closure from before a profile switch.
+  const refreshPlatformsRef = useRef(refreshPlatforms)
+
+  refreshPlatformsRef.current = refreshPlatforms
+
+  // Pairing has its own signal. platforms.changed tracks connect/disconnect
+  // health via gateway_state.json, which a new pairing request never moves —
+  // riding it would leave a pending row invisible until something unrelated
+  // reconnected. Failures stay silent: an older backend without the endpoint
+  // should show no rows, not an error banner over a working page.
+  const refreshPairing = useCallback(async () => {
+    try {
+      const result = await getPairing(scopeProfile)
+      setPairing({ approved: result.approved ?? [], pending: result.pending ?? [] })
+    } catch {
+      // Leave the last known rows in place rather than blanking them.
+    }
+  }, [scopeProfile])
+
+  const refreshAll = useCallback(
+    async (silent = false) => {
+      await Promise.all([refreshPlatforms(silent), refreshPairing()])
+    },
+    [refreshPairing, refreshPlatforms]
+  )
+
+  useRefreshHotkey(() => void refreshAll())
+
   useEffect(() => {
+    void refreshAll()
+  }, [refreshAll])
+
+  // Scope switch: the mounted list still shows the PREVIOUS profile's
+  // platforms/pairing while the new fetch is in flight — blank it so stale
+  // rows can't be toggled against the wrong backend.
+  const scopeSeenRef = useRef(scopeProfile)
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (scope-change guard)
+  useEffect(() => {
+    if (scopeSeenRef.current === scopeProfile) {
+      return
+    }
+
+    scopeSeenRef.current = scopeProfile
+    setPlatforms(null)
+    setPairing({ approved: [], pending: [] })
+    setEdits({})
+  }, [scopeProfile])
+
+  const changeEventsAvailable = useStore($changeEventsAvailable)
+  const platformsChangeTick = useStore($platformsChangeTick)
+  const pairingChangeTick = useStore($pairingChangeTick)
+
+  // A new pending request (or a grant from another surface) moves the pairing
+  // store on disk; the change watcher turns that into pairing.changed.
+  useEffect(() => {
+    if (!changeEventsAvailable || pairingChangeTick === 0 || document.hidden) {
+      return
+    }
+
+    void refreshPairing()
+  }, [changeEventsAvailable, pairingChangeTick, refreshPairing])
+
+  // Connection status updates without a manual "check" click. platforms.changed
+  // (the gateway persisting connect/disconnect/health to gateway_state.json)
+  // drives the refresh on event-capable backends — no timer; older backends
+  // keep the legacy visible-tab poll.
+  useEffect(() => {
+    if (!changeEventsAvailable || platformsChangeTick === 0 || document.hidden) {
+      return
+    }
+
+    void refreshPlatforms(true)
+  }, [changeEventsAvailable, platformsChangeTick, refreshPlatforms])
+
+  useEffect(() => {
+    if (changeEventsAvailable) {
+      return
+    }
+
     let cancelled = false
 
     function tick() {
@@ -248,7 +288,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         return
       }
 
-      void refreshPlatforms(true)
+      void refreshAll(true)
     }
 
     const id = window.setInterval(tick, 6000)
@@ -257,7 +297,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       cancelled = true
       window.clearInterval(id)
     }
-  }, [refreshPlatforms])
+  }, [changeEventsAvailable, refreshAll])
 
   const selected = useMemo(() => {
     if (!platforms) {
@@ -267,12 +307,15 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     return platforms.find(platform => platform.id === selectedId) || platforms[0] || null
   }, [platforms, selectedId])
 
+  const pendingByPlatform = useMemo(() => byPlatform(pairing.pending), [pairing.pending])
+  const approvedByPlatform = useMemo(() => byPlatform(pairing.approved), [pairing.approved])
+
   const visiblePlatforms = useMemo(() => {
     if (!platforms) {
       return []
     }
 
-    const q = query.trim().toLowerCase()
+    const q = normalize(query)
 
     if (!q) {
       return platforms
@@ -289,7 +332,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`enabled:${platform.id}`)
 
     try {
-      await updateMessagingPlatform(platform.id, { enabled })
+      const result = await updateMessagingPlatform(platform.id, { enabled }, scopeProfile)
       setPlatforms(
         current =>
           current?.map(row =>
@@ -302,13 +345,14 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
               : row
           ) ?? current
       )
+      settleAfterUpdate(result.hot_served)
       notify({
         kind: 'success',
-        title: enabled ? `${platform.name} enabled` : `${platform.name} disabled`,
-        message: 'Restart the gateway for this change to take effect.'
+        title: enabled ? m.platformEnabled(platform.name) : m.platformDisabled(platform.name),
+        message: result.hot_served ? m.appliedLive : m.restartToApply
       })
     } catch (err) {
-      notifyError(err, `Failed to update ${platform.name}`)
+      notifyError(err, m.failedUpdate(platform.name))
     } finally {
       setSaving(null)
     }
@@ -324,16 +368,17 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`env:${platform.id}`)
 
     try {
-      await updateMessagingPlatform(platform.id, { env })
+      const result = await updateMessagingPlatform(platform.id, { env }, scopeProfile)
       setEdits(current => ({ ...current, [platform.id]: {} }))
       await refreshPlatforms()
+      settleAfterUpdate(result.hot_served)
       notify({
         kind: 'success',
-        title: `${platform.name} setup saved`,
-        message: 'Restart the gateway to reconnect with the new credentials.'
+        title: m.setupSaved(platform.name),
+        message: result.hot_served ? m.connectingLive : m.restartToReconnect
       })
     } catch (err) {
-      notifyError(err, `Failed to save ${platform.name}`)
+      notifyError(err, m.failedSave(platform.name))
     } finally {
       setSaving(null)
     }
@@ -343,7 +388,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setSaving(`clear:${key}`)
 
     try {
-      await updateMessagingPlatform(platform.id, { clear_env: [key] })
+      const result = await updateMessagingPlatform(platform.id, { clear_env: [key] }, scopeProfile)
       setEdits(current => ({
         ...current,
         [platform.id]: {
@@ -352,11 +397,102 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
       }))
       await refreshPlatforms()
-      notify({ kind: 'success', title: `${key} cleared`, message: `${platform.name} setup was updated.` })
+      settleAfterUpdate(result.hot_served)
+      notify({ kind: 'success', title: m.keyCleared(key), message: m.setupUpdated(platform.name) })
     } catch (err) {
-      notifyError(err, `Failed to clear ${key}`)
+      notifyError(err, m.failedClear(key))
     } finally {
       setSaving(null)
+    }
+  }
+
+  // QR onboarding wrote the token + allowlist and asked the backend to restart
+  // the gateway. restart_started only means the child spawned; watch its exit
+  // so a failed restart lands in the banner instead of a silent "stopped".
+  async function handleTelegramApplied(result: TelegramOnboardingApplyResponse) {
+    await refreshPlatforms(true)
+
+    if (result.restart_started) {
+      notify({ kind: 'success', title: m.setupSaved('Telegram'), message: m.telegramQr.savedRestarting })
+      setRestartNeeded(false)
+      const ok = await watchGatewayRestartOutcome()
+
+      if (!ok) {
+        setRestartNeeded(true)
+        notify({
+          kind: 'error',
+          title: m.restartFailedManual,
+          message: m.restartFailedManualDetail,
+          action: { label: m.restartAgain, onClick: () => void runGatewayRestart() },
+          secondaryAction: { label: m.openLogs, onClick: () => void window.hermesDesktop?.revealLogs?.().catch(() => undefined) }
+        })
+      }
+
+      void refreshPlatforms(true)
+
+      return
+    }
+
+    if (result.needs_restart) {
+      // Backend could not spawn the restart (or is too old to try): fall back
+      // to the app's own restart action, same as the manual-save path.
+      await restartGatewayNow()
+
+      if (result.restart_error) {
+        notifyError(new Error(result.restart_error), m.telegramQr.savedRestartFailed(`: ${result.restart_error}`))
+        setRestartNeeded(true)
+      }
+    }
+  }
+
+  // Approve/revoke paint from a snapshot immediately, then let the
+  // authoritative refresh have the last word. A failed write restores the
+  // snapshot so the row never silently disappears on an error.
+  async function handleApprove(user: PairingUser) {
+    if (!user.request_id) {
+      return
+    }
+
+    const key = pairingKey(user)
+    const snapshot = pairing
+    setApproving(key)
+    setPairing(current => ({
+      approved: current.approved,
+      pending: current.pending.filter(row => pairingKey(row) !== key)
+    }))
+
+    try {
+      await approvePairing(user.platform, user.request_id, scopeProfile)
+      notify({ kind: 'success', title: m.approvedUser(pairingLabel(user)), message: m.approvedHint })
+      await refreshPairing()
+    } catch (err) {
+      setPairing(snapshot)
+      // 429 is the code path's brute-force lockout — a distinct condition the
+      // operator can only wait out, so it gets its own message.
+      const lockedOut = err instanceof Error && err.message.includes('429')
+      notifyError(err, lockedOut ? m.pairingLockedOut : m.failedApprove(pairingLabel(user)))
+    } finally {
+      setApproving(null)
+    }
+  }
+
+  // ConfirmDialog owns the pending → done → close beat and shows an inline
+  // error when onConfirm throws, so this rethrows instead of swallowing.
+  async function handleRevoke(user: PairingUser) {
+    const key = pairingKey(user)
+    const snapshot = pairing
+    setPairing(current => ({
+      approved: current.approved.filter(row => pairingKey(row) !== key),
+      pending: current.pending
+    }))
+
+    try {
+      await revokePairing(user.platform, user.user_id, scopeProfile)
+      notify({ kind: 'success', title: m.revokedUser(pairingLabel(user)), message: user.platform })
+      await refreshPairing()
+    } catch (err) {
+      setPairing(snapshot)
+      throw err
     }
   }
 
@@ -364,51 +500,106 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     <PageSearchShell
       {...props}
       onSearchChange={setQuery}
-      searchPlaceholder="Search messaging..."
-      searchTrailingAction={null}
+      searchHidden={(platforms?.length ?? 0) === 0}
+      searchHints={platforms?.slice(0, 5).map(platform => t.common.tryHint(platform.name.toLowerCase()))}
+      searchPlaceholder={m.search}
       searchValue={query}
     >
       {!platforms ? (
-        <PageLoader label="Loading messaging platforms..." />
+        <PageLoader label={m.loading} />
       ) : (
-        <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[14rem_minmax(0,1fr)]">
-          <aside className="min-h-0 overflow-y-auto border-b border-(--ui-stroke-tertiary) p-2 lg:border-b-0 lg:border-r">
-            <ul className="space-y-1">
-              {visiblePlatforms.map(platform => (
-                <li key={platform.id}>
-                  <PlatformRow
-                    active={selected?.id === platform.id}
-                    onSelect={() => setSelectedId(platform.id)}
-                    platform={platform}
-                  />
-                </li>
-              ))}
-            </ul>
-          </aside>
+        <div className="flex h-full min-h-0 flex-col">
+          {/* Which profile's gateway this page configures (hidden for
+              single-profile users). */}
+          <SettingsProfileScope className="border-b border-(--ui-stroke-secondary) px-3 py-2" />
+          <div className="min-h-0 flex-1">
+            <MasterDetail>
+              <ListColumn>
+                <ul className="space-y-1">
+                  {visiblePlatforms.map(platform => (
+                    <li key={platform.id}>
+                      <PlatformRow
+                        active={selected?.id === platform.id}
+                        onSelect={() => setSelectedId(platform.id)}
+                        pendingCount={pendingByPlatform[platform.id]?.length ?? 0}
+                        platform={platform}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </ListColumn>
 
-          <main className="min-h-0 overflow-hidden">
-            {selected && (
-              <PlatformDetail
-                edits={edits[selected.id] || {}}
-                onClear={key => void handleClear(selected, key)}
-                onEdit={(key, value) =>
-                  setEdits(current => ({
-                    ...current,
-                    [selected.id]: {
-                      ...(current[selected.id] || {}),
-                      [key]: value
-                    }
-                  }))
+              <DetailColumn
+                actionBar={
+                  selected && (
+                    <PlatformActionBar
+                      hasEdits={Object.keys(trimEdits(edits[selected.id] || {})).length > 0}
+                      onSave={() => void handleSave(selected)}
+                      onToggle={enabled => void handleToggle(selected, enabled)}
+                      platform={selected}
+                      saving={saving}
+                    />
+                  )
                 }
-                onSave={() => void handleSave(selected)}
-                onToggle={enabled => void handleToggle(selected, enabled)}
-                platform={selected}
-                saving={saving}
-              />
-            )}
-          </main>
+              >
+                {restartNeeded && (
+                  <Alert variant="warning">
+                    <AlertTriangle />
+                    <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+                      <span>{m.restartNeeded}</span>
+                      <Button
+                        disabled={gatewayRestarting}
+                        onClick={() => void restartGatewayNow()}
+                        size="sm"
+                        variant="secondary"
+                      >
+                        <RefreshCw className={gatewayRestarting ? 'animate-spin' : undefined} />
+                        {gatewayRestarting ? m.restarting : m.restartNow}
+                      </Button>
+                    </AlertDescription>
+                  </Alert>
+                )}
+                {selected && (
+                  <PlatformDetail
+                    approved={approvedByPlatform[selected.id] ?? []}
+                    approving={approving}
+                    edits={edits[selected.id] || {}}
+                    onApprove={user => void handleApprove(user)}
+                    onClear={key => void handleClear(selected, key)}
+                    onEdit={(key, value) =>
+                      setEdits(current => ({
+                        ...current,
+                        [selected.id]: {
+                          ...(current[selected.id] || {}),
+                          [key]: value
+                        }
+                      }))
+                    }
+                    onRevoke={setPendingRevoke}
+                    onTelegramApplied={result => void handleTelegramApplied(result)}
+                    pending={pendingByPlatform[selected.id] ?? []}
+                    platform={selected}
+                    saving={saving}
+                    scopeProfile={scopeProfile}
+                  />
+                )}
+              </DetailColumn>
+            </MasterDetail>
+          </div>
         </div>
       )}
+
+      <ConfirmDialog
+        busyLabel={m.revoking}
+        cancelLabel={t.common.cancel}
+        confirmLabel={m.revoke}
+        description={pendingRevoke ? m.revokeDesc(pairingLabel(pendingRevoke)) : null}
+        destructive
+        onClose={() => setPendingRevoke(null)}
+        onConfirm={() => (pendingRevoke ? handleRevoke(pendingRevoke) : undefined)}
+        open={Boolean(pendingRevoke)}
+        title={m.revokeTitle}
+      />
     </PageSearchShell>
   )
 }
@@ -416,19 +607,21 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 function PlatformRow({
   active,
   onSelect,
+  pendingCount,
   platform
 }: {
   active: boolean
   onSelect: () => void
+  pendingCount: number
   platform: MessagingPlatformInfo
 }) {
+  const { t } = useI18n()
+
   return (
     <button
       className={cn(
-        'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors',
-        active
-          ? 'bg-(--ui-bg-tertiary) text-foreground'
-          : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+        'row-hover flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:text-foreground',
+        active ? 'bg-(--ui-row-active-background) text-foreground' : 'text-(--ui-text-secondary)'
       )}
       onClick={onSelect}
       type="button"
@@ -436,188 +629,294 @@ function PlatformRow({
       <PlatformAvatar platformId={platform.id} platformName={platform.name} />
       <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
         <span className="truncate text-[length:var(--conversation-text-font-size)] font-normal">{platform.name}</span>
-        <StatusDot tone={stateTone(platform)} />
+        <span className="flex shrink-0 items-center gap-1.5">
+          {/* Someone is waiting to be let in — the only way this page tells
+              you so before you open the platform. */}
+          {pendingCount > 0 && (
+            <span
+              aria-label={t.messaging.pendingAria(pendingCount)}
+              className={cn(
+                'inline-flex min-w-4 items-center justify-center rounded-full px-1 text-[0.66rem] font-medium tabular-nums',
+                PILL_TONE.warn
+              )}
+            >
+              {pendingCount}
+            </span>
+          )}
+          <StatusDot tone={stateTone(platform)} />
+        </span>
       </span>
     </button>
   )
 }
 
-function PlatformAvatar({ platformId, platformName }: { platformId: string; platformName: string }) {
+function PlatformDetail({
+  approved,
+  approving,
+  edits,
+  onApprove,
+  onClear,
+  onEdit,
+  onRevoke,
+  onTelegramApplied,
+  pending,
+  platform,
+  saving,
+  scopeProfile
+}: {
+  approved: PairingUser[]
+  approving: null | string
+  edits: Record<string, string>
+  onApprove: (user: PairingUser) => void
+  onClear: (key: string) => void
+  onEdit: (key: string, value: string) => void
+  onRevoke: (user: PairingUser) => void
+  onTelegramApplied: (result: TelegramOnboardingApplyResponse) => void
+  pending: PairingUser[]
+  platform: MessagingPlatformInfo
+  saving: string | null
+  scopeProfile: string | undefined
+}) {
+  const { t } = useI18n()
+  const m = t.messaging
+  const [showAdvanced, setShowAdvanced] = useState(false)
+
+  const requiredFields = platform.env_vars.filter(field => field.required)
+  const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field, m).advanced)
+  const advancedFields = platform.env_vars.filter(field => !field.required && fieldCopy(field, m).advanced)
+  const hiddenCount = advancedFields.length
+
   return (
-    <span
-      className={cn(
-        'inline-flex size-6 shrink-0 items-center justify-center rounded-md text-[length:var(--conversation-caption-font-size)] font-medium',
-        PLATFORM_TINTS[platformId] || 'bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)'
+    <>
+      <header className="flex items-start gap-3">
+        <PlatformAvatar platformId={platform.id} platformName={platform.name} />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="min-w-0 truncate text-[0.9375rem] font-semibold tracking-tight">{platform.name}</h3>
+            <StatePill tone={stateTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
+            {/* Resting states earn no pill — only actionable ones. */}
+            {!platform.configured && <SetupPill active={false}>{m.needsSetup}</SetupPill>}
+            {/* The state pill already reads "gateway stopped" when that is the
+                platform's whole story; only add the hint when it is not. */}
+            {!platform.gateway_running && platform.state !== 'gateway_stopped' && (
+              <SetupPill active={false}>{m.gatewayStopped}</SetupPill>
+            )}
+          </div>
+          <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+            {platform.description}
+          </p>
+          <PlatformHint platform={platform} />
+        </div>
+      </header>
+
+      {platform.error_message && <ErrorBanner>{platform.error_message}</ErrorBanner>}
+
+      {/* Pending pairing requests. Rendered only when someone is actually
+          waiting — an empty-state card here would be permanent chrome on a
+          page that is usually about credentials, not approvals. */}
+      {pending.length > 0 && (
+        <section>
+          <SectionTitle>{m.pendingRequests(pending.length)}</SectionTitle>
+          <div className="mt-1 grid gap-1">
+            {pending.map(user => {
+              const busy = approving === pairingKey(user)
+              const waited = typeof user.age_minutes === 'number' ? m.waitingSince(user.age_minutes) : null
+
+              return (
+                <ListRow
+                  action={
+                    <Button
+                      disabled={busy || !user.request_id}
+                      onClick={() => onApprove(user)}
+                      size="sm"
+                      variant="secondary"
+                    >
+                      {busy ? m.approving : m.approve}
+                    </Button>
+                  }
+                  // An unnamed requester is only a user id — showing it as
+                  // both title and description just repeats itself.
+                  description={[user.user_name ? user.user_id : null, waited].filter(Boolean).join(' · ')}
+                  key={pairingKey(user)}
+                  title={pairingLabel(user)}
+                />
+              )
+            })}
+          </div>
+        </section>
       )}
-    >
-      {platformName.charAt(0).toUpperCase()}
-    </span>
+
+      {approved.length > 0 && (
+        <section>
+          <SectionTitle>{m.approvedUsers(approved.length)}</SectionTitle>
+          <div className="mt-1 grid gap-1">
+            {approved.map(user => (
+              <ListRow
+                action={
+                  <Button
+                    aria-label={m.revokeAria(pairingLabel(user))}
+                    onClick={() => onRevoke(user)}
+                    size="sm"
+                    variant="ghost"
+                  >
+                    {m.revoke}
+                  </Button>
+                }
+                description={user.user_name ? user.user_id : undefined}
+                key={pairingKey(user)}
+                title={pairingLabel(user)}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {platform.id === 'telegram' && (
+        <section>
+          <SectionTitle>{m.telegramQr.quickSetup}</SectionTitle>
+          <div className="mt-3">
+            <TelegramQrSetup onApplied={onTelegramApplied} platform={platform} scopeProfile={scopeProfile} />
+          </div>
+        </section>
+      )}
+
+      <section>
+        <SectionTitle>{m.getCredentials}</SectionTitle>
+        <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+          {introCopy(platform, m)}
+        </p>
+        {platform.docs_url && (
+          <div className="mt-3">
+            <Button asChild size="sm" variant="textStrong">
+              <a
+                href={platform.docs_url}
+                onClick={event => {
+                  // Route through the validated external opener instead of
+                  // letting Electron resolve the anchor. A packaged build's
+                  // empty/relative href resolves to the app's own
+                  // index.html file path, which shell.openPath then fails to
+                  // open ("file not found"). Plugin platforms (Teams, etc.)
+                  // ship no docs_url, so this guard + handler keeps the
+                  // button from ever pointing at a local bundle path.
+                  event.preventDefault()
+                  openExternalLink(platform.docs_url)
+                }}
+                rel="noreferrer"
+                target="_blank"
+              >
+                {m.openSetupGuide}
+                <ExternalLink className="size-3.5" />
+              </a>
+            </Button>
+          </div>
+        )}
+      </section>
+
+      <section>
+        <SectionTitle>{m.required}</SectionTitle>
+        <div className="mt-3 grid gap-1">
+          {requiredFields.length > 0 ? (
+            requiredFields.map(field => (
+              <MessagingField
+                edits={edits}
+                field={field}
+                key={field.key}
+                onClear={onClear}
+                onEdit={onEdit}
+                saving={saving}
+              />
+            ))
+          ) : (
+            <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+              {m.noTokenNeeded}
+            </p>
+          )}
+        </div>
+      </section>
+
+      {optionalFields.length > 0 && (
+        <section>
+          <SectionTitle>{m.recommended}</SectionTitle>
+          <div className="mt-3 grid gap-1">
+            {optionalFields.map(field => (
+              <MessagingField
+                edits={edits}
+                field={field}
+                key={field.key}
+                onClear={onClear}
+                onEdit={onEdit}
+                saving={saving}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {hiddenCount > 0 && (
+        <section>
+          <button
+            className="flex w-full items-center justify-between gap-2 py-0.5 text-left text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground transition-colors hover:text-foreground"
+            onClick={() => setShowAdvanced(value => !value)}
+            type="button"
+          >
+            <span>{m.advanced(hiddenCount)}</span>
+            <DisclosureCaret open={showAdvanced} size="0.875rem" />
+          </button>
+          {showAdvanced && (
+            <div className="mt-3 grid gap-1">
+              {advancedFields.map(field => (
+                <MessagingField
+                  edits={edits}
+                  field={field}
+                  key={field.key}
+                  onClear={onClear}
+                  onEdit={onEdit}
+                  saving={saving}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+    </>
   )
 }
 
-function PlatformDetail({
-  edits,
-  onClear,
-  onEdit,
+function PlatformActionBar({
+  hasEdits,
   onSave,
   onToggle,
   platform,
   saving
 }: {
-  edits: Record<string, string>
-  onClear: (key: string) => void
-  onEdit: (key: string, value: string) => void
+  hasEdits: boolean
   onSave: () => void
   onToggle: (enabled: boolean) => void
   platform: MessagingPlatformInfo
   saving: string | null
 }) {
-  const [showAdvanced, setShowAdvanced] = useState(false)
-
-  const hasEdits = Object.keys(trimEdits(edits)).length > 0
-  const requiredFields = platform.env_vars.filter(field => field.required)
-  const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field).advanced)
-  const advancedFields = platform.env_vars.filter(field => !field.required && fieldCopy(field).advanced)
-  const hiddenCount = advancedFields.length
+  const { t } = useI18n()
+  const m = t.messaging
   const isSavingEnv = saving === `env:${platform.id}`
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-2xl space-y-5 px-5 py-4">
-          <header className="flex items-start gap-3">
-            <PlatformAvatar platformId={platform.id} platformName={platform.name} />
-            <div className="min-w-0 flex-1">
-              <h3 className="text-[0.9375rem] font-semibold tracking-tight">{platform.name}</h3>
-              <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                {platform.description}
-              </p>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <StatePill tone={stateTone(platform)}>{stateLabel(platform.state)}</StatePill>
-                <SetupPill active={platform.configured}>
-                  {platform.configured ? 'Credentials set' : 'Needs setup'}
-                </SetupPill>
-                {!platform.gateway_running && <SetupPill active={false}>Messaging gateway stopped</SetupPill>}
-              </div>
-              <PlatformHint platform={platform} />
-            </div>
-          </header>
+    <>
+      <Switch
+        aria-label={platform.enabled ? m.disableAria(platform.name) : m.enableAria(platform.name)}
+        checked={platform.enabled}
+        disabled={saving === `enabled:${platform.id}`}
+        onCheckedChange={onToggle}
+        size="xs"
+      />
 
-          {platform.error_message && (
-            <div className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-destructive">
-              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-              <span>{platform.error_message}</span>
-            </div>
-          )}
-
-          <section>
-            <SectionTitle>Get your credentials</SectionTitle>
-            <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-              {introCopy(platform)}
-            </p>
-            <div className="mt-3">
-              <Button asChild size="sm" variant="outline">
-                <a href={platform.docs_url} rel="noreferrer" target="_blank">
-                  Open setup guide
-                  <ExternalLink className="size-3.5" />
-                </a>
-              </Button>
-            </div>
-          </section>
-
-          <section>
-            <SectionTitle>Required</SectionTitle>
-            <div className="mt-3 space-y-4">
-              {requiredFields.length > 0 ? (
-                requiredFields.map(field => (
-                  <MessagingField
-                    edits={edits}
-                    field={field}
-                    key={field.key}
-                    onClear={onClear}
-                    onEdit={onEdit}
-                    saving={saving}
-                  />
-                ))
-              ) : (
-                <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                  This platform does not need a token here. Use the setup guide above, then enable it below.
-                </p>
-              )}
-            </div>
-          </section>
-
-          {optionalFields.length > 0 && (
-            <section>
-              <SectionTitle>Recommended</SectionTitle>
-              <div className="mt-3 space-y-4">
-                {optionalFields.map(field => (
-                  <MessagingField
-                    edits={edits}
-                    field={field}
-                    key={field.key}
-                    onClear={onClear}
-                    onEdit={onEdit}
-                    saving={saving}
-                  />
-                ))}
-              </div>
-            </section>
-          )}
-
-          {hiddenCount > 0 && (
-            <section>
-              <button
-                className="flex w-full items-center justify-between gap-2 rounded-lg px-1 py-1 text-left text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground hover:text-foreground"
-                onClick={() => setShowAdvanced(value => !value)}
-                type="button"
-              >
-                <span>Advanced ({hiddenCount})</span>
-                <DisclosureCaret open={showAdvanced} size="0.875rem" />
-              </button>
-              {showAdvanced && (
-                <div className="mt-3 space-y-4">
-                  {advancedFields.map(field => (
-                    <MessagingField
-                      edits={edits}
-                      field={field}
-                      key={field.key}
-                      onClear={onClear}
-                      onEdit={onEdit}
-                      saving={saving}
-                    />
-                  ))}
-                </div>
-              )}
-            </section>
-          )}
-        </div>
+      <div className="ml-auto flex items-center gap-2">
+        {hasEdits && <span className="text-xs text-muted-foreground">{m.unsavedChanges}</span>}
+        <Button disabled={!hasEdits || isSavingEnv} onClick={onSave} size="sm">
+          <Save />
+          {isSavingEnv ? m.saving : m.saveChanges}
+        </Button>
       </div>
-
-      <footer className="border-t border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-5 py-2.5">
-        <div className="mx-auto flex max-w-2xl flex-wrap items-center gap-2">
-          <label className="flex shrink-0 items-center gap-2 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-2.5 py-1.5 text-[length:var(--conversation-text-font-size)]">
-            <Switch
-              aria-label={platform.enabled ? `Disable ${platform.name}` : `Enable ${platform.name}`}
-              checked={platform.enabled}
-              disabled={saving === `enabled:${platform.id}`}
-              onCheckedChange={onToggle}
-            />
-            <span className="text-xs font-medium text-muted-foreground">
-              {platform.enabled ? 'Enabled' : 'Disabled'}
-            </span>
-          </label>
-
-          <div className="ml-auto flex items-center gap-2">
-            {hasEdits && <span className="text-xs text-muted-foreground">Unsaved changes</span>}
-            <Button disabled={!hasEdits || isSavingEnv} onClick={onSave} size="sm">
-              <Save />
-              {isSavingEnv ? 'Saving...' : 'Save changes'}
-            </Button>
-          </div>
-        </div>
-      </footer>
-    </div>
+    </>
   )
 }
 
@@ -627,7 +926,7 @@ const PLATFORM_INTRO: Record<string, string> = {
   discord:
     'Open the Discord Developer Portal, create an application, add a Bot, then copy its token. Invite the bot to your server with the right scopes.',
   slack:
-    'Create a Slack app, enable Socket Mode, install it to your workspace, then copy the Bot token (xoxb-) and App-level token (xapp-).',
+    'Create a Slack app, enable Socket Mode, install it to your workspace, then copy the bot token and app-level token.',
   mattermost:
     'On your Mattermost server, create a bot account or personal access token, then paste the server URL and token here.',
   matrix: 'Sign in to your homeserver with the bot account, then copy the access token, user ID, and homeserver URL.',
@@ -650,7 +949,7 @@ const PLATFORM_INTRO: Record<string, string> = {
   wecom_callback:
     'Set up a WeCom self-built app, expose its callback URL, and provide the corp ID, secret, agent ID, and AES key.',
   weixin:
-    'Sign in to the WeChat Official Account platform, copy the AppID and Token, and point the message callback URL at Hermes.',
+    "Run `hermes gateway setup`, select Weixin, then scan and confirm the QR code with a personal WeChat account. Hermes connects through Tencent's iLink Bot API and saves the credentials.",
   qqbot: 'Register an app on the QQ Open Platform (q.qq.com) and copy the App ID and Client Secret.',
   api_server:
     'Expose Hermes as an OpenAI-compatible API. Set an auth key, then point Open WebUI / LobeChat / etc. at the host:port.',
@@ -658,7 +957,8 @@ const PLATFORM_INTRO: Record<string, string> = {
     'Run an HTTP server that other tools (GitHub, GitLab, custom apps) can POST to. Use the secret to verify signatures.'
 }
 
-const introCopy = (platform: MessagingPlatformInfo) => PLATFORM_INTRO[platform.id] || platform.description
+const introCopy = (platform: MessagingPlatformInfo, m: Translations['messaging']) =>
+  m.platformIntro[platform.id] || PLATFORM_INTRO[platform.id] || platform.description
 
 function MessagingField({
   edits,
@@ -673,46 +973,54 @@ function MessagingField({
   onEdit: (key: string, value: string) => void
   saving: string | null
 }) {
-  const copy = fieldCopy(field)
+  const { t } = useI18n()
+  const m = t.messaging
+  const copy = fieldCopy(field, m)
+  const fieldId = `messaging-field-${field.key}`
 
   return (
-    <div className="space-y-1.5">
-      <div className="flex flex-wrap items-baseline gap-2">
-        <label className="text-sm font-medium text-foreground" htmlFor={`messaging-field-${field.key}`}>
-          {copy.label}
-        </label>
-        {field.is_set && <span className="text-[0.66rem] font-medium text-primary">Saved</span>}
-      </div>
-      <div className="flex items-center gap-2">
-        <Input
-          className="h-9 rounded-lg font-mono text-sm"
-          id={`messaging-field-${field.key}`}
-          onChange={event => onEdit(field.key, event.target.value)}
-          placeholder={field.is_set ? field.redacted_value || 'Replace current value' : copy.placeholder}
-          type={field.is_password ? 'password' : 'text'}
-          value={edits[field.key] || ''}
-        />
-        {field.url && (
-          <Button asChild size="icon-sm" title="Open docs" variant="ghost">
-            <a href={field.url} rel="noreferrer" target="_blank">
-              <ExternalLink className="size-3.5" />
-            </a>
-          </Button>
-        )}
-        {field.is_set && (
-          <Button
-            disabled={saving === `clear:${field.key}`}
-            onClick={() => onClear(field.key)}
-            size="icon-sm"
-            title={`Clear ${field.key}`}
-            variant="ghost"
-          >
-            <Trash2 className="size-3.5" />
-          </Button>
-        )}
-      </div>
-      {copy.help && <p className="text-xs leading-5 text-muted-foreground">{copy.help}</p>}
-    </div>
+    <ListRow
+      action={
+        <div className="flex items-center gap-2">
+          <Input
+            className={CREDENTIAL_CONTROL_CLASS}
+            id={fieldId}
+            onChange={event => onEdit(field.key, event.target.value)}
+            placeholder={field.is_set ? field.redacted_value || m.replaceValue : copy.placeholder}
+            type={field.is_password ? 'password' : 'text'}
+            value={edits[field.key] || ''}
+          />
+          {field.url && (
+            <Tip label={m.openDocs}>
+              <Button asChild className="size-8 shrink-0" variant="ghost">
+                <a href={field.url} rel="noreferrer" target="_blank">
+                  <ExternalLink className="size-3.5" />
+                </a>
+              </Button>
+            </Tip>
+          )}
+          {field.is_set && (
+            <Tip label={m.clearField(field.key)}>
+              <Button
+                className="size-8 shrink-0"
+                disabled={saving === `clear:${field.key}`}
+                onClick={() => onClear(field.key)}
+                variant="ghost"
+              >
+                <Trash2 className="size-3.5" />
+              </Button>
+            </Tip>
+          )}
+        </div>
+      }
+      description={copy.help}
+      title={
+        <span className="flex flex-wrap items-center gap-2">
+          <label htmlFor={fieldId}>{copy.label}</label>
+          {field.is_set && <span className="text-[0.66rem] font-medium text-primary">{m.saved}</span>}
+        </span>
+      }
+    />
   )
 }
 
@@ -721,11 +1029,31 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 }
 
 function PlatformHint({ platform }: { platform: MessagingPlatformInfo }) {
+  const { t } = useI18n()
+
+  // A served secondary's api_server/webhook live on the shared gateway listener under
+  // /p/<profile>/: the state pill says connected, this line says where to point the client.
+  if (platform.ingress_url) {
+    return (
+      <p className="mt-2 text-xs leading-5 text-muted-foreground break-all">
+        {t.messaging.sharedListenerUrl}{' '}
+        <code className="font-mono text-foreground" data-slot="ingress-url">
+          {platform.ingress_url}
+        </code>
+      </p>
+    )
+  }
+
   if (!platform.enabled || platform.state === 'connected') {
     return null
   }
 
-  const hint = HINT_BY_STATE[platform.state || ''] || (platform.gateway_running ? null : HINT_BY_STATE.gateway_stopped)
+  const hint =
+    platform.state === 'pending_restart'
+      ? t.messaging.hintPendingRestart
+      : platform.gateway_running
+        ? null
+        : t.messaging.hintGatewayStopped
 
   return hint ? <p className="mt-2 text-xs leading-5 text-muted-foreground">{hint}</p> : null
 }

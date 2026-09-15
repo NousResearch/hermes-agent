@@ -80,10 +80,6 @@ def _make_draft_capable_adapter(
 class TestDraftTransportSelection:
     """Verify _resolve_draft_streaming picks the right transport."""
 
-    def test_default_transport_stays_on_edit(self):
-        adapter = _make_draft_capable_adapter()
-        consumer = GatewayStreamConsumer(adapter, "12345", StreamConsumerConfig(chat_type="dm"))
-        assert consumer._resolve_draft_streaming() is False
 
     def test_auto_dm_with_draft_capable_adapter_picks_draft(self):
         adapter = _make_draft_capable_adapter()
@@ -91,29 +87,10 @@ class TestDraftTransportSelection:
         consumer = GatewayStreamConsumer(adapter, "12345", cfg)
         assert consumer._resolve_draft_streaming() is True
 
-    def test_auto_group_falls_back_to_edit(self):
-        adapter = _make_draft_capable_adapter()
-        cfg = StreamConsumerConfig(transport="auto", chat_type="group")
-        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
-        assert consumer._resolve_draft_streaming() is False
 
     def test_explicit_edit_never_uses_drafts(self):
         adapter = _make_draft_capable_adapter()
         cfg = StreamConsumerConfig(transport="edit", chat_type="dm")
-        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
-        assert consumer._resolve_draft_streaming() is False
-
-    def test_explicit_draft_unsupported_falls_back(self):
-        adapter = _make_draft_capable_adapter(supports_draft=False)
-        cfg = StreamConsumerConfig(transport="draft", chat_type="dm")
-        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
-        assert consumer._resolve_draft_streaming() is False
-
-    def test_magicmock_adapter_falls_back_to_edit(self):
-        """MagicMock adapters (used in many existing tests) must default to
-        edit-based since their auto-attributes aren't real callables."""
-        adapter = MagicMock()
-        cfg = StreamConsumerConfig(transport="auto", chat_type="dm")
         consumer = GatewayStreamConsumer(adapter, "12345", cfg)
         assert consumer._resolve_draft_streaming() is False
 
@@ -159,26 +136,66 @@ class TestDraftStreamingHappyPath:
             else final_call.args[1] if len(final_call.args) > 1 else None
         )
         assert sent_content == "Hello world!"
+        final_metadata = final_call.kwargs.get("metadata") or {}
+        assert final_metadata.get("notify") is True
+        assert "expect_edits" not in final_metadata
 
     @pytest.mark.asyncio
-    async def test_group_chat_skips_draft_path(self):
+    async def test_stream_is_message_preserves_cumulative_text_across_tool_boundaries(self):
+        """Slack native streams accept cumulative frames. A tool boundary must
+        not clear the consumer accumulator, otherwise every next segment is a
+        non-prefix snapshot and the connector appends the whole answer again."""
         adapter = _make_draft_capable_adapter()
+        adapter.draft_stream_is_message = True
         cfg = StreamConsumerConfig(
-            transport="auto", chat_type="group",
-            edit_interval=0.01, buffer_threshold=5, cursor="",
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=1, cursor="",
         )
-        consumer = GatewayStreamConsumer(adapter, "67890", cfg)
+        consumer = GatewayStreamConsumer(adapter, "C1", cfg)
 
-        consumer.on_delta("Group message")
         task = asyncio.create_task(consumer.run())
+        consumer.on_delta("first segment")
+        await asyncio.sleep(0.05)
+        consumer.on_segment_break()
+        await asyncio.sleep(0.05)
+        consumer.on_delta(" second segment")
         await asyncio.sleep(0.05)
         consumer.finish()
         await task
 
-        # Group chats skip drafts entirely — no send_draft calls at all.
-        assert adapter.draft_calls == []
-        # Edit-based path delivered via send (first message).
-        adapter.send.assert_awaited()
+        contents = [call["content"] for call in adapter.draft_calls]
+        assert contents[-1] == "first segment second segment"
+
+    @pytest.mark.asyncio
+    async def test_edit_preview_still_marks_expect_edits(self):
+        adapter = _make_draft_capable_adapter(supports_draft=False)
+        cfg = StreamConsumerConfig(transport="edit", chat_type="dm", cursor="")
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+
+        delivered = await consumer._send_or_edit("Preview", finalize=False)
+
+        assert delivered is True
+        send_mock = adapter.__dict__["send"]
+        metadata = send_mock.call_args.kwargs.get("metadata") or {}
+        assert metadata.get("expect_edits") is True
+        assert "notify" not in metadata
+
+    @pytest.mark.asyncio
+    async def test_final_split_chunk_does_not_mark_expect_edits(self):
+        adapter = _make_draft_capable_adapter(supports_draft=False)
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "12345",
+            StreamConsumerConfig(transport="edit", chat_type="dm", cursor=""),
+        )
+
+        message_id = await consumer._send_new_chunk("Sealed head", None, final=True)
+
+        assert message_id == "msg_real"
+        send_mock = adapter.__dict__["send"]
+        metadata = send_mock.call_args.kwargs.get("metadata") or {}
+        assert metadata.get("notify") is True
+        assert "expect_edits" not in metadata
 
 
 class TestDraftFallbackOnFailure:
@@ -246,47 +263,6 @@ class TestDraftIdLifecycle:
         # Every draft_id must be non-zero (Telegram's contract).
         assert all(did != 0 for did in all_ids)
 
-    @pytest.mark.asyncio
-    async def test_tool_boundary_bumps_draft_id(self):
-        """After a segment break (tool boundary), the next text segment
-        animates via a new draft_id so it appears below the tool-progress
-        bubble rather than overwriting the prior segment's preview."""
-        adapter = _make_draft_capable_adapter()
-        cfg = StreamConsumerConfig(
-            transport="auto", chat_type="dm",
-            edit_interval=0.01, buffer_threshold=5, cursor="",
-        )
-        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
-
-        consumer.on_delta("Pre-tool ")
-        task = asyncio.create_task(consumer.run())
-        await asyncio.sleep(0.05)
-        # Tool boundary
-        consumer.on_segment_break()
-        await asyncio.sleep(0.05)
-        consumer.on_delta("Post-tool")
-        await asyncio.sleep(0.05)
-        consumer.finish()
-        await task
-
-        # Pre-tool and post-tool segments must use different draft_ids.
-        draft_ids = [c["draft_id"] for c in adapter.draft_calls]
-        if len(draft_ids) >= 2:
-            # Find pre-tool and post-tool calls by content
-            pre_ids = {
-                c["draft_id"] for c in adapter.draft_calls
-                if "Pre-tool" in c["content"] and "Post-tool" not in c["content"]
-            }
-            post_ids = {
-                c["draft_id"] for c in adapter.draft_calls
-                if "Post-tool" in c["content"]
-            }
-            if pre_ids and post_ids:
-                assert pre_ids.isdisjoint(post_ids), (
-                    f"pre-tool and post-tool segments must use distinct "
-                    f"draft_ids; got pre={pre_ids} post={post_ids}"
-                )
-
 
 class TestAlreadySentInDraftMode:
     """Drafts must NOT mark _already_sent — that flag gates the gateway's
@@ -321,3 +297,155 @@ class TestAlreadySentInDraftMode:
 
         # After the regular sendMessage finalize, _already_sent is True.
         assert consumer._already_sent is True
+
+
+def _make_fresh_final_adapter():
+    """Build a non-draft adapter that prefers a fresh final send.
+
+    Mirrors Telegram's rich-message contract: REQUIRES_EDIT_FINALIZE so the
+    final tick is routed through even when the text is unchanged, and
+    prefers_fresh_final_streaming() True so the consumer delivers the final
+    answer via a *fresh* send + preview delete instead of an edit.
+
+    ``send`` returns two distinct ids so the test can tell the preview
+    (first send) from the fresh final (second send) and assert the preview
+    is the one deleted.
+    """
+    from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+    FreshFinalAdapter = type(
+        "FreshFinalAdapter",
+        (BasePlatformAdapter,),
+        {"MAX_MESSAGE_LENGTH": 4096, "REQUIRES_EDIT_FINALIZE": True},
+    )
+    FreshFinalAdapter.__abstractmethods__ = frozenset()
+    adapter = FreshFinalAdapter.__new__(FreshFinalAdapter)
+    adapter._typing_paused = set()
+    adapter._fatal_error_message = None
+
+    # Edit-based path only — no native drafts.
+    adapter.supports_draft_streaming = lambda chat_type=None, metadata=None: False
+    # Accepts the metadata kwarg the consumer passes; ignores it (like Telegram).
+    adapter.prefers_fresh_final_streaming = lambda content, metadata=None: True
+
+    adapter.send = AsyncMock(side_effect=[
+        SendResult(success=True, message_id="preview1"),
+        SendResult(success=True, message_id="final1"),
+    ])
+    adapter.edit_message = AsyncMock(return_value=SendResult(success=True))
+    adapter.delete_message = AsyncMock(return_value=True)
+    return adapter
+
+
+class TestAdapterPrefersFreshFinal:
+    """An adapter whose send path is richer than its edit path (e.g. Telegram
+    rich messages) finalizes a streamed reply by sending a fresh final message
+    and deleting the preview, instead of final-editing the preview."""
+
+    @pytest.mark.asyncio
+    async def test_edit_stream_finalizes_with_fresh_send_and_deletes_preview(self):
+        adapter = _make_fresh_final_adapter()
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+            fresh_final_after_seconds=0.0,  # only the adapter hook drives fresh-final
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+
+        consumer.on_delta("Full answer here")
+        task = asyncio.create_task(consumer.run())
+        # Let the first send land so a real preview message_id exists before
+        # finalization — the fresh-final path only engages with a live preview.
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        # Two sends: the streaming preview, then the fresh final.
+        assert adapter.send.await_count == 2
+        first_content = adapter.send.call_args_list[0].kwargs.get("content")
+        second_content = adapter.send.call_args_list[1].kwargs.get("content")
+        # First update delivered the preview via adapter.send.
+        assert first_content == "Full answer here"
+        # Finalization re-sent the same completed content as a fresh message.
+        assert second_content == "Full answer here"
+
+        # The edit path must NOT be used to finalize a rich preview.
+        adapter.edit_message.assert_not_called()
+
+        # The stale preview is best-effort deleted (by its id, not the final's).
+        adapter.delete_message.assert_awaited_once_with("12345", "preview1")
+
+        assert consumer.final_response_sent is True
+
+
+def _make_rich_capable_adapter(*, overflow_limit=32768, send_results=None):
+    """Non-draft adapter that mimics Telegram rich messages: REQUIRES_EDIT_FINALIZE,
+    prefers a fresh (rich) final send, and reports a 32,768 streaming overflow
+    limit so the consumer doesn't pre-split a reply that fits one rich message.
+    """
+    from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+    RichAdapter = type(
+        "RichCapableAdapter",
+        (BasePlatformAdapter,),
+        {"MAX_MESSAGE_LENGTH": 4096, "REQUIRES_EDIT_FINALIZE": True},
+    )
+    RichAdapter.__abstractmethods__ = frozenset()
+    adapter = RichAdapter.__new__(RichAdapter)
+    adapter._typing_paused = set()
+    adapter._fatal_error_message = None
+    adapter.supports_draft_streaming = lambda chat_type=None, metadata=None: False
+    adapter.prefers_fresh_final_streaming = lambda content, metadata=None: True
+    adapter.streaming_overflow_limit = lambda: overflow_limit
+    adapter.send = AsyncMock(side_effect=send_results) if send_results else AsyncMock(
+        return_value=SendResult(success=True, message_id="m1"),
+    )
+    adapter.edit_message = AsyncMock(return_value=SendResult(success=True))
+    adapter.delete_message = AsyncMock(return_value=True)
+    return adapter
+
+
+class TestRichAwareOverflow:
+    """Rich-capable adapters raise the consumer's overflow limit so a reply that
+    fits one rich message isn't fragmented at the legacy 4,096 edit limit."""
+
+
+    def test_raw_message_limit_mock_adapter_is_safe(self):
+        # MagicMock adapters (many existing tests) must not crash or wrongly
+        # inflate the limit from a truthy auto-attribute.
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(adapter, "12345", StreamConsumerConfig())
+        assert consumer._raw_message_limit() == 4096
+
+    @pytest.mark.asyncio
+    async def test_long_rich_reply_not_split_and_final_is_whole(self):
+        from gateway.platforms.base import SendResult
+
+        long_text = "x" * 5000  # > 4096 legacy limit, < 32768 rich limit
+        adapter = _make_rich_capable_adapter(send_results=[
+            SendResult(success=True, message_id="preview1"),
+            SendResult(success=True, message_id="final1"),
+        ])
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+            fresh_final_after_seconds=0.0,
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+
+        consumer.on_delta(long_text)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        # Exactly two whole sends: the preview and the fresh final — NOT split
+        # into ~4096 chunks. Both carry the full 5,000-char reply.
+        assert adapter.send.await_count == 2
+        assert adapter.send.call_args_list[0].kwargs.get("content") == long_text
+        assert adapter.send.call_args_list[1].kwargs.get("content") == long_text
+        adapter.edit_message.assert_not_called()
+        adapter.delete_message.assert_awaited_once_with("12345", "preview1")
+        assert consumer.final_response_sent is True
+

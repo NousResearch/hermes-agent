@@ -1,3 +1,5 @@
+import type { MessageCompletePayload, SubagentEventPayload } from '@hermes/shared/gateway-events'
+
 import {
   REASONING_PULSE_MS,
   STREAM_BATCH_MS,
@@ -5,7 +7,7 @@ import {
   STREAM_SCROLL_BATCH_MS,
   STREAM_TYPING_BATCH_MS
 } from '../config/timing.js'
-import type { SessionInterruptResponse, SubagentEventPayload } from '../gatewayTypes.js'
+import type { SessionInterruptResponse } from '../gatewayTypes.js'
 import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import {
@@ -19,6 +21,7 @@ import {
 } from '../lib/text.js'
 import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '../types.js'
 
+import type { Notice } from './interfaces.js'
 import { resetFlowOverlays } from './overlayStore.js'
 import { pushSnapshot } from './spawnHistoryStore.js'
 import { archiveDoneTodos, getTurnState, patchTurnState, resetTurnState } from './turnStore.js'
@@ -65,10 +68,14 @@ const parseTodos = (value: unknown): null | TodoItem[] => {
         return null
       }
 
+      const id = String(row.id ?? '').trim()
+      const parent = String(row.parent ?? '').trim()
+
       return {
         content: String(row.content ?? '').trim(),
-        id: String(row.id ?? '').trim(),
-        status
+        id,
+        status,
+        ...(parent && parent !== id ? { parent } : {})
       }
     })
     .filter((item): item is TodoItem => Boolean(item?.id && item.content))
@@ -125,12 +132,23 @@ class TurnController {
   private activeTools: ActiveTool[] = []
   private activeReasoningText = ''
   private reasoningSegmentIndex: null | number = null
+  private interimBoundaryIndex: null | number = null
   private activityId = 0
   private reasoningStreamingTimer: Timer = null
   private reasoningTimer: Timer = null
   private streamTimer: Timer = null
   private streamDelay = STREAM_IDLE_BATCH_MS
-  private toolProgressTimer: Timer = null
+
+  // ── Credits notice machinery (Strategy B) ───────────────────────────
+  //
+  // A notice arriving mid-turn must NOT show (FaceTicker wins while busy);
+  // it is held here, latest-wins, and applied at turn end via onTurnEnd().
+  // The TTL clock starts only when the notice becomes VISIBLE (on apply),
+  // never on arrival, so an 8s "restored" notice shows for its full life.
+  // `noticeTimer` is DEDICATED — it is never the shared `statusTimer`.
+  private pendingNotice: Notice | null = null
+  private noticeTimer: Timer = null
+  private noticeIdSeq = 0
 
   boostStreamingForTyping() {
     this.streamDelay = STREAM_TYPING_BATCH_MS
@@ -157,8 +175,110 @@ class TurnController {
     this.statusTimer = clear(this.statusTimer)
   }
 
+  // ── Notice: arrival ──────────────────────────────────────────────────
+  //
+  // A `notification.show` arrived. If a turn is in flight (`busy`), the
+  // FaceTicker owns the verb slot, so we hold the notice (latest-wins) and
+  // let onTurnEnd() apply it when the turn finishes. If idle, apply it now.
+  // The Python side emits STABLE ids per notice kind (e.g. `credits.warn90`,
+  // `credits.restored`), NOT unique-per-emission ids.  The id-guard in
+  // applyNotice() is a defensive backup; the primary latest-wins mechanism is
+  // that applyNotice/clearNotice always cancel the prior timer first.
+  showNotice(notice: Notice) {
+    const stamped: Notice = { ...notice, id: notice.id || `n${++this.noticeIdSeq}` }
+
+    if (getUiState().busy) {
+      this.pendingNotice = stamped
+
+      return
+    }
+
+    this.applyNotice(stamped)
+  }
+
+  // ── Notice: clear by key (R3-H3 / HIGH-3) ────────────────────────────
+  //
+  // `notification.clear` only clears the visible notice when its key
+  // matches — a stale/late clear must not wipe a NEWER notice. Always drop
+  // a matching pending notice so it can't resurface at the next turn end.
+  clearNotice(key?: string) {
+    if (this.pendingNotice && this.pendingNotice.key === key) {
+      this.pendingNotice = null
+    }
+
+    if (getUiState().notice?.key === key) {
+      this.clearNoticeTimer()
+      patchUiState({ notice: null })
+    }
+  }
+
+  // Apply a notice to the visible UI state and (re)arm its TTL clock.
+  // Latest-wins: clear any prior TTL timer FIRST so an older notice's
+  // expiry can't wipe this one. A 'ttl' notice with `ttl_ms` self-expires;
+  // 'sticky' (default) persists until an explicit clear.
+  private applyNotice(notice: Notice) {
+    this.clearNoticeTimer()
+    patchUiState({ notice })
+
+    if (notice.kind === 'ttl' && typeof notice.ttl_ms === 'number' && notice.ttl_ms > 0) {
+      const id = notice.id
+
+      this.noticeTimer = setTimeout(() => {
+        this.noticeTimer = null
+
+        // Defensive backup: the prior timer was already cancelled by
+        // clearNoticeTimer() when a newer notice was applied, so in
+        // practice this guard only fires for the notice that armed it.
+        if (getUiState().notice?.id === id) {
+          patchUiState({ notice: null })
+        }
+      }, notice.ttl_ms)
+    }
+  }
+
+  private clearNoticeTimer() {
+    this.noticeTimer = clear(this.noticeTimer)
+  }
+
+  // ── Notice: turn-end flush (R3-C1 / R3-H4) ───────────────────────────
+  //
+  // Invoked ONLY by the three real turn-end sites (recordMessageComplete,
+  // interruptTurn, recordError) — NEVER by idle()/reset(), which would leak
+  // session A's notice into session B. Applies a pending NEW notice so it
+  // appears now that FaceTicker has yielded; the TTL clock starts here, when
+  // the notice first becomes visible. With no pending notice this is a
+  // no-op, so a standing sticky notice REappears untouched after the turn.
+  private flushPendingNotice() {
+    if (!this.pendingNotice) {
+      return
+    }
+
+    const notice = this.pendingNotice
+    this.pendingNotice = null
+    this.applyNotice(notice)
+  }
+
+  // Drop all notice state — pending + timer + visible (R3-H5). Called by
+  // reset()/fullReset() so a session A notice can't bleed into session B.
+  private clearNoticeState() {
+    this.pendingNotice = null
+    this.clearNoticeTimer()
+
+    if (getUiState().notice) {
+      patchUiState({ notice: null })
+    }
+  }
+
   endReasoningPhase() {
     this.reasoningStreamingTimer = clear(this.reasoningStreamingTimer)
+
+    // Seal any open reasoning segment so its isLiveReasoning flag drops the
+    // moment the reasoning phase ends — the panel must stop tracking the
+    // turn's global reasoningActive, not stay "live" for the rest of the turn.
+    if (this.reasoningSegmentIndex !== null) {
+      this.syncReasoningSegment(false)
+    }
+
     patchTurnState({ reasoningActive: false, reasoningStreaming: false })
   }
 
@@ -178,11 +298,16 @@ class TurnController {
       tools: [],
       turnTrail: []
     })
-    patchUiState({ busy: false })
+    patchUiState({ busy: false, compacting: false })
     resetFlowOverlays()
   }
 
-  interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps) {
+  // `keepBusy` holds the session busy after interrupting so a queued message
+  // drains on the gateway's real settle edge (message.complete, suppressed
+  // while `interrupted`) instead of racing the still-unwinding turn — the race
+  // duplicated the user bubble, leaked a "queued: …" note, and surfaced the
+  // cancelled turn's "[interrupted]" reply.
+  interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps, opts: { keepBusy?: boolean } = {}) {
     this.interrupted = true
     gw.request<SessionInterruptResponse>('session.interrupt', { session_id: sid }).catch(() => {})
 
@@ -218,13 +343,24 @@ class TurnController {
       sys('interrupted')
     }
 
-    patchUiState({ status: 'interrupted' })
     this.clearStatusTimer()
+
+    if (opts.keepBusy) {
+      // `idle()` already cleared busy; re-assert it so the drain waits for settle.
+      patchUiState({ busy: true, status: 'interrupting…' })
+
+      return
+    }
+
+    patchUiState({ status: 'interrupted' })
 
     this.statusTimer = setTimeout(() => {
       this.statusTimer = null
       patchUiState({ status: 'ready' })
     }, INTERRUPT_COOLDOWN_MS)
+
+    // Real turn end: surface any notice held back while busy.
+    this.flushPendingNotice()
   }
 
   pruneTransient() {
@@ -236,7 +372,7 @@ class TurnController {
     })
   }
 
-  private syncReasoningSegment() {
+  private syncReasoningSegment(live = true) {
     const thinking = this.activeReasoningText.trim()
 
     if (!thinking) {
@@ -249,7 +385,8 @@ class TurnController {
       text: '',
       thinking,
       thinkingTokens: estimateTokensRough(thinking),
-      toolTokens: this.toolTokenAcc || undefined
+      toolTokens: this.toolTokenAcc || undefined,
+      ...(live ? { isLiveReasoning: true } : {})
     }
 
     if (this.reasoningSegmentIndex === null) {
@@ -263,7 +400,7 @@ class TurnController {
   }
 
   private closeReasoningSegment() {
-    this.syncReasoningSegment()
+    this.syncReasoningSegment(false)
     this.activeReasoningText = ''
     this.reasoningSegmentIndex = null
   }
@@ -427,9 +564,12 @@ class TurnController {
     this.segmentMessages = []
     this.turnTools = []
     this.persistedToolLabels.clear()
+
+    // Real turn end: surface any notice held back while busy.
+    this.flushPendingNotice()
   }
 
-  recordMessageComplete(payload: { rendered?: string; reasoning?: string; text?: string }) {
+  recordMessageComplete(payload: MessageCompletePayload) {
     this.closeReasoningSegment()
 
     // Ink renders markdown via <Md>; the gateway's Rich-rendered ANSI
@@ -438,9 +578,19 @@ class TurnController {
     // `display.final_response_markdown: render` because raw ANSI escapes
     // pass through into the React tree.  Prefer raw text and fall back
     // only when the gateway elected not to send any (#16391).
-    const rawText = (payload.text ?? payload.rendered ?? this.bufRef).trimStart()
+    // `text` is `str | JsonValue` on the wire (structured parts stay possible); only a string renders here.
+    const wireText = typeof payload.text === 'string' ? payload.text : undefined
+    const rawText = (wireText ?? payload.rendered ?? this.bufRef).trimStart()
     const split = splitReasoning(rawText)
-    const finalText = finalTail(split.text, this.segmentMessages)
+    // Only dedupe segments AFTER the interim boundary — interim-sealed
+    // segments are preserved even if the final text includes them.
+    // Exception: when response_previewed is true, the final text is the
+    // same model response that was published provisionally as an interim
+    // message. Dedupe against ALL segments (including sealed interims) so
+    // the identical text doesn't render as a duplicate message. (#65919
+    // review: duplicate-message blocker)
+    const dedupeStart = payload.response_previewed ? 0 : (this.interimBoundaryIndex ?? 0)
+    const finalText = finalTail(split.text, this.segmentMessages.slice(dedupeStart))
     const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
     const savedReasoning = [existingReasoning, existingReasoning ? '' : split.reasoning].filter(Boolean).join('\n\n')
     const savedToolTokens = this.toolTokenAcc
@@ -520,10 +670,14 @@ class TurnController {
     this.interrupted = false
     patchTurnState({ activity: [], outcome: '' })
 
+    // Real turn end: surface any notice held back while busy. Done after
+    // idle() flips busy=false so applyNotice() reaches the visible slot.
+    this.flushPendingNotice()
+
     return { finalMessages, finalText, wasInterrupted }
   }
 
-  recordMessageDelta({ text }: { rendered?: string; text?: string }) {
+  recordMessageDelta({ text }: { rendered?: string | null; text?: string }) {
     if (this.interrupted || !text) {
       return
     }
@@ -543,6 +697,32 @@ class TurnController {
     }
   }
 
+  recordInterimMessage(text: string) {
+    if (this.interrupted) {
+      return
+    }
+
+    const authoritativeText = text.trimStart()
+
+    if (!authoritativeText) {
+      return
+    }
+
+    // If the streaming buffer hasn't caught up to the authoritative interim
+    // text (e.g. the backend didn't stream every token), sync it so the
+    // sealed segment matches what the user should see.
+    if (this.bufRef.trimStart() !== authoritativeText) {
+      this.bufRef = authoritativeText
+    }
+
+    // Flush the current streaming buffer into a sealed segment — this is the
+    // TUI equivalent of the desktop's finalizeInterimAssistantMessage. The
+    // segment survives message.complete's finalTail dedupe because
+    // interimBoundaryIndex marks it as interim-sealed.
+    this.flushStreamingSegment()
+    this.interimBoundaryIndex = this.segmentMessages.length
+  }
+
   recordReasoningAvailable(text: string, force = false) {
     if (this.interrupted || (!force && !getUiState().showReasoning)) {
       return
@@ -559,6 +739,39 @@ class TurnController {
     this.scheduleReasoning()
     this.syncReasoningSegment()
     this.pulseReasoningStreaming()
+  }
+
+  /**
+   * Render one MoA reference model's output as a committed labelled block
+   * before the aggregator responds. Unlike reasoning, references are shown
+   * regardless of showReasoning (they ARE the mixture-of-agents process the
+   * user opted into by selecting a MoA preset). Each becomes its own
+   * thinking-style segment tagged with the source model, so a multi-reference
+   * preset builds a stack the user can scroll.
+   */
+  recordMoaReference(label: string, text: string, index?: number, count?: number) {
+    if (this.interrupted) {
+      return
+    }
+
+    // Close any open reasoning segment so the reference block lands as its own
+    // committed entry rather than merging into streaming reasoning.
+    this.closeReasoningSegment()
+
+    const header = index && count ? `◇ Reference ${index}/${count} — ${label}` : `◇ Reference — ${label}`
+
+    const body = text.trim()
+    const thinking = body ? `${header}\n${body}` : header
+
+    this.pushSegment({
+      kind: 'trail',
+      role: 'system',
+      text: '',
+      thinking,
+      isMoaReference: true,
+      thinkingTokens: estimateTokensRough(thinking)
+    })
+    patchTurnState({ streamSegments: this.segmentMessages })
   }
 
   recordReasoningDelta(text: string, force = false) {
@@ -585,7 +798,6 @@ class TurnController {
   recordToolComplete(
     toolId: string,
     fallbackName?: string,
-    error?: string,
     summary?: string,
     duration?: number,
     todos?: unknown,
@@ -596,7 +808,7 @@ class TurnController {
     }
 
     this.recordTodos(todos)
-    const line = this.completeTool(toolId, fallbackName, error, summary, duration, resultText)
+    const line = this.completeTool(toolId, fallbackName, summary, duration, resultText)
 
     this.pendingSegmentTools = [...this.pendingSegmentTools, line]
     this.flushPendingToolsIntoLastSegment()
@@ -607,7 +819,6 @@ class TurnController {
     diffText: string,
     toolId: string,
     fallbackName?: string,
-    error?: string,
     duration?: number,
     resultText?: string
   ) {
@@ -616,14 +827,15 @@ class TurnController {
     }
 
     this.flushStreamingSegment()
-    this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, error, '', duration, resultText)])
+    this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, '', duration, resultText)])
     this.publishToolState()
   }
 
+  // `tool.complete` carries no error flag on the wire (tui_gateway/tool_progress.py::_on_tool_complete);
+  // a failed tool surfaces through its result text, so every trail line renders as non-error.
   private completeTool(
     toolId: string,
     fallbackName?: string,
-    error?: string,
     summary?: string,
     duration?: number,
     resultText?: string
@@ -638,12 +850,12 @@ class TurnController {
         ? buildVerboseToolTrailLine(
             name,
             done?.context || '',
-            Boolean(error),
+            false,
             duration ?? fallbackDuration,
             done?.verboseArgs,
-            error || resultText || summary || ''
+            resultText || summary || ''
           )
-        : buildToolTrailLine(name, done?.context || '', Boolean(error), error || summary || '', duration ?? fallbackDuration)
+        : buildToolTrailLine(name, done?.context || '', false, summary || '', duration ?? fallbackDuration)
 
     this.activeTools = this.activeTools.filter(tool => tool.id !== toolId)
 
@@ -664,29 +876,6 @@ class TurnController {
       tools: this.activeTools,
       turnTrail: this.turnTools
     })
-  }
-
-  recordToolProgress(toolName: string, preview: string) {
-    if (this.interrupted) {
-      return
-    }
-
-    const index = this.activeTools.findIndex(tool => tool.name === toolName)
-
-    if (index < 0) {
-      return
-    }
-
-    this.activeTools = this.activeTools.map((tool, i) => (i === index ? { ...tool, context: preview } : tool))
-
-    if (this.toolProgressTimer) {
-      return
-    }
-
-    this.toolProgressTimer = setTimeout(() => {
-      this.toolProgressTimer = null
-      patchTurnState({ tools: [...this.activeTools] })
-    }, STREAM_BATCH_MS)
   }
 
   recordToolStart(toolId: string, name: string, context: string, verboseArgs?: string) {
@@ -718,10 +907,14 @@ class TurnController {
     this.pendingSegmentTools = []
     this.protocolWarned = false
     this.reasoningSegmentIndex = null
+    this.interimBoundaryIndex = null
     this.segmentMessages = []
     this.turnTools = []
     this.toolTokenAcc = 0
     this.persistedToolLabels.clear()
+    // Session boundary: drop notice state so session A's sticky can't bleed
+    // into session B (R3-H5). reset()/fullReset() CLEAR — they never flush.
+    this.clearNoticeState()
     patchTurnState({ activity: [], outcome: '' })
   }
 
@@ -771,10 +964,24 @@ class TurnController {
     this.activeTools = []
     this.activeReasoningText = ''
     this.reasoningSegmentIndex = null
+    this.interimBoundaryIndex = null
     this.turnTools = []
     this.toolTokenAcc = 0
     this.interrupted = false
     this.persistedToolLabels.clear()
+    // "Flash and yield" notices clear when a new turn starts: a usage-band heads-up
+    // (credits.usage, 50/75/90%) and the one-time "grant spent" transition
+    // (credits.grant_spent) should show once, then get out of the way — not camp the
+    // bar (e.g. "Grant spent · $990 top-up left" sitting there with plenty of top-up
+    // left). Depletion (credits.depleted) and other notices stay — they're explicitly
+    // sticky until the policy clears them. The Python `active` latch retains the key,
+    // so a yielded notice won't re-fire on the next turn.
+    const yieldingNoticeKey = getUiState().notice?.key
+
+    if (yieldingNoticeKey === 'credits.usage' || yieldingNoticeKey === 'credits.grant_spent') {
+      this.clearNotice(yieldingNoticeKey)
+    }
+
     patchUiState({ busy: true })
     patchTurnState({ activity: [], outcome: '', subagents: [], toolTokens: 0, tools: [], turnTrail: [] })
   }
@@ -801,11 +1008,12 @@ class TurnController {
       }
 
       const base: SubagentProgress = existing ?? {
+        delegationId: p.delegation_id ?? undefined,
         depth: p.depth ?? 0,
         goal: p.goal,
         id,
         index: p.task_index,
-        model: p.model,
+        model: p.model ?? undefined,
         notes: [],
         parentId: p.parent_id ?? null,
         startedAt: Date.now(),
@@ -814,7 +1022,7 @@ class TurnController {
         thinking: [],
         toolCount: p.tool_count ?? 0,
         tools: [],
-        toolsets: p.toolsets
+        toolsets: p.toolsets ?? undefined
       }
 
       // Map snake_case payload keys onto camelCase state.  Only overwrite
@@ -831,13 +1039,12 @@ class TurnController {
       const next: SubagentProgress = {
         ...base,
         apiCalls: p.api_calls ?? base.apiCalls,
-        costUsd: p.cost_usd ?? base.costUsd,
+        delegationId: p.delegation_id ?? base.delegationId,
         depth: p.depth ?? base.depth,
         filesRead: p.files_read ?? base.filesRead,
         filesWritten: p.files_written ?? base.filesWritten,
         goal: p.goal || base.goal,
         inputTokens: p.input_tokens ?? base.inputTokens,
-        iteration: p.iteration ?? base.iteration,
         model: p.model ?? base.model,
         outputTail,
         outputTokens: p.output_tokens ?? base.outputTokens,

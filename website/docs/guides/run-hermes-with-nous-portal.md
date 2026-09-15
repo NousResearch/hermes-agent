@@ -47,8 +47,8 @@ OAuth needs a browser, but the loopback callback runs on the machine where Herme
 ssh -N -L 8642:127.0.0.1:8642 user@remote-host    # in a local terminal
 hermes setup --portal                              # on the remote, open the printed URL in your local browser
 
-# Option B: manual paste (for Cloud Shell, Codespaces, EC2 Instance Connect)
-hermes auth add nous --type oauth --manual-paste
+# Option B: device-code login (works from Cloud Shell, Codespaces, EC2 Instance Connect)
+hermes auth add nous --type oauth
 # Then re-run `hermes setup --portal` to wire the provider + gateway
 ```
 
@@ -57,7 +57,7 @@ See [OAuth over SSH / Remote Hosts](/guides/oauth-over-ssh) for the full walkthr
 ## 3. Verify it worked
 
 ```bash
-hermes portal status
+hermes portal info
 ```
 
 You should see:
@@ -95,7 +95,7 @@ You should see Hermes call `web_search` (Firecrawl-backed, through the gateway) 
 
 ## 5. Pick the model you actually want
 
-The default after `hermes setup --portal` is a sensible general-purpose model, but the whole point of the subscription is access to the full catalog. Switch with `/model` mid-session:
+`hermes setup --portal` lets you pick a model during setup, but the whole point of the subscription is access to the full catalog — switch any time with `/model` mid-session:
 
 ```bash
 /model anthropic/claude-sonnet-4.6     # best general-purpose agentic
@@ -120,7 +120,7 @@ hermes config set model.default anthropic/claude-sonnet-4.6
 
 ### Don't pick Hermes-4 for agent work
 
-Hermes-4-70B and Hermes-4-405B are available on the Portal at deep discounts, but they're **chat/reasoning models**, not tool-call-tuned. They will struggle with multi-step agent loops. Use them via [Nous Chat](https://chat.nousresearch.com) for conversation/research work, or through the [subscription proxy](/user-guide/features/subscription-proxy) from non-agent tools. For Hermes Agent itself, stick to the frontier agentic models above.
+Hermes-4-70B and Hermes-4-405B are available on the Portal at deep discounts, but they're **chat/reasoning models**, not tool-call-tuned. They will struggle with multi-step agent loops. Use them for conversation/research work through the [subscription proxy](/user-guide/features/subscription-proxy) from non-agent tools. For Hermes Agent itself, stick to the frontier agentic models above.
 
 The Portal's own [info page](https://portal.nousresearch.com/info) carries this warning too — it's the official Nous guidance, not just a Hermes-side opinion.
 
@@ -151,7 +151,7 @@ You'll see per-tool routing — `via Nous Portal` for the ones routed through th
 Because the Tool Gateway includes OpenAI TTS, [voice mode](/user-guide/features/voice-mode) works without a separate OpenAI key:
 
 ```bash
-hermes setup voice
+hermes setup tts
 # → pick "Nous Subscription" for TTS
 # → pick a speech-to-text backend (local faster-whisper is free, no setup)
 ```
@@ -163,7 +163,7 @@ Then in any messaging-platform session (Telegram, Discord, Signal, etc.), send a
 The Portal subscription works for [cron jobs](/user-guide/features/cron) and [batch processing](/user-guide/features/batch-processing) the same way it works for interactive chat — the OAuth refresh token is reused automatically. No additional setup; just schedule cron jobs and they'll bill against your subscription.
 
 ```bash
-hermes cron create "every day at 9am" \
+hermes cron create "0 9 * * *" \
   "Search the web for top AI news and summarize the 5 most important stories" \
   --name "Daily AI news"
 ```
@@ -178,15 +178,15 @@ For team setups where multiple humans share a machine, each human has their own 
 
 ## Troubleshooting
 
-### `hermes portal status` shows "not logged in" after `hermes setup --portal`
+### `hermes portal info` shows "not logged in" after `hermes setup --portal`
 
 The OAuth flow didn't complete. Re-run it:
 
 ```bash
-hermes auth add nous --type oauth
+hermes portal
 ```
 
-If your browser doesn't open or the callback fails, you're likely on a remote/headless host — see [OAuth over SSH](/guides/oauth-over-ssh) for the port-forwarding and manual-paste workarounds.
+If your browser doesn't open or the callback fails, you're likely on a remote/headless host — see [OAuth over SSH](/guides/oauth-over-ssh) for the port-forwarding workarounds.
 
 ### "Model: currently openrouter" (or some other provider) instead of "using Nous as inference provider"
 
@@ -203,7 +203,7 @@ hermes model
 # pick Nous Portal
 ```
 
-Re-verify with `hermes portal status`.
+Re-verify with `hermes portal info`.
 
 ### Tool Gateway tools showing partner names instead of "via Nous Portal"
 
@@ -228,7 +228,7 @@ The quarantine clears automatically on successful re-login.
 
 ### Model I want isn't in the `/model` picker
 
-The Portal catalog mirrors OpenRouter's model list (300+). If a model is missing, try typing the OpenRouter-style slug directly:
+The Portal catalog draws on OpenRouter's model list (300+) plus models served through proprietary or secondary providers. If a model is missing, try typing the OpenRouter-style slug directly:
 
 ```bash
 /model anthropic/claude-opus-4.6
@@ -239,16 +239,16 @@ If a model is genuinely unavailable, [open an issue](https://github.com/NousRese
 
 ### Billing not appearing on my Portal account
 
-`hermes portal status` will tell you whether you're actually routing through the Portal or some other provider. Common causes:
+`hermes portal info` will tell you whether you're actually routing through the Portal or some other provider. Common causes:
 
 - `model.provider` set to `openrouter`/`anthropic`/etc. instead of `nous`
 - An OAuth refresh failure that fell back to a different configured provider
-- Multiple Hermes profiles where you're using the wrong one (check `hermes profile current`)
+- Multiple Hermes profiles where you're using the wrong one (check `hermes profile list`)
 
 ### Want to revoke and start clean
 
 ```bash
-hermes auth remove nous       # wipes the local refresh token
+hermes auth logout nous       # wipes the local refresh token
 # Then re-run setup or remove the subscription from the Portal web UI
 ```
 

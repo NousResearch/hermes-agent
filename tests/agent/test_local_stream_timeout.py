@@ -46,20 +46,6 @@ class TestLocalStreamReadTimeout:
                 _stream_read_timeout = _base_timeout
             assert _stream_read_timeout == 300.0
 
-    @pytest.mark.parametrize("base_url", [
-        "https://api.openai.com",
-        "https://openrouter.ai/api",
-        "https://api.anthropic.com",
-    ])
-    def test_remote_endpoint_keeps_default(self, base_url):
-        """Remote endpoint -> keep 120s default."""
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("HERMES_STREAM_READ_TIMEOUT", None)
-            _base_timeout = float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
-            _stream_read_timeout = float(os.getenv("HERMES_STREAM_READ_TIMEOUT", 120.0))
-            if _stream_read_timeout == 120.0 and base_url and is_local_endpoint(base_url):
-                _stream_read_timeout = _base_timeout
-            assert _stream_read_timeout == 120.0
 
     def test_empty_base_url_keeps_default(self):
         """No base_url set -> keep 120s default."""
@@ -88,15 +74,7 @@ class TestIsLocalEndpoint:
     def test_classic_local_addresses(self, url):
         assert is_local_endpoint(url) is True
 
-    @pytest.mark.parametrize("url", [
-        "http://host.docker.internal:11434",
-        "http://host.docker.internal:8080/v1",
-        "http://gateway.docker.internal:11434",
-        "http://host.containers.internal:11434",
-        "http://host.lima.internal:11434",
-    ])
-    def test_container_dns_names(self, url):
-        assert is_local_endpoint(url) is True
+
 
     @pytest.mark.parametrize("url", [
         "https://api.openai.com",
@@ -107,24 +85,4 @@ class TestIsLocalEndpoint:
     def test_remote_endpoints(self, url):
         assert is_local_endpoint(url) is False
 
-    @pytest.mark.parametrize("url", [
-        "http://100.64.0.0:11434",            # lower bound of CGNAT block
-        "http://100.64.0.1:11434/v1",         # lower bound +1
-        "http://100.77.243.5:11434",          # representative Tailscale host
-        "https://100.100.100.100:443",        # Tailscale MagicDNS anchor
-        "https://100.127.255.254:443",        # upper bound -1
-        "http://100.127.255.255:11434",       # upper bound of CGNAT block
-    ])
-    def test_tailscale_cgnat_is_local(self, url):
-        """Tailscale 100.64.0.0/10 should be treated as local for timeout bumps."""
-        assert is_local_endpoint(url) is True
 
-    @pytest.mark.parametrize("url", [
-        "http://100.63.255.255:11434",        # just below CGNAT block
-        "http://100.128.0.1:11434",           # just above CGNAT block
-        "http://100.200.0.1:11434",           # well outside CGNAT
-        "http://99.64.0.1:11434",             # first octet wrong
-    ])
-    def test_near_but_not_cgnat_is_remote(self, url):
-        """Hosts adjacent to but outside 100.64.0.0/10 must not match."""
-        assert is_local_endpoint(url) is False

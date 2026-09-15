@@ -1,13 +1,19 @@
 """External secret source integrations.
 
-A secret source is anything that can supply environment-variable-shaped
-credentials at process startup, _after_ ~/.hermes/.env has loaded.  By
-default sources are non-destructive: they only set values for env vars
-that aren't already present, so .env and shell exports continue to win.
-
-Currently shipped:
-
-  - ``bitwarden`` — Bitwarden Secrets Manager (`bws` CLI).  See
-    ``agent.secret_sources.bitwarden`` for the integration and
-    ``hermes_cli.secrets_cli`` for the user-facing setup wizard.
+A secret source supplies env-var-shaped credentials at process startup, after
+~/.hermes/.env has loaded. Contract: :class:`base.SecretSource`; orchestrator
+(ordering, mapped-beats-bulk, first-claim-wins, provenance): :func:`registry.apply_all`.
+Bundled: ``bitwarden``, ``onepassword``, ``command``. The set is deliberately
+closed — third-party managers ship as plugins that subclass ``SecretSource`` and
+register through ``PluginContext.register_secret_source()``.
 """
+
+from agent.secret_sources.base import (  # noqa: F401
+    SECRET_SOURCE_API_VERSION,
+    ErrorKind,
+    FetchResult,
+    SecretSource,
+    is_valid_env_name,
+    run_secret_cli,
+    scrub_ansi,
+)

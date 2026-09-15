@@ -2,7 +2,8 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { Loader2, Mic, Volume2, VolumeX } from '@/lib/icons'
+import { useI18n } from '@/i18n'
+import { iconSize, Loader2, Mic, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { stopVoicePlayback } from '@/lib/voice-playback'
 import { $voicePlayback } from '@/store/voice-playback'
@@ -163,12 +164,14 @@ function PlaybackWaveform({ audioElement }: { audioElement: HTMLAudioElement | n
 }
 
 export function VoiceActivity({ state }: { state: VoiceActivityState }) {
+  const { t } = useI18n()
+
   if (state.status === 'idle') {
     return null
   }
 
   const recording = state.status === 'recording'
-  const title = recording ? 'Dictating' : 'Transcribing'
+  const title = recording ? t.composer.dictating : t.composer.transcribing
 
   return (
     <div
@@ -185,7 +188,7 @@ export function VoiceActivity({ state }: { state: VoiceActivityState }) {
           recording ? 'bg-primary/15 text-primary' : 'bg-primary/10 text-primary'
         )}
       >
-        {recording ? <Mic size={12} /> : <Loader2 className="animate-spin" size={12} />}
+        {recording ? <Mic className={iconSize.xs} /> : <Loader2 className={cn('animate-spin', iconSize.xs)} />}
       </div>
 
       <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -201,6 +204,7 @@ export function VoiceActivity({ state }: { state: VoiceActivityState }) {
 }
 
 export function VoicePlaybackActivity() {
+  const { t } = useI18n()
   const playback = useStore($voicePlayback)
 
   if (playback.status === 'idle') {
@@ -210,10 +214,10 @@ export function VoicePlaybackActivity() {
   const preparing = playback.status === 'preparing'
 
   const title = preparing
-    ? 'Preparing audio'
+    ? t.composer.preparingAudio
     : playback.source === 'voice-conversation'
-      ? 'Speaking response'
-      : 'Reading aloud'
+      ? t.composer.speakingResponse
+      : t.composer.readingAloud
 
   return (
     <div
@@ -225,7 +229,7 @@ export function VoicePlaybackActivity() {
       role="status"
     >
       <div className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
-        {preparing ? <Loader2 className="animate-spin" size={12} /> : <Volume2 size={12} />}
+        {preparing ? <Loader2 className={cn('animate-spin', iconSize.xs)} /> : <Volume2 className={iconSize.xs} />}
       </div>
 
       <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -240,7 +244,7 @@ export function VoicePlaybackActivity() {
         type="button"
         variant="ghost"
       >
-        <VolumeX size={12} />
+        <VolumeX className={iconSize.xs} />
         Stop
       </Button>
     </div>

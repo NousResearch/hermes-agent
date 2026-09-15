@@ -34,14 +34,21 @@ function FadeTextImpl({ children, className, fadeWidth = '3rem', style, ...rest 
   const ref = useRef<HTMLSpanElement>(null)
   const [overflowing, setOverflowing] = useState(false)
 
-  const measureOverflow = useCallback(() => {
+  const measureOverflow = useCallback((entries: readonly ResizeObserverEntry[]) => {
     const el = ref.current
 
     if (!el) {
       return
     }
 
-    setOverflowing(el.scrollWidth - el.clientWidth > 1)
+    // `clientWidth` from the RO entry when available (already computed);
+    // `scrollWidth` is unavoidable — content width isn't part of the entry —
+    // but inside RO timing layout is already clean so the read is cheap.
+    const clientWidth = entries.find(entry => entry.target === el)?.contentRect?.width ?? el.clientWidth
+
+    // setState is identity-stable: React bails out when the boolean doesn't
+    // change, so repeated RO fires with the same answer don't re-render.
+    setOverflowing(el.scrollWidth - clientWidth > 1)
   }, [])
 
   useResizeObserver(measureOverflow, ref)

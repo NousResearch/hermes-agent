@@ -1,29 +1,35 @@
+import type { SessionListRow } from '@hermes/shared/gateway-events'
 import { describe, expect, it } from 'vitest'
 
-import { DEFAULT_THEME } from '../theme.js'
-import type { SessionActiveItem } from '../gatewayTypes.js'
 import {
   activeSessionCountLabel,
   canTypeOrchestratorPrompt,
+  clampOrchestratorSelection,
+  closeFallbackAfterClose,
   currentSessionSelectionIndex,
+  draftModelArgFromPickerValue,
+  draftModelDisplayLabel,
+  draftTitleFromPrompt,
+  fixedSessionColumnStyle,
+  isNewSessionRow,
+  newSessionMarkerColor,
+  newSessionRowIndex,
   orchestratorContextHint,
   orchestratorContextHintSegments,
   orchestratorGlobalHotkeyHint,
   orchestratorGlobalHotkeyHintSegments,
   orchestratorHintSegmentColor,
-  clampOrchestratorSelection,
-  closeFallbackAfterClose,
-  draftModelArgFromPickerValue,
-  draftModelDisplayLabel,
-  fixedSessionColumnStyle,
-  draftTitleFromPrompt,
-  isNewSessionRow,
-  newSessionMarkerColor,
-  newSessionRowIndex,
   orchestratorRowClickAction,
   orchestratorVisibleRowIndexes,
-  selectedSessionRowStyle
+  relativeSessionAge,
+  resumableHistory,
+  selectedSessionRowStyle,
+  sessionRowKindAt,
+  sessionsCountLabel
 } from '../components/activeSessionSwitcher.js'
+import { listRowStyle } from '../components/overlayPrimitives.js'
+import type { SessionActiveItem } from '../gatewayTypes.js'
+import { DEFAULT_THEME } from '../theme.js'
 
 describe('session orchestrator helpers', () => {
   it('labels live sessions compactly for tight overlays', () => {
@@ -70,21 +76,27 @@ describe('session orchestrator helpers', () => {
     expect(newSessionMarkerColor(DEFAULT_THEME, true)).toBe(DEFAULT_THEME.color.text)
   })
 
-  it('uses a readable selected row style instead of accent-on-accent inverse text', () => {
+  it('uses the shared list-row primitive for the selected row (same as completions)', () => {
     const style = selectedSessionRowStyle(DEFAULT_THEME)
+    const shared = listRowStyle(DEFAULT_THEME, true)
 
-    expect(style.backgroundColor).toBe(DEFAULT_THEME.color.selectionBg)
-    expect(style.color).toBe(DEFAULT_THEME.color.text)
+    // One source of truth: the session switcher and the completions popover
+    // cannot disagree about what "selected" looks like.
+    expect(style.backgroundColor).toBe(shared.backgroundColor)
+    expect(style.color).toBe(shared.color)
+    // Readability contract survives: never accent-on-accent inverse.
     expect(style.backgroundColor).not.toBe(DEFAULT_THEME.color.accent)
     expect(style.color).not.toBe(DEFAULT_THEME.color.accent)
+    // Inactive rows paint nothing — the terminal's canvas is the row bg.
+    expect(listRowStyle(DEFAULT_THEME, false)).toEqual({})
   })
 
   it('turns model picker values into session-scoped draft model args', () => {
     expect(draftModelArgFromPickerValue('kimi-k2.6 --provider ollama-cloud --tui-session')).toBe(
-      'kimi-k2.6 --provider ollama-cloud'
+      'kimi-k2.6 --provider ollama-cloud --session'
     )
     expect(draftModelArgFromPickerValue('openai/gpt-5.5 --provider openai-codex --global')).toBe(
-      'openai/gpt-5.5 --provider openai-codex'
+      'openai/gpt-5.5 --provider openai-codex --session'
     )
   })
 
@@ -97,7 +109,13 @@ describe('session orchestrator helpers', () => {
 
     expect(currentSessionSelectionIndex(sessions, 'second')).toBe(1)
     expect(
-      currentSessionSelectionIndex([{ id: 'first', status: 'idle' }, { id: 'third', status: 'idle' }], 'third')
+      currentSessionSelectionIndex(
+        [
+          { id: 'first', status: 'idle' },
+          { id: 'third', status: 'idle' }
+        ],
+        'third'
+      )
     ).toBe(1)
     expect(currentSessionSelectionIndex(sessions, 'missing')).toBe(1)
     expect(currentSessionSelectionIndex([], 'missing')).toBe(0)
@@ -153,5 +171,47 @@ describe('session orchestrator helpers', () => {
     expect(draftTitleFromPrompt('  Build the websocket orchestrator panel and make it robust.  ', 24)).toBe(
       'Build the websocket orc…'
     )
+  })
+})
+
+describe('unified Sessions overlay helpers', () => {
+  it('orders rows as [new][live…][history…]', () => {
+    // 2 live sessions, any number of history rows after them.
+    expect(sessionRowKindAt(0, 2)).toBe('new')
+    expect(sessionRowKindAt(1, 2)).toBe('live')
+    expect(sessionRowKindAt(2, 2)).toBe('live')
+    expect(sessionRowKindAt(3, 2)).toBe('history')
+    expect(sessionRowKindAt(9, 2)).toBe('history')
+    // No live sessions: row 0 is new, everything after is history.
+    expect(sessionRowKindAt(0, 0)).toBe('new')
+    expect(sessionRowKindAt(1, 0)).toBe('history')
+  })
+
+  it('drops already-live sessions from the resumable history (dedupe by id)', () => {
+    const history = [
+      { id: 'a', message_count: 1, preview: '', started_at: 0, title: 'A' },
+      { id: 'b', message_count: 2, preview: '', started_at: 0, title: 'B' },
+      { id: 'c', message_count: 3, preview: '', started_at: 0, title: 'C' }
+    ] satisfies SessionListRow[]
+
+    const live = [{ id: 'b', status: 'idle' }] satisfies SessionActiveItem[]
+
+    expect(resumableHistory(history, live).map(h => h.id)).toEqual(['a', 'c'])
+    expect(resumableHistory(history, []).map(h => h.id)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('labels live + resumable counts compactly', () => {
+    expect(sessionsCountLabel(0, 0)).toBe('0 live · 0 resumable')
+    expect(sessionsCountLabel(2, 7)).toBe('2 live · 7 resumable')
+  })
+
+  it('renders relative session age, blank when unknown', () => {
+    const nowSec = Math.floor(Date.now() / 1000)
+
+    expect(relativeSessionAge(nowSec)).toBe('today')
+    expect(relativeSessionAge(nowSec - 36 * 3600)).toBe('yesterday')
+    expect(relativeSessionAge(nowSec - 3 * 86400)).toBe('3d ago')
+    expect(relativeSessionAge(undefined)).toBe('')
+    expect(relativeSessionAge(0)).toBe('')
   })
 })

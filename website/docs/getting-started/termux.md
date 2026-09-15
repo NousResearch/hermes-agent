@@ -6,13 +6,18 @@ description: "Run Hermes Agent directly on an Android phone with Termux"
 
 # Hermes on Android with Termux
 
-This is the tested path for running Hermes Agent directly on an Android phone through [Termux](https://termux.dev/).
+:::warning Tier 2 platform
+Termux (Android) is a [Tier 2 platform](./platform-support.md#tier-2). The installer script and documentation here are maintained on a best-effort basis only. Commits to `main` may break these packages at any point in time.
+:::
+
+Hermes Agent can run directly on an Android phone through [Termux](https://termux.dev/).
 
 It gives you a working local CLI on the phone, plus the core extras that are currently known to install cleanly on Android.
 
 ## What is supported in the tested path?
 
 The tested Termux bundle installs:
+
 - the Hermes CLI
 - cron support
 - PTY/background terminal support
@@ -41,15 +46,48 @@ That does not stop Hermes from working well as a phone-native CLI agent — it j
 
 ---
 
+## Community-maintained native `pkg` option
+
+:::caution Contributor-operated distribution
+This APT repository is **community-maintained by `@adybag14-cyber` and is not an official NousResearch distribution**. NousResearch does not build, sign, host, or audit these packages. Enabling the repository means trusting the contributor-operated repository and its signing key. Termux itself remains a Tier 2 / best-effort platform.
+:::
+
+For users who prefer a native package-manager install rather than building Python/Rust dependencies on the phone, a community-maintained APT repository is available. The repository bootstrap and packaging sources are published in [`adybag14-cyber/termux-python`](https://github.com/adybag14-cyber/termux-python), with the Hermes package build in [`adybag14-cyber/termux-hermes`](https://github.com/adybag14-cyber/termux-hermes).
+
+Install the repository key/source and Hermes with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/adybag14-cyber/termux-python/main/scripts/setup_apt_repo.sh | bash
+pkg install hermes-agent
+```
+
+The repository signing-key fingerprint currently documented by the community distribution is:
+
+```text
+EAD24A2124EFA7393A78B7B14699F966313F7A6B
+```
+
+APT-managed Hermes installs are marked with install method `apt`. Hermes therefore does not run its Git self-updater against package-owned files; use the package manager instead:
+
+```bash
+pkg update
+pkg upgrade hermes-agent
+```
+
+Packaging/repository/signing problems for this option should be reported to the community packaging repositories above. Hermes runtime bugs can still be reported here, keeping in mind that Android/Termux support is best-effort.
+
+---
+
 ## Option 1: One-line installer
 
 Hermes now ships a Termux-aware installer path:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
 On Termux, the installer automatically:
+
 - uses `pkg` for system packages
 - creates the venv with `python -m venv`
 - attempts the broad `.[termux-all]` extra first and falls back to the smaller `.[termux]` extra (then a base install) — the curl installer matches this order automatically
@@ -70,7 +108,24 @@ pkg install -y git python clang rust make pkg-config libffi openssl nodejs ripgr
 ```
 
 Why these packages?
+
 - `python` — runtime + venv support
+
+:::warning Supported Python range
+Hermes requires **Python >=3.11,&lt;3.14**. Current Termux ships `python`
+3.14.x, which is outside that range — the installer detects this, and will
+automatically try the [Termux User Repository (TUR)](https://github.com/termux-user-repository/tur)
+for a supported interpreter. For a manual install, get one yourself:
+
+```bash
+pkg install tur-repo
+pkg install python3.13
+```
+
+Then use `python3.13` in place of `python` in the commands below
+(e.g. `python3.13 -m venv venv`).
+:::
+
 - `git` — clone/update the repo
 - `clang`, `rust`, `make`, `pkg-config`, `libffi`, `openssl` — needed to build a few Python dependencies on Android
 - `nodejs` — optional Node runtime for experiments beyond the tested core path
@@ -80,14 +135,8 @@ Why these packages?
 ### 2. Clone Hermes
 
 ```bash
-git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
+git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
-```
-
-If you already cloned without submodules:
-
-```bash
-git submodule update --init --recursive
 ```
 
 ### 3. Create a virtual environment
@@ -124,7 +173,7 @@ ln -sf "$PWD/venv/bin/hermes" "$PREFIX/bin/hermes"
 ### 6. Verify the install
 
 ```bash
-hermes version
+hermes --version
 hermes doctor
 ```
 
@@ -154,12 +203,20 @@ hermes setup
 
 ### Install optional Node dependencies manually
 
-The tested Termux path skips Node/browser bootstrap on purpose. If you want to experiment with browser tooling later:
+The tested Termux path skips Node/browser bootstrap on purpose. If you want to experiment with browser tooling later, what you need depends on which backend you use:
 
-```bash
-pkg install nodejs-lts
-npm install
-```
+- **Cloud browser providers** (Browserbase, Browser Use, Firecrawl) host their own Chromium, so Node.js alone is enough — `agent-browser` resolves lazily via `npx agent-browser` on first use:
+
+  ```bash
+  pkg install nodejs-lts
+  ```
+
+- **Local browser automation** on Termux needs a real `agent-browser` install — the bare npx fallback is deliberately rejected in local mode as too fragile to advertise as ready:
+
+  ```bash
+  pkg install nodejs-lts
+  npm install -g agent-browser && agent-browser install
+  ```
 
 The browser tool automatically includes Termux directories (`/data/data/com.termux/files/usr/bin`) in its PATH search, so `agent-browser` and `npx` are discovered without any extra PATH configuration.
 
@@ -178,6 +235,7 @@ python -m pip install -e '.[termux]' -c constraints-termux.txt
 ```
 
 The blocker is currently the `voice` extra:
+
 - `voice` pulls `faster-whisper`
 - `faster-whisper` depends on `ctranslate2`
 - `ctranslate2` does not publish Android wheels
@@ -235,6 +293,7 @@ python -m pip install -e '.[termux]' -c constraints-termux.txt
 - some optional extras may work, but only `.[termux]` and `.[termux-all]` are currently documented as the tested Android bundles
 
 If you hit a new Android-specific issue, please open a GitHub issue with:
+
 - your Android version
 - `termux-info`
 - `python --version`

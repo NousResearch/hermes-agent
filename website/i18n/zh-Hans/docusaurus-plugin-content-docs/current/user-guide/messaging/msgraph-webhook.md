@@ -67,7 +67,7 @@ https://ops.example.com/msgraph/webhook
 | `max_seen_receipts` | `5000` | 通知 ID 的去重缓存大小。达到上限时淘汰最旧的条目。 |
 | `allowed_source_cidrs` | `[]`（允许全部） | 可选的源 IP 白名单。见下文。 |
 
-每个设置也有对应的环境变量（`MSGRAPH_WEBHOOK_*`），在 gateway 启动时合并到配置中——参见[环境变量参考](/reference/environment-variables#microsoft-graph-teams-meetings)。
+大多数设置也有对应的环境变量（`MSGRAPH_WEBHOOK_*`），在 gateway 启动时合并到配置中（例外是 `host`，它仅可通过配置文件设置——参见上方说明）——参见[环境变量参考](/reference/environment-variables#microsoft-graph-teams-meetings)。
 
 ## 安全加固
 

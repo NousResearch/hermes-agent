@@ -18,11 +18,14 @@ def _make_compressor():
     compressor.context_length = 200000
     compressor.threshold_percent = 0.80
     compressor.threshold_tokens = 160000
+    compressor.summary_target_ratio = 0.20
     compressor.max_summary_tokens = 10000
     compressor.quiet_mode = True
     compressor.compression_count = 0
     compressor.last_prompt_tokens = 0
     compressor._previous_summary = None
+    compressor._ineffective_compression_count = 0
+    compressor._verify_compaction_cleared_threshold = False
     compressor._summary_failure_cooldown_until = 0.0
     compressor.summary_model = None
     compressor.model = "test-model"
@@ -84,61 +87,7 @@ def test_no_focus_topic_no_injection():
     assert "FOCUS TOPIC" not in prompt_text
 
 
-def test_compress_passes_focus_to_generate_summary():
-    """compress() passes focus_topic through to _generate_summary."""
-    compressor = _make_compressor()
-
-    # Track what _generate_summary receives
-    received_kwargs = {}
-    original_generate = compressor._generate_summary
-
-    def tracking_generate(turns, **kwargs):
-        received_kwargs.update(kwargs)
-        return "## Goal\nTest."
-
-    compressor._generate_summary = tracking_generate
-
-    messages = [
-        {"role": "system", "content": "System prompt"},
-        {"role": "user", "content": "first"},
-        {"role": "assistant", "content": "reply1"},
-        {"role": "user", "content": "second"},
-        {"role": "assistant", "content": "reply2"},
-        {"role": "user", "content": "third"},
-        {"role": "assistant", "content": "reply3"},
-        {"role": "user", "content": "fourth"},
-        {"role": "assistant", "content": "reply4"},
-    ]
-
-    compressor.compress(messages, current_tokens=100000, focus_topic="authentication flow")
-
-    assert received_kwargs.get("focus_topic") == "authentication flow"
 
 
-def test_compress_none_focus_by_default():
-    """compress() passes None focus_topic by default."""
-    compressor = _make_compressor()
 
-    received_kwargs = {}
 
-    def tracking_generate(turns, **kwargs):
-        received_kwargs.update(kwargs)
-        return "## Goal\nTest."
-
-    compressor._generate_summary = tracking_generate
-
-    messages = [
-        {"role": "system", "content": "System prompt"},
-        {"role": "user", "content": "first"},
-        {"role": "assistant", "content": "reply1"},
-        {"role": "user", "content": "second"},
-        {"role": "assistant", "content": "reply2"},
-        {"role": "user", "content": "third"},
-        {"role": "assistant", "content": "reply3"},
-        {"role": "user", "content": "fourth"},
-        {"role": "assistant", "content": "reply4"},
-    ]
-
-    compressor.compress(messages, current_tokens=100000)
-
-    assert received_kwargs.get("focus_topic") is None

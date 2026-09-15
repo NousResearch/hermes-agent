@@ -11,6 +11,7 @@ pass after the Phase 2 s6 migration. Any drift is a regression.
 """
 from __future__ import annotations
 
+import re
 import shlex
 import shutil
 import subprocess
@@ -25,7 +26,18 @@ pytestmark = pytest.mark.skipif(
 
 def test_tty_passthrough_to_container(built_image: str) -> None:
     """``docker run -t`` must deliver a real TTY to the container process."""
-    probe = "if [ -t 1 ]; then tput cols; else echo NO_TTY; fi"
+    # Emit the probe result behind a unique marker. The container's s6 boot
+    # output (cont-init diagnostics, skills-sync summaries like
+    # "Done: 90 new, 0 updated, ...", the preinit "uid=0 ... egid=0" line)
+    # is written to the SAME PTY stream before this runs, so we must NOT
+    # scan the whole stream for "the first number" — that picks up a stray
+    # 0 from the boot log and flips the assertion (assert 0 > 0) whenever
+    # boot output shifts (e.g. a new bundled dep changes the skills-sync
+    # counts). Parse only the value tagged with our marker.
+    marker = "HERMES_TTY_COLS"
+    probe = (
+        f'if [ -t 1 ]; then echo "{marker}=$(tput cols)"; else echo "{marker}=NO_TTY"; fi'
+    )
     cmd = (
         f"docker run --rm -t -e COLUMNS=123 {built_image} "
         f"sh -c {shlex.quote(probe)}"
@@ -34,11 +46,13 @@ def test_tty_passthrough_to_container(built_image: str) -> None:
         ["script", "-qc", cmd, "/dev/null"],
         capture_output=True, text=True, timeout=120,
     )
-    output = r.stdout.strip()
-    assert "NO_TTY" not in output, f"TTY passthrough failed: {output!r}"
-    numeric_lines = [s for s in output.split() if s.strip().isdigit()]
-    assert numeric_lines, f"No numeric width in output: {output!r}"
-    assert int(numeric_lines[0]) > 0
+    output = r.stdout
+    matches = re.findall(rf"{marker}=(\S+)", output)
+    assert matches, f"No {marker} marker in output: {output!r}"
+    value = matches[-1].strip()
+    assert value != "NO_TTY", f"TTY passthrough failed: {output!r}"
+    assert value.isdigit(), f"Non-numeric column width {value!r} in: {output!r}"
+    assert int(value) > 0
 
 
 def test_tui_flag_recognized(built_image: str) -> None:

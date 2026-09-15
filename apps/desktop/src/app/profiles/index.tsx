@@ -1,67 +1,57 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { CodeEditor } from '@/components/chat/code-editor'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
-import {
-  createProfile,
-  deleteProfile,
-  getProfiles,
-  getProfileSetupCommand,
-  getProfileSoul,
-  type ProfileInfo,
-  renameProfile,
-  updateProfileSoul
-} from '@/hermes'
-import { AlertTriangle, Pencil, Save, Terminal, Trash2, Users } from '@/lib/icons'
-import { cn } from '@/lib/utils'
+import { ProfileGlyph } from '@/components/ui/profile-glyph'
+import { getProfileSoul, type ProfileInfo, updateProfileSoul } from '@/hermes'
+import { useI18n } from '@/i18n'
+import { displayPath } from '@/lib/display-path'
+import { AlertTriangle, Save } from '@/lib/icons'
+import { resolveProfileColor } from '@/lib/profile-color'
+import { normalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
+import { $profileColors, profileLabel, refreshProfiles } from '@/store/profile'
 
-import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
-import { titlebarHeaderBaseClass } from '../shell/titlebar'
-import type { SetTitlebarToolGroup } from '../shell/titlebar-controls'
+import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
+import {
+  Panel,
+  PanelAddButton,
+  PanelBody,
+  PanelDetail,
+  PanelEmpty,
+  PanelHeader,
+  PanelList,
+  PanelListRow,
+  type PanelMenuItem,
+  PanelMeta,
+  PanelPill,
+  PanelSectionLabel
+} from '../overlays/panel'
 
-const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+import { CreateProfileDialog } from './create-profile-dialog'
+import { DeleteProfileDialog } from './delete-profile-dialog'
+import { RenameProfileDialog } from './rename-profile-dialog'
 
-const PROFILE_NAME_HINT = 'Lowercase letters, digits, hyphens, and underscores. Must start with a letter or digit.'
-
-function isValidProfileName(name: string): boolean {
-  return PROFILE_NAME_RE.test(name.trim())
+interface ProfilesViewProps {
+  onClose: () => void
 }
 
-interface ProfilesViewProps extends React.ComponentProps<'section'> {
-  setStatusbarItemGroup?: SetStatusbarItemGroup
-  setTitlebarToolGroup?: SetTitlebarToolGroup
-}
-
-export function ProfilesView({
-  setStatusbarItemGroup: _setStatusbarItemGroup,
-  setTitlebarToolGroup,
-  ...props
-}: ProfilesViewProps) {
+export function ProfilesView({ onClose }: ProfilesViewProps) {
+  const { t } = useI18n()
+  const p = t.profiles
   const [profiles, setProfiles] = useState<null | ProfileInfo[]>(null)
-  const [refreshing, setRefreshing] = useState(false)
   const [selectedName, setSelectedName] = useState<null | string>(null)
+  const [query, setQuery] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
+  const [pendingRename, setPendingRename] = useState<null | ProfileInfo>(null)
   const [pendingDelete, setPendingDelete] = useState<null | ProfileInfo>(null)
-  const [deleting, setDeleting] = useState(false)
 
   const refresh = useCallback(async () => {
-    setRefreshing(true)
-
     try {
-      const { profiles: list } = await getProfiles()
+      const list = await refreshProfiles()
       setProfiles(list)
       setSelectedName(current => {
         if (current && list.some(p => p.name === current)) {
@@ -71,33 +61,15 @@ export function ProfilesView({
         return list.find(p => p.is_default)?.name ?? list[0]?.name ?? null
       })
     } catch (err) {
-      notifyError(err, 'Failed to load profiles')
-    } finally {
-      setRefreshing(false)
+      notifyError(err, p.failedLoad)
     }
-  }, [])
+  }, [p])
+
+  useRefreshHotkey(refresh)
 
   useEffect(() => {
     void refresh()
   }, [refresh])
-
-  useEffect(() => {
-    if (!setTitlebarToolGroup) {
-      return
-    }
-
-    setTitlebarToolGroup('profiles', [
-      {
-        disabled: refreshing,
-        icon: <Codicon name="refresh" spinning={refreshing} />,
-        id: 'refresh-profiles',
-        label: refreshing ? 'Refreshing profiles' : 'Refresh profiles',
-        onSelect: () => void refresh()
-      }
-    ])
-
-    return () => setTitlebarToolGroup('profiles', [])
-  }, [refresh, refreshing, setTitlebarToolGroup])
 
   const selected = useMemo(() => {
     if (!profiles) {
@@ -107,292 +79,197 @@ export function ProfilesView({
     return profiles.find(p => p.name === selectedName) ?? profiles[0] ?? null
   }, [profiles, selectedName])
 
-  const handleCreate = useCallback(
-    async (name: string, cloneFromDefault: boolean) => {
-      const trimmed = name.trim()
+  const visibleProfiles = useMemo(() => {
+    const q = normalize(query)
 
-      if (!isValidProfileName(trimmed)) {
-        throw new Error(PROFILE_NAME_HINT)
-      }
+    if (!profiles || !q) {
+      return profiles ?? []
+    }
 
-      await createProfile({ name: trimmed, clone_from_default: cloneFromDefault })
-      notify({ kind: 'success', title: 'Profile created', message: trimmed })
-      setSelectedName(trimmed)
+    return profiles.filter(
+      profile => profile.name.toLowerCase().includes(q) || (profile.model ?? '').toLowerCase().includes(q)
+    )
+  }, [profiles, query])
+
+  // The shared Create/Rename dialogs own the createProfile / renameProfile /
+  // updateProfileSoul calls; the panel just selects the resulting profile and
+  // re-pulls the list.
+  const selectAndRefresh = useCallback(
+    async (name: string) => {
+      setSelectedName(name)
       await refresh()
     },
     [refresh]
   )
-
-  const handleRename = useCallback(
-    async (from: string, to: string): Promise<void> => {
-      const target = to.trim()
-
-      if (target === from) {
-        return
-      }
-
-      if (!isValidProfileName(target)) {
-        throw new Error(PROFILE_NAME_HINT)
-      }
-
-      await renameProfile(from, target)
-      notify({ kind: 'success', title: 'Profile renamed', message: `${from} → ${target}` })
-      setSelectedName(target)
-      await refresh()
-    },
-    [refresh]
-  )
-
-  const handleConfirmDelete = useCallback(async () => {
-    if (!pendingDelete) {
-      return
-    }
-
-    setDeleting(true)
-
-    try {
-      await deleteProfile(pendingDelete.name)
-      notify({ kind: 'success', title: 'Profile deleted', message: pendingDelete.name })
-      setPendingDelete(null)
-      setSelectedName(null)
-      await refresh()
-    } catch (err) {
-      notifyError(err, 'Failed to delete profile')
-    } finally {
-      setDeleting(false)
-    }
-  }, [pendingDelete, refresh])
 
   return (
-    <section {...props} className="flex h-full min-w-0 flex-col overflow-hidden rounded-b-[0.9375rem] bg-background">
-      <header className={titlebarHeaderBaseClass}>
-        <h2 className="pointer-events-auto text-base font-semibold leading-none tracking-tight">Profiles</h2>
-        <span className="pointer-events-auto text-xs text-muted-foreground">
-          {profiles ? `${profiles.length} ${profiles.length === 1 ? 'profile' : 'profiles'}` : ''}
-        </span>
-      </header>
-
-      <div className="min-h-0 flex-1 overflow-hidden rounded-b-[1.0625rem] border border-border/50 bg-background/85">
-        {!profiles ? (
-          <PageLoader label="Loading profiles..." />
-        ) : (
-          <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[16rem_minmax(0,1fr)]">
-            <aside className="flex min-h-0 flex-col overflow-hidden border-b border-border/50 lg:border-b-0 lg:border-r">
-              <div className="border-b border-border/40 p-2">
-                <Button className="w-full" onClick={() => setCreateOpen(true)} size="sm">
-                  <Codicon name="add" />
-                  New profile
-                </Button>
-              </div>
-              <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
-                {profiles.map(profile => (
-                  <li key={profile.name}>
-                    <ProfileRow
-                      active={selected?.name === profile.name}
-                      onSelect={() => setSelectedName(profile.name)}
-                      profile={profile}
-                    />
-                  </li>
-                ))}
-                {profiles.length === 0 && (
-                  <li className="px-2 py-4 text-center text-xs text-muted-foreground">No profiles yet.</li>
-                )}
-              </ul>
-            </aside>
-
-            <main className="min-h-0 overflow-hidden">
-              {selected ? (
-                <ProfileDetail
-                  key={selected.name}
-                  onDelete={() => setPendingDelete(selected)}
-                  onRename={newName => handleRename(selected.name, newName)}
-                  profile={selected}
+    <Panel closeLabel={p.close} onClose={onClose}>
+      {!profiles ? (
+        <PageLoader label={p.loading} />
+      ) : profiles.length === 0 ? (
+        <PanelEmpty
+          action={
+            <Button onClick={() => setCreateOpen(true)} size="sm">
+              {p.newProfile}
+            </Button>
+          }
+          description={p.createDesc}
+          icon="organization"
+          title={p.noProfiles}
+        />
+      ) : (
+        <>
+          <PanelHeader subtitle={p.count(profiles.length)} title={p.title} />
+          <PanelBody>
+            <PanelList
+              onSearchChange={setQuery}
+              searchLabel={p.search}
+              searchPlaceholder={p.search}
+              searchValue={query}
+            >
+              {visibleProfiles.map(profile => (
+                <ProfileRow
+                  active={selected?.name === profile.name}
+                  key={profile.name}
+                  menuItems={
+                    profile.is_default
+                      ? // Renaming the default profile sets a presentation-only
+                        // display name (the canonical id stays "default").
+                        [{ icon: 'edit', label: p.renameMenu, onSelect: () => setPendingRename(profile) }]
+                      : [
+                          { icon: 'edit', label: p.renameMenu, onSelect: () => setPendingRename(profile) },
+                          {
+                            icon: 'trash',
+                            label: t.common.delete,
+                            onSelect: () => setPendingDelete(profile),
+                            tone: 'danger'
+                          }
+                        ]
+                  }
+                  onSelect={() => setSelectedName(profile.name)}
+                  profile={profile}
                 />
-              ) : (
-                <div className="grid h-full place-items-center px-6 py-12 text-center text-sm text-muted-foreground">
-                  <div>
-                    <Users className="mx-auto size-6 text-muted-foreground/60" />
-                    <p className="mt-3">Select a profile to view its details.</p>
-                  </div>
-                </div>
-              )}
-            </main>
-          </div>
-        )}
-      </div>
+              ))}
+              <PanelAddButton label={p.newProfile} onClick={() => setCreateOpen(true)} />
+            </PanelList>
+
+            {selected ? (
+              <ProfileDetail key={selected.name} profile={selected} />
+            ) : (
+              <PanelEmpty description={p.selectPrompt} icon="account" />
+            )}
+          </PanelBody>
+        </>
+      )}
+
+      <RenameProfileDialog
+        currentName={pendingRename?.name ?? ''}
+        isDefault={pendingRename?.is_default ?? false}
+        onClose={() => setPendingRename(null)}
+        onRenamed={selectAndRefresh}
+        open={pendingRename !== null}
+      />
 
       <CreateProfileDialog
         onClose={() => setCreateOpen(false)}
-        onCreate={async (name, cloneFromDefault) => handleCreate(name, cloneFromDefault)}
+        onCreated={selectAndRefresh}
         open={createOpen}
+        profiles={profiles ?? []}
       />
 
-      <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Delete profile?</DialogTitle>
-            <DialogDescription>
-              {pendingDelete ? (
-                <>
-                  This will delete <span className="font-medium text-foreground">{pendingDelete.name}</span> and remove
-                  its <span className="font-mono text-xs">{pendingDelete.path}</span> directory. This cannot be undone.
-                </>
-              ) : null}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button disabled={deleting} onClick={() => setPendingDelete(null)} variant="outline">
-              Cancel
-            </Button>
-            <Button disabled={deleting} onClick={() => void handleConfirmDelete()} variant="destructive">
-              {deleting ? 'Deleting...' : 'Delete'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </section>
+      <DeleteProfileDialog
+        onClose={() => setPendingDelete(null)}
+        onDeleted={async () => {
+          setSelectedName(null)
+          await refresh()
+        }}
+        open={pendingDelete !== null}
+        profile={pendingDelete}
+      />
+    </Panel>
   )
 }
 
-function ProfileRow({ active, onSelect, profile }: { active: boolean; onSelect: () => void; profile: ProfileInfo }) {
-  return (
-    <button
-      className={cn(
-        'flex w-full flex-col items-start gap-1 rounded-lg px-2.5 py-2 text-left transition-colors',
-        active ? 'bg-accent text-foreground' : 'text-foreground/85 hover:bg-accent/60'
-      )}
-      onClick={onSelect}
-      type="button"
-    >
-      <span className="flex w-full items-center justify-between gap-2">
-        <span className="truncate text-sm font-medium">{profile.name}</span>
-        {profile.is_default && <span className="text-[0.6rem] text-primary">default</span>}
-      </span>
-      <span className="text-[0.66rem] text-muted-foreground">
-        {profile.skill_count} {profile.skill_count === 1 ? 'skill' : 'skills'}
-        {profile.has_env ? ' · env' : ''}
-      </span>
-    </button>
-  )
-}
-
-function ProfileDetail({
-  onDelete,
-  onRename,
+function ProfileRow({
+  active,
+  menuItems,
+  onSelect,
   profile
 }: {
-  onDelete: () => void
-  onRename: (newName: string) => Promise<void>
+  active: boolean
+  menuItems: PanelMenuItem[]
+  onSelect: () => void
   profile: ProfileInfo
 }) {
-  const [renameOpen, setRenameOpen] = useState(false)
-  const [copying, setCopying] = useState(false)
-
-  const handleCopySetup = useCallback(async () => {
-    setCopying(true)
-
-    try {
-      const { command } = await getProfileSetupCommand(profile.name)
-      await navigator.clipboard.writeText(command)
-      notify({ kind: 'success', title: 'Setup command copied', message: command })
-    } catch (err) {
-      notifyError(err, 'Failed to copy setup command')
-    } finally {
-      setCopying(false)
-    }
-  }, [profile.name])
+  const colors = useStore($profileColors)
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-2xl space-y-6 px-6 py-6">
-          <header className="space-y-3">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="text-xl font-semibold tracking-tight">{profile.name}</h3>
-                  {profile.is_default && (
-                    <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[0.65rem] font-medium text-primary">
-                      Default
-                    </span>
-                  )}
-                  {profile.has_env && (
-                    <span className="rounded-full bg-muted px-2 py-0.5 text-[0.65rem] font-medium text-muted-foreground">
-                      .env
-                    </span>
-                  )}
-                </div>
-                <p className="mt-1 font-mono text-[0.7rem] text-muted-foreground" title={profile.path}>
-                  {profile.path}
-                </p>
-              </div>
-              <div className="flex shrink-0 items-center gap-1">
-                {!profile.is_default && (
-                  <Button onClick={() => setRenameOpen(true)} size="sm" variant="outline">
-                    <Pencil />
-                    Rename
-                  </Button>
-                )}
-                <Button disabled={copying} onClick={() => void handleCopySetup()} size="sm" variant="outline">
-                  <Terminal />
-                  {copying ? 'Copying...' : 'Copy setup'}
-                </Button>
-                {!profile.is_default && (
-                  <Button
-                    className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                    onClick={onDelete}
-                    size="sm"
-                    variant="ghost"
-                  >
-                    <Trash2 />
-                    Delete
-                  </Button>
-                )}
-              </div>
-            </div>
-
-            <dl className="grid gap-2 rounded-lg border border-border/40 bg-background/70 px-3 py-3 text-xs sm:grid-cols-2">
-              <DetailRow label="Model">
-                {profile.model ? (
-                  <>
-                    <span className="font-mono">{profile.model}</span>
-                    {profile.provider && <span className="text-muted-foreground"> · {profile.provider}</span>}
-                  </>
-                ) : (
-                  <span className="text-muted-foreground">Not set</span>
-                )}
-              </DetailRow>
-              <DetailRow label="Skills">{profile.skill_count}</DetailRow>
-            </dl>
-          </header>
-
-          <SoulEditor profileName={profile.name} />
-        </div>
-      </div>
-
-      <RenameProfileDialog
-        currentName={profile.name}
-        onClose={() => setRenameOpen(false)}
-        onRename={async newName => {
-          await onRename(newName)
-          setRenameOpen(false)
-        }}
-        open={renameOpen}
-      />
-    </div>
+    <PanelListRow
+      active={active}
+      lead={
+        <ProfileGlyph
+          aria-hidden="true"
+          color={resolveProfileColor(profile.name, colors)}
+          isDefault={profile.is_default}
+          name={profile.name}
+        />
+      }
+      menuItems={menuItems}
+      menuLabel={profileLabel(profile)}
+      onSelect={onSelect}
+      rowKey={profile.name}
+      title={profileLabel(profile)}
+    />
   )
 }
 
-function DetailRow({ children, label }: { children: React.ReactNode; label: string }) {
+function ProfileDetail({ profile }: { profile: ProfileInfo }) {
+  const { t } = useI18n()
+  const p = t.profiles
+
   return (
-    <div className="flex flex-wrap items-baseline gap-2">
-      <dt className="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{label}</dt>
-      <dd className="text-sm text-foreground">{children}</dd>
-    </div>
+    <PanelDetail>
+      <header className="space-y-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">{profileLabel(profile)}</h3>
+            {profile.is_default && <PanelPill tone="good">{p.defaultBadge}</PanelPill>}
+            {profile.has_env && <PanelPill tone="muted">.env</PanelPill>}
+          </div>
+          <p
+            className="mt-1 truncate font-mono text-[0.66rem] text-muted-foreground/55"
+            title={displayPath(profile.path)}
+          >
+            {displayPath(profile.path)}
+          </p>
+        </div>
+
+        <PanelMeta
+          rows={[
+            {
+              label: p.modelLabel,
+              value: profile.model ? (
+                <span className="font-mono">
+                  {profile.model}
+                  {profile.provider ? <span className="text-muted-foreground/55"> · {profile.provider}</span> : null}
+                </span>
+              ) : (
+                <span className="text-muted-foreground/55">{p.notSet}</span>
+              )
+            },
+            { label: p.skillsLabel, value: profile.skill_count }
+          ]}
+        />
+      </header>
+
+      <SoulEditor profileName={profile.name} />
+    </PanelDetail>
   )
 }
 
 function SoulEditor({ profileName }: { profileName: string }) {
+  const { t } = useI18n()
+  const p = t.profiles
   const [content, setContent] = useState('')
   const [original, setOriginal] = useState('')
   const [loading, setLoading] = useState(true)
@@ -400,6 +277,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
   const [error, setError] = useState<null | string>(null)
   const requestRef = useRef<string>(profileName)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     requestRef.current = profileName
     setLoading(true)
@@ -417,7 +295,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
         }
       } catch (err) {
         if (requestRef.current === profileName) {
-          setError(err instanceof Error ? err.message : 'Failed to load SOUL.md')
+          setError(err instanceof Error ? err.message : p.failedLoadSoul)
         }
       } finally {
         if (requestRef.current === profileName) {
@@ -425,10 +303,9 @@ function SoulEditor({ profileName }: { profileName: string }) {
         }
       }
     })()
-  }, [profileName])
+  }, [p, profileName])
 
   const dirty = content !== original
-  const isEmpty = !content.trim()
 
   async function handleSave() {
     setSaving(true)
@@ -437,9 +314,9 @@ function SoulEditor({ profileName }: { profileName: string }) {
     try {
       await updateProfileSoul(profileName, content)
       setOriginal(content)
-      notify({ kind: 'success', title: 'SOUL.md saved', message: profileName })
+      notify({ kind: 'success', title: p.soulSaved, message: profileName })
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save SOUL.md')
+      setError(err instanceof Error ? err.message : p.failedSaveSoul)
     } finally {
       setSaving(false)
     }
@@ -449,29 +326,29 @@ function SoulEditor({ profileName }: { profileName: string }) {
     <section className="space-y-2">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
-          <h4 className="text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground">SOUL.md</h4>
-          <p className="text-xs text-muted-foreground">
-            The system prompt and persona instructions baked into this profile.
-          </p>
+          <PanelSectionLabel className="text-[0.7rem] tracking-[0.14em]">SOUL.md</PanelSectionLabel>
+          <p className="text-xs text-muted-foreground">{p.soulDesc}</p>
         </div>
-        {dirty && <span className="text-[0.65rem] text-muted-foreground">Unsaved changes</span>}
+        {dirty && <span className="text-[0.65rem] text-muted-foreground">{p.unsavedChanges}</span>}
       </div>
 
       {loading ? (
-        <div className="grid h-44 place-items-center rounded-md border border-border/40 bg-background/60 text-xs text-muted-foreground">
-          Loading SOUL.md...
-        </div>
+        <PageLoader className="min-h-44" label={p.loadingSoul} />
       ) : (
-        <Textarea
-          className="min-h-72 font-mono text-xs leading-5"
-          onChange={event => setContent(event.target.value)}
-          placeholder={isEmpty ? 'Empty SOUL.md — start writing the persona...' : undefined}
-          value={content}
-        />
+        <div className="min-h-48">
+          <CodeEditor
+            filePath="SOUL.md"
+            framed
+            initialValue={content}
+            key={profileName}
+            onChange={setContent}
+            onSave={() => void handleSave()}
+          />
+        </div>
       )}
 
       {error && (
-        <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+        <div className="flex items-start gap-2 rounded bg-destructive/10 px-3 py-2 text-xs text-destructive">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
           <span>{error}</span>
         </div>
@@ -480,228 +357,9 @@ function SoulEditor({ profileName }: { profileName: string }) {
       <div className="flex justify-end">
         <Button disabled={!dirty || saving || loading} onClick={() => void handleSave()} size="sm">
           <Save />
-          {saving ? 'Saving...' : 'Save SOUL.md'}
+          {saving ? p.saving : p.saveSoul}
         </Button>
       </div>
     </section>
-  )
-}
-
-function CreateProfileDialog({
-  onClose,
-  onCreate,
-  open
-}: {
-  onClose: () => void
-  onCreate: (name: string, cloneFromDefault: boolean) => Promise<void>
-  open: boolean
-}) {
-  const [name, setName] = useState('')
-  const [cloneFromDefault, setCloneFromDefault] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<null | string>(null)
-
-  useEffect(() => {
-    if (!open) {
-      return
-    }
-
-    setName('')
-    setCloneFromDefault(true)
-    setError(null)
-    setSaving(false)
-  }, [open])
-
-  const trimmed = name.trim()
-  const invalid = trimmed !== '' && !isValidProfileName(trimmed)
-
-  async function handleSubmit(event: React.FormEvent) {
-    event.preventDefault()
-
-    if (!trimmed || invalid) {
-      setError(invalid ? `Invalid name. ${PROFILE_NAME_HINT}` : 'Name is required.')
-
-      return
-    }
-
-    setSaving(true)
-    setError(null)
-
-    try {
-      await onCreate(trimmed, cloneFromDefault)
-      onClose()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create profile')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <Dialog onOpenChange={value => !value && !saving && onClose()} open={open}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>New profile</DialogTitle>
-          <DialogDescription>
-            Profiles are independent Hermes environments: separate config, skills, and SOUL.md.
-          </DialogDescription>
-        </DialogHeader>
-
-        <form className="grid gap-4" onSubmit={handleSubmit}>
-          <div className="grid gap-1.5">
-            <label className="text-xs font-medium" htmlFor="new-profile-name">
-              Name
-            </label>
-            <Input
-              aria-invalid={invalid}
-              autoFocus
-              id="new-profile-name"
-              onChange={event => setName(event.target.value)}
-              placeholder="my-profile"
-              value={name}
-            />
-            <p className={cn('text-[0.66rem] leading-4', invalid ? 'text-destructive' : 'text-muted-foreground')}>
-              {PROFILE_NAME_HINT}
-            </p>
-          </div>
-
-          <label className="flex cursor-pointer items-center gap-2 rounded-md border border-border/40 bg-background/50 px-3 py-2 text-sm">
-            <input
-              checked={cloneFromDefault}
-              className="size-4 accent-primary"
-              onChange={event => setCloneFromDefault(event.target.checked)}
-              type="checkbox"
-            />
-            <span>
-              <span className="font-medium">Clone from default</span>
-              <span className="ml-2 text-xs text-muted-foreground">
-                Copy config, skills, and SOUL.md from your default profile.
-              </span>
-            </span>
-          </label>
-
-          {error && (
-            <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-              <span>{error}</span>
-            </div>
-          )}
-
-          <DialogFooter>
-            <Button disabled={saving} onClick={onClose} type="button" variant="outline">
-              Cancel
-            </Button>
-            <Button disabled={saving || !trimmed || invalid} type="submit">
-              {saving ? 'Creating...' : 'Create profile'}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-function RenameProfileDialog({
-  currentName,
-  onClose,
-  onRename,
-  open
-}: {
-  currentName: string
-  onClose: () => void
-  onRename: (newName: string) => Promise<void>
-  open: boolean
-}) {
-  const [name, setName] = useState(currentName)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<null | string>(null)
-
-  useEffect(() => {
-    if (!open) {
-      return
-    }
-
-    setName(currentName)
-    setError(null)
-    setSaving(false)
-  }, [currentName, open])
-
-  const trimmed = name.trim()
-  const unchanged = trimmed === currentName
-  const invalid = trimmed !== '' && !unchanged && !isValidProfileName(trimmed)
-
-  async function handleSubmit(event: React.FormEvent) {
-    event.preventDefault()
-
-    if (unchanged) {
-      onClose()
-
-      return
-    }
-
-    if (!trimmed || invalid) {
-      setError(invalid ? `Invalid name. ${PROFILE_NAME_HINT}` : 'Name is required.')
-
-      return
-    }
-
-    setSaving(true)
-    setError(null)
-
-    try {
-      await onRename(trimmed)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to rename profile')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <Dialog onOpenChange={value => !value && !saving && onClose()} open={open}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>Rename profile</DialogTitle>
-          <DialogDescription>
-            Renaming updates the profile directory and any wrapper scripts in{' '}
-            <span className="font-mono">~/.local/bin</span>.
-          </DialogDescription>
-        </DialogHeader>
-
-        <form className="grid gap-3" onSubmit={handleSubmit}>
-          <div className="grid gap-1.5">
-            <label className="text-xs font-medium" htmlFor="rename-profile-name">
-              New name
-            </label>
-            <Input
-              aria-invalid={invalid}
-              autoFocus
-              id="rename-profile-name"
-              onChange={event => setName(event.target.value)}
-              value={name}
-            />
-            <p className={cn('text-[0.66rem] leading-4', invalid ? 'text-destructive' : 'text-muted-foreground')}>
-              {PROFILE_NAME_HINT}
-            </p>
-          </div>
-
-          {error && (
-            <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-              <span>{error}</span>
-            </div>
-          )}
-
-          <DialogFooter>
-            <Button disabled={saving} onClick={onClose} type="button" variant="outline">
-              Cancel
-            </Button>
-            <Button disabled={saving || invalid || unchanged} type="submit">
-              {saving ? 'Renaming...' : 'Rename'}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
   )
 }

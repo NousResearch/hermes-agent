@@ -40,6 +40,8 @@ Cron jobs are fired by the gateway's background ticker thread, which ticks every
 
 If you're expecting jobs to fire automatically, you need a running gateway (`hermes gateway` for foreground, or `hermes gateway start` for the installed service). For one-off debugging, you can manually trigger a tick with `hermes cron tick`.
 
+**Desktop app:** the desktop's primary backend runs its own ticker, and it ticks **every local profile's** cron store — so jobs on a secondary profile keep firing even while that profile's backend is asleep (the desktop puts idle profile backends to sleep after ~10 minutes). You do not need to keep a profile open for its scheduled jobs to run.
+
 ### Check 4: Check the system clock and timezone
 
 Jobs use the local timezone. If your machine's clock is wrong or in a different timezone than expected, jobs will fire at the wrong times. Verify:
@@ -76,9 +78,9 @@ If delivery fails, the job still runs — it just won't send anywhere. Check `he
 
 ### Check 2: Check `[SILENT]` usage
 
-If your cron job produces no output or the agent responds with `[SILENT]`, delivery is suppressed. This is intentional for monitoring jobs — but make sure your prompt isn't accidentally suppressing everything.
+If your cron job produces no output, delivery is suppressed. If the agent response includes the cron quiet marker `[SILENT]`, delivery is also suppressed. This is intentional for monitoring jobs — but make sure your prompt is not accidentally suppressing everything.
 
-A prompt that says "respond with [SILENT] if nothing changed" will silently swallow non-empty responses too. Check your conditional logic.
+Use prompts like "respond with only [SILENT] if nothing changed." Avoid asking the agent to include `[SILENT]` inside a longer explanation, because cron treats that marker as a suppression signal.
 
 ### Check 3: Platform token permissions
 
@@ -97,6 +99,14 @@ cron:
   wrap_response: false
 ```
 
+### Check 5: Relay-fronted platforms (Hermes Cloud / Team Gateway)
+
+When a platform's credential lives in the relay connector (e.g. Slack or Discord fronted by a Team Gateway) rather than in your local `.env`, the **running gateway's live relay adapter is the only sender** — there is no standalone delivery path.
+
+- Scheduled fires work as long as the gateway is running: its ticker owns relay-fronted delivery.
+- A standalone `hermes cron run <id>` automatically **forwards the run to the gateway** over the api_server (`POST /api/jobs/{id}/run`). This requires the `api_server` platform to be enabled with an `API_SERVER_KEY` (16+ characters). A `--prompt` / `cronjob(action='run', prompt=...)` context is forwarded with it and applies to that single fire only.
+- If the gateway is not reachable, the run fails with a "relay-fronted … start the gateway" error instead of the misleading `platform 'slack' not configured/enabled`. Start the gateway and retry.
+
 ---
 
 ## Skill Loading Failures
@@ -111,7 +121,7 @@ Skills must be installed before they can be attached to cron jobs. If a skill is
 
 ### Check 2: Check skill name vs. skill folder name
 
-Skill names are case-sensitive and must match the installed skill's folder name. If your job specifies `ai-funding-daily-report` but the skill folder is `ai-funding-daily-report`, confirm the exact name from `hermes skills list`.
+Skill names are case-sensitive and must match the installed skill's folder name. If your job specifies `ai-funding-report` but the skill folder is `ai-funding-daily-report`, confirm the exact name from `hermes skills list`.
 
 ### Check 3: Skills that require interactive tools
 
@@ -154,7 +164,7 @@ hermes cron edit <job_id> --script ~/.hermes/scripts/your-script.py
 The skill must be installed on the machine running the scheduler. If you move between machines, skills don't automatically sync — reinstall them with `hermes skills install <skill-name>`.
 
 **Job runs but delivers nothing**
-Likely a delivery target issue (see Delivery Failures above) or a silently suppressed response (`[SILENT]`).
+Likely a delivery target issue (see Delivery Failures above), no output, or a response containing the cron quiet marker `[SILENT]`.
 
 **Job hangs or times out**
 The scheduler uses an inactivity-based timeout (default 600s, configurable via `HERMES_CRON_TIMEOUT` env var, `0` for unlimited). The agent can run as long as it's actively calling tools — the timer only fires after sustained inactivity. Long-running jobs should use scripts to handle data collection and deliver only the result.

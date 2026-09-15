@@ -1,6 +1,14 @@
+import { colorize } from '@hermes/ink'
 import { describe, expect, it } from 'vitest'
 
-import { canFastAppendShape, canFastBackspaceShape, supportsFastEchoTerminal } from '../components/textInput.js'
+import {
+  canFastAppendShape,
+  canFastBackspaceShape,
+  colorizeEcho,
+  colorizeHint,
+  hintCursorCell,
+  supportsFastEchoTerminal
+} from '../components/textInput.js'
 
 // The fast-echo path bypasses Ink and writes characters directly to stdout
 // for the common case of typing plain English at the end of the line. These
@@ -173,14 +181,117 @@ describe('canFastBackspaceShape', () => {
   })
 })
 
+describe('colorizeEcho', () => {
+  // The fast-echo bypass writes raw cells past Ink, so a themed input must
+  // carry the theme fg explicitly — a default-fg glyph goes invisible when a
+  // skin repaints the background to the opposite polarity (dark skin on a
+  // light terminal ⇒ black-on-black).
+
+  it('matches Ink exactly, never a hand-rolled truecolor escape', () => {
+    // The bypass and the Ink render paint the same cells, so they must agree
+    // byte-for-byte at whatever depth the terminal supports. Hand-rolling
+    // `38;2;r;g;b` shipped an escape a 256-color terminal (Apple Terminal)
+    // cannot parse: the accent fell back to the default fg and read GRAY.
+    // Asserted as an equality rather than a literal because chalk resolves
+    // its depth at import time — under vitest that's level 0 (no color).
+    for (const tone of ['#ff2d95', '#e77fa3', 'ansi256(211)']) {
+      expect(colorizeEcho('x', tone)).toBe(colorize('x', tone, 'foreground'))
+    }
+  })
+
+  it('passes through untouched without a color (unthemed keeps terminal default)', () => {
+    expect(colorizeEcho('x')).toBe('x')
+    expect(colorizeEcho('x', undefined)).toBe('x')
+  })
+
+  it('passes through on a non-color value (never emit a garbage SGR)', () => {
+    expect(colorizeEcho('x', 'red')).toBe('x')
+    expect(colorizeEcho('x', '#fff')).toBe('x')
+  })
+})
+
+describe('colorizeHint / hintCursorCell', () => {
+  // The placeholder bypass writes raw bytes past Ink too. Hand-rolling
+  // `38;2;r;g;b` here was WORSE than the gray-accent bug colorizeEcho had:
+  // legacy Terminal.app walks compound params one by one, so the literal `2`
+  // in `38;2;…` landed as SGR 2 (dim ON) with no closing `22m` — every
+  // frame that painted the placeholder left the terminal's dim flag stuck,
+  // and later unstyled cells rendered randomly dimmed. Both helpers must
+  // route through Ink's own colorize so depth downgrades with the terminal.
+
+  it('hint matches Ink exactly, never a hand-rolled truecolor escape', () => {
+    for (const tone of ['#8a8094', '#e77fa3']) {
+      expect(colorizeHint('Try it', tone)).toBe(colorize('Try it', tone, 'foreground'))
+    }
+  })
+
+  it('hint falls back to the neutral gray on junk, still through colorize', () => {
+    expect(colorizeHint('x')).toBe(colorize('x', '#808080', 'foreground'))
+    expect(colorizeHint('x', 'nope')).toBe(colorize('x', '#808080', 'foreground'))
+  })
+
+  it('cursor chip composes bg+fg through colorize only', () => {
+    expect(hintCursorCell('T', '#8a8094')).toBe(
+      colorize(colorize('T', '#ffffff', 'foreground'), '#8a8094', 'background')
+    )
+  })
+
+  it('never emits a raw 38;2/48;2 the depth layer did not choose', () => {
+    // chalk is level 0 under vitest, so ANY escape byte here means the
+    // helper bypassed colorize and hand-rolled the sequence.
+    expect(colorizeHint('x', '#8a8094')).not.toContain('\u001b')
+    expect(hintCursorCell('x', '#8a8094')).not.toContain('\u001b')
+  })
+})
+
 describe('supportsFastEchoTerminal', () => {
   it('disables fast-echo in Apple Terminal', () => {
     expect(supportsFastEchoTerminal({ TERM_PROGRAM: 'Apple_Terminal' } as NodeJS.ProcessEnv)).toBe(false)
   })
 
+  it('disables fast-echo inside tmux', () => {
+    expect(supportsFastEchoTerminal({ TMUX: '/tmp/tmux-1000/default,1234,0' } as NodeJS.ProcessEnv)).toBe(false)
+    expect(supportsFastEchoTerminal({ TMUX: '/private/tmp/tmux-501/default' } as NodeJS.ProcessEnv)).toBe(false)
+  })
+
+  it('tmux wins over Termux fast-echo opt-in', () => {
+    expect(
+      supportsFastEchoTerminal({
+        TMUX: '/tmp/tmux-1000/default,1234,0',
+        HERMES_TUI_TERMUX_FAST_ECHO: '1',
+        TERMUX_VERSION: '0.118.0'
+      } as NodeJS.ProcessEnv)
+    ).toBe(false)
+  })
+
+  it('keeps fast-echo enabled when TMUX is empty or unset', () => {
+    expect(supportsFastEchoTerminal({ TMUX: '' } as NodeJS.ProcessEnv)).toBe(true)
+    expect(supportsFastEchoTerminal({ TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv)).toBe(true)
+  })
+
+  it('disables fast-echo when only a tmux-flavored TERM is present (SSH from tmux, no TMUX forwarded)', () => {
+    // OpenSSH forwards TERM but not TMUX, so a TUI on a remote host launched
+    // from inside local tmux sees TERM=tmux-256color with no TMUX var. The
+    // cursor-drift bug still applies, so fast-echo must stay off.
+    expect(supportsFastEchoTerminal({ TERM: 'tmux' } as NodeJS.ProcessEnv)).toBe(false)
+    expect(supportsFastEchoTerminal({ TERM: 'tmux-256color' } as NodeJS.ProcessEnv)).toBe(false)
+  })
+
+  it('does NOT disable fast-echo for screen-flavored TERM (GNU screen out of scope, no reported drift)', () => {
+    // GNU screen sets TERM=screen/screen-256color and has no reported drift.
+    // We must not widen the tmux guard to screen* and regress its perf.
+    expect(supportsFastEchoTerminal({ TERM: 'screen' } as NodeJS.ProcessEnv)).toBe(true)
+    expect(supportsFastEchoTerminal({ TERM: 'screen-256color' } as NodeJS.ProcessEnv)).toBe(true)
+    // And an unrelated 256color TERM must stay enabled.
+    expect(supportsFastEchoTerminal({ TERM: 'xterm-256color' } as NodeJS.ProcessEnv)).toBe(true)
+  })
+
   it('disables fast-echo by default in Termux mode', () => {
     expect(
-      supportsFastEchoTerminal({ TERMUX_VERSION: '0.118.0', PREFIX: '/data/data/com.termux/files/usr' } as NodeJS.ProcessEnv)
+      supportsFastEchoTerminal({
+        TERMUX_VERSION: '0.118.0',
+        PREFIX: '/data/data/com.termux/files/usr'
+      } as NodeJS.ProcessEnv)
     ).toBe(false)
   })
 

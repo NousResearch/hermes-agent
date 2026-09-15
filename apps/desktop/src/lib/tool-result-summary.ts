@@ -1,6 +1,8 @@
 // Heuristic JSON → human summary for tool results. Default view; technical
 // mode still gets the raw JSON section.
 
+import { capitalize, normalize } from '@/lib/text'
+
 const WRAPPER_KEYS = ['data', 'result', 'output', 'response', 'payload'] as const
 
 const PRIORITY_KEYS = [
@@ -20,7 +22,11 @@ const PRIORITY_KEYS = [
 ] as const
 
 const ERROR_KEYS = ['error', 'errors', 'failure', 'exception'] as const
-const ERROR_MSG_KEYS = ['message', 'reason', 'detail', 'stderr'] as const
+// 'stderr' deliberately excluded: many CLIs emit informational lines on
+// stderr (npm progress, git's hint:, gcc's `In file included from`) that
+// aren't errors. Treating those as error signal flipped tool cards into
+// destructive styling for healthy commands.
+const ERROR_MSG_KEYS = ['message', 'reason', 'detail'] as const
 const NON_ERROR_TEXT = new Set(['', '0', 'false', 'none', 'null', 'nil', 'ok', 'success', 'n/a', 'na'])
 
 type Json = Record<string, unknown>
@@ -51,7 +57,7 @@ const titleCase = (k: string) =>
   k
     .split(/[_\-.]+/)
     .filter(Boolean)
-    .map(p => `${p[0]?.toUpperCase() ?? ''}${p.slice(1)}`)
+    .map(capitalize)
     .join(' ')
 
 const pluralize = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
@@ -341,7 +347,7 @@ function hasMeaningfulErrorValue(value: unknown): boolean {
   }
 
   if (typeof v === 'string') {
-    return !NON_ERROR_TEXT.has(v.trim().toLowerCase())
+    return !NON_ERROR_TEXT.has(normalize(v))
   }
 
   if (typeof v === 'boolean') {
@@ -369,7 +375,7 @@ function hasErrorSignal(record: Json): boolean {
   return (
     record.success === false ||
     record.ok === false ||
-    /\b(error|failed|failure|fatal|exception)\b/i.test(status) ||
+    /^(error|failed|failure|fatal|exception)$/i.test(status.trim()) ||
     ERROR_KEYS.some(k => hasMeaningfulErrorValue(record[k]))
   )
 }
@@ -396,7 +402,7 @@ function valueErrorText(value: unknown): string {
   return ''
 }
 
-function findNestedError(value: unknown, depth: number, seen: Set<unknown>): string {
+function findNestedError(value: unknown, depth: number, seen: Set<unknown>, failed = false): string {
   if (depth > 5) {
     return ''
   }
@@ -411,7 +417,7 @@ function findNestedError(value: unknown, depth: number, seen: Set<unknown>): str
 
   if (Array.isArray(v)) {
     for (const item of v) {
-      const nested = findNestedError(item, depth + 1, seen)
+      const nested = findNestedError(item, depth + 1, seen, failed)
 
       if (nested) {
         return nested
@@ -422,6 +428,10 @@ function findNestedError(value: unknown, depth: number, seen: Set<unknown>): str
   }
 
   const record = v as Json
+
+  if (record.success === true || record.ok === true) {
+    return ''
+  }
 
   for (const k of ERROR_KEYS) {
     if (!hasMeaningfulErrorValue(record[k])) {
@@ -443,8 +453,13 @@ function findNestedError(value: unknown, depth: number, seen: Set<unknown>): str
     }
   }
 
-  for (const k of [...ERROR_KEYS, ...WRAPPER_KEYS, 'details', 'meta']) {
-    const nested = findNestedError(record[k], depth + 1, seen)
+  // Returned data and stdout can describe failures without the tool failing.
+  // Only unwrap them to explain a failure already declared by the envelope.
+  const failureDeclared = failed || hasErrorSignal(record)
+  const nestedKeys = failureDeclared ? [...ERROR_KEYS, ...WRAPPER_KEYS, 'details'] : ERROR_KEYS
+
+  for (const k of nestedKeys) {
+    const nested = findNestedError(record[k], depth + 1, seen, failureDeclared)
 
     if (nested) {
       return nested

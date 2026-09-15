@@ -1,0 +1,36 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: alltrails
+description: 'AllTrails: find hikes and trails with reviews and ratings.'
+source: https://www.alltrails.com/mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). No authentication required (verified live:
+# initialize succeeds anonymously).
+
+transport:
+  type: http
+  url: https://www.alltrails.com/mcp
+
+auth:
+  type: none
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - hiking
+    - trail
+    - alltrails
+  hosts:
+    - alltrails.com
+
+post_install: |
+  No account or credentials needed — tools are available as soon as the
+  session restarts.
+
+  Heads-up: only 5 tools, but their schemas are unusually verbose (~24K
+  tokens total). If you only browse trails occasionally, consider leaving
+  this server disabled and enabling it on demand, or prune tools with:
+    hermes mcp configure alltrails

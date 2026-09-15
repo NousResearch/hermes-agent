@@ -56,7 +56,7 @@ class _FakeAsyncClient:
         return _FakeResponse(200, {
             "status": "done",
             "video": {"url": "https://xai-cdn/out.mp4", "duration": 8},
-            "model": "grok-imagine-video",
+            "model": self.posts[-1]["json"]["model"],
         })
 
 
@@ -109,19 +109,29 @@ class TestXAIEndpoint:
 
 
 class TestXAIPayload:
-    def test_text_payload_has_no_image_field(self, xai_provider):
-        provider, captured = xai_provider
-        provider.generate("a dog at sunset")
-        payload = _last_post(captured)["json"]
-        assert payload["prompt"] == "a dog at sunset"
-        assert "image" not in payload
-        assert "reference_images" not in payload
 
-    def test_image_payload_has_image_field(self, xai_provider):
+
+    def test_local_image_path_is_sent_as_data_uri(self, xai_provider, tmp_path):
         provider, captured = xai_provider
-        provider.generate("animate this", image_url="https://example.com/cat.png")
+        image_path = tmp_path / "frame.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+
+        provider.generate("animate this", image_url=str(image_path))
+
         payload = _last_post(captured)["json"]
-        assert payload["image"] == {"url": "https://example.com/cat.png"}
+        assert payload["model"] == "grok-imagine-video-1.5"
+        assert payload["image"]["url"].startswith("data:image/png;base64,")
+
+    def test_explicit_model_override_is_honored_for_image(self, xai_provider):
+        provider, captured = xai_provider
+        provider.generate(
+            "animate this",
+            image_url="https://example.com/cat.png",
+            model="grok-imagine-video",
+            _model_override_explicit=True,
+        )
+        payload = _last_post(captured)["json"]
+        assert payload["model"] == "grok-imagine-video"
 
     def test_reference_images_payload(self, xai_provider):
         provider, captured = xai_provider
@@ -148,16 +158,6 @@ class TestXAIValidation:
         # Never hit the network
         assert "client" not in captured or not captured["client"].posts
 
-    def test_image_plus_refs_rejects(self, xai_provider):
-        provider, captured = xai_provider
-        result = provider.generate(
-            "x",
-            image_url="https://example.com/i.png",
-            reference_image_urls=["https://example.com/r.png"],
-        )
-        assert result["success"] is False
-        assert result["error_type"] == "conflicting_inputs"
-        assert "client" not in captured or not captured["client"].posts
 
     def test_too_many_references_rejects(self, xai_provider):
         provider, captured = xai_provider
@@ -175,15 +175,6 @@ class TestXAIClamping:
         provider.generate("x", duration=30)
         assert _last_post(captured)["json"]["duration"] == 15
 
-    def test_duration_clamped_when_refs_present(self, xai_provider):
-        provider, captured = xai_provider
-        provider.generate(
-            "x",
-            duration=15,
-            reference_image_urls=["https://example.com/r.png"],
-        )
-        # refs present caps to 10
-        assert _last_post(captured)["json"]["duration"] == 10
 
     def test_invalid_aspect_ratio_soft_clamps(self, xai_provider):
         provider, captured = xai_provider

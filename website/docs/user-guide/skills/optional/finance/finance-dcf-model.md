@@ -1,21 +1,21 @@
 ---
-title: "Dcf Model"
+title: "Dcf Model — Build discounted cash flow valuation workbooks in Excel"
 sidebar_label: "Dcf Model"
-description: "Build institutional-quality DCF valuation models in Excel — revenue projections, FCF build, WACC, terminal value, Bear/Base/Bull scenarios, 5x5 sensitivity t..."
+description: "Build discounted cash flow valuation workbooks in Excel"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Dcf Model
 
-Build institutional-quality DCF valuation models in Excel — revenue projections, FCF build, WACC, terminal value, Bear/Base/Bull scenarios, 5x5 sensitivity tables. Pairs with excel-author. Use for intrinsic-value equity analysis.
+Build discounted cash flow valuation workbooks in Excel.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/finance/dcf-model` |
-| Path | `optional-skills/finance/dcf-model` |
+| Path | `optional-skills/finance\dcf-model` |
 | Version | `1.0.0` |
 | Author | Anthropic (adapted by Nous Research) |
 | License | Apache-2.0 |
@@ -1196,7 +1196,7 @@ This approach centralizes scenario logic, making the model easier to audit and m
 
 ## Troubleshooting
 
-**If you encounter errors or unreasonable results, read [TROUBLESHOOTING.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/finance/dcf-model/TROUBLESHOOTING.md) for detailed debugging guidance.**
+**If you encounter errors or unreasonable results, read [TROUBLESHOOTING.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/finance\dcf-model/TROUBLESHOOTING.md) for detailed debugging guidance.**
 
 ## Workflow Integration
 
@@ -1234,7 +1234,7 @@ This approach centralizes scenario logic, making the model easier to audit and m
 
 3. **Check output**:
    - If `status` is `"success"` → Continue to step 4
-   - If `status` is `"errors_found"` → Check `error_summary` and read [TROUBLESHOOTING.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/finance/dcf-model/TROUBLESHOOTING.md) for debugging guidance
+   - If `status` is `"errors_found"` → Check `error_summary` and read [TROUBLESHOOTING.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/finance\dcf-model/TROUBLESHOOTING.md) for debugging guidance
 
 4. **Fix errors and re-run recalc.py** until status is "success"
 

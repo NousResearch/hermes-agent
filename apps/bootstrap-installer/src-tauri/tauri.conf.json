@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Hermes Setup",
-  "version": "0.0.1",
+  "productName": "Hermes",
+  "version": "0.21.1",
   "identifier": "com.nousresearch.hermes.setup",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Hermes Setup",
+        "title": "Hermes",
         "width": 880,
         "height": 620,
         "minWidth": 720,
@@ -22,7 +22,8 @@
         "fullscreen": false,
         "decorations": true,
         "transparent": false,
-        "center": true
+        "center": true,
+        "visible": false
       }
     ],
     "security": {
@@ -33,7 +34,7 @@
   "bundle": {
     "active": true,
     "category": "DeveloperTool",
-    "shortDescription": "Hermes Setup",
+    "shortDescription": "Hermes",
     "longDescription": "Installs Hermes Agent on your machine. Drives scripts/install.ps1 (Windows) and scripts/install.sh (macOS/Linux).",
     "publisher": "Nous Research",
     "copyright": "Copyright © 2026 Nous Research",
@@ -56,7 +57,8 @@
     },
     "macOS": {
       "minimumSystemVersion": "11.0",
-      "hardenedRuntime": true
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.plist"
     }
   },
   "plugins": {

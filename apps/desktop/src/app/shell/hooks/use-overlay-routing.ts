@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router'
 
 import { type CommandCenterSection } from '@/app/command-center'
-import { AGENTS_ROUTE, appViewForPath, COMMAND_CENTER_ROUTE, NEW_CHAT_ROUTE } from '@/app/routes'
+import {
+  AGENTS_ROUTE,
+  appViewForPath,
+  COMMAND_CENTER_ROUTE,
+  isOverlayView,
+  NEW_CHAT_ROUTE,
+  STARMAP_ROUTE
+} from '@/app/routes'
 
-const SECTIONS = ['models', 'sessions', 'system'] as const
-const OVERLAY_VIEWS = new Set(['settings', 'command-center', 'agents'])
+const SECTIONS = ['sessions', 'system', 'usage'] as const
 
 export function useOverlayRouting() {
   const location = useLocation()
@@ -15,13 +21,18 @@ export function useOverlayRouting() {
   const settingsOpen = currentView === 'settings'
   const commandCenterOpen = currentView === 'command-center'
   const agentsOpen = currentView === 'agents'
+  const starmapOpen = currentView === 'starmap'
+  const cronOpen = currentView === 'cron'
+  const profilesOpen = currentView === 'profiles'
+  const webhooksOpen = currentView === 'webhooks'
   const chatOpen = currentView === 'chat'
-  const overlayOpen = OVERLAY_VIEWS.has(currentView)
+  const overlayOpen = isOverlayView(currentView)
 
   // Overlay routes (settings/command-center/agents) stash the underlying path
   // so closing them returns there instead of bouncing to /.
   const returnPathRef = useRef(NEW_CHAT_ROUTE)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!overlayOpen) {
       returnPathRef.current = `${location.pathname}${location.search}${location.hash}`
@@ -38,6 +49,10 @@ export function useOverlayRouting() {
     [navigate]
   )
 
+  const resetOverlayReturnRoute = useCallback(() => {
+    returnPathRef.current = NEW_CHAT_ROUTE
+  }, [])
+
   const closeOverlayToPreviousRoute = useCallback(
     () => navigate(returnPathRef.current || NEW_CHAT_ROUTE, { replace: true }),
     [navigate]
@@ -52,6 +67,7 @@ export function useOverlayRouting() {
   }, [closeOverlayToPreviousRoute, commandCenterOpen, navigate])
 
   const openAgents = useCallback(() => navigate(AGENTS_ROUTE), [navigate])
+  const openStarmap = useCallback(() => navigate(STARMAP_ROUTE), [navigate])
 
   return {
     agentsOpen,
@@ -59,10 +75,16 @@ export function useOverlayRouting() {
     closeOverlayToPreviousRoute,
     commandCenterInitialSection,
     commandCenterOpen,
+    cronOpen,
     currentView,
     openAgents,
     openCommandCenterSection,
+    openStarmap,
+    profilesOpen,
+    resetOverlayReturnRoute,
     settingsOpen,
-    toggleCommandCenter
+    starmapOpen,
+    toggleCommandCenter,
+    webhooksOpen
   }
 }

@@ -135,7 +135,9 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
           setDiscoveredModels(current.models)
         }
       } catch (err) {
-        notifyError(err, 'Could not load custom endpoints')
+        if (!cancelled) {
+          notifyError(err, 'Could not load custom endpoints')
+        }
       } finally {
         if (!cancelled) {
           setLoading(false)
@@ -257,6 +259,10 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
   async function handleDelete(endpoint: CustomEndpoint) {
     // This panel is not internationalized at all — keep the literal it had.
     if (!(await confirm({ destructive: true, title: `Delete ${endpoint.name}?` }))) {
+      return
+    }
+
+    if (!isCurrentOwner()) {
       return
     }
 

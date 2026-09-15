@@ -166,6 +166,30 @@ class TestStripBlockedTools(unittest.TestCase):
         self.assertIn("file", result)
         self.assertIn("web", result)
 
+    def test_composite_toolset_without_blocked_tools_is_kept(self):
+        """Regression: a composite declares ``tools: []`` and pulls its real surface in
+        via ``includes``, so the empty generator made ``all([])`` return True and the
+        toolset was dropped from every child. ``safe`` (web/vision/image_gen) and
+        ``hermes-gateway`` contain allowed tools and must survive; blocked leaf tools
+        inside them are subtracted later via ``disabled_toolsets``.
+        """
+        from toolsets import resolve_toolset
+
+        self.assertTrue(
+            DELEGATE_BLOCKED_TOOLS.isdisjoint(resolve_toolset("safe", include_registry=False))
+        )
+        result = _strip_blocked_tools(["terminal", "safe", "hermes-gateway", "delegation"])
+        self.assertIn("safe", result)
+        self.assertIn("hermes-gateway", result)
+        self.assertNotIn("delegation", result)
+
+    def test_toolsets_with_no_resolvable_tools_stay_stripped(self):
+        """Unchanged by the fix above: ``bot_room``/``context_engine`` declare neither
+        ``tools`` nor ``includes``, so the resolved surface is empty and they are still
+        classified as blocked."""
+        result = _strip_blocked_tools(["terminal", "bot_room", "context_engine"])
+        self.assertEqual(result, ["terminal"])
+
     def test_mixed_composite_is_subtracted_at_child_assembly(self):
         """A mixed platform bundle must not re-expose blocked leaf tools.
 

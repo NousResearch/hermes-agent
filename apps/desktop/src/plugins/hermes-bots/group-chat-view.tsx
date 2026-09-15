@@ -43,6 +43,7 @@ import {
   $lastRoster,
   botHandle,
   botMetaV2Active,
+  botRosterKey,
   botSourceStatus,
   noteBotMetaWrite,
   persistBotMetaSnapshot,
@@ -62,6 +63,7 @@ import {
   $groupChats,
   $groupChatWorkspace,
   $groupClarify,
+  GROUP_CHAT_MAX_MEMBERS,
   $groupNeedsYou,
   groupThreadOf,
   scheduleGroupChatServerSync,
@@ -74,8 +76,10 @@ import type { GroupRoomPrompt } from './group-chat-parts'
 import { GroupHoldStatus } from './group-hold-status'
 import {
   botGroups,
+  durableGroupChatMembers,
   groupChatMemberBots,
   groupDisbandMetadataPlan,
+  groupMembershipPatch,
   groupWorkspaceOwnerKey,
   liveGroupChatNames
 } from './group-membership'
@@ -351,6 +355,80 @@ export async function renameGroupChat(oldName: string, newName: string, members:
   return next
 }
 
+/** Persist the room-side member picker result.  Stored descriptors are the
+ * source of truth for remote Bots; local metadata remains a compatibility
+ * projection so existing roster surfaces continue to find the room. */
+export async function setGroupChatMembers(group: string, selected: RosterRow[]) {
+  if (selected.length < 2 || selected.length > GROUP_CHAT_MAX_MEMBERS) {
+    throw new Error(`A group chat needs between 2 and ${GROUP_CHAT_MAX_MEMBERS} bots`)
+  }
+
+  // A remote and local Bot may share a profile name.  Membership selection is
+  // source-qualified everywhere else, so the room picker must use the same
+  // identity rather than accidentally seating its local namesake too.
+  const selectedKeys = new Set(selected.map(botRosterKey))
+  const meta = $botMeta.get()
+  for (const bot of $lastRoster.get().filter(bot => !bot.remoteSource)) {
+    const enabled = selectedKeys.has(botRosterKey(bot))
+    const current = botGroups(botRosterMeta(bot, meta))
+    if (current.includes(group) !== enabled) {
+      await saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, meta), group, enabled))
+    }
+  }
+  updateGroupChat(group, room => ({ ...room, members: durableGroupChatMembers(selected) }))
+}
+
+function GroupMemberPicker({ group, members, open, onClose }: {
+  group: string
+  members: RosterRow[]
+  open: boolean
+  onClose: () => void
+}) {
+  const roster = useValue($lastRoster).filter(bot => !bot.ghost)
+  const [selected, setSelected] = useState(() => new Set(members.map(botRosterKey)))
+  const atCap = selected.size >= GROUP_CHAT_MAX_MEMBERS
+
+  useEffect(() => setSelected(new Set(members.map(botRosterKey))), [members, open])
+
+  const save = async () => {
+    try {
+      await setGroupChatMembers(group, roster.filter(bot => selected.has(botRosterKey(bot))))
+      onClose()
+    } catch (error) {
+      host.notify({ kind: 'error', message: String(error instanceof Error ? error.message : error) })
+    }
+  }
+
+  return <Dialog onOpenChange={value => !value && onClose()} open={open}>
+    <DialogContent className="max-w-md">
+      <DialogHeader>
+        <DialogTitle>Manage members</DialogTitle>
+        <DialogDescription>Select 2–{GROUP_CHAT_MAX_MEMBERS} Bots for this room.</DialogDescription>
+      </DialogHeader>
+      <div className="grid max-h-80 gap-1 overflow-y-auto">
+        {roster.map(bot => {
+          const key = botRosterKey(bot)
+          const checked = selected.has(key)
+          return <RowButton className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-(--chrome-action-hover)" key={key}
+            onClick={() => setSelected(current => {
+              const next = new Set(current)
+              if (checked) next.delete(key)
+              else if (!atCap) next.add(key)
+              return next
+            })}>
+            <span className={cn('size-3 rounded-sm border', checked && 'bg-(--ui-accent)')} />
+            <span className="min-w-0 flex-1 truncate text-left">{bot.title || bot.name}</span>
+          </RowButton>
+        })}
+      </div>
+      <DialogFooter>
+        <Button onClick={onClose} variant="ghost">Cancel</Button>
+        <Button disabled={selected.size < 2 || selected.size > GROUP_CHAT_MAX_MEMBERS} onClick={() => void save()}>Save members</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
+}
+
 interface GroupChatSettingsDialogProps {
   group: string
   members?: GroupMember[]
@@ -512,6 +590,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
 
   const [confirmDisband, setConfirmDisband] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [memberPickerOpen, setMemberPickerOpen] = useState(false)
   // Click-to-disambiguate: which log entry is showing its speaker's full
   // @handle (the roster's name-device form when names collide across
   // connections). Naturally every speaker just shows its display name.
@@ -685,6 +764,12 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           <Codicon name="gear" />
         </Button>
       </Tip>
+      <Tip label="Manage members">
+        <Button aria-label="Manage group members" className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
+          onClick={() => setMemberPickerOpen(true)} size="sm" variant="ghost">
+          <Codicon name="organization" />
+        </Button>
+      </Tip>
       <Tip label={b.group.disbandHint(group)}>
         <Button
           aria-label={b.group.disbandLabel(group)}
@@ -704,6 +789,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       ...b,
       title: (b.remoteSource ? '' : allMeta[b.name]?.title) || b.title || ''
     }))
+
+  const picker = <GroupMemberPicker group={group} members={members} onClose={() => setMemberPickerOpen(false)} open={memberPickerOpen} />
 
   // Activity disclosure: quiet, collapsed by default. The collapsed row shows
   // the latest event; expanding lists the current run's events newest-first.
@@ -1216,6 +1303,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         onClose={() => setSettingsOpen(false)}
         open={settingsOpen}
       />
+      {picker}
       <ConfirmDialog
         busyLabel={b.group.disbanding}
         confirmLabel={b.group.disbandAction}

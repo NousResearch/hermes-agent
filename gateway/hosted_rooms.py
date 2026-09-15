@@ -921,6 +921,47 @@ def rename_room(db_path: DbPath, *, room_id: Any, event_id: Any, name: Any, now:
         return {**_room_from_row(updated), "event": _event_from_row(_load_event(conn, room_id, event_id))}
 
 
+def replace_room_members(
+    db_path: DbPath, *, room_id: Any, event_id: Any, members: Any,
+    expected_gateway_id: Any, expected_epoch: Any, now: float | None = None
+) -> dict[str, Any]:
+    """Atomically replace an authority-owned roster and append its replay event.
+
+    The caller owns the product-level roster policy; this durable boundary preserves
+    retries and replication by recording the exact resulting roster in one event.
+    """
+    room_id = _room_id(room_id)
+    event_id = _event_id(event_id)
+    normalized_members, members_json = _validate_members(members)
+    gateway_id = _actor_id(expected_gateway_id, "expected_gateway_id")
+    epoch = _require_positive_int(expected_epoch, "expected_epoch")
+    now = _now(now)
+    actor_json = _system_actor_json("room-control")
+    payload_json = _payload_json({"members": normalized_members})
+    with _transaction(db_path, immediate=True) as conn:
+        room = _room_row(conn, _SELECT_ROOM_WITH_BYTES, (room_id,), room_id)
+        if room["disbanded_at"] is not None:
+            raise RoomNotFoundError("hosted room not found")
+        _require_authority(room, gateway_id, epoch, "stale hosted room authority")
+        existing = _load_event(conn, room_id, event_id)
+        if existing is not None:
+            if existing["kind"] != "room.members_changed" or existing["payload_json"] != payload_json:
+                raise EventConflictError("event_id already exists with different immutable content")
+            return {**_room_from_row(room, idempotent=True), "event": _event_from_row(existing, idempotent=True)}
+        seq = int(room["next_seq"])
+        event_bytes = _prepare_event(conn, room, event_id, "room.members_changed", actor_json, payload_json)
+        _fenced_update(conn, """UPDATE hosted_rooms
+                SET members_json=?, next_seq=?, event_bytes=event_bytes+?, revision=revision+1, updated_at=?
+                WHERE room_id=? AND authority_gateway_id=? AND authority_epoch=? AND next_seq=?
+                AND disbanded_at IS NULL""", (
+            members_json, seq + 1, event_bytes, now, room_id, gateway_id, epoch, seq),
+            AuthorityConflictError("hosted room membership update lost its authority fence"))
+        conn.execute(_INSERT_EVENT, (
+            room_id, seq, event_id, "room.members_changed", actor_json, epoch, payload_json, now))
+        updated = _reload(conn, _SELECT_ROOM, (room_id,), "updated room could not be reloaded")
+        return {**_room_from_row(updated), "event": _event_from_row(_load_event(conn, room_id, event_id))}
+
+
 def append_event(
     db_path: DbPath, *, room_id: Any, event_id: Any, kind: Any, actor: Any, payload: Any,
     authority_gateway_id: Any = None, authority_epoch: Any = None, now: float | None = None) -> dict[str, Any]:

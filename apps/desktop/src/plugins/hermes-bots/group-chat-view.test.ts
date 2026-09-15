@@ -137,6 +137,34 @@ describe('opening a room', () => {
   })
 })
 
+describe('member picker persistence', () => {
+  it('keeps a same-named local Bot out when selecting only its Connection counterpart', async () => {
+    const room = await loadRoom()
+    const local: RosterRow = { name: 'planner', title: 'Local Planner' }
+    const remote: RosterRow = {
+      connectionId: 'remote-1',
+      connectionKind: 'remote',
+      name: 'planner',
+      remoteSource: true,
+      route: { connectionId: 'remote-1', mode: 'remote', profile: 'planner', targetProfile: 'planner' },
+      sourceScoped: true,
+      title: 'Remote Planner'
+    }
+    const reviewer: RosterRow = { name: 'reviewer' }
+
+    room.data.$lastRoster.set([local, remote, reviewer])
+    room.data.$botMeta.set({ planner: { groups: ['Core'] } })
+
+    await room.view.setGroupChatMembers('Core', [remote, reviewer])
+
+    expect(room.data.$botMeta.get().planner.groups).toEqual([])
+    expect(room.chat.$groupChats.get().Core.members).toEqual(expect.arrayContaining([
+      expect.objectContaining({ connectionId: 'remote-1', name: 'planner', sourceScoped: true }),
+      expect.objectContaining({ name: 'reviewer' })
+    ]))
+  })
+})
+
 describe('disband', () => {
   it('removes only this membership, room log, workspace and needs-you state', async () => {
     const room = await loadRoom()

@@ -463,6 +463,42 @@ class HostedRoomService:
         self.runtime.wakeup()
         return event
 
+    def add_member(self, *, room_id: str, event_id: str, member: Any) -> dict[str, Any]:
+        """Seat one validated member through the hosted room's authority fence."""
+        room = self._room(room_id)
+        current = list(room["members"])
+        normalized = discussion.validate_roster([*current, member], local_profiles=self.local_profiles())
+        gateway_id, epoch = self._owned_authority(room_id)
+        updated = hosted_rooms.replace_room_members(
+            self.db_path, room_id=room_id, event_id=event_id,
+            members=[
+                {"member_id": item.member_id, "profile": item.profile, "handle": item.handle,
+                 "target": dict(item.target or {}),
+                 **({"display_name": item.display_name} if item.display_name else {})}
+                for item in normalized],
+            expected_gateway_id=gateway_id, expected_epoch=epoch)
+        self.runtime.wakeup()
+        return updated
+
+    def remove_member(self, *, room_id: str, event_id: str, member_id: str) -> dict[str, Any]:
+        """Remove one member while retaining the Discussion room's 2-member floor."""
+        room = self._room(room_id)
+        remaining = [member for member in room["members"] if str(member.get("member_id")) != str(member_id)]
+        if len(remaining) == len(room["members"]):
+            raise hosted_rooms.HostedRoomError("room member was not found")
+        normalized = discussion.validate_roster(remaining, local_profiles=self.local_profiles())
+        gateway_id, epoch = self._owned_authority(room_id)
+        updated = hosted_rooms.replace_room_members(
+            self.db_path, room_id=room_id, event_id=event_id,
+            members=[
+                {"member_id": item.member_id, "profile": item.profile, "handle": item.handle,
+                 "target": dict(item.target or {}),
+                 **({"display_name": item.display_name} if item.display_name else {})}
+                for item in normalized],
+            expected_gateway_id=gateway_id, expected_epoch=epoch)
+        self.runtime.wakeup()
+        return updated
+
     def stop_room(
         self, room_id: str, *, cancel_id: str, require_acknowledged: bool = False) -> int:
         gateway_id, epoch = self._owned_authority(room_id)

@@ -85,6 +85,34 @@ def test_capabilities_are_honest_about_the_driver_boundary(home):
     assert result["room_link"]["enabled"] is True
 
 
+def test_member_mutations_are_atomic_and_advertised(home):
+    (home / "profiles" / "reviewer").mkdir()
+    room = _create_room()
+    capability = _result(srv._methods["groups.capabilities"](1, {}))
+
+    assert "groups.add_member" in capability["methods"]
+    added = _result(
+        srv._methods["groups.add_member"](
+            2,
+            {
+                "room_id": room["room_id"],
+                "event_id": "seat-reviewer",
+                "member": {"member_id": "reviewer", "profile": "reviewer", "handle": "reviewer"},
+            },
+        )
+    )["room"]
+    assert [member["member_id"] for member in added["members"]] == ["default", "ops", "reviewer"]
+    assert added["event"]["kind"] == "room.members_changed"
+
+    removed = _result(
+        srv._methods["groups.remove_member"](
+            3,
+            {"room_id": room["room_id"], "event_id": "unseat-ops", "member_id": "ops"},
+        )
+    )["room"]
+    assert [member["member_id"] for member in removed["members"]] == ["default", "reviewer"]
+
+
 def test_capabilities_and_invitation_advertise_scoped_roomlink(home, monkeypatch):
     monkeypatch.setenv("API_SERVER_KEY", "gateway-api-key-1234567890")
     monkeypatch.setenv("HERMES_PROFILE", "reviewer")

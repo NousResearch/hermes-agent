@@ -16,7 +16,8 @@ method = _registry.method
 
 #: Wire order of ``groups.capabilities.methods``; every one runs on the RPC pool.
 _METHODS = (
-    "groups.capabilities", "groups.list", "groups.create", "groups.state", "groups.send",
+    "groups.capabilities", "groups.list", "groups.create", "groups.state", "groups.send", "groups.add_member",
+    "groups.remove_member",
     "groups.rename", "groups.log", "groups.disband", "groups.replicate", "groups.replica_state",
     "groups.promote", "groups.demote", "groups.stop", "groups.retry", "groups.approve",
     "groups.peer.invite", "groups.peer.revoke", "groups.peer.register")
@@ -391,6 +392,24 @@ def _(rid, params: dict, service) -> dict:
     return _ok(rid, {
         "event": event, "client_event_id": client_event_id, "accepted": True,
         "driver_started": True})
+
+
+@_room_method("groups.add_member", code=5121, room_code=4124, service_code=4123,
+              service_message=_WORKER_UNAVAILABLE)
+def _(rid, params: dict, service) -> dict:
+    """Atomically seat a member on this room's authority gateway."""
+    return _ok(rid, {"room": service.add_member(
+        room_id=str(params.get("room_id") or ""), event_id=str(params.get("event_id") or ""),
+        member=params.get("member"))})
+
+
+@_room_method("groups.remove_member", code=5122, room_code=4124, service_code=4123,
+              service_message=_WORKER_UNAVAILABLE)
+def _(rid, params: dict, service) -> dict:
+    """Atomically remove a member on this room's authority gateway."""
+    return _ok(rid, {"room": service.remove_member(
+        room_id=str(params.get("room_id") or ""), event_id=str(params.get("event_id") or ""),
+        member_id=str(params.get("member_id") or ""))})
 
 
 @_room_method(

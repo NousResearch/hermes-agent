@@ -274,6 +274,55 @@ def test_block_happy_path(worker_env):
         conn.close()
 
 
+def test_schedule_parks_current_worker_with_reason(worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools  # noqa: F401 — ensure registration
+    from tools.registry import registry
+
+    reason = "SCHEDULED_UNTIL=2026-09-13T00:00:00Z waiting for reconnect"
+    entry = registry.get_entry("kanban_schedule")
+    assert entry is not None and entry.toolset == "kanban"
+    out = json.loads(entry.handler({"reason": reason}))
+
+    assert out == {
+        "ok": True, "task_id": worker_env, "run_id": out["run_id"],
+        "status": "scheduled", "reason": reason,
+    }
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "scheduled"
+        run = kb.latest_run(conn, worker_env)
+        assert (run.outcome, run.summary) == ("scheduled", reason)
+        assert any(
+            event.kind == "scheduled" and event.payload == {"reason": reason}
+            for event in kb.list_events(conn, worker_env)
+        )
+
+
+def test_schedule_rejects_invalid_reason_and_unowned_contexts(monkeypatch, worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        other = kb.create_task(conn, title="sibling", assignee="peer")
+
+    invalid = json.loads(kt._handle_schedule({"reason": {"until": "tomorrow"}}))
+    foreign = json.loads(kt._handle_schedule({"task_id": other, "reason": "wait"}))
+    monkeypatch.setattr(
+        kt, "_delegation_ctx",
+        lambda predicate, default: predicate == "is_delegated_child_process_context",
+    )
+    delegated = json.loads(kt._handle_schedule({"task_id": worker_env, "reason": "wait"}))
+
+    assert "reason must be a string" in invalid["error"]
+    assert "refusing to mutate" in foreign["error"]
+    assert "delegate_task child agents are not Kanban run owners" in delegated["error"]
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "running"
+        assert kb.get_task(conn, other).status == "ready"
+
+
 def _make_goal_mode_worker_env(monkeypatch, tmp_path):
     """Set up an isolated HERMES_HOME with one claimed goal_mode task,
     matching the pattern used by the kanban_complete judge gate tests."""

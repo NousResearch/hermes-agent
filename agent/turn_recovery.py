@@ -706,7 +706,7 @@ def _print_nonretryable_auth_guidance(
         _vlines(agent, "      • Check credits: https://openrouter.ai/settings/credits")
 
 
-def _welcome_tier_guidance(classified: Any, *, model: Any, in_chat: bool) -> str:
+def _welcome_tier_guidance(classified: Any, *, model: Any, in_chat: bool, door: bool = True) -> str:
     """Copy for a Nous free-tier refusal the classifier parsed (``welcome_refusal`` /
     ``welcome_route`` in ``error_context``); empty for every other error."""
     ctx = getattr(classified, "error_context", None) or {}
@@ -715,8 +715,8 @@ def _welcome_tier_guidance(classified: Any, *, model: Any, in_chat: bool) -> str
         return ""
     from hermes_cli.anon_auth import welcome_refusal_copy, welcome_route_refusal_copy
     if refusal:
-        return welcome_refusal_copy(refusal, model=str(model or ""), in_chat=in_chat)
-    return welcome_route_refusal_copy(str(route), in_chat=in_chat)
+        return welcome_refusal_copy(refusal, model=str(model or ""), in_chat=in_chat, door=door)
+    return welcome_route_refusal_copy(str(route), in_chat=in_chat, door=door)
 
 
 def _welcome_surface_kind(classified: Any) -> str:
@@ -881,7 +881,9 @@ def nonretryable_client_error_result(
         "failure_retryable": bool(classified.retryable),
     })
     if _welcome_hint:
-        _stamp_free_tier(result, _welcome_surface_kind(classified), _final_response)
+        # The card form: the desktop renders the sign-in as a button, so no "To sign in" tail.
+        _stamp_free_tier(result, _welcome_surface_kind(classified),
+                         _welcome_tier_guidance(classified, model=model, in_chat=True, door=False))
     return result
 
 
@@ -1011,7 +1013,9 @@ def max_retries_exhausted_result(
         "billing_block": _billing_block,
     })
     if _free_tier_kind:
-        _stamp_free_tier(result, _free_tier_kind, _final_response)
+        _stamp_free_tier(result, _free_tier_kind, (
+            _welcome_tier_guidance(classified, model=model, in_chat=True, door=False)
+            if _welcome_hint else _final_response))
     return result
 
 

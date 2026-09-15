@@ -1,7 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+vi.mock('@/store/gateway', () => ({
+  requestGatewayForAgent: vi.fn()
+}))
+
+import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
+import { requestGatewayForAgent } from '@/store/gateway'
+
 import { $petInfo, setPetInfo } from './pet'
-import { $petGallery, adoptPet, type GatewayRequest, loadPetGallery, resetPetGallery } from './pet-gallery'
+import {
+  $petGallery,
+  adoptPet,
+  type GatewayRequest,
+  loadPetGallery,
+  loadPetThumb,
+  resetPetGallery
+} from './pet-gallery'
 
 function localGallery() {
   return {
@@ -13,14 +27,43 @@ function localGallery() {
 
 describe('pet gallery pet.info sync', () => {
   beforeEach(() => {
+    setWorkspaceScope('sessions')
+    vi.mocked(requestGatewayForAgent).mockReset()
     resetPetGallery()
     setPetInfo({ enabled: false })
   })
 
   afterEach(() => {
+    setWorkspaceScope('sessions')
     resetPetGallery()
     setPetInfo({ enabled: false })
     vi.restoreAllMocks()
+  })
+
+  it('routes gallery RPCs through the selected Bot connection', async () => {
+    setWorkspaceScope('bots', 'jaime-vpn::scout', {
+      kind: 'route',
+      route: {
+        connectionId: 'jaime-vpn',
+        mode: 'remote',
+        profile: 'scout',
+        targetProfile: 'scout'
+      }
+    })
+
+    vi.mocked(requestGatewayForAgent).mockResolvedValue({ ok: true, dataUri: 'data:image/png;base64,pet' } as never)
+
+    const ambient = vi.fn(async () => {
+      throw new Error('ambient gateway must not receive a routed Bot pet RPC')
+    }) as unknown as GatewayRequest
+
+    await expect(loadPetThumb(ambient, 'cache-capy')).resolves.toBe('data:image/png;base64,pet')
+    expect(requestGatewayForAgent).toHaveBeenCalledWith('jaime-vpn', 'scout', 'pet.thumb', {
+      profile: 'scout',
+      slug: 'cache-capy',
+      url: ''
+    })
+    expect(ambient).not.toHaveBeenCalled()
   })
 
   it('uses pet.info.meta and keeps the cached spritesheet when the revision is current', async () => {

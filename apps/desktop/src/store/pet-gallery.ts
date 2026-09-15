@@ -2,13 +2,15 @@ import { atom } from 'nanostores'
 
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { normalize } from '@/lib/text'
+import { requestGatewayForAgent } from '@/store/gateway'
 import {
   $petInfo,
   hasPetSpriteForMeta,
   mergePetInfoMeta,
   type PetInfo,
   type PetInfoMeta,
-  petProfile,
+  petOwner,
+  requestPetForOwner,
   setPetInfo
 } from '@/store/pet'
 
@@ -58,11 +60,17 @@ export type GatewayRequest = <T>(
   signal?: AbortSignal
 ) => Promise<T>
 
-/** Profile-scoped pet RPC. Pets are per-profile, so every call carries the active
- *  profile (the gateway no-ops it for the launch profile). One chokepoint so no
- *  call site can forget it. */
+/** Profile-scoped pet RPC. Bot Mode can target another registered connection,
+ * so the exact owner route wins over the ambient requester's gateway. */
 const petRpc = <T>(request: GatewayRequest, method: string, params: Record<string, unknown> = {}): Promise<T> =>
-  request<T>(method, { ...params, profile: petProfile() })
+  requestPetForOwner<T>(
+    petOwner(),
+    method,
+    params,
+    (ambientMethod, ambientParams) => request<T>(ambientMethod, ambientParams),
+    (connectionId, profile, routedMethod, routedParams) =>
+      requestGatewayForAgent<T>(connectionId, profile, routedMethod, routedParams)
+  )
 
 /** A JSON-RPC "method not found" — the backend predates the pet RPCs. */
 export const $petGallery = atom<PetGallery | null>(null)

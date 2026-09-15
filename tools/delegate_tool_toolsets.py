@@ -49,9 +49,14 @@ def _expand_parent_toolsets(parent_toolsets: set) -> set:
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """Remove toolsets whose tools are ALL blocked (derived from DELEGATE_BLOCKED_TOOLS so the two can't drift) plus
-    composite toolsets children must never get (``delegation``, ``kanban``)."""
+    composite toolsets children must never get (``delegation``, ``kanban``). A toolset with no directly-declared tools
+    (a composite that pulls its surface in via ``includes``) is never dropped here: whether its leaves are blocked is
+    decided after expansion, by ``disabled_toolsets`` / ``_blocked_toolsets_for_role``."""
     blocked_toolset_names = {"delegation", "kanban"} | {
-        name for name, defn in TOOLSETS.items() if all(t in DELEGATE_BLOCKED_TOOLS for t in defn.get("tools", []))
+        name
+        for name, defn in TOOLSETS.items()
+        if defn.get("tools")
+        and all(t in DELEGATE_BLOCKED_TOOLS for t in defn.get("tools", []))
     }
     return [t for t in toolsets if t not in blocked_toolset_names]
 

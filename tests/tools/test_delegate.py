@@ -166,6 +166,74 @@ class TestStripBlockedTools(unittest.TestCase):
         self.assertIn("file", result)
         self.assertIn("web", result)
 
+    def test_composites_without_direct_tools_survive_strip(self):
+        """Composite bundles declare ``tools: []`` and pull their real surface in
+        via ``includes``, so a vacuous all([]) classified them as fully blocked
+        and silently left children of ``safe``/``hermes-gateway``-only parents
+        with no tools at all. Only a non-empty direct tool list can be fully
+        blocked; blocked leaves inside composites are subtracted later, after
+        expansion (see test_mixed_composite_is_subtracted_at_child_assembly)."""
+        result = _strip_blocked_tools(["safe", "hermes-gateway", "terminal"])
+        self.assertIn("safe", result)
+        self.assertIn("hermes-gateway", result)
+        self.assertIn("terminal", result)
+
+    def test_safe_only_parent_no_longer_delegates_an_empty_child(self):
+        """End to end: a ``safe``-only parent must hand its child the safe
+        tools, not an empty toolset. The child must still stay disjoint from
+        DELEGATE_BLOCKED_TOOLS."""
+        import model_tools
+        from tools.delegate_tool import _resolve_child_toolsets
+
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["safe"]
+        parent.disabled_toolsets = []
+
+        enabled, disabled = _resolve_child_toolsets(parent, None, "leaf")
+        self.assertIn("safe", enabled)
+
+        definitions = model_tools.get_tool_definitions(
+            enabled_toolsets=enabled,
+            disabled_toolsets=disabled,
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        names = {item["function"]["name"] for item in definitions}
+        self.assertTrue(names & {"web_search", "web_extract", "vision_analyze"})
+        self.assertTrue(DELEGATE_BLOCKED_TOOLS.isdisjoint(names))
+
+    def test_hermes_gateway_child_keeps_allowed_leaves_and_sheds_blocked(self):
+        """``hermes-gateway`` resolves to a wide platform surface with a handful
+        of blocked leaves; the child keeps the allowed majority and the
+        blocked leaves are subtracted by ``disabled_toolsets`` after expansion."""
+        import model_tools
+        from toolsets import resolve_toolset
+        from tools.delegate_tool import _resolve_child_toolsets
+
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["hermes-gateway"]
+        parent.disabled_toolsets = []
+
+        enabled, disabled = _resolve_child_toolsets(parent, None, "leaf")
+        self.assertIn("hermes-gateway", enabled)
+
+        definitions = model_tools.get_tool_definitions(
+            enabled_toolsets=enabled,
+            disabled_toolsets=disabled,
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+        names = {item["function"]["name"] for item in definitions}
+        self.assertTrue(DELEGATE_BLOCKED_TOOLS.isdisjoint(names))
+        # The exact surface varies with optional platform deps (registry
+        # check_fn gates), so pin a stable core plus leak-freeness instead of
+        # an environment-dependent count.
+        self.assertTrue({"web_search", "web_extract", "read_file", "terminal"} <= names)
+        static_allowed = set(
+            resolve_toolset("hermes-gateway", include_registry=False)
+        ) - set(DELEGATE_BLOCKED_TOOLS)
+        self.assertTrue(names <= static_allowed)
+
     def test_mixed_composite_is_subtracted_at_child_assembly(self):
         """A mixed platform bundle must not re-expose blocked leaf tools.
 

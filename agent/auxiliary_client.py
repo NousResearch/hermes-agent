@@ -790,7 +790,7 @@ def _task_prefers_fast_model(task: Optional[str]) -> bool:
 
 
 # Dedicated vision models for direct providers whose main chat model differs.
-_PROVIDER_VISION_MODELS: Dict[str, str] = {"xiaomi": "mimo-v2.5", "zai": "glm-5v-turbo"}
+_PROVIDER_VISION_MODELS: Dict[str, str] = {"xiaomi": "mimo-v2.5", "zai": "glm-5.3-flash"}
 
 
 def _resolve_provider_vision_default(provider: str) -> Optional[str]:

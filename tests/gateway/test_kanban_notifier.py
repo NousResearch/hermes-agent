@@ -2,6 +2,7 @@ import asyncio
 import sqlite3
 from pathlib import Path
 
+import pytest
 
 from gateway.config import Platform
 from gateway.kanban_watchers_common import (
@@ -84,6 +85,44 @@ def _unseen_terminal_events(tid):
         conn.close()
 
 
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "completed",
+        "blocked",
+        "gave_up",
+        "crashed",
+        "timed_out",
+        "status",
+        "review_requested",
+        "block_loop_detected",
+    ],
+)
+def test_notifier_worker_attribution_is_inert_for_each_event_kind(
+    tmp_path, monkeypatch, kind,
+):
+    """Every worker-attributed ping must remain a label, not a member mention."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "inert-label.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="profile attribution", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        # Exercise the real collector/formatter/delivery path for each event
+        # independently, including events emitted directly by the dispatcher.
+        kb._append_event(conn, tid, kind=kind, payload={"status": "ready"})
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    message = adapter.sent[0]["text"]
+    assert f"[worker] Kanban {tid}" in message
+    assert "@worker" not in message
+
+
 def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, monkeypatch):
     db_path = tmp_path / "dm-topic-metadata.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
@@ -121,6 +160,9 @@ def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, m
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     assert len(adapter.sent) == 1
+    message = adapter.sent[0]["text"]
+    assert "[worker]" in message
+    assert "@worker" not in message
     assert adapter.sent[0]["metadata"] == {
         "chat_type": "dm",
         "direct_messages_topic_id": "20197",
@@ -169,6 +211,8 @@ def test_active_named_profile_subscription_is_delivered(tmp_path, monkeypatch):
     message = adapter.sent[0]["text"]
     assert tid in message
     assert "blocked" in message
+    assert "[publisher]" in message
+    assert "@publisher" not in message
 
 
 def test_non_dispatch_gateway_claims_only_its_profile_subscriptions(

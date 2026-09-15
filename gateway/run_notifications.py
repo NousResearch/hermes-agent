@@ -1331,12 +1331,20 @@ class GatewayNotificationsMixin:
         session_db = getattr(self, "_session_db", None)
         if session_db is None or not session_id:
             return False
+        # The gateway's ``_session_db`` is an ``AsyncSessionDB`` door (every method → coroutine via
+        # to_thread). This probe already runs INSIDE to_thread, so call the raw store: the door
+        # would hand back an un-awaited coroutine and ``_holder, expires_at = owner`` raised
+        # "cannot unpack non-iterable coroutine object" every 2 s watcher tick, forever (13k+
+        # errors 2026-09-15; the poisoned event never delivered and never dropped).
+        raw_db = getattr(session_db, "_db", session_db)
         try:
-            owner = session_db.get_session_turn_lease_owner(session_id)
+            owner = raw_db.get_session_turn_lease_owner(session_id)
         except Exception:
             return False
         if owner is None:
             return False
+        if not isinstance(owner, tuple) or len(owner) != 2:
+            return False  # fail OPEN on any unexpected shape — never poison the watcher loop
         _holder, expires_at = owner
         return float(expires_at) > time.time()
 
@@ -1771,7 +1779,9 @@ class GatewayNotificationsMixin:
                     except Exception as e:
                         for evt in group:
                             _pr.completion_queue.put(evt)
-                        logger.error("Async delegation injection error: %s", e)
+                        # exc_info: a persisted poisoned event re-fails every 2 s tick forever (13k+
+                        # rows 2026-09-15); without the traceback the failing frame is invisible.
+                        logger.error("Async delegation injection error: %s", e, exc_info=True)
             await asyncio.sleep(interval)
 
     @staticmethod

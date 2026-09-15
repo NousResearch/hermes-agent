@@ -368,8 +368,14 @@ def restore_project(conn: sqlite3.Connection, project_id: str) -> bool:
 
 
 def delete_project(conn: sqlite3.Connection, project_id: str) -> bool:
-    """Hard-delete a project and its folders (cascade)."""
-    return _execute_rowcount(conn, "DELETE FROM projects WHERE id = ?", (project_id,)) > 0
+    """Hard-delete a project, its folders, and its active selection together."""
+    with write_txn(conn):
+        cur = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        conn.execute(
+            "DELETE FROM project_meta WHERE key = ? AND value = ?",
+            (_ACTIVE_META_KEY, project_id),
+        )
+    return cur.rowcount > 0
 
 
 # --- Active-project pointer + discovery policy (project_meta KV) --------------

@@ -121,11 +121,13 @@ class TestDynamicParamGating(unittest.TestCase):
                     and int(meta.get("max_reference_images") or 0) > 1)
 
     def test_t2i_only_model_hides_edit_args(self):
+        # #45278: editing stays reachable via a per-call `model` override, so the FAL
+        # schema keeps image_url advertised even when the ACTIVE model is text-only —
+        # the description says an override that supports editing is required.
         schema = self._schema_for(self._t2i_only())
         props = schema["parameters"]["properties"]
-        self.assertNotIn("image_url", props)
-        self.assertNotIn("reference_image_urls", props)
-        self.assertIn("cannot edit", schema["description"])
+        self.assertIn("image_url", props)
+        self.assertIn("model override", schema["description"])
 
     def test_edit_model_advertises_edit_args_with_cap(self):
         model = self._edit_multi_ref()
@@ -133,9 +135,16 @@ class TestDynamicParamGating(unittest.TestCase):
         props = schema["parameters"]["properties"]
         self.assertIn("image_url", props)
         self.assertIn("reference_image_urls", props)
+        # Widest cap reachable via a per-call `model` override (#45278 review fix):
+        # the active model's cap AND every edit-capable catalog model are considered,
+        # so a single-reference editor still exposes multi-reference overrides.
+        widest = max(
+            [int(FAL_MODELS[m]["max_reference_images"])
+             for m in FAL_MODELS if FAL_MODELS[m].get("edit_endpoint")]
+            + [int(FAL_MODELS[model]["max_reference_images"])])
         self.assertEqual(
             props["reference_image_urls"]["maxItems"],
-            int(FAL_MODELS[model]["max_reference_images"]),
+            widest,
         )
 
     def test_fal_always_advertises_upscale(self):
@@ -158,7 +167,10 @@ class TestDynamicParamGating(unittest.TestCase):
              patch("hermes_cli.plugins._ensure_plugins_discovered"):
             schema = _build_dynamic_image_schema()
         props = schema["parameters"]["properties"]
-        self.assertEqual(sorted(props), ["aspect_ratio", "prompt"])
+        # `model` is always advertised (per-call override, #45278); edit/upscale stay hidden.
+        self.assertEqual(sorted(props), ["aspect_ratio", "model", "prompt"])
+        self.assertNotIn("image_url", props)
+        self.assertNotIn("reference_image_urls", props)
         self.assertNotIn("upscale", props)
 
     def test_static_schema_carries_no_capability_args(self):

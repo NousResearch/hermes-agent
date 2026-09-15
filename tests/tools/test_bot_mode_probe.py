@@ -273,3 +273,273 @@ def test_fingerprint_changes_when_a_peer_is_registered(tmp_path):
     )
     after = bot_mode_probe.capability_fingerprint(home)
     assert before != after
+
+
+def _set_private(profile_dir, value="true"):
+    """Mark an existing bot profile private, preserving its other ui_meta keys."""
+    (profile_dir / "profile.yaml").write_text(
+        textwrap.dedent(
+            f"""\
+            ui_meta:
+              hermes-bots:
+                shape: cloud
+                private: {value}
+            """
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_private_agent_is_not_listed_in_the_roster(tmp_path):
+    """A private agent leaves the mesh: teammates stop being told it exists."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher")
+    lucky = _make_bot_profile(home, "lucky")
+    _set_private(lucky)
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+
+    assert "@researcher" in section
+    assert "@lucky" not in section
+
+
+def test_private_agent_still_gets_its_own_protocol_section(tmp_path):
+    """Private is about what OTHERS see. The agent keeps working and keeps its own tools —
+    hiding it must not silently disable Bot Mode for itself."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher")
+    lucky = _make_bot_profile(home, "lucky")
+    _set_private(lucky)
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(lucky)
+
+    assert section.startswith("## Messaging other agents")
+    assert "You are `@lucky`" in section
+    assert "@researcher" in section
+
+
+def test_an_all_private_install_does_not_look_unmanaged(tmp_path):
+    """_roster also feeds _any_managed. Filtering there would switch Bot Mode off entirely
+    for an install where every agent is private — including the human's own access."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    only = _make_bot_profile(home, "lucky")
+    _set_private(only)
+
+    assert bot_mode_probe._any_managed(home) is True
+    assert bot_mode_probe.get_bot_mode_protocol_section(home).startswith("## Messaging other agents")
+
+
+def test_force_private_overrides_a_public_agent(tmp_path):
+    """The install-wide switch outranks each agent's own choice, never the other way round."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher")
+    _make_bot_profile(home, "lucky")
+    (home / "config.yaml").write_text("bots:\n  force_private: true\n", encoding="utf-8")
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+
+    assert "@researcher" not in section
+    assert "@lucky" not in section
+
+
+def test_force_private_off_leaves_per_agent_choice_alone(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher")
+    lucky = _make_bot_profile(home, "lucky")
+    _set_private(lucky)
+    (home / "config.yaml").write_text("bots:\n  force_private: false\n", encoding="utf-8")
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+
+    assert "@researcher" in section
+    assert "@lucky" not in section
+
+
+@pytest.mark.parametrize("value", ["yes", "on", "1", "True"])
+def test_private_accepts_hand_edited_yaml_truthies(tmp_path, value):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher")
+    lucky = _make_bot_profile(home, "lucky")
+    _set_private(lucky, value)
+
+    assert "@lucky" not in bot_mode_probe.get_bot_mode_protocol_section(home)
+
+
+@pytest.mark.parametrize("value", ["false", "no", "0", "maybe", "''"])
+def test_unrecognised_private_values_stay_public(tmp_path, value):
+    """Fail OPEN: a typo must not silently remove an agent from the mesh."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher")
+    lucky = _make_bot_profile(home, "lucky")
+    _set_private(lucky, value)
+
+    assert "@lucky" in bot_mode_probe.get_bot_mode_protocol_section(home)
+
+
+def _set_circle(profile_dir, circle):
+    (profile_dir / "profile.yaml").write_text(
+        textwrap.dedent(
+            f"""\
+            ui_meta:
+              hermes-bots:
+                shape: cloud
+                circle: {circle}
+            """
+        ),
+        encoding="utf-8",
+    )
+
+
+def _lines(section):
+    """The local roster bullets of a protocol section."""
+    start = section.find("Your teammates")
+    end = section.find("Teammates on OTHER")
+    return section[start:end if end > 0 else None]
+
+
+def test_same_circle_agents_see_each_other(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    work_a = _make_bot_profile(home, "reviewer")
+    work_b = _make_bot_profile(home, "programmer")
+    _set_circle(work_a, "work")
+    _set_circle(work_b, "work")
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(work_a)
+
+    assert "@programmer" in _lines(section)
+
+
+def test_different_circles_do_not_see_each_other(tmp_path):
+    """The whole point: work bots and hobby bots share a machine but not a mesh."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    work = _make_bot_profile(home, "reviewer")
+    hobby = _make_bot_profile(home, "lucky")
+    _set_circle(work, "work")
+    _set_circle(hobby, "hobby")
+
+    assert "@lucky" not in _lines(bot_mode_probe.get_bot_mode_protocol_section(work))
+    assert "@reviewer" not in _lines(bot_mode_probe.get_bot_mode_protocol_section(hobby))
+
+
+def test_unset_circle_is_the_shared_default_and_todays_behaviour(tmp_path):
+    """Agents with no circle form the shared circle: they see each other exactly as before —
+    and they do NOT see circled agents, nor are they seen by them."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    plain_a = _make_bot_profile(home, "alpha")
+    _make_bot_profile(home, "beta")
+    work = _make_bot_profile(home, "reviewer")
+    _set_circle(work, "work")
+
+    plain_view = _lines(bot_mode_probe.get_bot_mode_protocol_section(plain_a))
+    assert "@beta" in plain_view
+    assert "@reviewer" not in plain_view
+    assert "@alpha" not in _lines(bot_mode_probe.get_bot_mode_protocol_section(work))
+
+
+def test_private_outranks_circle(tmp_path):
+    """A private agent is a circle of one, even inside a circle it named."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    a = _make_bot_profile(home, "reviewer")
+    b = _make_bot_profile(home, "programmer")
+    _set_circle(a, "work")
+    (b / "profile.yaml").write_text(
+        "ui_meta:\n  hermes-bots:\n    shape: cloud\n    circle: work\n    private: true\n", encoding="utf-8"
+    )
+
+    assert "@programmer" not in _lines(bot_mode_probe.get_bot_mode_protocol_section(a))
+
+
+def test_force_private_outranks_circles(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    a = _make_bot_profile(home, "reviewer")
+    b = _make_bot_profile(home, "programmer")
+    _set_circle(a, "work")
+    _set_circle(b, "work")
+    (home / "config.yaml").write_text("bots:\n  force_private: true\n", encoding="utf-8")
+
+    assert "@programmer" not in _lines(bot_mode_probe.get_bot_mode_protocol_section(a))
+
+
+@pytest.mark.parametrize("value", ["''", "[]", "42", "true"])
+def test_garbage_circle_fails_open_to_the_shared_circle(tmp_path, value):
+    """A typo must never quietly cut an agent off: non-string / empty = the shared circle."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    a = _make_bot_profile(home, "alpha")
+    b = _make_bot_profile(home, "beta")
+    _set_circle(b, value)
+
+    assert "@beta" in _lines(bot_mode_probe.get_bot_mode_protocol_section(a))
+
+
+def test_circle_name_is_trimmed_and_capped(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    a = _make_bot_profile(home, "alpha")
+    _set_circle(a, "'  work  '")
+    assert bot_mode_probe._circle_of(a) == "work"
+    _set_circle(a, "'" + "x" * 100 + "'")
+    assert len(bot_mode_probe._circle_of(a)) == 64
+
+
+def test_remote_roster_is_filtered_to_the_viewers_circle(tmp_path, monkeypatch):
+    """Cross-machine rows carry `circle`; the viewer only learns about its own circle."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    me = _make_bot_profile(home, "reviewer")
+    _set_circle(me, "work")
+    rows = [
+        {"profile": "programmer", "handle": "programmer", "connection_id": "mini",
+         "connection_label": "mini", "title": "", "description": "", "circle": "work"},
+        {"profile": "lucky", "handle": "lucky", "connection_id": "mini",
+         "connection_label": "mini", "title": "", "description": "", "circle": "hobby"},
+        {"profile": "plain", "handle": "plain", "connection_id": "mini",
+         "connection_label": "mini", "title": "", "description": "", "circle": ""},
+    ]
+    monkeypatch.setattr(bot_mode_probe, "_remote_roster", lambda root: rows)
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(me)
+
+    assert "@programmer" in section
+    assert "@lucky" not in section
+    assert "@plain" not in section
+
+
+def test_circle_names_are_case_insensitive(tmp_path):
+    """`Work` and `work` are one circle: a stray capital must never isolate an agent."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    a = _make_bot_profile(home, "reviewer")
+    b = _make_bot_profile(home, "programmer")
+    _set_circle(a, "Work")
+    _set_circle(b, "work")
+
+    assert bot_mode_probe._circle_of(a) == "work"
+    assert "@programmer" in _lines(bot_mode_probe.get_bot_mode_protocol_section(a))
+    assert "@reviewer" in _lines(bot_mode_probe.get_bot_mode_protocol_section(b))
+
+
+def test_visible_roster_takes_no_default_viewer():
+    """Cross-circle visibility must never be one forgotten argument away.
+
+    Asserted on the signature, not on a raised error: a viewer defaulting to None still blows
+    up somewhere downstream, which would make a behavioural test pass while the unfiltered
+    call shape quietly came back.
+    """
+    import inspect
+
+    viewer = inspect.signature(bot_mode_probe._visible_roster).parameters["viewer"]
+    assert viewer.default is inspect.Parameter.empty
+    assert viewer.kind is inspect.Parameter.KEYWORD_ONLY

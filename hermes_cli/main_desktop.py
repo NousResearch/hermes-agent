@@ -19,6 +19,7 @@ import time as _time_mod
 
 from pathlib import Path
 from typing import Optional
+from hermes_cli.desktop_console import desktop_console_output, desktop_launch_notice
 from hermes_cli.main_tui_launch import _npm_lifecycle_env
 from hermes_cli.main_web_build import (
     _hash_source_tree, _nixos_build_env, _stamp_is_current, _write_build_stamp)
@@ -36,7 +37,9 @@ def _desktop_dist_exists(desktop_dir: Path) -> bool:
 
 def _compute_desktop_content_hash(project_root: Path) -> str:
     """SHA-256 of ``apps/desktop/`` (minus .gitignore matches) plus root workspace config."""
-    return _hash_source_tree(project_root, project_root / "apps" / "desktop")
+    from hermes_cli.desktop_source_cache import cached_desktop_source_hash
+    return cached_desktop_source_hash(
+        project_root, lambda: _hash_source_tree(project_root, project_root / "apps" / "desktop"))
 
 
 def _desktop_stamp_path() -> Path:
@@ -1481,7 +1484,7 @@ def _check_desktop_skip_build(
         print("  Or drop --skip-build to package automatically.")
         sys.exit(1)
     else:
-        print(f"→ Skipping desktop package build (--skip-build); using {packaged_executable}")
+        desktop_launch_notice(f"→ Skipping desktop package build (--skip-build); using {packaged_executable}")
 
 
 def _packaged_desktop_launch_command(packaged_executable: Path) -> list[str]:
@@ -1525,8 +1528,11 @@ def cmd_gui(args: argparse.Namespace):
 
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 
+    needs_build = not skip_build and (
+        force_build or _desktop_build_needed(desktop_dir, PROJECT_ROOT, source_mode=source_mode)
+    )
     npm = None
-    if source_mode or not skip_build:
+    if source_mode or needs_build:
         npm = _resolve_node_runtime_npm()
         if not npm:
             print("Desktop GUI requires Node.js/npm, but npm was not found on PATH.")
@@ -1537,14 +1543,14 @@ def cmd_gui(args: argparse.Namespace):
         _check_desktop_skip_build(
             desktop_dir, PROJECT_ROOT, source_mode=source_mode, packaged_executable=packaged_executable
         )
-    elif force_build or _desktop_build_needed(desktop_dir, PROJECT_ROOT, source_mode=source_mode):
+    elif needs_build:
         # --force-build overrides the content-hash stamp and always rebuilds.
         built = _build_desktop_app(desktop_dir, source_mode=source_mode, npm=npm, env=env)
         if not source_mode:
             packaged_executable = built
     else:
         build_label = "source build" if source_mode else "packaged app"
-        print(f"✓ Desktop {build_label} is up to date (content stamp matches)")
+        desktop_launch_notice(f"✓ Desktop {build_label} is up to date (content stamp matches)", source_mode=source_mode)
 
     # Best-effort and idempotent; a failure must never stop the app from launching.
     _register_linux_desktop_entry()
@@ -1581,6 +1587,7 @@ def cmd_gui(args: argparse.Namespace):
     if getattr(args, "local", False):
         launch_command.append("--local")
     if not source_mode:
-        print(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
-    launch_result = subprocess.run(launch_command, cwd=desktop_dir, env=env, check=False)
+        desktop_launch_notice(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
+    with desktop_console_output(source_mode=source_mode) as streams:
+        launch_result = subprocess.run(launch_command, cwd=desktop_dir, env=env, check=False, **streams)
     sys.exit(launch_result.returncode)

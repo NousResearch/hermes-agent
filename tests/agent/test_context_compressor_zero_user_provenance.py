@@ -7,7 +7,6 @@ from unittest.mock import patch
 import pytest
 
 from agent.context_compressor import (
-    COMPRESSION_CONTINUATION_USER_CONTENT,
     COMPRESSED_SUMMARY_HAS_USER_TURN_KEY,
     COMPRESSED_SUMMARY_METADATA_KEY,
     HISTORICAL_TASK_HEADING,
@@ -204,11 +203,8 @@ def test_zero_user_provenance_survives_iterative_compaction(compressor):
     assert second_handoffs[0][COMPRESSED_SUMMARY_HAS_USER_TURN_KEY] is False
 
 
-def test_max_iterations_nudge_is_synthetic_not_actionable():
-    """#78580: the max-iteration runtime nudge is runtime scaffolding, not a
-    human turn. It is appended as ``role="user"`` and persisted verbatim in
-    state.db (metadata flags do not survive projection), so recognition must be
-    content-based — exactly like the continuation/todo markers."""
+def test_legacy_max_iterations_nudge_is_synthetic_not_actionable():
+    """Old state.db rows remain recognizable after emission stops (#108452)."""
     # The projected form: a bare role/content row with no internal metadata.
     nudge = {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST}
 
@@ -220,9 +216,19 @@ def test_max_iterations_nudge_is_synthetic_not_actionable():
     assert ContextCompressor._transcript_has_real_user_turn([human, nudge]) is True
 
 
+def test_zero_user_compaction_does_not_invent_a_continuation_turn():
+    original = _assistant_tool_turns(0, 2)
+    compressed = [{"role": "assistant", "content": _valid_zero_user_summary()}]
+
+    _ensure_compressed_has_user_turn(original, compressed)
+
+    assert compressed == [
+        {"role": "assistant", "content": _valid_zero_user_summary()},
+    ]
+
+
 def test_real_task_wins_over_trailing_max_iterations_nudge(compressor):
-    """The tail anchor must resolve to the human task, not the nudge that the
-    runtime appended after it when iterations were exhausted."""
+    """A legacy nudge must not outrank the human task as the tail anchor."""
     human = {"role": "user", "content": "Refactor the auth module and add tests."}
     messages = [
         human,
@@ -339,7 +345,7 @@ def test_conversation_loop_retry_nudges_are_synthetic(content):
     """These are runtime recovery nudges appended by conversation_loop's retry
     loop (length-continuation, codex incomplete/ack-continuation,
     dropped-tool-call) — same "ephemeral scaffolding, not a human turn" class
-    as MAX_ITERATIONS_SUMMARY_REQUEST above. A turn interrupted/crashed mid-
+    as the legacy MAX_ITERATIONS_SUMMARY_REQUEST above. A turn interrupted/crashed mid-
     retry can persist one of these as a plain role="user" row (their
     _length_continuation_nudge/_dropped_toolcall_nudge metadata tags do not
     survive SessionDB projection), so recognition must be content-based."""
@@ -445,8 +451,6 @@ def test_compress_context_todo_snapshot_stays_synthetic_across_two_boundaries(
     assert "Second boundary" in handoff["content"]
     assert "User asked:" not in handoff["content"]
     db.close()
-
-
 
 
 

@@ -1,6 +1,7 @@
 import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { capitalize } from '@/lib/text'
 import { $connection } from '@/store/session'
+import { isSessionOwnerRoute, type SessionOwnerScope } from '@/store/session-request-router'
 
 export type MediaKind = 'audio' | 'image' | 'video' | 'file'
 
@@ -202,6 +203,29 @@ export async function gatewayMediaDataUrl(path: string): Promise<string> {
   return readDesktopFileDataUrl(filePathFromMediaPath(path))
 }
 
+// Build a download `origin` from a session's resolved owner (tile route,
+// open-time hint, or connection-tagged row — see session-states.ts's
+// `knownOwnerForSession`). A background session tile can be pinned to a
+// DIFFERENT registered connection than whichever one the window currently
+// shows, so the owner's connectionId/profile must ride along explicitly
+// instead of downloadGatewayMediaFile falling back to the ambient `$connection`.
+// A bare-profile (non-route) owner or an unresolved owner still passes the
+// sessionId through and lets the ambient fallback apply, matching a locally
+// owned or not-yet-known session.
+export function sessionDownloadOrigin(
+  sessionId: null | string | undefined,
+  owner: SessionOwnerScope
+): { sessionId: string; connectionId?: string; profile?: string } | undefined {
+  if (!sessionId) {
+    return undefined
+  }
+
+  return {
+    sessionId,
+    ...(isSessionOwnerRoute(owner) ? { connectionId: owner.connectionId, profile: owner.profile } : {})
+  }
+}
+
 // Remote-mode replacement for opening gateway-local file paths with file://.
 // The file lives on the gateway, so ask the Electron main process to fetch the
 // bytes through the authenticated backend connection and save them locally. This
@@ -209,7 +233,7 @@ export async function gatewayMediaDataUrl(path: string): Promise<string> {
 // used by preview endpoints.
 export async function downloadGatewayMediaFile(
   path: string,
-  origin?: { sessionId: string; profile?: string }
+  origin?: { sessionId: string; connectionId?: string; profile?: string }
 ): Promise<{ canceled?: boolean; path?: string; saved: boolean }> {
   // URI conversion belongs to the gateway OS, not the renderer's URL parser.
   const file = path
@@ -220,7 +244,7 @@ export async function downloadGatewayMediaFile(
   }
 
   return window.hermesDesktop.saveGatewayFile({
-    connectionId: conn?.connectionId,
+    connectionId: origin?.connectionId ?? conn?.connectionId,
     path: file,
     profile: origin?.profile ?? conn?.profile,
     ...(origin ? { sessionId: origin.sessionId } : {}),

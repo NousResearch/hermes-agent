@@ -74,6 +74,60 @@ def test_partially_valid_platform_toolsets_no_runtime_warning(caplog):
     assert not any("#38798" in r.getMessage() for r in caplog.records)
 
 
+def test_mcp_only_platform_toolsets_no_runtime_warning(caplog):
+    """#109791: an explicit list of enabled MCP server names is a load-bearing
+    passthrough (the platform's MCP allowlist), not an unknown-toolset config,
+    so the runtime zero-tools warning must not fire for it."""
+    import hermes_cli.tools_config as _tc
+    # The runtime warning fires once per platform per process; clear the guard
+    # so this test is deterministic regardless of prior resolutions.
+    _tc._warned_invalid_platform_toolsets.discard("telegram")
+    config = {
+        "mcp_servers": {"drawio": {"command": "mcp-proxy"}, "github": {"command": "mcp-proxy"}},
+        "platform_toolsets": {"telegram": ["drawio", "github"]},
+    }
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, "telegram")
+
+    assert not any("#38798" in r.getMessage() for r in caplog.records)
+
+
+def test_mcp_name_alongside_unknown_toolset_warns_without_mcp_name(caplog):
+    """A genuinely unknown name still warns, but an enabled MCP server name on
+    the same list is excluded from the reported unknown names (#109791)."""
+    import hermes_cli.tools_config as _tc
+    _tc._warned_invalid_platform_toolsets.discard("telegram")
+    config = {
+        "mcp_servers": {"drawio": {"command": "mcp-proxy"}},
+        "platform_toolsets": {"telegram": ["drawio", "bogus"]},
+    }
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, "telegram")
+
+    messages = [r.getMessage() for r in caplog.records if "#38798" in r.getMessage()]
+    assert messages, "expected the zero-valid warning for the unknown name"
+    assert "bogus" in messages[0] and "drawio" not in messages[0], messages
+
+
+def test_disabled_mcp_server_name_still_warns(caplog):
+    """A name matching a DISABLED MCP server merges no tools into the platform,
+    so it keeps the unknown-name warning (#109791)."""
+    import hermes_cli.tools_config as _tc
+    _tc._warned_invalid_platform_toolsets.discard("telegram")
+    config = {
+        "mcp_servers": {"drawio": {"command": "mcp-proxy", "enabled": False}},
+        "platform_toolsets": {"telegram": ["drawio"]},
+    }
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, "telegram")
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("#38798" in m and "drawio" in m for m in warnings), warnings
+
+
 def test_null_platform_toolsets_fall_back_to_platform_default():
     """A YAML ``platform:`` value is absent, not an explicit empty list."""
     config = {"platform_toolsets": {"cli": None}}

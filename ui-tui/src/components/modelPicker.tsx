@@ -61,26 +61,31 @@ export function filterModelHopRows(rows: ModelHopRow[], query: string): ModelHop
   }
 
   const slash = q.indexOf('/')
+  let pool = rows
+  let rest = q
 
+  // `nous/` scopes to that provider (OMP /switch); fuzzy only on provider fields
+  // so `nous` cannot leak into `openrouter/.../sonnet` via a scattered subsequence.
   if (slash >= 0) {
-    const providerQuery = q.slice(0, slash).toLowerCase()
-    const modelQuery = q.slice(slash + 1)
-    const scoped = providerQuery
-      ? rows.filter(
-          row =>
-            row.provider.slug.toLowerCase().includes(providerQuery) ||
-            (row.provider.name ?? '').toLowerCase().includes(providerQuery)
-        )
-      : rows
-
-    if (!modelQuery.trim()) {
-      return scoped
+    const providerQuery = q.slice(0, slash).trim()
+    rest = q.slice(slash + 1)
+    if (providerQuery) {
+      pool = fuzzyRank(
+        rows,
+        providerQuery,
+        row => `${row.provider.slug} ${row.name} ${row.provider.name ?? ''}`
+      ).map(r => r.item)
     }
-
-    return fuzzyRank(scoped, modelQuery, hopRowSearchText).map(r => r.item)
+    if (!rest.trim()) {
+      return pool
+    }
   }
 
-  return fuzzyRank(rows, q, hopRowSearchText).map(r => r.item)
+  const ranked = fuzzyRank(pool, rest, hopRowSearchText)
+  const best = ranked[0]?.score ?? 0
+  const floor = Math.min(2, best * 0.25)
+
+  return ranked.filter(r => r.score >= floor).map(r => r.item)
 }
 
 
@@ -144,6 +149,9 @@ export function ModelPicker({
   const [reasoningIdx, setReasoningIdx] = useState(0)
   // Model chosen on step 2, awaiting the effort pick on step 3.
   const [pendingModel, setPendingModel] = useState('')
+  // Hop Enter that offers reasoning must Esc back to the hop catalog, not the
+  // wizard's provider-scoped model list (same emit path as the model stage).
+  const [reasoningOrigin, setReasoningOrigin] = useState<'hop' | 'model'>('model')
   const [stage, setStage] = useState<Stage>(initialStage === 'provider' ? 'provider' : 'hop')
   const [keyInput, setKeyInput] = useState('')
   const [keySaving, setKeySaving] = useState(false)
@@ -296,7 +304,7 @@ export function ModelPicker({
     }
 
     if (stage === 'reasoning') {
-      setStage('model')
+      setStage(reasoningOrigin)
       setPendingModel('')
       setReasoningIdx(0)
 
@@ -534,6 +542,7 @@ export function ModelPicker({
 
           setPendingModel(hop.model)
           setReasoningIdx(0)
+          setReasoningOrigin('hop')
           setStage('reasoning')
         } else {
           onSelect(modelPickerCommand(hop.model, hop.provider.slug, allowPersistGlobal && persistGlobal))
@@ -586,6 +595,7 @@ export function ModelPicker({
           // Step 3/3: effort for the picked model (skipped on reasoning-free routes).
           setPendingModel(model)
           setReasoningIdx(0)
+          setReasoningOrigin('model')
           setStage('reasoning')
         } else {
           onSelect(modelPickerCommand(model, provider.slug, allowPersistGlobal && persistGlobal))

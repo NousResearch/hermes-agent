@@ -77,4 +77,20 @@ describe('ModelPicker hop catalog', () => {
       'openrouter/anthropic/claude-sonnet-4.6'
     ])
   })
+
+  it('fuzzy-matches model fragments without a provider prefix', () => {
+    const rows = buildModelHopRows([nous, openrouter], ['Nous Portal', 'OpenRouter'])
+    expect(filterModelHopRows(rows, 'son4').map(row => row.model)).toEqual([
+      'anthropic/claude-sonnet-4.6',
+      'claude-sonnet-4.6'
+    ])
+    expect(filterModelHopRows(rows, 'hrms').map(row => row.selector)).toEqual(['nous/hermes-4'])
+  })
+
+  it('AND-matches provider/model tokens across nested ids', () => {
+    const rows = buildModelHopRows([nous, openrouter], ['Nous Portal', 'OpenRouter'])
+    expect(filterModelHopRows(rows, 'openrouter/claude').map(row => row.selector)).toEqual([
+      'openrouter/anthropic/claude-sonnet-4.6'
+    ])
+  })
 })

@@ -74,6 +74,12 @@ def test_fuzzy_rank_drops_non_matching_prefix_rows():
     assert ranked == []
 
 
+def test_score_subsequence_name_match():
+    assert score_slash_completion_item(_item("/model", "change or show model"), "mdl") == 6
+    ranked, _ = fuzzy_rank_slash_items([], [_item("/model", "change or show model"), _item("/help")], "mdl")
+    assert [item["text"] for item in ranked] == ["/model"]
+
+
 def test_rank_slash_completions_uses_score_before_usage():
     # Without a scorer, usage sorts skills; with one, score leads and usage
     # only breaks ties within a tier.

@@ -29,9 +29,9 @@ export interface FuzzyMatch {
 
 const WORD_BOUNDARY = /[-_/.\s]/
 
-/** Length-preserving search fold: lower-case and `[-_.]` → space. */
+/** Length-preserving search fold: lower-case and `[-_./]` → space. */
 export function searchFold(value: string): string {
-  return value.toLowerCase().replace(/[-_.]/g, ' ')
+  return value.toLowerCase().replace(/[-_./]/g, ' ')
 }
 
 function isBoundary(target: string, index: number): boolean {
@@ -120,12 +120,12 @@ export function fuzzyScore(target: string, query: string): FuzzyMatch | null {
 }
 
 /**
- * Score a target against a whitespace-separated, multi-token query. Every token
- * must match (AND semantics); the result aggregates per-token scores and the
- * union of matched positions. Returns null if any token fails to match.
+ * Score a target against a whitespace- or `/`-separated, multi-token query.
+ * Every token must match (AND semantics); the result aggregates per-token scores
+ * and the union of matched positions. Returns null if any token fails to match.
  */
 export function fuzzyScoreMulti(target: string, query: string): FuzzyMatch | null {
-  const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  const tokens = query.trim().toLowerCase().split(/[\s/]+/).filter(Boolean)
 
   if (!tokens.length) {
     return { score: 0, positions: [] }

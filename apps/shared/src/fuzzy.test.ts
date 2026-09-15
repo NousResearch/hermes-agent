@@ -118,6 +118,18 @@ describe('fuzzyRank', () => {
     expect(ranked[0]!.positions.every(i => i >= 0 && i < expected.length)).toBe(true)
   })
 
+  it('AND-matches slash-separated provider/id tokens', () => {
+    const catalog = [
+      'nous/hermes-4',
+      'nous/claude-sonnet-4.6',
+      'openrouter/anthropic/claude-sonnet-4.6'
+    ]
+    expect(fuzzyRank(catalog, 'nous/hermes', m => m).map(r => r.item)).toEqual(['nous/hermes-4'])
+    expect(fuzzyRank(catalog, 'openrouter/claude', m => m).map(r => r.item)).toEqual([
+      'openrouter/anthropic/claude-sonnet-4.6'
+    ])
+  })
+
   it('matches across a derived key, not just the raw string', () => {
     const providers = [
       { slug: 'openai', name: 'OpenAI' },

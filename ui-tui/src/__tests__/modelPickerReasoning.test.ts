@@ -31,4 +31,14 @@ describe('ModelPicker reasoning step', () => {
     expect(pickerOffersReasoning(provider(undefined), 'gpt-5.6')).toBe(true)
     expect(pickerOffersReasoning(undefined, 'gpt-5.6')).toBe(true)
   })
+
+  it('hop Enter uses the same skip/emit as the wizard model step', () => {
+    const nous = provider({ 'hermes-4': { fast: false, reasoning: false } })
+
+    expect(pickerOffersReasoning(nous, 'hermes-4')).toBe(false)
+    expect(modelPickerCommand('hermes-4', 'nous', false)).toBe('hermes-4 --provider nous --tui-session')
+    expect(modelPickerCommand('hermes-4', 'nous', false, 'high')).toBe(
+      'hermes-4 --provider nous --reasoning high --tui-session'
+    )
+  })
 })

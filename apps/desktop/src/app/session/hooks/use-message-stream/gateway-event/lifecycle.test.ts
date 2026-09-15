@@ -18,12 +18,15 @@ vi.mock(import('@/hermes'), async importOriginal => ({
 function setupReadyContext(fromActiveSource: boolean): GatewayEventContext {
   const payload = {
     error: '',
+    error_code: null,
     finished_at: 1_700_000_100,
     free_tier: true,
     has_identity: true,
     inference_provider: 'nous',
     other_providers: false,
-    provider_configured: true
+    provider_configured: true,
+    retry_after: null,
+    retryable: null
   }
 
   return {

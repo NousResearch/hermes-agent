@@ -335,6 +335,9 @@ export const setupStatusResult = (over: Partial<SetupStatusResult> = {}): SetupS
   other_providers: null,
   inference_provider: null,
   profile: null,
+  error_code: null,
+  retryable: null,
+  retry_after: null,
   ok: null,
   error: null,
   ...over

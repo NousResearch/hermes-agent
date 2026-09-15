@@ -444,9 +444,13 @@ def _storage_error_data(failure, raw) -> dict:
     return {"code": failure.code, "cause": failure.cause, "details": storage_failure_details(raw)}
 
 
-def _persist_session_row_for_submit(rid, session):
-    """Lazily persist the DB row now that the user sent a message (a branch becomes real
-    here); the error reply is the only user-visible signal (desktop maps it to a toast)."""
+def _persist_session_row_for_submit(rid, session, text, *, display_kind=None, display_metadata=None):
+    """Persist the lazy row AND accepted user input before the deferred agent build.
+
+    ``prompt.submit`` acknowledges before that build finishes.  Leaving the user row to
+    ``AIAgent``'s turn-start flush therefore opened a crash window where Desktop had painted
+    the send but quitting a frozen renderer also killed the backend before either row existed.
+    The marked dict is handed to the agent later so its normal flush does not duplicate it."""
     from hermes_state_user_copy import describe_storage_failure
     try:
         if _ensure_session_db_row(session) is False:
@@ -458,6 +462,21 @@ def _persist_session_row_for_submit(rid, session):
                 data=_storage_error_data(failure, _db_error))
         else:
             _persist_branch_seed(session)
+            from agent.context_compressor import _DB_PERSISTED_MARKER
+            persisted_content = _build_persist_message_with_image_refs(
+                text if isinstance(text, str) else "", list(session.get("attached_images") or ()))
+            persisted_message = {
+                "role": "user", "content": persisted_content, "timestamp": time.time(),
+                **({"display_kind": display_kind} if display_kind else {}),
+                **({"display_metadata": display_metadata} if display_metadata else {}),
+            }
+            with _session_db(session) as db:
+                if db is None:
+                    raise RuntimeError("session database is unavailable")
+                db.append_messages_batch(session["session_key"], [persisted_message])
+            session["_prepersisted_user_message"] = {
+                **persisted_message, _DB_PERSISTED_MARKER: True,
+            }
             return None
     except Exception as exc:
         failure = describe_storage_failure(exc)
@@ -661,7 +680,9 @@ def _(rid, params: dict) -> dict:
         logger.warning(
             "compute-host dispatch failed for session %s; falling back inline: %s", sid,
             isolated_response["error"].get("message", "unknown error"))
-    if (err := _persist_session_row_for_submit(rid, session)) is not None:
+    if (err := _persist_session_row_for_submit(
+        rid, session, text, display_kind=display_kind,
+    )) is not None:
         return err
     # A completed FAILED build must not wedge the session: rebuild, don't replay it.
     if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):

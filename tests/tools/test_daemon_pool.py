@@ -14,6 +14,7 @@ import time
 
 from concurrent.futures.thread import _threads_queues
 
+import tools.daemon_pool as daemon_pool
 from tools.daemon_pool import DaemonThreadPoolExecutor
 
 
@@ -89,6 +90,28 @@ def test_submit_propagates_caller_contextvars():
         finally:
             var.reset(token)
         assert seen == "hello"
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_workers_support_worker_context_without_legacy_initializer_attrs(monkeypatch):
+    """Python 3.14 creates a worker context instead of storing initializer fields."""
+    seen_contexts = []
+
+    def worker_with_context(_executor_ref, worker_context, work_queue):
+        seen_contexts.append(worker_context)
+        work_queue.get().run()
+
+    pool = DaemonThreadPoolExecutor(max_workers=1)
+    monkeypatch.setattr(daemon_pool, "_worker", worker_with_context)
+    monkeypatch.setattr(
+        pool, "_create_worker_context", lambda: "worker-context", raising=False
+    )
+    del pool._initializer
+    del pool._initargs
+    try:
+        assert pool.submit(lambda: "done").result(timeout=10) == "done"
+        assert seen_contexts == ["worker-context"]
     finally:
         pool.shutdown(wait=True)
 

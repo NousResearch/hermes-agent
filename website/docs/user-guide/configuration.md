@@ -122,6 +122,12 @@ Hermes also warns (once per process per database) when an existing
 database's on-disk journal mode is silently flipped to WAL on open — for
 example a database an operator had manually converted to `delete` — and
 names `database.journal_mode` as the setting that makes the choice stick.
+The reverse never happens automatically: a database that is already in WAL
+mode is not live-downgraded when you set `journal_mode: delete` (a downgrade
+under open connections can corrupt it). `hermes doctor` warns
+`<db> is in WAL mode despite database.journal_mode=delete` until you stop
+every Hermes process for the profile and run a one-time offline
+`PRAGMA journal_mode=DELETE` on the file.
 
 ## Environment Variable Substitution
 

@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import queue
-import signal
 import subprocess
 import sys
 import threading
@@ -84,35 +83,31 @@ def _call_logged(cb: Callable[[dict], None], frame: dict, failure: str) -> None:
 
 
 def _pid_alive(pid: int) -> bool:
+    """Liveness via the canonical ``gateway.status._pid_exists`` (psutil-first, zombie-aware,
+    Windows-safe): ``os.kill(pid, 0)`` reports unreaped zombies as alive and maps sig 0 to
+    CTRL_C_EVENT on Windows console groups."""
     if pid <= 0:
         return False
     try:
-        os.kill(pid, 0)
-        return True
-    except Exception as exc:
-        return isinstance(exc, PermissionError)
+        from gateway.status import _pid_exists
 
-
-def _signal_pid(pid: int, sig: int, label: str) -> bool:
-    """Send ``sig``; False when the pid is gone or the signal failed (logged)."""
-    try:
-        os.kill(pid, sig)
-        return True
-    except ProcessLookupError:
-        return False
+        return bool(_pid_exists(pid))
     except Exception:
-        logger.debug("failed to %s compute host pid=%s", label, pid, exc_info=True)
+        logger.debug("failed to check liveness for pid=%s", pid, exc_info=True)
         return False
 
 
 def _pid_command(pid: int) -> str:
+    """Full command line via ``gateway.status._read_process_cmdline`` (psutil on Windows,
+    /proc + ps fallbacks on POSIX) — one cmdline policy for the whole repo."""
     if pid <= 0:
         return ""
-    with contextlib.suppress(Exception):  # Linux fast path
-        data = (Path("/proc") / str(pid) / "cmdline").read_bytes()
-        if data:
-            return data.replace(b"\x00", b" ").decode("utf-8", errors="replace")
-    return _check_output(["ps", "-p", str(pid), "-o", "command="])
+    try:
+        from gateway.status import _read_process_cmdline
+
+        return _read_process_cmdline(pid) or ""
+    except Exception:
+        return ""
 
 
 def is_compute_host_identity(pid: int) -> bool:
@@ -467,12 +462,24 @@ class HostSupervisor:
     _pid_matches_compute_host = staticmethod(is_compute_host_identity)
 
     def _terminate_pid(self, pid: int, *, timeout: float = _SHUTDOWN_TIMEOUT_SECS) -> None:
-        if not _signal_pid(pid, signal.SIGTERM, "SIGTERM"):
+        """Graceful-then-forced stop through ``gateway.status.terminate_pid`` (SIGTERM/SIGKILL on
+        POSIX, taskkill on Windows) instead of raw ``os.kill`` signals. The start-time fingerprint
+        is captured up front so the forced kill refuses a recycled PID (Windows requires it)."""
+        from gateway.status import get_process_start_time, terminate_pid
+
+        start_time = get_process_start_time(pid)
+        try:
+            terminate_pid(pid)
+        except Exception:
+            logger.debug("failed to terminate compute host pid=%s", pid, exc_info=True)
             return
         deadline = time.monotonic() + timeout
         while _pid_alive(pid):
             if time.monotonic() >= deadline:
-                _signal_pid(pid, signal.SIGKILL, "SIGKILL")
+                try:
+                    terminate_pid(pid, force=True, expected_start_time=start_time)
+                except Exception:
+                    logger.debug("failed to force-terminate compute host pid=%s", pid, exc_info=True)
                 return
             time.sleep(0.05)
 

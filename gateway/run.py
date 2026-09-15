@@ -2829,15 +2829,20 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
 
 def _channel_override_lookup_keys(
     chat_id: str, *, thread_id: Optional[str] = None, parent_id: Optional[str] = None) -> list[str]:
-    """Ordered, de-duplicated ``channel_overrides`` lookup keys (matches ``resolve_channel_prompt``:
-    exact id first, then parent — Discord threads inherit parent overrides)."""
-    return list(dict.fromkeys(str(key) for key in (chat_id, thread_id, parent_id) if key))
+    """Ordered, de-duplicated ``channel_overrides`` lookup keys, most specific first: a chat-scoped
+    topic key ``"<chat_id>:<thread_id>"``, then the bare ``thread_id``, then ``chat_id``, then
+    ``parent_id`` (Discord threads inherit parent overrides). A topic is more specific than its chat,
+    so its override wins over the group's; and forum topic ids are only unique within one chat
+    (every Telegram forum's General topic is ``1``), so the scoped key tells them apart."""
+    scoped_thread_key = f"{chat_id}:{thread_id}" if chat_id and thread_id else None
+    return list(dict.fromkeys(str(key) for key in (scoped_thread_key, thread_id, chat_id, parent_id) if key))
 
 
 def _get_channel_override(
     config: GatewayConfig, platform: Platform, chat_id: str, *, thread_id: Optional[str] = None,
     parent_id: Optional[str] = None) -> Optional[ChannelOverride]:
-    """Per-channel override via chat_id, then thread_id, then parent_id; None if absent."""
+    """Per-channel override via ``<chat_id>:<thread_id>``, ``thread_id``, ``chat_id``, then ``parent_id``;
+    None if absent."""
     platforms = getattr(config, "platforms", None)
     if not platforms:
         return None

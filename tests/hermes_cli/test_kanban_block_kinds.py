@@ -6,7 +6,9 @@ forever. The fix gives ``block_task`` a typed ``kind`` and a persistent
 ``block_recurrences`` counter:
 
 * ``dependency`` blocks route to ``todo`` (parent-gated, auto-resumed) and
-  never enter the human ``blocked`` bucket a cron would keep unblocking.
+  never enter the human ``blocked`` bucket a cron would keep unblocking. When
+  parents are already satisfied, repeated blocks count toward the same durable
+  recurrence cap and eventually route to ``triage``.
 * ``needs_input`` / ``capability`` / un-typed blocks land in ``blocked``;
   each same-cause re-block after an unblock increments ``block_recurrences``,
   and at ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
@@ -84,6 +86,34 @@ def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_parent_satisfied_dependency_blocks_escalate_after_recompute_cycles(
+    kanban_home: Path,
+) -> None:
+    """A chain-head cannot block -> auto-promote -> respawn indefinitely."""
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn)
+
+        for recurrence in range(1, kb.BLOCK_RECURRENCE_LIMIT + 1):
+            assert kb.block_task(conn, tid, reason="workspace collision", kind="dependency")
+            task = kb.get_task(conn, tid)
+            assert task.block_recurrences == recurrence
+
+            if recurrence == kb.BLOCK_RECURRENCE_LIMIT:
+                assert task.status == "triage"
+                assert kb.recompute_ready(conn) == 0
+                break
+
+            assert task.status == "todo"
+            assert kb.recompute_ready(conn) == 1
+            assert kb.recompute_ready(conn) == 0
+            assert kb.claim_task(conn, tid, claimer="worker") is not None
+
+        events = [event for event in kb.list_events(conn, tid)
+                  if event.kind == "block_loop_detected"]
+        assert len(events) == 1
+        assert events[0].payload["kind"] == "dependency"
+
+
 def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
     """A dependency-parked child becomes ready once its parent completes."""
     with kbc.connect_closing() as conn:
@@ -91,7 +121,11 @@ def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
         child = _running_task(conn, title="child")
         kb.link_tasks(conn, parent_id=parent, child_id=child)
         kb.block_task(conn, child, reason="wait", kind="dependency")
-        assert kb.get_task(conn, child).status == "todo"
+        task = kb.get_task(conn, child)
+        assert task.status == "todo"
+        assert task.block_recurrences == 0
+        assert kb.recompute_ready(conn) == 0
+        assert kb.recompute_ready(conn) == 0
         # Finish the parent, then let recompute_ready run.
         with kb.write_txn(conn):
             conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (parent,))
@@ -109,5 +143,4 @@ def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
 # ---------------------------------------------------------------------------
 # Validation + back-compat
 # ---------------------------------------------------------------------------
-
 

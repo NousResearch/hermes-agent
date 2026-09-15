@@ -3,14 +3,14 @@ import { atom } from 'nanostores'
 import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { isElementInHiddenPane, PANE_HIDDEN_ATTR } from '@/components/pane-shell/pane-visibility'
-import { $layoutTree } from '@/components/pane-shell/tree/store'
+import { $layoutTree, revealTreePane } from '@/components/pane-shell/tree/store'
 import { markRightPanePerf } from '@/debug/right-pane-events'
 import { createRendererLoopPauseController } from '@/lib/renderer-loop-pause'
 import { $paneStates } from '@/store/panes'
 
 import { $terminalTakeover } from '../store'
 
-import { ensureTerminal } from './terminals'
+import { ensureTerminal, restorePersistedTerminalPane } from './terminals'
 import { TerminalWorkspace } from './workspace'
 
 /**
@@ -73,6 +73,12 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
   // down. Only an explicit per-tab close kills a PTY. Re-opening re-ensures one
   // terminal exists (covers having closed the last tab).
   const [mounted, setMounted] = useState(false)
+
+  useEffect(() => {
+    if (restorePersistedTerminalPane()) {
+      revealTreePane('terminal')
+    }
+  }, [])
 
   useEffect(() => {
     if (terminalTakeover && ready) {

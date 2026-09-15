@@ -35,8 +35,16 @@ describe('terminal store persistence', () => {
 
     expect($activeTerminalId.get()).toBe('term-two')
     expect($terminals.get()).toEqual([
-      { auto: false, cwd: '/repo/one', id: 'term-one', kind: 'user', reviveBuffer: 'last output', title: 'zsh' },
-      { auto: true, cwd: '/repo/two', id: 'term-two', kind: 'user', title: 'Terminal' }
+      {
+        auto: false,
+        cwd: '/repo/one',
+        id: 'term-one',
+        kind: 'user',
+        resumeOnCreate: true,
+        reviveBuffer: 'last output',
+        title: 'zsh'
+      },
+      { auto: true, cwd: '/repo/two', id: 'term-two', kind: 'user', resumeOnCreate: true, title: 'Terminal' }
     ])
   })
 
@@ -186,5 +194,40 @@ describe('session cwd → terminal tab linking', () => {
     selectTerminal(first)
     $currentCwd.set('/repo')
     expect($activeTerminalId.get()).toBe(first)
+  })
+})
+
+describe('terminal pane restore', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.resetModules()
+  })
+
+  it('reopens the pane and marks restored tabs to reattach tmux', async () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        activeTerminalId: 'term-one',
+        terminals: [{ auto: false, cwd: '/repo', cursorChatId: 'chat-1', id: 'term-one', title: 'zsh' }]
+      })
+    )
+
+    const { $terminals, restorePersistedTerminalPane, shouldRestoreTerminalPane } = await loadTerminalStore()
+    const { $terminalTakeover } = await import('../store')
+
+    expect($terminals.get()[0]).toMatchObject({
+      cursorChatId: 'chat-1',
+      resumeOnCreate: true
+    })
+    expect($terminalTakeover.get()).toBe(true)
+    expect(shouldRestoreTerminalPane()).toBe(true)
+    expect(restorePersistedTerminalPane()).toBe(true)
+  })
+
+  it('does not mark a freshly created tab for Cursor resume', async () => {
+    const { $terminals, createTerminal } = await loadTerminalStore()
+
+    createTerminal('/repo')
+    expect($terminals.get()[0]?.resumeOnCreate).toBeUndefined()
   })
 })

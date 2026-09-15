@@ -121,11 +121,10 @@ class TestCodexAppServerClose:
     def test_close_reaps_independent_descendant_process_group(self, tmp_path):
         """A Codex-owned MCP child that calls setsid must not survive close().
 
-        Regression ported from openclaw/openclaw#126285: killing only the
-        app-server root lets independently grouped stdio MCP descendants live
-        past client retirement. The fake codex binary below spawns a long-lived
-        child in its own session, records its PID, and exits promptly on root
-        SIGTERM; close() must still reap the child.
+        Killing only the app-server root lets independently grouped stdio MCP
+        descendants live past client retirement. The fake codex binary below
+        spawns a long-lived child in its own session, records its PID, and exits
+        promptly on root SIGTERM; close() must still reap the child.
         """
         import os
         import stat
@@ -173,7 +172,7 @@ while True:
             while not child_pid_file.exists() and time.time() < deadline:
                 time.sleep(0.05)
             assert child_pid_file.exists(), "fake codex did not report child PID"
-            child_pid = int(child_pid_file.read_text())
+            child_pid = int(child_pid_file.read_text(encoding="utf-8"))
             assert psutil.pid_exists(child_pid)
 
             client.close(timeout=1.0)
@@ -189,9 +188,33 @@ while True:
             client.close(timeout=0.1)
             if child_pid_file.exists():
                 try:
-                    os.kill(int(child_pid_file.read_text()), 9)
+                    os.kill(int(child_pid_file.read_text(encoding="utf-8")), 9)
                 except ProcessLookupError:
                     pass
+
+    def test_close_escalates_to_tree_kill_when_root_ignores_sigterm(self, monkeypatch):
+        """When the root outlives the graceful wait, close() must kill the tree AND
+        run the post-kill wait so a codex ignoring SIGTERM cannot leak."""
+        import subprocess
+        from unittest import mock
+
+        from agent.transports import codex_app_server as mod
+
+        proc = mock.MagicMock()
+        proc.pid = 4242
+        proc.stdin = None
+        proc.wait.side_effect = [subprocess.TimeoutExpired(cmd="codex", timeout=0.01), 0]
+        killed: list[int] = []
+        monkeypatch.setattr(mod, "kill_process_tree", lambda pid, **kw: killed.append(pid) or True)
+        monkeypatch.setattr(mod, "_snapshot_descendants", lambda pid: [])
+
+        client = mod.CodexAppServerClient.__new__(mod.CodexAppServerClient)
+        client._proc = proc
+        client._closed = False
+        client.close(timeout=0.01)
+
+        assert killed == [4242]
+        assert proc.wait.call_args_list == [mock.call(timeout=0.01), mock.call(timeout=1.0)]
 
 
 class TestSpawnEnvIsolation:

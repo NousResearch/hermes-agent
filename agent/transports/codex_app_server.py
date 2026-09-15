@@ -17,6 +17,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from agent.deadline import kill_process_tree
 from tools.environments.local import hermes_subprocess_env
 
 MIN_CODEX_VERSION = (0, 125, 0)

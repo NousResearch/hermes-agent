@@ -29,9 +29,12 @@ function fontFamilyFromConfig(config: HermesConfigRecord): string {
 export function ChatFontSetting() {
   const { t } = useI18n()
   const copy = t.settings.appearance
-  const { data: loadedConfig } = useHermesConfigRecord()
+  const { data: loadedConfig, dataUpdatedAt } = useHermesConfigRecord()
   const [draft, setDraft] = useState<string | null>(null)
-  const [staleConfig, setStaleConfig] = useState<HermesConfigRecord | null>(null)
+  // dataUpdatedAt of the record the previous profile was looking at; the seed
+  // effect refuses to reseed while the query still carries that stamp. A
+  // structurally-shared refetch keeps the object reference but bumps the stamp.
+  const [staleStamp, setStaleStamp] = useState<null | number>(null)
   const [saveVersion, setSaveVersion] = useState(0)
   const saveVersionRef = useRef(0)
 
@@ -40,19 +43,19 @@ export function ChatFontSetting() {
   }
 
   useEffect(() => {
-    if (!loadedConfig || draft !== null || loadedConfig === staleConfig) {
+    if (!loadedConfig || draft !== null || dataUpdatedAt === staleStamp) {
       return
     }
 
     const value = fontFamilyFromConfig(loadedConfig)
     setDraft(value)
     setChatFontFamilyFromConfig(value)
-  }, [draft, loadedConfig, staleConfig])
+  }, [dataUpdatedAt, draft, loadedConfig, staleStamp])
 
   useOnProfileSwitch(() => {
     saveVersionRef.current += 1
     setDraft(null)
-    setStaleConfig(loadedConfig ?? null)
+    setStaleStamp(dataUpdatedAt)
     setSaveVersion(0)
     setChatFontFamilyFromConfig('')
   })

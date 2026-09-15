@@ -73,6 +73,14 @@ def _is_dir(cwd: str) -> bool:
         return False
 
 
+def _review_cwd(cwd: str) -> str:
+    """Normalize a cwd already inside Git to the repository top level."""
+    if not _is_dir(cwd):
+        return cwd
+    root = _git_out(cwd, ["rev-parse", "--show-toplevel"]).strip()
+    return os.path.normpath(root) if root else cwd
+
+
 def _status_z(cwd: str, *extra: str) -> tuple[int, str]:
     """(returncode, raw) of ``git status --porcelain=v2 -z``."""
     code, raw, _ = _git(cwd, ["status", "--porcelain=v2", *extra, "-z"])
@@ -248,6 +256,7 @@ def review_list(cwd: str, scope: str, base_ref: str | None) -> dict:
     """Changed files for a scope. Mirrors the Electron reviewList shapes."""
     if not _is_dir(cwd):
         return {"files": [], "base": None}
+    cwd = _review_cwd(cwd)
     if scope in ("branch", "lastTurn"):
         base = _branch_base(cwd) if scope == "branch" else base_ref
         if not base:
@@ -288,6 +297,7 @@ def _all_add_diff(cwd: str, file_path: str) -> str:
 def review_diff(cwd: str, file_path: str, scope: str, base_ref: str | None, staged: bool) -> str:
     if not _is_dir(cwd):
         return ""
+    cwd = _review_cwd(cwd)
     if scope == "branch":
         base = _branch_base(cwd)
         return _git_out(cwd, ["diff", f"{base}...HEAD", "--", file_path]) if base else ""
@@ -312,17 +322,20 @@ def file_diff_vs_head(cwd: str, file_path: str) -> str:
 
 
 def review_stage(cwd: str, file_path: str | None) -> dict:
+    cwd = _review_cwd(cwd)
     _git_ok(cwd, ["add", "--", file_path] if file_path else ["add", "-A"])
     return {"ok": True}
 
 
 def review_unstage(cwd: str, file_path: str | None) -> dict:
+    cwd = _review_cwd(cwd)
     _git_ok(cwd, ["reset", "-q", "HEAD", *(["--", file_path] if file_path else [])])
     return {"ok": True}
 
 
 def review_revert(cwd: str, file_path: str | None) -> dict:
     """Discard changes back to the committed state (restore tracked, remove untracked)."""
+    cwd = _review_cwd(cwd)
     target = ["--", file_path or "."]
     _git(cwd, ["checkout", "HEAD", *target])
     _git(cwd, ["clean", "-fd", *target])

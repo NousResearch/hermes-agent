@@ -6,7 +6,17 @@ import path from 'node:path'
 
 import { afterEach, test } from 'vitest'
 
-import { gitFor, repoStatus, resolveRenamePath, REVIEW_FILE_CAP, reviewList } from './git-review-ops'
+import {
+  gitFor,
+  repoStatus,
+  resolveRenamePath,
+  REVIEW_FILE_CAP,
+  reviewDiff,
+  reviewList,
+  reviewRevert,
+  reviewStage,
+  reviewUnstage
+} from './git-review-ops'
 
 const tempDirs: string[] = []
 
@@ -116,4 +126,48 @@ test('reviewList caps the file payload returned to the renderer', async () => {
   const result = await reviewList(dir, 'uncommitted', null, 'git')
 
   assert.equal(result.files.length, REVIEW_FILE_CAP)
+})
+
+function makeNestedRepo() {
+  const dir = makeRepo()
+  const sub = path.join(dir, 'sub')
+
+  fs.mkdirSync(sub)
+  fs.writeFileSync(path.join(sub, 'nested.txt'), 'nested\n')
+  execFileSync('git', ['add', 'sub/nested.txt'], { cwd: dir })
+  execFileSync('git', ['commit', '-qm', 'nested'], { cwd: dir })
+  fs.writeFileSync(path.join(dir, 'tracked.txt'), 'tracked changed\n')
+  fs.writeFileSync(path.join(sub, 'nested.txt'), 'nested changed\n')
+
+  return { dir, sub }
+}
+
+test('Review list and diff use repo-root-relative paths from a nested cwd', async () => {
+  const { sub } = makeNestedRepo()
+  const listed = await reviewList(sub, 'uncommitted', null, 'git')
+
+  assert.deepEqual(
+    listed.files.map(file => file.path),
+    ['sub/nested.txt', 'tracked.txt']
+  )
+  assert.match(String(await reviewDiff(sub, 'tracked.txt', 'uncommitted', null, false, 'git')), /tracked changed/)
+})
+
+test('Review stage and unstage target repo-root-relative paths from a nested cwd', async () => {
+  const { dir, sub } = makeNestedRepo()
+
+  await reviewStage(sub, 'tracked.txt', 'git')
+  assert.ok((await gitFor(dir, 'git').status()).staged.includes('tracked.txt'))
+
+  await reviewUnstage(sub, 'tracked.txt', 'git')
+  assert.ok(!(await gitFor(dir, 'git').status()).staged.includes('tracked.txt'))
+})
+
+test('Review revert targets a repo-root-relative path from a nested cwd', async () => {
+  const { dir, sub } = makeNestedRepo()
+
+  await reviewRevert(sub, 'tracked.txt', 'git')
+
+  assert.equal(fs.readFileSync(path.join(dir, 'tracked.txt'), 'utf8'), 'tracked\n')
+  assert.equal(fs.readFileSync(path.join(sub, 'nested.txt'), 'utf8'), 'nested changed\n')
 })

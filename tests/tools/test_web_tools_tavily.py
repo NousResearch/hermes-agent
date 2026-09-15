@@ -174,7 +174,9 @@ class TestWebExtractCacheAttribution:
 
     def test_redirected_page_caches_under_requested_source_url(self):
         """Keenable/Firecrawl report the post-redirect address in ``url`` and the requested URL in
-        ``metadata.sourceURL``; the cache key must stay the requested URL, never the redirect target."""
+        ``metadata.sourceURL``; the cache key must stay the requested URL, never the redirect target.
+        The first requested page is omitted, so positional pairing would file the redirected page
+        under the wrong requested URL."""
         from tools import web_tools_extract as wte
 
         class _RedirectProvider:
@@ -182,10 +184,11 @@ class TestWebExtractCacheAttribution:
 
             async def extract(self, urls, format=None):
                 return [{"url": "https://www.example.com/moved", "raw_content": "moved page", "title": "Moved",
-                         "metadata": {"sourceURL": urls[0]}}]
+                         "metadata": {"sourceURL": urls[1]}}]
 
+        urls = ["https://example.com/failed", "https://example.com/old"]
         with patch("tools.web_result_cache.extract_cache_put") as cache_put:
-            asyncio.run(wte._dispatch_extract(_RedirectProvider(), ["https://example.com/old"], None))
+            asyncio.run(wte._dispatch_extract(_RedirectProvider(), urls, None))
 
         cache_put.assert_called_once_with(
             "https://example.com/old", "moved page", "Moved", format=None, provider="keenable"

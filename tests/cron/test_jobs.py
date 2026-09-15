@@ -1971,3 +1971,33 @@ class TestEnsureCronDirWidened:
         with pytest.raises(FileNotFoundError):
             jobs._ensure_cron_dir(scripts_dir)
         assert not deleted_home.exists()
+
+
+class TestCroniterCachePoisoningSelfHeal:
+    """Batch runs must survive a poisoned ``cron.jobs.croniter`` global.
+
+    Earlier test directories that clear/re-import modules can leave the
+    lazy-import global bound to the croniter *module* object with
+    ``HAS_CRONITER`` latched True; solo cron runs never see it. Regression
+    for #105838: every parse_schedule-based test failed with
+    ``'module' object is not callable`` in directory-order runs.
+    """
+
+    def test_poisoned_module_binding_self_heals(self):
+        import croniter as croniter_module
+        import cron.jobs as jobs
+
+        pytest.importorskip("croniter")
+        assert jobs._ensure_croniter(), "precondition: croniter importable"
+
+        saved_croniter, saved_flag = jobs.croniter, jobs.HAS_CRONITER
+        try:
+            # Simulate the poisoned state an earlier directory leaves behind.
+            jobs.croniter = croniter_module
+            jobs.HAS_CRONITER = True
+
+            result = jobs.parse_schedule("every sunday 9am")
+            assert result["kind"] == "cron"
+            assert result["expr"] == "0 9 * * 0"
+        finally:
+            jobs.croniter, jobs.HAS_CRONITER = saved_croniter, saved_flag

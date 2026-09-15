@@ -419,6 +419,35 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "PHOTON_HOME_CHANNEL",
     "PHOTON_HOME_CHANNEL_THREAD_ID",
     "PHOTON_HOME_CHANNEL_NAME",
+    # Platform adapter behavior knobs (non-credential). A deployment
+    # machine exports these to steer its live adapters; tests mock config
+    # at import/call time, so the real values win over the mocks and
+    # batch runs diverge from solo runs (#105838). Tests that need them
+    # set them explicitly with monkeypatch.
+    "DISCORD_AUTO_THREAD",
+    "DISCORD_COMMAND_SYNC_POLICY",
+    "DISCORD_HIDE_SLASH_COMMANDS",
+    "DISCORD_HISTORY_BACKFILL",
+    "DISCORD_HISTORY_BACKFILL_LIMIT",
+    "DISCORD_MAX_ATTACHMENT_BYTES",
+    "DISCORD_MISSED_MESSAGE_BACKFILL",
+    "DISCORD_MISSED_MESSAGE_BACKFILL_LIMIT",
+    "DISCORD_REACTIONS",
+    "DISCORD_THREAD_REQUIRE_MENTION",
+    "DISCORD_REPLY_TO_MODE",
+    "TELEGRAM_MENTION_PATTERNS",
+    "TELEGRAM_REACTIONS",
+    "TELEGRAM_WEBHOOK_HOST",
+    "TELEGRAM_WEBHOOK_URL",
+    "TEAMS_CHANNEL_ID",
+    "TEAMS_CHAT_ID",
+    "TEAMS_DELIVERY_MODE",
+    "TEAMS_HOST",
+    "TEAMS_INCOMING_WEBHOOK_URL",
+    "TEAMS_PORT",
+    "TEAMS_SERVICE_URL",
+    "TEAMS_TENANT_ID",
+    "TEAMS_TEAM_ID",
     # API server bind/auth settings are common in local gateway profiles and
     # change adapter defaults plus load_gateway_config() enablement. Tests that
     # need them set opt in explicitly with monkeypatch.

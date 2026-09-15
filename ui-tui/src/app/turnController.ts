@@ -1,4 +1,5 @@
 import type { MessageCompletePayload, SubagentEventPayload } from '@hermes/shared/gateway-events'
+import { createStreamTpsCounter } from '@hermes/shared/stream-tps'
 
 import {
   REASONING_PULSE_MS,
@@ -138,6 +139,8 @@ class TurnController {
   private reasoningTimer: Timer = null
   private streamTimer: Timer = null
   private streamDelay = STREAM_IDLE_BATCH_MS
+  private toolProgressTimer: Timer = null
+  private _streamTps = createStreamTpsCounter()
 
   // ── Credits notice machinery (Strategy B) ───────────────────────────
   //
@@ -692,6 +695,20 @@ class TurnController {
     // `display.final_response_markdown: render`.
     this.bufRef += text
 
+    // ── Streaming throughput tracker (rolling 2s window) ──────────────
+    // Each delta ≈ one output token. Rolling 2 s window → tokens/sec.
+    // The throttle (≈1s) and the min-3-samples gate live inside the shared
+    // counter: it returns a rate only on an eligible tick. We patch the
+    // status bar only then — an `undefined` return means either not enough
+    // samples or inside the throttle window (nothing to push).
+    const stream_tps = this._streamTps.accumulate(Date.now())
+    if (stream_tps !== undefined) {
+      patchUiState(state => ({
+        ...state,
+        usage: { ...state.usage, stream_tps }
+      }))
+    }
+
     if (getUiState().streaming) {
       this.scheduleStreaming()
     }
@@ -912,6 +929,10 @@ class TurnController {
     this.turnTools = []
     this.toolTokenAcc = 0
     this.persistedToolLabels.clear()
+    // Streaming TPS window is per-stream: never carry a previous session's
+    // timestamps into a fresh turn (a stale rolling 2 s window would surface
+    // a misleading t/s right after handoff).
+    this._streamTps.reset()
     // Session boundary: drop notice state so session A's sticky can't bleed
     // into session B (R3-H5). reset()/fullReset() CLEAR — they never flush.
     this.clearNoticeState()

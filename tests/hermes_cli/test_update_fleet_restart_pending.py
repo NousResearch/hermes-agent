@@ -484,6 +484,71 @@ def test_clean_update_escalates_surviving_serve_as_unaccounted(
     assert by_pid == {4444: "restarted", 5555: "unaccounted"}
 
 
+def test_clean_update_defers_desktop_owned_serve_and_clears_marker(
+    monkeypatch, tmp_path, capsys
+):
+    """#111494 end to end: the only survivor is the Desktop app's own ``serve``
+    backend. The restart phase is forbidden to restart it, so reconciliation must
+    not count it as a missed restart either — otherwise every update with the
+    Desktop open ends ``partial``/exit 1 and re-arms ``fleet_restart_pending``
+    with nothing that could ever discharge it. It is surfaced (``deferred``,
+    relaunch hint) rather than dropped."""
+    from hermes_cli.update_inventory import (
+        RuntimeRecord, UpdatePlan, _restart_mechanism,
+    )
+    import hermes_cli.update_inventory as ui
+    import hermes_cli.process_identity as pi
+
+    args = _update_args()
+    _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
+
+    plan = UpdatePlan()
+    plan.runtimes = [
+        RuntimeRecord(kind="gateway", profile="default", pid=4444,
+                      supervisor="systemd",
+                      restart_via=_restart_mechanism("systemd", "default")),
+        RuntimeRecord(kind="serve", profile="default", pid=6161,
+                      supervisor="desktop",
+                      restart_via=_restart_mechanism("desktop", "default"),
+                      detail={"create_time": 1000.0}),
+    ]
+    monkeypatch.setattr(ui, "collect_runtime_inventory", lambda: plan)
+    real_match = ui.match_runtime_outcomes
+
+    def _match(p, **kw):
+        kw["restarted_services"] = list(kw.get("restarted_services") or []) + [
+            "hermes-gateway.service"
+        ]
+        return real_match(p, **kw)
+
+    monkeypatch.setattr(ui, "match_runtime_outcomes", _match)
+    # The gateway leg is healthy on the new code; only the Desktop serve is left.
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **_k: [{"profile": "default", "pid": 4444, "code_sha": "def456",
+                       "code_version": "0.21.0", "state": "current"}],
+    )
+    # Same incarnation still alive: the Desktop serve genuinely survived on pre-update code.
+    monkeypatch.setattr(
+        pi, "ledger_entries",
+        lambda **_k: [{"pid": 6161, "purpose": "serve", "create_time": 1000.0}],
+    )
+
+    hermes_main.cmd_update(args)  # no SystemExit(1)
+
+    out = capsys.readouterr().out
+    assert "pid 6161" in out and "pre-update code" in out
+    assert "relaunch the Desktop app" in out
+    assert "Planned runtimes the restart phase never touched" not in out
+    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+
+    latest = get_hermes_home() / "logs" / "update_receipts" / "latest.json"
+    receipt = json.loads(latest.read_text(encoding="utf-8"))
+    assert receipt["outcome"] == "success"
+    by_pid = {o["pid"]: o["outcome"] for o in receipt["runtime_outcomes"]}
+    assert by_pid == {4444: "restarted", 6161: "deferred"}
+
+
 def test_interrupt_between_pull_and_restart_leaves_marker(
     monkeypatch, tmp_path
 ):

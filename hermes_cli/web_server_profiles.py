@@ -174,7 +174,9 @@ def _write_profile_mcp_servers(profile_dir: Path, servers: List["MCPServerCreate
                 _log.warning("Profile-create: skipping MCP server '%s': %s", display_name, exc)
                 continue
             if bearer_token is not None:
-                entry["headers"] = _save_bearer_auth_token(name, bearer_token)
+                saved_headers = _save_bearer_auth_token(name, bearer_token)
+                if entry.get("auth") != "query":
+                    entry["headers"] = saved_headers
             mcp[name] = entry
             written += 1
         if written:

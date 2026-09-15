@@ -870,6 +870,11 @@ class SearchMixin:
             cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
         if output_mode in _OUTPUT_MODE_FLAGS:
             cmd_parts.append(_OUTPUT_MODE_FLAGS[output_mode])
+        # Add pattern and path. `--` ends flag parsing so a pattern that
+        # itself starts with `-` (negative number, a CLI-flag literal like
+        # `--pdf-engine`, `->`) is matched literally instead of being parsed
+        # as an rg option (#93750).
+        cmd_parts.append("--")
         cmd_parts.append(self._escape_shell_arg(pattern))
         # rg is a native Windows binary (winget/cargo/choco): needs C:/... not MSYS /c/...
         cmd_parts.append(self._escape_native_tool_arg(path))
@@ -889,6 +894,9 @@ class SearchMixin:
             parts.extend(["--include", self._escape_shell_arg(file_glob)])
         if output_mode in _OUTPUT_MODE_FLAGS:
             parts.append(_OUTPUT_MODE_FLAGS[output_mode])
+        # `--` ends flag parsing so a pattern starting with `-` is matched
+        # literally instead of parsed as an option (#93750).
+        parts.append("--")
         parts.append(self._escape_shell_arg(pattern))
         return parts
 

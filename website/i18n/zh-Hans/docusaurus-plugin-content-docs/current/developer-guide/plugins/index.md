@@ -732,7 +732,7 @@ def register(ctx):
 
 ### 从斜杠命令分发工具
 
-需要编排工具的斜杠命令处理器（生成子代理 `delegate_task`、调用 `file_edit` 等）应使用 `ctx.dispatch_tool()`，而非深入框架内部。父代理上下文（工作区提示、spinner、模型继承）会自动连接。
+需要编排工具的斜杠命令处理器（生成子代理 `delegate_task`、调用 `write_file` 等）应使用 `ctx.dispatch_tool()`，而非深入框架内部。父代理上下文（工作区提示、spinner、模型继承）会自动连接。
 
 ```python
 def register(ctx):
@@ -757,7 +757,7 @@ def register(ctx):
 
 | 参数 | 类型 | 描述 |
 |-----------|------|-------------|
-| `name` | `str` | 工具注册表中的工具名称（例如 `"delegate_task"`、`"file_edit"`） |
+| `name` | `str` | 工具注册表中的工具名称（例如 `"delegate_task"`、`"write_file"`） |
 | `args` | `dict` | 工具参数，与模型发送的格式相同 |
 | `parent_agent` | `Agent \| None` | 可选覆盖。省略时从当前 CLI 代理解析（网关模式下优雅降级） |
 

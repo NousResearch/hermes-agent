@@ -1696,11 +1696,29 @@ class _AnthropicCompletionsAdapter:
         _nr = get_transport("anthropic_messages").normalize_response(response, strip_tool_prefix=self._is_oauth)
         usage = None
         if hasattr(response, "usage") and response.usage:
-            prompt_tokens = getattr(response.usage, "input_tokens", 0) or 0
-            completion_tokens = getattr(response.usage, "output_tokens", 0) or 0
+            input_tokens = getattr(response.usage, "input_tokens", 0) or 0
+            output_tokens = getattr(response.usage, "output_tokens", 0) or 0
+            cache_read_input_tokens = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+            cache_creation_input_tokens = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+            inclusive_prompt = (
+                int(input_tokens)
+                + int(cache_read_input_tokens)
+                + int(cache_creation_input_tokens)
+            )
             usage = SimpleNamespace(
-                prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
-                total_tokens=getattr(response.usage, "total_tokens", 0) or (prompt_tokens + completion_tokens),
+                prompt_tokens=inclusive_prompt,
+                completion_tokens=output_tokens,
+                total_tokens=getattr(response.usage, "total_tokens", 0) or (
+                    inclusive_prompt + int(output_tokens)
+                ),
+                prompt_tokens_details=SimpleNamespace(
+                    cached_tokens=cache_read_input_tokens,
+                    cache_write_tokens=cache_creation_input_tokens,
+                ),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_input_tokens=cache_read_input_tokens,
+                cache_creation_input_tokens=cache_creation_input_tokens,
             )
         # ToolCall already duck-types as OpenAI shape via properties.
         choice = SimpleNamespace(

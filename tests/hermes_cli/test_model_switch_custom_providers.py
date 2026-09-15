@@ -16,7 +16,11 @@ import hermes_cli.providers as providers_mod
 import pytest
 import yaml
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
-from hermes_cli.model_switch_providers import _fetch_picker_live_models, _save_discovered_models_to_config
+from hermes_cli.model_switch_providers import (
+    _fetch_picker_live_models,
+    _save_discovered_models_to_config,
+    list_picker_providers,
+)
 from hermes_cli.providers import resolve_provider_full
 
 
@@ -1357,6 +1361,93 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
         "gateway-model-c",
     ], "Live models must replace the static subset"
     assert gateway_prov["total_models"] == 3
+
+
+def test_custom_discovery_preserves_verbatim_model_ids(monkeypatch):
+    """Custom endpoints must keep opaque IDs exactly as they returned them.
+
+    A self-hosted LiteLLM proxy can use prefixes to distinguish routes serving the
+    same underlying model. The picker must not canonicalize those IDs against
+    Hermes' provider catalog or collapse the two routes into one entry.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models", lambda: [])
+
+    discovered_ids = [
+        "ms-DeepSeek-V4.1-Flash",
+        "sfcom-DeepSeek-V4.1-Flash",
+        "or-claude-haiku-4.5",
+        "kiro-claude-sonnet-4.5",
+    ]
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_api_models",
+        lambda *args, **kwargs: list(discovered_ids),
+    )
+
+    custom_providers = [
+        {
+            "name": "local-litellm",
+            "api_key": "sk-litellm",
+            "base_url": "http://litellm:4000/v1",
+            "discover_models": True,
+            "model": discovered_ids[0],
+        }
+    ]
+
+    providers = list_picker_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    litellm = next(
+        provider
+        for provider in providers
+        if provider.get("api_url") == "http://litellm:4000/v1"
+    )
+    assert litellm["models"] == discovered_ids
+    assert litellm["total_models"] == len(discovered_ids)
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "api_key": "sk-litellm",
+            "base_url": "http://litellm:4000/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_api_models",
+        lambda *args, **kwargs: {
+            "models": list(discovered_ids),
+            "probed_url": "http://litellm:4000/v1/models",
+            "resolved_base_url": "http://litellm:4000/v1",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        },
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_capabilities",
+        lambda *args, **kwargs: None,
+    )
+
+    for model_id in discovered_ids:
+        result = switch_model(
+            raw_input=model_id,
+            current_provider="openrouter",
+            current_model="gpt-5.4",
+            explicit_provider=litellm["slug"],
+            custom_providers=custom_providers,
+        )
+        assert result.success is True
+        assert result.target_provider == litellm["slug"]
+        assert result.new_model == model_id
+        assert result.api_key == "sk-litellm"
+        assert result.base_url == "http://litellm:4000/v1"
+        assert result.api_mode == "chat_completions"
 
 
 def test_same_endpoint_different_extra_headers_not_collapsed(monkeypatch):

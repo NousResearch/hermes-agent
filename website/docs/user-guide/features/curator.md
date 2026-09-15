@@ -118,6 +118,7 @@ hermes curator archive <skill>  # manually archive a single skill now
 hermes curator prune [--days N] # bulk-archive agent-created skills idle >= N days (default: `archive_after_days`, 30)
 hermes curator ledger           # list the per-mutation audit ledger (all actors)
 hermes curator ledger --skill <name> --limit 50  # filter/paginate ledger entries
+hermes curator ledger --json    # same entries as a JSON array, for scripts
 hermes curator rollback <entry-id>  # undo a single mutation from the ledger
 hermes curator purge [--days N] [--dry-run]  # delete archived skills older than the TTL (explicit only)
 ```
@@ -163,7 +164,16 @@ Whole-run snapshots answer "undo everything the last curator pass did" — but s
 ```bash
 hermes curator ledger                  # newest 20 entries
 hermes curator ledger --skill my-skill --limit 50
+hermes curator ledger --json           # JSON array instead of the table
 hermes curator rollback <entry-id>     # restore that one mutation's before-state
+```
+
+`--json` emits the entries as they are stored, so `ts` is an absolute ISO-8601 timestamp with offset rather than the table's relative `21m ago`, and an empty ledger prints `[]` rather than a sentence. Use it instead of reading `~/.hermes/skills/.curator_ledger.jsonl`: that file is internal state, while the command is the supported interface.
+
+```bash
+# entries from the last day
+hermes curator ledger --json --limit 200 \
+  | jq --arg since "$(date -u -v-1d +%Y-%m-%dT%H:%M:%SZ)" '[.[] | select(.ts >= $since)]'
 ```
 
 Single-entry rollback restores exactly the files that mutation touched (and removes files it created) from the blob store — nothing else in the skills tree moves. Like whole-tree rollback, it takes a safety ledger entry of the current state first and **fails closed**: if the safety capture can't be written, nothing is changed. Because foreground deletes are ledgered too, `hermes curator rollback <entry-id>` can resurrect a hard-deleted skill.

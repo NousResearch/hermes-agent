@@ -386,9 +386,17 @@ def _cmd_backup(args) -> int:
 
 def _cmd_ledger(args) -> int:
     """List per-mutation audit ledger entries (newest first)."""
+    import json as _json
     from tools import skill_ledger
     rows = skill_ledger.list_entries(
         skill=getattr(args, "skill", None), limit=getattr(args, "limit", None) or 20)
+    if getattr(args, "json", False):
+        # Entries verbatim: `ts` is already ISO-8601 with offset, and the table's
+        # relative "21m ago" is a rendering, not data. Emitted before the empty
+        # check so a consumer always parses an array — "ledger is empty" is a
+        # sentence for humans, not something `json.loads` can read.
+        print(_json.dumps(rows, indent=2, ensure_ascii=False))
+        return 0
     if not rows:
         print("curator: ledger is empty (or skills.ledger is disabled).")
         return 0
@@ -674,7 +682,10 @@ _SUBCOMMANDS = (
         "ledger", "List the per-mutation skill audit ledger (all actors: curator/agent/user)",
         _cmd_ledger,
         _arg("--skill", default=None, help="Only show entries for this skill"),
-        _arg("--limit", type=int, default=20, help="Max entries to show (default: 20)")),
+        _arg("--limit", type=int, default=20, help="Max entries to show (default: 20)"),
+        _arg("--json", **_STORE_TRUE,
+             help="Emit the entries as a JSON array instead of the table; "
+                  "timestamps are absolute (ISO-8601 with offset)")),
     (
         "purge",
         "Delete archived skills older than curator.archive_ttl_days "

@@ -27,6 +27,7 @@ class _ClarifyEntry:
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
+    owner: object = None
 
 
 _lock = threading.RLock()
@@ -44,12 +45,18 @@ TEXT_NO_PENDING = "no_pending"
 
 
 def register(clarify_id: str, session_key: str, question: str, choices: Optional[List[str]],
-             multi_select: bool = False) -> _ClarifyEntry:
+             multi_select: bool = False, *, owner: object = None,
+             is_current: Optional[Callable[[], bool]] = None) -> _ClarifyEntry:
     """Register a pending clarify request; caller then blocks on ``wait_for_response``.
     Open-ended (no choices) entries start in text mode: the next message IS the response."""
     entry = _ClarifyEntry(clarify_id, session_key, question, list(choices) if choices else None,
-                          bool(multi_select) and bool(choices), awaiting_text=not bool(choices))
+                          bool(multi_select) and bool(choices), awaiting_text=not bool(choices), owner=owner)
     with _lock:
+        # Serialize admission with cancellation: a displaced worker must not re-arm a prompt.
+        if is_current is not None and not is_current():
+            entry.response = ""
+            entry.event.set()
+            return entry
         _entries[clarify_id] = entry
         _session_index.setdefault(session_key, []).append(clarify_id)
     return entry
@@ -237,22 +244,31 @@ def has_pending(session_key: str) -> bool:
         return any(_entries.get(cid) is not None for cid in _session_index.get(session_key) or [])
 
 
-def clear_session(session_key: str) -> int:
+def clear_session(session_key: str, *, owner: object = None) -> int:
     """Drop every pending clarify for a session (``/new``, shutdown, cached-agent eviction) so
     blocked agent threads don't outlive it; returns how many were cancelled. Cancelled waiters
     see "" (callers tell it from a real reply only via their own timeout bookkeeping; most treat
     any falsy result as no response). First-writer-wins: an already-set entry was answered for
     real, so it is dropped but its response preserved. The loop stays inside the lock so a button
     callback cannot slip between pop and check; entries go regardless of state so a cleared
-    session is never resurrected by late callbacks."""
+    session is never resurrected by late callbacks. With ``owner``, only that turn's
+    registrations are removed; a displaced finalizer cannot clear its successor."""
     with _lock:
         cancelled = 0
-        for entry in (_entries.pop(cid, None) for cid in list(_session_index.pop(session_key, []) or [])):
+        ids = _session_index.get(session_key, [])
+        for cid in list(ids):
+            entry = _entries.get(cid)
+            if owner is not None and (entry is None or entry.owner is not owner):
+                continue
+            _entries.pop(cid, None)
+            ids.remove(cid)
             if entry is None or entry.event.is_set():
                 continue
             entry.response = ""
             entry.event.set()
             cancelled += 1
+        if not ids:
+            _session_index.pop(session_key, None)
     return cancelled
 
 

@@ -469,6 +469,10 @@ class GatewayAgentCacheMixin:
         _generation_at_interrupt = self._interrupt_running_turn(
             session_key, interrupt_reason=interrupt_reason, invalidation_reason=invalidation_reason,
         )
+        # No adapter await before cancellation: all current registrations belong to the
+        # displaced turn. Its generation is already invalid, so late admission is refused.
+        from tools.clarify_gateway import clear_session
+        clear_session(session_key)
         from gateway.run import _AGENT_PENDING_SENTINEL
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             # Plugins holding a per-turn external resource (an outbound RPC blocked on a tool result

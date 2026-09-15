@@ -1298,10 +1298,13 @@ class TurnRunner:
         session_key = ctx.session_key or ""
         clarify_id = uuid.uuid4().hex[:10]
         choices = list(choices) if choices else None
-        clarify_mod.register(
+        entry = clarify_mod.register(
             clarify_id=clarify_id, session_key=session_key, question=question, choices=choices,
-            multi_select=bool(multi_select),
+            multi_select=bool(multi_select), owner=self,
+            is_current=ctx._run_still_current,
         )
+        if entry.event.is_set():
+            return "[Clarify cancelled]"
         # Unlike approval, clarify passes reopen=True so the continuation re-opens a native stream
         # below the question; if the re-seed fails the consumer degrades to send() automatically.
         self._close_native_stream_boundary("Clarify", "💬 等待你的选择...", reopen=True)
@@ -1328,7 +1331,8 @@ class TurnRunner:
         # Boundary rule (see _approval_send_outcome): a send timeout is AMBIGUOUS — the card may
         # have posted with a late ack. Only a definitive failure tears down the registration;
         # ambiguous falls through to the bounded wait so a late reply resolves.
-        response = _clarify_send_then_wait(fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod)
+        response = _clarify_send_then_wait(
+            fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod, owner=self)
         # Only re-arm typing when the user actually answered — the undeliverable sentinel and the
         # timeout/cancellation strings start with '[' and must pass through untouched.
         if not (isinstance(response, str) and response.startswith("[")):
@@ -1599,7 +1603,7 @@ class TurnRunner:
             # run (interrupt, completion, gateway shutdown). Idempotent.
             with suppress(Exception):
                 from tools.clarify_gateway import clear_session
-                clear_session(session_key)
+                clear_session(session_key, owner=self)
             reset_current_session_key(token)
 
     def _finish_stream_consumer(self, result, agent_history, stream_consumer):

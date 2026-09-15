@@ -162,6 +162,56 @@ def test_codex_usage_account_id_read_failure_keeps_singleton_token(monkeypatch, 
     assert "ChatGPT-Account-Id" not in calls[0]["headers"]
 
 
+def test_anthropic_usage_skips_nonnumeric_window_and_keeps_the_rest(monkeypatch):
+    """A window the API reports as text costs only that window, not the whole report.
+
+    `float(used)` in `_usage_windows` raised ValueError straight out into the blanket
+    `except Exception` of `fetch_account_usage`, so a single "unavailable" window made the
+    provider look like it had no usage data at all (#54404).
+
+    The numeric values here are deliberately > 1 so the `fraction=True` scaling is a no-op:
+    this test asserts *which* windows survive, not how a fraction is rendered.
+    """
+    payload = {
+        "five_hour": {"utilization": 12.5, "resets_at": "2026-09-13T21:30:00Z"},
+        "seven_day": {"utilization": "unavailable", "resets_at": "2026-09-18T21:00:00Z"},
+        "seven_day_opus": {"utilization": 3.0, "resets_at": "2026-09-18T21:00:00Z"},
+    }
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda: "synthetic-oauth-token")
+    monkeypatch.setattr(account_usage, "_is_oauth_token", lambda token: True)
+    monkeypatch.setattr(account_usage.httpx, "Client", lambda timeout: _FakeClient([], payload))
+
+    snapshot = account_usage.fetch_account_usage("anthropic")
+
+    assert snapshot is not None, "one unreadable window must not blank out the provider"
+    assert [(window.label, window.used_percent) for window in snapshot.windows] == [
+        ("Current session", 12.5),
+        ("Opus week", 3.0),
+    ]
+
+
+@pytest.mark.parametrize(
+    "unusable", ["unavailable", "", {"percent": 20}, [20], float("nan"), float("inf")]
+)
+def test_usage_windows_drops_only_the_window_it_cannot_read(unusable):
+    """Same guard on the sibling Codex shape: neighbours of a bad window still come back."""
+    source = {
+        "primary_window": {"used_percent": 21, "reset_at": 1779846359},
+        "secondary_window": {"used_percent": unusable, "reset_at": 1780230796},
+        "tertiary_window": {"used_percent": 4, "reset_at": 1780230796},
+    }
+
+    windows = account_usage._usage_windows(
+        source,
+        (("primary_window", "Session"), ("secondary_window", "Weekly"), ("tertiary_window", "Monthly")),
+        "used_percent",
+        "reset_at",
+    )
+
+    assert [(window.label, window.used_percent) for window in windows] == [
+        ("Session", 21.0),
+        ("Monthly", 4.0),
+    ]
 
 
 # ── Banked rate-limit reset credits (`/usage reset`) ─────────────────────────

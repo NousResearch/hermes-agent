@@ -355,7 +355,17 @@ def _usage_windows(
         used = window.get(used_key)
         if used is None:
             continue
-        used = float(used)
+        try:
+            used = float(used)
+        except (TypeError, ValueError):
+            used = math.nan
+        if not _is_finite_num(used):
+            # One unusable window — text like "unavailable", NaN, a nested object — used to
+            # raise out of here into fetch_account_usage's blanket ``except Exception`` and
+            # blank out the whole provider's report, every healthy window with it. Drop only
+            # the window we can't read.
+            logger.debug("Skipping %s usage window: unusable %s %r", label, used_key, window.get(used_key))
+            continue
         if fraction and used <= 1:
             used *= 100
         windows.append(AccountUsageWindow(label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key))))

@@ -3551,6 +3551,7 @@ export interface Translations {
     secretSendFailed: string
     sudoTitle: string
     sudoDesc: string
+    sudoCommandUnavailable: string
     sudoPlaceholder: string
     secretTitle: string
     secretDesc: string

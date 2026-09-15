@@ -103,6 +103,7 @@ interface PendingApprovalPayload {
 }
 
 export interface SudoRequest extends KeyedPrompt {
+  command?: string
   requestId: string
 }
 

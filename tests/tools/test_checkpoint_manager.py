@@ -1136,6 +1136,28 @@ class TestClearFunctions:
         # Store preserved
         assert (base / "store" / "HEAD").exists()
 
+    def test_clear_legacy_reports_deletion_errors(self, tmp_path, monkeypatch, work_dir):
+        base = tmp_path / "checkpoints"
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+        m = CheckpointManager(enabled=True)
+        m.ensure_checkpoint(str(work_dir), "initial")
+
+        legacy = base / "legacy-20200101-000000"
+        legacy.mkdir()
+        (legacy / "junk").write_bytes(b"x" * 1000)
+
+        def _raise(_path):
+            raise OSError("locked")
+
+        monkeypatch.setattr("tools.checkpoint_manager.shutil.rmtree", _raise)
+
+        result = clear_legacy()
+
+        assert result["deleted"] == 0
+        assert result["bytes_freed"] == 0
+        assert result["errors"] == 1
+        assert legacy.exists()
+
 
 # =========================================================================
 # Orphan pruning must not act on an unreachable volume

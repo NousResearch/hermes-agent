@@ -30,6 +30,7 @@ import {
 } from 'electron'
 
 import { classifyActiveRuntime } from './active-runtime-state'
+import { claimStaleBackendExitRecovery } from './backend-stale-exit-recovery'
 import {
   destroyKeepaliveAgents,
   downloadAgentFor,
@@ -1449,6 +1450,7 @@ const backendDialClaims = new BackendDialClaims()
 // True while connection-config:apply soft-rehomes the primary — suppresses the
 // backend-exit toast so an intentional kill doesn't look like a crash.
 let softRehomeInProgress = false
+let staleExitRecoveryClaimed = false
 // Additional per-profile backends, keyed by profile name. The PRIMARY backend
 // (the desktop's launch profile) stays managed by backendConnectionState +
 // startHermes(); this pool only holds EXTRA profile
@@ -12836,6 +12838,26 @@ function startHermes() {
   return localBackendLifecycle.start(runHermesStart)
 }
 
+function scheduleUnexpectedPrimaryRecovery({ code = null, signal = null, error = null, ready = false } = {}) {
+  if (!ready) {
+    return false
+  }
+
+  if (claimStaleBackendExitRecovery({
+    hasCurrentProcess: backendConnectionState.getProcess() !== null,
+    hasPendingStart: backendConnectionState.getPendingPromise() !== null || localBackendLifecycle.hasPending(),
+    intentionalTeardown: softRehomeInProgress || isQuittingForHandoff || backendShutdown.hasStarted(),
+    recoveryClaimed: staleExitRecoveryClaimed
+  })) {
+    staleExitRecoveryClaimed = true
+    sendBackendExit({ code, signal, ...(error ? { error } : {}) })
+    startHermes().catch(() => {})
+    return true
+  }
+
+  return false
+}
+
 async function runHermesStart() {
   // Only the single-instance lock holder may reap/spawn/claim the desktop
   // backend. A lock-losing instance must stay inert even if some path reaches
@@ -13118,6 +13140,7 @@ async function runHermesStart() {
 
       if (!backendConnectionState.clearForCurrentProcess(processOwner)) {
         rememberLog(`Ignoring stale Hermes backend error: ${error.message}`)
+        scheduleUnexpectedPrimaryRecovery({ error: error.message, ready: backendReady })
         rejectBackendStart?.(new Error('Hermes backend start was superseded by a newer connection attempt.'))
 
         return
@@ -13142,6 +13165,8 @@ async function runHermesStart() {
       if (!backendConnectionState.clearForCurrentProcess(processOwner)) {
         rememberLog(`Ignoring stale Hermes backend exit (${signal || code})`)
 
+        scheduleUnexpectedPrimaryRecovery({ code, signal, ready: backendReady })
+
         if (!backendReady) {
           rejectBackendStart?.(new Error('Hermes backend start was superseded by a newer connection attempt.'))
         }
@@ -13150,7 +13175,9 @@ async function runHermesStart() {
       }
 
       rememberLog(`Hermes backend exited (${signal || code})`)
-      sendBackendExit({ code, signal })
+      if (!scheduleUnexpectedPrimaryRecovery({ code, signal, ready: backendReady })) {
+        sendBackendExit({ code, signal })
+      }
 
       if (!backendReady) {
         const message = `Hermes backend exited before it became ready (${signal || code}).${primaryOutputTail.describe()}`
@@ -13188,6 +13215,7 @@ async function runHermesStart() {
     await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
     backendReady = true
+    staleExitRecoveryClaimed = false
     backendStartFailure = null
 
     const authToken = await adoptServedDashboardToken(baseUrl, token, {

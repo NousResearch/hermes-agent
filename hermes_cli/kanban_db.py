@@ -24,7 +24,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from toolsets import get_toolset_names
 
@@ -1218,6 +1218,64 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
     return cleaned
 
 
+#: Columns ``create_task`` populates itself, in INSERT order. Deployment extension
+#: columns (``extra_fields``, declared in the kanban extension-columns overlay) are
+#: appended after these — one list keeps the INSERT and the validation in sync, and a
+#: name here can never be re-assigned through ``extra_fields``.
+_TASK_INSERT_COLUMNS = (
+    "id", "title", "body", "assignee", "status", "priority",
+    "created_by", "created_at", "workspace_kind", "workspace_path",
+    "branch_name", "project_id", "tenant", "idempotency_key",
+    "max_runtime_seconds", "skills", "max_retries", "model_override", "provider_override",
+    "reasoning_effort", "goal_mode", "goal_max_turns", "session_id", "completion_contract",
+)
+
+
+def _quote_ident(name: str) -> str:
+    """SQL-quote an identifier (``"`` doubled). Column names come from the live schema
+    or the validated overlay, never from raw model text."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _validate_extra_fields(
+    conn: sqlite3.Connection, extra_fields: Optional[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Normalize deployment extension columns (``extra_fields``) for the INSERT.
+
+    Every key must name a real ``tasks`` column that ``create_task`` does not already
+    set itself, and every value must be SQLite-bindable. Raises ``ValueError`` — which
+    the kanban tool surface renders as a structured tool error — instead of letting a
+    typo'd name vanish silently or reach SQLite raw.
+    """
+    if not extra_fields:
+        return {}
+    if not isinstance(extra_fields, Mapping):
+        raise ValueError(
+            f"extra_fields must be a mapping of column -> value, got {type(extra_fields).__name__}")
+    try:
+        table_columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+    except sqlite3.Error as exc:
+        raise ValueError(f"could not inspect the tasks table for extension columns: {exc}") from exc
+    normalized: dict[str, Any] = {}
+    for name, value in extra_fields.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("extension column names must be non-empty strings")
+        if name in _TASK_INSERT_COLUMNS:
+            raise ValueError(
+                f"{name!r} is managed by create_task and cannot be passed as an extension column")
+        if name not in table_columns:
+            raise ValueError(
+                f"extension column {name!r} does not exist on the tasks table — run the "
+                f"deployment's migration that creates it, or fix the name declared in the "
+                f"kanban extension-columns overlay")
+        if isinstance(value, (dict, list, tuple, set)):
+            raise ValueError(
+                f"extension column {name!r} must be a scalar (str/int/float/bool/None), "
+                f"got {type(value).__name__}")
+        normalized[name] = value
+    return normalized
+
+
 def create_task(
     conn: sqlite3.Connection, *, title: str, body: Optional[str] = None,
     assignee: Optional[str] = None, created_by: Optional[str] = None,
@@ -1232,6 +1290,7 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    extra_fields: Optional[Mapping[str, Any]] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1247,6 +1306,9 @@ def create_task(
     in the active profile's projects.db — see ``_resolve_project_link``.
     ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
+    ``extra_fields``: values for deployment extension columns (columns added to
+    ``tasks`` outside Hermes and declared in the kanban extension-columns overlay);
+    each name is validated against the live table and appended to the INSERT.
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract
@@ -1279,6 +1341,10 @@ def create_task(
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
+
+    # Deployment extension columns (#109800): validate before any write/idempotency
+    # shortcut so a bad name or unscalarable value fails deterministically.
+    extra_fields = _validate_extra_fields(conn, extra_fields)
 
     project_id, project_obj, project_repo, workspace_kind = _resolve_project_link(
         conn, project_id, project_source_task_id, workspace_kind, workspace_path
@@ -1322,18 +1388,13 @@ def create_task(
                     if not branch_name:
                         branch_name = _project_branch_name(project_obj, task_id, title)
 
+                # One list drives both the column names and the placeholders; deployment
+                # extension columns ride at the end of the same INSERT (#109800).
+                insert_columns = (*_TASK_INSERT_COLUMNS, *extra_fields)
+                columns_sql = ", ".join(_quote_ident(c) for c in insert_columns)
+                placeholders_sql = ", ".join("?" for _ in insert_columns)
                 conn.execute(
-                    """
-                    INSERT INTO tasks (
-                        id, title, body, assignee, status, priority,
-                        created_by, created_at, workspace_kind, workspace_path,
-                        branch_name, project_id, tenant, idempotency_key,
-                        max_runtime_seconds,
-                        skills, max_retries, model_override, provider_override,
-                        reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
+                    f"INSERT INTO tasks ({columns_sql}) VALUES ({placeholders_sql})",
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
                         created_by, now, workspace_kind, workspace_path,
@@ -1342,6 +1403,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        *extra_fields.values(),
                     ),
                 )
                 for pid in parents:

@@ -40,6 +40,7 @@ DEFAULT_CATALOG_DIR = REPO_ROOT / "plugin-catalog"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "website" / "static" / "api"
 
 CATALOG_TIERS = ("official", "community")
+CATALOG_CATEGORIES = ("memory", "desktop", "platform", "web", "tools", "voice", "automation", "models", "other")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -106,6 +107,10 @@ def load_catalog_entries(catalog_dir: Path) -> list[dict]:
         if tier not in CATALOG_TIERS:
             _log(f"{path.name} ({name}): unknown tier {tier!r}, treating as community")
             tier = "community"
+        category = str(raw.get("category") or "other").strip().lower()
+        if category not in CATALOG_CATEGORIES:
+            _log(f"{path.name} ({name}): unknown category {category!r}, treating as other")
+            category = "other"
 
         entries.append({
             "name": name,
@@ -114,6 +119,7 @@ def load_catalog_entries(catalog_dir: Path) -> list[dict]:
             "sha": sha,
             "shaShort": sha[:7],
             "tier": tier,
+            "category": category,
             "maintainer": str(raw.get("maintainer") or "").strip(),
             "subdir": str(raw.get("subdir") or "").strip(),
             "requiresHermes": str(raw.get("requires_hermes") or "").strip(),
@@ -173,10 +179,12 @@ def main(catalog_dir: Path = DEFAULT_CATALOG_DIR, output_dir: Path = DEFAULT_OUT
     removed_count = count_removed(catalog_dir)
 
     by_tier = Counter(e["tier"] for e in entries)
+    by_category = Counter(e["category"] for e in entries)
     meta = {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "total": len(entries),
         "byTier": {tier: by_tier.get(tier, 0) for tier in CATALOG_TIERS},
+        "byCategory": {c: by_category.get(c, 0) for c in CATALOG_CATEGORIES if by_category.get(c)},
         "removedCount": removed_count,
     }
 

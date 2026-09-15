@@ -17,6 +17,7 @@ interface CatalogPlugin {
   sha: string;
   shaShort: string;
   tier: string;
+  category: string;
   maintainer: string;
   subdir?: string;
   requiresHermes?: string;
@@ -32,6 +33,7 @@ interface CatalogMeta {
   generatedAt?: string;
   total?: number;
   byTier?: Record<string, number>;
+  byCategory?: Record<string, number>;
   removedCount?: number;
 }
 
@@ -64,6 +66,22 @@ const TIER_CONFIG: Record<
 };
 
 const TIER_ORDER = ["all", "official", "community"];
+
+// Browse taxonomy. Order here is the order of the filter pills and of the
+// grouped sections; keep it in sync with CATALOG_CATEGORIES in
+// hermes_cli/plugin_catalog.py and website/scripts/extract-plugins.py.
+const CATEGORY_CONFIG: Record<string, { label: string; icon: string; blurb: string }> = {
+  memory: { label: "Memory", icon: "\u{1F9E0}", blurb: "Memory providers and context engines" },
+  desktop: { label: "Desktop", icon: "\u{1F5A5}\u{FE0F}", blurb: "Panes, tabs and views for Hermes Desktop" },
+  platform: { label: "Platforms", icon: "\u{1F4AC}", blurb: "Messaging and channel adapters" },
+  web: { label: "Web & Browser", icon: "\u{1F310}", blurb: "Search backends, extraction and browser control" },
+  tools: { label: "Tools", icon: "\u{1F6E0}\u{FE0F}", blurb: "New tools the agent can call" },
+  voice: { label: "Voice", icon: "\u{1F399}\u{FE0F}", blurb: "Speech, TTS and realtime audio" },
+  automation: { label: "Automation", icon: "\u{23F1}\u{FE0F}", blurb: "Hooks, wake triggers and session automation" },
+  models: { label: "Models", icon: "\u{2728}", blurb: "Model and inference providers" },
+  other: { label: "Other", icon: "\u{1F4E6}", blurb: "Everything else" },
+};
+const CATEGORY_ORDER = Object.keys(CATEGORY_CONFIG);
 
 function formatRelativeTime(iso?: string): string | null {
   if (!iso) return null;
@@ -142,6 +160,7 @@ function PluginCard({
   expanded,
   onToggle,
   onPick,
+  onCategoryClick,
   style,
 }: {
   plugin: CatalogPlugin;
@@ -150,9 +169,11 @@ function PluginCard({
   onToggle: () => void;
   /** Picker embed mode: render "+ Add to this Agent" and call this. */
   onPick?: (plugin: CatalogPlugin) => void;
+  onCategoryClick?: (category: string) => void;
   style?: React.CSSProperties;
 }) {
   const tier = TIER_CONFIG[plugin.tier] || TIER_CONFIG.community;
+  const category = CATEGORY_CONFIG[plugin.category] || CATEGORY_CONFIG.other;
   const caps = plugin.capabilities || {};
   const toolCount = caps.providesTools?.length || 0;
   const hookCount = caps.providesHooks?.length || 0;
@@ -169,7 +190,7 @@ function PluginCard({
 
       <div className={styles.cardInner}>
         <div className={styles.cardTop}>
-          <span className={styles.cardIcon}>{"\u{1F50C}"}</span>
+          <span className={styles.cardIcon} title={category.label}>{category.icon}</span>
           <div className={styles.cardTitleGroup}>
             <h3 className={styles.cardTitle}>{highlightMatch(plugin.name, query)}</h3>
             <span
@@ -190,6 +211,16 @@ function PluginCard({
         </p>
 
         <div className={styles.cardMeta}>
+          <button
+            className={styles.categoryChip}
+            onClick={(e) => {
+              e.stopPropagation();
+              onCategoryClick?.(plugin.category);
+            }}
+            title={`Filter by ${category.label}`}
+          >
+            {category.label}
+          </button>
           {toolCount > 0 && (
             <span className={styles.capChip}>
               {toolCount} tool{toolCount === 1 ? "" : "s"}
@@ -322,6 +353,8 @@ function buildSearchHaystack(p: CatalogPlugin): string {
     p.description,
     p.maintainer,
     p.tier,
+    p.category,
+    CATEGORY_CONFIG[p.category]?.label,
     ...(p.capabilities?.providesTools || []),
     ...(p.capabilities?.providesHooks || []),
     ...(p.capabilities?.requiresEnv || []),
@@ -368,6 +401,7 @@ export default function PluginCatalogPage() {
 
   const [search, setSearch] = useState("");
   const [tierFilter, setTierFilter] = useState("all");
+  const [categoryFilter, setCategoryFilter] = useState("all");
   const [expandedCard, setExpandedCard] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -418,21 +452,67 @@ export default function PluginCatalogPage() {
     const q = search.toLowerCase().trim();
     return allPlugins.filter((p) => {
       if (tierFilter !== "all" && p.tier !== tierFilter) return false;
+      if (categoryFilter !== "all" && p.category !== categoryFilter) return false;
       if (q) return (p._search || "").includes(q);
       return true;
     });
-  }, [search, tierFilter, allPlugins]);
+  }, [search, tierFilter, categoryFilter, allPlugins]);
+
+  // Browse mode (no search, no category picked): render one section per
+  // category so Memory, Desktop, Platforms… read as distinct shelves rather
+  // than one undifferentiated wall. Filtering or searching flattens to a grid.
+  const grouped = useMemo(() => {
+    if (search.trim() || categoryFilter !== "all") return null;
+    const buckets = new Map<string, CatalogPlugin[]>();
+    for (const p of filtered) {
+      const key = CATEGORY_CONFIG[p.category] ? p.category : "other";
+      (buckets.get(key) ?? buckets.set(key, []).get(key)!).push(p);
+    }
+    return CATEGORY_ORDER.filter((c) => buckets.has(c)).map((c) => [c, buckets.get(c)!] as const);
+  }, [filtered, search, categoryFilter]);
+
+  const categoryCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const p of allPlugins) {
+      if (tierFilter !== "all" && p.tier !== tierFilter) continue;
+      const key = CATEGORY_CONFIG[p.category] ? p.category : "other";
+      counts[key] = (counts[key] || 0) + 1;
+    }
+    return counts;
+  }, [allPlugins, tierFilter]);
 
   useEffect(() => {
     setExpandedCard(null);
-  }, [search, tierFilter]);
+  }, [search, tierFilter, categoryFilter]);
 
   const clearAll = useCallback(() => {
     setSearch("");
     setTierFilter("all");
+    setCategoryFilter("all");
+  }, []);
+
+  const pickCategory = useCallback((c: string) => {
+    setCategoryFilter((cur) => (cur === c ? "all" : c));
+    setSearch("");
   }, []);
 
   const catalogEmpty = data !== null && allPlugins.length === 0;
+
+  const renderCard = (plugin: CatalogPlugin, i: number) => {
+    const key = `${plugin.tier}-${plugin.name}`;
+    return (
+      <PluginCard
+        key={key}
+        plugin={plugin}
+        query={search}
+        expanded={expandedCard === key}
+        onToggle={() => setExpandedCard(expandedCard === key ? null : key)}
+        onPick={pickerMode ? pickPlugin : undefined}
+        onCategoryClick={pickCategory}
+        style={{ animationDelay: `${Math.min(i, 20) * 25}ms` }}
+      />
+    );
+  };
 
   return (
     <Layout
@@ -481,6 +561,11 @@ export default function PluginCatalogPage() {
                   value={allPlugins.filter((p) => p.tier === "community").length}
                   label="Community"
                   color="#94a3b8"
+                />
+                <StatCard
+                  value={Object.keys(categoryCounts).length}
+                  label="Categories"
+                  color="#7dd3fc"
                 />
                 <StatCard value={meta.removedCount ?? 0} label="Removed" color="#f87171" />
               </div>
@@ -554,6 +639,34 @@ export default function PluginCatalogPage() {
                 );
               })}
             </div>
+
+            <div className={styles.categoryPills} role="tablist" aria-label="Plugin categories">
+              <button
+                className={`${styles.categoryBtn} ${categoryFilter === "all" ? styles.categoryBtnActive : ""}`}
+                onClick={() => setCategoryFilter("all")}
+                role="tab"
+                aria-selected={categoryFilter === "all"}
+              >
+                All categories
+              </button>
+              {CATEGORY_ORDER.filter((c) => categoryCounts[c]).map((c) => {
+                const conf = CATEGORY_CONFIG[c];
+                const active = categoryFilter === c;
+                return (
+                  <button
+                    key={c}
+                    className={`${styles.categoryBtn} ${active ? styles.categoryBtnActive : ""}`}
+                    onClick={() => pickCategory(c)}
+                    role="tab"
+                    aria-selected={active}
+                    title={conf.blurb}
+                  >
+                    <span aria-hidden="true">{conf.icon}</span> {conf.label}
+                    <span className={styles.tierCount}>{categoryCounts[c]}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         )}
 
@@ -586,23 +699,51 @@ export default function PluginCatalogPage() {
                 </Link>
               </div>
             </div>
+          ) : filtered.length > 0 && grouped ? (
+            grouped.map(([cat, plugins]) => {
+              const conf = CATEGORY_CONFIG[cat];
+              return (
+                <section key={cat} className={styles.categorySection} aria-labelledby={`cat-${cat}`}>
+                  <header className={styles.categoryHeader}>
+                    <h2 id={`cat-${cat}`} className={styles.categoryTitle}>
+                      <span aria-hidden="true">{conf.icon}</span> {conf.label}
+                      <span className={styles.tierCount}>{plugins.length}</span>
+                    </h2>
+                    <p className={styles.categoryBlurb}>{conf.blurb}</p>
+                    <button className={styles.categoryViewAll} onClick={() => pickCategory(cat)}>
+                      View only {conf.label} →
+                    </button>
+                  </header>
+                  <div className={styles.grid}>
+                    {plugins.map((plugin, i) => renderCard(plugin, i))}
+                  </div>
+                </section>
+              );
+            })
           ) : filtered.length > 0 ? (
-            <div className={styles.grid}>
-              {filtered.map((plugin, i) => {
-                const key = `${plugin.tier}-${plugin.name}`;
-                return (
-                  <PluginCard
-                    key={key}
-                    plugin={plugin}
-                    query={search}
-                    expanded={expandedCard === key}
-                    onToggle={() => setExpandedCard(expandedCard === key ? null : key)}
-                    onPick={pickerMode ? pickPlugin : undefined}
-                    style={{ animationDelay: `${Math.min(i, 20) * 25}ms` }}
-                  />
-                );
-              })}
-            </div>
+            <>
+              <div className={styles.resultsBar} role="status">
+                {categoryFilter !== "all" && CATEGORY_CONFIG[categoryFilter] && (
+                  <span>
+                    <span aria-hidden="true">{CATEGORY_CONFIG[categoryFilter].icon}</span>{" "}
+                    <strong>{CATEGORY_CONFIG[categoryFilter].label}</strong>
+                    <span style={{ opacity: 0.7 }}> · {CATEGORY_CONFIG[categoryFilter].blurb}</span>
+                  </span>
+                )}
+                {search.trim() && (
+                  <span>
+                    Results for <strong>“{search.trim()}”</strong>
+                  </span>
+                )}
+                <span>
+                  {filtered.length} plugin{filtered.length === 1 ? "" : "s"}
+                </span>
+                <button className={styles.resultsClear} onClick={clearAll}>
+                  Clear filters
+                </button>
+              </div>
+              <div className={styles.grid}>{filtered.map((plugin, i) => renderCard(plugin, i))}</div>
+            </>
           ) : (
             <div className={styles.empty}>
               <div className={styles.emptyIcon}>{"\u{1F50D}"}</div>

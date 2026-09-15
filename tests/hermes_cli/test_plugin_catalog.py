@@ -30,6 +30,18 @@ def test_shipped_catalog_entries_are_all_valid_and_pinned():
     assert all(e.install_identifier.startswith(e.repo) for e in entries)
 
 
+def test_category_defaults_to_other_and_unknown_category_is_rejected(tmp_path):
+    """``category`` is the browse shelf: absent → ``other``; a value outside CATALOG_CATEGORIES is an
+    invalid entry (skipped with a warning) so a typo cannot create a phantom shelf on the site."""
+    (tmp_path / "a.yaml").write_text(yaml.safe_dump(_entry("no-cat")))
+    (tmp_path / "b.yaml").write_text(yaml.safe_dump(_entry("mem", category="memory")))
+    (tmp_path / "c.yaml").write_text(yaml.safe_dump(_entry("typo", category="memmory")))
+    entries = {e.name: e for e in pc.load_catalog(tmp_path)}
+    assert set(entries) == {"no-cat", "mem"}
+    assert entries["no-cat"].category == "other" and entries["mem"].category == "memory"
+    assert entries["mem"].to_dict()["category"] == "memory"
+
+
 def test_invalid_entries_are_skipped_not_raised(tmp_path):
     (tmp_path / "a.yaml").write_text(yaml.safe_dump(_entry("ok")))
     (tmp_path / "b.yaml").write_text(yaml.safe_dump(_entry("short-sha", sha="abc123")))

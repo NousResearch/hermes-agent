@@ -44,6 +44,8 @@ subdir: ""                  # optional path within the repo
 description: One-line description.
 maintainer: OwnerName
 tier: official              # official | community (default community)
+category: memory            # memory | desktop | platform | web | tools | voice | automation | models | other
+                            # (default other) — the shelf the entry sits on at /docs/plugins
 requires_hermes: ">=0.19"   # optional
 docs_url: ""                # optional
 platforms: []               # optional, e.g. [linux, macos]; empty = all

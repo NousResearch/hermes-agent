@@ -27,6 +27,8 @@ import yaml
 logger = logging.getLogger(__name__)
 
 CATALOG_TIERS = ("official", "community")
+# Browse taxonomy for the catalog page / picker. Entries without one land in "other".
+CATALOG_CATEGORIES = ("memory", "desktop", "platform", "web", "tools", "voice", "automation", "models", "other")
 LIVE_CATALOG_URL = "https://hermes-agent.nousresearch.com/docs/api/plugin-catalog.json"
 LIVE_CATALOG_TTL_SECONDS = 6 * 60 * 60
 _REQUEST_TIMEOUT = 5.0
@@ -60,6 +62,7 @@ class PluginCatalogEntry:
     description: str
     maintainer: str
     tier: str = "community"
+    category: str = "other"
     requires_hermes: str = ""
     subdir: str = ""
     docs_url: str = ""
@@ -75,7 +78,8 @@ class PluginCatalogEntry:
         caps = self.capabilities
         return {
             "name": self.name, "repo": self.repo, "sha": self.sha, "description": self.description,
-            "maintainer": self.maintainer, "tier": self.tier, "requires_hermes": self.requires_hermes,
+            "maintainer": self.maintainer, "tier": self.tier, "category": self.category,
+            "requires_hermes": self.requires_hermes,
             "subdir": self.subdir, "docs_url": self.docs_url, "platforms": list(self.platforms),
             "capabilities": {
                 "provides_tools": list(caps.provides_tools), "provides_hooks": list(caps.provides_hooks),
@@ -104,11 +108,14 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
     repo = str(data.get("repo") or "")
     sha = str(data.get("sha") or "").strip().lower()
     tier = str(data.get("tier") or "community")
+    category = str(data.get("category") or "other")
     problem = (
         f"invalid name {name!r} (must match [a-z0-9_-]{{1,64}})" if not _NAME_RE.match(name)
         else f"repo must be an https:// URL (got {repo!r})" if not repo.startswith("https://")
         else f"sha must be a full 40-character hex commit SHA (got {data.get('sha')!r})" if not _SHA_RE.match(sha)
         else f"tier must be one of {'/'.join(CATALOG_TIERS)} (got {tier!r})" if tier not in CATALOG_TIERS
+        else f"category must be one of {'/'.join(CATALOG_CATEGORIES)} (got {category!r})"
+        if category not in CATALOG_CATEGORIES
         else None)
     if problem:
         logger.warning("Plugin catalog: %s: %s", label, problem)
@@ -118,7 +125,7 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
     return PluginCatalogEntry(
         name=name, repo=repo, sha=sha,
         description=str(data.get("description") or "").strip(),
-        maintainer=str(data.get("maintainer") or "").strip(), tier=tier,
+        maintainer=str(data.get("maintainer") or "").strip(), tier=tier, category=category,
         requires_hermes=str(data.get("requires_hermes") or "").strip(),
         subdir=str(data.get("subdir") or "").strip(), docs_url=str(data.get("docs_url") or "").strip(),
         platforms=_str_list(data.get("platforms")),

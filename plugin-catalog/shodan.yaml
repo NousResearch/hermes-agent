@@ -4,6 +4,7 @@ sha: c7d56211420438bd300c3526b7536f55aafb0fce
 description: Shodan tools with complete capability declarations.
 maintainer: Adolanium
 tier: community
+category: tools
 docs_url: https://github.com/Adolanium/hermes-plugin-shodan#readme
 capabilities:
   provides_tools:

@@ -54,6 +54,51 @@ def _grok_get_bridge(session_id: str):
     return bridge
 
 
+def _grok_delegation_sink(session_id: str):
+    """SPEC §5 step 3: a settled spoken exchange becomes a NORMAL Hermes turn on the open
+    session — mirrors gpt-live's seam exactly (same ``surface: "voice-live"``, same per-turn
+    note function ``tools/voice_live.py::voice_live_turn_note()`` reused verbatim via
+    ``session_notifications._hud_surface_note`` — no new note text is authored here, the
+    single biggest cache-safety guarantee per SPEC §5/§13#1). Never touches the system prompt,
+    the toolset, or the agent's context — only ``prompt.submit``'s existing ``text``/
+    ``voice_context``/``surface``/``queued`` wire params, exactly like a client-issued submit.
+
+    Runs on the bridge's asyncio loop thread; ``prompt.submit`` itself just claims the turn and
+    returns — the actual model call runs on its own daemon thread (``_run_prompt_submit``), so
+    this call does not block the bridge."""
+    def _sink(sid: str, delegation_id: str, prompt: str, context: str) -> None:
+        bridge = _grok_get_bridge(sid)
+
+        def _speak_reply(text: str, status: str) -> None:
+            # A voice reply must be short/speakable prose per SPEC (the per-turn note in
+            # voice_live_turn_note() already instructs the model to answer that way — this
+            # is presentation cleanup of markdown/links only, not a persona rewrite).
+            if bridge is None or not bridge.alive or status != "complete" or not text.strip():
+                return
+            try:
+                from tools.tts_text_normalize import strip_markdown_for_tts
+                spoken = strip_markdown_for_tts(text).strip()
+            except Exception:
+                spoken = text.strip()
+            if spoken:
+                bridge.speak_reply(spoken)
+
+        session = _sessions.get(sid)
+        if not isinstance(session, dict):
+            return
+        # Server-internal only (methods_prompt.py pops it, never a wire param); last delegation
+        # in a session wins if a newer one supersedes an in-flight turn, matching gpt-live's
+        # busyRef-gated interrupt-then-submit semantics (SPEC §13#2).
+        session["_voice_reply_sink"] = _speak_reply
+        submitted = _methods["prompt.submit"](f"grok-delegation-{delegation_id}", {
+            "session_id": sid, "text": prompt, "surface": "voice-live",
+            "voice_context": context, "queued": True})
+        if "error" in submitted:
+            logger.warning("grok-live: delegation prompt.submit failed for session=%s: %s",
+                           sid, submitted["error"])
+    return _sink
+
+
 @method("voice.grok.status")
 def _(rid, params: dict) -> dict:
     """Non-secret Grok-Live readiness verdict — mirrors ``GET /api/audio/voice-live-grok/status``
@@ -93,6 +138,7 @@ def _(rid, params: dict) -> dict:
         logger.debug("voice.grok.start: wake pause failed (best-effort): %s", e)
     from tools.voice_live_grok_bridge import GrokLiveBridge
     bridge = GrokLiveBridge(session_id=session_id, emit=_grok_emit_for(session_id),
+                            delegation_sink=_grok_delegation_sink(session_id),
                             live_config=_grok_live_section())
     with _grok_bridges_lock:
         _grok_bridges[session_id] = bridge

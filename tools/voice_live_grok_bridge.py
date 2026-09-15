@@ -270,6 +270,43 @@ class GrokLiveBridge:
         self._muted = bool(muted)
         return self._muted
 
+    def speak_reply(self, text: str) -> bool:
+        """Make xAI speak ``text`` verbatim (SPEC §5 step 5 / risk #6 — the implementation spike):
+        a Hermes-generated reply the voice model never produced itself needs to be read aloud
+        without re-prompting the model (which would risk paraphrasing or refusing to repeat it).
+
+        xAI's realtime API resolves this with an extension the reference script never needed
+        (it let xAI both hear and answer): ``conversation.item.create`` with ``item.type ==
+        "force_message"`` makes the agent speak a hard-coded, TTS-synthesized line with NO model
+        involvement — no ``response.create`` follows (the force message IS the turn), so it never
+        re-enters function-calling / reasoning (docs.x.ai/developers/model-capabilities/audio/
+        speech-to-speech#force-message, confirmed 2026-09-15). ``interruptible: True`` (default)
+        so the AEC gate's normal barge-in behavior still applies."""
+        loop, ws = self._loop, self._ws
+        text = text.strip()
+        if not text or loop is None or ws is None or self._stop_requested.is_set():
+            return False
+        frame = json.dumps({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "force_message",
+                "role": "assistant",
+                "interruptible": True,
+                "content": [{"type": "output_text", "text": text}],
+            },
+        })
+        loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._send_speak_frame(frame)))
+        return True
+
+    async def _send_speak_frame(self, frame: str) -> None:
+        ws = self._ws
+        if ws is None:
+            return
+        try:
+            await ws.send(frame)
+        except Exception:
+            logger.debug("grok-live: speak_reply send failed", exc_info=True)
+
     def status(self) -> Dict[str, Any]:
         with self._state_lock:
             return {

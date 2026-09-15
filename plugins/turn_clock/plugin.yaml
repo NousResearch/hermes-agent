@@ -1,0 +1,7 @@
+name: turn-clock
+version: 1.0.0
+description: "Per-turn wall-clock time + elapsed-since-last-message, injected into the API copy of the user message (ephemeral, prompt-cache safe)."
+author: zkangping-glitch
+kind: standalone
+provides_hooks:
+  - pre_llm_call

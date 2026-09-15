@@ -404,13 +404,34 @@ def delivery_turn_author(from_profile: Any, from_handle: Any, from_connection: A
             "is_bot": True}
 
 
-def delivery_env(author: Optional[dict]) -> dict[str, str]:
-    """Environment for one delivery turn's ``hermes`` child. The dispatcher's own HERMES_TURN_AUTHOR is
-    dropped first so a delivery without an author never inherits the author of the turn that sent it."""
-    from agent.turn_author import TURN_AUTHOR_ENV, turn_author_env
+def _delivery_child_session_env_names() -> "tuple[str, ...]":
+    """Session-bound env names to strip from a delivery child, from ``gateway.session_context``.
 
-    env = dict(os.environ)
+    Synced with the session binding surface as vars are added; deliberately NOT a
+    ``HERMES_SESSION_*`` prefix match, which would also strip non-identity knobs
+    (e.g. ``HERMES_SESSION_STALL_TIMEOUT``)."""
+    from gateway.session_context import _VAR_MAP
+
+    return tuple(_VAR_MAP)
+
+
+def delivery_env(author: Optional[dict], profile_home: "str | Path | None" = None) -> dict[str, str]:
+    """Environment for one delivery turn's ``hermes -p <profile>`` child. The dispatcher's own
+    HERMES_TURN_AUTHOR is dropped first so a delivery without an author never inherits the author of the turn
+    that sent it. Dispatcher session identity (the canonical ``gateway.session_context`` session env names) is
+    dropped too: a nested recipient that ``message_agent``s onward must not stamp that grandchild
+    notify with the grandparent's key, or the live recipient never resumes. The child runs the target
+    profile's Bot Chat turn, so it starts from THAT profile's env (``served_profile_child_env``: launch
+    profile ``.env`` / TERMINAL_* residue dropped, target secrets overlaid), never the multiplexer's raw
+    ``os.environ``; ``-p`` alone only pinned HERMES_HOME. ``profile_home`` is the target's home when the
+    caller knows it (relay RPC, roster); otherwise the active override."""
+    from agent.turn_author import TURN_AUTHOR_ENV, turn_author_env
+    from tools.environments.local import served_profile_child_env
+
+    env = served_profile_child_env(base=os.environ, target_home=profile_home, inherit_credentials=True)
     env.pop(TURN_AUTHOR_ENV, None)
+    for name in _delivery_child_session_env_names():
+        env.pop(name, None)
     if author:
         env.update(turn_author_env(author))
     return env

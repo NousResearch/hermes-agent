@@ -17,6 +17,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from agent.deadline import kill_process_tree
 from tools.environments.local import hermes_subprocess_env
 
 MIN_CODEX_VERSION = (0, 125, 0)
@@ -32,6 +33,36 @@ class CodexAppServerError(RuntimeError):
 
     def __str__(self) -> str:  # pragma: no cover - trivial
         return f"codex app-server error {self.code}: {self.message}"
+
+
+def _snapshot_descendants(pid: int) -> list[Any]:
+    """psutil handles for ``pid``'s current descendants ([] when psutil is unavailable)."""
+    try:
+        import psutil
+        return psutil.Process(int(pid)).children(recursive=True)
+    except Exception:
+        return []
+
+
+def _reap_snapshotted(descendants: list[Any]) -> None:
+    """SIGTERM the snapshotted descendants (deepest first), then SIGKILL survivors after a
+    bounded wait. psutil identity checks make a recycled PID a no-op."""
+    if not descendants:
+        return
+    import psutil
+    live = []
+    for child in reversed(descendants):
+        with contextlib.suppress(Exception):
+            if child.is_running():
+                child.terminate()
+                live.append(child)
+    try:
+        _, alive = psutil.wait_procs(live, timeout=1.0)
+    except Exception:
+        alive = live
+    for child in alive:
+        with contextlib.suppress(Exception):
+            child.kill()
 
 
 class CodexAppServerClient:
@@ -132,10 +163,16 @@ class CodexAppServerClient:
         return result
 
     def close(self, timeout: float = 3.0) -> None:
-        """Close stdin and wait for the subprocess to exit, escalating to kill."""
+        """Close stdin and wait for the subprocess TREE to exit, escalating to kill.
+
+        Codex app-server owns stdio MCP descendants that may sit in their own process
+        groups (``setsid``). Once the root exits they reparent and a parent walk can no
+        longer find them, so descendants are snapshotted BEFORE the root is retired and
+        the proven identities (PID + create time) are swept afterwards."""
         if self._closed:
             return
         self._closed = True
+        descendants = _snapshot_descendants(self._proc.pid)
         with contextlib.suppress(Exception):
             if self._proc.stdin and not self._proc.stdin.closed:
                 self._proc.stdin.close()
@@ -144,8 +181,10 @@ class CodexAppServerClient:
             self._proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             with contextlib.suppress(Exception):
-                self._proc.kill()
+                kill_process_tree(self._proc.pid)
                 self._proc.wait(timeout=1.0)
+        finally:
+            _reap_snapshotted(descendants)
 
     def __enter__(self) -> "CodexAppServerClient":
         return self

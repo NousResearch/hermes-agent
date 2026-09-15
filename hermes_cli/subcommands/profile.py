@@ -33,6 +33,11 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
              "Two profiles holding one bot token collide; refused when the source is served by a live "
              "multiplexed gateway.")
     profile_create.add_argument(
+        "--sync-imports", action="store_true",
+        help="With --clone/--clone-from: also carry over the `hermes import-agent` sync manifest so "
+             "the new profile stays registered against the same Claude Code / Codex trees "
+             "(`hermes -p <name> import-agent --sync`). Never syncs config from the source profile.")
+    profile_create.add_argument(
         "--no-alias", action="store_true", help="Skip wrapper script creation")
     profile_create.add_argument(
         "--no-skills", action="store_true",

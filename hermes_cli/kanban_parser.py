@@ -373,6 +373,10 @@ _SPECS = [
              help="Originating source chat_type, recorded so the active-wake delivery "
                   "modes resolve the operator's real session. Omit to leave an "
                   "existing sub unchanged (new subs default to 'dm')."),
+        _arg("--parent-chat-id",
+             help="Parent channel ID for a thread or forum post, used for multiplex profile routing."),
+        _arg("--guild-id",
+             help="Discord guild ID, used for multiplex profile routing."),
         _arg("--notifier-profile",
              help="Profile gateway that owns/delivers this subscription (default: active profile)"),
         # choices: single source of truth shared with the DB/watcher enum.

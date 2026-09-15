@@ -24,6 +24,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult,
 )
+from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.egress import (
@@ -659,6 +660,30 @@ class RelayAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=f"{op} transport error: {e}")
 
+    @staticmethod
+    def _task_card_metadata(
+        reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        merged_meta = dict(metadata or {})
+        if reply_to and "thread_ts" not in merged_meta:
+            # Slack card streams are thread replies anchored on the trigger.
+            merged_meta["thread_ts"] = str(reply_to)
+        return merged_meta
+
+    def native_task_card_destination_supported(
+        self, chat_id: str, *, reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Check the actual card-frame placement, not its per-turn card identity."""
+        if self._chat_platform(chat_id) != _SLACK:
+            return True
+        md = self._task_card_metadata(reply_to, metadata)
+        # Connector threadTs(): thread_id ?? thread_ts, and only strings thread.
+        thread = md.get("thread_id")
+        if thread is None:
+            thread = md.get("thread_ts")
+        return isinstance(thread, str)
+
     async def send_native_task_card_progress(
         self,
         chat_id: str,
@@ -678,10 +703,7 @@ class RelayAdapter(BasePlatformAdapter):
 
         See #85476.
         """
-        merged_meta = dict(metadata or {})
-        if reply_to and "thread_ts" not in merged_meta:
-            # Slack card streams are thread replies anchored on the trigger.
-            merged_meta["thread_ts"] = str(reply_to)
+        merged_meta = self._task_card_metadata(reply_to, metadata)
         result = await self._card_frame(
             chat_id, "task_card", reply_to, merged_meta, chunks=[dict(t) for t in tasks]
         )
@@ -1970,7 +1992,7 @@ class RelayAdapter(BasePlatformAdapter):
 
     _PROMPT_UNAVAILABLE = SendResult(success=False, error="relay prompt op unavailable")
 
-    _EA_HEADER = "⚠️ **Command Approval Required**\n\n"
+    _EA_HEADER = f"⚠️ **{EA_HEADER_TEXT}**\n\n"
     _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
     _EA_CMD_BUDGET = 1500
 

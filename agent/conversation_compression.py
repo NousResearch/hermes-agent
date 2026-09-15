@@ -1808,15 +1808,14 @@ def check_compression_model_feasibility(agent: Any) -> None:
         if client is None or not aux_model:
             if _aux_cfg_provider and _aux_cfg_provider != "auto":
                 msg = (
-                    "⚠ Configured auxiliary compression provider "
-                    f"'{_aux_cfg_provider}' is unavailable — context "
-                    "compression will drop middle turns without a summary. "
-                    "Check auxiliary.compression in config.yaml and reauthenticate that provider."
+                    f"⚠ Configured auxiliary compression provider '{_aux_cfg_provider}' is unavailable, "
+                    "so older messages in long chats will be cut without a summary. Sign in to that "
+                    "provider again, or change auxiliary.compression in your config."
                 )
             else:
                 msg = (
-                    "⚠ No auxiliary LLM provider configured — context compression will drop middle turns without a summary. "
-                    "Run `hermes setup` or set OPENROUTER_API_KEY."
+                    "⚠ No auxiliary LLM provider configured: Hermes has no helper model for summarising "
+                    "long chats, so older messages will be cut without a summary. Run `hermes setup` to add one."
                 )
             agent._compression_warning = msg
             agent._emit_status(msg)
@@ -3033,21 +3032,29 @@ def _warn_summary_or_aux_fallback(agent: Any) -> None:
         _aux_key = (_aux_fail_model, _aux_fail_err)
         if _aux_fail_model and getattr(agent, "_last_aux_fallback_warning_key", None) != _aux_key:
             agent._last_aux_fallback_warning_key = _aux_key
+            logger.warning(
+                "Configured compression model %r failed (%s); recovered using the main model.",
+                _aux_fail_model, _aux_fail_err or "unknown error",
+            )
             agent._emit_warning(
-                f"ℹ Configured compression model '{_aux_fail_model}' failed "
-                f"({_aux_fail_err or 'unknown error'}). Recovered using main model — "
-                "check auxiliary.compression.model in config.yaml."
+                f"ℹ Configured compression model '{_aux_fail_model}' failed, so Hermes summarised "
+                "with your main model instead. Check auxiliary.compression.model in your config."
             )
 
 
-def _reset_read_dedup_caches(task_id: str, *, skills: bool = True) -> None:
+def _reset_read_dedup_caches(task_id: str, *, session_id: str = "", skills: bool = True) -> None:
     """Advance the file-read (and skill_view) repeat-read dedup to a fresh generation after a boundary.
     The mtime map is kept: the first read of each unchanged key returns full content compaction may have
     omitted; later reads return stubs, and stub-hit counters restart at the same boundary (#84857).
+    The computer_use screenshot dedup is session-keyed and forgets its last frame for the same reason.
     """
     with contextlib.suppress(Exception):
         from tools.file_tools_read_tracking import reset_file_dedup
         reset_file_dedup(task_id)
+    if session_id:
+        with contextlib.suppress(Exception):
+            from tools.computer_use.tool import reset_screenshot_dedup
+            reset_screenshot_dedup(session_id)
     if not skills:
         return
     with contextlib.suppress(Exception):
@@ -3145,7 +3152,7 @@ def _finish_compaction_boundary(
             )
         else:
             compressor._verify_compaction_cleared_threshold = True
-    _reset_read_dedup_caches(task_id)
+    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
     return _compressed_est
 
 
@@ -3832,7 +3839,7 @@ def _compress_context_via_codex_app_server(
         # armed until a later turn; minimal test engines may lack update_from_response.
         if hasattr(agent.context_compressor, "update_from_response"):
             _record_codex_app_server_usage(agent, result, messages=messages)
-    _reset_read_dedup_caches(task_id, skills=False)
+    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "", skills=False)
     logger.info(
         "codex app-server compaction done: session=%s thread=%s turn=%s", _sid,
         getattr(result, "thread_id", None) or "", getattr(result, "turn_id", None) or "",

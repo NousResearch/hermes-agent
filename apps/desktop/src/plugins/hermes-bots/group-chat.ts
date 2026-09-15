@@ -40,7 +40,7 @@ export const $groupNeedsYou = atom<Record<string, boolean>>({})
 // Members run in invisible plumbing sessions, so a member's blocking prompt
 // used to park server-side with no surface to answer it — the user saw
 // "is thinking…" until the prompt timeout. The turn poll mirrors each
-// member's `pending_clarify` / `pending_approval` resume fields in here;
+// member's `open_requests` / `pending_approval` resume fields in here;
 // the room renders answer cards from it.
 export const $groupClarify = atom<Record<string, GroupPrompt>>({})
 

@@ -5,9 +5,17 @@
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
 
+import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
 export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru'
+
+/** One error-card entry: a short title and one plain sentence. Either may
+ *  take the failing provider's display name (falls back to "the AI service"). */
+export interface ErrorCardCopy {
+  title: string | ((provider: string) => string)
+  body: string | ((provider: string) => string)
+}
 
 export type ToolTitleKey =
   | 'browser_click'
@@ -72,17 +80,15 @@ export interface Translations {
     opening: string
     waiting: string
     timeout: string
-    keepWaiting: string
     refresh: string
     statusError: string
     connectError: string
+    connectErrorFor: (app: string) => string
     unavailable: string
     ownerMissing: string
     search: string
     empty: string
     disclaimer: string
-    connectTitle: (app: string) => string
-    describe: (app: string) => string
     execution: string
   }
   sessionImport: {
@@ -194,15 +200,30 @@ export interface Translations {
       backgroundExited: string
       backgroundExitedDuringStartup: string
       backendStopped: string
+      restartHermes: string
+      openLogs: string
       desktopBootFailed: string
       gatewayConnectionLost: string
       gatewayConnectionLostDetail: string
+      reconnectNow: string
+      connectionSettings: string
       gatewaySignInRequired: string
+      gatewaySignInRequiredDetail: string
+      signInAgain: string
       ipcBridgeUnavailable: string
+    }
+    causes: {
+      exitedEarly: string
+      timedOut: string
+      permission: string
+      diskFull: string
+      portInUse: string
+      installMissing: string
     }
     failure: {
       title: string
       description: string
+      details: string
       remoteTitle: string
       remoteDescription: string
       retry: string
@@ -258,18 +279,28 @@ export interface Translations {
       errorMessage: (name: string) => string
       signIn: string
       view: string
+      disable: string
+      disabledMessage: (name: string) => string
+      disableFailed: (name: string) => string
     }
     errors: {
       elevenLabsNeedsKey: string
       elevenLabsRejectedKey: string
       diskFull: string
+      storageFailure: string
       gatewayAuthFailed: string
       methodNotAllowed: string
       microphonePermission: string
       openaiRejectedApiKey: string
-      openaiRejectedApiKeyWithStatus: (status: string) => string
       openaiTtsNeedsKey: string
       codeSkewRestartRequired: string
+      restartHermesFailed: string
+    }
+    actions: {
+      restartHermes: string
+      openKeys: string
+      openGateways: string
+      openMaintenance: string
     }
     voice: {
       configureSpeechToText: string
@@ -481,7 +512,7 @@ export interface Translations {
         desktopSuccess: (name: string) => string
         agentFailed: string
         desktopFailed: string
-        missingEnv: (vars: string) => string
+        missingEnv: (name: string, vars: string) => string
       }
     }
     vault: {
@@ -606,6 +637,12 @@ export interface Translations {
       terminalFontPlaceholder: string
       terminalFontPreview: string
       terminalFontReset: string
+      chatFontTitle: string
+      chatFontDesc: string
+      chatFontPlaceholder: string
+      chatFontPreview: string
+      chatFontSample: string
+      chatFontReset: string
       translucencyTitle: string
       translucencyDesc: string
       translucencyGlassDesc: string
@@ -656,6 +693,7 @@ export interface Translations {
       technicalDesc: string
       themeTitle: string
       themeDesc: string
+      themeSearchPlaceholder: string
       themeProfileNote: (profile: string) => string
       installTitle: string
       installDesc: string
@@ -706,6 +744,30 @@ export interface Translations {
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
+    uninstallSection: {
+      dangerZone: string
+      confirmUninstall: string
+      uninstallHermes: string
+    }
+    poolLimits: {
+      warmBotBackendsAria: string
+      warmBotBackendsTitle: string
+      backendIdleTimeoutAria: string
+      backendIdleTimeoutTitle: string
+    }
+    customEndpoints: {
+      title: string
+      deleteEndpoint: string
+      emptyDescription: string
+      emptyTitle: string
+      namePlaceholder: string
+      contextPlaceholder: string
+    }
+    computerUse: {
+      accessibility: string
+      screenRecording: string
+      driverHealth: string
+    }
     about: {
       heading: string
       version: (value: string) => string
@@ -765,6 +827,7 @@ export interface Translations {
       attachmentSizeDesc: string
       attachmentSizeUnit: string
       attachmentSizeLabel: string
+      showOptions: string
     }
     quickEntry: {
       enabledTitle: string
@@ -1121,10 +1184,14 @@ export interface Translations {
       setToMain: string
       change: string
       autoUseMain: string
+      inheritMainEffort: string
       providerDefault: string
       fallbackAdd: string
       fallbackEmpty: string
       notInCatalog: string
+      moaTitle: string
+      moaPreset: string
+      moaAggregator: string
       tasks: Record<string, AuxTaskCopy>
     }
     localModels: {
@@ -1175,7 +1242,6 @@ export interface Translations {
       updating: string
       upToDateTitle: string
       upToDateDetail: (tag: string, backend: string) => string
-      updateToast: (next: string) => string
       activeDetail: string
       activeNotLoaded: string
       loadedPill: string
@@ -1319,6 +1385,8 @@ export interface Translations {
       nousAuthDoneTitle: string
       nousAuthDoneMessage: string
       nousAuthFailed: string
+      nousAuthFailedMessage: string
+      nousAuthTryAgain: string
       noApiKeyRequired: string
       postSetupHint: (step: string) => string
       postSetupInstalledHint: string
@@ -1331,6 +1399,8 @@ export interface Translations {
       postSetupCompleteMessage: (step: string) => string
       postSetupErrorTitle: string
       postSetupErrorMessage: (step: string) => string
+      postSetupOpenLogs: string
+      postSetupRunAgain: string
       postSetupFailed: (step: string) => string
       webSearchActive: (backend: string) => string
       webExtractActive: (backend: string) => string
@@ -1362,6 +1432,11 @@ export interface Translations {
         selectedMessage: (backend: string) => string
         failedSelect: (backend: string) => string
         needsSetupHint: string
+        unavailableTitle: string
+        unavailableMessage: (backend: string) => string
+        openBackendSettings: string
+        useLocal: string
+        switchedToLocal: string
       }
       browserRealProfile: {
         label: string
@@ -1514,6 +1589,10 @@ export interface Translations {
       uninstallStarted: (name: string) => string
       updateStarted: string
       actionFailed: string
+      installBlockedTitle: (name: string) => string
+      installBlockedMessage: (findings: number, unverified: boolean) => string
+      viewScan: string
+      openLog: string
       actionLog: string
       alreadyInstalled: (name: string) => string
       pickerTitle: string
@@ -1836,6 +1915,9 @@ export interface Translations {
     restartNow: string
     restarting: string
     restartFailedManual: string
+    restartFailedManualDetail: string
+    restartAgain: string
+    openLogs: string
     telegramQr: {
       title: string
       subtitle: string
@@ -2073,6 +2155,9 @@ export interface Translations {
     search: string
     loading: string
     states: Record<string, string>
+    lastRunFailed: string
+    editJob: string
+    runAgain: string
     deliveryLabels: Record<string, string>
     scheduleLabels: Record<string, string>
     scheduleHints: Record<string, string>
@@ -2682,6 +2767,8 @@ export interface Translations {
     notAvailableTitle: string
     unsupportedMessage: string
     connectionRetry: string
+    connectionSettings: string
+    openDownloadPage: string
     latestBody: string
     latestBodyBackend: string
     allSetTitle: string
@@ -2780,6 +2867,7 @@ export interface Translations {
     remoteUrlPlaceholder: string
     probing: string
     probeError: string
+    probeErrorDetails: string
     identityProvider: string
     authTitle: string
     authNeedsOauth: (provider: string) => string
@@ -2817,6 +2905,7 @@ export interface Translations {
     copiedOutput: string
     copyOutput: string
     reloadRetry: string
+    openLogs: string
   }
 
   onboarding: {
@@ -2852,6 +2941,10 @@ export interface Translations {
     connectedPicking: (provider: string) => string
     signInFailed: string
     signInExpired: string
+    signInDidNotFinish: (provider: string) => string
+    tryAgain: string
+    useApiKeyInstead: string
+    errorDetails: string
     pickDifferentProvider: string
     signInWith: (provider: string) => string
     openedBrowser: (provider: string) => string
@@ -3357,10 +3450,42 @@ export interface Translations {
         runtime: string
         streaming: string
       }
+      /** One plain sentence per layer — what happened and what to do — shown
+       *  when the failure code has no dedicated entry in `errorCodes`. */
+      errorLayerBodies: {
+        auth: string
+        billing: string
+        disk: string
+        endpoint: string
+        gateway: string
+        generic: string
+        provider: string
+        runtime: string
+        streaming: string
+      }
+      /** Per failure code (agent/error_classifier.py FailoverReason values plus
+       *  the gateway's site codes): a title and one plain sentence saying what
+       *  happened and what to do. Function entries take the provider label. */
+      errorCodes: Record<ErrorCodeKey, ErrorCardCopy>
+      /** Auth layer, keyed on how the provider is credentialed. The OAuth
+       *  body is `errorOauthExpired` (already translated per locale). */
+      errorAuthKinds: { api_key: ErrorCardCopy; oauth: Pick<ErrorCardCopy, 'title'> }
+      /** Collapsed "Details" line holding the raw provider/gateway text. */
+      errorDetails: string
+      /** Stands in for the provider name when the descriptor carries none. */
+      errorGenericProvider: string
+      /** Global toast title for a mid-turn gateway `error` event. */
+      errorToastTitle: string
       errorRetry: string
       /** Escape hatch when Retry would only reproduce SESSION_NOT_OWNED (#106217). */
       errorStartNewSession: string
       errorSwitchProvider: string
+      errorChooseModel: string
+      errorCompressConversation: string
+      errorCompressFailed: string
+      errorOpenHermesFolder: string
+      errorOpenHermesFolderFailed: string
+      errorUpdateApiKey: string
       /** One-click recovery for an expired/revoked OAuth grant: re-runs that
        *  provider's sign-in flow (auth layer, authKind 'oauth'). */
       errorSignInAgain: (provider: string) => string
@@ -3396,6 +3521,9 @@ export interface Translations {
     approval: {
       gatewayDisconnected: string
       sendFailed: string
+      reconnect: string
+      timedOutSystemLine: string
+      openSafetySettings: string
       run: string
       command: string
       moreOptions: string
@@ -3425,22 +3553,18 @@ export interface Translations {
       lateAnswerHint: string
     }
     mcpSetup: {
-      installTitle: (server: string) => string
-      enableTitle: (server: string) => string
-      authorizeTitle: (server: string) => string
+      installTitle: string
+      enableTitle: string
+      authorizeTitle: string
       installAction: string
       enableAction: string
       authorizeAction: string
-      decline: string
-      declined: string
       installed: (server: string) => string
       enabled: (server: string) => string
       authorized: (server: string) => string
       failed: (server: string) => string
-      unanswered: string
       toolCount: (count: number) => string
       notInCatalog: (server: string) => string
-      catalogSource: string
       envRequired: string
       sendFailed: string
       reloadFailed: string
@@ -3457,6 +3581,19 @@ export interface Translations {
       copyQuery: string
       copyFile: string
       copyPath: string
+      failedCalls: (count: number) => string
+      skillActivity: {
+        loading: string
+        loaded: string
+        loadFailed: string
+        readingResource: string
+        readResource: string
+        resourceFailed: string
+        listing: string
+        listed: string
+        listFailed: string
+        unavailable: string
+      }
       outputAlt: string
       rawResponse: string
       copyActivity: string
@@ -3469,6 +3606,7 @@ export interface Translations {
       statusRecovered: string
       statusDone: string
       /** Over-budget / rejected memory write title — not "Saved to memory". */
+      resultUnavailable: string
       memoryWriteNoted: string
       actions: {
         read: string
@@ -3501,10 +3639,12 @@ export interface Translations {
 
   prompts: {
     gatewayDisconnected: string
+    reconnect: string
     sudoSendFailed: string
     secretSendFailed: string
     sudoTitle: string
     sudoDesc: string
+    sudoCommandUnavailable: string
     sudoPlaceholder: string
     secretTitle: string
     secretDesc: string
@@ -3609,6 +3749,7 @@ export interface Translations {
       systemNote: (platform: string) => string
       failed: (error: string) => string
       timedOut: string
+      startMessaging: string
     }
   }
 
@@ -3618,6 +3759,7 @@ export interface Translations {
      *  campaign tips, which live outside the rotation's catalog: they carry
      *  a button, and `action` is its label. */
     items: Record<TipId, { title: string; text: string }> & {
+      'local-runtime-update': { title: string; text: string; action: string }
       'local-setup': { title: string; text: string; action: string }
     }
   }
@@ -3626,6 +3768,8 @@ export interface Translations {
     genericFailure: string
     boundaryTitle: string
     boundaryDesc: string
+    boundaryDetails: string
+    sendDiagnostics: string
     reloadWindow: string
     openLogs: string
   }

@@ -186,6 +186,10 @@ def test_call_tool_handler_rebuilds_configured_server_transport(
     mcp_tool._servers["resumed"] = server
     mcp_tool._server_error_counts.pop("resumed", None)
     mcp_tool._server_breaker_opened_at.pop("resumed", None)
+    # Auto-retry after session expiry is only safe (and only performed) for
+    # tools positively annotated read-only; a write may already have
+    # executed server-side (#88821).
+    mcp_tool._tool_read_only_hints.setdefault("resumed", {})["health"] = True
     loop = mcp_tool._mcp_loop
     assert loop is not None
     run_future = asyncio.run_coroutine_threadsafe(
@@ -218,6 +222,7 @@ def test_call_tool_handler_rebuilds_configured_server_transport(
         mcp_tool._servers.pop("resumed", None)
         mcp_tool._server_error_counts.pop("resumed", None)
         mcp_tool._server_breaker_opened_at.pop("resumed", None)
+        mcp_tool._tool_read_only_hints.pop("resumed", None)
 
 
 def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
@@ -278,6 +283,10 @@ def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
     server._reconnect_event = _ReconnectAdapter()
     mcp_tool._servers["hindsight"] = server
     mcp_tool._server_error_counts["hindsight"] = 7
+    # Read-only annotation: the session-expired auto-retry now only fires
+    # for tools positively marked readOnlyHint=True (write-capable calls
+    # get the outcome-unknown path instead).
+    mcp_tool._tool_read_only_hints.setdefault("hindsight", {})["get_bank"] = True
     # Stamp the breaker "open" far enough in the past that the cooldown has
     # provably elapsed, so this call is a half-open probe. The breaker compares
     # against time.monotonic() (tools/mcp_tool.py), whose origin is arbitrary and
@@ -297,6 +306,7 @@ def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
         mcp_tool._servers.pop("hindsight", None)
         mcp_tool._server_error_counts.pop("hindsight", None)
         mcp_tool._server_breaker_opened_at.pop("hindsight", None)
+        mcp_tool._tool_read_only_hints.pop("hindsight", None)
 
 
 def test_session_expired_handler_returns_none_without_loop(monkeypatch):
@@ -327,6 +337,13 @@ def test_session_expired_handler_returns_none_without_loop(monkeypatch):
             "Without an event loop, session-expired handler must fall "
             "through to caller's generic error path — not hang or raise."
         )
+        # A write-capable call still gets the outcome-uncertain verdict: a generic "call failed"
+        # would invite the model to replay a write that may have landed.
+        out = _handle_session_expired_and_retry(
+            "srv-noloop", RuntimeError("Invalid or expired session"), lambda: '{"ok": true}',
+            "tools/call", call_may_have_side_effects=True,
+        )
+        assert out is not None and json.loads(out).get("outcome_uncertain") is True
     finally:
         mcp_tool._servers.pop("srv-noloop", None)
 
@@ -417,3 +434,73 @@ def test_non_tool_handlers_also_reconnect_on_session_expired(
     finally:
         mcp_tool._servers.pop(f"srv-{op_label}", None)
         mcp_tool._server_error_counts.pop(f"srv-{op_label}", None)
+
+
+# ---------------------------------------------------------------------------
+# At-most-once guard for write-capable tools: a session-expired/transport
+# failure on a call that may already have executed server-side must NOT be
+# auto-retried. The transport is healed and an outcome_uncertain error tells
+# the model to verify first. Only readOnlyHint=True tools keep the retry.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("read_only", [False, True], ids=["write-capable", "read-only"])
+def test_session_expired_retry_only_for_read_only_tools(monkeypatch, tmp_path, read_only):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool_handlers import _make_tool_handler
+
+    _mcp_loop._ensure_mcp_loop()
+    server, reconnect_flag = _install_stub_server("srv")
+    call_count = {"n": 0}
+
+    async def _sequence(*a, **kw):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("Session terminated")
+        result = MagicMock()
+        result.is_error = False
+        result.content = [MagicMock(type="text", text="fresh data")]
+        result.structured_content = None
+        return result
+
+    server.session.call_tool = _sequence
+    mcp_tool._servers["srv"] = server
+    mcp_tool._server_error_counts.pop("srv", None)
+    if read_only:
+        mcp_tool._tool_read_only_hints.setdefault("srv", {})["tool"] = True
+    # else: no readOnlyHint entry -> fails safe to write-capable.
+
+    try:
+        parsed = json.loads(_make_tool_handler("srv", "tool", 10.0)({}))
+        assert reconnect_flag.is_set()  # transport healed either way
+        if read_only:
+            assert parsed.get("result") == "fresh data", parsed
+            assert call_count["n"] == 2  # original + one retry
+        else:
+            assert parsed.get("outcome_uncertain") is True, parsed
+            assert "may or may not have taken effect" in parsed["error"]
+            assert call_count["n"] == 1  # exactly one dispatch
+            # Successful reconnect clears breaker state (session-state failure, not server health).
+            assert mcp_tool._server_error_counts.get("srv", 0) == 0
+    finally:
+        mcp_tool._servers.pop("srv", None)
+        mcp_tool._server_error_counts.pop("srv", None)
+        mcp_tool._server_breaker_opened_at.pop("srv", None)
+        mcp_tool._tool_read_only_hints.pop("srv", None)
+
+
+def test_tool_is_read_only_fails_safe():
+    """Unknown server/tool metadata classifies as write-capable (False)."""
+    from tools import mcp_tool
+    from tools.mcp_tool_handlers import _tool_is_read_only
+
+    assert _tool_is_read_only("no-such-server", "tool") is False
+    mcp_tool._tool_read_only_hints["known"] = {"reader": True, "writer": False}
+    try:
+        assert _tool_is_read_only("known", "reader") is True
+        assert _tool_is_read_only("known", "writer") is False
+        assert _tool_is_read_only("known", "unlisted") is False
+    finally:
+        mcp_tool._tool_read_only_hints.pop("known", None)

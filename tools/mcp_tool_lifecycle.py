@@ -201,6 +201,11 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
             clear_selected_status()
         _clear_connect_cooldowns(None if scope is None and names is None else selected_status)
     _loop._stop_mcp_loop(only_if_idle=scope is not None or names is not None)
+    # A removed subset still shares its profile's log with the remaining servers.
+    # Full/profile shutdown must also release handles left by completed CLI/UI probes.
+    if names is None:
+        from tools.mcp_tool_config import _close_mcp_stderr_logs
+        _close_mcp_stderr_logs(scope=scope)
 
 
 def _take_reapable_pids(include_active: bool, server_name: Optional[str]) -> tuple[Dict[int, str], Dict[int, int]]:

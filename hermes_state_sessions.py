@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from agent.session_activity import (
     ActivityProvenance, bound_activity_description, normalize_activity_provenance,
 )
+from hermes_startup_watchdog import report_startup_progress
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _shape_preview,
@@ -744,9 +745,13 @@ class SessionSessionsMixin:
         )
         return self._session_row_dict(row) if row else None
 
-    def get_dominant_session_model_route(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Main-loop model route that served most API calls (``session_model_usage`` keeps the coherent
-        per-call tuple; ``sessions`` mixes route changes)."""
+    def get_recent_session_model_route(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Most recently used main-loop model route as one coherent per-call tuple
+        (``session_model_usage`` keeps model+provider together; ``sessions`` mixes route changes).
+        Recency, not lifetime call count: on a long session a route retired weeks ago can hold the
+        highest ``api_call_count`` forever, and /status and /usage would keep calling it current.
+        ``rowid DESC`` breaks same-timestamp ties toward the route that first appeared later; without
+        it SQLite's temp-sort order is unspecified and the retired route can win."""
         self.flush_token_counts()
         row = self._read_one(
             """SELECT model, billing_provider, billing_base_url, billing_mode,
@@ -756,10 +761,7 @@ class SessionSessionsMixin:
                   AND task = ''
                   AND model <> 'unknown'
                   AND billing_provider <> ''
-                ORDER BY api_call_count DESC,
-                         (input_tokens + output_tokens + cache_read_tokens +
-                          cache_write_tokens + reasoning_tokens) DESC,
-                         last_seen DESC
+                ORDER BY last_seen DESC, rowid DESC
                 LIMIT 1""",
             (session_id,),
         )
@@ -1613,6 +1615,10 @@ class SessionSessionsMixin:
             if last and now - last < min_interval_hours * 3600:
                 result["skipped"] = True
                 return result
+            # Startup-watchdog lease: the archive sweep is I/O-bound (near-zero CPU),
+            # which the watchdog's CPU fallback misreads as a parked deadlock.
+            # No-op when the watchdog is not armed; never raises.
+            report_startup_progress(900.0, phase="state_db_auto_archive")
             archived = result["archived"] = self.archive_stale_sessions(idle_days, exclude_pinned=exclude_pinned)
             # Record even a zero-archive run so we don't re-sweep every call.
             self.set_meta("last_auto_archive", str(now))

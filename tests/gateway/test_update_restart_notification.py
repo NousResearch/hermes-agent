@@ -18,9 +18,9 @@ from gateway.platforms.base import SendResult
 from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
-_PLANNED_RESTART = "⬆️ Updating Hermes"
+_PLANNED_RESTART = "⬆️ Hermes is updating"
 _PLANNED_ONLINE = "⬆️ Update complete — Hermes is back on the new version and ready."
-_GENERIC_RESTART = "⚠️ Gateway restarting — Your current task will be interrupted. "
+_GENERIC_RESTART = "⚠️ Hermes is restarting — your current task will be interrupted. "
 _GENERIC_ONLINE = "♻️ Gateway online — Hermes is back and ready."
 
 
@@ -103,7 +103,7 @@ async def test_restart_notification_says_update_when_marker_present(tmp_path, mo
     assert message.startswith(_PLANNED_RESTART)
     assert "⚠️" not in message
     # The resume hint has to survive the reword — it is the actionable half.
-    assert "resume where you left off" in message
+    assert "pick up where we left off" in message
 
 
 @pytest.mark.asyncio
@@ -128,7 +128,8 @@ async def test_shutdown_without_restart_ignores_update_marker(tmp_path, monkeypa
 
     message = await _shutdown_message(runner, adapter)
 
-    assert message == "⚠️ Gateway shutting down — Your current task will be interrupted."
+    assert message.startswith("⚠️ Hermes is shutting down")
+    assert _PLANNED_RESTART not in message
 
 
 # ── startup notification ───────────────────────────────────────────────────

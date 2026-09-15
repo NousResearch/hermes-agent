@@ -13,6 +13,7 @@ import { $desktopBoot } from '@/store/boot'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 
+import { type LocalBootFailureCopy, localBootFailureCopy } from './boot-failure-cause'
 import type { RemoteReauth } from './boot-failure-reauth'
 import {
   deriveProviderShape,
@@ -229,6 +230,13 @@ export function BootFailureOverlay() {
   const openLogs = () => void window.hermesDesktop?.revealLogs().catch(() => undefined)
   const copy = t.boot.failure
 
+  // SSH failures keep their own gloss; every other local failure is classified
+  // into one plain sentence, raw output collapsed underneath (desktop-05).
+  const failureCopy: LocalBootFailureCopy =
+    connectionConfig?.mode === 'ssh'
+      ? { headline: sshFailureMessage(connectionConfig, boot.error, t.settings.gateway), rawDetail: null }
+      : localBootFailureCopy(boot.error, t.boot.causes)
+
   const label = signInLabel(remoteReauth, {
     identityProvider: copy.identityProvider,
     remoteGateway: copy.signInToRemoteGateway,
@@ -391,7 +399,18 @@ export function BootFailureOverlay() {
 
         <div className="grid gap-4 p-5 pt-0">
           <div className="rounded-2xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-xs text-destructive">
-            {sshFailureMessage(connectionConfig, boot.error, t.settings.gateway)}
+            {failureCopy.headline}
+            {failureCopy.rawDetail ? (
+              <details className="mt-2 text-muted-foreground">
+                <summary className="cursor-pointer select-none font-medium">{copy.details}</summary>
+                <pre
+                  className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap wrap-break-word font-mono text-[0.6875rem] leading-relaxed"
+                  data-selectable-text="true"
+                >
+                  {failureCopy.rawDetail}
+                </pre>
+              </details>
+            ) : null}
           </div>
 
           <div className="grid gap-2">

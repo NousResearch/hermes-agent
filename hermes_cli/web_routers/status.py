@@ -350,11 +350,14 @@ async def _component_health(gateway: Dict[str, Any]) -> Dict[str, Any]:
         components["storage"] = {"status": storage_check.get("status", "degraded")}
     except Exception:
         components["storage"] = {"status": "degraded"}
+    # ``disabled`` entries are platforms the multiplexer deliberately does not run for a served profile
+    # (shared ingress owned by the default) — informational, never a degraded verdict.
     platform_states = [str(value.get("state") or value.get("status") or "").lower()
                        for value in gateway_platforms.values() if isinstance(value, dict)]
+    platform_states = [state for state in platform_states if state != "disabled"]
     connected = sum(1 for state in platform_states if state in _HEALTHY_PLATFORM_STATES)
     components["platforms"] = {"status": "ok" if connected == len(platform_states) else "degraded",
-                               "configured": len(gateway_platforms), "connected": connected}
+                               "configured": len(platform_states), "connected": connected}
     return components
 
 

@@ -27,7 +27,8 @@ from agent.acp_openai_bridge import (
     extract_tool_calls_from_text as _extract_tool_calls_from_text,
     render_tool_bridge_sections as _render_tool_bridge_sections,
 )
-from agent.file_safety import get_read_block_error, get_write_denied_error, is_write_approval_required
+from agent.file_safety import (
+    get_nt_namespace_error, get_read_block_error, get_write_denied_error, is_write_approval_required)
 from agent.redact import redact_sensitive_text
 from tools.environments.local import hermes_subprocess_env
 
@@ -217,7 +218,10 @@ def _render_message_content(content: Any) -> str:
     return str(content).strip()
 
 
-def _ensure_path_within_cwd(path_text: str, cwd: str) -> Path:
+def _ensure_path_within_cwd(path_text: str, cwd: str, *, verb: str) -> Path:
+    # Raw-string check BEFORE resolve(): resolving an NT-namespace path is the NTLM-leak trigger.
+    if nt_error := get_nt_namespace_error(path_text, verb=verb):
+        raise PermissionError(nt_error)
     if not Path(path_text).is_absolute():
         raise PermissionError("ACP file-system paths must be absolute.")
     resolved, root = Path(path_text).resolve(), Path(cwd).resolve()
@@ -237,7 +241,7 @@ def _effective_timeout(timeout: Any) -> float:
 
 
 def _fs_read_text_file(params: dict[str, Any], cwd: str) -> Any:
-    path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd)
+    path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd, verb="Read")
     if block_error := get_read_block_error(str(path)):
         raise PermissionError(block_error)
     try:
@@ -252,7 +256,7 @@ def _fs_read_text_file(params: dict[str, Any], cwd: str) -> Any:
 
 
 def _fs_write_text_file(params: dict[str, Any], cwd: str) -> Any:
-    path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd)
+    path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd, verb="Write")
     if denied := get_write_denied_error(str(path)):
         raise PermissionError(denied)
     if is_write_approval_required(str(path)):  # soft-gated for interactive tools; the ACP shim has no human channel → fail closed

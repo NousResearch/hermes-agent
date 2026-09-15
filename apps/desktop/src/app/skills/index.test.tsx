@@ -177,7 +177,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       ]
     })
 
-      await act(async () => {
+    await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter initialEntries={['/skills?tab=toolsets']}>
@@ -222,7 +222,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       }
     ])
 
-      await act(async () => {
+    await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter initialEntries={['/skills?tab=skills']}>
@@ -265,7 +265,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       }
     ])
 
-      await act(async () => {
+    await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter initialEntries={['/skills?tab=skills']}>
@@ -320,7 +320,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
 
     // Embedded mode drives tabs through local state (the route hooks are
     // mocked here), starting on Skills: the picker mounts with the tab.
-      await act(async () => {
+    await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter initialEntries={['/skills']}>
@@ -378,7 +378,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     // the live surface pointed at ITS backend — the reads must carry the
     // (connection, profile) pin, not a bare profile name that would resolve
     // against the ACTIVE gateway (the wrong-machine bug).
-      await act(async () => {
+    await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter initialEntries={['/skills']}>
@@ -491,7 +491,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       ]
     })
 
-      await act(async () => {
+    await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter initialEntries={['/skills?tab=skills']}>

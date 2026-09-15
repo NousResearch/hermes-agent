@@ -1,9 +1,11 @@
-import { botFriendlyNames, botHandle, mentionNameForms } from './data'
 /**
  * Room-level coordination: who speaks, in what order, for how long — the
  * @mention parse, the round-robin driver, the #93129 member holds, the stop
  * path, and the user send that starts it all.
  */
+import { host } from '@hermes/plugin-sdk'
+
+import { botFriendlyNames, botHandle, mentionNameForms } from './data'
 import { recordGroupActivity } from './group-activity'
 import {
   $groupChats,
@@ -12,15 +14,23 @@ import {
   GROUP_CHAT_MAX_CONTINUATIONS,
   GROUP_CHAT_MAX_MESSAGES,
   GROUP_CHAT_MAX_ROUNDS,
+  groupChatRoomKey,
   groupThreadOf,
   mintGroupThreadId,
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom, GroupHoldStamp } from './group-chat'
-import { durableGroupChatMembers, followGroupChat, groupMemberKey } from './group-membership'
+import {
+  durableGroupChatMembers,
+  followGroupChat,
+  groupMemberKey,
+  groupSessionKey,
+  hasThreadScopedGroupSession
+} from './group-membership'
 import { runGroupContinuationMembers, runGroupRoundMember } from './group-round-members'
 import { rejectGroupSlashCommand } from './group-slash'
-import { harvestStrandedGroupReply } from './group-turns'
+import { GROUP_TURN_HARD_CAP_MS, harvestStrandedGroupReply } from './group-turns'
+import { botsText } from './i18n'
 import { requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupMessage } from './types'
 
@@ -48,10 +58,9 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
 
   for (const member of members) {
     const title = String(member.title || '').trim()
-    // Cross-connection members are also addressable by their @name-device
-    // handle (the roster's disambiguated form) — same-named agents on two
-    // machines resolve to the right one.
-    const handle = String(member.handle || botHandle(member.name, member) || '').trim()
+    // Normalize legacy "default" handles without aliasing device-qualified
+    // defaults to @hermes: that would retarget the primary tag by roster order.
+    const handle = String(botHandle(member.name, member) || '').trim()
 
     const forms = new Set([
       member.name.toLowerCase(),
@@ -354,6 +363,7 @@ export async function stopGroupThread(group: string, thread: null | string, memb
   const room = $groupChats.get()[group] || {}
   const roster = Array.isArray(members) && members.length ? members : room.members || []
   const onTurn = room.turn || null
+  groupChatDrives.get(groupChatRoomKey(group, room))?.pending.clear()
 
   const stamp: GroupHoldStamp = {
     at: Date.now(),
@@ -398,7 +408,15 @@ export async function stopGroupThread(group: string, thread: null | string, memb
   })
 
   // The captured descriptor owns routing even if the roster has changed.
-  const sessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
+  // Sessions are per thread, so a stop targets the session of the thread it
+  // was issued from; an unmigrated room still answers on its bare pointer.
+  const sessions = room.sessions || {}
+  const onTurnKey = onTurn ? groupMemberKey(onTurn) : ''
+
+  const sessionId = onTurn
+    ? sessions[groupSessionKey(thread || 'legacy', onTurn)] ||
+      (hasThreadScopedGroupSession(sessions, onTurnKey) ? null : sessions[onTurnKey])
+    : null
 
   if (onTurn && sessionId) {
     try {
@@ -413,11 +431,11 @@ export async function stopGroupThread(group: string, thread: null | string, memb
 }
 
 /** Drive one bounded round-robin turn for ONE THREAD. Serial — one member at
- *  a time. A newer user send bumps the room epoch; this loop notices at the
- *  next member boundary, bails, and the newest send's own loop takes over.
+ *  a time. User follow-ups queue behind this drive; Stop invalidates its
+ *  epoch and discards queued continuations.
  *  Watermarks are per thread+member (`${thread}::${memberKey}`), so parallel
  *  topics never eat each other's deltas. */
-export async function runGroupChatRounds(group: string, members: GroupMember[], thread: string) {
+export async function runGroupChatRounds(group: string, members: GroupMember[], thread: string, failedMembers = new Set<string>()) {
   const binding = followGroupChat(group, name => {
     group = name
   })
@@ -432,6 +450,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
     members,
     thread,
     startEpoch,
+    failedMembers,
     binding,
     isCurrent
   }
@@ -593,7 +612,8 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
 }
 
 /** Bounded background harvest for members whose replies outlived the turn
- *  loop. Polls every 5s for up to 5 minutes; stops early when nothing is
+ *  loop. Watches for a further hard-cap duration plus a minute of grace
+ *  after foreground polling ends; stops early when nothing is
  *  stranded, a new loop takes the room over (it harvests on its own), or the
  *  room record disappears (disband). */
 async function harvestStrandedUntilSettled(group: string, members: GroupMember[], thread: string) {
@@ -603,7 +623,7 @@ async function harvestStrandedUntilSettled(group: string, members: GroupMember[]
 
   try {
     const HARVEST_INTERVAL_MS = 5000
-    const HARVEST_MAX_TRIES = 60
+    const HARVEST_MAX_TRIES = Math.ceil((GROUP_TURN_HARD_CAP_MS + 60000) / HARVEST_INTERVAL_MS)
 
     for (let attempt = 0; attempt < HARVEST_MAX_TRIES; attempt++) {
       await new Promise(resolve => window.setTimeout(resolve, HARVEST_INTERVAL_MS))
@@ -650,8 +670,8 @@ async function harvestStrandedUntilSettled(group: string, members: GroupMember[]
 
 /** User send into a group room. `thread` continues that thread (its reply
  *  box); omitted/null mints a NEW thread — the main composer's Slack shape.
- *  Appends, bumps the room epoch (supersedes any running loop at its next
- *  member boundary), and starts the turn drive for the target thread.
+ *  Appends and queues the target thread behind the active room drive,
+ *  without redirecting a member whose inference is still in flight.
  *  Returns the thread id the message landed in. */
 export function sendToGroupChat(
   group: string,
@@ -668,7 +688,20 @@ export function sendToGroupChat(
 
   const attached = Array.isArray(images) ? images.filter((img: Attachment) => img && img.data) : []
 
-  if ((!trimmed && !attached.length) || !members.length) {
+  if (!trimmed && !attached.length) {
+    return null
+  }
+
+  // An empty member seat (roster hydration race, meta clobber, legacy room
+  // record without member descriptors) used to swallow the send: a fully
+  // typed message vanished with no thread and no error. Surface it — the
+  // caller keeps the draft, so nothing is lost.
+  if (!members.length) {
+    host.notify({
+      kind: 'error',
+      message: botsText().group.noMembersToSend(group)
+    })
+
     return null
   }
 
@@ -697,10 +730,7 @@ export function sendToGroupChat(
     attached
   )
 
-  const wasRunning = ($groupChats.get()[group] || {}).running === true
   updateGroupChat(group, (room: GroupChatRoom) => {
-    room.epoch = (room.epoch || 0) + 1
-    room.running = true
     // #93129: user text is the ONLY input that changes member holds. An
     // explicit "stop @member" sets a sticky hold; "@member resume" (or
     // @all resume, or any direct non-stop mention of the held member)
@@ -725,36 +755,68 @@ export function sendToGroupChat(
     thread: target
   })
 
-  const binding = followGroupChat(group, name => {
-    group = name
-  })
-
-  const drive = () => {
-    if (!binding.isLive()) {
-      binding.dispose()
-
-      return
-    }
-
-    void runGroupChatRounds(group, members, target)
-      .catch(() => {
-        if (binding.isLive()) {
-          updateGroupChat(group, (r: GroupChatRoom) => {
-            r.running = false
-
-            return r
-          })
-        }
-      })
-      .finally(binding.dispose)
-  }
-
-  if (!wasRunning) {
-    drive()
-  } else {
-    // Preserve the existing newer-send handoff delay, without pinning its name.
-    setTimeout(drive, 250)
-  }
+  queueGroupChatDrive(group, members, target)
 
   return target
+}
+
+interface GroupChatDrive {
+  failedMembers: Set<string>
+  pending: Map<string, GroupMember[]>
+  binding: ReturnType<typeof followGroupChat>
+}
+
+// Keep the owner until its awaited member releases, even after Stop. A
+// rename follows the room identity; disband retires the binding permanently.
+const groupChatDrives = new Map<string, GroupChatDrive>()
+
+function queueGroupChatDrive(group: string, members: GroupMember[], thread: string) {
+  let key = groupChatRoomKey(group, $groupChats.get()[group])
+  const active = groupChatDrives.get(key)
+
+  if (active?.binding.isLive()) {
+    // Only a new user action AFTER failure authorizes another attempt.
+    active.failedMembers.clear()
+    active.pending.set(thread, members)
+
+    return
+  }
+
+  const binding = followGroupChat(group, name => {
+    groupChatDrives.delete(key)
+    group = name
+    key = groupChatRoomKey(group, $groupChats.get()[group])
+    groupChatDrives.set(key, drive)
+  })
+
+  const drive: GroupChatDrive = { pending: new Map([[thread, members]]), failedMembers: new Set(), binding }
+  groupChatDrives.set(key, drive)
+  // Queued threads share the activity epoch, so draining one cannot hide
+  // unresolved failures from the preceding thread. Stop still invalidates it.
+  updateGroupChat(group, room => ({ ...room, epoch: (room.epoch || 0) + 1 }))
+
+  void (async () => {
+    let currentThread = thread
+
+    try {
+      while (binding.isLive() && drive.pending.size) {
+        const [nextThread, nextMembers] = drive.pending.entries().next().value!
+        currentThread = nextThread
+        drive.pending.delete(nextThread)
+        updateGroupChat(group, room => ({ ...room, running: true }))
+        await runGroupChatRounds(group, nextMembers, nextThread, drive.failedMembers)
+      }
+    } catch {
+      if (binding.isLive()) {
+        recordGroupActivity(group, { kind: 'failed', member: null, thread: currentThread })
+        updateGroupChat(group, room => ({ ...room, running: false, turn: null }))
+      }
+    } finally {
+      binding.dispose()
+
+      if (groupChatDrives.get(key) === drive) {
+        groupChatDrives.delete(key)
+      }
+    }
+  })()
 }

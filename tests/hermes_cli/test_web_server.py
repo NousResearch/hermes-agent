@@ -775,15 +775,17 @@ class TestWebServerEndpoints:
         seen = {}
 
         def _pid(pid_path=None, **kw):
-            seen["pid_path"] = pid_path
+            # The served-profile probe also verifies the DEFAULT home's gateway identity; the
+            # contract here is that the worker's OWN pid file is what the scoped rung reads.
+            seen.setdefault("pid_paths", []).append(pid_path)
             return None
 
         def _runtime(path=None):
-            seen["status_path"] = path
+            seen.setdefault("status_paths", []).append(path)
             return None
 
         def _runtime_pid(runtime=None, *, expected_home=None):
-            seen["expected_home"] = expected_home
+            seen.setdefault("expected_homes", []).append(expected_home)
             return None
 
         monkeypatch.setattr(_gw_status, "get_running_pid_cached", _pid)
@@ -795,9 +797,9 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/messaging/platforms?profile=worker")
 
         assert resp.status_code == 200
-        assert seen["pid_path"] == worker_home / "gateway.pid"
-        assert seen["status_path"] == worker_home / "gateway_state.json"
-        assert seen["expected_home"] == worker_home
+        assert worker_home / "gateway.pid" in seen["pid_paths"]
+        assert worker_home / "gateway_state.json" in seen["status_paths"]
+        assert worker_home in seen["expected_homes"]
 
 
 
@@ -4668,7 +4670,7 @@ class TestPtyWebSocket:
             notice = conn.receive_text()
             with pytest.raises(WebSocketDisconnect) as exc:
                 conn.receive_text()
-        assert "Chat unavailable" in notice
+        assert "Chat could not start" in notice
         assert exc.value.code == 1011
         if expect_detail is not None:
             assert expect_detail in notice

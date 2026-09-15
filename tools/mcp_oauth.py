@@ -11,6 +11,8 @@ redirect_host, client_name, client_metadata_url, cimd, user_agent, timeout."""
 import asyncio
 import contextlib
 import contextvars
+import errno
+import html
 import importlib.util as _importlib_util
 import json
 import logging
@@ -23,6 +25,17 @@ import threading
 import time
 import webbrowser
 from functools import partialmethod
+
+# Cross-process advisory file locking for the refresh fence. Mirrors
+# cron/jobs.py: fcntl is Unix-only, msvcrt is the Windows fallback.
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-Unix
+    fcntl = None
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - non-Windows
+    msvcrt = None
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -37,6 +50,122 @@ if TYPE_CHECKING:  # annotations only; the SDK is imported lazily at runtime
     from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthMetadata, OAuthToken
 
 logger = logging.getLogger(__name__)
+
+# The refresh fence's critical section spans the token-endpoint POST, so it must
+# outlast a slow network round trip. Bounded anyway -- a wedged peer must not
+# strand us forever -- but generous enough that a healthy refresh never trips it.
+_REFRESH_FENCE_TIMEOUT_SECONDS = 60.0
+
+class RefreshFenceTimeout(RuntimeError):
+    """The refresh fence could not be acquired within its bound.
+
+    Raised so the caller FAILS CLOSED. Submitting a refresh token we are not
+    certain we own is the whole defect class this fence exists to close: on a
+    provider with single-use refresh tokens it burns the credential and logs
+    the user out of a working session. Aborting this one refresh attempt is
+    strictly cheaper -- the next request retries, and by then the peer that
+    held the fence has published its replacement.
+    """
+
+
+# POSIX flock: EWOULDBLOCK/EAGAIN, EACCES on some NFS; msvcrt.locking: EACCES/EDEADLK.
+# Same set as cron.scheduler._is_lock_contention_errno (not imported: that module is heavy).
+_FENCE_CONTENTION_ERRNOS = frozenset({errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES, errno.EDEADLK})
+
+
+def _refresh_lock_path(path: "Path") -> "Path":
+    return path.with_suffix(path.suffix + ".refresh.lock")
+
+
+async def acquire_refresh_fence(path: "Path", *, timeout: float = _REFRESH_FENCE_TIMEOUT_SECONDS) -> int:
+    """Take the fence that owns one refresh generation across read -> POST -> persist.
+
+    Token files are written atomically (``_write_json``), so a reader never
+    sees a torn file; the only cross-process hazard is the read-modify-write
+    of a single-use refresh token. The damaging interleaving is:
+
+        A: get_tokens() -> R1
+        B: get_tokens() -> R1
+        A: POST R1              -> 200, receives R2
+        B: POST R1              -> 400, credential already burned
+        B: clear_tokens()       -> user is logged out of a live session
+
+    No lock scoped to one file read or write can prevent it: the fence must
+    be held across the POST. It lives in a ``.refresh.lock`` sibling of the
+    token file so the holder can still read/write the tokens normally.
+
+    Entered from the SDK's coroutine-driven auth flow, so the wait is an
+    ``asyncio.sleep`` poll on a non-blocking lock: a peer's slow network
+    round trip must not freeze every other task on this event loop. No
+    in-process lock layer is needed: an advisory lock on a fresh descriptor
+    already excludes sibling tasks and threads of the same process.
+
+    Acquisition failure RAISES. Degrading to "proceed unlocked" would
+    reintroduce the exact race. Returns the locked descriptor; the caller
+    hands it back to ``release_refresh_fence`` from its own exit path (the
+    SDK drives the refresh as a generator, so no single ``with`` block can
+    span the critical section).
+    """
+    lock_path = _refresh_lock_path(path)
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        secure_parent_dir(lock_path)
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as exc:
+        # No lock file means no ownership proof. Fail closed: see the
+        # class docstring for why proceeding is worse than aborting.
+        raise RefreshFenceTimeout(
+            f"refresh fence unavailable ({lock_path.name}): {exc}"
+        ) from exc
+
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                elif msvcrt is not None:
+                    getattr(msvcrt, "locking")(fd, getattr(msvcrt, "LK_NBLCK"), 1)
+                else:  # pragma: no cover - no advisory locking primitive
+                    raise RefreshFenceTimeout(
+                        "refresh fence unsupported: no flock/msvcrt on this platform"
+                    )
+                return fd
+            except OSError as exc:
+                if exc.errno not in _FENCE_CONTENTION_ERRNOS:
+                    # Not "a peer holds it" but "this filesystem cannot lock"
+                    # (e.g. some network mounts). Still fail closed, but say so
+                    # now instead of spinning to the deadline and blaming a peer.
+                    raise RefreshFenceTimeout(
+                        f"refresh fence unavailable on this filesystem: {exc}"
+                    ) from exc
+                if time.monotonic() >= deadline:
+                    raise RefreshFenceTimeout(
+                        f"refresh fence held by a peer for {timeout:.0f}s ({lock_path.name})"
+                    ) from None
+                await asyncio.sleep(0.05)
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def release_refresh_fence(fd: int) -> None:
+    """Unlock and close a descriptor returned by ``acquire_refresh_fence``. Never raises."""
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        elif msvcrt is not None:
+            getattr(msvcrt, "locking")(fd, getattr(msvcrt, "LK_UNLCK"), 1)
+    except OSError:
+        pass
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+
+
+# ---------------------------------------------------------------------------
+# Lazy imports -- MCP SDK with OAuth support is optional
+# ---------------------------------------------------------------------------
 
 # SDK availability is detected WITHOUT importing mcp (~170 ms); classes bind lazily via _sdk_class().
 _OAUTH_AVAILABLE = _importlib_util.find_spec("mcp") is not None
@@ -274,6 +403,11 @@ class HermesTokenStorage:
     def __init__(self, server_name: str, *, hermes_home: str | Path | None = None):
         self._server_name = _safe_filename(server_name)
         self._hermes_home = Path(hermes_home) if hermes_home is not None else None
+        # Issuer binding: ``loaded_issuer`` is what the token file on disk recorded (the authorization
+        # server that granted the stored refresh token); ``_bound_issuer`` is stamped onto the next
+        # ``set_tokens`` write. See ``tools.mcp_oauth_provider.enforce_refresh_token_issuer``.
+        self.loaded_issuer: str | None = None
+        self._bound_issuer: str | None = None
 
     def _path(self, suffix: str) -> Path:
         return _get_token_dir(self._hermes_home) / f"{self._server_name}{suffix}"
@@ -325,8 +459,14 @@ class HermesTokenStorage:
                 implied_expiry = self._tokens_path().stat().st_mtime + int(data["expires_in"])
                 data["expires_in"] = int(max(implied_expiry - time.time(), 0))
 
+    def _fixup_loaded_tokens(self, data: dict) -> None:
+        # ``hermes_issuer`` is Hermes bookkeeping, not an SDK OAuthToken field: pop before validation.
+        self.loaded_issuer = data.pop("hermes_issuer", None)
+        self._rebase_expires_in(data)
+
     async def get_tokens(self) -> "OAuthToken | None":
-        return self._load_model(self._tokens_path(), "OAuthToken", "tokens", self._rebase_expires_in)
+        self.loaded_issuer = None
+        return self._load_model(self._tokens_path(), "OAuthToken", "tokens", self._fixup_loaded_tokens)
 
     async def set_tokens(self, tokens: "OAuthToken") -> None:
         payload = _model_json(tokens)
@@ -334,8 +474,47 @@ class HermesTokenStorage:
         if payload.get("expires_in") is not None:
             with contextlib.suppress(TypeError, ValueError):  # mock tokens / odd shapes: skip, don't fail persistence
                 payload["expires_at"] = time.time() + int(payload["expires_in"])
+        if self._bound_issuer:  # which authorization server granted these tokens (never sent on the wire)
+            payload["hermes_issuer"] = self._bound_issuer
+            self.loaded_issuer = self._bound_issuer
         _write_json(self._tokens_path(), payload)
         logger.debug("OAuth tokens saved for %s", self._server_name)
+
+    def bind_issuer(self, issuer: str | None) -> None:
+        """Set the authorization-server issuer stamped on future token writes."""
+        self._bound_issuer = str(issuer) if issuer else None
+
+    def stamp_issuer(self, issuer: str) -> None:
+        """Backfill ``hermes_issuer`` onto a pre-binding token file: adopt the currently discovered
+        issuer once instead of forcing a re-login, so the *next* read is protected."""
+        data = _read_json(self._tokens_path())
+        if data is None or data.get("hermes_issuer"):
+            return
+        data["hermes_issuer"] = str(issuer)
+        try:
+            _write_json(self._tokens_path(), data)
+        except OSError as exc:  # non-fatal — worst case we stamp next time
+            logger.debug("Could not stamp issuer on tokens for %s: %s", self._server_name, exc)
+            return
+        self.loaded_issuer = str(issuer)
+
+    def strip_refresh_token(self) -> None:
+        """Drop the refresh token (and its issuer record) from disk, keeping the access token: the
+        unexpired access token may still be used, but a refresh token must never go to a different
+        issuer than the one that granted it."""
+        data = _read_json(self._tokens_path())
+        if data is None or not data.get("refresh_token"):
+            return
+        data.pop("refresh_token", None)
+        data.pop("hermes_issuer", None)
+        self.loaded_issuer = None
+        try:
+            _write_json(self._tokens_path(), data)
+        except OSError as exc:
+            logger.warning("Could not strip refresh token for %s: %s", self._server_name, exc)
+            return
+        logger.info("Removed issuer-mismatched refresh token for %s (re-authorization will be required "
+                    "when the access token expires)", self._server_name)
 
     @staticmethod
     def _coerce_secret_auth_method(data: dict) -> bool:
@@ -387,6 +566,8 @@ class HermesTokenStorage:
 
     def remove(self) -> None:
         """Delete all stored OAuth state for this server."""
+        # The ``.refresh.lock`` sidecar is deliberately kept: flock is inode-bound, so unlinking it
+        # while a peer holds the fence would let the next acquirer lock a fresh inode (two holders).
         for p in (*self._state_paths(), self._cimd_rejected_path()):
             p.unlink(missing_ok=True)
 
@@ -473,7 +654,7 @@ def _make_callback_handler() -> tuple[type, dict]:
             parsed = _parse_redirect_query(urlparse(self.path).query)
             result.update(auth_code=parsed["code"], state=parsed["state"], error=parsed["error"], iss=parsed["iss"])
             body = ("<h2>Authorization Successful</h2><p>You can close this tab and return to Hermes.</p>" if parsed["code"]
-                    else f"<h2>Authorization Failed</h2><p>Error: {parsed['error'] or 'unknown'}</p>")
+                    else f"<h2>Authorization Failed</h2><p>Error: {html.escape(parsed['error'] or 'unknown')}</p>")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()

@@ -604,6 +604,73 @@ class TestExternalRotationRecovery:
         assert "AFTER rotation" not in rotated.read_text()
 
 
+def test_eio_from_file_handler_names_the_path_once_then_recovers(tmp_path, capsys):
+    """A failing log destination is named once (no per-record traceback) and writes resume
+    once the file is reachable again."""
+    import io
+
+    class _SickStream(io.TextIOBase):
+        def writable(self):
+            return True
+
+        def write(self, *_a):
+            raise OSError(5, "Input/output error")
+
+        seek = tell = flush = write
+
+    path = tmp_path / "agent.log"
+    handler = hermes_logging._ManagedRotatingFileHandler(
+        str(path), maxBytes=1024, backupCount=1, encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    try:
+        handler.stream.close()
+        handler.stream = _SickStream()
+        for i in range(5):
+            handler.handle(logging.LogRecord("t", logging.INFO, __file__, 0, f"sick {i}", (), None))
+        err = capsys.readouterr().err
+        assert "--- Logging error ---" not in err
+        assert err.count(str(path)) == 1 and "Input/output error" in err
+
+        # Stream dropped, so the next emit reopens the real file and logging resumes.
+        handler.handle(logging.LogRecord("t", logging.INFO, __file__, 0, "recovered", (), None))
+        assert "recovered" in path.read_text(encoding="utf-8")
+    finally:
+        handler.close()
+
+
+def test_eio_after_successful_reopen_still_names_the_path_once(tmp_path, capsys):
+    """The reported case: open() succeeds but every write/seek/flush raises EIO. Reopening must
+    not re-arm the notice, or a stuck device prints the path once per record."""
+    import io
+
+    class _SickStream(io.TextIOBase):
+        def writable(self):
+            return True
+
+        def write(self, *_a):
+            raise OSError(5, "Input/output error")
+
+        seek = tell = flush = write
+
+    path = tmp_path / "agent.log"
+    handler = hermes_logging._ManagedRotatingFileHandler(
+        str(path), maxBytes=1024, backupCount=1, encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    try:
+        handler._builtin_open = lambda *_a, **_kw: _SickStream()
+        handler.stream.close()
+        handler.stream = _SickStream()
+        for i in range(25):
+            handler.handle(logging.LogRecord("t", logging.INFO, __file__, 0, f"sick {i}", (), None))
+        err = capsys.readouterr().err
+        assert "--- Logging error ---" not in err
+        assert err.count(str(path)) == 1
+    finally:
+        handler.close()
+
+
 class TestSafeStderr:
     """Tests for _safe_stderr() — Unicode tolerance on Windows console."""
 
@@ -685,4 +752,3 @@ class TestAsyncQueueLogging:
             "agent.log" in getattr(h, "baseFilename", "")
             for h in hermes_logging._queued_file_handlers
         )
-

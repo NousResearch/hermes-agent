@@ -57,6 +57,11 @@ Hermes ships a curated catalog of MCP servers that Nous staff has reviewed
 and merged. They're disabled by default — install only what you actually
 want.
 
+In the desktop app you can also ask: "add the Linear MCP". The agent calls
+`manage_connections` with an `mcp: true` target, an approval card appears in
+the chat, and Install writes the same config the CLI would. On the CLI and in
+messaging apps the agent relays the commands below instead.
+
 ```bash
 hermes mcp                # interactive picker (default)
 hermes mcp catalog        # plain-text list, scriptable
@@ -270,6 +275,8 @@ mcp_servers:
 ```
 
 On first connect, Hermes prints an authorize URL, opens your browser when possible, and waits for the OAuth callback on a local loopback port. Tokens are cached at `~/.hermes/mcp-tokens/<server>.json` with 0o600 perms; subsequent runs reuse them silently until refresh fails.
+
+Refresh tokens are bound to the authorization server that granted them: Hermes records the discovered issuer alongside the cached tokens and, if a server's advertised authorization server ever changes (server migration, metadata edit, or hijack), the stored refresh token is dropped instead of being sent to the new issuer. The current access token keeps working until it expires, then a normal re-authorization runs against the new issuer.
 
 **Remote / headless hosts.** When Hermes runs on a different machine than your browser, the loopback callback can't reach your laptop. Ways to complete the flow:
 

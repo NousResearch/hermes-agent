@@ -913,6 +913,65 @@ class TestGroupMessageGuard:
         adapter.handle_message.assert_not_called()
 
 
+class TestContentlessEnvelopeGuard:
+    """Meta delivers non-conversational payloads on the same ``messages``
+    webhook field: ``system`` (user_changed_number, and since Aug 11 2026
+    user_changed_user_id BSUID-rotation events), ``reaction`` (emoji taps),
+    and ``unsupported``/``unknown``. None carry a user utterance — without
+    the guard they'd become MessageEvents with empty text and trigger a
+    blank agent turn."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("msg_type,extra", [
+        (
+            "system",
+            {"system": {
+                "type": "user_changed_user_id",
+                "previous_user_id": "bsuid-old",
+                "user_id": "bsuid-new",
+            }},
+        ),
+        (
+            "system",
+            {"system": {"type": "user_changed_number", "body": "changed number"}},
+        ),
+        ("reaction", {"reaction": {"message_id": "wamid.orig", "emoji": "👍"}}),
+        ("unsupported", {"errors": [{"code": 131051, "title": "Unsupported message type"}]}),
+        ("unknown", {}),
+    ])
+    async def test_contentless_envelope_dropped(self, msg_type, extra):
+        adapter = _make_adapter()
+        adapter.handle_message = AsyncMock()
+        raw = {
+            "from": "15551234567",
+            "id": f"wamid.{msg_type}1",
+            "timestamp": "0",
+            "type": msg_type,
+            **extra,
+        }
+        event = await adapter._build_message_event_from_cloud(
+            raw, {"15551234567": "Alice"}, {}
+        )
+        assert event is None
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_plain_text_still_processed(self):
+        adapter = _make_adapter()
+        raw = {
+            "from": "15551234567",
+            "id": "wamid.text1",
+            "timestamp": "0",
+            "type": "text",
+            "text": {"body": "hello"},
+        }
+        event = await adapter._build_message_event_from_cloud(
+            raw, {"15551234567": "Alice"}, {}
+        )
+        assert event is not None
+        assert event.text == "hello"
+
+
 # =========================================================================
 # Phase 9 — Interactive button messages (clarify / approval / slash-confirm)
 # =========================================================================

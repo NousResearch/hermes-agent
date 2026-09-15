@@ -39,7 +39,8 @@ from typing import Any, Dict, Optional, Set
 
 from agent.secret_scope import get_secret
 from gateway.platforms._shared import (
-    apply_yaml_bridge as _apply_yaml_bridge, get_scoped_secret as _get_scoped_secret, send_error
+    apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret,
+    get_scoped_secret as _get_scoped_secret, send_error
 )
 
 try:
@@ -60,6 +61,7 @@ except ImportError:
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
@@ -196,6 +198,36 @@ def _strip_reply_fallback(body: str) -> str:
     return "\n".join(stripped) if stripped else body
 
 
+# Auth errcodes that genuinely require re-authentication (never retried).
+_MATRIX_PERMANENT_ERRCODES = frozenset({
+    "m_unknown_token",
+    "m_missing_token",
+    "m_forbidden",
+})
+
+
+def _is_permanent_matrix_auth_error(exc: BaseException) -> bool:
+    """Return True only for genuine auth failures that must stop the sync loop.
+
+    A transient homeserver outage surfaces as a 5xx whose body may be an HTML
+    error page (Umbrel's app-proxy returns one). Naive substring checks like
+    ``"403" in str(exc)`` false-positive on digits embedded in that HTML (an SVG
+    path coordinate such as ``1403.2`` contains ``403``) or in the ``since`` token
+    echoed by a timeout message, which stopped the sync loop permanently on a
+    passing blip. mautrix raises ``MatrixRequestError`` with ``errcode`` and
+    ``http_status`` for every non-2xx, so classify on those alone; anything
+    without a structured auth signal (timeouts, dropped connections, 5xx) is
+    retried. Deliberately not ``.status``/``.status_code``/``.code``: those
+    belong to unrelated exception shapes (aiohttp responses, OS errno) and can
+    misclassify on a coincidental integer.
+    """
+    errcode = getattr(exc, "errcode", None)
+    if isinstance(errcode, str) and errcode.strip().lower() in _MATRIX_PERMANENT_ERRCODES:
+        return True
+    status = getattr(exc, "http_status", None)
+    return isinstance(status, int) and status in (401, 403)
+
+
 class _MatrixHtmlSanitizer(HTMLParser):
     """Allowlist sanitizer for Matrix-compatible formatted HTML."""
 
@@ -319,10 +351,8 @@ MATRIX_MAX_MESSAGE_LENGTH_CEILING = 65535
 
 def _resolve_max_message_length(config) -> int:
     """Resolve outbound chunk size from config, env, or plugin registry."""
-    raw = (getattr(config, "extra", {}) or {}).get("max_message_length")
-    if raw is None:
-        raw = _get_scoped_secret("MATRIX_MAX_MESSAGE_LENGTH")
-    if raw is None:
+    raw = _extra_or_secret(getattr(config, "extra", None), "max_message_length", "MATRIX_MAX_MESSAGE_LENGTH", None)
+    if raw is None or not str(raw).strip():
         with suppress(Exception):
             from gateway.platform_registry import platform_registry
             entry = platform_registry.get("matrix")
@@ -477,16 +507,14 @@ def _csv_set(raw: Any) -> Set[str]:
 
 
 def _extra_csv_set(config, key: str, env_name: str) -> Set[str]:
-    """Resolve a room/user list from config.extra[key], else the env var."""
-    raw = config.extra.get(key)
-    if raw is None:
-        # Scoped read: under multiplex os.environ is the DEFAULT profile's room/user list.
-        raw = _get_scoped_secret(env_name, "").strip()
-    return _csv_set(raw)
+    """Resolve a room/user list: scoped env var → config.extra[key] → empty."""
+    return _csv_set(_extra_or_secret(config.extra, key, env_name, "", blank_is_unset=False))
 
 
 def _recovery_key_output_path() -> Optional[Path]:
-    output_file = os.getenv("MATRIX_RECOVERY_KEY_OUTPUT_FILE", "").strip()
+    """MATRIX_RECOVERY_KEY_OUTPUT_FILE via the profile-scoped reader: a bare os.getenv under
+    multiplex resolves the default profile's path, writing/finding the wrong profile's file."""
+    output_file = _get_scoped_secret("MATRIX_RECOVERY_KEY_OUTPUT_FILE", "").strip()
     return Path(output_file).expanduser() if output_file else None
 
 
@@ -821,10 +849,10 @@ class MatrixAdapter(BasePlatformAdapter):
         self._auto_thread: bool = self._extra_truthy(config, "auto_thread", "MATRIX_AUTO_THREAD", "true")
         self._dm_auto_thread: bool = _env_truthy("MATRIX_DM_AUTO_THREAD", "false")
         self._dm_mention_threads: bool = self._extra_truthy(config, "dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "false")
-        raw_session_scope = str(config.extra.get("session_scope") or _get_scoped_secret("MATRIX_SESSION_SCOPE", "auto")).strip().lower()
+        raw_session_scope = str(_extra_or_secret(config.extra, "session_scope", "MATRIX_SESSION_SCOPE", "auto")).strip().lower()
         self._matrix_session_scope = raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"
         self._process_notices: bool = self._extra_truthy(config, "process_notices", "MATRIX_PROCESS_NOTICES", "false")
-        self._reactions_enabled: bool = str(_get_scoped_secret("MATRIX_REACTIONS", "true")).lower() not in {"false", "0", "no"}
+        self._reactions_enabled: bool = str(_extra_or_secret(config.extra, "reactions", "MATRIX_REACTIONS", "true")).lower() not in {"false", "0", "no"}
         self._pending_reactions: dict[tuple[str, str], str] = {}
         # Let the final message land before redacting reactions ("missing event" in some
         # clients). 5s is empirically safe; if it must be tunable, use config.yaml not env.
@@ -846,12 +874,13 @@ class MatrixAdapter(BasePlatformAdapter):
         self._approval_timeout_seconds = _env_number("MATRIX_APPROVAL_TIMEOUT_SECONDS", 300, int)
         self._model_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
         self._choice_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
-        # Authz lists via the scoped reader: under multiplex os.environ is the DEFAULT profile's
-        # allowlist, which must not decide who approves tool calls on a secondary bot.
-        self._allowed_user_ids: Set[str] = _csv_set(_get_scoped_secret("MATRIX_ALLOWED_USERS", "").strip())
+        # Authz lists: scoped env → this profile's YAML (``allowed_users`` / ``ignore_user_patterns``,
+        # seeded by the bridge) → empty. Under multiplex os.environ is the DEFAULT profile's allowlist,
+        # which must not decide who approves tool calls on a secondary bot.
+        self._allowed_user_ids: Set[str] = _extra_csv_set(config, "allowed_users", "MATRIX_ALLOWED_USERS")
         self._allowed_room_ids: Set[str] = set(self._allowed_rooms)
         self._ignored_user_patterns: list[re.Pattern[str]] = []
-        for pattern in (p.strip() for p in _get_scoped_secret("MATRIX_IGNORE_USER_PATTERNS", "").strip().split(",") if p.strip()):
+        for pattern in _csv_set(_extra_or_secret(config.extra, "ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS", "")):
             try:
                 self._ignored_user_patterns.append(re.compile(pattern))
             except re.error as exc:
@@ -871,10 +900,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _extra_truthy(config, key: str, env_name: str, default: str) -> bool:
-        """``config.extra[key]`` (YAML-bridged, per profile) else the env var, true/1/yes semantics."""
-        configured = config.extra.get(key)
-        if configured is None:
-            return _env_truthy(env_name, default)
+        """Scoped env var → ``config.extra[key]`` (YAML, per profile) → ``default``; true/1/yes semantics."""
+        configured = _extra_or_secret(config.extra, key, env_name, default)
         return configured if isinstance(configured, bool) else str(configured).lower() in ("true", "1", "yes")
 
     @staticmethod
@@ -891,19 +918,15 @@ class MatrixAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _parse_require_mention(config) -> bool:
-        """require_mention from config.extra, else MATRIX_REQUIRE_MENTION (default true)."""
-        configured = MatrixAdapter._configured_bool(config, "require_mention")
-        if configured is not None:
-            return configured
-        return str(_get_scoped_secret("MATRIX_REQUIRE_MENTION", "true")).lower() not in {"false", "0", "no", "off"}
+        """MATRIX_REQUIRE_MENTION (scoped) → ``require_mention`` in config.extra → true."""
+        configured = _extra_or_secret(config.extra, "require_mention", "MATRIX_REQUIRE_MENTION", True)
+        return configured if isinstance(configured, bool) else str(configured).lower() not in {"false", "0", "no", "off"}
 
     @staticmethod
     def _parse_thread_require_mention(config) -> bool:
-        """thread_require_mention from config.extra, else MATRIX_THREAD_REQUIRE_MENTION (default false)."""
-        configured = MatrixAdapter._configured_bool(config, "thread_require_mention")
-        if configured is not None:
-            return configured
-        return str(_get_scoped_secret("MATRIX_THREAD_REQUIRE_MENTION", "false")).lower() in {"true", "1", "yes", "on"}
+        """MATRIX_THREAD_REQUIRE_MENTION (scoped) → ``thread_require_mention`` in config.extra → false."""
+        configured = _extra_or_secret(config.extra, "thread_require_mention", "MATRIX_THREAD_REQUIRE_MENTION", False)
+        return configured if isinstance(configured, bool) else str(configured).lower() not in {"false", "0", "no", "off"}
 
     @staticmethod
     def _extract_server_ed25519(device_keys_obj: Any) -> Optional[str]:
@@ -1560,7 +1583,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     # Template attrs for the shared _format_exec_approval core (header + fence + reason only;
     # the smart-deny/scope wording lives in the reaction legend below).
-    _EA_HEADER = "⚠️ **Dangerous command requires approval**\n"
+    _EA_HEADER = f"⚠️ **{EA_HEADER_TEXT}**\n"
     _EA_CMD_BUDGET = 2000
 
     async def _send_reaction_prompt(
@@ -1769,13 +1792,9 @@ class MatrixAdapter(BasePlatformAdapter):
         next_batch = await client.sync_store.get_next_batch()  # resume from the initial sync
         while not self._closing:
             try:
-                # 45s outer cap guards TCP-level hangs the 30s long-poll timeout can't catch.
+                # 45s outer cap guards TCP-level hangs the 30s long-poll timeout cannot catch.
+                # mautrix raises on every non-2xx, so a non-dict here is never an error object.
                 sync_data = await asyncio.wait_for(client.sync(since=next_batch, timeout=30000), timeout=45.0)
-                # Auth failures (M_UNKNOWN_TOKEN) arrive as SyncError objects, not exceptions.
-                _sync_msg = getattr(sync_data, "message", None)
-                if isinstance(_sync_msg, str) and "unknown_token" in _sync_msg.lower():
-                    logger.error("Matrix: permanent auth error from sync: %s — stopping", _sync_msg)
-                    return
                 if isinstance(sync_data, dict):
                     next_batch = await self._absorb_sync(client, sync_data) or next_batch
                     await asyncio.sleep(0)  # let fresh invite joins start before the next sync
@@ -1784,8 +1803,9 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception as exc:
                 if self._closing:
                     return
-                if any(k in str(exc).lower() for k in ("401", "403", "unauthorized", "forbidden")):
-                    logger.error("Matrix: permanent auth error: %s — stopping sync", exc)
+                # Detect permanent auth/permission failures. Transient 5xx outages must retry.
+                if _is_permanent_matrix_auth_error(exc):
+                    logger.error("Matrix: permanent auth error, stopping sync: %s", exc)
                     return
                 logger.warning("Matrix: sync error: %s — retrying in 5s", exc)
                 await asyncio.sleep(5)

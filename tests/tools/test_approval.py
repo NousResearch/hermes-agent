@@ -158,6 +158,43 @@ class TestDetectDangerousRm:
                 assert "delete" in desc.lower(), command
 
 
+class TestDynamicShellWordSpellings:
+    """Unquoted brace/glob words that the shell can expand into `find -delete`/`-exec` or into a
+    program-bearing read-tool option require approval. Additive detection of these spellings only:
+    approval is decided from source text, so `$var`-built words are out of scope here."""
+
+    @pytest.mark.parametrize("command", [
+        "find ./missing-approval-target -{delete,print}",
+        "find ./missing-approval-target -del*",
+        "find ./missing-approval-target -delet?",
+        "find ./missing-approval-target -delet[e]",
+        "echo x; find ./missing-approval-target -{delete,print}",
+        "rg --pre{=,=sh} pattern missing-approval-payload.sh",
+        "rg --hostname-bin{=,=sh} pattern file",
+        "sort --compress-program{=,=sh} file",
+        "ag --pager{=,=sh} pattern",
+    ])
+    def test_dynamic_spellings_require_approval(self, command):
+        dangerous, key, desc = detect_dangerous_command(command)
+        assert dangerous is True and key is not None, command
+        assert "dynamic shell word" in desc, command
+
+    @pytest.mark.parametrize("command", [
+        "echo '-{delete,print}' '-del*'",
+        'echo -g"*.py" \'-{delete,print}\' "--pre{=,=sh}"',
+        "find . -name '*.pyc' -print",
+        "find . -name 'log-del*'",
+        "find . -name 'pre-exec*.sh'",
+        "find src -path '*-exec[0-9]*'",
+        "echo find . -{delete,print}",
+        "grep -r 'find . -del*' docs",
+        "rg --pretty pattern file",
+        'rg "--pre*" pattern file',
+    ])
+    def test_inert_spellings_remain_safe(self, command):
+        assert detect_dangerous_command(command) == (False, None, None), command
+
+
 class TestWindowsShellDestructiveCommands:
     def test_windows_destructive_requires_approval(self):
         cases = [

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import importlib
 import json
 import logging
@@ -185,7 +186,25 @@ def _is_retryable_error(exc: BaseException) -> bool:
 
 
 def check_google_chat_requirements() -> bool:
-    """Canonical "are the optional deps available" probe; triggers the lazy import."""
+    """PASSIVE deps probe; must never install. Registry ``check_fn`` uses this via ``_check_for_registry``."""
+    return _load_google_modules()
+
+
+def ensure_google_chat_deps() -> bool:
+    """ACTIVE installer (registry ``ensure_deps_fn``).
+
+    Routes through ``tools.lazy_deps`` so sealed hosted/Docker images write
+    ``HERMES_LAZY_INSTALL_TARGET`` instead of the read-only venv. Resets the
+    failed-import cache so ``create_adapter()`` can load modules after install.
+    ``FeatureUnavailable`` propagates: the registry logs its ``reason`` (quarantine
+    404, no writable target, network), which is exactly what a hosted operator needs.
+    """
+    global _google_modules_loaded, GOOGLE_CHAT_AVAILABLE
+    if GOOGLE_CHAT_AVAILABLE:
+        return True
+    from tools.lazy_deps import ensure as _lazy_ensure
+    _lazy_ensure("platform.google_chat", prompt=False)
+    _google_modules_loaded = False
     return _load_google_modules()
 
 
@@ -366,6 +385,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
         self._project_id = self._subscription_path = self._bot_user_id = None  # bot id is users/{id}
         self._supervisor_task: Optional[asyncio.Task] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        # The profile scope this adapter was connected under (multiplex: HERMES_HOME override + secret
+        # scope). Pub/Sub callbacks arrive on the gRPC SubscriberClient's own threads with an EMPTY
+        # context, and ``run_coroutine_threadsafe`` copies THAT context onto the loop task — so
+        # ``_dispatch_message`` and everything it reaches (attachment cache, per-user OAuth token
+        # store, delivery ledger, TTS keys) would resolve the launch profile. Captured in ``connect()``.
+        self._scope_ctx: Optional[contextvars.Context] = None
         # User-authed Chat clients for native ``media.upload`` (bot identity is rejected
         # there) keyed by sender email; ``_user_credentials``/``_user_chat_api`` = LEGACY fallback.
         self._user_chat_api = self._user_credentials = None
@@ -478,9 +503,13 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return
         try:
             from agent.async_utils import safe_schedule_threadsafe
-            future = safe_schedule_threadsafe(
-                coro, loop, logger=logger, log_message="[GoogleChat] Failed to schedule background callback",
-                log_level=logging.WARNING,
+            # run_coroutine_threadsafe copies the CALLING thread's context onto the loop task; from the
+            # gRPC callback thread that is empty. Run the scheduling inside the adapter's connect-time
+            # scope so the task (and every to_thread/create_task under it) carries the profile.
+            ctx = self._scope_ctx.copy() if self._scope_ctx is not None else contextvars.copy_context()
+            future = ctx.run(
+                safe_schedule_threadsafe, coro, loop, logger=logger,
+                log_message="[GoogleChat] Failed to schedule background callback", log_level=logging.WARNING,
             )
         except RuntimeError:
             logger.warning("[GoogleChat] Loop closed between check and submit")
@@ -590,6 +619,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                                   message="google-cloud-pubsub / google-api-python-client not installed")
             return False
         self._loop = asyncio.get_running_loop()
+        self._scope_ctx = contextvars.copy_context()  # the profile scope connect() runs under (see __init__)
         try:
             project_id, subscription_path = self._validate_config()
             credentials = self._load_sa_credentials()
@@ -764,7 +794,13 @@ class GoogleChatAdapter(BasePlatformAdapter):
     def _on_pubsub_message(self, message: Any) -> None:
         """Pub/Sub callback — parse envelope and dispatch to the asyncio loop.
         Runs in a SubscriberClient worker thread: never block, never raise (that
-        triggers nack + infinite redelivery). Event type comes from ``ce-type``."""
+        triggers nack + infinite redelivery). Event type comes from ``ce-type``. The body runs under
+        the adapter's profile scope (a per-callback copy: a Context cannot be entered concurrently) so
+        ``_save_cached_bot_id`` and the loop hand-off resolve the served profile, not the launch one."""
+        ctx = self._scope_ctx.copy() if self._scope_ctx is not None else contextvars.copy_context()
+        ctx.run(self._handle_pubsub_message, message)
+
+    def _handle_pubsub_message(self, message: Any) -> None:
         if self._shutting_down:
             message.nack()
             return
@@ -1704,6 +1740,7 @@ def register(ctx) -> None:
         label="Google Chat",
         adapter_factory=lambda cfg: GoogleChatAdapter(cfg),
         check_fn=_check_for_registry,
+        ensure_deps_fn=ensure_google_chat_deps,
         validate_config=_validate_config,
         is_connected=_is_connected,
         required_env=["GOOGLE_CHAT_SERVICE_ACCOUNT_JSON"],

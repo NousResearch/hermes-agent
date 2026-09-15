@@ -140,7 +140,10 @@ class PtySession:
 
 
 class RegistryFull(Exception):
-    pass
+    """Every keep-alive slot holds a PTY that some tab is still attached to."""
+
+    def __init__(self, message: str = "Too many chat terminals are open in other tabs; close one and try again.") -> None:
+        super().__init__(message)
 
 
 async def run_reaper(registry: "PtySessionRegistry", *, interval: float = 60.0) -> None:

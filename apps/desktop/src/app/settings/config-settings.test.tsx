@@ -3,7 +3,9 @@ import { cleanup, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { createRef } from 'react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { ConfigSettings as ConfigSettingsType } from './config-settings'
 
 const getHermesConfigRecord = vi.fn()
 const getHermesConfigSchema = vi.fn()
@@ -24,10 +26,14 @@ vi.mock('../hooks/use-on-profile-switch', () => ({
 
 // The real stores pull in the gateway/profile stack, which needs a live
 // backend connection. This page only reads the "applies to" scope override
-// and the repo-discovery signature, neither of which this test touches.
+// and the repo-discovery signature, neither of which this test touches. The
+// scope chip it renders also reads the selected profile and the loud-note
+// selector, so those are stubbed to the single-profile default shape.
 vi.mock('@/store/settings-scope', () => ({
   $settingsRequestProfile: atom<string | undefined>(undefined),
-  $settingsScopeOverride: atom<null | string>(null)
+  $settingsScopeEditsNonDefault: atom(false),
+  $settingsScopeOverride: atom<null | string>(null),
+  $settingsScopeProfile: atom<string>('default')
 }))
 
 vi.mock('@/store/projects', () => ({
@@ -35,6 +41,15 @@ vi.mock('@/store/projects', () => ({
   repoDiscoveryPolicySignature: (policy: unknown) => JSON.stringify(policy),
   scanAndRecordRepos: vi.fn().mockResolvedValue(undefined)
 }))
+
+// The module graph behind ConfigSettings is large (1.5s cold here, >10s on a
+// saturated CI runner); load it once under the hook timeout so the 15s test
+// budget is spent on the autosave behaviour, not on transform + import.
+let ConfigSettings: typeof ConfigSettingsType
+
+beforeAll(async () => {
+  ;({ ConfigSettings } = await import('./config-settings'))
+}, 60_000)
 
 beforeEach(() => {
   getElevenLabsVoices.mockResolvedValue({ available: false })
@@ -47,8 +62,7 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-async function renderConfigSettings() {
-  const { ConfigSettings } = await import('./config-settings')
+function renderConfigSettings() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const importInputRef = createRef<HTMLInputElement>()
 
@@ -70,7 +84,7 @@ describe('ConfigSettings autosave', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
 
     try {
-      await renderConfigSettings()
+      renderConfigSettings()
 
       const toggle = await screen.findByRole('switch')
 

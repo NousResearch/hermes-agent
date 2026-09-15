@@ -113,6 +113,11 @@ _BILLING_ERROR_CODES = frozenset({
     "insufficient_quota", "billing_not_active", "payment_required", "insufficient_credits",
     "no_usable_credits", "balance_depleted", "model_not_supported_on_free_tier",
     "member_spend_cap_exceeded", "terminal_quota_exhausted", _XAI_SPENDING_LIMIT_ERROR_CODE,
+    # OpenAI (and OpenAI-compatible aggregators) spend/usage-limit family:
+    # a credit balance or an org/project spend or usage cap is exhausted —
+    # terminal for this credential until limits are raised.
+    "credit_balance_exhausted", "organization_spend_limit_exceeded",
+    "organization_usage_limit_exceeded", "project_spend_limit_exceeded",
 })
 
 # Transient rate limiting. Bedrock "Throttling error: Too many tokens" also
@@ -785,6 +790,9 @@ def _classify_400(c: _Ctx) -> Verdict:
     if code == "invalid_encrypted_content" or "invalid_encrypted_content" in msg or (
         "encrypted content for item" in msg and "could not be verified" in msg
     ) or "could not decrypt the provided encrypted_content" in msg or (
+        # Custom Responses endpoints wrap a replay rejection in a generic bad_request (#95834).
+        "encrypted content could not be decrypted or parsed" in msg
+    ) or (
         # Azure Foundry (gpt-6-astra) rejects replayed reasoning from several prior responses this way (#105369).
         "conflicting authenticated continuation identities" in msg
     ):

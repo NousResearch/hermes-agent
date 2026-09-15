@@ -36,7 +36,15 @@
 
 export const LEGACY_OAUTH_PARTITION = 'persist:hermes-remote-oauth'
 
-const CONNECTION_PARTITION_PREFIX = `${LEGACY_OAUTH_PARTITION}:conn:`
+// Colon-free ON PURPOSE: Electron escapes ':' in a partition name to '%3A' in
+// the on-disk profile folder, and a Windows profile folder whose name contains
+// '%3A' gets a cookie store the network stack can neither read nor write (a
+// jar seeded into it reads back zero cookies, `cookies.set()` never reaches
+// disk, and every cookie-authenticated request 401s as `no_cookie`). A jar
+// the app cannot see means the dial always looks signed-out and the user is
+// asked to sign in again on every connect. Keep this path component to
+// [A-Za-z0-9._-] — never a character Electron has to escape.
+const CONNECTION_PARTITION_PREFIX = `${LEGACY_OAUTH_PARTITION}-conn-`
 
 export interface PartitionRegistrySnapshot {
   primary?: unknown

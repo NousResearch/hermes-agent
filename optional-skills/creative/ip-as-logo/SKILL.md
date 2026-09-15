@@ -13,9 +13,9 @@ metadata:
     related_skills: [pixel-art]
 ---
 
-# IP as Logo
+# IP as Logo Skill
 
-Create the simplest possible cute IP character: a compact, lovable symbol that remains recognizable at `32 × 32`, not a detailed character illustration. Use when a user wants a mascot, IP character, brand character, or "cute logo" for a product, repo, app, or community.
+Create the simplest possible cute IP character: a compact, lovable symbol that remains recognizable at `32 × 32`, not a detailed character illustration.
 
 > **Hermes adaptation notes** (the rest of this document is the upstream
 > workflow, kept intact — snapshot of
@@ -41,7 +41,16 @@ Create the simplest possible cute IP character: a compact, lovable symbol that r
 >   candidates. Only run `vision_analyze` on a result if the user explicitly
 >   asks for a compliance check.
 
-## Workflow
+## When to Use
+
+Use when a user wants a mascot, IP character, brand character, or "cute logo" for a product, repo, app, or community.
+
+## Prerequisites
+
+- An image-generation backend configured for the built-in `image_generate` tool; check with `hermes tools` and enable one there if the tool reports no backend.
+- `vision_analyze` only for an explicitly requested compliance check; `delegate_task` only for large batches where the user wants speed.
+
+## Procedure
 
 1. Parse the request for an explicit IP subject and available product context. Do not ask the user to choose a color mode unless they explicitly want to control it.
 2. When the user has not specified an IP subject and the current workspace is a product repository, inspect relevant read-only context before asking questions. Prefer the README, product docs, package or app metadata, landing-page copy, manifests, and design tokens. Treat context as sufficient when the product purpose, primary audience, and intended personality can be inferred with reasonable confidence.

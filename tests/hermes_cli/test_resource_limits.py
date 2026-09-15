@@ -100,6 +100,13 @@ def test_unsupported_platform_is_a_safe_noop(monkeypatch):
     assert resource_limits.apply_nofile_soft_limit({}) is False
 
 
+def test_windows_resource_stub_without_rlimit_attributes_is_a_safe_noop(monkeypatch):
+    """Windows can import ``resource`` even when its POSIX API is absent."""
+    monkeypatch.setattr(resource_limits, "_resource", object())
+
+    assert resource_limits.apply_nofile_soft_limit({}) is False
+
+
 def test_fresh_process_import_without_posix_resource_is_a_safe_noop():
     code = textwrap.dedent(
         """

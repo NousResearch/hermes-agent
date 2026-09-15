@@ -27,6 +27,7 @@ from gateway.restart import (
     resolve_cron_drain_budget,
     resolve_systemd_timeout_stop_sec,
 )
+from gateway.shutdown_watchdog import resolve_shutdown_watchdog_delay
 from tests.gateway.restart_test_helpers import make_restart_runner
 
 
@@ -177,15 +178,17 @@ class TestResolveSystemdTimeoutStopSec:
         assert timeout > 60
 
     def test_configured_drain_still_extends_the_deadline_directly(self):
-        assert resolve_systemd_timeout_stop_sec(60.0, 30.0) == 90
-        assert resolve_systemd_timeout_stop_sec(180.0, 30.0) == 210
+        # Each is watchdog-bound: drain + 60s watchdog grace + 10s exit reserve.
+        assert resolve_systemd_timeout_stop_sec(60.0, 30.0) == 130
+        assert resolve_systemd_timeout_stop_sec(180.0, 30.0) == 250
 
     def test_larger_cron_floor_raises_timeout_stop_sec(self):
-        # 60s cron + 10s reserve + 30s headroom = 100s
+        # 60s cron + 10s reserve + 30s headroom = 100s, above the 0+60+10 watchdog budget.
         assert resolve_systemd_timeout_stop_sec(0.0, 60.0) == 100
 
     def test_zero_cron_floor_is_an_opt_out_not_a_hidden_default(self):
-        assert resolve_systemd_timeout_stop_sec(0.0, 0.0) == 60
+        # Cron opted out, but the watchdog still hard-exits at 0+60s, so systemd waits past it.
+        assert resolve_systemd_timeout_stop_sec(0.0, 0.0) == 70
 
     def test_cron_floor_never_shortens_a_long_drain(self):
         assert resolve_systemd_timeout_stop_sec(180.0, 30.0) == resolve_systemd_timeout_stop_sec(
@@ -193,4 +196,12 @@ class TestResolveSystemdTimeoutStopSec:
         )
 
     def test_garbage_inputs_degrade_to_the_floor(self):
-        assert resolve_systemd_timeout_stop_sec("soon", None) == 60
+        # Unparseable drain reads as 0s, leaving the watchdog budget (0+60+10) as the binding term.
+        assert resolve_systemd_timeout_stop_sec("soon", None) == 70
+
+    @pytest.mark.parametrize("drain", [0.0, 30.0, 60.0, 180.0, 600.0])
+    @pytest.mark.parametrize("cron", [0.0, 30.0, 300.0])
+    def test_systemd_never_sigkills_before_the_shutdown_watchdog_hard_exits(self, drain, cron):
+        """The watchdog dumps stacks then ``os._exit``s at drain+grace; systemd SIGKILLing first
+        destroys the only forensic artifact a wedged stop leaves behind (#66892 vs #94759)."""
+        assert resolve_systemd_timeout_stop_sec(drain, cron) > resolve_shutdown_watchdog_delay(drain)

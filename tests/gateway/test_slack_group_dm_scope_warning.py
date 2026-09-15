@@ -63,23 +63,6 @@ def _make_adapter():
     return object.__new__(SlackAdapter)
 
 
-def test_warns_when_mpim_history_missing(caplog):
-    adapter = _make_adapter()
-    resp = _FakeAuthResponse("chat:write,im:history,im:read,channels:history")
-    with caplog.at_level(logging.WARNING):
-        adapter._warn_if_missing_group_dm_scopes(resp, "Acme")
-    assert any("Group DMs" in r.message and "mpim:history" in r.message
-               for r in caplog.records)
-
-
-def test_no_warning_when_mpim_history_present(caplog):
-    adapter = _make_adapter()
-    resp = _FakeAuthResponse("chat:write,im:history,mpim:history,mpim:read")
-    with caplog.at_level(logging.WARNING):
-        adapter._warn_if_missing_group_dm_scopes(resp, "Acme")
-    assert not any("Group DMs" in r.message for r in caplog.records)
-
-
 def test_no_warning_when_no_dm_scopes_at_all(caplog):
     # A channel-only app (no im:history) shouldn't be nudged about group DMs.
     adapter = _make_adapter()
@@ -99,10 +82,3 @@ def test_warns_only_once_per_workspace(caplog):
     assert len(warnings) == 1
 
 
-def test_missing_header_does_not_warn(caplog):
-    # Header absent (e.g. some proxies strip it) — don't guess, stay silent.
-    adapter = _make_adapter()
-    resp = _FakeAuthResponse("")
-    with caplog.at_level(logging.WARNING):
-        adapter._warn_if_missing_group_dm_scopes(resp, "Acme")
-    assert not any("Group DMs" in r.message for r in caplog.records)

@@ -8,6 +8,7 @@ import {
   clearSessionSubagents,
   failedSubagentCount,
   pruneDelegateFallbackSubagents,
+  pruneFinishedSessionSubagents,
   upsertSubagent
 } from './subagents'
 
@@ -130,5 +131,207 @@ describe('subagent store', () => {
 
     expect($subagentsBySession.get().s1).toBeUndefined()
     expect($subagentsBySession.get().s2).toHaveLength(1)
+  })
+
+  // Regression test for #64015: still-RUNNING background subagents must survive
+  // the per-turn wipe that previously dropped them at message.start. The fix
+  // replaces clearSessionSubagents() with pruneFinishedSessionSubagents() at
+  // the use-message-stream message.start handler, so only terminal-status rows
+  // get filtered out.
+  it('pruneFinishedSessionSubagents keeps running/queued and drops terminal rows', () => {
+    upsertSubagent('s1', { goal: 'live-a', status: 'running', subagent_id: 'live-a', task_index: 0 })
+    upsertSubagent('s1', { goal: 'live-b', status: 'queued', subagent_id: 'live-b', task_index: 1 })
+    upsertSubagent('s1', { goal: 'done', status: 'completed', subagent_id: 'done', task_index: 2 })
+    upsertSubagent('s1', { goal: 'broken', status: 'failed', subagent_id: 'broken', task_index: 3 })
+    upsertSubagent('s1', { goal: 'cancelled', status: 'interrupted', subagent_id: 'cancelled', task_index: 4 })
+
+    pruneFinishedSessionSubagents('s1')
+
+    const ids = listFor('s1')
+      .map(item => item.id)
+      .sort()
+
+    expect(ids).toEqual(['live-a', 'live-b'])
+    expect(activeSubagentCount(listFor('s1'))).toBe(2)
+  })
+
+  // Companion test: after prune, a late `subagent.complete` event for a
+  // surviving live row must still be accepted by upsertSubagent (the wipe
+  // path previously silently dropped these).
+  it('surviving live subagents still accept createIfMissing=false completion', () => {
+    upsertSubagent('s1', { goal: 'live', status: 'running', subagent_id: 'live', task_index: 0 })
+
+    pruneFinishedSessionSubagents('s1')
+
+    upsertSubagent(
+      's1',
+      { status: 'completed', subagent_id: 'live', task_index: 0, summary: 'finished later' },
+      false,
+      'subagent.complete'
+    )
+
+    const item = listFor('s1')[0]
+    expect(item?.status).toBe('completed')
+    expect(item?.summary).toBe('finished later')
+  })
+
+  it('pruneFinishedSessionSubagents leaves other sessions untouched', () => {
+    upsertSubagent('s1', { goal: 'live', status: 'running', subagent_id: 'a', task_index: 0 })
+    upsertSubagent('s1', { goal: 'done', status: 'completed', subagent_id: 'b', task_index: 1 })
+    upsertSubagent('s2', { goal: 'live', status: 'running', subagent_id: 'c', task_index: 0 })
+    upsertSubagent('s2', { goal: 'done', status: 'completed', subagent_id: 'd', task_index: 1 })
+
+    pruneFinishedSessionSubagents('s1')
+
+    expect(listFor('s1').map(item => item.id)).toEqual(['a'])
+    expect(
+      listFor('s2')
+        .map(item => item.id)
+        .sort()
+    ).toEqual(['c', 'd'])
+  })
+
+  // Regression test for #73728: backend terminal statuses like `timeout` and
+  // `error` were normalised to `running`, making timed-out subagents immortal
+  // in the active status stack. `cancelled`/`canceled` must also map to
+  // `interrupted`.
+  it('normalises backend terminal statuses to recognised SubagentStatus values', () => {
+    upsertSubagent('s1', { goal: 'a', status: 'running', subagent_id: 'a', task_index: 0 })
+    upsertSubagent('s1', { goal: 'b', status: 'running', subagent_id: 'b', task_index: 1 })
+    upsertSubagent('s1', { goal: 'c', status: 'running', subagent_id: 'c', task_index: 2 })
+    upsertSubagent('s1', { goal: 'd', status: 'running', subagent_id: 'd', task_index: 3 })
+
+    // Emit terminal events with backend-native status strings
+    upsertSubagent(
+      's1',
+      { status: 'timeout', subagent_id: 'a', task_index: 0, summary: 'timed out' },
+      false,
+      'subagent.complete'
+    )
+    upsertSubagent(
+      's1',
+      { status: 'error', subagent_id: 'b', task_index: 1, summary: 'errored' },
+      false,
+      'subagent.complete'
+    )
+    upsertSubagent('s1', { status: 'cancelled', subagent_id: 'c', task_index: 2 }, false, 'subagent.complete')
+    upsertSubagent('s1', { status: 'canceled', subagent_id: 'd', task_index: 3 }, false, 'subagent.complete')
+
+    const items = listFor('s1')
+    const byId = Object.fromEntries(items.map(i => [i.id, i]))
+
+    // timeout → failed
+    expect(byId['a']?.status).toBe('failed')
+    expect(byId['a']?.currentTool).toBeUndefined()
+
+    // error → failed
+    expect(byId['b']?.status).toBe('failed')
+
+    // cancelled → interrupted
+    expect(byId['c']?.status).toBe('interrupted')
+
+    // canceled → interrupted
+    expect(byId['d']?.status).toBe('interrupted')
+
+    // All four are terminal — prune should remove them all
+    pruneFinishedSessionSubagents('s1')
+    expect(listFor('s1')).toHaveLength(0)
+  })
+
+  // The backend completes subagents with status "timeout" (hard child timeout,
+  // delegation.child_timeout_seconds) and no summary — synthesize the reason
+  // so the failed row explains itself instead of rendering as a bare failure.
+  it('maps backend timeout status to a terminal failure with a synthesized reason', () => {
+    upsertSubagent('s1', { goal: 'scan files', status: 'running', subagent_id: 't1', task_index: 0 })
+    upsertSubagent(
+      's1',
+      { status: 'timeout', subagent_id: 't1', task_index: 0, duration_seconds: 612.3 },
+      false,
+      'subagent.complete'
+    )
+
+    const item = listFor('s1')[0]
+    expect(item?.status).toBe('failed')
+    expect(item?.durationSeconds).toBe(612.3)
+    expect(item?.summary).toBe('Timed out after 612.3s')
+
+    // A timed-out row must be pruned at the next message.start boundary like
+    // any other finished row — it must not linger as a live spinner.
+    pruneFinishedSessionSubagents('s1')
+    expect(listFor('s1')).toHaveLength(0)
+  })
+
+  it('falls back to a placeholder when timeout duration is missing', () => {
+    upsertSubagent('s1', { goal: 'scan files', status: 'running', subagent_id: 't2', task_index: 0 })
+    upsertSubagent('s1', { status: 'timeout', subagent_id: 't2', task_index: 0 }, false, 'subagent.complete')
+
+    expect(listFor('s1')[0]?.summary).toBe('Timed out after ?s')
+  })
+
+  // Fail-closed guard: subagent.complete is terminal by definition, so an
+  // unrecognized status on it must not resurrect a row as 'running'. Live
+  // events keep the lenient fallback (a status we don't know is still active).
+  it('fails closed on unrecognized completion statuses but stays lenient for live events', () => {
+    upsertSubagent('s1', { goal: 'scan files', status: 'running', subagent_id: 'u1', task_index: 0 })
+    upsertSubagent(
+      's1',
+      { status: 'some_future_terminal_status', subagent_id: 'u1', task_index: 0 },
+      false,
+      'subagent.complete'
+    )
+    expect(listFor('s1')[0]?.status).toBe('failed')
+    expect(activeSubagentCount(listFor('s1'))).toBe(0)
+
+    upsertSubagent('s1', { goal: 'scan files', status: 'running', subagent_id: 'u2', task_index: 1 })
+    upsertSubagent(
+      's1',
+      { status: 'some_future_live_status', subagent_id: 'u2', task_index: 1, text: 'still working' },
+      false,
+      'subagent.progress'
+    )
+    expect(listFor('s1')[1]?.status).toBe('running')
+    expect(activeSubagentCount(listFor('s1'))).toBe(1)
+  })
+
+  // Folded in from PR #85995: a subagent.complete carrying a still-active
+  // payload status ('running'/'queued') must also settle as failed — the
+  // event itself is the source of truth that the child is done.
+  it.each(['running', 'queued'] as const)(
+    'treats a completion event with %s payload status as terminal failure',
+    status => {
+      upsertSubagent(
+        's1',
+        {
+          goal: 'inconsistent completion',
+          status: 'running',
+          subagent_id: 'ic1',
+          task_index: 0,
+          tool_name: 'search_files'
+        },
+        true,
+        'subagent.start'
+      )
+      upsertSubagent('s1', { status, subagent_id: 'ic1', task_index: 0 }, false, 'subagent.complete')
+
+      const items = listFor('s1')
+      expect(items[0]?.status).toBe('failed')
+      expect(items[0]?.currentTool).toBeUndefined()
+      expect(activeSubagentCount(items)).toBe(0)
+    }
+  )
+
+  // Folded in from PR #80045 (#80018): a late progress event must not revive
+  // the spinner after a terminal completion — the row stays settled.
+  it('does not regress to running when a late running event arrives after timeout', () => {
+    upsertSubagent('s1', { goal: 'task', status: 'running', subagent_id: 'late1', task_index: 0 })
+    upsertSubagent(
+      's1',
+      { goal: 'task', status: 'timeout', subagent_id: 'late1', summary: 'Timed out', task_index: 0 },
+      true,
+      'subagent.complete'
+    )
+    upsertSubagent('s1', { goal: 'task', status: 'running', subagent_id: 'late1', task_index: 0, text: 'late' })
+
+    expect(listFor('s1')[0]?.status).toBe('failed')
   })
 })

@@ -1,7 +1,7 @@
+import type { ModelOptionProvider } from '@hermes/shared/gateway-events'
 import { describe, expect, it } from 'vitest'
 
 import { providerIndexAfterClearingFilter } from '../components/modelPicker.js'
-import type { ModelOptionProvider } from '../gatewayTypes.js'
 
 const provider = (slug: string, name = slug): ModelOptionProvider => ({ name, slug })
 
@@ -21,9 +21,7 @@ describe('ModelPicker provider filtering', () => {
   })
 
   it('returns -1 when provider is undefined', () => {
-    const rows = [
-      { name: 'A', provider: provider('a') }
-    ]
+    const rows = [{ name: 'A', provider: provider('a') }]
 
     expect(providerIndexAfterClearingFilter(rows, undefined)).toBe(-1)
   })

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import {
   Activity,
   Brain,
@@ -45,9 +45,20 @@ import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { HermesConsoleModal } from "@/components/HermesConsoleModal";
 import { cn, themedBody } from "@/lib/utils";
 import { api } from "@/lib/api";
+import { copyTextToClipboard } from "@/lib/clipboard";
+import {
+  gatewayStateNeedsLogs,
+  gatewayStateDescription,
+  gatewayActionFailedMessage,
+  servedProfileRefusal,
+  sharedGatewayProfiles,
+  sharedGatewayRestartDescription,
+  sharedGatewayRestartedMessage,
+} from "@/lib/shared-gateway";
 import type {
   StatusResponse,
   MemoryStatus,
+  MemoryProviderInfo,
   CredentialPoolProvider,
   CheckpointsResponse,
   HooksResponse,
@@ -57,7 +68,9 @@ import type {
   CuratorStatus,
   PortalStatus,
   DebugShareResponse,
+  GatewayMigratePlan,
 } from "@/lib/api";
+import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -171,6 +184,23 @@ const HOOK_EVENTS_FALLBACK = [
   "on_session_end",
 ];
 
+const MEMORY_STATUS_LABEL: Record<MemoryProviderInfo["status"], string> = {
+  ready: "ready",
+  needs_config: "needs setup",
+  unavailable: "unavailable",
+  missing: "missing",
+};
+
+const MEMORY_STATUS_TONE: Record<
+  MemoryProviderInfo["status"],
+  "success" | "warning" | "destructive" | "secondary"
+> = {
+  ready: "success",
+  needs_config: "warning",
+  unavailable: "destructive",
+  missing: "destructive",
+};
+
 export default function SystemPage() {
   const { toast, showToast } = useToast();
 
@@ -188,6 +218,7 @@ export default function SystemPage() {
 
   const [activeAction, setActiveAction] = useState<string | null>(null);
   const [consoleOpen, setConsoleOpen] = useState(false);
+  const [migratePlan, setMigratePlan] = useState<GatewayMigratePlan | null>(null);
 
   // Add-credential form.
   const [credProvider, setCredProvider] = useState("openrouter");
@@ -247,8 +278,9 @@ export default function SystemPage() {
       // Cached (non-forced) check so the version row shows update status on
       // load without a separate effect / a forced network round-trip.
       api.checkHermesUpdate(false),
+      api.getGatewayMigratePlan(),
     ])
-      .then(([s, st, m, p, c, h, cur, prt, upd]) => {
+      .then(([s, st, m, p, c, h, cur, prt, upd, mig]) => {
         if (s.status === "fulfilled") setStatus(s.value);
         if (st.status === "fulfilled") setStats(st.value);
         if (m.status === "fulfilled") setMemory(m.value);
@@ -258,6 +290,7 @@ export default function SystemPage() {
         if (cur.status === "fulfilled") setCurator(cur.value);
         if (prt.status === "fulfilled") setPortal(prt.value);
         if (upd.status === "fulfilled") setUpdateInfo(upd.value);
+        if (mig.status === "fulfilled") setMigratePlan(mig.value);
       })
       .finally(() => setLoading(false));
   }, []);
@@ -267,7 +300,14 @@ export default function SystemPage() {
   }, [loadAll]);
 
   // ── Gateway lifecycle ──────────────────────────────────────────────
-  const runGateway = async (verb: "start" | "stop" | "restart") => {
+  // A profile served by the shared multiplexer has no gateway of its own: Restart restarts
+  // the ONE process every bot on this device runs in, so confirm first and say so after;
+  // Start/Stop answer 409 with an explanation that belongs in a notice, not a raw error.
+  const sharedGateway = sharedGatewayProfiles(status);
+  const [sharedRestartOpen, setSharedRestartOpen] = useState(false);
+  const [servedNotice, setServedNotice] = useState<string | null>(null);
+  const runGateway = async (verb: "start" | "stop" | "restart"): Promise<boolean> => {
+    setServedNotice(null);
     try {
       if (verb === "start") {
         await api.startGateway();
@@ -281,8 +321,50 @@ export default function SystemPage() {
       }
       showToast(`Gateway ${verb} started`, "success");
       setTimeout(loadAll, 3000);
+      return true;
     } catch (e) {
-      showToast(`Gateway ${verb} failed: ${e}`, "error");
+      const refusal = servedProfileRefusal(e);
+      if (refusal) {
+        setServedNotice(refusal);
+        return false;
+      }
+      showToast(gatewayActionFailedMessage(verb, errorMessage(e), e), "error");
+      return false;
+    }
+  };
+  const requestRestart = () => {
+    if (sharedGateway) {
+      setSharedRestartOpen(true);
+      return;
+    }
+    void runGateway("restart");
+  };
+  // Same completion rule as the Desktop: the restart child exiting 0, or still running when the
+  // bounded poll ends (in a no-service install it BECOMES the gateway and never exits), is
+  // success — then the "(N bots)" toast; a non-zero exit is the action log's failure to show.
+  const restartShared = async () => {
+    const bots = sharedGateway?.length ?? 0;
+    const started = await runGateway("restart");
+    if (!started) return;
+    for (let attempt = 0; attempt < 18; attempt += 1) {
+      await new Promise((r) => setTimeout(r, 1200));
+      const st = await api.getActionStatus("gateway-restart", 1).catch(() => null);
+      if (st && !st.running) {
+        if (st.exit_code != null && st.exit_code !== 0) return;
+        break;
+      }
+    }
+    showToast(sharedGatewayRestartedMessage(bots), "success");
+  };
+
+  const migrateToMultiplex = async () => {
+    try {
+      await api.migrateGatewayToMultiplex();
+      setActiveAction("gateway-migrate");
+      showToast("Migrating to a single multiplexed gateway", "success");
+      setTimeout(loadAll, 5000);
+    } catch (e) {
+      showToast(`Gateway migration failed: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -294,7 +376,7 @@ export default function SystemPage() {
       showToast(curator.paused ? "Curator resumed" : "Curator paused", "success");
       loadAll();
     } catch (e) {
-      showToast(`Curator toggle failed: ${e}`, "error");
+      showToast(`Curator toggle failed: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -312,7 +394,7 @@ export default function SystemPage() {
           showToast(`Reset: ${res.deleted.join(", ") || "nothing"}`, "success");
           loadAll();
         } catch (e) {
-          showToast(`Reset failed: ${e}`, "error");
+          showToast(`Reset failed: ${errorMessage(e)}`, "error");
           throw e;
         }
       },
@@ -338,7 +420,7 @@ export default function SystemPage() {
       setCredLabel("");
       loadAll();
     } catch (e) {
-      showToast(`Failed to add credential: ${e}`, "error");
+      showToast(`Failed to add credential: ${errorMessage(e)}`, "error");
     } finally {
       setAddingCred(false);
     }
@@ -353,7 +435,7 @@ export default function SystemPage() {
           showToast("Credential removed", "success");
           loadAll();
         } catch (e) {
-          showToast(`Failed to remove: ${e}`, "error");
+          showToast(`Failed to remove: ${errorMessage(e)}`, "error");
           throw e;
         }
       },
@@ -368,7 +450,7 @@ export default function SystemPage() {
       setActiveAction(res.name);
       showToast(`${label} started`, "success");
     } catch (e) {
-      showToast(`${label} failed: ${e}`, "error");
+      showToast(`${label} failed: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -380,7 +462,7 @@ export default function SystemPage() {
       setDownloadableBackupArchive(null);
       showToast("Backup started", "success");
     } catch (e) {
-      showToast(`Backup failed: ${e}`, "error");
+      showToast(`Backup failed: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -404,7 +486,9 @@ export default function SystemPage() {
     setDownloadingBackup(true);
     try {
       const res = await api.downloadBackup(archive);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        throw apiErrorFromResponse(res.status, await res.text().catch(() => ""), res.url);
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -415,7 +499,7 @@ export default function SystemPage() {
       link.remove();
       URL.revokeObjectURL(url);
     } catch (e) {
-      showToast(`Download failed: ${e}`, "error");
+      showToast(`Download failed: ${errorMessage(e)}`, "error");
     } finally {
       setDownloadingBackup(false);
     }
@@ -437,7 +521,7 @@ export default function SystemPage() {
       showToast("Import started", "success");
       if (target.kind === "upload") clearImportFile();
     } catch (e) {
-      showToast(`Import failed: ${e}`, "error");
+      showToast(`Import failed: ${errorMessage(e)}`, "error");
     } finally {
       setImportingBackup(false);
     }
@@ -456,14 +540,13 @@ export default function SystemPage() {
 
   const copyToClipboard = useCallback(
     async (text: string, label: string) => {
-      try {
-        await navigator.clipboard.writeText(text);
+      if (await copyTextToClipboard(text)) {
         setCopiedLabel(label);
         setTimeout(
           () => setCopiedLabel((cur) => (cur === label ? null : cur)),
           1500,
         );
-      } catch {
+      } else {
         showToast("Couldn't copy to clipboard", "error");
       }
     },
@@ -484,7 +567,7 @@ export default function SystemPage() {
         "success",
       );
     } catch (e) {
-      showToast(`Debug share failed: ${e}`, "error");
+      showToast(`Debug share failed: ${errorMessage(e)}`, "error");
     } finally {
       setSharing(false);
     }
@@ -514,7 +597,7 @@ export default function SystemPage() {
           }
         }
       } catch (e) {
-        showToast(`Update check failed: ${e}`, "error");
+        showToast(`Update check failed: ${errorMessage(e)}`, "error");
       } finally {
         setCheckingUpdate(false);
       }
@@ -546,7 +629,7 @@ export default function SystemPage() {
       setActiveAction(resp.name ?? "hermes-update");
       showToast("Update started", "success");
     } catch (e) {
-      showToast(`Update failed: ${e}`, "error");
+      showToast(`Update failed: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -557,7 +640,7 @@ export default function SystemPage() {
         setActiveAction(res.name);
         showToast("Checkpoint prune started", "success");
       } catch (e) {
-        showToast(`Prune failed: ${e}`, "error");
+        showToast(`Prune failed: ${errorMessage(e)}`, "error");
         throw e;
       }
     }, [showToast]),
@@ -585,7 +668,7 @@ export default function SystemPage() {
       setHookModalOpen(false);
       loadAll();
     } catch (e) {
-      showToast(`Failed to create hook: ${e}`, "error");
+      showToast(`Failed to create hook: ${errorMessage(e)}`, "error");
     } finally {
       setCreatingHook(false);
     }
@@ -602,7 +685,7 @@ export default function SystemPage() {
           showToast("Hook removed", "success");
           loadAll();
         } catch (e) {
-          showToast(`Failed to remove hook: ${e}`, "error");
+          showToast(`Failed to remove hook: ${errorMessage(e)}`, "error");
           throw e;
         }
       },
@@ -620,6 +703,9 @@ export default function SystemPage() {
 
   const gatewayRunning = status?.gateway_running;
   const canUpdateHermes = status?.can_update_hermes !== false;
+  const activeMemoryProvider = memory?.active
+    ? memory.providers.find((provider) => provider.name === memory.active)
+    : null;
   const validEvents = hooks?.valid_events?.length
     ? hooks.valid_events
     : HOOK_EVENTS_FALLBACK;
@@ -635,6 +721,18 @@ export default function SystemPage() {
         onChange={(event) => {
           setImportFile(event.currentTarget.files?.[0] ?? null);
         }}
+      />
+
+      <ConfirmDialog
+        open={sharedRestartOpen}
+        onCancel={() => setSharedRestartOpen(false)}
+        onConfirm={() => {
+          setSharedRestartOpen(false);
+          void restartShared();
+        }}
+        title="Restart the shared gateway?"
+        description={sharedGatewayRestartDescription(sharedGateway ?? [])}
+        confirmLabel="Restart all"
       />
 
       <ConfirmDialog
@@ -1026,9 +1124,13 @@ export default function SystemPage() {
                 {gatewayRunning ? "running" : "stopped"}
               </Badge>
               <span className="text-sm text-muted-foreground">
-                {status?.gateway_state ?? "—"}
-                {status?.gateway_pid ? ` · pid ${status.gateway_pid}` : ""}
+                {gatewayStateDescription(status?.gateway_state, gatewayRunning)}
               </span>
+              {gatewayStateNeedsLogs(status?.gateway_state) && (
+                <Link to="/logs?file=gateway" className="text-sm underline">
+                  Open logs
+                </Link>
+              )}
             </div>
             <div className="flex items-center gap-2">
               <Button
@@ -1043,7 +1145,7 @@ export default function SystemPage() {
               <Button
                 size="sm"
                 className="uppercase"
-                onClick={() => runGateway("restart")}
+                onClick={requestRestart}
                 prefix={<RotateCw className="h-3.5 w-3.5" />}
               >
                 Restart
@@ -1060,6 +1162,34 @@ export default function SystemPage() {
               </Button>
             </div>
           </CardContent>
+          {(sharedGateway || servedNotice) && (
+            <CardContent className="border-t border-current/10 py-3 text-xs text-muted-foreground" data-slot="shared-gateway-notice">
+              {servedNotice ?? `Served by the shared gateway with ${sharedGateway!.join(", ")}.`}
+            </CardContent>
+          )}
+          {migratePlan && !migratePlan.already_multiplexed && migratePlan.profiles.length > 1 && (
+            migratePlan.eligible || migratePlan.blockers.length > 0
+          ) && (
+            <CardContent className="flex flex-col gap-2 border-t border-border py-4 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted-foreground">
+                  Your profiles each run their own gateway. One multiplexed gateway serves every profile from a single process.
+                </span>
+                <Button
+                  size="sm"
+                  className="uppercase"
+                  onClick={migrateToMultiplex}
+                  disabled={!migratePlan.eligible}
+                  title={migratePlan.eligible ? undefined : "Fix the blockers below first"}
+                >
+                  Migrate to a single multiplexed gateway
+                </Button>
+              </div>
+              {migratePlan.blockers.map((b) => (
+                <div key={b} className="text-warning">• {b}</div>
+              ))}
+            </CardContent>
+          )}
         </Card>
       </section>
 
@@ -1077,14 +1207,27 @@ export default function SystemPage() {
                   {memory?.active || "built-in only"}
                 </span>
               </span>
+              {activeMemoryProvider && (
+                <Badge tone={MEMORY_STATUS_TONE[activeMemoryProvider.status]}>
+                  {MEMORY_STATUS_LABEL[activeMemoryProvider.status]}
+                </Badge>
+              )}
               <Link to="/plugins" className="underline">
                 Change in Plugins →
               </Link>
               <span className="ml-auto">
-                New credentials:{" "}
-                <span className="font-mono">hermes memory setup</span>
+                Provider setup:{" "}
+                <Link to="/plugins" className="underline">
+                  configure in Plugins
+                </Link>
               </span>
             </div>
+
+            {activeMemoryProvider?.status === "missing" && (
+              <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
+                The configured provider is no longer installed. Switch to built-in memory or configure another provider in Plugins.
+              </p>
+            )}
 
             <div className="flex flex-wrap items-center gap-3 border-t border-border pt-3">
               <span className="text-xs text-muted-foreground">

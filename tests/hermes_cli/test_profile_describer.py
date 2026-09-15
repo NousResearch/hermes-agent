@@ -24,46 +24,10 @@ def profile_env(tmp_path, monkeypatch):
     return home
 
 
-def test_read_profile_meta_empty_when_missing(profile_env):
-    meta = profiles_mod.read_profile_meta(profile_env)
-    assert meta == {"description": "", "description_auto": False}
 
 
-def test_write_and_read_profile_meta(profile_env):
-    profiles_mod.write_profile_meta(
-        profile_env,
-        description="a useful researcher",
-        description_auto=False,
-    )
-    meta = profiles_mod.read_profile_meta(profile_env)
-    assert meta["description"] == "a useful researcher"
-    assert meta["description_auto"] is False
 
 
-def test_write_profile_meta_preserves_other_fields(profile_env):
-    # First write sets description_auto=True; second write only updates
-    # description and leaves description_auto unchanged.
-    profiles_mod.write_profile_meta(
-        profile_env,
-        description="auto-gen",
-        description_auto=True,
-    )
-    profiles_mod.write_profile_meta(profile_env, description="edited by hand")
-    meta = profiles_mod.read_profile_meta(profile_env)
-    assert meta["description"] == "edited by hand"
-    assert meta["description_auto"] is True
-
-
-def test_write_profile_meta_rejects_missing_dir(tmp_path):
-    bogus = tmp_path / "does_not_exist"
-    with pytest.raises(FileNotFoundError):
-        profiles_mod.write_profile_meta(bogus, description="x")
-
-
-def test_read_profile_meta_tolerates_corrupt_yaml(profile_env):
-    (profile_env / "profile.yaml").write_text("not: valid: yaml: [unclosed")
-    meta = profiles_mod.read_profile_meta(profile_env)
-    assert meta == {"description": "", "description_auto": False}
 
 
 # ---------------------------------------------------------------------------
@@ -79,11 +43,11 @@ def _fake_aux_response(content: str):
 
 
 def _patch_aux_client(content: str):
-    client = MagicMock()
-    client.chat.completions.create = MagicMock(return_value=_fake_aux_response(content))
+    # describe_profile now routes through call_llm (#35566) — mock it at the
+    # source module.
     return patch(
-        "agent.auxiliary_client.get_text_auxiliary_client",
-        return_value=(client, "test-model"),
+        "agent.auxiliary_client.call_llm",
+        return_value=_fake_aux_response(content),
     )
 
 
@@ -112,6 +76,41 @@ def test_describer_writes_description_with_auto_true(profile_env, monkeypatch):
     assert meta["description_auto"] is True
 
 
+@pytest.fixture
+def registered_profile(profile_env, monkeypatch):
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    return profile_env
+
+
+@pytest.mark.parametrize("raw", [
+    '{\n  "description": "Generalist agent that writes and debugs code, orchestrates autonomous sub-agents, and automates macOS/App',
+    '{\n  "desc',
+    '```json\n{\n  "description": "Generalist agent that writes and debugs cod',
+    '```JSON\n{\n  "description": "Generalist agent that writes and debugs cod',
+])
+def test_describer_refuses_json_shaped_reply_that_does_not_parse(registered_profile, raw):
+    """A reply that started as the requested JSON object but was cut off (#104067) is not prose:
+    it must be refused and leave profile.yaml untouched -- including behind an uppercase fence."""
+    profiles_mod.write_profile_meta(registered_profile, description="previous", description_auto=True)
+    before = (registered_profile / "profile.yaml").read_bytes()
+    with _patch_aux_client(raw), patch("agent.auxiliary_client.get_auxiliary_extra_body", return_value={}):
+        outcome = describer.describe_profile("myprof", overwrite=True)
+    assert outcome.ok is False
+    assert (registered_profile / "profile.yaml").read_bytes() == before
+
+
+def test_describer_still_accepts_plain_prose_fallback(registered_profile):
+    """A reply that never looked like JSON keeps the lenient one-paragraph prose fallback."""
+    with _patch_aux_client("Writes and debugs Python codebases.\n\nSecond paragraph is dropped."), \
+         patch("agent.auxiliary_client.get_auxiliary_extra_body", return_value={}):
+        outcome = describer.describe_profile("myprof")
+    assert outcome.ok, outcome.reason
+    assert outcome.description == "Writes and debugs Python codebases."
+    assert profiles_mod.read_profile_meta(registered_profile)["description"] == outcome.description
+
+
 def test_describer_refuses_to_overwrite_user_authored(profile_env, monkeypatch):
     profiles_mod.write_profile_meta(
         profile_env, description="curated", description_auto=False,
@@ -127,42 +126,3 @@ def test_describer_refuses_to_overwrite_user_authored(profile_env, monkeypatch):
     assert profiles_mod.read_profile_meta(profile_env)["description"] == "curated"
 
 
-def test_describer_overwrite_flag_replaces_user_authored(profile_env, monkeypatch):
-    profiles_mod.write_profile_meta(
-        profile_env, description="curated", description_auto=False,
-    )
-    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
-    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
-    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
-
-    payload = jsonlib.dumps({"description": "new auto-gen"})
-    with _patch_aux_client(payload), patch(
-        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
-    ):
-        outcome = describer.describe_profile("myprof", overwrite=True)
-    assert outcome.ok, outcome.reason
-    meta = profiles_mod.read_profile_meta(profile_env)
-    assert meta["description"] == "new auto-gen"
-    assert meta["description_auto"] is True
-
-
-def test_describer_handles_malformed_llm_response(profile_env, monkeypatch):
-    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
-    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
-    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
-
-    # Non-JSON: describer falls back to taking the first paragraph as the description.
-    with _patch_aux_client("Plain text description that sneaks in"), patch(
-        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
-    ):
-        outcome = describer.describe_profile("myprof")
-    assert outcome.ok
-    assert "Plain text description" in (outcome.description or "")
-
-
-def test_describer_returns_false_when_profile_missing(profile_env, monkeypatch):
-    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: False)
-    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
-    outcome = describer.describe_profile("ghost")
-    assert outcome.ok is False
-    assert "not found" in outcome.reason

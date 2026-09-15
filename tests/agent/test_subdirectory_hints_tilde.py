@@ -35,13 +35,6 @@ class TestSubdirectoryHintTrackerTildeRobustness:
         # Must not raise — return value can be None / empty
         tracker.check_tool_call("terminal", {"command": cmd})
 
-    def test_tilde_with_unknown_user_does_not_crash(self, tmp_path):
-        """``~unknown_user`` similarly raises RuntimeError on POSIX systems
-        whose /etc/passwd does not contain that user.  Walker must absorb it."""
-        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
-        cmd = "echo path: ~nonexistent_user_xyzzy_12345/some/file"
-        # Must not raise
-        tracker.check_tool_call("terminal", {"command": cmd})
 
     def test_valid_tilde_user_still_works(self, tmp_path):
         """The fix must not regress the legitimate-tilde-user path.

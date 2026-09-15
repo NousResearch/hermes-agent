@@ -1,21 +1,21 @@
 ---
-title: "Chroma — Open-source embedding database for AI applications"
+title: "Chroma — Embedding database for RAG and semantic search"
 sidebar_label: "Chroma"
-description: "Open-source embedding database for AI applications"
+description: "Embedding database for RAG and semantic search"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Chroma
 
-Open-source embedding database for AI applications. Store embeddings and metadata, perform vector and full-text search, filter by metadata. Simple 4-function API. Scales from notebooks to production clusters. Use for semantic search, RAG applications, or document retrieval. Best for local development and open-source projects.
+Embedding database for RAG and semantic search.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/chroma` |
-| Path | `optional-skills/mlops/chroma` |
+| Path | `optional-skills/mlops\chroma` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
 | License | MIT |

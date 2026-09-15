@@ -97,7 +97,13 @@ const { FakeWebSocket } = vi.hoisted(() => {
 
 vi.mock('undici', () => ({ WebSocket: FakeWebSocket }))
 
-import { GatewayClient } from '../gatewayClient.js'
+import {
+  GatewayClient,
+  RECONNECT_BASE_MS,
+  RECONNECT_MAX_MS,
+  WS_HEARTBEAT_DEAD_MS,
+  WS_HEARTBEAT_INTERVAL_MS
+} from '../gatewayClient.js'
 
 describe('GatewayClient websocket attach mode', () => {
   const originalWebSocket = globalThis.WebSocket
@@ -396,6 +402,34 @@ describe('GatewayClient websocket attach mode', () => {
     gw.kill()
   })
 
+  it('surfaces JSON-RPC error code and data to callers (shared error mapping)', async () => {
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+
+    gw.start()
+    const socket = FakeWebSocket.instances[0]!
+
+    socket.open()
+    const req = gw.request('projects.create', {})
+    await vi.waitFor(() => expect(socket.sent.length).toBeGreaterThan(0))
+
+    const frame = JSON.parse(socket.sent[0] ?? '{}') as { id: string }
+    socket.message(
+      JSON.stringify({
+        error: { code: -32601, data: { method: 'projects.create' }, message: 'unknown method: projects.create' },
+        id: frame.id,
+        jsonrpc: '2.0'
+      })
+    )
+
+    await expect(req).rejects.toMatchObject({
+      code: -32601,
+      data: { method: 'projects.create' },
+      message: 'unknown method: projects.create'
+    })
+    gw.kill()
+  })
+
   it('uses the undici WebSocket fallback when global WebSocket is unavailable', () => {
     process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=hunter2&channel=secret'
     delete (globalThis as { WebSocket?: unknown }).WebSocket
@@ -492,5 +526,146 @@ describe('GatewayClient websocket attach mode', () => {
     expect(tail).not.toContain('token=secret')
 
     gw.kill()
+  })
+
+  it('keeps a healthy idle websocket open when heartbeat acknowledgements arrive (issue #32997)', async () => {
+    vi.useFakeTimers()
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+
+    try {
+      gw.start()
+      const socket = FakeWebSocket.instances[0]!
+
+      socket.open()
+      socket.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { type: 'gateway.ready', payload: { heartbeat: true } }
+        })
+      )
+      // A live gateway answers every ping (tui_gateway/ws.py replies inline);
+      // the shared channel counts any inbound frame as liveness, so a socket
+      // whose pings keep getting acked must never trip the deadline.
+      const acked: string[] = []
+
+      const ackPings = () => {
+        for (const raw of socket.sent) {
+          const frame = JSON.parse(raw) as { id: string; method: string }
+
+          if (frame.method === 'gateway.ping' && !acked.includes(frame.id)) {
+            acked.push(frame.id)
+            socket.message(JSON.stringify({ id: frame.id, jsonrpc: '2.0', result: { ok: true } }))
+          }
+        }
+      }
+
+      await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_INTERVAL_MS)
+      expect(JSON.parse(socket.sent.at(-1) ?? '{}')).toMatchObject({ method: 'gateway.ping' })
+
+      for (let elapsed = 0; elapsed < WS_HEARTBEAT_DEAD_MS * 2; elapsed += WS_HEARTBEAT_INTERVAL_MS) {
+        ackPings()
+        await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_INTERVAL_MS)
+      }
+
+      expect(acked.length).toBeGreaterThan(2)
+      expect(socket.readyState).toBe(FakeWebSocket.OPEN)
+      expect(FakeWebSocket.instances).toHaveLength(1)
+    } finally {
+      gw.kill()
+      vi.useRealTimers()
+    }
+  })
+
+  it('auto-reconnects after a missing heartbeat acknowledgement (issue #32997)', async () => {
+    vi.useFakeTimers()
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+
+    try {
+      gw.start()
+      const first = FakeWebSocket.instances[0]!
+
+      first.open()
+      first.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { type: 'gateway.ready', payload: { heartbeat: true } }
+        })
+      )
+      await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_INTERVAL_MS)
+      expect(JSON.parse(first.sent.at(-1) ?? '{}')).toMatchObject({ method: 'gateway.ping' })
+      await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_DEAD_MS + WS_HEARTBEAT_INTERVAL_MS)
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS)
+      expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2)
+    } finally {
+      gw.kill()
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not heartbeat an older backend that omits the capability', async () => {
+    vi.useFakeTimers()
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+
+    try {
+      gw.start()
+      const socket = FakeWebSocket.instances[0]!
+
+      socket.open()
+      socket.message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: { type: 'gateway.ready', payload: {} }
+        })
+      )
+      await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_DEAD_MS + WS_HEARTBEAT_INTERVAL_MS)
+      expect(socket.readyState).toBe(FakeWebSocket.OPEN)
+      expect(socket.sent).toEqual([])
+      expect(FakeWebSocket.instances).toHaveLength(1)
+    } finally {
+      gw.kill()
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not double-reconnect when the exit subscriber restarts immediately', async () => {
+    vi.useFakeTimers()
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+
+    try {
+      gw.on('exit', () => gw.start())
+      gw.start()
+      const first = FakeWebSocket.instances[0]!
+
+      first.open()
+      gw.drain()
+      await Promise.resolve()
+      first.close(1011)
+
+      expect(FakeWebSocket.instances).toHaveLength(2)
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS)
+      expect(FakeWebSocket.instances).toHaveLength(2)
+    } finally {
+      gw.kill()
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not auto-reconnect after an intentional kill() (issue #32997)', async () => {
+    vi.useFakeTimers()
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+    gw.start()
+    FakeWebSocket.instances[0]!.open()
+    gw.kill() // sets disposed
+    await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_DEAD_MS + RECONNECT_MAX_MS + 1000)
+    expect(FakeWebSocket.instances.length).toBe(1) // no reconnect attempted
+    vi.useRealTimers()
   })
 })

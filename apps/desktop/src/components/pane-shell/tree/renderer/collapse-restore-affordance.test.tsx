@@ -61,13 +61,23 @@ function registerPane(id: string, data: Record<string, unknown>, title = id) {
   disposers.push(registry.register({ area: 'panes', data, id, render: () => null, title }))
 }
 
-function LiveTreeGroup({ index = 0, parentAxis }: { index?: number; parentAxis: 'column' | 'row' }) {
+function LiveTreeGroup({
+  index = 0,
+  leftEdge = false,
+  parentAxis,
+  topEdge = false
+}: {
+  index?: number
+  leftEdge?: boolean
+  parentAxis: 'column' | 'row'
+  topEdge?: boolean
+}) {
   useStore($layoutTree)
 
   const node = $layoutTree.get()!
   const zone = (node.type === 'split' ? node.children[index] : node) as GroupNode
 
-  return <TreeGroup node={zone} parentAxis={parentAxis} />
+  return <TreeGroup leftEdge={leftEdge} node={zone} parentAxis={parentAxis} topEdge={topEdge} />
 }
 
 const tablist = () => globalThis.document.querySelector('[role="tablist"]')
@@ -133,6 +143,30 @@ describe('Sessions/Bots strip — #91223', () => {
     expect(zoneAt(0).minimized).toBeFalsy()
     expect(tabEl('sessions')).toBeTruthy()
     expect(tabEl('hermes-bots:pane')).toBeTruthy()
+  })
+
+  it('hydrates a minimized row as a visible restore rail below the titlebar controls', () => {
+    $layoutTree.set(
+      split('row', [
+        group(['sessions', 'hermes-bots:pane'], { active: 'sessions', id: 'g-side', minimized: true }),
+        group(['workspace'], { active: 'workspace', id: 'g-main' })
+      ])
+    )
+
+    render(<LiveTreeGroup leftEdge parentAxis="row" topEdge />)
+
+    expect(globalThis.document.querySelector('[data-collapsed-rail="g-side"]')).toBeTruthy()
+
+    const restore = globalThis.document.querySelector<HTMLButtonElement>(
+      '[data-tree-group="g-side"] button[aria-label="Restore"]'
+    )
+
+    expect(restore).toBeTruthy()
+    expect(restore?.className).toContain('[-webkit-app-region:no-drag]')
+    expect(globalThis.document.querySelector('[data-panel-header]')?.className).toContain('z-60')
+
+    fireEvent.click(restore!)
+    expect(zoneAt(0).minimized).toBe(false)
   })
 
   it('an explicit never hides the sessions/Bots strip', () => {

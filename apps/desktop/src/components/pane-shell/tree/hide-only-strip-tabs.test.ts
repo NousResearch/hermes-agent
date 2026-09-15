@@ -77,6 +77,30 @@ describe('hide-only strip tabs', () => {
     expect(vi.mocked(notify)).toHaveBeenCalledTimes(1)
   })
 
+  it('repairs persisted hides that would remove every tab on reload', async () => {
+    const persistedTree = split('row', [
+      group(['sessions', 'hermes-bots:pane'], { active: 'sessions', id: 'g-side' }),
+      group(['workspace'], { active: 'workspace', id: 'g-main' })
+    ])
+
+    window.localStorage.setItem('hermes.desktop.layoutTree.v2', JSON.stringify(persistedTree))
+    window.localStorage.setItem(
+      'hermes.desktop.hiddenStripTabs.v1',
+      JSON.stringify(['sessions', 'hermes-bots:pane'])
+    )
+
+    vi.resetModules()
+    const hydrated = await import('./store')
+
+    expect(hydrated.$hiddenStripTabs.get()).not.toContain('sessions')
+    expect(hydrated.$hiddenStripTabs.get()).toContain('hermes-bots:pane')
+    expect(hydrated.$hiddenTreePanes.get()).not.toContain('sessions')
+    expect(hydrated.$hiddenTreePanes.get()).toContain('hermes-bots:pane')
+    expect(JSON.parse(window.localStorage.getItem('hermes.desktop.hiddenStripTabs.v1') ?? '[]')).toEqual([
+      'hermes-bots:pane'
+    ])
+  })
+
   it('persists hides and clears them on reveal', () => {
     sessionsBotsTree()
     setStripTabHidden('hermes-bots:pane', true)

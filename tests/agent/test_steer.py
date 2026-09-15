@@ -720,6 +720,24 @@ class TestSteerMarkerContract:
         got refused as injection — it must not come back."""
         assert "User guidance:" not in format_steer_marker("hi")
 
+    def test_note_describes_delivery_as_a_standalone_user_message(self):
+        """The briefing must match how the steer is actually delivered.
+
+        Delivery is a standalone ``role:"user"`` row appended after the newest
+        tool result (``steer_user_row`` / ``apply_pending_steer_to_tool_results``),
+        NOT text smeared onto the end of a tool result. If the note still tells
+        the model the marker lives 'at the end of a tool result', the model is
+        briefed to expect it inside tool output and can misclassify the real
+        standalone user row as off-channel. Pin the briefing to the mechanism.
+        """
+        from agent.prompt_builder import STEER_CHANNEL_NOTE, steer_user_row
+
+        # The delivery mechanism this note describes.
+        assert steer_user_row("do X")["role"] == "user"
+        # The briefing must call it a user message, not claim it rides a tool result.
+        assert "user message" in STEER_CHANNEL_NOTE
+        assert "end of a tool result" not in STEER_CHANNEL_NOTE
+
 
 class TestSteerRowIsHumanInput:
     def test_steer_row_counts_as_a_user_originated_turn(self, tmp_path):

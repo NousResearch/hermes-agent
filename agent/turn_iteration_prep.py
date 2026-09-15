@@ -507,7 +507,7 @@ def apply_retry_restarts(
     # All retries may exhaust with `response` still None; break out cleanly.
     if response is None:
         _turn_exit_reason = "all_retries_exhausted_no_response"
-        print(f"{agent.log_prefix}❌ All API retries exhausted with no successful response.")
+        agent._emit_status("❌ The model provider didn't answer after all retries. Send /retry, or switch models with /model.")
         agent._persist_session(messages, conversation_history)
         return _verdict("break")
     return _verdict("fallthrough")

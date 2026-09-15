@@ -166,13 +166,22 @@ def _memory_skill_edges(memory_cards: list[dict[str, Any]], skills: list[SkillNo
     return edges
 
 
+def _has_learning_signal(node: SkillNode) -> bool:
+    """Graph-worthy: agent-created, user-taught (/learn), or actually used.
+
+    ``created_by="learn"`` is a learning-signal marker only — curator management stays keyed
+    strictly on ``"agent"`` (see ``tools.skill_usage._is_curator_managed_record``).
+    """
+    return node.created_by in {"agent", "learn"} or node.use_count > 0
+
+
 def build_learning_graph() -> dict[str, Any]:
     """Full payload for the desktop learning panel: non-base skills with real
     learning signal (agent-created or used) plus memory chunks as graph nodes."""
     roots = [("base", Path(__file__).resolve().parent.parent / "skills"), ("profile", get_hermes_home() / "skills")]
     learned_skills = {
         name: node for name, node in build_skill_nodes(roots).items()
-        if node.source != "base" and (node.created_by == "agent" or node.use_count > 0)
+        if node.source != "base" and _has_learning_signal(node)
     }
     skill_edges, memory_cards = build_edges(learned_skills), _memory_cards()
     memory_edges = _memory_skill_edges(memory_cards, list(learned_skills.values()))

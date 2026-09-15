@@ -351,3 +351,145 @@ def test_evaluate_runtime_unserializable_value(chrome_cdp, supervisor_registry):
     out = supervisor.evaluate_runtime("Infinity")
     assert out["ok"] is True
     assert out["result"] == "Infinity"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Ownership binding & idle watcher tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_owned_target_id_is_set(chrome_cdp, supervisor_registry):
+    """Supervisor caches its owned about:blank target id after initial attach."""
+    cdp_url, _port = chrome_cdp
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+    supervisor = SUPERVISOR_REGISTRY.get_or_start(
+        task_id="pytest-own-1", cdp_url=cdp_url
+    )
+    assert supervisor._owned_target_id is not None
+    assert isinstance(supervisor._owned_target_id, str)
+    assert len(supervisor._owned_target_id) > 0
+
+
+def test_owned_tab_exists_in_chrome(chrome_cdp, supervisor_registry):
+    """The supervisor-owned tab is an about:blank page visible to Chrome."""
+    cdp_url, _port = chrome_cdp
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+    supervisor = SUPERVISOR_REGISTRY.get_or_start(
+        task_id="pytest-own-2", cdp_url=cdp_url
+    )
+    owned_id = supervisor._owned_target_id
+    assert owned_id is not None
+
+    # Ask Chrome for all targets and verify ours is an about:blank page.
+    import asyncio as _asyncio
+    import websockets as _ws_mod
+
+    async def check():
+        async with _ws_mod.connect(cdp_url, max_size=50 * 1024 * 1024) as ws:
+            await ws.send(json.dumps({"id": 1, "method": "Target.getTargets"}))
+            async for raw in ws:
+                msg = json.loads(raw)
+                if msg.get("id") == 1:
+                    targets = msg["result"]["targetInfos"]
+                    for t in targets:
+                        if t["targetId"] == owned_id:
+                            assert t["type"] == "page"
+                            assert t["url"] == "about:blank"
+                            return
+                    pytest.fail(f"owned target {owned_id} not found in Chrome")
+
+    _asyncio.run(check())
+
+
+def test_reconnect_recreates_when_tab_is_closed(chrome_cdp, supervisor_registry):
+    """When the owned tab is closed externally, a new one is created on reconnect."""
+    cdp_url, _port = chrome_cdp
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+    supervisor = SUPERVISOR_REGISTRY.get_or_start(
+        task_id="pytest-recreate-1", cdp_url=cdp_url
+    )
+    owned_id_before = supervisor._owned_target_id
+    assert owned_id_before is not None
+
+    # Close the owned tab via a separate CDP connection.
+    import asyncio as _asyncio
+    import websockets as _ws_mod
+
+    async def close_tab():
+        async with _ws_mod.connect(cdp_url, max_size=50 * 1024 * 1024) as ws:
+            await ws.send(json.dumps({
+                "id": 1,
+                "method": "Target.closeTarget",
+                "params": {"targetId": owned_id_before},
+            }))
+            async for raw in ws:
+                msg = json.loads(raw)
+                if msg.get("id") == 1:
+                    return
+
+    _asyncio.run(close_tab())
+    time.sleep(0.5)
+
+    # Stop and restart — should create a new tab with a different id.
+    SUPERVISOR_REGISTRY.stop(task_id="pytest-recreate-1")
+    supervisor2 = SUPERVISOR_REGISTRY.get_or_start(
+        task_id="pytest-recreate-1", cdp_url=cdp_url
+    )
+
+    assert supervisor2._owned_target_id is not None
+    assert supervisor2._owned_target_id != owned_id_before, (
+        "expected a new owned target after the old one was closed"
+    )
+
+
+def test_idle_watcher_task_is_running(chrome_cdp, supervisor_registry):
+    """The idle watcher background task is created after the first attach."""
+    cdp_url, _port = chrome_cdp
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+    supervisor = SUPERVISOR_REGISTRY.get_or_start(
+        task_id="pytest-idle-1", cdp_url=cdp_url
+    )
+    assert supervisor._idle_watcher_task is not None
+    assert not supervisor._idle_watcher_task.done()
+
+
+def test_last_activity_is_updated(chrome_cdp, supervisor_registry):
+    """_last_activity timestamp is bumped when a CDP event is received."""
+    cdp_url, _port = chrome_cdp
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+    supervisor = SUPERVISOR_REGISTRY.get_or_start(
+        task_id="pytest-act-1", cdp_url=cdp_url
+    )
+    before = supervisor._last_activity
+
+    # Fire a page event so the supervisor receives a CDP event.
+    _fire_on_page(cdp_url, "/* no dialog */ void 0")
+    time.sleep(1.0)
+
+    after = supervisor._last_activity
+    assert after > before, (
+        f"_last_activity should be updated (was {before}, now {after})"
+    )
+
+
+def test_set_auto_attach_rejection_no_crash(chrome_cdp, supervisor_registry):
+    """Supervisor reaches active state even when setAutoAttach is rejected.
+
+    Chrome 150+ rejects Target.setAutoAttach on local connections. The
+    supervisor wraps that call in try-except and continues — this test
+    verifies a healthy startup regardless of the Chrome version.
+    """
+    cdp_url, _port = chrome_cdp
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+    supervisor = SUPERVISOR_REGISTRY.get_or_start(
+        task_id="pytest-saa-1", cdp_url=cdp_url
+    )
+    snap = supervisor.snapshot()
+    assert snap.active is True
+    assert supervisor._owned_target_id is not None

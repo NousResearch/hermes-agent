@@ -11,7 +11,7 @@ choice.
 
 All resolved through `tools.delegate_tool._get_max_concurrent_children()`,
 which reads `delegation.max_concurrent_children` from `config.yaml`
-(env fallback `DELEGATION_MAX_CONCURRENT_CHILDREN`, default 3). Floor of 1.
+(env fallback `DELEGATION_MAX_CONCURRENT_CHILDREN`, default 10). Floor of 1.
 **No hard ceiling.**
 
 1. **Per-call hard reject** — `tools/delegate_tool.py` (~line 1953).

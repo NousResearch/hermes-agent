@@ -1326,6 +1326,15 @@ When the agent calls the `clarify` tool — to ask which approach you prefer, ge
 
 Tap a button to answer, or tap **Other** to type a free-form response (the next message you send becomes the answer). Open-ended `clarify` calls (no preset choices) skip the buttons and just capture your next message.
 
+By default each choice button shows only its number, and the message above the buttons lists every choice in full, because Telegram clients cut off long button labels. To put each choice's text on its own button instead, set:
+
+```yaml
+telegram:
+  clarify_button_labels: text
+```
+
+Labels longer than 64 characters are shortened on the button. The message still lists every choice in full.
+
 Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `600` seconds). If you don't respond within the timeout, the agent unblocks with a sentinel message and adapts rather than hanging.
 
 ## Push notification volume

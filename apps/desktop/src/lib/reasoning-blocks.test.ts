@@ -1,48 +1,41 @@
 import { describe, expect, it } from 'vitest'
 
-import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
+import { separateGluedReasoningBlocks } from './reasoning-blocks'
 
 describe('separateGluedReasoningBlocks', () => {
-  it('splits heading-onto-heading parts (the `****` run)', () => {
-    const glued =
-      '**Investigating likely culprit PRs****Inspecting message schema****Analyzing interrupted tool call impact**'
-
-    expect(separateGluedReasoningBlocks(glued)).toBe(
-      [
-        '**Investigating likely culprit PRs**',
-        '',
-        '**Inspecting message schema**',
-        '',
-        '**Analyzing interrupted tool call impact**'
-      ].join('\n')
-    )
+  it('splits bare **** runs into separate paragraphs (heading-onto-heading)', () => {
+    const input = '**First****Second**'
+    const output = separateGluedReasoningBlocks(input)
+    expect(output).toBe('**First**\n\n**Second**')
   })
 
-  it('splits prose-onto-heading parts (vercel/ai#6742 repro)', () => {
-    const glued =
-      '**Simulating a greeting stream**\n\nIt feels like a streaming interaction!**Simulating a greeting stream**\n\nI want to meet the request.'
-
-    expect(separateGluedReasoningBlocks(glued)).toContain('interaction!\n\n**Simulating')
-    expect(separateGluedReasoningBlocks(glued)).not.toContain('interaction!**')
+  it('splits prose-glued heading onto its own line (prose-onto-heading)', () => {
+    const input = 'interaction!**Checking logs**'
+    const output = separateGluedReasoningBlocks(input)
+    expect(output).toBe('interaction!\n\n**Checking logs**')
   })
 
-  it('is idempotent on already-separated text', () => {
-    const separated = '**One**\n\n**Two**'
-
-    expect(separateGluedReasoningBlocks(separated)).toBe(separated)
+  it('preserves inline bold when NOT at line-end (CJK case)', () => {
+    const input = '1. **日経原因**（共同社）：指数重挫——**半導体領跌**——与美股同步。'
+    const output = separateGluedReasoningBlocks(input)
+    expect(output).toBe(input)
   })
 
-  it('leaves emphasis inside prose alone', () => {
-    const prose = 'Looking at the logs, the **signature** field is missing — so the replay 400s.'
-
-    expect(separateGluedReasoningBlocks(prose)).toBe(prose)
+  it('preserves inline bold mid-sentence (English)', () => {
+    const input = 'The **core issue** is that the regex was over-broad.'
+    const output = separateGluedReasoningBlocks(input)
+    expect(output).toBe(input)
   })
 
-  it('leaves an unclosed emphasis run alone', () => {
-    expect(separateGluedReasoningBlocks('weighing options **')).toBe('weighing options **')
+  it('splits a line-final heading after prose', () => {
+    const input = 'interaction!**Heading at end**'
+    const output = separateGluedReasoningBlocks(input)
+    expect(output).toBe('interaction!\n\n**Heading at end**')
   })
 
-  it('does not split a heading that already opens the text', () => {
-    expect(separateGluedReasoningBlocks('**Only one part**')).toBe('**Only one part**')
+  it('leaves pre-separated blocks unchanged (idempotent)', () => {
+    const input = '**First**\n\n**Second**'
+    const output = separateGluedReasoningBlocks(input)
+    expect(output).toBe(input)
   })
 })

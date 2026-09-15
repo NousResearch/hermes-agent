@@ -15,6 +15,7 @@ import os
 import sqlite3
 import time
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -973,8 +974,152 @@ class TestToolRegistration:
             "attachments_fetch", "events_poll", "events_wait",
             "messages_send", "channels_list",
             "permissions_list_open", "permissions_respond",
+            "memory_read", "memory_search", "memory_write",
+            "credentials_lookup", "skills_list",
         }
         assert expected == tool_names, f"Missing: {expected - tool_names}, Extra: {tool_names - expected}"
+
+
+# ---------------------------------------------------------------------------
+# 4b. MEMORY & CREDENTIAL HELPERS
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryHelpers:
+    def test_get_memory_roots_returns_existing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        memories = tmp_path / "memories"
+        memories.mkdir()
+        (memories / "MEMORY.md").write_text("test")
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        # Patch _hermes_home to return our tmp_path
+        import mcp_serve
+        orig = mcp_serve._hermes_home
+        monkeypatch.setattr(mcp_serve, "_hermes_home", lambda: tmp_path)
+        roots = mcp_serve._get_memory_roots()
+        assert "memories" in roots
+        assert "skills" in roots
+        monkeypatch.setattr(mcp_serve, "_hermes_home", orig)
+
+    def test_resolve_memory_path_valid(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        memories = tmp_path / "memories"
+        memories.mkdir()
+        notes = memories / "notes"
+        notes.mkdir()
+        (notes / "test.md").write_text("hello")
+        import mcp_serve
+        monkeypatch.setattr(mcp_serve, "_hermes_home", lambda: tmp_path)
+        resolved = mcp_serve._resolve_memory_path("notes/test.md", "memories")
+        assert resolved is not None
+        assert resolved.name == "test.md"
+
+    def test_resolve_memory_path_traversal_blocked(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        memories = tmp_path / "memories"
+        memories.mkdir()
+        import mcp_serve
+        monkeypatch.setattr(mcp_serve, "_hermes_home", lambda: tmp_path)
+        resolved = mcp_serve._resolve_memory_path("../secret.txt", "memories")
+        assert resolved is None
+
+    def test_mask_value_short(self):
+        import mcp_serve
+        assert len(mcp_serve._mask_value("abcdefgh")) > 0
+        assert "abc" not in mcp_serve._mask_value("abcdefgh")  # middle is masked
+
+    def test_find_credentials_file_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Also patch Path.home() so the HermesVault fallback doesn't find the real one
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        import mcp_serve
+        monkeypatch.setattr(mcp_serve, "_hermes_home", lambda: tmp_path)
+        assert mcp_serve._find_credentials_file() is None
+
+    def test_find_credentials_file_found(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cred = tmp_path / "credentials-master-vault.md"
+        cred.write_text("X_API_KEY = secret123")
+        import mcp_serve
+        monkeypatch.setattr(mcp_serve, "_hermes_home", lambda: tmp_path)
+        assert mcp_serve._find_credentials_file() is not None
+
+
+# ---------------------------------------------------------------------------
+# 4c. MEMORY TOOL TESTS
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryTools:
+    def test_memory_read_existing_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        memories = tmp_path / "memories"
+        memories.mkdir()
+        (memories / "test.md").write_text("hello world")
+        import mcp_serve
+        monkeypatch.setattr(mcp_serve, "_hermes_home", lambda: tmp_path)
+        handler = mcp_serve._ToolHandlers(mcp_serve.EventBridge())
+        result = json.loads(handler.memory_read("test.md"))
+        assert "error" not in result
+        assert result["content"] == "hello world"
+
+    def test_memory_read_missing_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        memories = tmp_path / "memories"
+        memories.mkdir()
+        import mcp_serve
+        monkeypatch.setattr(mcp_serve, "_hermes_home", lambda: tmp_path)
+        handler = mcp_serve._ToolHandlers(mcp_serve.EventBridge())
+        result = json.loads(handler.memory_read("nope.md"))
+        assert "error" in result
+
+    def test_memory_write_creates_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        memories = tmp_path / "memories"
+        memories.mkdir()
+        import mcp_serve
+        monkeypatch.setattr(mcp_serve, "_hermes_home", lambda: tmp_path)
+        handler = mcp_serve._ToolHandlers(mcp_serve.EventBridge())
+        result = json.loads(handler.memory_write("new-note.md", "test content"))
+        assert "error" not in result
+        assert (memories / "new-note.md").exists()
+
+    def test_skills_list_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        import mcp_serve
+        monkeypatch.setattr(mcp_serve, "_hermes_home", lambda: tmp_path)
+        handler = mcp_serve._ToolHandlers(mcp_serve.EventBridge())
+        result = json.loads(handler.skills_list())
+        assert "error" not in result
+        assert result["count"] == 0
+
+    def test_skills_list_with_skill(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cat_dir = tmp_path / "skills" / "productivity"
+        cat_dir.mkdir(parents=True)
+        skill_dir = cat_dir / "test-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: test-skill\ndescription: A test skill\n---\n\n# Test"
+        )
+        import mcp_serve
+        monkeypatch.setattr(mcp_serve, "_hermes_home", lambda: tmp_path)
+        handler = mcp_serve._ToolHandlers(mcp_serve.EventBridge())
+        result = json.loads(handler.skills_list())
+        assert result["count"] == 1
+        assert result["skills"][0]["name"] == "test-skill"
+
+    def test_credentials_lookup_no_vault(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        import mcp_serve
+        monkeypatch.setattr(mcp_serve, "_hermes_home", lambda: tmp_path)
+        handler = mcp_serve._ToolHandlers(mcp_serve.EventBridge())
+        result = json.loads(handler.credentials_lookup("API_KEY"))
+        assert "error" in result or result.get("match_count", 0) == 0
 
     def test_tools_have_descriptions(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e

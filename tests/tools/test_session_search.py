@@ -1171,213 +1171,88 @@ def _unix(year, month, day):
     return int(datetime(year, month, day, tzinfo=timezone.utc).timestamp())
 
 
+def _set_started(db, **started_at_by_sid):
+    for sid, ts in started_at_by_sid.items():
+        db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (ts, sid))
+    db._conn.commit()
+
+
 class TestDiscoveryTemporalNarrowing:
-    def test_schema_exposes_after_before_and_exclude(self):
-        params = SESSION_SEARCH_SCHEMA["parameters"]["properties"]
-        assert "after" in params
-        assert "before" in params
-        assert "exclude_session_ids" in params
-        assert params["exclude_session_ids"]["type"] == "array"
-
-    def test_after_before_keep_only_sessions_inside_the_interval(self, db):
-        _seed_modpack_sessions(db)
-        db._conn.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?",
-            (_unix(2026, 6, 15), "s_oldest"),
-        )
-        db._conn.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?",
-            (_unix(2026, 7, 15), "s_middle"),
-        )
-        db._conn.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?",
-            (_unix(2026, 8, 10), "s_newest"),
-        )
-        db._conn.commit()
-
-        result = json.loads(session_search(
-            query="modpack",
-            limit=5,
-            after="2026-06-01",
-            before="2026-07-01",
-            db=db,
-        ))
-        assert result["success"] is True
-        sids = [r["session_id"] for r in result["results"]]
-        assert "s_oldest" in sids
-        assert "s_middle" not in sids
-        assert "s_newest" not in sids
-
-    def test_missing_bounds_leave_existing_discovery_unchanged(self, db):
-        _seed_modpack_sessions(db)
-        unbounded = json.loads(session_search(query="modpack", limit=5, db=db))
-        bounded = json.loads(session_search(
-            query="modpack", limit=5, after=None, before=None, db=db,
-        ))
-        assert unbounded["success"] is True
-        assert {r["session_id"] for r in unbounded["results"]} == {
-            r["session_id"] for r in bounded["results"]
-        }
-
-    def test_invalid_after_returns_error(self, db):
-        _seed_modpack_sessions(db)
-        result = json.loads(session_search(
-            query="modpack", after="not-a-date", db=db,
-        ))
-        assert result["success"] is False
-
-    def test_relative_after_keeps_only_recent_sessions(self, db):
-        """Amp-style relative bounds: after="7d" = started within the last week."""
-        _seed_modpack_sessions(db)
-        now = int(time.time())
-        db._conn.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?",
-            (now - 2 * 86400, "s_newest"),
-        )
-        db._conn.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?",
-            (now - 30 * 86400, "s_middle"),
-        )
-        db._conn.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?",
-            (now - 60 * 86400, "s_oldest"),
-        )
-        db._conn.commit()
-
-        result = json.loads(session_search(
-            query="modpack", limit=5, after="7d", db=db,
-        ))
-        assert result["success"] is True
-        sids = [r["session_id"] for r in result["results"]]
-        assert "s_newest" in sids
-        assert "s_middle" not in sids
-        assert "s_oldest" not in sids
-
-    def test_relative_before_finds_only_stale_sessions(self, db):
-        """before="7d" = no session started more recently than a week ago."""
-        _seed_modpack_sessions(db)
-        now = int(time.time())
-        db._conn.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?",
-            (now - 2 * 86400, "s_newest"),
-        )
-        db._conn.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?",
-            (now - 30 * 86400, "s_middle"),
-        )
-        db._conn.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?",
-            (now - 60 * 86400, "s_oldest"),
-        )
-        db._conn.commit()
-
-        result = json.loads(session_search(
-            query="modpack", limit=5, before="7d", db=db,
-        ))
-        assert result["success"] is True
-        sids = [r["session_id"] for r in result["results"]]
-        assert "s_newest" not in sids
-        assert "s_middle" in sids
-        assert "s_oldest" in sids
-
-    def test_relative_bound_units_hours_and_weeks(self):
+    @pytest.mark.parametrize("value, expected", [
+        ("24h", 86400), ("1d", 86400), ("2w", 2 * 604800), ("7D", 7 * 86400), (" 3 d ", 3 * 86400),
+        ("2026-06-01", _unix(2026, 6, 1)), ("2026-06-01T12:00:00Z", _unix(2026, 6, 1) + 43200),
+        (None, None), ("", None), ("7x", ValueError), ("not-a-date", ValueError),
+    ])
+    def test_parse_bound(self, value, expected):
+        """Relative durations are now-minus-N (checked as an offset); ISO is absolute UTC."""
         from tools.session_search_tool import _parse_iso_bound
-        now = int(time.time())
-        h = _parse_iso_bound("24h")
-        d = _parse_iso_bound("1d")
-        w = _parse_iso_bound("2w")
-        assert h is not None and abs((now - h) - 86400) < 5
-        assert d is not None and abs((now - d) - 86400) < 5
-        assert w is not None and abs((now - w) - 2 * 604800) < 5
-        # Case-insensitive + internal whitespace tolerated
-        assert _parse_iso_bound("7D") is not None
-        # Bad units still error
-        with pytest.raises(ValueError):
-            _parse_iso_bound("7x")
+        if expected is ValueError:
+            with pytest.raises(ValueError):
+                _parse_iso_bound(value)
+        elif isinstance(value, str) and value.strip() and value.strip()[-1].lower() in "hdw":
+            assert abs((int(time.time()) - _parse_iso_bound(value)) - expected) < 5
+        else:
+            assert _parse_iso_bound(value) == expected
 
-    def test_window_finds_in_range_session_buried_by_fts_limit(self, db, monkeypatch):
-        """A June hit must survive even if FTS rank would fill the scan with August.
-
-        Teknium's ticket wants the bound in the search query (WHERE), not a
-        post-filter of the already-truncated FTS top-N.
-        """
-        monkeypatch.setattr(
-            "tools.session_search_tool._DISCOVER_SCAN_LIMIT", 2
-        )
-        august = _unix(2026, 8, 10)
+    def test_iso_window_is_applied_in_sql_not_as_a_post_filter(self, db, monkeypatch):
+        """A June hit must survive even when FTS rank would fill the scan with August rows, so the
+        bound has to live in the WHERE clause rather than trim the already-truncated top-N. An
+        invalid bound is a tool error, not a silent unbounded search."""
+        monkeypatch.setattr("tools.session_search_tool._DISCOVER_SCAN_LIMIT", 2)
         for i in range(4):
             sid = f"s_aug_{i}"
             db.create_session(sid, source="cli")
-            db._conn.execute(
-                "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
-                (august, f"August {i}", sid),
-            )
-            db.append_message(
-                sid, role="user", content="modpack modpack modpack modpack"
-            )
-            db.append_message(
-                sid, role="assistant", content=("modpack details " * 20)
-            )
+            db.append_message(sid, role="user", content="modpack modpack modpack modpack")
+            db.append_message(sid, role="assistant", content="modpack details " * 20)
+            _set_started(db, **{sid: _unix(2026, 8, 10)})
         db.create_session("s_june", source="cli")
-        db._conn.execute(
-            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
-            (_unix(2026, 6, 15), "June quiet", "s_june"),
-        )
         db.append_message("s_june", role="user", content="modpack")
         db.append_message("s_june", role="assistant", content="ok")
-        db._conn.commit()
+        _set_started(db, s_june=_unix(2026, 6, 15))
 
         result = json.loads(session_search(
-            query="modpack",
-            limit=5,
-            after="2026-06-01",
-            before="2026-07-01",
-            db=db,
-        ))
+            query="modpack", limit=5, after="2026-06-01", before="2026-07-01", db=db))
         assert result["success"] is True
-        sids = [r["session_id"] for r in result["results"]]
-        assert "s_june" in sids
-        assert all(not sid.startswith("s_aug_") for sid in sids)
+        assert [r["session_id"] for r in result["results"]] == ["s_june"]
+        assert json.loads(session_search(query="modpack", after="not-a-date", db=db))["success"] is False
+
+    def test_relative_bounds_reach_the_tool_through_the_inline_executor(self, db):
+        """after="7d" keeps the last week, before="7d" keeps everything older — and both must
+        survive the production dispatch (INLINE_TOOL_EXECUTORS), which maps schema args to kwargs
+        explicitly and used to drop the new parameters on the floor."""
+        from types import SimpleNamespace
+
+        from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+
+        _seed_modpack_sessions(db)
+        now = int(time.time())
+        _set_started(db, s_newest=now - 2 * 86400, s_middle=now - 30 * 86400, s_oldest=now - 60 * 86400)
+        agent = SimpleNamespace(_get_session_db_for_recall=lambda: db, session_id="current")
+        ctx = InlineToolContext(effective_task_id="task-1", tool_call_id="call-1")
+
+        def run(**args):
+            out = json.loads(INLINE_TOOL_EXECUTORS["session_search"](
+                agent, {"query": "modpack", "limit": 5, **args}, ctx))
+            assert out["success"] is True
+            return {r["session_id"] for r in out["results"]}
+
+        assert run(after="7d") == {"s_newest"}
+        assert run(before="7d") == {"s_middle", "s_oldest"}
+        assert run(exclude_session_ids=["s_newest"]) == {"s_middle", "s_oldest"}
 
 
 class TestDiscoverySessionExclusion:
-    def test_exclude_session_ids_drops_named_session(self, db):
-        _seed_modpack_sessions(db)
-        result = json.loads(session_search(
-            query="modpack",
-            limit=5,
-            exclude_session_ids=["s_newest"],
-            db=db,
-        ))
-        assert result["success"] is True
-        sids = [r["session_id"] for r in result["results"]]
-        assert "s_newest" not in sids
-        assert "s_middle" in sids or "s_oldest" in sids
-
     def test_exclude_session_ids_drops_whole_lineage(self, db):
         db.create_session("s_root", source="cli")
-        db._conn.execute(
-            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
-            (_unix(2026, 6, 1), "Lineage Root", "s_root"),
-        )
         db.append_message("s_root", role="user", content="unique lineage token alpha")
         db.append_message("s_root", role="assistant", content="noted unique lineage token alpha")
-
         db.create_session("s_child", source="cli", parent_session_id="s_root")
-        db._conn.execute(
-            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
-            (_unix(2026, 6, 2), "Lineage Child", "s_child"),
-        )
         db.append_message("s_child", role="user", content="follow-up unique lineage token alpha")
         db.append_message("s_child", role="assistant", content="child unique lineage token alpha")
-        db._conn.commit()
+        _set_started(db, s_root=_unix(2026, 6, 1), s_child=_unix(2026, 6, 2))
 
+        found = json.loads(session_search(query="unique lineage token alpha", limit=5, db=db))
+        assert {r["session_id"] for r in found["results"]} & {"s_root", "s_child"}
         excluded = json.loads(session_search(
-            query="unique lineage token alpha",
-            limit=5,
-            exclude_session_ids=["s_child"],
-            db=db,
-        ))
-        sids = [r["session_id"] for r in excluded["results"]]
-        assert "s_child" not in sids
-        assert "s_root" not in sids
+            query="unique lineage token alpha", limit=5, exclude_session_ids=["s_child"], db=db))
+        assert not {r["session_id"] for r in excluded["results"]} & {"s_root", "s_child"}

@@ -24,8 +24,8 @@ const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
 const { $settingsScopeOverride } = await import('@/store/settings-scope')
 const { SettingsProfileScope } = await import('./profile-scope')
 
-const profile = (name: string, isDefault = false): ProfileInfo =>
-  ({ has_env: false, is_default: isDefault, model: null, name }) as unknown as ProfileInfo
+const profile = (name: string, isDefault = false, extra: Partial<ProfileInfo> = {}): ProfileInfo =>
+  ({ has_env: false, is_default: isDefault, model: null, name, ...extra }) as ProfileInfo
 
 beforeEach(() => {
   $activeGatewayProfile.set('default')
@@ -64,5 +64,33 @@ describe('SettingsProfileScope', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'default' }))
     expect($settingsScopeOverride.get()).toBeNull()
+  })
+
+  it('labels chips with the bot title, else the display name, else the slug', () => {
+    $profiles.set([
+      profile('default', true, { bot_title: 'JordyV', display_name: 'JordieF' }),
+      profile('default-2', false, { display_name: 'Copy' }),
+      profile('weather-man')
+    ])
+
+    render(<SettingsProfileScope />)
+
+    // Bot Mode title wins over display_name and the slug — same identity the
+    // Bots roster shows.
+    expect(screen.getByRole('button', { name: 'JordyV' })).toBeTruthy()
+    // display_name (profile.yaml) when no Bot Mode title exists.
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeTruthy()
+    // Canonical slug when neither is set.
+    expect(screen.getByRole('button', { name: 'weather-man' })).toBeTruthy()
+  })
+
+  it('keeps selection keyed on the canonical name while showing the presentation label', () => {
+    $profiles.set([profile('default', true), profile('coder', false, { bot_title: 'JordyV' })])
+
+    render(<SettingsProfileScope />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'JordyV' }))
+    // The label changed, the identity did not: the override stores the slug.
+    expect($settingsScopeOverride.get()).toBe('coder')
   })
 })

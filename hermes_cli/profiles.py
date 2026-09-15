@@ -479,6 +479,9 @@ class ProfileInfo:
     description_auto: bool = False
     # Presentation-only display name; resolution/comparison/spawn always use ``name``.
     display_name: str = ""
+    # Bot Mode title (``profile.yaml`` ``ui_meta['hermes-bots'].title``) — the name
+    # the Bots roster shows. Presentation-only, like ``display_name``.
+    bot_title: str = ""
 
 
 def _load_yaml_dict(path: Path) -> Optional[dict]:
@@ -618,10 +621,17 @@ def read_profile_meta(profile_dir: Path) -> dict:
     defaults when missing/unreadable). Never raises — a corrupt file on one profile must not
     break ``hermes profile list``."""
     data = _load_yaml_dict(profile_dir / "profile.yaml") or {}
+    ui_meta = data.get("ui_meta")
+    bot_title = ""
+    if isinstance(ui_meta, dict):
+        hermes_bots = ui_meta.get("hermes-bots")
+        if isinstance(hermes_bots, dict):
+            bot_title = str(hermes_bots.get("title") or "").strip()
     return {
         "description": str(data.get("description") or "").strip(),
         "description_auto": bool(data.get("description_auto", False)),
         "display_name": str(data.get("display_name") or "").strip(),
+        "bot_title": bot_title,
     }
 
 

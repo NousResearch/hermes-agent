@@ -41,11 +41,18 @@ export function normalizeProfileKey(name: string | null | undefined): string {
   return value || 'default'
 }
 
-// Presentation-only label: the display_name from profile.yaml when set (e.g. a
-// renamed default profile), else the canonical name. Never used for
+// Presentation-only label: the Bot Mode title the Bots roster shows when set
+// (ui_meta['hermes-bots'].title), else the display_name from profile.yaml
+// (e.g. a renamed default profile), else the canonical name. Never used for
 // comparison or routing — canonical `name` remains the identity everywhere.
-export function profileLabel(profile: Pick<ProfileInfo, 'display_name' | 'name'>): string {
-  return (profile.display_name ?? '').trim() || profile.name
+export function profileLabel(
+  profile: Pick<ProfileInfo, 'bot_title' | 'display_name' | 'name'>
+): string {
+  return (
+    (profile.bot_title ?? '').trim() ||
+    (profile.display_name ?? '').trim() ||
+    profile.name
+  )
 }
 
 // The profile the running local backend is actually scoped to (mirrors

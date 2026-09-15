@@ -46,6 +46,24 @@ class TestMetaAndValidation:
     def test_missing_file_defaults_empty(self, profile_env):
         assert read_profile_meta(profile_env)["display_name"] == ""
 
+    def test_bot_title_read_from_hermes_bots_ui_meta(self, profile_env):
+        (profile_env / "profile.yaml").write_text(
+            "ui_meta:\n  hermes-bots:\n    title: JordyV\n", encoding="utf-8")
+        assert read_profile_meta(profile_env)["bot_title"] == "JordyV"
+
+    def test_bot_title_absent_when_no_bots_meta(self, profile_env):
+        (profile_env / "profile.yaml").write_text(
+            "display_name: JordieF\nui_meta:\n  user-sections: {}\n", encoding="utf-8")
+        assert read_profile_meta(profile_env)["bot_title"] == ""
+
+    def test_bot_title_never_raises_on_malformed_shapes(self, profile_env):
+        (profile_env / "profile.yaml").write_text(
+            "ui_meta: hermes-bots\n", encoding="utf-8")  # ui_meta is a scalar
+        assert read_profile_meta(profile_env)["bot_title"] == ""
+        (profile_env / "profile.yaml").write_text(
+            "ui_meta:\n  hermes-bots: 7\n", encoding="utf-8")  # not a mapping
+        assert read_profile_meta(profile_env)["bot_title"] == ""
+
     def test_empty_clears_key_from_file(self, profile_env):
         write_profile_meta(profile_env, display_name="Harumesu")
         write_profile_meta(profile_env, display_name="")

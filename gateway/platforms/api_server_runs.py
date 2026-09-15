@@ -9,7 +9,7 @@ import time
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
     from aiohttp import web
@@ -68,6 +68,28 @@ def _room_retention_until(request: "web.Request") -> float:
 def _run_event(run_id: str, name: str, **fields: Any) -> Dict[str, Any]:
     """Build one SSE event payload (key order is part of the wire format)."""
     return {"event": name, "run_id": run_id, "timestamp": time.time(), **fields}
+
+
+def terminal_run_status(result: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    """Map a ``run_conversation`` result to its terminal run status and the wire fields every
+    terminal event/status carries. An interrupted turn is ``cancelled``; a turn that ended
+    without finishing (``failed``, ``partial``, or ``completed=False`` such as the iteration
+    budget) is ``failed``, so ``completed: true`` never rides next to ``partial: true``."""
+    interrupted = bool(result.get("interrupted"))
+    finished = (
+        not interrupted and not result.get("failed") and not result.get("partial")
+        and result.get("completed") is not False
+    )
+    status = "cancelled" if interrupted else "completed" if finished else "failed"
+    fields: Dict[str, Any] = {
+        "completed": finished, "partial": bool(result.get("partial")), "interrupted": interrupted,
+    }
+    if not finished and result.get("turn_exit_reason"):
+        fields["turn_exit_reason"] = str(result["turn_exit_reason"])
+    if result.get("pending_steer"):
+        # Undelivered steer text rides on every terminal event/status for client replay.
+        fields["pending_steer"] = result["pending_steer"]
+    return status, fields
 
 
 def _run_not_found(_openai_error, run_id: str) -> "web.Response":
@@ -633,15 +655,14 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             None, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
         if not isinstance(result, dict):
             result = {}
-        if run_id in self._stopping_run_ids and result.get("interrupted") is True:
-            _finish("cancelled")
+        status, fields = terminal_run_status(result)
+        if status == "cancelled":
+            _finish("cancelled", fields)
         elif result.get("failed"):
             # Non-retryable client errors (401/400) return failed=True rather than raising.
-            _finish("failed", error=_redact_api_error_text(result.get("error") or "agent run failed"))
+            _finish("failed", fields, error=_redact_api_error_text(result.get("error") or "agent run failed"))
         else:
-            # Undelivered steer text rides on the terminal event/status for client replay.
-            extra = {"pending_steer": result["pending_steer"]} if result.get("pending_steer") else {}
-            _finish("completed", extra, output=result.get("final_response", ""), usage=usage)
+            _finish(status, fields, output=result.get("final_response", ""), usage=usage)
     except asyncio.CancelledError:
         _finish("cancelled")
         raise

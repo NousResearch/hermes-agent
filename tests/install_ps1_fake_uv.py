@@ -23,6 +23,13 @@ public static class FakeUv {
         File.AppendAllText(Environment.GetEnvironmentVariable("FAKE_UV_LOG"),
             string.Join(" ", args) + Environment.NewLine);
 
+        // Resolve-UvCmd / Install-Uv probe every uv candidate with `--version` before
+        // trusting it; a fake that exits non-zero here would be purged as "unusable".
+        if (args.Length >= 1 && args[0] == "--version") {
+            Console.WriteLine("uv 0.0.0 (fake)");
+            return 0;
+        }
+
         if (args.Length >= 2 && args[0] == "python" && args[1] == "find") {
             string findDelayMs = Environment.GetEnvironmentVariable(
                 "FAKE_UV_FIND_DELAY_MS");

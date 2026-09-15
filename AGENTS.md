@@ -318,7 +318,9 @@ changing `pyproject.toml`. Reference: #2810 (bounds), #9801 (SHA pinning + audit
 - **Squash merges from stale branches silently revert recent fixes.** Before squash-merging,
   bring the branch to `main` (`git fetch origin main && git reset --hard origin/main`, re-apply
   the PR's commits). Verify with `git diff HEAD~1..HEAD` after merging — unexpected deletions
-  are a red flag.
+  are a red flag. Before merging, `python scripts/ci/check_silent_revert.py --base origin/main
+  --head <branch>` names any file whose branch content is a version main already moved past
+  (CI runs it as an advisory step on every PR).
 - Salvage by cherry-pick so contributor authorship survives (see rubric).
 - Tests per fix: 1–2 INVARIANT tests (behaviour contract, proven red on base), never
   change-detectors; ≤ 2 tests is the salvage bar too. Reject/rewrite in salvaged diffs:

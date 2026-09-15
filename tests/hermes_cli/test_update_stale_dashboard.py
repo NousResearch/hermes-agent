@@ -320,6 +320,15 @@ class TestDashboardUpdateCleanup:
 
         assert "stopped during update" not in capsys.readouterr().out
 
+    def test_returns_pids_that_cleanup_could_not_restore(self, capsys):
+        with patch(
+            "hermes_cli.main._kill_stale_dashboard_processes",
+            return_value={"unrecovered": [12345]},
+        ):
+            assert _finish_dashboard_update_cleanup([]) == [12345]
+
+        assert "could not be auto-restarted" in capsys.readouterr().out
+
 
 class TestWindowsWmicEncoding:
     """Regression tests for #17049 — the Windows wmic branch must not crash

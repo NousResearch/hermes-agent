@@ -63,7 +63,7 @@ def test_computer_use_backend_not_shared_across_profiles_and_release_finds_it(tw
         def stop(self):
             self.stopped = True
 
-    monkeypatch.setattr(cu, "_new_backend", lambda mode: _Backend())
+    monkeypatch.setattr(cu, "_new_backend", lambda sid, mode, provider: _Backend())
     monkeypatch.setattr(cu, "_cua_permission_mode", lambda sid: "standard")
     with cu._backend_lock:
         cu._backends.clear(), cu._backend_call_locks.clear(), cu._backend_permission_modes.clear()

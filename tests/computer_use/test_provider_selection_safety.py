@@ -138,13 +138,17 @@ def test_normal_loader_preserves_selection_and_approved_actions(
         ))
         path = managed_dir / "config.yaml"
     path.write_text("computer_use:\n" + selection)
+    # This test is about provider selection, not approval — grant every destructive action through
+    # the shared gate (an interactive CLI with a callback), the sanctioned bypass documented on
+    # tests/tools/conftest.py's grant_computer_use_approvals fixture.
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
     prompts = []
-    monkeypatch.setattr(cu, "_approval_callback", lambda *args: prompts.append(args[0]) or "approve_once")
+    monkeypatch.setattr(cu, "_approval_callback", lambda command, description, **kw: prompts.append(command) or "once")
     result = json.loads(registry.dispatch(
         "computer_use", {"action": action, "element": 1}, session_id="normal-test",
     ))
     assert "error" not in result, result
-    assert prompts == (["click"] if action == "click" else [])
+    assert len(prompts) == (1 if action == "click" else 0)
     assert inert_desktops == [("create", expected), ("start", expected), (action, expected)]
 
 

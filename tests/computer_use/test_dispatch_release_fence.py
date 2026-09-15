@@ -28,9 +28,10 @@ def backends(monkeypatch):
         return backend
 
     cu.reset_backend_for_tests()
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
     monkeypatch.setattr(cu, "_new_backend", create)
     monkeypatch.setattr(cu, "_cua_permission_mode", lambda sid: "standard")
-    monkeypatch.setattr(cu, "_approval_callback", lambda *args: "approve_once")
+    monkeypatch.setattr(cu, "_approval_callback", lambda command, description, **kw: "once")
     yield created
     cu.reset_backend_for_tests()
 

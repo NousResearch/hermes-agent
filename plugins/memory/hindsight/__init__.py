@@ -437,7 +437,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_tags", "description": "Tags to filter when searching memories (comma-separated)", "default": ""},
             {"key": "recall_tags_match", "description": "Tag matching mode for recall", "default": "any", "choices": ["any", "all", "any_strict", "all_strict"]},
             {"key": "recall_types", "description": "Fact types to surface on recall — applies to both auto-recall and the hindsight_recall tool (comma-separated or list). Defaults to observation-only — observations are Hindsight's consolidated, deduplicated, evidence-grounded knowledge layer; raw world/experience facts are the supporting evidence observations already summarize. Set to e.g. 'observation,world,experience' to also include raw facts.", "default": "observation"},
-            {"key": "recall_bank_allowlist", "description": "Optional comma-separated list of banks that hindsight_recall and hindsight_reflect may target per call. Empty allows any bank.", "default": ""},
+            {"key": "recall_bank_allowlist", "description": "Optional comma-separated list of alternate banks that hindsight_recall and hindsight_reflect may target per call. Empty permits only the configured bank.", "default": ""},
             {"key": "auto_recall", "description": "Automatically recall memories before each turn", "default": True},
             {"key": "recall_sync", "description": "Recall synchronously against the current message before each turn (higher relevance, adds recall latency to the turn). Default off: recall runs in the background and is injected on the next turn.", "default": False},
             {"key": "recall_indicator", "description": "Show a '👁️ Hindsight — recalled N memories' status line when auto-recall injects memory (turn off for customer-facing agents)", "default": True},
@@ -1144,9 +1144,11 @@ class HindsightMemoryProvider(MemoryProvider):
         bank_id = str(args["bank"] or "").strip()
         if not bank_id:
             raise ValueError("bank must not be blank")
-        if self._recall_bank_allowlist and bank_id not in self._recall_bank_allowlist:
-            allowed = ", ".join(sorted(self._recall_bank_allowlist))
-            raise ValueError(f"bank {bank_id!r} is not allowed; allowed banks: {allowed}")
+        if bank_id != self._bank_id and bank_id not in self._recall_bank_allowlist:
+            allowed = sorted({self._bank_id, *self._recall_bank_allowlist})
+            raise ValueError(
+                f"bank {bank_id!r} is not allowed; allowed banks: {', '.join(allowed)}"
+            )
         return bank_id
 
     # tool name -> (required arg, handler, user-facing failure prefix)

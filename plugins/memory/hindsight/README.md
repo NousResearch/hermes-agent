@@ -61,7 +61,7 @@ Config file: `~/.hermes/hindsight/config.json`
 |-----|---------|-------------|
 | `bank_id` | `hermes` | Memory bank name (static fallback used when `bank_id_template` is unset or resolves empty) |
 | `bank_id_template` | — | Optional template to derive the bank name dynamically. Placeholders: `{profile}`, `{workspace}`, `{platform}`, `{user}`, `{session}`. Example: `hermes-{profile}` isolates memory per active Hermes profile. Empty placeholders collapse cleanly (e.g. `hermes-{user}` with no user becomes `hermes`). |
-| `recall_bank_allowlist` | — | Optional comma-separated list of banks that `hindsight_recall` and `hindsight_reflect` may target with their per-call `bank` argument. Empty permits any bank; disallowed targets return a visible error. |
+| `recall_bank_allowlist` | — | Optional comma-separated list of alternate banks that `hindsight_recall` and `hindsight_reflect` may target with their per-call `bank` argument. Empty permits only the configured bank; disallowed targets return a visible error. |
 | `bank_mission` | — | Reflect mission (identity/framing for reflect reasoning). Applied via Banks API. |
 | `bank_retain_mission` | — | Retain mission (steers what gets extracted). Applied via Banks API. |
 

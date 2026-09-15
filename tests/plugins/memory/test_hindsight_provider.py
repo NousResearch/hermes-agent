@@ -544,6 +544,20 @@ class TestToolHandlers:
         assert "not allowed" in blocked["error"]
         assert provider._client.arecall.await_count == 2
 
+    def test_per_call_bank_defaults_to_configured_bank_only(self, provider):
+        explicit_default = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "default", "bank": "test-bank"}
+        ))
+        blocked = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "audit", "bank": "other-bank"}
+        ))
+
+        assert "error" not in explicit_default
+        assert provider._client.arecall.call_args.kwargs["bank_id"] == "test-bank"
+        assert "not allowed" in blocked["error"]
+        assert "test-bank" in blocked["error"]
+        provider._client.arecall.assert_awaited_once()
+
     def test_recall_result_preserves_per_hit_provenance(self, provider):
         provider._client.arecall.return_value = SimpleNamespace(results=[
             SimpleNamespace(

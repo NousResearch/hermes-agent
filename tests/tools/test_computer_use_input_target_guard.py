@@ -111,3 +111,57 @@ def test_unknown_action_without_suggestion_unchanged():
     out = _dispatch_result(_backend(None), "frobnicate", {})
     assert out["error"] == "unknown action 'frobnicate'"
     assert "did you mean" not in out["error"]
+
+
+# ── validated capture selector vs localized display name (#104170) ─────
+
+
+def _backend_with_selector(last_app, selector):
+    return SimpleNamespace(_last_app=last_app, _last_app_selector=selector)
+
+
+def test_captured_bundle_id_repeated_is_not_mismatch():
+    # macOS resolves com.apple.Chess to a localized display name on capture; repeating the
+    # same validated bundle ID on the follow-up input call is the same app (#104170).
+    assert _input_target_mismatch(_backend_with_selector("国际象棋", "com.apple.Chess"), "com.apple.Chess") is None
+
+
+def test_selector_does_not_let_a_different_app_through():
+    backend = _backend_with_selector("国际象棋", "com.apple.Chess")
+    assert _input_target_mismatch(backend, "Safari") == "国际象棋"
+
+
+def test_selector_match_is_exact_not_substring():
+    backend = _backend_with_selector("国际象棋", "com.apple.Chess")
+    assert _input_target_mismatch(backend, "chess") == "国际象棋"
+
+
+def test_selector_and_request_normalized_for_comparison():
+    backend = _backend_with_selector("国际象棋", " com.apple.chess ")
+    assert _input_target_mismatch(backend, "Com.Apple.Chess") is None
+
+
+def test_frontmost_capture_without_selector_keeps_string_guard():
+    # No app= on capture -> no validated selector; the substring comparison stays the only authority.
+    assert _input_target_mismatch(_backend_with_selector("国际象棋", ""), "com.apple.Chess") == "国际象棋"
+
+
+def test_backend_without_selector_attribute_unchanged():
+    class _LegacyBackend:
+        _last_app = "国际象棋"  # pre-#104170 backend shape (e.g. injected test doubles)
+
+    assert _input_target_mismatch(_LegacyBackend(), "com.apple.Chess") == "国际象棋"
+
+
+def test_type_with_captured_bundle_id_reaches_backend():
+    backend = _backend_with_selector("国际象棋", "com.apple.Chess")
+    calls = {}
+
+    def _type_text(text, **kw):
+        calls["text"] = text
+        return _fake_action_result()
+
+    backend.type_text = _type_text
+    out = _dispatch_result(backend, "type", {"text": "e4", "app": "com.apple.Chess"})
+    assert calls["text"] == "e4"
+    assert out.get("ok") is True

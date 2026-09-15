@@ -293,9 +293,16 @@ class _CaptureMixin:
         self._set_active_target(target := _select_capture_target(windows, app_requested=bool(app), exact_target=exact_target))
         app_name = target["app_name"]
         # Record the resolved app so capture_after= follow-ups re-target the same app rather than falling back
-        # to the frontmost window.
+        # to the frontmost window. Keep the caller's validated selector alongside it: the resolved name may be
+        # a localized display name that no longer resembles the requested bundle ID (#104170).
         if app or not self._last_app:
             self._last_app = app_name or app or ""
+            self._last_app_selector = (app or "").strip()
+        else:
+            # Frontmost capture retargets to whatever is now frontmost, so the sticky selector no longer
+            # vouches for the active target: keeping it would let input(app=<old selector>) pass the guard
+            # while keystrokes go to the new frontmost app (#104170).
+            self._last_app_selector = ""
         png_b64, image_mime_type, elements, window_title = (
             self._capture_vision() if mode == "vision" else self._capture_window_state())
         png_bytes_len, width, height = _png_metrics(png_b64, 0, 0) if png_b64 else (0, 0, 0)
@@ -367,6 +374,7 @@ class _CaptureMixin:
             return ActionResult(ok=False, action="focus_app", message=f"No on-screen window found for app '{app}'.")
         self._set_active_target(target := matched[0])
         self._last_app = target["app_name"] or app  # retained for back-compat diagnostics
+        self._last_app_selector = (app or "").strip()  # validated selector; the resolved name may be localized (#104170)
         if not raise_window:
             return ActionResult(ok=True, action="focus_app", message=f"Targeted {target['app_name']} (pid "
                                 f"{self._active_pid}, window {self._active_window_id}) without raising window.")

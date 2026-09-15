@@ -3,9 +3,10 @@ import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
-import type { AppOverlaysProps } from '../app/interfaces.js'
+import type { AppOverlaysProps, CompletionItem } from '../app/interfaces.js'
 import { $overlayState, hasFloatingPanel, patchOverlayState } from '../app/overlayStore.js'
 import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
+import type { Theme } from '../theme.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
@@ -52,6 +53,92 @@ function PromptCell({ children, cols, id }: { children: ReactNode; cols: number;
         ]}
       />
     </Box>
+  )
+}
+
+/**
+ * The completion dropdown's panel: the visible slice of rows plus a
+ * hidden-count footer when the list exceeds the window. Factored out of
+ * PromptZone so it renders in the normal flow on its own — the absolute
+ * geometry PromptZone wraps around it is positioning, not content.
+ */
+export function CompletionMenuPanel({
+  cols,
+  completions,
+  compIdx,
+  t
+}: {
+  cols: number
+  completions: CompletionItem[]
+  compIdx: number
+  t: Theme
+}) {
+  // Fixed viewport centered on compIdx — previously the slice end was
+  // compIdx + 8 so the dropdown grew from 8 rows to 16 as the user scrolled
+  // down, bouncing the height on every keystroke.
+  const viewportSize = Math.min(COMPLETION_WINDOW, completions.length)
+
+  const start = Math.max(0, Math.min(compIdx - Math.floor(COMPLETION_WINDOW / 2), completions.length - viewportSize))
+
+  // The window silently drops completions outside [start, start + viewportSize)
+  // when the list is longer — count them so the menu says so instead of
+  // reading as a complete list (same `…and N more` shape as queuedMessages).
+  const hiddenCount = completions.length - viewportSize
+
+  return (
+    <FloatBox color={t.color.primary}>
+      {/* No painted panel fill: FloatBox is `opaque`, so rows sit on the
+          terminal's own background — the one color that is always right
+          on a canvas we don't own (a full completionBg fill was the lone
+          surface painting its own background, which is why it could
+          disagree with every other overlay). Only the ACTIVE row carries
+          a selection chip, mirroring the session switcher. */}
+      <Box flexDirection="column" width={Math.max(28, cols - 6)}>
+        {(() => {
+          const visible = completions.slice(start, start + viewportSize)
+          // Two-column grid: the name track auto-sizes to the widest
+          // visible command, so descriptions align — and wrapped
+          // description lines stay inside their own column instead of
+          // running under the names.
+          const nameW = Math.max(...visible.map(item => stringWidth(item.display))) + 2
+
+          return visible.map((item, i) => {
+            const active = start + i === compIdx
+            const row = listRowStyle(t, active)
+
+            return (
+              <Box
+                backgroundColor={row.backgroundColor}
+                flexDirection="row"
+                key={`${start + i}:${item.text}:${item.display}:${item.meta ?? ''}`}
+                width="100%"
+              >
+                <Box flexShrink={0} width={nameW}>
+                  <Text bold color={t.color.label}>
+                    {' '}
+                    {item.display}
+                  </Text>
+                </Box>
+                {item.meta ? (
+                  // Descriptions in the neutral gray, NOT a gold-family
+                  // tone — label vs muted are near-twins on some skins,
+                  // which made command and description read as one run.
+                  // Active row: meta rides the chip, so it uses row ink.
+                  <Text backgroundColor={row.backgroundColor} color={active ? row.color : t.color.statusFg}>
+                    {item.meta}
+                  </Text>
+                ) : null}
+              </Box>
+            )
+          })
+        })()}
+        {hiddenCount > 0 && (
+          <Text color={t.color.muted} dimColor>
+            {'  '}…and {hiddenCount} more
+          </Text>
+        )}
+      </Box>
+    </FloatBox>
   )
 }
 
@@ -224,13 +311,6 @@ export function FloatingOverlays({
     return null
   }
 
-  // Fixed viewport centered on compIdx — previously the slice end was
-  // compIdx + 8 so the dropdown grew from 8 rows to 16 as the user scrolled
-  // down, bouncing the height on every keystroke.
-  const viewportSize = Math.min(COMPLETION_WINDOW, completions.length)
-
-  const start = Math.max(0, Math.min(compIdx - Math.floor(COMPLETION_WINDOW / 2), completions.length - viewportSize))
-
   // Every floating panel is a widget in a single-column grid. Panels keep
   // their intrinsic (content-hugging) widths inside full-width cells today;
   // multi-column tiling on wide terminals is a `columns`/track change here,
@@ -350,56 +430,7 @@ export function FloatingOverlays({
   if (completions.length) {
     widgets.push({
       id: 'completions',
-      render: () => (
-        <FloatBox color={theme.color.primary}>
-          {/* No painted panel fill: FloatBox is `opaque`, so rows sit on the
-              terminal's own background — the one color that is always right
-              on a canvas we don't own (a full completionBg fill was the lone
-              surface painting its own background, which is why it could
-              disagree with every other overlay). Only the ACTIVE row carries
-              a selection chip, mirroring the session switcher. */}
-          <Box flexDirection="column" width={Math.max(28, cols - 6)}>
-            {(() => {
-              const visible = completions.slice(start, start + viewportSize)
-              // Two-column grid: the name track auto-sizes to the widest
-              // visible command, so descriptions align — and wrapped
-              // description lines stay inside their own column instead of
-              // running under the names.
-              const nameW = Math.max(...visible.map(item => stringWidth(item.display))) + 2
-
-              return visible.map((item, i) => {
-                const active = start + i === compIdx
-                const row = listRowStyle(theme, active)
-
-                return (
-                  <Box
-                    backgroundColor={row.backgroundColor}
-                    flexDirection="row"
-                    key={`${start + i}:${item.text}:${item.display}:${item.meta ?? ''}`}
-                    width="100%"
-                  >
-                    <Box flexShrink={0} width={nameW}>
-                      <Text bold color={theme.color.label}>
-                        {' '}
-                        {item.display}
-                      </Text>
-                    </Box>
-                    {item.meta ? (
-                      // Descriptions in the neutral gray, NOT a gold-family
-                      // tone — label vs muted are near-twins on some skins,
-                      // which made command and description read as one run.
-                      // Active row: meta rides the chip, so it uses row ink.
-                      <Text backgroundColor={row.backgroundColor} color={active ? row.color : theme.color.statusFg}>
-                        {item.meta}
-                      </Text>
-                    ) : null}
-                  </Box>
-                )
-              })
-            })()}
-          </Box>
-        </FloatBox>
-      )
+      render: () => <CompletionMenuPanel cols={cols} compIdx={compIdx} completions={completions} t={theme} />
     })
   }
 

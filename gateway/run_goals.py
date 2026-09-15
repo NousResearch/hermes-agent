@@ -152,6 +152,7 @@ class GatewayGoalsMixin:
             return
         event = self._synthetic_prompt_event(source, prompt)
         event.metadata["gateway_session_key"] = quick_key
+        event._trusted_scheduled_heartbeat = True
         event._heartbeat_execution_started = False
         event._heartbeat_session_id = session_id
         # A pinned route skips topic recovery: no await between the idle

@@ -77,6 +77,7 @@ async def test_idle_wake_coalesces_intervals_while_adapter_owns_turn(poller):
             await runner._heartbeat_poll_once(watch)
         assert len(received) == 1
         assert not received[0].internal  # authorization and emergency-stop still apply
+        assert received[0]._trusted_scheduled_heartbeat
         assert runner._queue_depth(key, adapter=adapter) == 0
         assert HeartbeatManager("heartbeat-session").state.fire_count == 1
     finally:

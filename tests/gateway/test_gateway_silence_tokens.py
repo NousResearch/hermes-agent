@@ -25,9 +25,9 @@ def _source():
     )
 
 
-def _event(*, internal: bool = False):
+def _event(*, text: str = "side chatter", internal: bool = False):
     return MessageEvent(
-        text="side chatter",
+        text=text,
         source=_source(),
         message_id="msg-42",
         internal=internal,
@@ -145,6 +145,38 @@ async def test_internal_silence_token_suppresses_delivery_but_preserves_transcri
 
 
 @pytest.mark.asyncio
+async def test_trusted_scheduled_heartbeat_silence_suppresses_delivery(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "[SILENT]",
+        "messages": [], "tools": [], "history_offset": 0, "last_prompt_tokens": 0,
+        "api_calls": 1, "failed": False,
+    })
+    event = _event()
+    event._trusted_scheduled_heartbeat = True
+
+    assert await runner._handle_message_with_agent(
+        event, _source(), "agent:main:telegram:group:-1001:12345", 1
+    ) == ""
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_like_human_text_keeps_the_silence_fallback(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "[SILENT]",
+        "messages": [], "tools": [], "history_offset": 0, "last_prompt_tokens": 0,
+        "api_calls": 1, "failed": False,
+    })
+
+    response = await runner._handle_message_with_agent(
+        _event(text="[Heartbeat] check status"), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert "silence marker" in response
+
+
+@pytest.mark.asyncio
 async def test_queued_human_turn_also_gets_the_visible_fallback():
     runner = gateway_run.GatewayRunner(GatewayConfig())
     runner._deliver_queued_first_response = AsyncMock()
@@ -183,7 +215,8 @@ async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_pa
         run_generation=1, _interrupt_depth=0, history=[], _status_thread_metadata=None,
         context_prompt=None, result_holder=[None])
     pending_event = SimpleNamespace(source=_source(), message_id="43", channel_prompt=None,
-                                    message_type=None, internal=True)
+                                    message_type=None, internal=False,
+                                    _trusted_scheduled_heartbeat=True)
 
     merged = await gateway_run.GatewayRunner._run_agent_queued_followup(
         runner, turn_ctx, adapter=None, pending="hi again", pending_event=pending_event,

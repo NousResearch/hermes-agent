@@ -1,0 +1,18 @@
+# Owner of this repo. yaan-repo-control/gate.py refuses to deploy this repo to a
+# live path unless the deployer matches the name below, and refuses a commit
+# whose HEAD lacks a matching "Reviewed-by:" trailer. GitHub cannot enforce this
+# on a private repo (branch protection is Pro-gated), so the deploy seam does.
+#
+# engines-stl - the agent fork we maintain and publish PRs to.
+#
+# Ownership follows the four-domain coder / tech-lead structure (operator ruling,
+# APR-0112, approved 2026-09-15): every repository is owned by the tech lead of
+# the domain that ships it, and that owner is the identity the repo's deploy path
+# runs as.
+#
+# ONE owner per repo, and it is the deployer's identity: gate.py's declared_owner()
+# reads the FIRST non-comment, non-blank line below, and the ownership check
+# compares it to the --owner the deploy ran with. A second name here is inert -
+# read by nobody. To move ownership, change this line and the YAAN_OWNER the
+# deploy runs under, together.
+engines-stl

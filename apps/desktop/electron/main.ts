@@ -427,6 +427,7 @@ import {
   registrySshScopeForWindowRoute,
   WindowConnectionRouteRegistry
 } from './window-connection-route'
+import { focusTargetWindow } from './window-focus'
 import { createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
@@ -13430,19 +13431,13 @@ function wireWindowReveal(win, { show, onRevealed }: { show?: () => void; onReve
 const sessionWindows = createSessionWindowRegistry()
 
 function focusWindow(win) {
-  if (!win || win.isDestroyed()) {
-    return
-  }
-
-  if (win.isMinimized()) {
-    win.restore()
-  }
-
-  if (!win.isVisible()) {
-    win.show()
-  }
-
-  win.focus()
+  // Pure ordering (restore → show → focus) lives in window-focus.ts. On macOS,
+  // win.focus() only makes the window key *inside* the app; app.focus() maps to
+  // -[NSApplication activateIgnoringOtherApps:] and raises the whole app when
+  // another application is active. Every call site here is user-initiated
+  // (Dock 'activate', HUD toggle, notification/deep-link reveal), so this never
+  // steals the foreground from a background event.
+  focusTargetWindow(win, IS_MAC ? () => app.focus() : undefined)
 }
 
 function spawnSecondaryWindow({

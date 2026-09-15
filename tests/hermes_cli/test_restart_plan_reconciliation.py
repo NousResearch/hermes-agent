@@ -295,6 +295,47 @@ def test_serve_outcome_follows_incarnation_probe_when_provided():
     assert by_pid == {900: "unaccounted", 901: "stopped"}
 
 
+def test_failed_respawn_outranks_incarnation_probe():
+    """A respawn the cleanup watched raise is ``failed`` even when the incarnation probe
+    sees the pre-update pid gone — "gone" is exactly what a failed respawn looks like
+    from the outside, so the attempt's result must outrank the observation. See #109290."""
+    plan = _plan(_serve("default", 900), _serve("default", 901, kind="dashboard"))
+    outcomes = match_runtime_outcomes(
+        plan, restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+        stale_serve_pids=set(),  # probe ran and saw both pids gone => both would read "restarted"
+        failed_respawn_pids={901},
+    )
+    by_pid = {o["pid"]: o["outcome"] for o in outcomes}
+    assert by_pid == {900: "restarted", 901: "failed"}
+
+
+def test_failed_respawn_recorded_without_probe():
+    """Without the probe, an attempted-and-failed respawn still reads ``failed`` — the
+    fact must not degrade to the probe-less ``unaccounted`` default. See #109290."""
+    outcomes = match_runtime_outcomes(
+        _plan(_serve("default", 900)),
+        restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+        stale_serve_pids=None,
+        failed_respawn_pids={900},
+    )
+    assert outcomes[0]["outcome"] == "failed"
+
+
+def test_failed_respawn_pids_do_not_touch_gateway_rows():
+    """Serve-only vocabulary: a gateway pid in ``failed_respawn_pids`` is ignored —
+    gateways are never respawned via the dashboard argv path. See #100479, #109290."""
+    outcomes = match_runtime_outcomes(
+        _plan(_rt("default", 100), _serve("default", 900)),
+        restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+        failed_respawn_pids={100, 900},
+    )
+    by_pid = {o["pid"]: o["outcome"] for o in outcomes}
+    assert by_pid == {100: "unaccounted", 900: "failed"}
+
+
 def test_unaccounted_serve_report_names_serve_remedy_not_gateway_restart(capsys):
     outcomes = match_runtime_outcomes(
         _plan(_serve("default", 900)),

@@ -53,3 +53,49 @@ class TestStripUnicodeTags:
         # This function only handles plane-14 tags — ZWJ emoji stay intact
         family = "\U0001F468\u200D\U0001F469\u200D\U0001F467"
         assert strip_unicode_tags(family) == family
+
+
+class TestSanitizeVaultMetadata:
+    """sanitize_vault_metadata: vault labels/identifiers are attacker-influenced
+    (database writers control them); invisible Unicode must not reach the model
+    through browser_vault_list (#110278)."""
+
+    def test_strips_tag_chars(self):
+        from tools.ansi_strip import sanitize_vault_metadata
+
+        smuggled = "".join(chr(0xE0000 + ord(c)) for c in "ignore this")
+        assert sanitize_vault_metadata(f"GitHub{smuggled}") == "GitHub"
+
+    def test_strips_bidi_override(self):
+        from tools.ansi_strip import sanitize_vault_metadata
+
+        assert sanitize_vault_metadata("admin\u202euser") == "adminuser"
+        assert sanitize_vault_metadata("\u2066user@example.com\u2069") == "user@example.com"
+
+    def test_strips_zero_width_chars(self):
+        from tools.ansi_strip import sanitize_vault_metadata
+
+        assert sanitize_vault_metadata("Gi\u200bth\u200cub") == "Github"
+
+    def test_plain_text_unchanged(self):
+        from tools.ansi_strip import sanitize_vault_metadata
+
+        s = "GitHub login — user@example.com ✔"
+        assert sanitize_vault_metadata(s) is s  # fast path returns same object
+
+    def test_empty(self):
+        from tools.ansi_strip import sanitize_vault_metadata
+
+        assert sanitize_vault_metadata("") == ""
+
+    def test_preserves_emoji_tag_sequence(self):
+        from tools.ansi_strip import sanitize_vault_metadata
+
+        flag = "\U0001F3F4" + "".join(chr(0xE0000 + ord(c)) for c in "gbsct") + "\U000E007F"
+        assert sanitize_vault_metadata(f"Card {flag}") == f"Card {flag}"
+
+    def test_preserves_zwj_emoji(self):
+        from tools.ansi_strip import sanitize_vault_metadata
+
+        family = "\U0001F468\u200d\U0001F469\u200d\U0001F467"
+        assert sanitize_vault_metadata(f"Family {family}") == f"Family {family}"

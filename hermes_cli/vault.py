@@ -203,7 +203,7 @@ def register_cli(subparser) -> None:
     p_rm.add_argument("handle", help="Item handle (see `hermes vault list`)")
     p_rm.set_defaults(_vault_handler=_cmd_rm)
 
-    p_src = subs.add_parser("sources", help="Show detected password managers (1Password, Bitwarden); they are on automatically")
+    p_src = subs.add_parser("sources", help="Show detected password managers (1Password, Bitwarden, KeePassXC); they are on automatically")
     group = p_src.add_mutually_exclusive_group()
     group.add_argument("--disable", metavar="NAME", help="Stop using a detected manager: onepassword | bitwarden")
     group.add_argument("--enable", metavar="NAME", help="Undo --disable")

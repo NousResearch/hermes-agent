@@ -110,6 +110,9 @@ def is_installed(name: str) -> bool:
     if name == "onepassword":
         from agent.secret_sources.onepassword import find_op
         return find_op() is not None
+    if name == "keepass":
+        from agent.secret_sources.keepass import find_keepassxc
+        return find_keepassxc() is not None
     return shutil.which("bw") is not None
 
 

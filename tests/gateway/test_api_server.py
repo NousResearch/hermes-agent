@@ -370,6 +370,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
     app.router.add_get("/v1/health", adapter._handle_health)
+    app.router.add_get("/v1/health/detailed", adapter._handle_health_detailed)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/api/model/options", adapter._handle_model_options)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
@@ -822,6 +823,29 @@ class TestHealthDetailedEndpoint:
                 assert data["gateway_drainable"] is True
                 assert isinstance(data["pid"], int)
                 assert "updated_at" in data
+
+    @pytest.mark.asyncio
+    async def test_v1_health_detailed_alias_matches(self, adapter):
+        """GET /v1/health/detailed is registered in the real route table and serves the identical body as /health/detailed."""
+        routes = {(method, path) for method, path, _handler in adapter._http_route_table()}
+        assert ("GET", "/v1/health/detailed") in routes
+        app = _create_app(adapter)
+        with patch("gateway.status.read_runtime_status", return_value={
+            "gateway_state": "running",
+            "platforms": {"telegram": {"state": "connected"}},
+            "active_agents": 2,
+            "exit_reason": None,
+            "updated_at": "2026-04-14T00:00:00Z",
+        }), patch("gateway.run._resolve_gateway_model", return_value="test/model"), patch(
+            "gateway.readiness.shutil.disk_usage",
+            return_value=types.SimpleNamespace(total=100, used=25, free=75),
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                detailed = await cli.get("/health/detailed")
+                alias = await cli.get("/v1/health/detailed")
+                assert detailed.status == 200
+                assert alias.status == 200
+                assert await detailed.json() == await alias.json()
 
 
     @pytest.mark.asyncio

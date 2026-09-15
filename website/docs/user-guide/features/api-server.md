@@ -423,6 +423,8 @@ model, disk space, gateway/platform state, active API runs, pending process
 completions, and active delegations. The response exposes status and counts,
 not config values, credentials, paths, commands, queue payloads, or raw errors.
 
+Also available at **GET /v1/health/detailed**.
+
 The public `/health` route remains a cheap liveness probe and does not run
 readiness checks. A degraded readiness result still uses HTTP 200; inspect the
 top-level `status` and `readiness.checks` fields.

@@ -815,6 +815,15 @@ _LATER_TASK_COLUMNS = (
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
     # Spawn-time start fingerprint of worker_pid (PID-reuse guard; NULL = legacy row).
     ("worker_started_at", "worker_started_at INTEGER"),
+    # Guided-routing (plans/2026-09-15_141016-guided-model-routing.md): persisted
+    # decision receipt id in the origin profile's model_routing.db, resolved at
+    # claim/start (not card creation) so queued tasks see current approval/
+    # availability. NULL = unmanaged task, legacy behavior unchanged.
+    ("routing_receipt_id", "routing_receipt_id TEXT"),
+    # Requested managed-routing role for this task (e.g. "builder",
+    # "reviewquality"); NULL means unmanaged. Distinct from the eventual
+    # receipt so a re-attempt can reselect against the same role.
+    ("routing_role", "routing_role TEXT"),
 )
 
 _NOTIFY_SUB_COLUMNS = (

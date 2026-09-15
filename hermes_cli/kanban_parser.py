@@ -82,6 +82,36 @@ _STEP_HANDOFF = (
     _arg("--metadata", help="JSON dict of structured facts to store on the latest completed run."),
 )
 
+_ROUTING_SPECS = [
+    _cmd("publish", [
+        _arg("policy_json", help="Path to a policy JSON file (schema_version, policy_id, revision, routes, ...)"),
+        _arg("--approval-ref", required=True,
+             help="Human-readable record of who/what approved this revision (required — publishing "
+                  "is an auditable admission step, not silent)."),
+        _json_flag(),
+    ], help="Publish an immutable policy revision (does not activate it)"),
+    _cmd("activate", [
+        _arg("policy_id"),
+        _arg("revision", type=int),
+    ], help="Mark one published revision as the active one used at claim/start time"),
+    _cmd("show", [
+        _arg("policy_id", nargs="?", default="kanban-default"),
+        _json_flag(),
+    ], help="Print the currently active policy (default policy_id: kanban-default)"),
+    _cmd("revisions", [
+        _arg("policy_id", nargs="?", default="kanban-default"),
+        _json_flag(),
+    ], help="List all published revisions of a policy"),
+    _cmd("receipt", [
+        _arg("receipt_id"),
+        _json_flag(),
+    ], help="Show a persisted routing decision receipt"),
+    _cmd("receipt-for-task", [
+        _TASK_ID,
+        _json_flag(),
+    ], help="Show the routing decision receipted for a task's current attempt"),
+]
+
 _BOARD_SPECS = [
     _cmd("list", [
         _json_flag(),
@@ -189,6 +219,12 @@ _SPECS = [
                   "the worker). Requires --model."),
         _arg("--completion-contract", metavar="CONTRACT",
              help="local-only (default), OWNER/REPO for publication, or exact GitHub PR URL; required CI gates done."),
+        _arg("--routing-role", dest="routing_role",
+             help="Opt this task into guided model routing for the given role "
+                  "(e.g. builder, reviewquality). Resolved against the active "
+                  "policy at claim/start time, not now; a receipted decision "
+                  "pins the worker's actual provider/model/reasoning. See "
+                  "`hermes kanban routing`."),
         _arg("--goal", action="store_true", dest="goal_mode",
              help="Run the worker in a goal loop: after each turn a judge checks the "
                   "response against the card title/body and, if not done, the worker "
@@ -427,6 +463,15 @@ _SPECS = [
              "the same narrow auto-repair the connect-time guard applies. Any other corruption "
              "class is reported and left untouched (fail-closed). Exits 0 when the DB is healthy "
              "or was repaired, non-zero when it is still corrupt."
+         )),
+    _cmd("routing", children=("routing_action", _ROUTING_SPECS),
+         help="Guided model routing: publish/activate policy revisions, inspect receipts",
+         description=(
+             "Manage the origin profile's guided-routing policy used to resolve "
+             "--routing-role tasks at claim time (plans/2026-09-15_141016-"
+             "guided-model-routing.md). Publishing/activating a policy is a "
+             "local, auditable admission step — it never itself dispatches a "
+             "worker or changes a running task's route."
          )),
 ]
 

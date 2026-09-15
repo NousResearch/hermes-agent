@@ -713,6 +713,8 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    routing_role: Optional[str] = None       # guided-routing role requested for this task; NULL = unmanaged
+    routing_receipt_id: Optional[str] = None  # id of the resolved decision receipt in model_routing.db
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -743,6 +745,7 @@ _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
+    "routing_role", "routing_receipt_id",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -1234,6 +1237,7 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    routing_role: Optional[str] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1249,6 +1253,10 @@ def create_task(
     in the active profile's projects.db — see ``_resolve_project_link``.
     ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
+    ``routing_role``: opts this task into guided model routing (design
+    plans/2026-09-15_141016-guided-model-routing.md). Resolved to a receipted
+    decision at claim/start time, not here — a queued task must see current
+    policy/availability, not a stale snapshot from creation time.
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract
@@ -1333,8 +1341,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        routing_role
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1344,6 +1353,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        (routing_role or None),
                     ),
                 )
                 for pid in parents:
@@ -1557,6 +1567,20 @@ def set_model_override(
         "UPDATE tasks SET model_override = ?, provider_override = ? WHERE id = ?", (model, provider),
         "model_override_set", {"model": model, "provider": provider},
         ("model_override", "provider_override"), archived_msg="cannot set model override",
+    )
+
+
+def set_routing_receipt(conn: sqlite3.Connection, task_id: str, receipt_id: Optional[str]) -> bool:
+    """Record the guided-routing decision receipt id resolved for this task's
+    current attempt (design plans/2026-09-15_141016-guided-model-routing.md
+    §12 claim/start sequence). Called by the dispatcher immediately after a
+    successful ``select()`` for a ``routing_role`` task, before spawning the
+    worker — never at card-creation time."""
+    return _set_task_override(
+        conn, task_id,
+        "UPDATE tasks SET routing_receipt_id = ? WHERE id = ?", (receipt_id,),
+        "routing_receipt_set", {"receipt_id": receipt_id},
+        ("routing_receipt_id",), archived_msg="cannot set routing receipt",
     )
 
 

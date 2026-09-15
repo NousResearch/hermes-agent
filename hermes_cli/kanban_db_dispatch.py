@@ -1640,6 +1640,36 @@ def _dispatch_lane_task(
     claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
     if claimed is None:
         return False
+    if getattr(claimed, "routing_role", None):
+        # Guided model routing (plans/2026-09-15_141016-guided-model-routing.md
+        # §4 step 4): resolve NOW, against the live policy/approval, never at
+        # card-creation time. A resolution failure is a real spawn failure —
+        # it must go through the normal breaker/re-queue path, never fall
+        # back to an unmanaged default route (design §5, "no silent escape").
+        try:
+            from agent.model_selection_types import RoutingBlocked as _RoutingBlocked
+            from hermes_cli.kanban_model_routing import resolve_task_route as _resolve_task_route
+            from hermes_constants import get_hermes_home as _get_hermes_home
+        except Exception:
+            raise
+        try:
+            kwargs = _resolve_task_route(
+                _get_hermes_home(), conn, claimed,
+                now=int(time.time()),
+                frozen_sha=os.environ.get("HERMES_KANBAN_ROUTING_FROZEN_SHA", "unknown"),
+                verified_by=os.environ.get("HERMES_KANBAN_ROUTING_VERIFIED_BY", "kanban-dispatcher"),
+            )
+        except _RoutingBlocked as exc:
+            if _record_task_failure(
+                conn, claimed.id, f"routing: {exc}",
+                outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
+            ):
+                result.auto_blocked.append(claimed.id)
+            return False
+        if kwargs is not None:
+            claimed.provider_override = kwargs["provider"]
+            claimed.model_override = kwargs["model"]
+            claimed.reasoning_effort = kwargs["reasoning_effort"]
     try:
         resolved_branch_name = None
         if claimed.workspace_kind == "worktree":

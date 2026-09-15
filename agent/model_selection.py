@@ -129,8 +129,11 @@ def select(requirements: dict, policy: dict, availability: dict, now: int) -> di
         if reason is not None:
             rejections[route_id] = [reason]
             continue
-        selected = route
-        break
+        if selected is None:
+            selected = route
+        # Keep evaluating every remaining ranked candidate even after a winner
+        # is found: an ineligible later route must be recorded as a rejection,
+        # never surface as a viable "alternate" just because we stopped early.
 
     for route_id in unranked:
         if route_id in rejections:
@@ -159,6 +162,7 @@ def select(requirements: dict, policy: dict, availability: dict, now: int) -> di
             "execution_kind": requirements["execution_kind"],
             "execution_id": requirements["execution_id"],
             "attempt_id": requirements["attempt_id"],
+            "slot_id": requirements.get("slot_id", ""),
             "task_class": requirements["task_class"],
             "quality": quality,
             "reasoning": requirements["reasoning"],

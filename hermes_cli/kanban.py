@@ -157,6 +157,9 @@ def kanban_command(args: argparse.Namespace) -> int:
     if action == "boards":
         return _dispatch_boards(args)
 
+    if action == "routing":
+        return _cmd_routing(args)
+
     # `--board <slug>` pins HERMES_KANBAN_BOARD for the duration of this call so it inherits the
     # exact resolution the dispatcher uses for workers.
     board_override = getattr(args, "board", None)
@@ -371,6 +374,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_max_turns=getattr(args, "goal_max_turns", None),
             completion_contract=getattr(args, "completion_contract", None),
             initial_status=getattr(args, "initial_status", "running"),
+            routing_role=getattr(args, "routing_role", None) or None,
             creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
                              if is_dispatcher_owned_worker_context() else None),
         )
@@ -1243,6 +1247,93 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
 
     return _run_triage_sweep(args, "decompose", decomp, decomp.decompose_task, "decomposed",
                              ("task_id", "ok", "reason", "fanout", "child_ids", "new_title"), _decompose_ok_line)
+
+
+def _cmd_routing(args: argparse.Namespace) -> int:
+    """``hermes kanban routing …``: guided-routing policy/receipt CLI.
+
+    Deliberately thin — all real logic (validation, immutability, receipt
+    idempotency) lives in agent.model_selection_store; this only resolves
+    the origin profile's Hermes home and renders results.
+    """
+    from agent.model_selection_store import (
+        activate_policy, get_active_policy, get_receipt, list_policy_revisions, publish_policy,
+    )
+    from agent.model_selection_types import RoutingBlocked
+    from hermes_constants import get_hermes_home
+
+    action = getattr(args, "routing_action", None)
+    hermes_home = get_hermes_home()
+    as_json = bool(getattr(args, "json", False))
+    try:
+        if action == "publish":
+            with open(args.policy_json, "r", encoding="utf-8") as f:
+                policy = json.load(f)
+            record = publish_policy(hermes_home, policy, approval_ref=args.approval_ref)
+            if as_json:
+                _print_json(record)
+            else:
+                print(f"published {record['policy_id']} revision {record['revision']} "
+                      f"(hash {record['content_hash'][:12]}…)")
+            return 0
+        if action == "activate":
+            activate_policy(hermes_home, args.policy_id, args.revision)
+            print(f"activated {args.policy_id} revision {args.revision}")
+            return 0
+        if action == "show":
+            policy = get_active_policy(hermes_home, args.policy_id)
+            if policy is None:
+                return _err(f"kanban routing: no active policy for {args.policy_id!r}")
+            if as_json:
+                _print_json(policy)
+            else:
+                print(f"{policy['policy_id']} revision {policy['revision']}: "
+                      f"{len(policy.get('routes', []))} route(s)")
+            return 0
+        if action == "revisions":
+            revs = list_policy_revisions(hermes_home, args.policy_id)
+            if as_json:
+                _print_json(revs)
+            else:
+                for r in revs:
+                    marker = "*" if r["active"] else " "
+                    print(f"{marker} rev {r['revision']}  approval_ref={r['approval_ref']!r}  "
+                          f"hash={r['content_hash'][:12]}…")
+            return 0
+        if action == "receipt":
+            receipt = get_receipt(hermes_home, args.receipt_id)
+            if receipt is None:
+                return _err(f"kanban routing: no such receipt {args.receipt_id!r}")
+            if as_json:
+                _print_json(receipt)
+            else:
+                sel = receipt["selected"]
+                print(f"{args.receipt_id}: role={receipt['requirements']['role']} "
+                      f"-> {sel['provider']}/{sel['model']} (route {sel['route_id']}, "
+                      f"policy {receipt['policy_id']}#{receipt['policy_revision']})")
+            return 0
+        if action == "receipt-for-task":
+            with kbc.connect_closing() as conn:
+                task = kb.get_task(conn, args.task_id)
+            if task is None:
+                return _err(f"kanban routing: no such task {args.task_id!r}")
+            receipt_id = getattr(task, "routing_receipt_id", None)
+            if not receipt_id:
+                return _err(f"kanban routing: task {args.task_id} has no routing receipt "
+                            "(unmanaged, or not yet claimed/dispatched)")
+            receipt = get_receipt(hermes_home, receipt_id)
+            if as_json:
+                _print_json({"receipt_id": receipt_id, "decision": receipt})
+            else:
+                sel = (receipt or {}).get("selected", {})
+                print(f"{args.task_id}: receipt={receipt_id} -> "
+                      f"{sel.get('provider')}/{sel.get('model')}")
+            return 0
+        return _err(f"kanban routing: unknown action {action!r}", 2)
+    except RoutingBlocked as exc:
+        return _err(f"kanban routing: {exc}")
+    except FileNotFoundError as exc:
+        return _err(f"kanban routing: {exc}")
 
 
 _HANDLERS = {

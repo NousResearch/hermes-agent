@@ -624,7 +624,17 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
 
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies for chat surfaces: concise, secret-redacted provider failure
-    categories instead of raw HTTP bodies, request IDs, leaked credentials, or policy text."""
+    categories instead of raw HTTP bodies, request IDs, leaked credentials, or policy text.
+
+    The sanitizing runs through the composable output-guard pipeline (``gateway.output_guards``),
+    which reproduces secret redaction and provider-error rewriting as ordered guards and lets
+    opt-in guards (em-dash stripping, link verification) drop in via ``gateway.guards.*`` config
+    without touching this call site. Only the synchronous guards run here (this helper is called
+    from both sync and async contexts); async guards such as link verification apply on the
+    delivery path instead. A pipeline "drop" is rare for a final response, so the original text
+    is kept rather than sending an empty reply; any pipeline failure falls back to the inline
+    legacy path so a bug in the guard layer can never mute the agent.
+    """
     if not text or _gateway_surface_passes_raw_text(platform):
         return text
 
@@ -644,10 +654,20 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     if str(text).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
         return ""
 
-    redacted = _redact_gateway_user_facing_secrets(str(text))
-    if _looks_like_gateway_provider_error(redacted):
-        return _gateway_provider_error_reply(redacted)
-    return redacted
+    try:
+        from gateway.output_guards import apply_output_guards_sync, GuardContext
+        ctx = GuardContext(
+            platform=_gateway_platform_value(platform),
+            is_final_response=True,
+        )
+        result = apply_output_guards_sync(str(text), ctx)
+        return result if result is not None else text
+    except Exception:
+        logger.debug("output-guard pipeline failed; using legacy sanitize", exc_info=True)
+        redacted = _redact_gateway_user_facing_secrets(str(text))
+        if _looks_like_gateway_provider_error(redacted):
+            return _gateway_provider_error_reply(redacted)
+        return redacted
 
 
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:

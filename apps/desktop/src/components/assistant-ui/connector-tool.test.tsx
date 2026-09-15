@@ -210,7 +210,7 @@ describe('ConnectorTool operation card', () => {
     await waitFor(() => {
       expect(request).toHaveBeenCalledWith('connection.respond', {
         op_id: 'operation-1',
-        result: { settled_by: 'continue' },
+        result: { settled_by: 'continue', targets: [] },
         session_id: SESSION_ID
       })
     })

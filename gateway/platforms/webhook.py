@@ -65,6 +65,70 @@ _TEMPLATE_KEY_RE = re.compile(r"\{([a-zA-Z0-9_.]+)\}")
 _REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 # Credentials `gh` reads; a routed profile's github_comment must use its own, never the process env's.
 _GH_TOKEN_VARS = ("GH_TOKEN", "GITHUB_TOKEN")
+_WEBHOOK_CONTEXT_TTL_SECONDS = 300.0
+_WEBHOOK_CONTEXT_MAX_ENTRIES = 100
+
+
+class WebhookDeliveryContextBridge:
+    """Bounded, one-shot context from an authenticated webhook to its explicit DM target."""
+
+    def __init__(self, *, ttl_seconds: float = _WEBHOOK_CONTEXT_TTL_SECONDS,
+                 max_entries: int = _WEBHOOK_CONTEXT_MAX_ENTRIES):
+        self._ttl_seconds = ttl_seconds
+        self._max_entries = max_entries
+        self._entries: Dict[tuple, dict] = {}
+        self._order: Deque[tuple[float, tuple]] = deque()
+
+    @staticmethod
+    def _key(*, profile, platform: Platform, chat_id: str, thread_id: Optional[str]) -> tuple:
+        return (profile, platform.value, str(chat_id), str(thread_id) if thread_id else None)
+
+    def _prune(self, now: float) -> None:
+        cutoff = now - self._ttl_seconds
+        while self._order and (self._order[0][0] <= cutoff or len(self._entries) > self._max_entries):
+            created_at, key = self._order.popleft()
+            entry = self._entries.get(key)
+            if entry and entry["created_at"] == created_at:
+                self._entries.pop(key, None)
+
+    def capture(self, *, profile, platform: Platform, chat_id: str, thread_id: Optional[str],
+                event_text: str, now: Optional[float] = None) -> tuple:
+        """Store an authenticated event and return the token its final response must present."""
+        now = time.monotonic() if now is None else now
+        self._prune(now)
+        key = self._key(profile=profile, platform=platform, chat_id=chat_id, thread_id=thread_id)
+        self._entries[key] = {"created_at": now, "event_text": event_text, "response_text": None}
+        self._order.append((now, key))
+        self._prune(now)
+        return key, now
+
+    def record_response(self, token: tuple, response_text: str, *, now: Optional[float] = None) -> None:
+        """Make a successful final delivery available only when it belongs to the latest event."""
+        now = time.monotonic() if now is None else now
+        self._prune(now)
+        key, created_at = token
+        entry = self._entries.get(key)
+        if entry and entry["created_at"] == created_at:
+            entry["response_text"] = response_text
+
+    def consume(self, source, *, now: Optional[float] = None) -> Optional[str]:
+        """Return matching delivered context once; never infer a target from an identity."""
+        if getattr(source, "chat_type", None) not in {"dm", "private"}:
+            return None
+        now = time.monotonic() if now is None else now
+        self._prune(now)
+        key = self._key(
+            profile=getattr(source, "profile", None), platform=source.platform,
+            chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
+        )
+        entry = self._entries.get(key)
+        if not entry or not entry["response_text"]:
+            return None
+        self._entries.pop(key, None)
+        return (
+            "[Recent authenticated webhook event]\n"
+            f"{entry['event_text']}\n\n[Webhook delivery response]\n{entry['response_text']}"
+        )
 
 
 def _is_loopback_host(host: Optional[str]) -> bool:
@@ -277,9 +341,43 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
         if self.gateway_runner and _is_known_platform(deliver_type):
-            return await self._deliver_cross_platform(deliver_type, content, delivery)
+            result = await self._deliver_cross_platform(deliver_type, content, delivery)
+            if result.success and not (metadata or {}).get("_interim_send"):
+                self._record_delivered_context(delivery, content)
+            return result
         logger.warning("[webhook] Unknown deliver type: %s", deliver_type)
         return SendResult(success=False, error=f"Unknown deliver type: {deliver_type}")
+
+    def _context_bridge(self) -> Optional[WebhookDeliveryContextBridge]:
+        """Return the runner-owned bridge shared with the target platform's inbound path."""
+        runner = self.gateway_runner
+        if runner is None:
+            return None
+        bridge = getattr(runner, "_webhook_delivery_context_bridge", None)
+        if not isinstance(bridge, WebhookDeliveryContextBridge):
+            bridge = WebhookDeliveryContextBridge()
+            runner._webhook_delivery_context_bridge = bridge
+        return bridge
+
+    def _capture_delivery_context(self, delivery: dict, prompt: str) -> None:
+        """Capture only explicitly addressed messaging deliveries; home-channel fallback is not a bridge target."""
+        extra = delivery.get("deliver_extra", {})
+        chat_id = extra.get("chat_id") if isinstance(extra, dict) else None
+        try:
+            platform = Platform(delivery.get("deliver", ""))
+        except ValueError:
+            return
+        if not chat_id or not (bridge := self._context_bridge()):
+            return
+        delivery["context_token"] = bridge.capture(
+            profile=delivery.get("profile"), platform=platform, chat_id=str(chat_id),
+            thread_id=extra.get("message_thread_id") or extra.get("thread_id"), event_text=prompt,
+        )
+
+    def _record_delivered_context(self, delivery: dict, content: str) -> None:
+        token = delivery.get("context_token")
+        if token and (bridge := self._context_bridge()):
+            bridge.record_response(token, content)
 
     def _prune_delivery_info(self, now: float) -> None:
         """Drop delivery_info entries older than the idempotency TTL (bounds the dict by ``rate_limit * TTL``
@@ -651,9 +749,11 @@ class WebhookAdapter(BasePlatformAdapter):
         session_chat_id = f"webhook:{route_name}:{delivery_id}"
         # ``profile`` rides along so the reply leg (``send`` → ``_deliver_cross_platform``) egresses through
         # THIS profile's adapter, home channel and secrets — not the first profile that has the platform.
-        self._delivery_info[session_chat_id] = {
+        delivery = {
             "deliver": route_config.get("deliver", "log"), "profile": profile,
             "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload)}
+        self._capture_delivery_context(delivery, prompt)
+        self._delivery_info[session_chat_id] = delivery
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)

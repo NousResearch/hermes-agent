@@ -32,9 +32,12 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import SendResult
 from gateway.platforms.webhook import (
     WebhookAdapter,
+    WebhookDeliveryContextBridge,
     _INSECURE_NO_AUTH,
     check_webhook_requirements,
 )
+from gateway.run_inbound import GatewayInboundMixin
+from gateway.session import SessionSource
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +93,98 @@ def _mock_request(headers=None, body=b"", content_length=None, match_info=None):
 
     req.read = _read
     return req
+
+
+class TestWebhookDeliveryContextBridge:
+    """Regression coverage for #112274's explicit-target context handoff."""
+
+    def test_consumes_matching_dm_context_once(self):
+        bridge = WebhookDeliveryContextBridge(ttl_seconds=60)
+        token = bridge.capture(
+            profile="work", platform=Platform.TELEGRAM, chat_id="42", thread_id=None,
+            event_text="New email from Ada", now=100.0,
+        )
+        bridge.record_response(token, "I summarized the email.", now=101.0)
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="42", chat_type="dm", profile="work",
+        )
+
+        context = bridge.consume(source, now=102.0)
+
+        assert "New email from Ada" in context
+        assert "I summarized the email." in context
+        assert bridge.consume(source, now=102.0) is None
+
+    def test_rejects_unmatched_group_thread_and_expired_context(self):
+        bridge = WebhookDeliveryContextBridge(ttl_seconds=60)
+        token = bridge.capture(
+            profile=None, platform=Platform.TELEGRAM, chat_id="42", thread_id="7",
+            event_text="Event", now=100.0,
+        )
+        bridge.record_response(token, "Response", now=101.0)
+
+        assert bridge.consume(SessionSource(
+            platform=Platform.TELEGRAM, chat_id="42", chat_type="group", thread_id="7",
+        ), now=102.0) is None
+        assert bridge.consume(SessionSource(
+            platform=Platform.TELEGRAM, chat_id="42", chat_type="dm", thread_id="8",
+        ), now=102.0) is None
+        assert bridge.consume(SessionSource(
+            platform=Platform.TELEGRAM, chat_id="42", chat_type="dm", thread_id="7",
+        ), now=162.0) is None
+
+    def test_late_response_cannot_replace_a_newer_event_for_the_same_target(self):
+        bridge = WebhookDeliveryContextBridge(ttl_seconds=60)
+        first = bridge.capture(
+            profile=None, platform=Platform.TELEGRAM, chat_id="42", thread_id=None,
+            event_text="Older event", now=100.0,
+        )
+        second = bridge.capture(
+            profile=None, platform=Platform.TELEGRAM, chat_id="42", thread_id=None,
+            event_text="Newer event", now=101.0,
+        )
+        bridge.record_response(first, "Late older response", now=102.0)
+        bridge.record_response(second, "Newer response", now=103.0)
+
+        context = bridge.consume(SessionSource(
+            platform=Platform.TELEGRAM, chat_id="42", chat_type="dm",
+        ), now=104.0)
+
+        assert "Newer event" in context
+        assert "Newer response" in context
+        assert "Late older response" not in context
+
+    def test_inbound_preparation_injects_matching_context_without_merging_sessions(self):
+        bridge = WebhookDeliveryContextBridge(ttl_seconds=60)
+        now = time.monotonic()
+        token = bridge.capture(
+            profile=None, platform=Platform.TELEGRAM, chat_id="42", thread_id=None,
+            event_text="Incoming invoice", now=now,
+        )
+        bridge.record_response(token, "Invoice summary", now=now)
+        runner = MagicMock()
+        runner.config.group_sessions_per_user = True
+        runner.config.thread_sessions_per_user = False
+        runner._webhook_delivery_context_bridge = bridge
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm")
+
+        prepared = GatewayInboundMixin._prefix_inbound_sender_context(
+            runner, MagicMock(channel_context=None), source, "Forward that to Sam."
+        )
+
+        assert prepared.endswith("[New message]\nForward that to Sam.")
+        assert "Incoming invoice" in prepared
+        assert "Invoice summary" in prepared
+
+    def test_log_delivery_never_creates_a_context_target(self):
+        adapter = _make_adapter()
+        adapter.gateway_runner = MagicMock()
+
+        adapter._capture_delivery_context(
+            {"deliver": "log", "profile": None, "deliver_extra": {"chat_id": "42"}}, "Event"
+        )
+
+        assert "_webhook_delivery_context_bridge" not in vars(adapter.gateway_runner)
 
 
 def _github_signature(body: bytes, secret: str) -> str:

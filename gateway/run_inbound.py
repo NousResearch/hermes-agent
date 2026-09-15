@@ -1402,6 +1402,9 @@ class GatewayInboundMixin:
         # After the sender-prefix so the prefix applies only to the trigger message, not the backfill.
         if getattr(event, "channel_context", None):
             message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
+        bridge = getattr(self, "_webhook_delivery_context_bridge", None)
+        if bridge and (webhook_context := bridge.consume(source)):
+            message_text = f"{webhook_context}\n\n[New message]\n{message_text}"
         return message_text
 
     @staticmethod

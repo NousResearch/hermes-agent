@@ -80,7 +80,7 @@ class TestSendCap:
         adapter = _make_adapter()
         sends = []
 
-        async def fake_send(*, content, reference=None):
+        async def fake_send(*, content, reference=None, **_kwargs):
             sends.append(content)
             return SimpleNamespace(id=9000 + len(sends))
 
@@ -104,7 +104,7 @@ class TestForumCap:
         adapter = _make_adapter()
         thread_sends = []
 
-        async def fake_thread_send(*, content):
+        async def fake_thread_send(*, content, **_kwargs):
             thread_sends.append(content)
             return SimpleNamespace(id=8000 + len(thread_sends))
 
@@ -137,10 +137,10 @@ class TestEditOverflowCap:
         edits = []
         sends = []
 
-        async def fake_edit(*, content):
+        async def fake_edit(*, content, **_kwargs):
             edits.append(content)
 
-        async def fake_send(*, content, reference=None):
+        async def fake_send(*, content, reference=None, **_kwargs):
             sends.append(content)
             return SimpleNamespace(id=9000 + len(sends))
 

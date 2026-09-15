@@ -921,11 +921,20 @@ def _contains_unsafe_gateway_action(
             read_remote_script=read_remote_script,
         )
 
-    for payload in _iter_shell_command_payloads(command):
+    # Keep the recursive walkers in parity with the direct regex pass: quoted,
+    # data-sink heredoc bodies are inert input, not executable shell syntax.
+    # Preserve the original command for budget accounting above; only the scan
+    # view is masked so oversized files referenced by Python source cannot cause
+    # a false fail-closed result. The stripper fails open for executable or
+    # ambiguous heredocs, so lifecycle commands in those forms remain blocked.
+    from tools.shell_heredoc import strip_inert_heredoc_bodies
+
+    scan_command = strip_inert_heredoc_bodies(command)
+    for payload in _iter_shell_command_payloads(scan_command):
         if recurse(payload, cwd):
             return True
 
-    for script_path in _iter_referenced_shell_scripts(command, cwd=cwd):
+    for script_path in _iter_referenced_shell_scripts(scan_command, cwd=cwd):
         # Do not touch a FileProvider path even to discover whether the file is hydrated.
         if _on_cloud_path(script_path):
             return True

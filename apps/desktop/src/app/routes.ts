@@ -82,6 +82,8 @@ const RESERVED_PATHS: ReadonlySet<string> = new Set(APP_ROUTES.map(route => rout
 // (`render` on the contribution itself, like every other area). Contributed
 // paths are reserved exactly like APP_ROUTES so the session-id parser never
 // mistakes them for a session route. Navigate with `host.navigate(path)`.
+// A route's render component may accept optional `{ onClose?: () => void }`
+// props: the host returns to the prior view, or closes only its split tile.
 
 export const ROUTES_AREA = 'routes'
 

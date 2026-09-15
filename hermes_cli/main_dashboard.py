@@ -211,8 +211,11 @@ def _try_restart_systemd_service(svc_name: str, cgroup_path: str | None = None) 
 
 
 def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
-    """Exact argv of a running process: ``/proc/<pid>/cmdline`` (Linux), ``ps -o command=`` + shlex
-    (macOS), None on Windows (no graceful taskkill window; Desktop manages its backend)."""
+    """Return exact process argv from ``/proc`` or psutil, when available.
+
+    Display-oriented ``ps -o command=`` output has no recoverable argv boundaries, so capture
+    failures return None and let the update path print its manual-restart hint instead.
+    """
     if sys.platform == "win32":
         return None
     try:
@@ -221,19 +224,17 @@ def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
             with open(cmdline_path, "rb") as f:
                 raw = f.read()
             argv = [part.decode("utf-8", errors="replace") for part in raw.split(b"\x00") if part]
-            return argv or None
-        result = _run_probe(["ps", "-p", str(pid), "-o", "command="], timeout=10)
-        if result.returncode != 0:
-            return None
-        command = (result.stdout or "").strip()
-        if not command:
-            return None
-        try:
-            argv = shlex.split(command)
-        except ValueError:
-            argv = command.split()
-        return argv or None
-    except (OSError, ValueError, subprocess.TimeoutExpired):
+            if argv:
+                return argv
+    except OSError:
+        pass
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        return psutil.Process(pid).cmdline() or None
+    except (psutil.Error, OSError, ValueError):
         return None
 
 

@@ -33,7 +33,25 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
   } = deps
 
   if (event.type === 'status.update') {
-    if (sessionId && payload?.kind === 'compacting') {
+    if (sessionId && payload?.kind === 'model-switch-warning') {
+      const text = coerceGatewayText(payload?.text)
+
+      if (text) {
+        flushQueuedDeltas(sessionId)
+        updateSessionState(sessionId, state => ({
+          ...state,
+          messages: [
+            ...state.messages,
+            {
+              id: `model-switch-warning-${Date.now()}`,
+              role: 'system',
+              parts: [textPart(`warning: ${text}`, occurredAt)],
+              timestamp: occurredAt
+            }
+          ]
+        }))
+      }
+    } else if (sessionId && payload?.kind === 'compacting') {
       setSessionCompacting(sessionId, true)
       compactedTurnRef.current.add(sessionId)
     } else if (sessionId && payload?.kind === 'compacted') {

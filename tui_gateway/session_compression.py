@@ -185,6 +185,8 @@ def _apply_pending_model_switch(sid: str, session: dict) -> None:
         # on a model the user never confirmed.
         if result.get("confirm_required"):
             _emit("error", sid, {"message": result.get("confirm_message") or result.get("warning") or ""})
+        elif result.get("warning"):
+            _emit("status.update", sid, {"kind": "model-switch-warning", "text": result["warning"], "timestamp": time.time()})
     except Exception as e:
         _emit("error", sid, {"message": f"Could not switch model: {e}"})
 

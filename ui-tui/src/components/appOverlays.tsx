@@ -19,6 +19,7 @@ import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
 import { SkillsHub } from './skillsHub.js'
 import { SubscriptionOverlay } from './subscriptionOverlay.js'
+import { TriggerPicker } from './triggerPicker.js'
 import { WidgetGrid, type WidgetGridWidget } from './widgetGrid.js'
 
 const COMPLETION_WINDOW = 16
@@ -287,6 +288,24 @@ export function FloatingOverlays({
       render: width => (
         <FloatBox color={theme.color.border}>
           <PetPicker gw={gw} maxWidth={width} onClose={() => patchOverlayState({ petPicker: false })} t={theme} />
+        </FloatBox>
+      )
+    })
+  }
+
+  if (overlay.triggerPicker) {
+    const onPick: (phrase: string) => void = phrase => overlay.triggerPicker?.onPick(phrase)
+    widgets.push({
+      id: 'trigger-picker',
+      render: width => (
+        <FloatBox color={theme.color.border}>
+          <TriggerPicker
+            gw={gw}
+            maxWidth={width}
+            onClose={() => patchOverlayState({ triggerPicker: null })}
+            onPick={onPick}
+            t={theme}
+          />
         </FloatBox>
       )
     })

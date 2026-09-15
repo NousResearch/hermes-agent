@@ -296,6 +296,9 @@ export interface OverlayState {
   modelPicker: boolean | { refresh?: boolean }
   pager: null | PagerState
   petPicker: boolean
+  /** Workflow-trigger picker; the payload carries the dispatch callback (set by the
+   *  renderer-side /trigger command, which captures the live SlashRunCtx). */
+  triggerPicker: null | { onPick: (phrase: string) => void }
   pluginsHub: boolean
   secret: null | SecretReq
   vaultUnlock: null | VaultUnlockReq

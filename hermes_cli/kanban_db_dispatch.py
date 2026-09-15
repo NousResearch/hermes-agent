@@ -133,6 +133,13 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    batch_approval_blocked: Optional[str] = None
+    """Reason string when this tick was refused because the board's
+    batch_approval_gate is unset or not decision-hud-approved. None when the
+    gate passed, the board has no gate configured (feature flag disabled), or
+    the feature flag ``HERMES_KANBAN_BATCH_APPROVAL_GATE_ENABLED`` is unset
+    (see _check_batch_approval_gate). Reclaim/promotion bookkeeping still
+    ran; this only blocks the spawn phase."""
 
 
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in
@@ -1835,6 +1842,35 @@ def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
 # The dispatch lock has been released here. Fire the tick observer strictly OUTSIDE the single-writer
 # critical section (#56066 sweeper finding / #64231 disposition): a slow subscriber must never extend the
 # lock hold and stall a sibling dispatcher's tick.
+def _check_batch_approval_gate(board: Optional[str]) -> Optional[str]:
+    """Return a block reason string if this board's dispatch tick must not
+    spawn, else None. Feature-flagged: no-op (always returns None
+    immediately, without touching board metadata) unless
+    ``HERMES_KANBAN_BATCH_APPROVAL_GATE_ENABLED`` is set to a truthy value
+    ('1'/'true'/'yes'), since the underlying behavior is DEFAULT-GATED — an
+    unset batch_approval_gate is treated as "blocked", not "passed through".
+    See decision-hub-first-work/plans/02-minimal-bridge-alternative.md
+    section 5 for the migration/rollout rationale: shipping this gate
+    enabled by default would halt every board with no gate configured
+    (including boards with proven live dispatch activity), so it ships
+    disabled until an operator explicitly opts in.
+    """
+    if os.environ.get("HERMES_KANBAN_BATCH_APPROVAL_GATE_ENABLED", "").strip().lower() not in (
+        "1", "true", "yes", "on",
+    ):
+        return None
+    meta = _kb.read_board_metadata(board=board)
+    gate = meta.get("batch_approval_gate")
+    if not gate:
+        return "no batch_approval_gate configured on this board"
+    project = meta.get("project_id") or _kb._slug_or_default(board)
+    from hermes_cli.plugin_bridges.decision_hud import check_batch_approval
+    approved, reason = check_batch_approval(project=project, batch_id=str(gate))
+    if not approved:
+        return reason or f"batch {gate!r} not approved"
+    return None
+
+
 def _dispatch_once_locked(
     conn: sqlite3.Connection,
     *,
@@ -1860,6 +1896,10 @@ def _dispatch_once_locked(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans,
     )
+    block_reason = _check_batch_approval_gate(board)
+    if block_reason is not None:
+        result.batch_approval_blocked = block_reason
+        return result
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
     )

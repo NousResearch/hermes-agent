@@ -143,6 +143,38 @@ async def test_fixed_native_inventory_preserves_identity_and_future_files(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_native_preparation_transfers_branch_custody_before_terminal_release(tmp_path, monkeypatch):
+    from hermes_state_input_custody import copy_branch_input_refs
+    from hermes_state_mutation_retirement import RETIRED_PREFIX
+    db, owner = owned(tmp_path, monkeypatch)
+    try:
+        rpc, bound = rpc_files(tmp_path, owner, count=2, image=True)
+        prepared = prepare_hosted_input(rpc, request_id='hosted:branch', prompt='read',
+            attachments=[item for item, _ in bound])
+        await owner.submit(rpc.principal, Submission('hosted:branch', rpc.ref, prepared.payload, 'queue'),
+            _input_custody=prepared.handle)
+        digest = hashlib.sha256(bound[-1][1]).hexdigest()
+        image = _media_root() / digest / (digest + '.png')
+        db.create_session('branch', source='cli', model_config={'_branched_from': rpc.ref.session_id})
+        db._execute_write(lambda conn: copy_branch_input_refs(conn, rpc.ref.session_id, 'branch'))
+        async def inert(*args):
+            return 'done'
+        monkeypatch.setattr('gateway.session_finite.execute_finite_admission', inert)
+        await owner._drain(rpc.ref)
+        assert image.exists(), 'branch ownership must survive original settlement'
+        collect_legacy_input_aliases(db, epoch=owner.epoch)
+        assert image.exists()
+        def retired_branch(conn):
+            conn.execute('DELETE FROM sessions WHERE id=?', ('branch',))
+            conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (RETIRED_PREFIX + 'branch', '{}'))
+        db._execute_write(retired_branch)
+        collect_legacy_input_aliases(db, epoch=owner.epoch)
+        assert not image.exists()
+    finally:
+        close(db, tmp_path)
+
+
+@pytest.mark.asyncio
 async def test_known_v2_native_hardlink_pair_drains_without_unknown_owners(tmp_path, monkeypatch):
     from gateway.hosted_room_attachments import default_attachment_root
     db, owner = owned(tmp_path, monkeypatch, initialize=False)

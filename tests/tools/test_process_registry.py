@@ -1161,7 +1161,7 @@ class TestSpawnRewriteCompoundBackground:
         fake_thread.daemon = False
 
         with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
-             patch("subprocess.Popen", side_effect=fake_popen), \
+             patch("tools.process_registry.fork_safe_popen", side_effect=fake_popen), \
              patch("threading.Thread", return_value=fake_thread), \
              patch.object(registry, "_write_checkpoint"):
             registry.spawn_local("cd /app && node server.js &>/tmp/srv.log &", cwd="/tmp")
@@ -1186,7 +1186,7 @@ class TestSpawnRewriteCompoundBackground:
         fake_thread.daemon = False
 
         with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
-             patch("subprocess.Popen", side_effect=fake_popen), \
+             patch("tools.process_registry.fork_safe_popen", side_effect=fake_popen), \
              patch("threading.Thread", return_value=fake_thread), \
              patch.object(registry, "_write_checkpoint"):
             registry.spawn_local("sleep 5 &", cwd="/tmp")
@@ -2043,7 +2043,7 @@ class TestSystemdCgroupIsolation:
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
         with (
-            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("tools.process_registry.fork_safe_popen", side_effect=fake_popen),
             patch("threading.Thread", return_value=MagicMock()),
             patch.object(registry, "_write_checkpoint"),
         ):
@@ -2109,7 +2109,7 @@ class TestSystemdCgroupIsolation:
         )
 
         with (
-            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("tools.process_registry.fork_safe_popen", side_effect=fake_popen),
             patch("threading.Thread", return_value=MagicMock()),
             patch.object(registry, "_write_checkpoint"),
         ):
@@ -2136,7 +2136,7 @@ class TestSystemdCgroupIsolation:
         )
 
         with (
-            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("tools.process_registry.fork_safe_popen", side_effect=fake_popen),
             patch("threading.Thread", return_value=MagicMock()),
             patch.object(registry, "_write_checkpoint"),
         ):
@@ -2180,7 +2180,7 @@ class TestSystemdCgroupIsolation:
         else:
             fake_popen, captured = self._fake_popen_capture()
             with (
-                patch("subprocess.Popen", side_effect=fake_popen),
+                patch("tools.process_registry.fork_safe_popen", side_effect=fake_popen),
                 patch("threading.Thread", return_value=MagicMock()),
                 patch.object(registry, "_write_checkpoint"),
             ):
@@ -2231,7 +2231,7 @@ class TestSystemdCgroupIsolation:
         else:
             fake_popen, captured = self._fake_popen_capture()
             with (
-                patch("subprocess.Popen", side_effect=fake_popen),
+                patch("tools.process_registry.fork_safe_popen", side_effect=fake_popen),
                 patch("threading.Thread", return_value=MagicMock()),
                 patch.object(registry, "_write_checkpoint"),
             ):
@@ -2696,7 +2696,7 @@ class TestSystemdCgroupIsolation:
         monkeypatch.setattr("subprocess.run", fake_probe_run)
 
         with (
-            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("tools.process_registry.fork_safe_popen", side_effect=fake_popen),
             patch("threading.Thread", return_value=MagicMock()),
             patch.object(registry, "_write_checkpoint"),
         ):

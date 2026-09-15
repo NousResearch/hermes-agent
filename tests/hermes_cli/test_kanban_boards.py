@@ -257,6 +257,7 @@ class TestWorkerSpawnEnv:
             return FakeProc()
 
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        monkeypatch.setattr("hermes_cli._subprocess_compat.fork_safe_popen", fake_popen)
         kb.create_board("spawntest")
 
         task = kb.Task(

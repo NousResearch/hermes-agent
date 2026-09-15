@@ -604,8 +604,9 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
         death_r, kernel.death_pipe_w = os.pipe()
         child_env["HERMES_KERNEL_PARENT_DEATH_FD"] = str(death_r)
         pass_fds = (death_r,)
+    from hermes_cli._subprocess_compat import fork_safe_popen
     try:
-        kernel.proc = subprocess.Popen(
+        kernel.proc = fork_safe_popen(
             [child_python, os.path.join(kernel.tmpdir, "hermes_kernel_runner.py")],
             # Strict mode passes an empty cwd: the kernel's staging dir plays the per-call tmpdir's role.
             cwd=child_cwd or kernel.tmpdir, env=child_env, start_new_session=True,

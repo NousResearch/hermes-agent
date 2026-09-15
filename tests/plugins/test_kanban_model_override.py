@@ -131,6 +131,7 @@ def _spawn_and_capture(monkeypatch, tmp_path, task):
         return FakeProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr("hermes_cli._subprocess_compat.fork_safe_popen", fake_popen)
     workspace = tmp_path / "ws"
     workspace.mkdir(exist_ok=True)
     kbd._default_spawn(task, str(workspace))

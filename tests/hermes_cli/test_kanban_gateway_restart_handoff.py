@@ -131,6 +131,7 @@ def test_standalone_dispatcher_keeps_direct_worker_spawn(
         pid = 4243
 
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: captured_cmd.extend(cmd) or FakeProc())
+    monkeypatch.setattr("hermes_cli._subprocess_compat.fork_safe_popen", lambda cmd, **kwargs: captured_cmd.extend(cmd) or FakeProc())
     monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: False)
     monkeypatch.setattr(
         "tools.process_registry._systemd_run_user_scope_available",

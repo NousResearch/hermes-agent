@@ -333,11 +333,12 @@ class SearchMixin:
         ``merge_stderr`` mirrors the shell path's stderr handling: merged for content
         search (diagnostics feed the error message), discarded (``2>/dev/null``) for
         file lists and probes."""
+        from hermes_cli._subprocess_compat import fork_safe_popen
         from tools.environments.local import _kill_process_group_posix, _make_run_env
         cwd = getattr(self.env, "cwd", None) or self.cwd
         args = shlex.split(" ".join(argv))
         try:
-            proc = subprocess.Popen(
+            proc = fork_safe_popen(
                 args, cwd=cwd, env=_make_run_env(self.env.env), stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT if merge_stderr else subprocess.DEVNULL,
                 start_new_session=True)

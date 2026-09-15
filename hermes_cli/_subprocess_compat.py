@@ -4,19 +4,24 @@
   WinError 193 because CreateProcessW can't run a ``.cmd`` without ``shell=True``/PATHEXT.
 * ``start_new_session=True`` — POSIX ``os.setsid()`` detach; silently ignored on Windows, whose
   equivalent is the ``CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`` creationflags bundle.
+* ``fork_safe_popen`` — macOS: ``cwd``/``start_new_session``/``close_fds``/``pass_fds`` make CPython
+  3.11 fork() instead of posix_spawn(), which a threaded parent must not do (#97296).
 """
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import shutil
 import subprocess
 import sys
+import time
 from typing import Mapping, Sequence
 
 __all__ = [
     "IS_WINDOWS",
+    "fork_safe_popen",
     "resolve_node_command",
     "split_command_line",
     "suppress_platform_ver_console",
@@ -209,6 +214,111 @@ def windows_detach_popen_kwargs() -> dict:
     if IS_WINDOWS:
         return {"creationflags": windows_detach_flags()}
     return {"start_new_session": True}
+
+
+# posix_spawn()ed by fork_safe_popen in place of the program: applies what posix_spawn cannot
+# express (session, cwd, fd closing), undoes its own startup side effects (Python ignores SIGPIPE /
+# SIGXFSZ and coerces LC_CTYPE per PEP 538; CoreFoundation adds __CF_USER_TEXT_ENCODING), then
+# execs the program in place — same pid. An exec failure exits 127, like a shell.
+_EXEC_TRAMPOLINE = """\
+import os, signal, sys
+new_session, restore_signals, cwd, keep, lc_ctype, cf_encoding, program, *argv = sys.argv[1:]
+try:
+    if new_session == "1":
+        os.setsid()
+    if cwd:
+        os.chdir(cwd)
+    if keep != "*":
+        kept = {int(fd) for fd in keep.split(",") if fd}
+        for fd in [int(name) for name in os.listdir("/dev/fd")]:
+            if fd > 2 and fd not in kept:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+    if restore_signals == "1":
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+        signal.signal(signal.SIGXFSZ, signal.SIG_DFL)
+    for name, value in (("LC_CTYPE", lc_ctype), ("__CF_USER_TEXT_ENCODING", cf_encoding)):
+        if value:
+            os.environ[name] = value[1:]
+        else:
+            os.environ.pop(name, None)
+    os.execv(program, argv)
+except OSError as exc:
+    os.write(2, ("hermes: cannot run %s: %s\\n" % (program, exc)).encode())
+    os._exit(127)
+"""
+
+
+def fork_safe_popen(args, **kwargs) -> "subprocess.Popen":
+    """``subprocess.Popen`` that never fork()s a threaded macOS parent (#97296).
+
+    CPython 3.11 posix_spawn()s only when argv[0] names a directory and none of ``cwd``,
+    ``start_new_session``, ``close_fds`` (on by default) or ``pass_fds`` is requested. Otherwise
+    it fork()s, and a child forked from a threaded parent that holds Network.framework state
+    (e.g. with a VPN network extension loaded) can die in an atfork handler before exec:
+    SIGSEGV, exit -11, empty output. On macOS those four are applied by a ``sys.executable -I -S``
+    trampoline that is itself posix_spawn()ed and then execs the program in place, so the child
+    keeps the pid, cwd, session, fds and environment it would have had. A missing program or cwd
+    still raises ``OSError`` here, and with ``start_new_session`` the call returns once the child
+    leads its own group, as callers record ``getpgid(pid)`` right after spawning. Other
+    platforms, and arguments the trampoline cannot reproduce, get plain ``subprocess.Popen``.
+    """
+    single = isinstance(args, (str, bytes, os.PathLike))
+    args = args if single else list(args)
+    argv = [os.fsdecode(a) for a in ([args] if single else args)]
+    cwd = kwargs.get("cwd")
+    new_session = bool(kwargs.get("start_new_session"))
+    pass_fds = tuple(kwargs.get("pass_fds") or ())
+    close_fds = bool(kwargs.get("close_fds", True)) or bool(pass_fds)
+    if (sys.platform != "darwin" or not argv or not sys.executable
+            or (cwd is None and not new_session and not close_fds and os.path.dirname(argv[0]))
+            or kwargs.get("shell") or kwargs.get("executable") is not None
+            or kwargs.get("preexec_fn") is not None or kwargs.get("process_group") not in (None, -1)
+            or any(kwargs.get(key) is not None for key in ("user", "group", "extra_groups"))
+            or kwargs.get("umask", -1) != -1):
+        return subprocess.Popen(args, **kwargs)
+    for key in ("cwd", "start_new_session", "close_fds", "pass_fds"):
+        kwargs.pop(key, None)
+    if cwd is not None:
+        cwd = os.fsdecode(cwd)
+        os.stat(cwd)  # FileNotFoundError / PermissionError, as Popen's chdir would raise
+        if not os.path.isdir(cwd):
+            raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), cwd)
+    env = kwargs.get("env")
+    program = argv[0]
+    if not os.path.dirname(program):
+        program = shutil.which(program, path=os.pathsep.join(os.get_exec_path(env))) or ""
+    target = os.path.join(cwd or "", program)
+    if not program or not os.path.exists(target):
+        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), argv[0])
+    if os.path.isdir(target) or not os.access(target, os.X_OK):
+        raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), argv[0])
+    source_env = os.environ if env is None else env
+    startup_env = ["" if source_env.get(name) is None else "=" + source_env[name]
+                   for name in ("LC_CTYPE", "__CF_USER_TEXT_ENCODING")]
+    trampoline = [sys.executable, "-I", "-S", "-c", _EXEC_TRAMPOLINE, "1" if new_session else "0",
+                  "1" if kwargs.get("restore_signals", True) else "0", cwd or "",
+                  ",".join(map(str, pass_fds)) if close_fds else "*", *startup_env, program, *argv]
+    lent = [fd for fd in pass_fds if not os.get_inheritable(fd)]
+    try:
+        for fd in lent:
+            os.set_inheritable(fd, True)  # posix_spawn hands the trampoline only inheritable fds
+        proc = subprocess.Popen(trampoline, close_fds=False, **kwargs)
+    finally:
+        for fd in lent:
+            os.set_inheritable(fd, False)
+    proc.args = args
+    deadline = time.monotonic() + 5.0
+    while new_session and proc.poll() is None and time.monotonic() < deadline:
+        try:
+            if os.getpgid(proc.pid) == proc.pid:  # windows-footgun: ok — darwin-only path
+                break
+        except OSError:
+            break
+        time.sleep(0.001)
+    return proc
 
 
 # GIT_CONFIG_KEY_n/VALUE_n overrides for internal git children: no credential/askpass prompts, no

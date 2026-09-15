@@ -76,6 +76,13 @@ must never test `== "ok"` for "the user got their result":
 | `error` | Agent run failed | `last_error` |
 | `delivery_failed` | Agent run succeeded, but the output never reached its target | `last_delivery_error` (`last_error` is `null`) |
 | `blocked_config` | Pre-dispatch validation refused to burn a run | `last_error` |
+| `interrupted` | Gateway shutdown killed the run's tool subprocess mid-flight: the run's own outcome is unknown | `last_error` (the shutdown phase and reason) |
+
+`interrupted` is deliberately NOT `error`: nothing was recorded about the run's
+outcome, so it must not read as "the agent failed" to the operator or to any
+consumer keyed on the cron record. It is also **streak-neutral** —
+`cron.jobs._record_run_outcome` leaves `failure_streak` untouched for an
+interrupted run, while a genuine agent error still increments it.
 
 ### Job Lifecycle States
 

@@ -164,7 +164,11 @@ export async function materializeDesktopHalf(
 
   try {
     stat = await fs.promises.stat(entry)
-  } catch {
+  } catch (error) {
+    if (!isMissing(error)) {
+      console.warn(`[desktop-plugins] cannot read ${packageName}: ${String(error)}`)
+    }
+
     return null
   }
 
@@ -200,6 +204,31 @@ export async function materializeDesktopHalf(
   await fs.promises.writeFile(path.join(target, PACKAGE_MARKER), JSON.stringify(marker, null, 2) + '\n')
 
   return target
+}
+
+function isMissing(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code
+
+  return code === 'ENOENT' || code === 'ENOTDIR'
+}
+
+/** `true` only when the package's `desktop/plugin.js` is genuinely gone. A
+ *  source the app is not ALLOWED to stat (Windows ACL EPERM, a mode-000 folder)
+ *  is not an uninstall — pruning its root copy would silently drop the pane. */
+async function sourceGone(name: string, entry: string): Promise<boolean> {
+  try {
+    await fs.promises.stat(entry)
+
+    return false
+  } catch (error) {
+    if (isMissing(error)) {
+      return true
+    }
+
+    console.warn(`[desktop-plugins] keeping desktop half of unreadable package ${name}: ${String(error)}`)
+
+    return false
+  }
 }
 
 /** Walk every local home's `plugins/` root and materialize each package's
@@ -245,7 +274,7 @@ export async function reconcileUnifiedDesktopHalves(hermesHome: string, appRoot:
     const dir = path.join(appRoot, name)
     const marker = await readMarker(dir)
 
-    if (marker && !fs.existsSync(path.join(marker.source, 'plugin.js'))) {
+    if (marker && (await sourceGone(name, path.join(marker.source, 'plugin.js')))) {
       await fs.promises.rm(dir, { force: true, recursive: true })
       touched.push(dir)
     }

@@ -398,7 +398,20 @@ def _run_one_file_once(
     #
     # One root for each subprocess removes the shared directory that the race
     # needs. The parent deletes the root after the attempt.
+    # Isolate the subprocess from the host user's test home, not the production one.
+    #
+    # The runner host doubles as a production Hermes gateway machine. A test
+    # whose fixture isolation fails (or that resolves Hermes home before its
+    # fixture runs) otherwise falls straight through to production ~/.hermes
+    # — on this host that meant pytest subprocesses rewriting the live
+    # gateway's config.yaml with test fixture providers (2026-09-15 outage).
+    # Give every file a throwaway HOME *and* HERMES_HOME so neither
+    # Path.home() nor get_hermes_home() can resolve production state, and a
+    # leak writes into a directory nobody reads.
     env = os.environ.copy()
+    home_root = tempfile.mkdtemp(prefix="hermes-pytest-home-")
+    env["HOME"] = home_root
+    env["HERMES_HOME"] = os.path.join(home_root, ".hermes")
     temproot = tempfile.mkdtemp(prefix="hermes-pytest-tmproot-")
     env["PYTEST_DEBUG_TEMPROOT"] = temproot
 
@@ -459,6 +472,9 @@ def _run_one_file_once(
         # subprocess exits. More than 3000 of them fill the disk of the
         # runner over one suite.
         shutil.rmtree(temproot, ignore_errors=True)
+        # Same lifetime for the throwaway HOME: a leaked fixture write there
+        # is harmless, but thousands of ~home dirs also fill the disk.
+        shutil.rmtree(home_root, ignore_errors=True)
 
     if rc == 5:
         # No tests collected in THIS file — legitimate per-file: a

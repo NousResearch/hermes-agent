@@ -151,6 +151,22 @@ def test_stale_claim_reclaim_fires_hook(kanban_home, captured_hooks):
     assert "profile_name" in kw
     assert "board" in kw
 
+def _absent_pid() -> int:
+    """A pid with no ``/proc`` entry — what a reclaim must see to act.
+
+    The reclaim path books a worker dead only on *positive* absence, so a
+    fixture pid has to be one the OS really does not have: a small int like
+    ``111`` is a live kernel thread on Linux (and is only absent on some hosts),
+    which makes the test assert the developer's box rather than the behaviour.
+    """
+    import os
+
+    pid = 991111
+    while os.path.exists(f"/proc/{pid}"):
+        pid += 1
+    return pid
+
+
 def test_raising_callbacks_never_break_worker_lifecycle(
     kanban_home, all_assignees_spawnable, monkeypatch,
 ):
@@ -167,7 +183,7 @@ def test_raising_callbacks_never_break_worker_lifecycle(
         conn = kbc.connect()
         try:
             tid = kb.create_task(conn, title="t", assignee="alice")
-            result = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 111)
+            result = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: _absent_pid())
             assert any(row[0] == tid for row in result.spawned)
 
             monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)

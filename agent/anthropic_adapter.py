@@ -89,6 +89,20 @@ _NO_XHIGH_CLAUDE_SUBSTRINGS = ("claude-opus-4-6", "claude-opus-4.6", "claude-son
 # 400s the turn, a spurious one only leaves thinking on — so when in doubt, add the family.
 _MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable",)
 _FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-8", "opus-4.8", "opus-5")
+# Claude 5.1+ binds each thinking-block signature to the full conversation prefix (system, tools,
+# every earlier message). Hermes mutates that prefix between turns in sanctioned ways (compression,
+# orphan tool-call stripping, OAuth identity transforms), so a replayed signed block behind a
+# changed prefix answers HTTP 400 on enforcement-enabled accounts unless the request opts into
+# ``thinking.block_binding.prefix_mismatch_behavior="drop_block"`` under this beta. Enforcement is
+# on for API accounts created after 2026-08-31 and expands to everyone on later models.
+# Docs: https://platform.claude.com/docs/en/build-with-claude/preserved-thinking
+# (Ported from anomalyco/opencode#47884.)
+_THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01"
+# Accept gateway namespaces (``anthropic/claude-fable-5.1``) and ``@suffix``/``:suffix`` variants
+# without treating a snapshot date (``claude-opus-5-20260901``) as a minor version.
+_CLAUDE_VERSION_RE = re.compile(
+    r"(?:^|[./])claude-[a-z]+-(?P<major>\d+)(?:[.-](?P<minor>\d{1,2}))?(?:$|[-:@])", re.IGNORECASE
+)
 
 
 def _is_claude_model(model: str | None) -> bool:
@@ -197,6 +211,35 @@ def _supports_fast_mode(model: str) -> bool:
     bill at standard speed), Opus 4.7 hard-400s on the param. Dedicated ``...-fast`` ids select
     fast inference via the model field and must NOT also receive the speed parameter."""
     return "-fast" not in model and any(v in model for v in _FAST_MODE_SUPPORTED_SUBSTRINGS)
+
+
+def _supports_thinking_block_binding(model: str) -> bool:
+    """True for Claude 5.1+ (``claude-<family>-<major>[.<minor>]``), where Anthropic enforces
+    thinking-prefix binding. A version floor, not an allowlist: enforcement expands to every later
+    model, so an allowlist would silently route a new model into hard 400s. Snapshot dates
+    (``claude-opus-5-20260901``) are not minor versions; models without a parseable version
+    (Haiku is additionally excluded — it has no extended thinking) return False."""
+    if "haiku" in model.lower():
+        return False
+    match = _CLAUDE_VERSION_RE.search(model)
+    if not match:
+        return False
+    major, minor = int(match.group("major")), int(match.group("minor") or 0)
+    return major > 5 or (major == 5 and minor >= 1)
+
+
+def _apply_thinking_block_binding(kwargs: Dict[str, Any]) -> None:
+    """Default ``thinking.block_binding.prefix_mismatch_behavior="drop_block"`` on ``kwargs``.
+    Adaptive models think by DEFAULT, so a missing ``thinking`` param still replays signed blocks —
+    materialize the adaptive form first. An explicit disable keeps the omission (nothing to bind)."""
+    thinking = kwargs.get("thinking")
+    if isinstance(thinking, dict) and thinking.get("type") == "disabled":
+        return
+    if not isinstance(thinking, dict):
+        thinking_new: Dict[str, Any] = {"type": "adaptive", "display": "summarized"}
+        kwargs["thinking"] = thinking = thinking_new
+    if "block_binding" not in thinking:
+        thinking["block_binding"] = {"prefix_mismatch_behavior": "drop_block"}
 
 
 # Beta headers safe on ordinary/native Anthropic requests. GA on Claude 4.6+ (harmless no-op
@@ -589,12 +632,24 @@ def build_anthropic_kwargs(
         for key in ("temperature", "top_p", "top_k"):
             kwargs.pop(key, None)
     # Fast mode: native Anthropic only — third-party providers reject the unknown beta/param and
-    # Anthropic scopes it to the Claude API (not Bedrock/Vertex/Foundry). Per-request extra_headers
-    # OVERRIDE the client-level anthropic-beta header, so rebuild the full beta list.
+    # Anthropic scopes it to the Claude API (not Bedrock/Vertex/Foundry).
+    extra_betas: list[str] = []
     if fast_mode and not _is_third_party_anthropic_endpoint(base_url) and _supports_fast_mode(model):
         kwargs.setdefault("extra_body", {})["speed"] = "fast"
+        extra_betas.append(_FAST_MODE_BETA)
+    # Thinking-prefix binding (Claude 5.1+): only where signed thinking blocks actually replay —
+    # direct Anthropic and Nous Portal. Other third-party Anthropic-compatible endpoints have their
+    # signatures stripped in convert_messages_to_anthropic (same predicate) and would reject the
+    # unknown parameter/beta.
+    replays_signed_thinking = not _is_third_party_anthropic_endpoint(base_url) or _is_nous_portal_endpoint(base_url)
+    if replays_signed_thinking and _supports_thinking_block_binding(model):
+        _apply_thinking_block_binding(kwargs)
+        extra_betas.append(_THINKING_BINDING_BETA)
+    # Per-request extra_headers OVERRIDE the client-level anthropic-beta header, so rebuild the
+    # full beta list whenever any request-scoped beta is added.
+    if extra_betas:
         betas = _common_betas_for_base_url(base_url, drop_context_1m_beta=drop_context_1m_beta)
-        kwargs["extra_headers"] = _beta_header(betas + (_OAUTH_ONLY_BETAS if is_oauth else []) + [_FAST_MODE_BETA])
+        kwargs["extra_headers"] = _beta_header(betas + (_OAUTH_ONLY_BETAS if is_oauth else []) + extra_betas)
     return kwargs
 
 

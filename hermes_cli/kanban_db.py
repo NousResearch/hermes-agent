@@ -290,6 +290,12 @@ DEFAULT_CRASH_GRACE_SECONDS = 30
 # Worker exit "provider rate-limited": released WITHOUT counting a failure (the
 # breaker must never trip on a throttle). 75 == BSD EX_TEMPFAIL.
 KANBAN_RATE_LIMIT_EXIT_CODE = 75
+# Billing/credit exhaustion (402). Distinct from the rate-limit code: the
+# dispatcher requeues rate-limited workers WITHOUT counting a failure (a quota
+# wall clears), but a billing wall does not — treating it as rate-limited made
+# 402 refusals relaunch forever (2026-09-13 incident: three relaunches after
+# "Insufficient available credits", each counted as neutral).
+KANBAN_BILLING_EXIT_CODE = 76
 
 
 def _resolve_crash_grace_seconds() -> int:

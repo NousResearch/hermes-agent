@@ -26,6 +26,10 @@ from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_graph import decompose_triage_task
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import profiles as profiles_mod
+
+# Block kinds that route a repeat-blocked task to triage FOR A HUMAN
+# (``kanban_db._route_block``). The auto-decomposer must never consume these.
+_HUMAN_INPUT_BLOCK_KINDS = frozenset({"needs_input", "capability"})
 from hermes_cli.kanban_specify import (
     _call_aux, _extract_json_blob, _load_triage_task, _task_prompt_fields, _title_body,
 )
@@ -304,6 +308,14 @@ def decompose_task(
     task, reason = _load_triage_task(task_id)
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
+    if getattr(task, "block_kind", None) in _HUMAN_INPUT_BLOCK_KINDS:
+        # Same exclusion as ``list_triage_ids``, enforced at the entry point so
+        # a direct call (CLI, dashboard) cannot bypass the listing guard.
+        return DecomposeOutcome(
+            task_id, False,
+            f"task is in triage for a human (block_kind={task.block_kind!r}); "
+            "decomposition excluded",
+        )
 
     routing = _load_routing()
     raw, reason = _call_aux(
@@ -329,10 +341,20 @@ def decompose_task(
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Return task ids currently in the triage column."""
+    """Return task ids currently in the triage column.
+
+    Excludes tasks routed to triage by a repeat human-input block
+    (``needs_input`` / ``capability``): ``_route_block`` sends those to triage
+    FOR A HUMAN, so auto-decomposition must not consume them — decomposing a
+    pending-approval blocker re-creates the work the blocker was stopping
+    (2026-09-13 incident: a timed-out approval became six new children).
+    """
     with kbc.connect_closing() as conn:
         rows = kb.list_tasks(conn, status="triage", tenant=tenant, limit=1000)
-    return [row.id for row in rows]
+        return [
+            row.id for row in rows
+            if getattr(row, "block_kind", None) not in _HUMAN_INPUT_BLOCK_KINDS
+        ]
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

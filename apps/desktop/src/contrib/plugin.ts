@@ -59,6 +59,10 @@ export interface PluginOs {
    *  when unavailable. The path is on the BACKEND's filesystem, so hand it
    *  to a `rest` call rather than trying to write it from the renderer. */
   pickSavePath: (options?: PluginFileDialogOptions) => Promise<null | string>
+  /** Save a renderer-owned buffer (e.g. a binary `rest` download) to a
+   *  user-picked path via the native save dialog. Resolves false on cancel /
+   *  when the shell lacks the door — never throws. */
+  saveFileBuffer: (data: ArrayBuffer, filename: string) => Promise<boolean>
   /** Native open dialog, single file. Resolves the chosen path, or null on
    *  cancel / when unavailable. */
   pickOpenPath: (options?: PluginFileDialogOptions) => Promise<null | string>
@@ -189,6 +193,12 @@ function createPluginOs(pluginId: string): PluginOs {
         return picked?.[0] ?? null
       }),
     pickSavePath: options => attemptPath(async bridge => (await bridge.selectSavePath?.(options)) ?? null),
+    saveFileBuffer: (data, filename) =>
+      attempt(async bridge => {
+        const result = await bridge.saveFileBuffer?.(data, filename)
+
+        return Boolean(result?.saved)
+      }),
     revealPath: path => attempt(async bridge => (bridge.revealPath ? bridge.revealPath(path) : false)),
     writeClipboard: text => attempt(bridge => bridge.writeClipboard(text))
   }

@@ -309,6 +309,14 @@ declare global {
         path?: string
         saved: boolean
       }>
+      /** Save a renderer-owned buffer to a user-picked path (native dialog +
+       *  failure-atomic write in main). Absent on older shells — callers fall
+       *  back to the in-app toast. */
+      saveFileBuffer?: (data: ArrayBuffer, filename: string) => Promise<{
+        canceled?: boolean
+        path?: string
+        saved: boolean
+      }>
       saveImageFromUrl: (url: string) => Promise<boolean>
       /** Edit verb against the window's focused element (the custom context
        *  menu's Cut/Copy/Paste/Select all). */
@@ -1283,6 +1291,9 @@ export interface HermesApiRequest {
   // exclusive with `body`; bytes transfer over IPC as a structured-clone
   // ArrayBuffer. Token-mode backends only.
   upload?: { filename: string; contentType?: string; bytes: ArrayBuffer }
+  // The response is binary (a file download): return the raw body as an
+  // ArrayBuffer instead of parsing JSON. Mutually exclusive with `upload`.
+  binary?: boolean
   timeoutMs?: number
   // Route this REST call to a specific profile's backend. Omit for the primary
   // (window) backend. Read-only cross-profile data is served by the primary, so

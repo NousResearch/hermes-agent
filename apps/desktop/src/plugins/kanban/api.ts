@@ -246,6 +246,12 @@ export const reclaimTask = (id: string) => nudged(call(withBoard(`/tasks/${id}/r
 export const uploadAttachment = (id: string, upload: { filename: string; contentType?: string; bytes: ArrayBuffer }) =>
   call(withBoard(`/tasks/${id}/attachments`), { method: 'POST', upload })
 
+/** Binary GET through the plugin REST door. The desktop's `hermesApi` bridge
+ *  parses every response as JSON, so a FileResponse body would throw — the
+ *  `binary` flag makes main return the raw bytes as an ArrayBuffer instead. */
+export const downloadAttachment = (attachmentId: number | string) =>
+  call<ArrayBuffer>(withBoard(`/attachments/${attachmentId}`), { binary: true })
+
 export const createBoard = (slug: string, name: string, projectId?: string) =>
   call<{ board: { slug: string } }>('/boards', {
     method: 'POST',

@@ -765,8 +765,8 @@ class LinkBody(BaseModel):
 @router.post("/links")
 def add_link(payload: LinkBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn), _value_error_400():
-        kanban_db.link_tasks(conn, payload.parent_id, payload.child_id)
-        return {"ok": True}
+        gated = kanban_db.link_tasks(conn, payload.parent_id, payload.child_id)
+        return {"ok": True, "gated": gated}
 
 
 @router.delete("/links")

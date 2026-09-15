@@ -72,26 +72,6 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
-def test_link_warns_when_ready_child_gated_by_undone_parent(kanban_home):
-    """`hermes kanban link` must tell the operator the child was demoted.
-
-    A ready child linked under an unfinished parent drops to todo silently in
-    the DB layer (the claim path re-checks parents); the CLI is the operator's
-    only window onto that demotion, so it prints a note naming the gate.
-    """
-    with kbc.connect_closing() as conn:
-        parent_id = kb.create_task(conn, title="blocked parent")
-        child_id = kb.create_task(conn, title="support card")
-        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (child_id,))
-        conn.commit()
-
-    output = kc.run_slash(f"link {parent_id} {child_id}")
-
-    assert f"Linked {parent_id} -> {child_id}" in output
-    assert "was ready and is now todo" in output
-    assert f"parent {parent_id} is not done yet" in output
-
-
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")

@@ -72,6 +72,10 @@ export async function renameSessionPreferringRpc(
   title: string,
   profile?: string
 ): Promise<{ title?: string }> {
+  const resolvedProfile =
+    (profile ?? '').trim() ||
+    $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))?.profile ||
+    undefined
   const isActiveRow = storedSessionId === $selectedStoredSessionId.get()
   const runtimeId = isActiveRow ? $activeSessionId.get() : null
   const gateway = activeGateway()
@@ -93,7 +97,7 @@ export async function renameSessionPreferringRpc(
     }
   }
 
-  return renameSession(storedSessionId, title, profile)
+  return renameSession(storedSessionId, title, resolvedProfile)
 }
 
 interface SessionActions {
@@ -673,9 +677,13 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
     setSubmitting(true)
 
     try {
-      const result = await renameSessionPreferringRpc(sessionId, next, profile)
+      const targetProfile =
+        (profile ?? '').trim() ||
+        $sessions.get().find(s => sessionMatchesStoredId(s, sessionId))?.profile ||
+        undefined
+      const result = await renameSessionPreferringRpc(sessionId, next, targetProfile)
       const finalTitle = result.title || next || ''
-      setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, title: finalTitle || null } : s)))
+      setSessions(prev => prev.map(s => (sessionMatchesStoredId(s, sessionId) ? { ...s, title: finalTitle || null } : s)))
       notify({ durationMs: 2_000, kind: 'success', message: r.renamed })
       onOpenChange(false)
     } catch (err) {

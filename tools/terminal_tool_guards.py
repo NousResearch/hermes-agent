@@ -48,15 +48,25 @@ def _validate_workdir(workdir: str) -> str | None:
 
 
 def _safe_command_preview(command: Any, limit: int = 200) -> str:
-    """Return a log-safe preview for possibly-invalid command values."""
+    """Return a force-redacted, bounded description for command logs."""
+    # Lazy import keeps the companion module's import cycle benign while
+    # preserving terminal_tool as the canonical redaction implementation.
+    from tools.terminal_tool import _redact_terminal_error_text
+
     if command is None:
         return "<None>"
     if isinstance(command, str):
-        return command[:limit]
+        if "\n" in command or len(command) > limit:
+            return (
+                f"<command chars={len(command)} "
+                f"lines={command.count(chr(10)) + 1}>"
+            )
+        return _redact_terminal_error_text(command)[:limit]
     try:
-        return repr(command)[:limit]
+        rendered = repr(command)
     except Exception:
         return f"<{type(command).__name__}>"
+    return _redact_terminal_error_text(rendered)[:limit]
 
 
 def _blocked_json(error: str, status: str) -> str:

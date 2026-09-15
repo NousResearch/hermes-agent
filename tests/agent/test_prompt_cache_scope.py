@@ -473,6 +473,10 @@ class TestPerResponseRunNonceIsolation:
             == "cron_backup"
         )
         assert (
+            _cache_scope_from_session_id("cron_backup_20260814_120000_deadbeef")
+            == "cron_backup"
+        )
+        assert (
             _cache_scope_from_session_id(self.RESPONSE_1) == self.RESPONSE_1
         )
 

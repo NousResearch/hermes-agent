@@ -65,6 +65,10 @@ All three OpenCode providers send an opaque, per-conversation `x-opencode-sessio
 
 For the official API-key path, see the dedicated [Google Gemini guide](/guides/google-gemini).
 
+:::warning Google authentication and billing are separate
+Google AI Pro and Ultra subscriptions do not authenticate the Hermes `gemini` provider. That provider uses a Google AI Studio API key's quota and, on paid tiers, separate API billing; `vertex` uses separate Google Cloud credentials and billing. Hermes does not import Gemini CLI OAuth credentials or use Antigravity as a provider. Google [ended consumer-account access in Gemini CLI on June 18, 2026](https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals). See the [Google Gemini guide](/guides/google-gemini) for the full boundary.
+:::
+
 :::tip Model key alias
 In the `model:` config section, you can use either `default:` or `model:` as the key name for your model ID. Both `model: { default: my-model }` and `model: { model: my-model }` work identically.
 :::

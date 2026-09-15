@@ -245,10 +245,13 @@ def _find_skill_path(name: str) -> Optional[Path]:
     return found["path"] if found else None
 
 
-def skill_pending_diff(record: Dict[str, Any]) -> str:
-    """Full content (create) or unified diff vs. the on-disk skill (edit/patch/write_file),
-    rendered by /skills diff <id> on surfaces that can show it."""
-    payload = record.get("payload", {})
+def _pending_op_diff(payload: Dict[str, Any]) -> str:
+    """Render the diff text for ONE staged operation payload (no header).
+
+    ``payload`` carries the staged ``skill_manage`` kwargs verbatim, so each
+    entry of a staged batch (same keys, plus its own ``name``) renders through
+    here unchanged.
+    """
     action = payload.get("action", "")
     name = payload.get("name", "")
     if action == "create":
@@ -258,11 +261,12 @@ def skill_pending_diff(record: Dict[str, Any]) -> str:
                 "delete": f"delete skill '{name}'"}.get(action, f"({action} on '{name}')")
 
     # patch/write_file target a file inside the skill; edit always targets SKILL.md.
-    target_label, current = "SKILL.md", ""
+    # The label must come from file_path even when the skill is not on disk yet,
+    # or ops after a batch `create` would all be labelled SKILL.md.
+    target_label = "SKILL.md" if action == "edit" else (payload.get("file_path") or "SKILL.md")
+    current = ""
     skill_dir = _find_skill_path(name)
     if skill_dir:
-        if action != "edit":
-            target_label = payload.get("file_path") or "SKILL.md"
         with suppress(Exception):
             p = skill_dir / target_label
             current = p.read_text(encoding="utf-8") if p.exists() else ""
@@ -275,6 +279,26 @@ def skill_pending_diff(record: Dict[str, Any]) -> str:
     diff = difflib.unified_diff(current.splitlines(keepends=True), new.splitlines(keepends=True),
                                 fromfile=f"a/{target_label}", tofile=f"b/{target_label}")
     return "".join(diff) or "(no textual change)"
+
+
+def skill_pending_diff(record: Dict[str, Any]) -> str:
+    """Full content (create) or unified diff vs. the on-disk skill
+    (edit/patch/write_file), rendered by /skills diff <id> on surfaces that can
+    show it. A staged batch (``action: "batch"`` — the shape
+    ``_skill_manage_batch`` stages when the gate intercepts a multi-op write)
+    renders each operation's diff under its own heading; without it the batch
+    fell through to the unknown-action stub and the preview showed no
+    reviewable content at all (#99704)."""
+    payload = record.get("payload", {})
+    if payload.get("action") == "batch":
+        ops = payload.get("operations") or []
+        parts = [
+            f"=== op[{i}] {op.get('action', '?')} on '{op.get('name', '')}' ===\n"
+            + _pending_op_diff(op)
+            for i, op in enumerate(ops)
+        ]
+        return "\n".join(parts) if parts else "(empty batch)"
+    return _pending_op_diff(payload)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

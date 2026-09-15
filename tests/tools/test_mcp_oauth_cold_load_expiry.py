@@ -275,8 +275,9 @@ async def test_initialize_seeds_token_expiry_time_from_stored_tokens(
         "Fix A: _initialize must seed context.token_expiry_time so "
         "is_token_valid() correctly reports expiry on cold-load."
     )
-    # Should be ~7200s in the future (fresh write).
-    assert provider.context.token_expiry_time > time.time() + 7000
+    # Should be ~7200s in the future (fresh write), less the per-process early-refresh
+    # margin (at most 600s) that keeps processes sharing the tokens file from refreshing together.
+    assert provider.context.token_expiry_time > time.time() + 7200 - 600 - 5
     assert provider.context.token_expiry_time <= time.time() + 7200 + 5
 
 

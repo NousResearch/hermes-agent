@@ -393,26 +393,37 @@ function playVariant(variantId: number) {
     return
   }
 
-  // Signal path: voices → master → low-pass → (dry + reverb send) → out.
+  // Signal path: voices → master → low-pass → (dry + reverb send) →
+  // compressor → out. Master was 0.48 with dry 0.88 (≈-33.5 dBFS peak),
+  // barely audible on standard speakers (#102013). Raised to 0.9 with a
+  // DynamicsCompressor soft limiter so the louder chime cannot clip.
   const master = ac.createGain()
   const tone = ac.createBiquadFilter()
   tone.type = 'lowpass'
   tone.frequency.setValueAtTime(3800, ac.currentTime)
   tone.Q.setValueAtTime(0.32, ac.currentTime)
-  master.gain.setValueAtTime(0.48, ac.currentTime)
+  master.gain.setValueAtTime(0.9, ac.currentTime)
   master.connect(tone)
 
   const dry = ac.createGain()
   dry.gain.setValueAtTime(0.88, ac.currentTime)
   tone.connect(dry)
-  dry.connect(ac.destination)
 
   const reverb = makeReverb(ac)
   const wet = ac.createGain()
   wet.gain.setValueAtTime(0.34, ac.currentTime)
   tone.connect(reverb)
   reverb.connect(wet)
-  wet.connect(ac.destination)
+
+  const limiter = ac.createDynamicsCompressor()
+  limiter.threshold.setValueAtTime(-12, ac.currentTime)
+  limiter.knee.setValueAtTime(20, ac.currentTime)
+  limiter.ratio.setValueAtTime(8, ac.currentTime)
+  limiter.attack.setValueAtTime(0.003, ac.currentTime)
+  limiter.release.setValueAtTime(0.2, ac.currentTime)
+  dry.connect(limiter)
+  wet.connect(limiter)
+  limiter.connect(ac.destination)
 
   variant.play(ac, master, ac.currentTime + 0.01)
 }

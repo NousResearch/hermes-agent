@@ -240,6 +240,7 @@ class CompressionFacadeMixin:
             missing_fence = object()
             previous_fence = vars(self).get("_active_compression_commit_fence", missing_fence)
             self._active_compression_commit_fence = active_fence
+        sanitation_owner_thread_id = threading.get_ident()
         try:
 
             def _run(fence=None, target_messages=None):
@@ -247,6 +248,7 @@ class CompressionFacadeMixin:
                     self, target_messages if target_messages is not None else messages, system_message,
                     approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic, force=force,
                     bypass_cooldown=bypass_cooldown,
+                    sanitation_outcome_owner_thread_id=sanitation_owner_thread_id,
                     defer_context_engine_notification=(defer_context_engine_notification), commit_fence=fence,
                 )
 

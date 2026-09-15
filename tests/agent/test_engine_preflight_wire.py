@@ -123,6 +123,46 @@ def test_default_false_hook_is_byte_identical_noop():
 
 
 
+def test_pending_sanitation_runs_before_short_transcript_cheap_gate():
+    """A short transcript can still carry an engine sanitation operation."""
+    hook = MagicMock(return_value=True)
+    compressor = _stub_compressor(preflight=hook)
+    compressor.protect_first_n = 3
+    compressor.protect_last_n = 6
+    agent = _make_agent(compressor)
+    sanitized = [{"role": "user", "content": "[redacted]"}]
+    agent._compress_context = MagicMock(return_value=(sanitized, "SYSTEM"))
+
+    ctx = _build(agent, conversation_history=_history(2))
+
+    hook.assert_called_once()
+    agent._compress_context.assert_called_once()
+    assert ctx.messages is sanitized
+
+
+@pytest.mark.parametrize("blocked_by", ["cooldown", "deferred", "codex_native"])
+def test_short_transcript_sanitation_respects_preflight_skip_gates(blocked_by):
+    hook = MagicMock(return_value=True)
+    compressor = _stub_compressor(preflight=hook)
+    compressor.protect_first_n = 3
+    compressor.protect_last_n = 6
+    agent = _make_agent(compressor)
+    if blocked_by == "cooldown":
+        compressor.get_active_compression_failure_cooldown = lambda: {
+            "remaining_seconds": 30.0,
+        }
+    elif blocked_by == "deferred":
+        compressor.should_defer_preflight_to_real_usage = lambda _tokens: True
+    else:
+        agent.api_mode = "codex_app_server"
+        agent.codex_app_server_auto_compaction = "native"
+
+    _build(agent, conversation_history=_history(2))
+
+    hook.assert_not_called()
+    agent._compress_context.assert_not_called()
+
+
 def test_true_engine_noop_does_not_defeat_retry_loop_blocking():
     """#64382 interplay: an engine pass that no-ops must not touch the
 

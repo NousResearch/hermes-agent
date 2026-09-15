@@ -3,6 +3,7 @@ replayed-user dedupe. Mixin bound via the MRO, built on SessionDB's _read_ctx/_e
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 import logging
@@ -563,6 +564,148 @@ class SessionMessagesMixin:
             f"SELECT {col_list}, {'?, ' if retarget else ''}1, 0 FROM messages "
             f"WHERE id IN ({_placeholders(tail_ids)}) ORDER BY id",
             [session_id, *tail_ids] if retarget else tail_ids)
+
+    def sanitize_and_compact(self, session_id: str, sanitized_messages: List[Dict[str, Any]],
+        *, watermark: int, lock_holder: str,
+        represented_row_ids: Optional[Tuple[int, ...]] = None) -> int:
+        """Destructively publish a sanitized transcript under a lease and watermark.
+
+        Unlike ordinary compaction, sanitation must remove superseded rows and their
+        FTS entries. Active rows absent from *represented_row_ids* (or, for legacy
+        callers, rows appended after *watermark*) are cloned byte-exactly, interleaved
+        by durable id up to *watermark* and always after the complete candidate when
+        they arrived later. Concurrent display metadata on represented rows is merged
+        onto the replacement before insert. The earlier display generation is deleted
+        in the same transaction.
+        """
+        from agent.session_persistence import _is_ephemeral_scaffolding
+        from hermes_state import SessionCompressionInProgressError
+
+        durable_messages = [
+            message
+            for message in sanitized_messages
+            if not _is_ephemeral_scaffolding(message)
+        ]
+
+        def _insert_retained_row(conn, row: Dict[str, Any]) -> None:
+            conn.execute(
+                _INSERT_MESSAGE_SQL,
+                (
+                    session_id,
+                    row["role"],
+                    row["content"],
+                    row["tool_call_id"],
+                    row["tool_calls"],
+                    row["tool_name"],
+                    row["effect_disposition"],
+                    row["timestamp"],
+                    row["token_count"],
+                    row["finish_reason"],
+                    row["reasoning"],
+                    row["reasoning_content"],
+                    row["reasoning_details"],
+                    row["codex_reasoning_items"],
+                    row["codex_message_items"],
+                    row["platform_message_id"],
+                    row["observed"],
+                    row["_compressed_summary"],
+                    1,
+                    row["api_content"],
+                    row["display_kind"],
+                    row["display_metadata"],
+                    row["display_identity"],
+                ),
+            )
+
+        def _do(conn):
+            lock_row = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
+            if (
+                lock_row is None
+                or lock_row["holder"] != lock_holder
+                or float(lock_row["expires_at"]) <= time.time()
+            ):
+                raise SessionCompressionInProgressError(
+                    f"Compression lease for {session_id!r} lost before sanitation; "
+                    "refusing to publish a stale transcript"
+                )
+            if conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone() is None:
+                raise ValueError(f"Session not found: {session_id}")
+            active_rows = conn.execute(
+                "SELECT * FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+                (session_id,),
+            ).fetchall()
+            active_ids = {int(row["id"]) for row in active_rows}
+            if represented_row_ids is not None:
+                represented = tuple(
+                    row_id
+                    for row_id in represented_row_ids
+                    if isinstance(row_id, int)
+                    and not isinstance(row_id, bool)
+                    and row_id > 0
+                    and row_id in active_ids
+                )
+            else:
+                represented = tuple(
+                    int(row["id"])
+                    for row in active_rows
+                    if int(row["id"]) <= int(watermark)
+                )
+            represented_set = set(represented)
+            represented_sorted = sorted(represented_set)
+            current_by_id = {int(row["id"]): dict(row) for row in active_rows}
+            for message, row_id in zip(durable_messages, represented):
+                live = current_by_id.get(row_id)
+                if live is None:
+                    continue
+                if live["display_kind"] is None:
+                    message.pop("display_kind", None)
+                else:
+                    message["display_kind"] = live["display_kind"]
+                display_metadata = self._decode_display_metadata(
+                    live["display_metadata"]
+                )
+                if display_metadata is None:
+                    message.pop("display_metadata", None)
+                else:
+                    message["display_metadata"] = display_metadata
+            retained_by_slot: Dict[int, List[Dict[str, Any]]] = {}
+            for row in active_rows:
+                row_id = int(row["id"])
+                if row_id in represented_set:
+                    continue
+                if row_id > int(watermark):
+                    slot = len(durable_messages)
+                else:
+                    slot = min(
+                        bisect.bisect_left(represented_sorted, row_id),
+                        len(durable_messages),
+                    )
+                retained_by_slot.setdefault(slot, []).append(dict(row))
+
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+
+            inserted = 0
+            tool_calls_total = 0
+            for slot in range(len(durable_messages) + 1):
+                for retained in retained_by_slot.get(slot, []):
+                    _insert_retained_row(conn, retained)
+                    inserted += 1
+                    tool_calls_total += _tool_calls_len(retained.get("tool_calls"))
+                if slot < len(durable_messages):
+                    row_inserted, row_tool_calls = self._insert_message_rows(
+                        conn, session_id, [durable_messages[slot]]
+                    )
+                    inserted += row_inserted
+                    tool_calls_total += row_tool_calls
+            conn.execute(
+                f"{_SET_COUNTERS_SQL} WHERE id = ?",
+                (inserted, tool_calls_total, session_id),
+            )
+            return inserted
+
+        return self._execute_write(_do)
 
     def archive_and_compact(self, session_id: str, compacted_messages: List[Dict[str, Any]],
         model_config_patch: Optional[Dict[str, Any]] = None, watermark: Optional[int] = None,

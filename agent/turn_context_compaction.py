@@ -19,6 +19,7 @@ from agent.conversation_compression import (
     IDLE_COMPACTION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
     compression_skipped_due_to_lock, conversation_history_after_compression,
 )
+from agent.conversation_sanitation import has_sanitation_retry
 
 logger = logging.getLogger("agent.turn_context")
 
@@ -240,10 +241,44 @@ def _preflight_compression(
         _rearm_uncompressed_overflow_warn(agent, out.messages, out.active_system_prompt)
         return
     _compressor = agent.context_compressor
-    if _tc._review_fork_first_request_pending(agent) or not _tc._should_run_preflight_estimate(
+    if _tc._review_fork_first_request_pending(agent):
+        return
+    if not _tc._should_run_preflight_estimate(
         out.messages, _compressor.protect_first_n, _compressor.protect_last_n,
         _compressor.threshold_tokens,
     ):
+        _compression_cooldown = getattr(
+            _compressor,
+            "get_active_compression_failure_cooldown",
+            lambda: None,
+        )()
+        _preflight_deferred = (
+            not getattr(agent, "_request_pressure_anchored", False)
+            and getattr(
+                _compressor,
+                "should_defer_preflight_to_real_usage",
+                lambda _tokens: False,
+            )(0)
+        )
+        if not (
+            _compression_cooldown
+            or _preflight_deferred
+            or _codex_native_auto_compaction(agent)
+        ):
+            _engine_preflight_maintenance(
+                agent,
+                out,
+                _compressor,
+                0,
+                system_message,
+                effective_task_id,
+            )
+            if out.compressed:
+                out.current_turn_user_idx = _reanchor(
+                    agent,
+                    out.messages,
+                    user_message,
+                )
         return
 
     _preflight_tokens = _tc._preflight_request_tokens(
@@ -350,6 +385,7 @@ def _run_preflight_passes(
     """Threshold-triggered preflight passes (honor ``compression.max_attempts`` like
     the loop's sites, default 3)."""
     from agent import turn_context as _tc
+    from agent.conversation_compression import context_compression_was_sanitation
 
     out.compressed = True
     # Compression is actually running — reset the dedup so a future blocked turn can
@@ -374,7 +410,9 @@ def _run_preflight_passes(
     if _preflight_status:
         agent._emit_status(_preflight_status)
     _max_preflight_passes = max(1, int(getattr(agent, "max_compression_attempts", 3) or 3))
-    for _pass in range(_max_preflight_passes):
+    _generic_passes = 0
+    _free_sanitation_pass_available = True
+    while _generic_passes < _max_preflight_passes:
         _preflight_input = out.messages
         _orig_len = len(_preflight_input)
         _orig_tokens = _preflight_tokens
@@ -382,6 +420,11 @@ def _run_preflight_passes(
             _preflight_input, system_message, approx_tokens=_preflight_tokens,
             task_id=effective_task_id,
         )
+        _sanitation_only = context_compression_was_sanitation(agent)
+        if _sanitation_only and _free_sanitation_pass_available:
+            _free_sanitation_pass_available = False
+        else:
+            _generic_passes += 1
         if out.messages is _preflight_input and compression_skipped_due_to_lock(agent):
             # Lock-skip: another path holds the lock, so this is a DEFER, not proof of
             # incompressibility — don't arm the blocker; stop passes this turn.
@@ -400,9 +443,10 @@ def _run_preflight_passes(
         _preflight_tokens = _tc._preflight_request_tokens(
             agent, out.messages, out.active_system_prompt or ""
         )
-        if not _tc.compression_made_progress(
+        _made_progress = _tc.compression_made_progress(
             _orig_len, len(out.messages), _orig_tokens, _preflight_tokens
-        ):
+        )
+        if not _made_progress and not _sanitation_only:
             _tc._fail_closed_after_preflight_timeout(agent, _preflight_tokens)
             out.blocked = True
             break  # Cannot compress further: neither rows nor tokens moved
@@ -412,6 +456,8 @@ def _run_preflight_passes(
         _reset_retry_state_after_compaction(agent)
         if not _compressor.should_compress(_preflight_tokens):
             break
+        if _sanitation_only:
+            continue
         if not _tc._compression_warrants_another_preflight_pass(
             _orig_tokens, _preflight_tokens, _compressor.threshold_tokens
         ):
@@ -431,19 +477,22 @@ def _engine_preflight_maintenance(
     """Engine-driven sub-threshold preflight maintenance: engines overriding
     ``should_compress_preflight()`` get exactly ONE ``compress()`` pass; a no-op never
     touches ``blocked``."""
+    _retry_pending = has_sanitation_retry(agent, out.messages)
     _engine_preflight = getattr(_compressor, "should_compress_preflight", None)
-    if not callable(_engine_preflight):
+    if not callable(_engine_preflight) and not _retry_pending:
         return
-    try:
-        _wants_engine_preflight = bool(_engine_preflight(out.messages))
-    except Exception as _preflight_exc:
-        # A buggy engine must never break an otherwise-healthy turn.
-        logger.debug(
-            "should_compress_preflight raised %s; skipping "
-            "engine-driven preflight maintenance",
-            _preflight_exc,
-        )
-        return
+    _wants_engine_preflight = _retry_pending
+    if not _retry_pending:
+        try:
+            _wants_engine_preflight = bool(_engine_preflight(out.messages))
+        except Exception as _preflight_exc:
+            # A buggy engine must never break an otherwise-healthy turn.
+            logger.debug(
+                "should_compress_preflight raised %s; skipping "
+                "engine-driven preflight maintenance",
+                _preflight_exc,
+            )
+            return
     if not _wants_engine_preflight:
         return
     logger.info(

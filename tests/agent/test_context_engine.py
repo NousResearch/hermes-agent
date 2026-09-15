@@ -93,6 +93,9 @@ class TestContextEngineABC:
 class TestDefaults:
     """Verify ABC default implementations work correctly."""
 
+    def test_pending_compression_operation_hint_is_not_part_of_context_engine_api(self):
+        assert not hasattr(ContextEngine, "pending_compression_operation")
+
 
 
     def test_default_get_status(self):

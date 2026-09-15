@@ -49,6 +49,7 @@ import {
   claimDecision,
   createBackendOutputTail,
   execText,
+  formatBackendExitLine,
   isPidOnlyStartMarker,
   pidOnlyStartMarker,
   probeStartMarker,
@@ -12641,7 +12642,7 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
     rejectStart?.(error)
   })
   child.once('exit', (code, signal) => {
-    rememberLog(`Hermes backend for profile "${profile}" exited (${signal || code})`)
+    rememberLog(formatBackendExitLine(`Hermes backend for profile "${profile}" exited`, code, signal, outputTail))
     releaseLocalBackendSlot(entry)
     releaseBackendChild(child)
 
@@ -13140,7 +13141,7 @@ async function runHermesStart() {
       releaseBackendChild(hermesProcess)
 
       if (!backendConnectionState.clearForCurrentProcess(processOwner)) {
-        rememberLog(`Ignoring stale Hermes backend exit (${signal || code})`)
+        rememberLog(formatBackendExitLine('Ignoring stale Hermes backend exit', code, signal, primaryOutputTail))
 
         if (!backendReady) {
           rejectBackendStart?.(new Error('Hermes backend start was superseded by a newer connection attempt.'))
@@ -13149,7 +13150,7 @@ async function runHermesStart() {
         return
       }
 
-      rememberLog(`Hermes backend exited (${signal || code})`)
+      rememberLog(formatBackendExitLine('Hermes backend exited', code, signal, primaryOutputTail))
       sendBackendExit({ code, signal })
 
       if (!backendReady) {

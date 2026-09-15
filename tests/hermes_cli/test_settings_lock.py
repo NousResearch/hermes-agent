@@ -120,10 +120,52 @@ def test_an_enabled_but_keyless_lock_fails_CLOSED(tmp_path):
 
 @pytest.mark.parametrize("value,enabled", [
     (True, True), (1, True), ("true", True), ("YES", True), (" on ", True),
-    (False, False), (0, False), ("no", False), ("maybe", False), (None, False), ([], False),
+    (False, False), (0, False), ("no", False), ("off", False), ("FALSE", False),
+    (None, False), ("", False),
 ])
 def test_enabled_accepts_the_yaml_spellings(value, enabled):
     assert sl.is_enabled({"enabled": value}) is enabled
+
+
+@pytest.mark.parametrize("value", ["maybe", "ture", "enabled", "1.0", 2, -1, 0.5, ["true"], {"a": 1}])
+def test_an_unrecognised_enabled_value_is_unusable_not_off(tmp_path, value):
+    """The fail-open this feature exists to avoid: `enabled: maybe` used to be indistinguishable
+    from an explicit disable, so a typo in the one field that arms the lock silently unarmed it."""
+    assert sl._enabled_state(value) == "invalid"
+    home = _root(tmp_path, "")
+    (home / "config.yaml").write_text(
+        f"settings_lock:\n  enabled: {value!r}\n  keys: ['approvals.mode']\n", encoding="utf-8")
+
+    assert sl.lock_state(home).status == "unusable"
+    with pytest.raises(sl.SettingsLockError, match="cannot be applied"):
+        sl.check_write({"approvals": {"mode": "manual"}}, {"approvals": {"mode": "off"}}, home)
+
+
+def test_a_settings_lock_that_is_not_a_mapping_is_unusable(tmp_path):
+    home = _root(tmp_path, "settings_lock: enabled\napprovals:\n  mode: manual\n")
+
+    state = sl.lock_state(home)
+    assert state.status == "unusable"
+    assert "not a mapping" in state.reason
+    with pytest.raises(sl.SettingsLockError):
+        sl.check_write({"approvals": {"mode": "manual"}}, {"approvals": {"mode": "off"}}, home)
+
+
+def test_an_unusable_lock_is_refused_even_inside_an_unlock_window(tmp_path):
+    """A window cannot authorise writes against a spec that cannot be normalised: it has no
+    generation to be bound to, and the password meant to gate it may be the malformed part."""
+    home = _root(tmp_path, "settings_lock:\n  enabled: maybe\n  keys: ['approvals.mode']\n")
+    # A receipt that DOES match this spec's fingerprint — otherwise the window is stale for an
+    # unrelated reason and the test would pass even if the window were consulted first.
+    state = sl.lock_state(home)
+    assert state.status == "unusable"
+    sl.unlock_path(home).write_text(
+        '{"expires_at": %d, "lock": "%s"}' % (int(time.time() + 600), sl.spec_fingerprint(state.spec)),
+        encoding="utf-8")
+    assert sl.unlock_expiry(home, spec=state.spec) is not None  # the window really is live
+
+    with pytest.raises(sl.SettingsLockError, match="cannot be applied"):
+        sl.check_write({"approvals": {"mode": "manual"}}, {"approvals": {"mode": "off"}}, home)
 
 
 def test_the_lock_is_read_from_the_ROOT_not_the_profile(tmp_path):
@@ -165,6 +207,38 @@ def test_two_hashes_of_one_password_differ_by_salt():
     assert sl.hash_password("same") != sl.hash_password("same")
 
 
+@pytest.mark.parametrize("stored", [123456, True, ["hash"], {"h": 1}, "plaintext", "scrypt$bad",
+                                    "bcrypt$16384$8$1$YQ==$Yg==", "scrypt$x$8$1$YQ==$Yg==",
+                                    "scrypt$16384$8$1$not-base64!$Yg==", "scrypt$16384$8$1$$Yg=="])
+def test_a_malformed_password_makes_the_lock_unusable_never_passwordless(tmp_path, stored):
+    """`has_password` gates whether the unlock doors ask for anything at all, so a hash this build
+    cannot verify must not read as "no password configured" — that opened the window to anyone."""
+    home = _root(tmp_path, "")
+    (home / "config.yaml").write_text(
+        "settings_lock:\n  enabled: true\n  keys: ['approvals.mode']\n"
+        f"  password: {stored!r}\n", encoding="utf-8")
+
+    state = sl.lock_state(home)
+    assert state.status == "unusable"
+    assert "password" in state.reason
+    assert sl.has_password(state.spec) is False  # and the doors refuse before ever consulting it
+    with pytest.raises(sl.SettingsLockError, match="cannot be applied"):
+        sl.check_write({"approvals": {"mode": "manual"}}, {"approvals": {"mode": "off"}}, home)
+
+
+def test_a_verifiable_password_keeps_the_lock_valid_and_required(tmp_path):
+    stored = sl.hash_password("operator")
+    home = _root(tmp_path, "")
+    (home / "config.yaml").write_text(
+        "settings_lock:\n  enabled: true\n  keys: ['approvals.mode']\n"
+        f"  password: {stored}\n", encoding="utf-8")
+
+    state = sl.lock_state(home)
+    assert state.status == "valid"
+    assert sl.has_password(state.spec) is True
+    assert sl.describe(home)["password_required"] is True
+
+
 # ── the unlock window ────────────────────────────────────────────────────────
 
 
@@ -184,7 +258,10 @@ def test_the_unlock_window_opens_expires_and_closes(tmp_path):
 
 def test_an_expired_window_does_not_unlock(tmp_path):
     home = _root(tmp_path, LOCKED)
-    sl.unlock_path(home).write_text('{"expires_at": %d}' % int(time.time() - 5), encoding="utf-8")
+    # Correctly bound to this lock, but lapsed — so this still tests expiry, not the binding.
+    fingerprint = sl.spec_fingerprint(sl.lock_state(home).spec)
+    sl.unlock_path(home).write_text(
+        '{"expires_at": %d, "lock": "%s"}' % (int(time.time() - 5), fingerprint), encoding="utf-8")
 
     assert sl.is_unlocked(home) is False
     with pytest.raises(sl.SettingsLockError):
@@ -197,6 +274,71 @@ def test_an_unreadable_window_file_is_not_an_unlock(tmp_path, body):
     sl.unlock_path(home).write_text(body, encoding="utf-8")
 
     assert sl.is_unlocked(home) is False
+
+
+def test_an_unlock_does_not_survive_the_lock_it_authorised_being_replaced(tmp_path):
+    """Stale authority: unlock A, swap in lock B while the window is live, and B used to be born
+    unlocked with B's password never verified. The receipt is bound to one lock generation."""
+    stored_a, stored_b = sl.hash_password("operator-A"), sl.hash_password("attacker-B")
+    lock_a = ("settings_lock:\n  enabled: true\n  keys: ['approvals.mode']\n"
+              f"  password: {stored_a}\n")
+    lock_b = ("settings_lock:\n  enabled: true\n  keys: ['yolo']\n"
+              f"  password: {stored_b}\n")
+    home = _root(tmp_path, lock_a)
+
+    spec_a = sl.lock_state(home).spec
+    assert sl.verify_password("operator-A", spec_a.get("password")) is True
+    sl.begin_unlock(home, seconds=600, spec=spec_a)
+    assert sl.is_unlocked(home) is True
+
+    (home / "config.yaml").write_text(lock_b, encoding="utf-8")
+    assert sl.is_unlocked(home) is False
+    with pytest.raises(sl.SettingsLockError):
+        sl.check_write({"yolo": False}, {"yolo": True}, home)
+
+    # Restoring the exact lock the window was opened against keeps that window live.
+    (home / "config.yaml").write_text(lock_a, encoding="utf-8")
+    assert sl.is_unlocked(home) is True
+
+
+def test_changing_only_the_password_also_lapses_the_window(tmp_path):
+    """Same keys, re-hashed password: a new generation the old authority never proved."""
+    home = _root(tmp_path, "")
+    (home / "config.yaml").write_text(
+        "settings_lock:\n  enabled: true\n  keys: ['approvals.mode']\n"
+        f"  password: {sl.hash_password('one')}\n", encoding="utf-8")
+    sl.begin_unlock(home, seconds=600, spec=sl.lock_state(home).spec)
+    assert sl.is_unlocked(home) is True
+
+    (home / "config.yaml").write_text(
+        "settings_lock:\n  enabled: true\n  keys: ['approvals.mode']\n"
+        f"  password: {sl.hash_password('two')}\n", encoding="utf-8")
+
+    assert sl.is_unlocked(home) is False
+
+
+def test_a_receipt_without_a_generation_is_never_honoured(tmp_path):
+    """A window file that names no lock cannot be shown to belong to this one."""
+    home = _root(tmp_path, LOCKED)
+    sl.unlock_path(home).write_text(
+        '{"expires_at": %d}' % int(time.time() + 600), encoding="utf-8")
+
+    assert sl.is_unlocked(home) is False
+    with pytest.raises(sl.SettingsLockError):
+        sl.check_write({"approvals": {"mode": "manual"}}, {"approvals": {"mode": "off"}}, home)
+
+
+def test_the_receipt_never_carries_the_stored_hash(tmp_path):
+    home = _root(tmp_path, "")
+    stored = sl.hash_password("operator")
+    (home / "config.yaml").write_text(
+        "settings_lock:\n  enabled: true\n  keys: ['approvals.mode']\n"
+        f"  password: {stored}\n", encoding="utf-8")
+    sl.begin_unlock(home, seconds=60, spec=sl.lock_state(home).spec)
+
+    body = sl.unlock_path(home).read_text(encoding="utf-8")
+    assert stored not in body
+    assert stored.split("$")[-1] not in body
 
 
 def test_the_window_file_is_not_world_readable(tmp_path):

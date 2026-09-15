@@ -3911,7 +3911,7 @@ def _lock_status_lines() -> list[str]:
 
     st = describe()
     if st["unusable"]:
-        return ["Settings lock: ENABLED but unusable — settings_lock.keys is empty or not a list.",
+        return [f"Settings lock: ENABLED but unusable — {st['reason']}.",
                 "Every config write is refused until you fix settings_lock in the root config.yaml."]
     if not st["enabled"]:
         return ["Settings lock: off.", "Lock some: hermes config lock approvals.mode yolo"]
@@ -3933,11 +3933,12 @@ def _lock_status_lines() -> list[str]:
 def _cmd_config_lock(args):
     """Show the lock, or lock the named config paths."""
     from hermes_cli.settings_lock import (LOCK_SECTION, describe, hash_password, is_unlocked,
-                                          lock_spec)
+                                          lock_spec, lock_state)
 
     keys = [str(k).strip() for k in (getattr(args, "keys", None) or []) if str(k).strip()]
     if getattr(args, "clear", False):
-        if describe()["enabled"] and not is_unlocked():
+        state = lock_state()
+        if state.status != "off" and not is_unlocked(spec=state.spec):
             print("Settings are locked. Run `hermes config unlock` first.", file=sys.stderr)
             sys.exit(1)
         cfg = read_raw_config() or {}
@@ -3976,14 +3977,20 @@ def _cmd_config_unlock(args):
     """Verify the password (when set) and open a time-boxed unlock window."""
     import time
 
-    from hermes_cli.settings_lock import (begin_unlock, describe, has_password, lock_spec,
-                                          verify_password)
+    from hermes_cli.settings_lock import (begin_unlock, has_password, lock_state, verify_password)
 
-    st = describe()
-    if not st["enabled"]:
+    state = lock_state()
+    if state.status == "off":
         print("Settings are not locked.")
         return
-    spec = lock_spec()
+    if state.status == "unusable":
+        # Nothing to unlock against: the window would carry no provable authority, and the
+        # password that should gate it may be the malformed part.
+        print(f"Settings lock is unusable — {state.reason}.\n"
+              "Fix settings_lock in the root config.yaml; a window cannot be opened against it.",
+              file=sys.stderr)
+        sys.exit(1)
+    spec = state.spec
     if has_password(spec):
         import getpass
 
@@ -3991,7 +3998,7 @@ def _cmd_config_unlock(args):
             print("Incorrect password.", file=sys.stderr)
             sys.exit(1)
     minutes = max(0.1, float(getattr(args, "minutes", 15.0) or 15.0))
-    expires = begin_unlock(seconds=minutes * 60)
+    expires = begin_unlock(seconds=minutes * 60, spec=spec)
     print(f"Settings unlocked until {time.strftime('%H:%M:%S', time.localtime(expires))} "
           f"({minutes:g} min). `hermes config relock` closes it sooner.")
 

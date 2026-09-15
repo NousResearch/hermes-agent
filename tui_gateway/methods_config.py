@@ -402,7 +402,7 @@ def _(rid, params: dict) -> dict:
 
 # ── operator settings lock
 #
-# The lock itself is enforced in ``hermes_cli.config.save_config`` — every writer funnels there,
+# The lock itself is enforced at the config.yaml write primitives (see hermes_cli.settings_lock),
 # so these doors only read status and open/close the unlock window. Nothing here can change a
 # locked setting; that still goes through a normal ``config.set`` once a window is open.
 
@@ -423,13 +423,16 @@ def _(rid, params: dict) -> dict:
     The password arrives over the local gateway socket and is never logged or persisted — only
     compared against the stored scrypt hash.
     """
-    from hermes_cli.settings_lock import (begin_unlock, describe, has_password, lock_spec,
-                                          verify_password)
+    from hermes_cli.settings_lock import begin_unlock, has_password, lock_state, verify_password
 
-    status = describe()
-    if not status["enabled"]:
+    state = lock_state()
+    if state.status == "off":
         return _err(rid, 4004, "settings are not locked")
-    spec = lock_spec()
+    if state.status == "unusable":
+        # No window against a spec we cannot normalise: it would carry no provable authority, and
+        # the password meant to gate it may be the malformed part.
+        return _err(rid, 4005, f"settings lock is unusable — {state.reason}")
+    spec = state.spec
     if has_password(spec) and not verify_password(str(params.get("password") or ""), spec.get("password")):
         return _err(rid, 4003, "incorrect password")
     minutes = params.get("minutes")
@@ -437,7 +440,7 @@ def _(rid, params: dict) -> dict:
         seconds = max(6.0, float(minutes) * 60) if minutes is not None else 900.0
     except (TypeError, ValueError):
         seconds = 900.0
-    return _ok(rid, {"ok": True, "unlocked_until": begin_unlock(seconds=seconds)})
+    return _ok(rid, {"ok": True, "unlocked_until": begin_unlock(seconds=seconds, spec=spec)})
 
 
 @method("config.relock")

@@ -172,7 +172,7 @@ def test_lock_during_unlock_wins_and_only_the_owning_session_release_drops_a_tok
 
 def test_bitwarden_multi_uri_item_binds_every_saved_web_origin():
     """A Bitwarden login with several URIs binds all of them (deduped, first stays
-    primary); non-web URIs never widen the fill set."""
+    primary); non-web URIs and URIs marked match=Never (5) never widen the fill set."""
     backend = BitwardenLoginBackend({"enabled": True})
     items_json = json.dumps([{
         "id": "multi", "type": 1, "name": "Amazon", "creationDate": "2026-01-01T00:00:00Z",
@@ -182,6 +182,7 @@ def test_bitwarden_multi_uri_item_binds_every_saved_web_origin():
             {"uri": "https://eu.account.amazon.com"},
             {"uri": "androidapp://com.amazon.shopping"},
             {"uri": "not a url"},
+            {"uri": "https://never.amazon.co.uk", "match": 5},
         ]},
     }])
     with patch.object(BitwardenLoginBackend, "is_unlocked", return_value=True), \

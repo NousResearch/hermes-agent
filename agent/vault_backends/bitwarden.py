@@ -96,6 +96,8 @@ class BitwardenLoginBackend(LoginBackend):
             login = item["login"]
             origins: List[str] = []
             for uri in login.get("uris") or []:
+                if uri.get("match") == 5:  # Bitwarden URI match "Never": not a fill target
+                    continue
                 try:
                     origin = normalize_origin(str(uri.get("uri") or ""))
                 except Exception:

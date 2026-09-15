@@ -226,6 +226,28 @@ def test_task_detail_includes_links_and_events(client):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("proof", [None, ["not-typed"]])
+def test_patch_done_maps_completion_evidence_errors_to_400(client, proof):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="evidence gated",
+            completion_contract="evidence",
+        )
+
+    payload = {"status": "done"}
+    if proof is not None:
+        payload["proof"] = proof
+    response = client.patch(f"/api/plugins/kanban/tasks/{task_id}", json=payload)
+
+    assert response.status_code == 400
+    assert "proof" in response.json()["detail"]
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status != "done"
+
+
 def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
     secret = "ghp_" + "D" * 40
     task = client.post(

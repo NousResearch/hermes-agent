@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -218,6 +219,25 @@ class TestScopedGatewayPidQuery:
 
 
 class TestGatewayRuntimeStatus:
+    def test_concurrent_platform_writes_preserve_both_updates(self, tmp_path, monkeypatch):
+        """The read/merge/write transaction must not lose a concurrent platform update."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        barrier = threading.Barrier(2)
+
+        def write(platform):
+            barrier.wait()
+            status.write_runtime_status(platform=platform, platform_state="connected")
+
+        threads = [threading.Thread(target=write, args=(platform,)) for platform in ("telegram", "discord")]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        platforms = status.read_runtime_status()["platforms"]
+        assert platforms["telegram"]["state"] == "connected"
+        assert platforms["discord"]["state"] == "connected"
+
     def test_clear_profile_platforms_preserves_primary_entries(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "gateway_state.json").write_text(

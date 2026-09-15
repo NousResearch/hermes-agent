@@ -13,7 +13,7 @@ from tools.registry import registry
 pytestmark = pytest.mark.windows_only
 
 
-def _capture(monkeypatch, windows, requested="Calculator"):
+def _capture(monkeypatch, windows, requested="Calculator", **extra_args):
     backend = CuaDriverBackend()
     backend._session = MagicMock()
 
@@ -36,12 +36,13 @@ def _capture(monkeypatch, windows, requested="Calculator"):
     args = {"action": "capture", "mode": "ax"}
     if requested is not None:
         args["app"] = requested
+    args.update(extra_args)
     result = registry.dispatch("computer_use", args)
     return json.loads(result), backend
 
 
-def _window(app="ApplicationFrameHost.exe", title="Calculator", window_id=20):
-    return {"app_name": app, "pid": 10, "window_id": window_id,
+def _window(app="ApplicationFrameHost.exe", title="Calculator", window_id=20, pid=10):
+    return {"app_name": app, "pid": pid, "window_id": window_id,
             "is_on_screen": True, "title": title, "z_index": 1}
 
 
@@ -84,4 +85,29 @@ def test_unrelated_or_ambiguous_titles_never_arm_a_capture_target(monkeypatch, w
     assert result["total_elements"] == 0
     assert backend._active_pid is None
     assert backend._active_window_id is None
+
+
+def test_unlisted_stale_hwnd_capture_fails_closed(monkeypatch):
+    """(a) An unlisted/stale HWND is refused (fails closed) and never sets _active_window_id."""
+    windows = [_window(app="notepad.exe", title="Notes", window_id=20, pid=100)]
+    result, backend = _capture(monkeypatch, windows, requested=None, window_id=999)
+
+    assert result["total_elements"] == 0
+    assert "<window_id 999 not found in active windows>" in (result.get("window_title") or "")
+    assert backend._active_window_id is None
+    assert backend._active_pid is None
+
+
+def test_observed_hwnd_capture_binds_discovered_pid_and_hwnd(monkeypatch):
+    """(b) An observed HWND binds the discovered live PID and HWND."""
+    windows = [
+        _window(app="notepad.exe", title="Notes", window_id=20, pid=100),
+        _window(app="code.exe", title="Editor", window_id=42, pid=555),
+    ]
+    result, backend = _capture(monkeypatch, windows, requested=None, window_id=42)
+
+    assert result["total_elements"] == 1
+    assert backend._active_window_id == 42
+    assert backend._active_pid == 555
+
 

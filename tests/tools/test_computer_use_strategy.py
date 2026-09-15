@@ -162,19 +162,16 @@ def test_window_id_alone_lookup_matching_window():
     assert candidates[0]["window_id"] == 8765
 
 
-def test_window_id_alone_fallback_when_not_in_list():
+def test_window_id_alone_fails_closed_when_not_in_list():
     sample_windows = [
         {"app_name": "Notepad", "pid": 1234, "window_id": 4321, "off_screen": False, "title": "Untitled", "z_index": 1},
     ]
     backend = FakeCaptureBackend(sample_windows)
 
-    # Window ID not enumerated in list_windows returns direct HWND entry
-    candidates = backend._resolve_capture_windows("som", "GhostApp", pid=None, window_id=99999)
-    assert isinstance(candidates, list)
-    assert len(candidates) == 1
-    assert candidates[0]["window_id"] == 99999
-    assert candidates[0]["pid"] == 0
-    assert candidates[0]["app_name"] == "GhostApp"
+    # Window ID not enumerated in list_windows must fail closed
+    res = backend._resolve_capture_windows("som", "GhostApp", pid=None, window_id=99999)
+    assert isinstance(res, CaptureResult)
+    assert "<window_id 99999 not found in active windows>" in res.window_title
 
 
 def test_pid_alone_still_fails_closed():

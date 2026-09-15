@@ -67,7 +67,9 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
-  if (event.type === 'tool.start' || event.type === 'tool.progress') {
+  const eventType = event.type as string
+
+  if (eventType === 'tool.start' || eventType === 'tool.progress') {
     if (!sessionId) {
       return true
     }
@@ -76,6 +78,7 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
     upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type, occurredAt)
 
     const currentCU = $computerUseBySession.get()[sessionId]
+
     const toolId =
       typeof payload?.tool_id === 'string'
         ? payload.tool_id
@@ -89,13 +92,13 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
 
     const isComputerUseEvent =
       payload?.name === 'computer_use' ||
-      (event.type === 'tool.progress' &&
+      (eventType === 'tool.progress' &&
         (currentCU?.phase === 'running' || currentCU?.phase === 'drafting') &&
         (!payload?.name || payload?.name === 'computer_use') &&
         (!toolId || !currentCU?.toolId || toolId === currentCU.toolId))
 
     if (isComputerUseEvent) {
-      setComputerUseRunning(sessionId, extractComputerUseArgs(payload), event.type === 'tool.progress')
+      setComputerUseRunning(sessionId, extractComputerUseArgs(payload), eventType === 'tool.progress')
     }
 
     if (isActiveEvent) {
@@ -134,6 +137,7 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
       }
 
       const currentCU = $computerUseBySession.get()[sessionId]
+
       const toolId =
         typeof payload?.tool_id === 'string'
           ? payload.tool_id
@@ -141,11 +145,12 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
             ? payload.id
             : undefined
 
+      const matchesCurrentCall = !toolId || !currentCU?.toolId || toolId === currentCU.toolId
+
       const isComputerUseComplete =
-        payload?.name === 'computer_use' ||
-        (!payload?.name &&
-          currentCU?.phase === 'running' &&
-          (!toolId || !currentCU?.toolId || toolId === currentCU.toolId))
+        matchesCurrentCall &&
+        (payload?.name === 'computer_use' ||
+          (!payload?.name && currentCU?.phase === 'running'))
 
       if (isComputerUseComplete) {
         const errorMessage = extractToolErrorMessage(payload)

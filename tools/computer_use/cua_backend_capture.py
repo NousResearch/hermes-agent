@@ -213,10 +213,9 @@ class _CaptureMixin:
             with self._disarming():
                 windows = self.list_windows()
             matched = [w for w in windows if w.get("window_id") == target_window_id]
-            if matched:
+            if len(matched) == 1:
                 return matched
-            return [{"app_name": app or "", "pid": 0, "window_id": target_window_id, "off_screen": False,
-                     "title": "", "z_index": 0}]
+            return self._failed_capture(mode, f"<window_id {target_window_id} not found in active windows>")
         if pid is not None or window_id is not None:
             # An exact pid/window pair is both the stable capture_after target and the escape hatch when
             # discovery is unavailable on X11.

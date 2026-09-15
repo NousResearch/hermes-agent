@@ -1,5 +1,8 @@
 """Authorized hosted inputs: leased v3 preparation or read-only accepted replay."""
+from contextlib import contextmanager
 from dataclasses import dataclass
+import time
+import uuid
 import hashlib
 import json
 from pathlib import Path
@@ -101,11 +104,9 @@ def _reconstruct_payload(db, prompt, inputs, admission, *, retired=False):
         if raw is None or any(raw[k] != admission[k] for k in ('principal_id', 'target_session_id', 'request_id')):
             raise RuntimeStoreError('permission_denied')
         has_refs = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='input_custody_refs'").fetchone()
-        if retired and has_refs:
-            refs = conn.execute('''SELECT c.* FROM input_custody_refs r JOIN input_custody_copies c USING(copy_id)
-                WHERE r.admission_id=? ORDER BY r.ordinal''', (raw['admission_id'],)).fetchall()
-        else:
-            refs = admission_input_refs(conn, raw) if has_refs else None
+        # Lifecycle comes only from durable authority, never the caller's hint.
+        terminal = raw['status'] == 'terminal'
+        refs = admission_input_refs(conn, raw, require_ready=not terminal) if has_refs else None
     docs, images, types = [], [], []
     doc_inputs = [(item, digest) for item, digest in inputs if item['mime'] not in _ATTACHMENT_MIMES]
     if refs and len(refs) != len(doc_inputs):
@@ -126,7 +127,7 @@ def _reconstruct_payload(db, prompt, inputs, admission, *, retired=False):
                 path = _media_root() / digest / item['name']
             docs.append(str(path))
             index += 1
-        if not retired:
+        if not terminal:
             verified_identity(path, digest, item['size'])
     payload = {'text': prompt + ''.join('\n[Shared attachment] file: ' + path + '\n' for path in docs)}
     if images:
@@ -214,10 +215,67 @@ def prepare_verified_documents(authority, *, principal_id, session_id, request_i
             paths.append({'path': str(path), 'sha256': copy['digest'], 'size': copy['size']})
         return paths
     paths = db._execute_write(materialize)
-    payload = json.loads(_json(build_payload(tuple(paths))))
+    with native_preparation_capture(authority, handle):
+        payload = json.loads(_json(build_payload(tuple(paths))))
     digest = admission_fingerprint(canonical_target=session_id, payload={'input': payload, 'intent': 'queue'})
     db._execute_write(lambda conn: finish_preparation(conn, epoch=epoch, handle=handle, payload_digest=digest))
     return PreparedHostedInput(payload, handle)
+
+
+@contextmanager
+def native_preparation_capture(authority, handle):
+    """Register canonical native aliases before publication, under the document lease.
+
+    The capture callback is synchronous and scoped to this context/thread. Neither
+    a rollback nor a callback exception can roll back the committed capture intent.
+    Collection of native aliases remains exclusive/pre-ingress, never online.
+    """
+    from gateway.session_ingress_media import _preparation_capture
+    from hermes_state_input_custody import PreparedInputHandle, native_preparation_holds
+    if handle is None:
+        yield
+        return
+    if not isinstance(handle, PreparedInputHandle):
+        raise RuntimeStoreError('invalid_params')
+    db, epoch = authority.db, authority.epoch
+    owned_home(db)
+
+    def capture(staged, references, publish):
+        def plan(conn):
+            require_initialized(conn, db)
+            preparation(conn, epoch=epoch, handle=handle)
+            for temporary, reference in zip(staged, references):
+                path = Path(reference['path'])
+                identity = verified_identity(path if path.exists() else temporary,
+                    reference['sha256'], reference['size'])
+                row = conn.execute("SELECT * FROM input_custody_copies WHERE namespace='native' AND digest=? AND name=?",
+                    (reference['sha256'], path.name)).fetchone()
+                if row is None:
+                    copy_id, generation = uuid.uuid4().hex, 1
+                    conn.execute('INSERT INTO input_custody_copies VALUES(?,?,?,?,?,?,?,?,?)',
+                        (copy_id, 'native', path.name, reference['sha256'], reference['size'], generation, 'ready', *identity))
+                else:
+                    copy_id, generation = row['copy_id'], row['generation']
+                    if row['state'] == 'sealed' or row['size'] != reference['size']:
+                        raise RuntimeStoreError('input_preparation_busy')
+                    if row['state'] == 'removed' or (row['device'], row['inode']) != identity:
+                        if native_preparation_holds(conn, copy_id, generation, time.time()):
+                            raise RuntimeStoreError('input_preparation_busy')
+                        generation += 1
+                        conn.execute("UPDATE input_custody_copies SET generation=?,state='ready',device=?,inode=? WHERE copy_id=?",
+                            (generation, *identity, copy_id))
+                conn.execute('INSERT OR IGNORE INTO input_custody_native_items VALUES(?,?,?)',
+                    (handle.preparation_id, copy_id, generation))
+        # All preparations and admission GC on this owner serialize across the
+        # durable intent commit and publication. No alias collector runs online.
+        with db._lock:
+            db._execute_write(plan)
+            publish()
+    token = _preparation_capture.set(capture)
+    try:
+        yield
+    finally:
+        _preparation_capture.reset(token)
 
 
 def prepare_hosted_input(rpc, *, request_id, prompt, attachments=None, ttl=300):

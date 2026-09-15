@@ -275,7 +275,9 @@ class SessionAuthority:
                 payload = retry_payload(conn, handle=_input_custody, principal_id=actor.subject,
                     session_id=request.ref.session_id, request_id=request.request_id)
         else:
-            payload = normalize_submission_payload(self, actor, request)
+            from gateway.hosted_room_input_preparation import native_preparation_capture
+            with native_preparation_capture(self, _input_custody):
+                payload = normalize_submission_payload(self, actor, request)
         row = admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
                                   session_id=request.ref.session_id, request_id=request.request_id,
                                   payload=payload, intent=request.intent, input_custody=_input_custody)

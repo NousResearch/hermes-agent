@@ -108,7 +108,8 @@ def _legacy_active(conn):
         except (TypeError, ValueError):
             return True
     if rows:
-        conn.execute('DELETE FROM gateway_legacy_input_paths')
+        # Paths are collector work, not merely a hold bit. Their original
+        # physical inventory survives until the sealed alias collector drains it.
         conn.execute('DELETE FROM gateway_legacy_input_admissions')
     return False
 

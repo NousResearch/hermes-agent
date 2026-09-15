@@ -1,10 +1,16 @@
-"""Todo tool: in-memory, revisioned task list for multi-step work. State lives on the
-AIAgent (one per session), is re-injected after context compression, and every write bumps
-a monotonic revision so UI clients can reject stale updates. One ``todo_list`` tool: pass
-``todos`` to write, omit to read; every call returns the full list. No system-prompt mutation."""
+"""Todo tool: session-scoped, revisioned task lists for multi-step work."""
 
+import hashlib
 import json
+import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from hermes_constants import get_hermes_home
+from utils import atomic_json_write
+
+
+logger = logging.getLogger(__name__)
 
 VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
 # The list is re-read after every compression (format_for_injection), so unbounded
@@ -24,12 +30,21 @@ _ACTIVE_STATUSES = {"pending", "in_progress"}
 
 
 class TodoStore:
-    """In-memory todo list, one per AIAgent. List position is priority; items are
-    ``{id, content, status, parent?}`` — ``parent`` nests a subtask."""
+    """Todo list, optionally persisted to a session-specific JSON file."""
 
-    def __init__(self):
+    def __init__(self, persist_path: Optional[Path] = None):
         self._items: List[Dict[str, str]] = []
         self._revision = 0
+        self._persist_path = Path(persist_path) if persist_path else None
+        if self._persist_path is not None:
+            self._load_from_disk()
+
+    @classmethod
+    def for_session(cls, session_id: str, hermes_home: Optional[Path] = None) -> "TodoStore":
+        """Create a store isolated to one Hermes session."""
+        home = Path(hermes_home) if hermes_home is not None else get_hermes_home()
+        session_key = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+        return cls(home / "todos" / f"{session_key}.json")
 
     def _fresh_items(self, todos: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         """Validate, dedupe and order a whole new list (replace / restore)."""
@@ -46,6 +61,7 @@ class TodoStore:
         self._sanitize_parents(self._items)
         if self._items != before:
             self._revision += 1
+        self._save_to_disk()
         return self.read()
 
     def _merge(self, todos: List[Dict[str, Any]]) -> None:
@@ -124,6 +140,42 @@ class TodoStore:
             if not item.get("parent"):
                 render(item, 0, lines)
         return "\n".join(lines) if len(lines) > 1 else None
+
+    def _load_from_disk(self) -> None:
+        """Best-effort load; corrupt persistence never prevents an agent from starting."""
+        path = self._persist_path
+        if path is None:
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Could not load todo persistence file %s: %s", path, exc)
+            return
+        if not isinstance(data, list):
+            logger.warning("Todo persistence file %s is not a JSON array", path)
+            return
+        items = []
+        seen_ids = set()
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            normalized = self._validate(item)
+            if normalized["id"] not in seen_ids:
+                items.append(normalized)
+                seen_ids.add(normalized["id"])
+        self._items = self._normalize_order(items)[:MAX_TODO_ITEMS]
+        self._sanitize_parents(self._items)
+
+    def _save_to_disk(self) -> None:
+        path = self._persist_path
+        if path is None:
+            return
+        try:
+            atomic_json_write(path, self._items)
+        except OSError as exc:
+            logger.warning("Could not persist todo state to %s: %s", path, exc)
 
     @staticmethod
     def _cap_content(content: str) -> str:

@@ -328,7 +328,7 @@ def _sync_agent_to_session(cli, session_id: str, *, parent_session_id: str, reas
     if hasattr(cli.agent, "_todo_store"):
         with suppress(Exception):
             from tools.todo_tool import TodoStore
-            cli.agent._todo_store = TodoStore()
+            cli.agent._todo_store = TodoStore.for_session(session_id)
     if hasattr(cli.agent, "_invalidate_system_prompt"):
         cli.agent._invalidate_system_prompt()
     with suppress(Exception):

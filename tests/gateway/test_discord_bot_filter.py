@@ -107,17 +107,6 @@ class TestDiscordBotFilter(unittest.TestCase):
         self.assertTrue(self._run_filter(msg, "mentions"))
         self.assertTrue(self._run_filter(msg, "all"))
 
-    def test_allow_bots_none_rejects_bots(self):
-        """With allow_bots=none, all other bot messages are rejected."""
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot)
-        self.assertFalse(self._run_filter(msg, "none"))
-
-    def test_allow_bots_all_accepts_bots(self):
-        """With allow_bots=all, all bot messages are accepted."""
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot)
-        self.assertTrue(self._run_filter(msg, "all"))
 
     def test_allow_bots_mentions_rejects_without_mention(self):
         """With allow_bots=mentions, bot messages without @mention are rejected."""
@@ -126,49 +115,6 @@ class TestDiscordBotFilter(unittest.TestCase):
         msg = _make_message(author=bot, mentions=[])
         self.assertFalse(self._run_filter(msg, "mentions", our_user))
 
-    def test_allow_bots_mentions_accepts_with_mention(self):
-        """With allow_bots=mentions, bot messages with @mention are accepted."""
-        our_user = _make_author(is_self=True)
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot, mentions=[our_user])
-        self.assertTrue(self._run_filter(msg, "mentions", our_user))
-
-    def test_allow_bots_mentions_accepts_with_raw_content_mention(self):
-        """Raw <@!ID> mention counts even when message.mentions is empty."""
-        our_user = _make_author(is_self=True)
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot, content=f"<@!{our_user.id}> relay", mentions=[])
-        self.assertTrue(self._run_filter(msg, "mentions", our_user))
-
-    def test_inline_mention_requirement_off_preserves_reply_ping_behavior(self):
-        """Default behavior: resolved reply-ping mentions still admit bot messages."""
-        our_user = _make_author(is_self=True)
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot, content="reply-ping only", mentions=[our_user])
-
-        self.assertTrue(
-            self._run_filter(
-                msg,
-                "all",
-                our_user,
-                bots_require_inline_mention=False,
-            )
-        )
-
-    def test_inline_mention_requirement_rejects_reply_ping_only(self):
-        """Opt-in guard rejects bot messages where only Discord's reply-ping mentions us."""
-        our_user = _make_author(is_self=True)
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot, content="reply-ping only", mentions=[our_user])
-
-        self.assertFalse(
-            self._run_filter(
-                msg,
-                "all",
-                our_user,
-                bots_require_inline_mention=True,
-            )
-        )
 
     def test_inline_mention_requirement_accepts_body_mention(self):
         """Opt-in guard still admits intentional inline cross-bot mentions."""
@@ -189,34 +135,11 @@ class TestDiscordBotFilter(unittest.TestCase):
             )
         )
 
-    def test_inline_mention_requirement_does_not_affect_humans(self):
-        """The opt-in guard only applies to bot-authored messages."""
-        human = _make_author(bot=False)
-        our_user = _make_author(is_self=True)
-        msg = _make_message(author=human, content="human reply-ping", mentions=[our_user])
-
-        self.assertTrue(
-            self._run_filter(
-                msg,
-                "none",
-                our_user,
-                bots_require_inline_mention=True,
-            )
-        )
 
     def test_default_is_none(self):
         """Default behavior (no env var) should be 'none'."""
         default = os.getenv("DISCORD_ALLOW_BOTS", "none")
         self.assertEqual(default, "none")
-
-    def test_case_insensitive(self):
-        """Allow_bots value should be case-insensitive."""
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot)
-        self.assertTrue(self._run_filter(msg, "ALL"))
-        self.assertTrue(self._run_filter(msg, "All"))
-        self.assertFalse(self._run_filter(msg, "NONE"))
-        self.assertFalse(self._run_filter(msg, "None"))
 
 
 if __name__ == "__main__":

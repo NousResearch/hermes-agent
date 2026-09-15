@@ -1,27 +1,27 @@
 ---
-title: "Qmd"
+title: "Qmd — Hybrid local search over notes, docs, and transcripts"
 sidebar_label: "Qmd"
-description: "Search personal knowledge bases, notes, docs, and meeting transcripts locally using qmd — a hybrid retrieval engine with BM25, vector search, and LLM reranking"
+description: "Hybrid local search over notes, docs, and transcripts"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Qmd
 
-Search personal knowledge bases, notes, docs, and meeting transcripts locally using qmd — a hybrid retrieval engine with BM25, vector search, and LLM reranking. Supports CLI and MCP integration.
+Hybrid local search over notes, docs, and transcripts.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/research/qmd` |
-| Path | `optional-skills/research/qmd` |
+| Path | `optional-skills/research\qmd` |
 | Version | `1.0.0` |
 | Author | Hermes Agent + Teknium |
 | License | MIT |
 | Platforms | macos, linux |
 | Tags | `Search`, `Knowledge-Base`, `RAG`, `Notes`, `MCP`, `Local-AI` |
-| Related skills | [`obsidian`](/docs/user-guide/skills/bundled/note-taking/note-taking-obsidian), `native-mcp`, [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv) |
+| Related skills | [`obsidian`](/docs/user-guide/skills/bundled/note-taking/note-taking-obsidian), [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent), [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv) |
 
 ## Reference: full SKILL.md
 

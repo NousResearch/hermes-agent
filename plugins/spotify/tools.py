@@ -1,20 +1,20 @@
-"""Native Spotify tools for Hermes (registered via plugins/spotify)."""
+"""Native Spotify tools for Hermes (registered via plugins/spotify).
+
+Each tool routes ``args["action"]`` through a dict dispatch table; every entry
+has the signature ``(client, args, action) -> str`` and issues its Spotify Web
+API call through ``client.request`` (auth refresh + error mapping live there).
+"""
 
 from __future__ import annotations
 
-from typing import Any, List
+from typing import Any, Callable, Dict, List, Optional
 
 from hermes_cli.auth import get_auth_status
 from plugins.spotify.client import (
-    SpotifyAPIError,
-    SpotifyAuthRequiredError,
-    SpotifyClient,
-    SpotifyError,
-    normalize_spotify_id,
-    normalize_spotify_uri,
-    normalize_spotify_uris,
-)
+    SpotifyClient, SpotifyError, normalize_spotify_id, normalize_spotify_uri, normalize_spotify_uris)
 from tools.registry import tool_error, tool_result
+
+_Handler = Callable[[SpotifyClient, dict, str], str]
 
 
 def _check_spotify_available() -> bool:
@@ -24,24 +24,24 @@ def _check_spotify_available() -> bool:
         return False
 
 
-def _spotify_client() -> SpotifyClient:
-    return SpotifyClient()
-
-
 def _spotify_tool_error(exc: Exception) -> str:
-    if isinstance(exc, (SpotifyError, SpotifyAuthRequiredError)):
+    if isinstance(exc, SpotifyError):  # includes SpotifyAPIError / SpotifyAuthRequiredError
         return tool_error(str(exc))
-    if isinstance(exc, SpotifyAPIError):
-        return tool_error(str(exc), status_code=exc.status_code)
     return tool_error(f"Spotify tool failed: {type(exc).__name__}: {exc}")
 
 
-def _coerce_limit(raw: Any, *, default: int = 20, minimum: int = 1, maximum: int = 50) -> int:
-    try:
-        value = int(raw)
-    except Exception:
-        value = default
-    return max(minimum, min(maximum, value))
+# Inside a ``_dispatcher`` boundary ``raise SpotifyError(msg)`` renders exactly like ``return tool_error(msg)``.
+def _required(value: Any, message: str) -> Any:
+    if value is None:
+        raise SpotifyError(message)
+    return value
+
+
+def _nonblank(raw: Any, message: str) -> str:
+    value = str(raw or "").strip()
+    if not value:
+        raise SpotifyError(message)
+    return value
 
 
 def _coerce_bool(raw: Any, default: bool = False) -> bool:
@@ -59,396 +59,281 @@ def _coerce_bool(raw: Any, default: bool = False) -> bool:
 def _as_list(raw: Any) -> List[str]:
     if raw is None:
         return []
-    if isinstance(raw, list):
-        return [str(item).strip() for item in raw if str(item).strip()]
-    return [str(raw).strip()] if str(raw).strip() else []
+    items = raw if isinstance(raw, list) else [raw]
+    return [str(item).strip() for item in items if str(item).strip()]
 
 
-def _describe_empty_playback(payload: Any, *, action: str) -> dict | None:
-    if not isinstance(payload, dict) or not payload.get("empty"):
-        return None
-    if action == "get_currently_playing":
-        return {
-            "success": True,
-            "action": action,
-            "is_playing": False,
-            "status_code": payload.get("status_code", 204),
-            "message": payload.get("message") or "Spotify is not currently playing anything.",
-        }
-    if action == "get_state":
-        return {
-            "success": True,
-            "action": action,
-            "has_active_device": False,
-            "status_code": payload.get("status_code", 204),
-            "message": payload.get("message") or "No active Spotify playback session was found.",
-        }
-    return None
+_offset = lambda args: max(0, int(args.get("offset") or 0))  # noqa: E731
 
 
-def _handle_spotify_playback(args: dict, **kw) -> str:
-    action = str(args.get("action") or "get_state").strip().lower()
-    client = _spotify_client()
+def _limit(args: dict, default: int = 20) -> int:
+    """Clamp ``limit`` to Spotify's 1..50 window; non-numeric input falls back to *default*."""
+    raw: Any = args.get("limit")
     try:
-        if action == "get_state":
-            payload = client.get_playback_state(market=args.get("market"))
-            empty_result = _describe_empty_playback(payload, action=action)
-            return tool_result(empty_result or payload)
-        if action == "get_currently_playing":
-            payload = client.get_currently_playing(market=args.get("market"))
-            empty_result = _describe_empty_playback(payload, action=action)
-            return tool_result(empty_result or payload)
-        if action == "play":
-            offset = args.get("offset")
-            if isinstance(offset, dict):
-                payload_offset = {k: v for k, v in offset.items() if v is not None}
-            else:
-                payload_offset = None
-            uris = normalize_spotify_uris(_as_list(args.get("uris")), "track") if args.get("uris") else None
-            context_uri = None
-            if args.get("context_uri"):
-                raw_context = str(args.get("context_uri"))
-                context_type = None
-                if raw_context.startswith("spotify:album:") or "/album/" in raw_context:
-                    context_type = "album"
-                elif raw_context.startswith("spotify:playlist:") or "/playlist/" in raw_context:
-                    context_type = "playlist"
-                elif raw_context.startswith("spotify:artist:") or "/artist/" in raw_context:
-                    context_type = "artist"
-                context_uri = normalize_spotify_uri(raw_context, context_type)
-            result = client.start_playback(
-                device_id=args.get("device_id"),
-                context_uri=context_uri,
-                uris=uris,
-                offset=payload_offset,
-                position_ms=args.get("position_ms"),
-            )
-            return tool_result({"success": True, "action": action, "result": result})
-        if action == "pause":
-            result = client.pause_playback(device_id=args.get("device_id"))
-            return tool_result({"success": True, "action": action, "result": result})
-        if action == "next":
-            result = client.skip_next(device_id=args.get("device_id"))
-            return tool_result({"success": True, "action": action, "result": result})
-        if action == "previous":
-            result = client.skip_previous(device_id=args.get("device_id"))
-            return tool_result({"success": True, "action": action, "result": result})
-        if action == "seek":
-            if args.get("position_ms") is None:
-                return tool_error("position_ms is required for action='seek'")
-            result = client.seek(position_ms=int(args["position_ms"]), device_id=args.get("device_id"))
-            return tool_result({"success": True, "action": action, "result": result})
-        if action == "set_repeat":
-            state = str(args.get("state") or "").strip().lower()
-            if state not in {"track", "context", "off"}:
-                return tool_error("state must be one of: track, context, off")
-            result = client.set_repeat(state=state, device_id=args.get("device_id"))
-            return tool_result({"success": True, "action": action, "result": result})
-        if action == "set_shuffle":
-            result = client.set_shuffle(state=_coerce_bool(args.get("state")), device_id=args.get("device_id"))
-            return tool_result({"success": True, "action": action, "result": result})
-        if action == "set_volume":
-            if args.get("volume_percent") is None:
-                return tool_error("volume_percent is required for action='set_volume'")
-            result = client.set_volume(volume_percent=max(0, min(100, int(args["volume_percent"]))), device_id=args.get("device_id"))
-            return tool_result({"success": True, "action": action, "result": result})
-        if action == "recently_played":
-            after = args.get("after")
-            before = args.get("before")
-            if after and before:
-                return tool_error("Provide only one of 'after' or 'before'")
-            return tool_result(client.get_recently_played(
-                limit=_coerce_limit(args.get("limit"), default=20),
-                after=int(after) if after is not None else None,
-                before=int(before) if before is not None else None,
-            ))
-        return tool_error(f"Unknown spotify_playback action: {action}")
-    except Exception as exc:
-        return _spotify_tool_error(exc)
+        value = int(raw)
+    except Exception:
+        value = default
+    return max(1, min(50, value))
 
 
-def _handle_spotify_devices(args: dict, **kw) -> str:
-    action = str(args.get("action") or "list").strip().lower()
-    client = _spotify_client()
-    try:
-        if action == "list":
-            return tool_result(client.get_devices())
-        if action == "transfer":
-            device_id = str(args.get("device_id") or "").strip()
-            if not device_id:
-                return tool_error("device_id is required for action='transfer'")
-            result = client.transfer_playback(device_id=device_id, play=_coerce_bool(args.get("play")))
-            return tool_result({"success": True, "action": action, "result": result})
-        return tool_error(f"Unknown spotify_devices action: {action}")
-    except Exception as exc:
-        return _spotify_tool_error(exc)
+_ok = lambda action, result, **extra: tool_result({"success": True, "action": action, **extra, "result": result})  # noqa: E731
 
 
-def _handle_spotify_queue(args: dict, **kw) -> str:
-    action = str(args.get("action") or "get").strip().lower()
-    client = _spotify_client()
-    try:
-        if action == "get":
-            return tool_result(client.get_queue())
-        if action == "add":
-            uri = normalize_spotify_uri(str(args.get("uri") or ""), None)
-            result = client.add_to_queue(uri=uri, device_id=args.get("device_id"))
-            return tool_result({"success": True, "action": action, "uri": uri, "result": result})
-        return tool_error(f"Unknown spotify_queue action: {action}")
-    except Exception as exc:
-        return _spotify_tool_error(exc)
+def _dispatcher(tool_name: str, default: str, table: Dict[str, _Handler], prepare: Optional[Callable[[dict], dict]] = None):
+    """Build a tool handler that routes ``args['action']`` through *table*.
+
+    The client is constructed outside the error boundary (auth failures propagate
+    as exceptions, as they always have). *prepare* runs inside the boundary before
+    the action lookup, so its validation errors surface even for unknown actions.
+    """
+    def handle(args: dict, **kw) -> str:
+        action = str(args.get("action") or default).strip().lower()
+        client = SpotifyClient()
+        try:
+            if prepare is not None:
+                args = prepare(args)
+            handler = table.get(action)
+            if handler is None:
+                return tool_error(f"Unknown {tool_name} action: {action}")
+            return handler(client, args, action)
+        except Exception as exc:
+            return _spotify_tool_error(exc)
+    handle.__name__ = handle.__qualname__ = f"_handle_{tool_name}"
+    return handle
+
+
+# -- spotify_playback ---------------------------------------------------------
+
+# action -> (flag key reported False, fallback message) when Spotify returns 204/empty.
+_EMPTY_PLAYBACK = {
+    "get_currently_playing": ("is_playing", "Spotify is not currently playing anything."),
+    "get_state": ("has_active_device", "No active Spotify playback session was found.")}
+
+
+def _pb_read(fetch: Callable[..., Any], args: dict, action: str) -> str:
+    payload = fetch(market=args.get("market"))
+    if isinstance(payload, dict) and payload.get("empty"):
+        flag, fallback = _EMPTY_PLAYBACK[action]
+        payload = {"success": True, "action": action, flag: False, "status_code": payload.get("status_code", 204),
+                   "message": payload.get("message") or fallback}
+    return tool_result(payload)
+
+
+_CONTEXT_TYPES = (("album", "spotify:album:", "/album/"), ("playlist", "spotify:playlist:", "/playlist/"), ("artist", "spotify:artist:", "/artist/"))
+
+
+def _pb_play(client: SpotifyClient, args: dict, action: str) -> str:
+    offset = args.get("offset")
+    payload_offset = {k: v for k, v in offset.items() if v is not None} if isinstance(offset, dict) else None
+    uris = normalize_spotify_uris(_as_list(args.get("uris")), "track") if args.get("uris") else None
+    context_uri = None
+    if args.get("context_uri"):
+        raw = str(args.get("context_uri"))
+        # Infer the context type so mismatches raise; unknown kinds pass through unchecked.
+        context_type = next((t for t, prefix, frag in _CONTEXT_TYPES if raw.startswith(prefix) or frag in raw), None)
+        context_uri = normalize_spotify_uri(raw, context_type)
+    body = {"context_uri": context_uri, "uris": uris, "offset": payload_offset, "position_ms": args.get("position_ms")}
+    return _ok(action, client.request("PUT", "/me/player/play", params={"device_id": args.get("device_id")}, json_body=body))
+
+
+def _pb_cmd(client: SpotifyClient, args: dict, action: str, method: str, path: str, **extra: Any) -> str:
+    """Player command whose only free argument is ``device_id`` (*extra* = fixed params)."""
+    return _ok(action, client.request(method, path, params={**extra, "device_id": args.get("device_id")}))
+
+
+_pb_device_cmd = lambda method, path: (lambda c, a, act: _pb_cmd(c, a, act, method, path))  # noqa: E731
+
+
+def _pb_required_param(path: str, param: str, convert: Callable[[Any], Any]) -> _Handler:
+    """PUT *path* with ``param`` (required, converted) plus device_id."""
+    return lambda c, a, act: _pb_cmd(c, a, act, "PUT", path, **{param: convert(_required(a.get(param), f"{param} is required for action='{act}'"))})
+
+
+def _pb_repeat_state(args: dict) -> str:
+    state = str(args.get("state") or "").strip().lower()
+    if state not in {"track", "context", "off"}:
+        raise SpotifyError("state must be one of: track, context, off")
+    return state
+
+
+def _pb_recently_played(client: SpotifyClient, args: dict, action: str) -> str:
+    after, before = args.get("after"), args.get("before")
+    if after and before:
+        return tool_error("Provide only one of 'after' or 'before'")
+    params = {"limit": _limit(args), "after": int(after) if after is not None else None, "before": int(before) if before is not None else None}
+    return tool_result(client.request("GET", "/me/player/recently-played", params=params))
+
+
+_handle_spotify_playback = _dispatcher("spotify_playback", "get_state", {
+    "get_state": lambda c, a, act: _pb_read(c.get_playback_state, a, act),
+    "get_currently_playing": lambda c, a, act: _pb_read(c.get_currently_playing, a, act),
+    "play": _pb_play,
+    "pause": _pb_device_cmd("PUT", "/me/player/pause"),
+    "next": _pb_device_cmd("POST", "/me/player/next"),
+    "previous": _pb_device_cmd("POST", "/me/player/previous"),
+    "seek": _pb_required_param("/me/player/seek", "position_ms", int),
+    "set_repeat": lambda c, a, act: _pb_cmd(c, a, act, "PUT", "/me/player/repeat", state=_pb_repeat_state(a)),
+    "set_shuffle": lambda c, a, act: _pb_cmd(c, a, act, "PUT", "/me/player/shuffle", state=str(_coerce_bool(a.get("state"))).lower()),
+    "set_volume": _pb_required_param("/me/player/volume", "volume_percent", lambda v: max(0, min(100, int(v)))),
+    "recently_played": _pb_recently_played,
+})
+
+
+# -- spotify_devices / spotify_queue / spotify_search ---------------------------
+
+_handle_spotify_devices = _dispatcher("spotify_devices", "list", {
+    "list": lambda c, a, act: tool_result(c.request("GET", "/me/player/devices")),
+    "transfer": lambda c, a, act: _ok(act, c.request("PUT", "/me/player", json_body={
+        "device_ids": [_nonblank(a.get("device_id"), "device_id is required for action='transfer'")], "play": _coerce_bool(a.get("play")),
+    })),
+})
+
+
+def _queue_add(client: SpotifyClient, args: dict, action: str) -> str:
+    uri = normalize_spotify_uri(str(args.get("uri") or ""), None)
+    return _ok(action, client.request("POST", "/me/player/queue", params={"uri": uri, "device_id": args.get("device_id")}), uri=uri)
+
+
+_handle_spotify_queue = _dispatcher("spotify_queue", "get", {
+    "get": lambda c, a, act: tool_result(c.request("GET", "/me/player/queue")), "add": _queue_add})
+
+_SEARCH_TYPES = {"album", "artist", "playlist", "track", "show", "episode", "audiobook"}
 
 
 def _handle_spotify_search(args: dict, **kw) -> str:
-    client = _spotify_client()
+    client = SpotifyClient()
     query = str(args.get("query") or "").strip()
     if not query:
         return tool_error("query is required")
     raw_types = _as_list(args.get("types") or args.get("type") or ["track"])
-    search_types = [value.lower() for value in raw_types if value.lower() in {"album", "artist", "playlist", "track", "show", "episode", "audiobook"}]
+    search_types = [value.lower() for value in raw_types if value.lower() in _SEARCH_TYPES]
     if not search_types:
         return tool_error("types must contain one or more of: album, artist, playlist, track, show, episode, audiobook")
+    params = {"q": query, "type": ",".join(search_types), "limit": _limit(args, 10), "offset": _offset(args),
+              "market": args.get("market"), "include_external": args.get("include_external")}
     try:
-        return tool_result(client.search(
-            query=query,
-            search_types=search_types,
-            limit=_coerce_limit(args.get("limit"), default=10),
-            offset=max(0, int(args.get("offset") or 0)),
-            market=args.get("market"),
-            include_external=args.get("include_external"),
-        ))
+        return tool_result(client.request("GET", "/search", params=params))
     except Exception as exc:
         return _spotify_tool_error(exc)
 
 
-def _handle_spotify_playlists(args: dict, **kw) -> str:
-    action = str(args.get("action") or "list").strip().lower()
-    client = _spotify_client()
-    try:
-        if action == "list":
-            return tool_result(client.get_my_playlists(
-                limit=_coerce_limit(args.get("limit"), default=20),
-                offset=max(0, int(args.get("offset") or 0)),
-            ))
-        if action == "get":
-            playlist_id = normalize_spotify_id(str(args.get("playlist_id") or ""), "playlist")
-            return tool_result(client.get_playlist(playlist_id=playlist_id, market=args.get("market")))
-        if action == "create":
-            name = str(args.get("name") or "").strip()
-            if not name:
-                return tool_error("name is required for action='create'")
-            return tool_result(client.create_playlist(
-                name=name,
-                public=_coerce_bool(args.get("public")),
-                collaborative=_coerce_bool(args.get("collaborative")),
-                description=args.get("description"),
-            ))
-        if action == "add_items":
-            playlist_id = normalize_spotify_id(str(args.get("playlist_id") or ""), "playlist")
-            uris = normalize_spotify_uris(_as_list(args.get("uris")))
-            return tool_result(client.add_playlist_items(
-                playlist_id=playlist_id,
-                uris=uris,
-                position=args.get("position"),
-            ))
-        if action == "remove_items":
-            playlist_id = normalize_spotify_id(str(args.get("playlist_id") or ""), "playlist")
-            uris = normalize_spotify_uris(_as_list(args.get("uris")))
-            return tool_result(client.remove_playlist_items(
-                playlist_id=playlist_id,
-                uris=uris,
-                snapshot_id=args.get("snapshot_id"),
-            ))
-        if action == "update_details":
-            playlist_id = normalize_spotify_id(str(args.get("playlist_id") or ""), "playlist")
-            return tool_result(client.update_playlist_details(
-                playlist_id=playlist_id,
-                name=args.get("name"),
-                public=args.get("public"),
-                collaborative=args.get("collaborative"),
-                description=args.get("description"),
-            ))
-        return tool_error(f"Unknown spotify_playlists action: {action}")
-    except Exception as exc:
-        return _spotify_tool_error(exc)
+# -- spotify_playlists ---------------------------------------------------------
+
+_playlist_path = lambda args, suffix="": f"/playlists/{normalize_spotify_id(str(args.get('playlist_id') or ''), 'playlist')}{suffix}"  # noqa: E731
 
 
-def _handle_spotify_albums(args: dict, **kw) -> str:
-    action = str(args.get("action") or "get").strip().lower()
-    client = _spotify_client()
-    try:
-        album_id = normalize_spotify_id(str(args.get("album_id") or args.get("id") or ""), "album")
-        if action == "get":
-            return tool_result(client.get_album(album_id=album_id, market=args.get("market")))
-        if action == "tracks":
-            return tool_result(client.get_album_tracks(
-                album_id=album_id,
-                limit=_coerce_limit(args.get("limit"), default=20),
-                offset=max(0, int(args.get("offset") or 0)),
-                market=args.get("market"),
-            ))
-        return tool_error(f"Unknown spotify_albums action: {action}")
-    except Exception as exc:
-        return _spotify_tool_error(exc)
+_handle_spotify_playlists = _dispatcher("spotify_playlists", "list", {
+    "list": lambda c, a, act: tool_result(c.request("GET", "/me/playlists", params={"limit": _limit(a), "offset": _offset(a)})),
+    "get": lambda c, a, act: tool_result(c.request("GET", _playlist_path(a), params={"market": a.get("market")})),
+    "create": lambda c, a, act: tool_result(c.request("POST", "/me/playlists", json_body={
+        "name": _nonblank(a.get("name"), "name is required for action='create'"), "public": _coerce_bool(a.get("public")),
+        "collaborative": _coerce_bool(a.get("collaborative")), "description": a.get("description")})),
+    "add_items": lambda c, a, act: tool_result(c.request("POST", _playlist_path(a, "/items"), json_body={
+        "uris": normalize_spotify_uris(_as_list(a.get("uris"))), "position": a.get("position")})),
+    "remove_items": lambda c, a, act: tool_result(c.request("DELETE", _playlist_path(a, "/items"), json_body={
+        "items": [{"uri": u} for u in normalize_spotify_uris(_as_list(a.get("uris")))], "snapshot_id": a.get("snapshot_id")})),
+    "update_details": lambda c, a, act: tool_result(c.request("PUT", _playlist_path(a), json_body={
+        "name": a.get("name"), "public": a.get("public"), "collaborative": a.get("collaborative"), "description": a.get("description")})),
+})
+
+
+# -- spotify_albums ------------------------------------------------------------
+
+_page_params = lambda args: {"limit": _limit(args), "offset": _offset(args), "market": args.get("market")}  # noqa: E731
+_prepare_album = lambda args: {**args, "_path": f"/albums/{normalize_spotify_id(str(args.get('album_id') or args.get('id') or ''), 'album')}"}  # noqa: E731
+
+
+_handle_spotify_albums = _dispatcher("spotify_albums", "get", {
+    "get": lambda c, a, act: tool_result(c.request("GET", a["_path"], params={"market": a.get("market")})),
+    "tracks": lambda c, a, act: tool_result(c.request("GET", a["_path"] + "/tracks", params=_page_params(a))),
+}, prepare=_prepare_album)
+
+
+# -- spotify_library — saved tracks + saved albums, selected by `kind` ---------
+
+def _lib_remove_uris(args: dict) -> str:
+    item_type = args["_item_type"]
+    ids = [normalize_spotify_id(item, item_type) for item in _as_list(args.get("ids") or args.get("items"))]
+    return ",".join(f"spotify:{item_type}:{i}" for i in _required(ids or None, "ids/items is required for action='remove'"))
+
+
+_dispatch_library = _dispatcher("spotify_library", "list", {
+    "list": lambda c, a, act: tool_result(c.request("GET", f"/me/{a['kind']}", params=_page_params(a))),
+    "save": lambda c, a, act: tool_result(c.request("PUT", "/me/library", params={
+        "uris": ",".join(normalize_spotify_uris(_as_list(a.get("uris") or a.get("items")), a["_item_type"]))})),
+    "remove": lambda c, a, act: tool_result(c.request("DELETE", "/me/library", params={"uris": _lib_remove_uris(a)})),
+})
 
 
 def _handle_spotify_library(args: dict, **kw) -> str:
-    """Unified handler for saved tracks + saved albums (formerly two tools)."""
     kind = str(args.get("kind") or "").strip().lower()
     if kind not in {"tracks", "albums"}:
         return tool_error("kind must be one of: tracks, albums")
-    action = str(args.get("action") or "list").strip().lower()
-    item_type = "track" if kind == "tracks" else "album"
-    client = _spotify_client()
-    try:
-        if action == "list":
-            limit = _coerce_limit(args.get("limit"), default=20)
-            offset = max(0, int(args.get("offset") or 0))
-            market = args.get("market")
-            if kind == "tracks":
-                return tool_result(client.get_saved_tracks(limit=limit, offset=offset, market=market))
-            return tool_result(client.get_saved_albums(limit=limit, offset=offset, market=market))
-        if action == "save":
-            uris = normalize_spotify_uris(_as_list(args.get("uris") or args.get("items")), item_type)
-            return tool_result(client.save_library_items(uris=uris))
-        if action == "remove":
-            ids = [normalize_spotify_id(item, item_type) for item in _as_list(args.get("ids") or args.get("items"))]
-            if not ids:
-                return tool_error("ids/items is required for action='remove'")
-            if kind == "tracks":
-                return tool_result(client.remove_saved_tracks(track_ids=ids))
-            return tool_result(client.remove_saved_albums(album_ids=ids))
-        return tool_error(f"Unknown spotify_library action: {action}")
-    except Exception as exc:
-        return _spotify_tool_error(exc)
+    return _dispatch_library({**args, "kind": kind, "_item_type": kind[:-1]})  # tracks->track, albums->album
 
+
+# -- Schemas (sent to the model — byte-stable; property order matters) ----------
 
 COMMON_STRING = {"type": "string"}
+_INT = {"type": "integer"}
+_BOOL = {"type": "boolean"}
+_STR_ARRAY = {"type": "array", "items": COMMON_STRING}
 
-SPOTIFY_PLAYBACK_SCHEMA = {
-    "name": "spotify_playback",
-    "description": "Control Spotify playback, inspect the active playback state, or fetch recently played tracks.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "action": {"type": "string", "enum": ["get_state", "get_currently_playing", "play", "pause", "next", "previous", "seek", "set_repeat", "set_shuffle", "set_volume", "recently_played"]},
-            "device_id": COMMON_STRING,
-            "market": COMMON_STRING,
-            "context_uri": COMMON_STRING,
-            "uris": {"type": "array", "items": COMMON_STRING},
-            "offset": {"type": "object"},
-            "position_ms": {"type": "integer"},
-            "state": {"description": "For set_repeat use track/context/off. For set_shuffle use boolean-like true/false.", "oneOf": [{"type": "string"}, {"type": "boolean"}]},
-            "volume_percent": {"type": "integer"},
-            "limit": {"type": "integer", "description": "For recently_played: number of tracks (max 50)"},
-            "after": {"type": "integer", "description": "For recently_played: Unix ms cursor (after this timestamp)"},
-            "before": {"type": "integer", "description": "For recently_played: Unix ms cursor (before this timestamp)"},
-        },
-        "required": ["action"],
-    },
+
+_strs = lambda *names: dict.fromkeys(names, COMMON_STRING)  # noqa: E731
+_enum = lambda *values: {"type": "string", "enum": list(values)}  # noqa: E731
+_idesc = lambda text: {"type": "integer", "description": text}  # noqa: E731
+
+
+def _schema(name: str, description: str, properties: dict, required: tuple = ("action",)) -> dict:
+    return {"name": name, "description": description, "parameters": {"type": "object", "properties": properties, "required": list(required)}}
+
+
+SPOTIFY_PLAYBACK_SCHEMA = _schema("spotify_playback", "Control Spotify playback, inspect the active playback state, or fetch recently played tracks.", {
+    "action": _enum("get_state", "get_currently_playing", "play", "pause", "next", "previous", "seek", "set_repeat", "set_shuffle", "set_volume", "recently_played"),
+    **_strs("device_id", "market", "context_uri"), "uris": _STR_ARRAY, "offset": {"type": "object"}, "position_ms": _INT,
+    "state": {"description": "For set_repeat use track/context/off. For set_shuffle use boolean-like true/false.", "oneOf": [{"type": "string"}, {"type": "boolean"}]},
+    "volume_percent": _INT, "limit": _idesc("For recently_played: number of tracks (max 50)"),
+    "after": _idesc("For recently_played: Unix ms cursor (after this timestamp)"), "before": _idesc("For recently_played: Unix ms cursor (before this timestamp)"),
+})
+SPOTIFY_DEVICES_SCHEMA = _schema("spotify_devices", "List Spotify Connect devices or transfer playback to a different device.",
+                                 {"action": _enum("list", "transfer"), "device_id": COMMON_STRING, "play": _BOOL})
+SPOTIFY_QUEUE_SCHEMA = _schema("spotify_queue", "Inspect the user's Spotify queue or add an item to it.", {"action": _enum("get", "add"), **_strs("uri", "device_id")})
+SPOTIFY_SEARCH_SCHEMA = _schema(
+    "spotify_search", "Search the Spotify catalog for tracks, albums, artists, playlists, shows, or episodes.",
+    {"query": COMMON_STRING, "types": _STR_ARRAY, "type": COMMON_STRING, "limit": _INT, "offset": _INT, **_strs("market", "include_external")}, ("query",),
+)
+SPOTIFY_PLAYLISTS_SCHEMA = _schema("spotify_playlists", "List, inspect, create, update, and modify Spotify playlists.", {
+    "action": _enum("list", "get", "create", "add_items", "remove_items", "update_details"),
+    **_strs("playlist_id", "market"), "limit": _INT, "offset": _INT, **_strs("name", "description"),
+    "public": _BOOL, "collaborative": _BOOL, "uris": _STR_ARRAY, "position": _INT, "snapshot_id": COMMON_STRING})
+SPOTIFY_ALBUMS_SCHEMA = _schema("spotify_albums", "Fetch Spotify album metadata or album tracks.",
+                                {"action": _enum("get", "tracks"), **_strs("album_id", "id", "market"), "limit": _INT, "offset": _INT})
+SPOTIFY_LIBRARY_SCHEMA = _schema("spotify_library", "List, save, or remove the user's saved Spotify tracks or albums. Use `kind` to select which.", {
+    "kind": {"type": "string", "enum": ["tracks", "albums"], "description": "Which library to operate on"},
+    "action": _enum("list", "save", "remove"),
+    "limit": _INT, "offset": _INT, "market": COMMON_STRING, "uris": _STR_ARRAY, "ids": _STR_ARRAY, "items": _STR_ARRAY,
+}, ("kind", "action"))
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'SpotifyAPIError': ('plugins.spotify.client', 'SpotifyAPIError'),
+    'SpotifyAuthRequiredError': ('plugins.spotify.client', 'SpotifyAuthRequiredError'),
 }
 
-SPOTIFY_DEVICES_SCHEMA = {
-    "name": "spotify_devices",
-    "description": "List Spotify Connect devices or transfer playback to a different device.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "action": {"type": "string", "enum": ["list", "transfer"]},
-            "device_id": COMMON_STRING,
-            "play": {"type": "boolean"},
-        },
-        "required": ["action"],
-    },
-}
 
-SPOTIFY_QUEUE_SCHEMA = {
-    "name": "spotify_queue",
-    "description": "Inspect the user's Spotify queue or add an item to it.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "action": {"type": "string", "enum": ["get", "add"]},
-            "uri": COMMON_STRING,
-            "device_id": COMMON_STRING,
-        },
-        "required": ["action"],
-    },
-}
-
-SPOTIFY_SEARCH_SCHEMA = {
-    "name": "spotify_search",
-    "description": "Search the Spotify catalog for tracks, albums, artists, playlists, shows, or episodes.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": COMMON_STRING,
-            "types": {"type": "array", "items": COMMON_STRING},
-            "type": COMMON_STRING,
-            "limit": {"type": "integer"},
-            "offset": {"type": "integer"},
-            "market": COMMON_STRING,
-            "include_external": COMMON_STRING,
-        },
-        "required": ["query"],
-    },
-}
-
-SPOTIFY_PLAYLISTS_SCHEMA = {
-    "name": "spotify_playlists",
-    "description": "List, inspect, create, update, and modify Spotify playlists.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "action": {"type": "string", "enum": ["list", "get", "create", "add_items", "remove_items", "update_details"]},
-            "playlist_id": COMMON_STRING,
-            "market": COMMON_STRING,
-            "limit": {"type": "integer"},
-            "offset": {"type": "integer"},
-            "name": COMMON_STRING,
-            "description": COMMON_STRING,
-            "public": {"type": "boolean"},
-            "collaborative": {"type": "boolean"},
-            "uris": {"type": "array", "items": COMMON_STRING},
-            "position": {"type": "integer"},
-            "snapshot_id": COMMON_STRING,
-        },
-        "required": ["action"],
-    },
-}
-
-SPOTIFY_ALBUMS_SCHEMA = {
-    "name": "spotify_albums",
-    "description": "Fetch Spotify album metadata or album tracks.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "action": {"type": "string", "enum": ["get", "tracks"]},
-            "album_id": COMMON_STRING,
-            "id": COMMON_STRING,
-            "market": COMMON_STRING,
-            "limit": {"type": "integer"},
-            "offset": {"type": "integer"},
-        },
-        "required": ["action"],
-    },
-}
-
-SPOTIFY_LIBRARY_SCHEMA = {
-    "name": "spotify_library",
-    "description": "List, save, or remove the user's saved Spotify tracks or albums. Use `kind` to select which.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "kind": {"type": "string", "enum": ["tracks", "albums"], "description": "Which library to operate on"},
-            "action": {"type": "string", "enum": ["list", "save", "remove"]},
-            "limit": {"type": "integer"},
-            "offset": {"type": "integer"},
-            "market": COMMON_STRING,
-            "uris": {"type": "array", "items": COMMON_STRING},
-            "ids": {"type": "array", "items": COMMON_STRING},
-            "items": {"type": "array", "items": COMMON_STRING},
-        },
-        "required": ["kind", "action"],
-    },
-}
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

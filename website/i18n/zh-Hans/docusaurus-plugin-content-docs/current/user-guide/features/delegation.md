@@ -6,15 +6,22 @@ description: "使用 delegate_task 为并行工作流生成隔离的子智能体
 
 # 子智能体委派
 
-`delegate_task` 工具会生成具有隔离上下文、受限工具集和独立终端会话的子 AIAgent 实例。每个子智能体获得全新的对话并独立运行——只有其最终摘要会进入父智能体的上下文。
+`delegate_task` 工具会生成具有隔离上下文、继承工具访问权限和独立终端会话的子 AIAgent 实例。每个子智能体获得全新的对话并独立运行——只有其最终摘要会进入父智能体的上下文。
+
+顶层模型调用会自动在后台运行。Hermes 会立即返回句柄，使对话可以继续，并在任务完成后将结果作为新消息发送回来。编排者子智能体会等待自己的工作线程完成，以便在返回前综合结果。
+
+## 后台进程的生命周期
+
+后台终端进程属于启动它的智能体。委派结束并关闭子智能体时，系统会终止它仍在运行的进程，包括先前轮次启动的任务，但不会停止父智能体或其他子智能体拥有的进程。共享终端环境并不意味着共享进程所有权。
+
+子智能体应等待构建、测试等有明确结束条件的后台命令完成，再返回最终摘要。如果 CI 监视器或服务器需要在子智能体结束后继续运行，应由父会话启动；返回进程 ID 不会将所有权转移给父智能体。
 
 ## 单任务
 
 ```python
 delegate_task(
     goal="Debug why tests fail",
-    context="Error: assertion in test_foo.py line 42",
-    toolsets=["terminal", "file"]
+    context="Error: assertion in test_foo.py line 42"
 )
 ```
 
@@ -24,9 +31,9 @@ delegate_task(
 
 ```python
 delegate_task(tasks=[
-    {"goal": "Research topic A", "toolsets": ["web"]},
-    {"goal": "Research topic B", "toolsets": ["web"]},
-    {"goal": "Fix the build", "toolsets": ["terminal", "file"]}
+    {"goal": "Research topic A", "context": "Focus on recent primary sources"},
+    {"goal": "Research topic B", "context": "Compare the leading explanations"},
+    {"goal": "Fix the build", "context": "Project root: /home/user/project"}
 ])
 ```
 
@@ -35,6 +42,8 @@ delegate_task(tasks=[
 :::warning 关键：子智能体一无所知
 子智能体以**全新对话**启动。它们对父智能体的对话历史、之前的工具调用或委派前讨论的任何内容一无所知。子智能体的唯一上下文来自父智能体调用 `delegate_task` 时填写的 `goal` 和 `context` 字段。
 :::
+
+唯一例外：当父智能体有已解析的工作区目录时，每个子智能体的系统提示都会嵌入该工作区的**项目上下文文件**（`.hermes.md` > AGENTS.md 链 > CLAUDE.md > `.cursorrules`——与主智能体系统提示相同的发现逻辑、优先级和大小上限；SOUL.md 除外）。在仓库中工作的子智能体无需重新发现即可遵循仓库自身的约定。
 
 这意味着父智能体必须在调用中传递子智能体所需的**一切**信息：
 
@@ -65,18 +74,15 @@ delegate_task(
 delegate_task(tasks=[
     {
         "goal": "Research the current state of WebAssembly in 2025",
-        "context": "Focus on: browser support, non-browser runtimes, language support",
-        "toolsets": ["web"]
+        "context": "Focus on: browser support, non-browser runtimes, language support"
     },
     {
         "goal": "Research the current state of RISC-V adoption in 2025",
-        "context": "Focus on: server chips, embedded systems, software ecosystem",
-        "toolsets": ["web"]
+        "context": "Focus on: server chips, embedded systems, software ecosystem"
     },
     {
         "goal": "Research quantum computing progress in 2025",
-        "context": "Focus on: error correction breakthroughs, practical applications, key players",
-        "toolsets": ["web"]
+        "context": "Focus on: error correction breakthroughs, practical applications, key players"
     }
 ])
 ```
@@ -92,8 +98,7 @@ delegate_task(
     Auth module files: src/auth/login.py, src/auth/jwt.py, src/auth/middleware.py.
     The project uses Flask, PyJWT, and bcrypt.
     Focus on: SQL injection, JWT validation, password handling, session management.
-    Fix any issues found and run the test suite (pytest tests/auth/).""",
-    toolsets=["terminal", "file"]
+    Fix any issues found and run the test suite (pytest tests/auth/)."""
 )
 ```
 
@@ -112,22 +117,21 @@ delegate_task(
     - print(f"Debug: ...") -> logger.debug(...)
     - Other prints -> logger.info(...)
     Don't change print() in test files or CLI output.
-    Run pytest after to verify nothing broke.""",
-    toolsets=["terminal", "file"]
+    Run pytest after to verify nothing broke."""
 )
 ```
 
 ## 批处理模式详情
 
-当你提供 `tasks` 数组时，子智能体会使用线程池**并行**运行：
+当顶层智能体提供 `tasks` 数组时，Hermes 会返回一个后台句柄，并行运行所有子智能体，并在每个子智能体完成后发送一条汇总结果。编排者子智能体则会在当前轮次中等待批处理完成，以便综合结果。
 
 - **最大并发数：** 默认 3 个任务（可通过 `delegation.max_concurrent_children` 或环境变量 `DELEGATION_MAX_CONCURRENT_CHILDREN` 配置；最低为 1，无硬性上限）。超出限制的批次会返回工具错误，而不是被静默截断。
 - **线程池：** 使用 `ThreadPoolExecutor`，以配置的并发限制作为最大工作线程数
 - **进度显示：** 在 CLI 模式下，树形视图会实时显示每个子智能体的工具调用，并附带每个任务的完成行。在 gateway 模式下，进度会被批量汇总并转发给父智能体的进度回调
 - **结果排序：** 结果按任务索引排序，与输入顺序一致，不受完成顺序影响
-- **中断传播：** 中断父智能体（例如发送新消息）会中断所有活跃的子智能体
+- **取消：** 后续消息不会取消顶层后台批处理。`/stop` 或关闭/重置所属会话会取消其活跃子智能体。同步编排者的子智能体仍会跟随其父智能体的中断状态
 
-单任务委派直接运行，不会产生线程池开销。
+编排者发起的同步单任务委派会直接运行，不会产生线程池开销。
 
 ### 持久化后台完成事件
 
@@ -148,19 +152,61 @@ delegation:
 
 如果省略，子智能体将使用与父智能体相同的模型。
 
-## 工具集选择建议
+### 成本策略：前沿模型规划，低价模型执行
 
-`toolsets` 参数控制子智能体可以访问的工具。根据任务选择：
+将问题分解为规格清晰的子任务需要前沿模型级别的判断力；而执行一个已经带有明确目标、完整上下文和输出约定的子任务通常不需要。与此同时，token 消耗主要发生在子智能体身上——并行批量子智能体通常消耗一次运行中绝大多数的 token，因此成本真正落在 worker 模型上。将 `delegation.model` 固定为低价模型、同时主会话保持前沿模型，可以把规划质量留在最需要的地方，并在消耗量最大的地方削减开支：
 
-| 工具集模式 | 使用场景 |
-|----------------|----------|
-| `["terminal", "file"]` | 代码工作、调试、文件编辑、构建 |
-| `["web"]` | 研究、事实核查、文档查阅 |
-| `["terminal", "file", "web"]` | 全栈任务（默认） |
-| `["file"]` | 只读分析、无需执行的代码审查 |
-| `["terminal"]` | 系统管理、进程管理 |
+```yaml
+# ~/.hermes/config.yaml
+model:
+  default: "your-frontier-model"     # 父智能体（规划者）保持前沿模型
+delegation:
+  model: "your-inexpensive-model"    # 所有 delegate_task 子智能体运行此模型
+  provider: "openrouter"             # 可选：将子智能体路由到不同的提供商
+```
 
-无论你指定什么，某些工具集对子智能体始终被屏蔽：
+解析顺序：`delegation.base_url`（直连端点）优先，其次是 `delegation.provider`（通过运行时提供商系统解析完整凭证包）；两者都未设置时，子智能体继承父智能体的提供商和凭证。`delegation.model` 在所有情况下生效，为空时子智能体继承父智能体的模型。
+
+注意此固定是全局的：`delegate_task` 没有按任务指定模型的参数，批处理中的每个子智能体都运行配置的委派模型。对于需要更强模型的质量敏感型子任务，可以在该会话中不设置 `delegation.model`，或者将任务交给[看板](kanban.md)——看板支持按任务覆盖模型。
+
+## `/review` 命令
+
+`/review` 会派生一个独立的、拥有完整工具权限的后台评审子智能体，专门评审对话刚刚产出的工作——PR、diff、代码、文档、设计。它在所有界面均可用：CLI、TUI、桌面应用以及所有网关消息平台。
+
+```
+/review                       # 评审最近 10 条消息中呈现的工作
+/review 重点关注安全性          # 为评审者附加额外指示
+```
+
+工作流程：
+
+1. 最近 10 条用户/助手消息被快照为评审者的起始证据（工具输出和系统消息被排除）。
+2. 评审子智能体在与 `delegate_task` 相同的后台委派通道上派发——它拥有完整的常规子智能体工具集（终端、网络、文件、浏览器等），因此会实际打开 PR、阅读 diff、运行代码，而不是仅凭摘录下判断。
+3. 评审者继承主智能体的工作上下文：主智能体已加载的技能（启动预加载或会话中通过 `skill_view` 加载）会列在其简报中，并指示其加载这些技能、以其约定为标准评判工作。与所有子智能体一样，其系统提示也会嵌入工作区的项目上下文文件（AGENTS.md / CLAUDE.md / .cursorrules）作为具有约束力的约定。
+4. 完成后，完整评审作为常规后台子智能体完成事件重新进入同一会话——你的主智能体可以看到并据此行动（修复问题、推送后续提交、回复你）。
+
+典型流程：主智能体开了一个 PR，你输入 `/review`，第二双眼睛在你继续工作的同时对其进行调查；评审结果回到聊天中，交给创建该 PR 的智能体。
+
+### 评审模型
+
+默认情况下评审者运行在你的主模型上。要固定专用评审模型，请在 `config.yaml` 中设置 `auxiliary.review`：
+
+```yaml
+auxiliary:
+  review:
+    provider: openrouter               # 或 nous、anthropic、直连 base_url 等
+    model: anthropic/claude-opus-4.6   # 一个强力的评审模型
+```
+
+凭证解析方式与 `delegation.provider` 固定完全相同（完整运行时提供商凭证包：base_url、API 密钥、api_mode）。`provider: auto` 加空 `model` 表示"继承主智能体的模型"——这是默认值。
+
+`/review` 与 `/refine` 刻意分开：`/refine` 评审对话本身以更新记忆和技能，`/review` 评审对话产出的*工作成果*。
+
+## 继承的工具访问权限
+
+`delegate_task` 不接受面向模型的 `toolsets` 参数。每个子智能体都会继承父智能体已启用的工具集，因此模型无法授予子智能体父智能体本身没有的能力。如果委派任务需要其他能力，请在开始对话前配置父智能体的工具。
+
+即使父智能体拥有某些工具，以下工具仍会对子智能体屏蔽：
 - `delegation` — 对叶子子智能体屏蔽（默认）。`role="orchestrator"` 的子智能体可保留，受 `max_spawn_depth` 约束——参见下方[深度限制与嵌套编排](#depth-limit-and-nested-orchestration)。
 - `clarify` — 子智能体无法与用户交互
 - `memory` — 不可写入共享持久内存
@@ -208,7 +254,17 @@ TUI 提供 `/agents` 浮层（别名 `/tasks`），将递归 `delegate_task` 扇
 - 终止和暂停控制——可在不中断其兄弟智能体的情况下取消特定子智能体
 - 事后回顾：即使子智能体已返回父智能体，也可逐轮查看其历史记录
 
-经典 CLI 仅将 `/agents` 打印为文本摘要；TUI 才是浮层真正发挥作用的地方。参见 [TUI — 斜杠命令](/user-guide/tui#slash-commands)。
+经典 CLI、TUI 和 Desktop 会在输入框上方自动显示正在运行的子智能体，包括总数、任务名称、已运行时间和最近活动。终端根据屏幕高度限制可见行数，并显示隐藏数量；Desktop 最多预览三个工作者。
+
+- **经典 CLI：F6** 打开全屏实时列表；方向键选择，**Enter** 查看近期日志，**PgUp/PgDn** 滚动，**s** 输入引导，**x** 后按 **y** 确认停止。关闭后保留原有输入草稿。
+- **TUI：Ctrl+T** 或 `/agents` 打开完整树状列表；**Enter/t** 查看实时日志，**d** 查看详情（历史回放中 Enter 仍打开详情），**e** 输入引导，**x** 停止选中的工作者，**X** 停止其子树。
+- **Desktop：** 展开输入框上方的 **Subagents**，选择工作者查看详情并使用 **Steer** / **Stop**。
+
+引导的“已排队”确认不代表子智能体已经读取；它会在检查点接收。日志预览只包含有大小限制的近期内容。工作者结束后离开实时列表，完成消息和已有历史视图仍可用于回顾。
+
+在经典 CLI 和 TUI 中按 **F7**，可将实时栏折叠为单行摘要，再按一次恢复多行预览。单行保留运行数量和展开/恢复提示，空间允许时显示活动。输入和发送不受影响；关闭监视器后保留草稿及光标位置。此选项不写入配置。
+
+经典 CLI 的 `/agents` 和 `/tasks` 仍打印文本摘要；父智能体忙碌时可直接按 **F6** 打开交互式监视器。参见 [TUI — 斜杠命令](/user-guide/tui#slash-commands)。
 
 ## 深度限制与嵌套编排 {#depth-limit-and-nested-orchestration}
 
@@ -233,9 +289,9 @@ delegate_task(
 ## 生命周期与持久性
 
 :::warning 后台完成事件持久化并不等于执行持久化
-默认情况下，`delegate_task` 在**父智能体的当前轮次内**运行，并阻塞到所有子智能体完成。使用 `background=true` 时，只要所属会话和 Hermes 进程仍然存活，子智能体可以在该轮次返回后继续运行：
+在会话支持稍后交付结果时，顶层面向模型的 `delegate_task` 调用会自动在后台运行。Hermes 会立即返回句柄，并在子智能体或批处理完成后将结果重新发送到对话中。编排者子智能体会在当前轮次中等待自己的工作线程，因为它们必须在返回前综合这些结果。无法稍后交付分离结果的无状态请求/响应端点会回退到同步执行。
 
-- 如果父智能体被中断（用户发送新消息、`/stop`、`/new`），所有活跃的子智能体都会被取消并返回 `status="interrupted"`。其进行中的工作将被丢弃。
+- 普通后续消息不会取消后台子智能体。`/stop` 会取消运行中的后台委派，关闭或重置所属会话会丢弃其活跃子智能体。
 - 显式关闭或重置会话会中断该会话的后台子智能体。关闭由 TUI 查看、但由网关拥有的会话不会终止网关自己的后台工作。
 - Hermes 进程重启后不会恢复仍在运行的子智能体；该尝试会变为 `unknown`，因为 Hermes 无法证明哪些外部副作用已经发生。
 - 如果子智能体在重启前已经完成、但结果尚未交付，该完成事件会被恢复，并重新经过所属会话的正常路由检查。
@@ -250,9 +306,10 @@ delegate_task(
 ## 关键特性
 
 - 每个子智能体获得其**独立的终端会话**（与父智能体分离）
+- 子智能体继承父智能体已启用的工具集；模型无法按调用选择或扩大这些工具集
 - **嵌套委派为可选项**——只有 `role="orchestrator"` 的子智能体可以进一步委派，且仅在 `max_spawn_depth` 从默认值 1（扁平）提高后才生效。可通过 `orchestrator_enabled: false` 全局禁用。
 - 叶子子智能体**不能**调用：`delegate_task`、`clarify`、`memory`、`send_message`、`execute_code`。编排者子智能体保留 `delegate_task`，但仍不能使用其他四个。
-- **中断传播**——中断父智能体会中断所有活跃的子智能体（包括编排者下的孙智能体）
+- **取消遵循所有权**——`/stop` 或关闭/重置所属会话会取消其后台子智能体；编排者下的同步后代会跟随父智能体的中断状态
 - 只有最终摘要进入父智能体的上下文，保持 token 使用高效
 - 子智能体继承父智能体的 **API 密钥、provider 配置和凭据池**（支持在速率限制时轮换密钥）
 

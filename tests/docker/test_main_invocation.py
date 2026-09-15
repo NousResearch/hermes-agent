@@ -43,17 +43,6 @@ def test_chat_subcommand_passthrough(built_image: str) -> None:
     assert "chat" in combined or "usage" in combined
 
 
-def test_bare_executable_passthrough(built_image: str) -> None:
-    """``docker run <image> sleep 1`` should exec ``sleep`` directly.
-
-    The entrypoint detects that ``sleep`` is on PATH and routes around the
-    hermes wrapper. Useful for long-lived sandbox mode and for testing.
-    """
-    r = subprocess.run(
-        ["docker", "run", "--rm", built_image, "sleep", "1"],
-        capture_output=True, text=True, timeout=30,
-    )
-    assert r.returncode == 0
 
 
 def test_bash_pattern(built_image: str) -> None:

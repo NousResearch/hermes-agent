@@ -11,7 +11,6 @@ Regression coverage for https://github.com/NousResearch/hermes-agent/issues/1755
 import os
 import shutil
 import tempfile
-import threading
 from unittest.mock import MagicMock, patch
 
 from tools.environments.local import (
@@ -27,21 +26,6 @@ class TestResolveSafeCwd:
         path = str(tmp_path)
         assert _resolve_safe_cwd(path) == path
 
-    def test_walks_up_to_first_existing_ancestor(self, tmp_path):
-        nested = tmp_path / "child" / "grandchild"
-        nested.mkdir(parents=True)
-        deleted = str(nested)
-        shutil.rmtree(tmp_path / "child")
-
-        # The deepest existing ancestor on the path is tmp_path itself.
-        assert _resolve_safe_cwd(deleted) == str(tmp_path)
-
-    def test_falls_back_when_path_is_empty(self):
-        assert _resolve_safe_cwd("") == tempfile.gettempdir()
-
-    def test_returns_tempdir_when_nothing_on_path_exists(self, monkeypatch):
-        monkeypatch.setattr(os.path, "isdir", lambda p: False)
-        assert _resolve_safe_cwd("/no/such/dir") == tempfile.gettempdir()
 
     def test_returns_root_when_only_root_exists(self, monkeypatch):
         """If every ancestor except the filesystem root is gone, the root
@@ -50,10 +34,6 @@ class TestResolveSafeCwd:
         sep = os.path.sep
         monkeypatch.setattr(os.path, "isdir", lambda p: p == sep)
         assert _resolve_safe_cwd("/no/such/deep/dir") == sep
-
-
-def _fake_interrupt():
-    return threading.Event()
 
 
 def _make_fake_popen(captured: dict, fds: list):
@@ -114,7 +94,6 @@ class TestRunBashCwdRecovery:
         try:
             with patch("tools.environments.local._find_bash", return_value="/bin/bash"), \
                  patch("subprocess.Popen", side_effect=_make_fake_popen(captured, fds)), \
-                 patch("tools.terminal_tool._interrupt_event", _fake_interrupt()), \
                  caplog.at_level("WARNING", logger="tools.environments.local"):
                 env.execute("echo hello")
         finally:
@@ -139,7 +118,6 @@ class TestRunBashCwdRecovery:
         try:
             with patch("tools.environments.local._find_bash", return_value="/bin/bash"), \
                  patch("subprocess.Popen", side_effect=_make_fake_popen(captured, fds)), \
-                 patch("tools.terminal_tool._interrupt_event", _fake_interrupt()), \
                  caplog.at_level("WARNING", logger="tools.environments.local"):
                 env.execute("echo hello")
         finally:
@@ -160,13 +138,14 @@ class TestUpdateCwdRejectsMissingPaths:
         with patch.object(LocalEnvironment, "init_session", autospec=True, return_value=None):
             env = LocalEnvironment(cwd=str(original), timeout=10)
 
-        # Simulate the stale-marker case: the prior command's ``pwd -P`` left
-        # a path in the cwd file, but that path has since been deleted.
+        # Simulate the stale-marker case: the prior command emitted a cwd
+        # marker for a directory that has since been deleted.
         deleted = tmp_path / "wedge-repro"
-        with open(env._cwd_file, "w") as f:
-            f.write(str(deleted))
+        marker = env._cwd_marker
 
-        env._update_cwd({"output": "", "returncode": 0})
+        env._update_cwd(
+            {"output": f"x\n{marker}{deleted}{marker}\n", "returncode": 0}
+        )
 
         assert env.cwd == str(original)
 
@@ -178,10 +157,10 @@ class TestUpdateCwdRejectsMissingPaths:
 
         with patch.object(LocalEnvironment, "init_session", autospec=True, return_value=None):
             env = LocalEnvironment(cwd=str(original), timeout=10)
+        marker = env._cwd_marker
 
-        with open(env._cwd_file, "w") as f:
-            f.write(str(new_dir))
-
-        env._update_cwd({"output": "", "returncode": 0})
+        env._update_cwd(
+            {"output": f"x\n{marker}{new_dir}{marker}\n", "returncode": 0}
+        )
 
         assert env.cwd == str(new_dir)

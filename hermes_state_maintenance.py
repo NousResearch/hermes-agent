@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_state_common import (
-    AUTO_VACUUM_MIN_FREELIST_RATIO, _placeholders, _sql_session_last_active, escape_like as _escape_like
+    AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _placeholders, _sql_session_last_active, escape_like as _escape_like
 )
+from hermes_startup_watchdog import report_startup_progress
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -95,8 +96,9 @@ class SessionMaintenanceMixin:
                       SELECT 1 FROM messages WHERE messages.session_id = sessions.id
                   )
             """, (cutoff,)).fetchall()]
+            for chunk in _id_chunks(ids):
+                conn.execute(f"DELETE FROM sessions WHERE id IN ({_placeholders(chunk)})", chunk)
             if ids:
-                conn.execute(f"DELETE FROM sessions WHERE id IN ({_placeholders(ids)})", ids)
                 self._delete_unreferenced_system_prompts(conn)
             return ids
         removed_ids = self._execute_write(_do) or []
@@ -245,7 +247,9 @@ class SessionMaintenanceMixin:
         latest message / ``started_at``); may archive unended sessions.  ``archived = 0`` makes
         repeats no-ops; only lineage tips (``end_reason <> 'compression'``) are candidates — a
         stale tip archives its chain via :meth:`set_session_archived`, so an old compressed-away
-        root with a recent continuation is never matched."""
+        root with a recent continuation is never matched.  The hidden canonical Bot Chat (same
+        predicate as :meth:`set_session_pinned`) is exempt: only a deliberate archive may retire
+        it, since archiving releases its registry title to the next Bot open."""
         if idle_days is None or idle_days < 0:
             return 0
         cutoff = time.time() - float(idle_days) * 86400.0
@@ -256,9 +260,10 @@ class SessionMaintenanceMixin:
             WHERE s.archived = 0
               AND COALESCE(s.end_reason, '') <> 'compression'
               {pin_clause}
+              AND NOT (COALESCE(s.hidden, 0) <> 0 AND COALESCE(s.title, '') = ?)
               AND {_sql_session_last_active("s")} < ?
             ORDER BY s.started_at ASC
-            """, (cutoff,))
+            """, (self.CANONICAL_BOT_CHAT_TITLE, cutoff))
         for row in rows:
             self.set_session_archived(row[0], True)
         return len(rows)
@@ -282,12 +287,13 @@ class SessionMaintenanceMixin:
                                 if self._write_guards_reject(conn, sid, allow_closed_compression_parent=True)}
             if not session_ids:
                 return 0
-            conn.execute(f"UPDATE sessions SET parent_session_id = NULL "
-                         f"WHERE parent_session_id IN ({_placeholders(session_ids)})", list(session_ids))
-            for sid in session_ids:
-                conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
-                conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
-                removed_ids.append(sid)
+            # Batched: a cron-heavy store prunes tens of thousands of ids in one call.
+            for chunk in _id_chunks(session_ids):
+                ph = _placeholders(chunk)
+                conn.execute(f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk)
+                conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
+                conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
+                removed_ids.extend(chunk)
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
         count = self._execute_write(_do)
@@ -395,8 +401,14 @@ class SessionMaintenanceMixin:
                 result["skipped"] = True
                 return result
             # Prune first: orphans closed below get a full retention window.
+            # Startup-watchdog leases: each long step is I/O-bound (near-zero CPU), which the
+            # watchdog's CPU fallback misreads as a parked deadlock. Leases are clamped to
+            # _MAX_LEASE_S=900 per call, so a multi-minute step renews per step rather than
+            # once at entry. No-op when the watchdog is not armed; never raises.
+            report_startup_progress(900.0, phase="state_db_auto_prune")
             result["pruned"] = pruned = self.prune_sessions(
                 older_than_days=retention_days, sessions_dir=sessions_dir, exclude_active_write_guards=True)
+            report_startup_progress(900.0, phase="state_db_auto_sweep")
             closed = self.sweep_orphaned_sessions(
                 max_idle_seconds=float(retention_days) * 86400.0,
                 sources=self._AUTO_PRUNE_STALE_OPEN_SOURCES, exclude_pinned=True,
@@ -411,6 +423,9 @@ class SessionMaintenanceMixin:
                 result["freelist_ratio"] = ratio = self._freelist_ratio()
                 if ratio is None or ratio > min_vacuum_freelist_ratio:
                     try:
+                        # VACUUM rewrites every page with ~zero CPU: renew the lease here so
+                        # a multi-minute rewrite on a large state.db never outlives the clamp.
+                        report_startup_progress(900.0, phase="state_db_auto_vacuum")
                         self.vacuum()
                         result["vacuumed"] = True
                         self.set_meta("last_vacuum", str(now))

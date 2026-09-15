@@ -437,6 +437,31 @@ def _nous_picker_model_ids(curated: dict, force_fresh_nous_tier: bool) -> list:
     return model_ids
 
 
+def _free_tier_nous_row(row: dict) -> dict | None:
+    """The one free-tier rule for a Nous picker row, shared by every row builder.
+
+    ``row`` carries at least ``name`` and ``models``. A guest identity carrying inference turns
+    it into "Nous · free tier" with the single model ``nous/welcome`` (the welcome host serves
+    nothing else). A guest that ``nous.guest: false`` has switched off yields ``None``: no Nous
+    row at all, since there is nothing selectable. A real account (or no Nous state) passes the
+    row through untouched. Builders that compute the full catalog lazily should pass
+    ``models=[]`` and only compute when the returned row still has no models."""
+    from hermes_cli import anon_auth
+    if not anon_auth.has_guest():
+        return row
+    if not anon_auth.guest_enabled():
+        return None
+    out = dict(row)
+    out["name"] = anon_auth.FREE_TIER_LABEL
+    out["models"] = [anon_auth.GUEST_MODEL]
+    out["total_models"] = 1
+    # The explicit flag every consumer keys on (pricing, badges): never the display name. It also
+    # tells the picker this is the free tier's identity, distinct from ``free_tier`` (an account on
+    # the free plan) which pricing sets from the Portal's entitlement read.
+    out["free_tier_row"] = True
+    return out
+
+
 def _cap_models(model_ids: list, max_models: int | None, slug: str = "") -> list:
     """Apply ``max_models``; aggregators in ``_UNCAPPED_PICKER_PROVIDERS`` show everything."""
     if slug in _UNCAPPED_PICKER_PROVIDERS or max_models is None:
@@ -653,10 +678,16 @@ class _PickerBuild:
     def add_builtin_row(
         self, slug: str, name: str, is_current: bool, model_ids: list, source: str, *, uncapped_ok: bool = True,
     ) -> None:
-        self.results.append({
+        row = {
             "slug": slug, "name": name, "is_current": is_current, "is_user_defined": False,
             "models": _cap_models(model_ids, self.max_models, slug if uncapped_ok else ""),
-            "total_models": len(model_ids), "source": source})
+            "total_models": len(model_ids), "source": source}
+        if slug == "nous":
+            # Free-tier identity: one row "Nous · free tier" / nous/welcome, or no row when
+            # nous.guest is off. Still marks the slug seen so a later lap cannot re-emit it.
+            row = _free_tier_nous_row(row)
+        if row is not None:
+            self.results.append(row)
         self.seen_slugs.add(slug.lower())
         self.record_builtin_endpoint(slug)
 
@@ -708,10 +739,12 @@ class _PickerBuild:
 
 def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None:
     """Section 1: models.dev-mapped providers with api_key auth."""
-    from hermes_cli.model_switch import _declared_model_ids
+    from hermes_cli.model_switch import _declared_model_ids, _scoped_key_env
     from agent.models_dev import get_provider_info
     for hermes_id, mdev_id, pconfig, env_vars in _iter_builtin_candidates(data, b.excluded, b.seen_slugs):
-        if not (_any_env(env_vars) or _raw_pool_usable(hermes_id)):
+        # Per-profile scope, never raw os.environ: a secondary profile's picker otherwise listed the
+        # LAUNCH profile's env-keyed providers and hid its own .env-keyed ones.
+        if not (_any_env(env_vars, _scoped_key_env) or _raw_pool_usable(hermes_id)):
             continue
         model_ids = _live_or_curated_ids(hermes_id, b.curated)
         # A providers.<built-in>.models block extends the discovered catalog; section 3 cannot
@@ -733,7 +766,8 @@ def _overlay_has_creds(b: _PickerBuild, pid: str, hermes_slug: str, overlay) -> 
     if overlay.auth_type == "aws_sdk":
         has_creds = _has_aws_sdk_creds_for_listing(hermes_slug, b.current_provider)
     else:
-        has_creds = _overlay_has_env_creds(pid, hermes_slug, overlay, os.environ.get)
+        from hermes_cli.model_switch import _scoped_key_env
+        has_creds = _overlay_has_env_creds(pid, hermes_slug, overlay, _scoped_key_env)
     # External-process providers (copilot-acp) hold no key/token/pool entry by design — the
     # spawned ACP subprocess brings its own auth. "Configured" means the executable resolves.
     # "Configured" means the executable resolves, which is exactly what get_auth_status() reports for them;
@@ -801,7 +835,11 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict) -> None:
         elif overlay.auth_type == "aws_sdk":
             model_ids = _aws_live_or_curated_ids(hermes_slug, b.curated, hermes_slug, pid)
         elif hermes_slug == "nous":
-            model_ids = _nous_picker_model_ids(b.curated, b.force_fresh_nous_tier)
+            # A guest identity never needs the Portal catalog: add_builtin_row pins nous/welcome
+            # (or drops the row when nous.guest is off), so only a real account fetches.
+            tier_row = _free_tier_nous_row({"name": get_label(hermes_slug), "models": []})
+            real_account = tier_row is not None and not tier_row["models"]
+            model_ids = _nous_picker_model_ids(b.curated, b.force_fresh_nous_tier) if real_account else []
         else:
             model_ids = _live_or_curated_ids(hermes_slug, b.curated, hermes_slug, pid)
         b.add_builtin_row(

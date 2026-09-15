@@ -25,6 +25,7 @@ from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.image_token_cost import bind_image_token_cost
 from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
+from agent.turn_author import parse_turn_author
 
 logger = logging.getLogger(__name__)
 
@@ -507,6 +508,11 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
     _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
     if callable(_reset_consol):
         _reset_consol()
+    # Expiry clock for build_api_messages: admission time (not the input's platform-event
+    # stamp, which can predate admission by minutes), frozen so every request this turn
+    # sends identical bytes. Distinct from note_turn_start's _inflight_turn_started, a
+    # tripwire slot cleared at persist.
+    agent._current_turn_timestamp = time.time()
 
     # Pre-turn connection health check: clean up dead TCP connections.
     if agent.api_mode != "anthropic_messages":
@@ -661,6 +667,8 @@ def _collect_pre_llm_call_context(
     """Run ``pre_llm_call`` plugins; their context is injected into the user message
     (never the system prompt). Oversized per-hook context is spilled to disk so a
     runaway plugin can't inflate every subsequent turn's prompt."""
+    if getattr(agent, "_persist_disabled", False):
+        return ""
     try:
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
         _pre_results = _invoke_hook(
@@ -751,15 +759,23 @@ def _bind_interrupt_scope(agent: Any, ra) -> None:
     agent._interrupt_thread_signal_pending = False
 
 
-def _memory_turn_start_and_prefetch(agent: Any, original_user_message: Any) -> str:
+def _memory_turn_start_and_prefetch(
+    agent: Any, original_user_message: Any, turn_author: Optional[Dict[str, Any]] = None,
+) -> str:
     """Notify memory providers of the new turn, then prefetch external memory once
     before the tool loop (skipped on trivial prompts with no semantic signal).
     Returns the prefetch text (``""`` when nothing was injected)."""
     if not agent._memory_manager:
         return ""
     _query = original_user_message if isinstance(original_user_message, str) else ""
+    # The author rides along so a provider can attribute THIS turn, not whoever opened the session.
+    _author = turn_author if isinstance(turn_author, dict) else {}
     with suppress(Exception):
-        agent._memory_manager.on_turn_start(agent._user_turn_count, _query)
+        agent._memory_manager.on_turn_start(
+            agent._user_turn_count, _query,
+            author_id=_author.get("id") or None, author_name=_author.get("name") or None,
+            author_is_bot=bool(_author.get("is_bot")),
+        )
     ext_prefetch_cache = ""
     with suppress(Exception):
         if not is_trivial_prompt(_query):
@@ -843,7 +859,8 @@ def build_turn_context(
     conversation_history: Optional[List[Dict[str, Any]]], task_id: Optional[str], stream_callback,
     persist_user_message: Optional[Any], persist_user_timestamp: Optional[float]=None,
     persist_user_platform_id: Optional[str]=None, *, persist_user_display_kind: Optional[str]=None,
-    persist_user_display_metadata: Optional[Dict[str, Any]]=None, restore_or_build_system_prompt,
+    persist_user_display_metadata: Optional[Dict[str, Any]]=None, turn_author: Optional[Dict[str, Any]]=None,
+    restore_or_build_system_prompt,
     install_safe_stdio, sanitize_surrogates, summarize_user_message_for_log, set_session_context,
     set_current_write_origin, ra, moa_active: bool=False,
 ) -> TurnContext:
@@ -857,6 +874,10 @@ def build_turn_context(
 
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
+
+    # Reset first: a cached gateway agent must never carry the previous turn's bot author into a human turn.
+    turn_author = parse_turn_author(turn_author)
+    agent._turn_author = turn_author
 
     # Recover a rotated session before binding log/turn ids or copying client history so
     # everything in this turn belongs to the canonical child.
@@ -945,6 +966,17 @@ def build_turn_context(
 
     _ensure_session_row(agent, pending_cli_message)
 
+    # A turn interrupted before admission could not write its accepted input because
+    # it did not own the session lease. Persist that carried-forward row now, before
+    # compaction can rewrite or drop it.
+    from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+
+    if conversation_history and any(
+        isinstance(msg, dict) and msg.get(_PERSIST_AFTER_ADMISSION_INTERRUPT)
+        for msg in conversation_history
+    ):
+        agent._flush_messages_to_session_db(conversation_history, conversation_history)
+
     compaction = run_turn_start_compaction(
         agent, messages=messages, system_message=system_message,
         active_system_prompt=active_system_prompt, conversation_history=conversation_history,
@@ -966,7 +998,7 @@ def build_turn_context(
     )
 
     _bind_interrupt_scope(agent, ra)
-    ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message)
+    ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message, turn_author)
 
     # Sidecar skipped for codex_app_server/MoA.
     if (
@@ -1031,9 +1063,26 @@ def build_api_messages(
     replayed verbatim."""
     from agent.agent_runtime_helpers import fill_empty_non_final_wire_payload
     from agent.conversation_loop import _clone_message_for_send
+    from agent.replay_cleanup import canonicalize_replay_history
+
+    has_current = isinstance(current_turn_user_idx, int) and 0 <= current_turn_user_idx < len(messages)
+    current_turn_message = messages[current_turn_user_idx] if has_current else None
+
+    # Replay consumers canonicalize the persisted prefix on read; the request copy must
+    # carry the same bytes or a resume diverges mid-prefix. Only the rows BEFORE this
+    # turn's user message are the replayed prefix — rows this turn appended (its tool
+    # calls/results) are live and must never be rewritten between iterations. The
+    # expiry clock is the turn's admission time, frozen in _reset_per_turn_agent_state.
+    # Without an anchor (compaction found no surviving user row) there is no provable
+    # persisted prefix, so nothing is canonicalized. The clock is stamped once per turn in
+    # _reset_per_turn_agent_state; a caller that skipped the prologue fails loudly here
+    # rather than silently un-freezing it.
+    turn_now = agent._current_turn_timestamp
+    split = current_turn_user_idx if has_current else 0
+    canonical_messages = canonicalize_replay_history(messages[:split], now=turn_now) + messages[split:]
 
     api_messages = []
-    for idx, msg in enumerate(messages):
+    for idx, msg in enumerate(canonical_messages):
         # Structural clone, NOT msg.copy(): in-place transforms below must not reach
         # persisted history via nested containers; see _clone_message_for_send.
         api_msg = _clone_message_for_send(msg)
@@ -1047,7 +1096,7 @@ def build_api_messages(
 
         # Inject ephemeral context (memory prefetch + pre_llm_call user hooks)
         # at API time only; `messages` is untouched beyond the api_content stamp.
-        if idx == current_turn_user_idx and msg.get("role") == "user":
+        if msg is current_turn_message and msg.get("role") == "user":
             if isinstance(_api_content, str) and _api_content:
                 # Reuse the prologue's stamp so sidecar and wire cannot drift
                 # and every pass this turn sends identical bytes.
@@ -1078,7 +1127,7 @@ def build_api_messages(
         # Fill empty non-final user/assistant wire copies so the pre-call sanitizer
         # stops re-healing and flooding errors.log; durable history is untouched.
         # After the reasoning copy so thinking-only turns keep payload.
-        fill_empty_non_final_wire_payload(api_msg, is_final=(idx == len(messages) - 1))
+        fill_empty_non_final_wire_payload(api_msg, is_final=(idx == len(canonical_messages) - 1))
         # _thinking_prefill survives intentionally: the drop pass below needs it.
         # Strip length-continuation marks; some transports keep underscore keys.
         api_msg.pop("_length_continuation_fragment", None)

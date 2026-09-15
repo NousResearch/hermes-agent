@@ -303,6 +303,56 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
         pass
 
 
+def _effective_file_timeout(
+    file: Path,
+    repo_root: Path,
+    file_timeout: float,
+    durations: dict[str, float] | None,
+) -> float:
+    """Scale the per-file timeout for files whose last observed runtime
+    approaches the flat cap.
+
+    The flat ``file_timeout`` (default 300s) is sized for the typical file,
+    but a handful of large-collection files (e.g. ``tests/test_hermes_state.py``,
+    239 tests × subprocess-per-test overhead) legitimately run 200s+ on a
+    quiet runner. Under CI load that dilates past the cap, the file is
+    SIGKILL'd mid-run, and the automatic retry then passes — a manufactured
+    FLAKY report for a file that was never broken (seen 2026-08-18 on main:
+    first attempt killed at 300s, retry passed in 205s).
+
+    Rule: a file gets ``max(flat_cap, 3 × last_observed_duration)``. Files
+    without a cache entry keep the flat cap. This only ever *raises* the
+    bound — a genuinely hung file is still killed, just with headroom
+    proportional to its known-good runtime.
+    """
+    if not durations:
+        return file_timeout
+    cached = durations.get(_format_file(file, repo_root))
+    if not cached:
+        return file_timeout
+    return max(file_timeout, float(cached) * 3.0)
+
+
+def _clean_pass_durations(
+    file_times: List[Tuple[Path, float]],
+    failures: List[Tuple[Path, str, Dict[str, int]]],
+    flaky: List[Tuple[Path, str]],
+) -> List[Tuple[Path, float]]:
+    """Keep only durations from files that passed on their first attempt.
+
+    ``file_times`` records every file's total subprocess wall, including a
+    timed-out attempt (~the cap) and retry-summed walls for FLAKY files.
+    Feeding those into the cache would let the timeout scaler compound: a
+    file that hung once is cached at ~300s, gets a 900s bound next run,
+    hangs again and is cached at ~900s, and so on until the job timeout
+    is the only bound left. A duration is a measurement of a healthy run
+    or it is not a measurement; failed and retried files keep their last
+    known-good entry instead.
+    """
+    excluded = {f for f, _o, _s in failures} | {f for f, _o in flaky}
+    return [(f, t) for f, t in file_times if f not in excluded]
+
+
 def _run_one_file(
     file: Path,
     pytest_args: List[str],
@@ -508,8 +558,8 @@ def _parse_pytest_summary(output: str) -> dict[str, int]:
 
 def _format_file(file: Path, repo_root: Path) -> str:
     """Render a test-file path for display: strip the repo-root prefix
-    when possible so output reads ``tests/acp/test_auth.py`` instead of
-    ``/home/runner/work/hermes-agent/hermes-agent/tests/acp/test_auth.py``.
+    when possible so output reads ``tests/acp_adapter/test_auth.py`` instead of
+    ``/home/runner/work/hermes-agent/hermes-agent/tests/acp_adapter/test_auth.py``.
 
     Falls back to the absolute path for anything outside the repo root.
     """
@@ -1123,12 +1173,19 @@ def main() -> int:
                 _print_inline_failure(fpath, output, repo_root, pytest_passthrough)
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        # Duration cache for the timeout scaler: known-slow files get
+        # proportional headroom instead of a false timeout-kill under
+        # CI load (see _effective_file_timeout).
+        timeout_durations = _load_durations(repo_root)
         futures: List[Future] = []
         for file in files:
             t0 = time.monotonic()
             fut = pool.submit(
                 _run_one_file, file, pytest_passthrough, repo_root,
-                args.file_timeout, args.file_retries,
+                _effective_file_timeout(
+                    file, repo_root, args.file_timeout, timeout_durations
+                ),
+                args.file_retries,
             )
             fut.add_done_callback(lambda f, file=file, t0=t0: _on_done(file, t0, f))
             futures.append(fut)
@@ -1188,13 +1245,15 @@ def main() -> int:
             print(f"  {_format_file(f, repo_root)}")
             print(output.rstrip())
 
-    # Save durations for future --slice runs. Each slice writes its own
-    # partial test_durations.json; a CI merge step joins them later.
-    # Locally, _save_durations merges with any existing cache so entries
-    # from previous runs aren't lost.
-    if file_times:
-        _save_durations(file_times, repo_root)
-        print(f"  Durations cached to {_DURATIONS_FILE} ({len(file_times)} files)")
+    # Save durations for future runs (LPT slicing and the per-file timeout
+    # scaler, see _effective_file_timeout). _save_durations merges with any
+    # existing cache so entries from previous runs aren't lost.
+    clean_times = _clean_pass_durations(
+        file_times, failures, _FLAKY_RESULTS,
+    )
+    if clean_times:
+        _save_durations(clean_times, repo_root)
+        print(f"  Durations cached to {_DURATIONS_FILE} ({len(clean_times)} files)")
 
     # Per-file time distribution (throwaway diagnostic — shows how
     # subprocess time is distributed so we can see if startup dominates).

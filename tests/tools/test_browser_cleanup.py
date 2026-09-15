@@ -128,7 +128,7 @@ class TestInactivityJanitorMultiplex:
         monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
         p1 = tmp_path / "profiles" / "p1"
         p1.mkdir(parents=True)
-        (p1 / ".env").write_text("CAMOFOX_URL=http://127.0.0.1:1\n")
+        (p1 / ".env").write_text("CAMOFOX_URL=http://127.0.0.1:1\n", encoding="utf-8")
 
         # Profile p1's turn opens the session; the janitor later runs unscoped.
         home_tok = set_hermes_home_override(str(p1))
@@ -187,3 +187,19 @@ class TestInactivityJanitorMultiplex:
         assert "t1" not in self.bt._active_sessions
         assert "t1" not in self.bt._session_last_activity
         assert "t1" not in self.bt._cleanup_failures
+
+
+class TestAtexitStopSwallowsInterrupt:
+    def test_second_ctrl_c_during_join_does_not_propagate(self, monkeypatch):
+        """A second Ctrl+C while the atexit hook waits on the janitor must not escape as a
+        traceback (#10764): the thread is a daemon, the interpreter is already exiting."""
+        from tools import browser_tool
+
+        class _InterruptedJoin:
+            def join(self, timeout=None):
+                raise KeyboardInterrupt
+
+        monkeypatch.setattr(browser_tool, "_cleanup_thread", _InterruptedJoin())
+        monkeypatch.setattr(browser_tool, "_cleanup_running", True)
+        bt_lifecycle._stop_browser_cleanup_thread()  # must not raise
+        assert browser_tool._cleanup_running is False

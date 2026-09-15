@@ -80,9 +80,8 @@ apps/
 # Test suite — not shipped in production images
 tests/
 
-# Documentation site (Docusaurus) and supplementary docs
+# Documentation site (Docusaurus)
 website/
-docs/
 
 # Assets only used by the GitHub README
 assets/

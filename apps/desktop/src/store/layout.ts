@@ -2,13 +2,17 @@ import { atom, computed, type ReadableAtom, type WritableAtom } from 'nanostores
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
-import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
+import {
+  restoreHiddenTreeSideTabs,
+  restoreMinimizedTreeSide,
+  setTreeSideCollapsed
+} from '@/components/pane-shell/tree/store'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { connectionScopedAtom } from '@/lib/connection-scoped'
 import { type Codec, Codecs, persistentAtom } from '@/lib/persisted'
 import { arraysEqual, insertUniqueId, readKey } from '@/lib/storage'
 
-import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride, togglePane } from './panes'
+import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride } from './panes'
 import { $showAllProfiles, setShowAllProfiles } from './profile'
 import type { PullRequestBucket } from './pull-requests'
 import type { SessionStatusBucket } from './session-dot-state'
@@ -529,12 +533,21 @@ function revealNarrowPane(id: string, mode: 'close' | 'open' | 'toggle'): boolea
 
 export function setSidebarOpen(open: boolean) {
   setPaneOpen(CHAT_SIDEBAR_PANE_ID, open)
+  setTreeSideCollapsed('left', !open)
+
+  if (open) {
+    restoreMinimizedTreeSide('left')
+    restoreHiddenTreeSideTabs('left')
+  }
+
   revealNarrowPane(CHAT_SIDEBAR_PANE_ID, open ? 'open' : 'close')
 }
 
 export function toggleSidebarOpen() {
   if (!revealNarrowPane(CHAT_SIDEBAR_PANE_ID, 'toggle')) {
-    togglePane(CHAT_SIDEBAR_PANE_ID)
+    const open = restoreMinimizedTreeSide('left') || !$sidebarOpen.get()
+    setPaneOpen(CHAT_SIDEBAR_PANE_ID, open)
+    setTreeSideCollapsed('left', !open)
   }
 }
 
@@ -543,23 +556,20 @@ export function toggleFileBrowserOpen() {
     return
   }
 
-  // Ask the TREE, not the pane's boolean. `$fileBrowserOpen` stays true while
-  // the tree pane sits behind a sibling tab in the shared right column (the
-  // preview rail, the diff) or inside a minimized zone, so ⌘J spent its press
-  // re-asserting a value it already held and read as a dead key. Only fold the
-  // side when the tree is genuinely the thing on screen; otherwise bring it
-  // forward through the reveal path, which fronts and un-minimizes.
-  if (!isPaneVisible(FILES_PANE_ID) && $fileBrowserOpen.get()) {
-    revealTreePane(FILES_PANE_ID)
-
-    return
-  }
-
-  togglePane(FILE_BROWSER_PANE_ID)
+  const open = restoreMinimizedTreeSide('right') || !$fileBrowserOpen.get()
+  setPaneOpen(FILE_BROWSER_PANE_ID, open)
+  setTreeSideCollapsed('right', !open)
 }
 
 export function setFileBrowserOpen(open: boolean) {
   setPaneOpen(FILE_BROWSER_PANE_ID, open)
+  setTreeSideCollapsed('right', !open)
+
+  if (open) {
+    restoreMinimizedTreeSide('right')
+    restoreHiddenTreeSideTabs('right')
+  }
+
   revealNarrowPane(FILE_BROWSER_PANE_ID, open ? 'open' : 'close')
 }
 

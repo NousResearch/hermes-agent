@@ -147,13 +147,30 @@ def _record_update_step(step: str, ok: bool, detail: str = "") -> None:
         record_step(step, ok, detail)
 
 
+# A fetch whose transport dead-stalls (HTTP/2 to GitHub on some networks, a black-holed proxy)
+# otherwise leaves `hermes update` on "Fetching updates..." forever (#93759, #95777). Five
+# minutes is generous for a scoped single-branch fetch and still ends in a real error.
+NETWORK_GIT_TIMEOUT_SECONDS = 300
+
+
 def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
     """Run git capturing utf-8 text (default cwd: checkout); ``network=True`` disables the
-    terminal prompt so an HTTP 401 fails fast instead of hanging."""
-    return subprocess.run(
-        git_cmd + args, cwd=_m().PROJECT_ROOT if cwd is None else cwd, capture_output=True,
-        text=True, encoding="utf-8", errors="replace", check=check,
-        **(_no_prompt_git_kwargs() if network else {}))
+    terminal prompt so an HTTP 401 fails fast instead of hanging, and bounds the wait."""
+    try:
+        return subprocess.run(
+            git_cmd + args, cwd=_m().PROJECT_ROOT if cwd is None else cwd, capture_output=True,
+            text=True, encoding="utf-8", errors="replace", check=check,
+            **({"timeout": NETWORK_GIT_TIMEOUT_SECONDS, **_no_prompt_git_kwargs()} if network else {}))
+    except subprocess.TimeoutExpired as exc:
+        # subprocess.run already killed the child; the checkout stays consistent because
+        # fetch writes to tmp_pack_* and only renames on success. Report as a failed run
+        # so every caller's existing stderr path prints one clear line.
+        result = subprocess.CompletedProcess(
+            exc.cmd, 124, stdout="",
+            stderr=f"git {args[0]} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s with no response from the remote")
+        if check:
+            raise subprocess.CalledProcessError(124, exc.cmd, output="", stderr=result.stderr) from exc
+        return result
 
 
 def _capture_head_sha(git_cmd, cwd) -> str | None:
@@ -514,6 +531,18 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         _print_fetch_failure(fetch_result.stderr)
         sys.exit(1)
 
+    if is_shallow:
+        # The depth-1 fetch above leaves the previous tip behind as a ``.git/shallow`` graft
+        # (git never removes old grafts); prune the stale ones so the file stops growing and
+        # merge-base / the orphan-divergence heuristic keep working (#105951).
+        from hermes_cli.gitlock import repair_broken_shallow_boundaries, prune_stale_shallow_grafts
+        repaired = repair_broken_shallow_boundaries(_m().PROJECT_ROOT)
+        if repaired:
+            print(f"  (restored {repaired} broken shallow boundary(ies))")
+        pruned = prune_stale_shallow_grafts(_m().PROJECT_ROOT)
+        if pruned:
+            print(f"  (pruned {pruned} stale shallow graft(s) left by past depth-1 checks)")
+
     # rev-list on a bogus ref exits 128 and (check=True) would traceback; verify first.
     verify_result = _git_run(git_cmd, ["rev-parse", "--verify", "--quiet", compare_branch])
     if verify_result.returncode != 0:
@@ -559,15 +588,15 @@ def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
         print("✓ Already up to date.")
         return
     if behind is not None:
-        print(f"⚕ Update available: {behind} {'commit' if behind == 1 else 'commits'} behind {compare_branch}.")
+        print(f"☤ Update available: {behind} {'commit' if behind == 1 else 'commits'} behind {compare_branch}.")
     else:
-        print(f"⚕ Update available (behind {compare_branch}).")
+        print(f"☤ Update available (behind {compare_branch}).")
     from hermes_cli.config import recommended_update_command
     print(f"  Run '{recommended_update_command()}' to install.")
 
 
 def _repair_venv_on_current_checkout(
-    *, assume_yes, gateway_mode, pre_update_snapshot_id, desktop_dir,
+    *, assume_yes, gateway_mode, pre_update_snapshot_id,
     had_desktop_app_before_update, active_lazy_features, active_tool_dependencies,
     _windows_gateway_resume) -> bool:
     """Reinstall ``.[all]`` + lazy/tool deps into an unhealthy (or handed-off) venv; returns
@@ -601,15 +630,17 @@ def _repair_venv_on_current_checkout(
         print("  Close all Hermes windows/gateways and re-run: hermes update")
         return False
     print("✓ Dependencies repaired!")
-    # Check for config migrations (#91360).
-    _check_and_apply_config_migration(
-        assume_yes=assume_yes, gateway_mode=gateway_mode, pre_update_snapshot_id=pre_update_snapshot_id)
-    # The hand-off child never reaches the commits-pulled rebuild; do it here.
-    if _rebuild_desktop_after_update(desktop_dir, had_desktop_app_before_update=had_desktop_app_before_update):
-        return _print_verified_update_completion("✓ Update complete!")
-    _print_update_completion(
-        "⚠ Update partially complete — the desktop app was not rebuilt and is still on the previous build.")
-    return False
+    # The hand-off child never reaches the commits-pulled Node/web/Desktop
+    # phase. Finish through the current-checkout repair path, whose npm digest
+    # gate keeps this cheap when the pulled manifests did not change.
+    return _repair_node_deps_on_current_checkout(
+        _print_verified_update_completion,
+        assume_yes=assume_yes,
+        gateway_mode=gateway_mode,
+        pre_update_snapshot_id=pre_update_snapshot_id,
+        completion_message="✓ Update complete!",
+        had_desktop_app_before_update=had_desktop_app_before_update,
+    )
 
 
 def _pip_install_prefix(uv_bin) -> tuple[list[str], dict | None]:
@@ -628,7 +659,7 @@ def _pip_install_prefix(uv_bin) -> tuple[list[str], dict | None]:
 
 
 def _repair_current_checkout(
-    *, assume_yes, gateway_mode, pre_update_snapshot_id, desktop_dir,
+    *, assume_yes, gateway_mode, pre_update_snapshot_id,
     had_desktop_app_before_update, active_lazy_features, active_tool_dependencies,
     upstream_checked, _windows_gateway_resume) -> bool:
     """Already-up-to-date path: keep the managed runtime current, repair a broken venv.
@@ -656,7 +687,7 @@ def _repair_current_checkout(
     if handed_off_sync or not healthy:
         current_checkout_complete = _repair_venv_on_current_checkout(
             assume_yes=assume_yes, gateway_mode=gateway_mode,
-            pre_update_snapshot_id=pre_update_snapshot_id, desktop_dir=desktop_dir,
+            pre_update_snapshot_id=pre_update_snapshot_id,
             had_desktop_app_before_update=had_desktop_app_before_update,
             active_lazy_features=active_lazy_features,
             active_tool_dependencies=active_tool_dependencies,
@@ -1120,17 +1151,21 @@ def _handle_update_called_process_error(
         if gateway_mode:
             _write_gateway_update_exit_code(desktop_build_ok)
     else:
-        print(f"✗ {stage}: {e}")
-        _print_called_process_error_tail(e)
         if _called_process_error_is_python_dep_install(e):
-            print(
-                "  The git update already finished. Re-downloading the source "
-                "ZIP cannot fix a dependency install error and would overwrite local files.")
+            print(f"✗ {stage} (the code update itself succeeded).")
+            _print_called_process_error_tail(e)
+            print()
+            print("  Hermes may not start until the dependencies are installed. Fix the error above")
+            print("  (usually network or disk space), then run `hermes update` again.")
             if _m()._is_windows():
-                print("  Retry through the venv interpreter:")
+                print("  If `hermes update` itself will not start, retry through the venv interpreter:")
                 print(
                     '    venv\\Scripts\\python.exe -c '
                     '"from hermes_cli.main import main; main()" update --yes')
+        else:
+            print(f"✗ {stage}.")
+            print(f"  Details: {e}")
+            _print_called_process_error_tail(e)
         _finalize_receipt("failed", 'Update receipt finalize failed: %s')
         sys.exit(1)
 
@@ -1144,7 +1179,7 @@ def _finalize_receipt(status: str, debug_message: str) -> None:
 
 def _finish_already_up_to_date(
     git_cmd, branch: str, current_branch: str, _plan, *, assume_yes: bool, gateway_mode: bool,
-    gw_input_fn, pre_update_snapshot_id, desktop_dir, had_desktop_app_before_update: bool,
+    gw_input_fn, pre_update_snapshot_id, had_desktop_app_before_update: bool,
     active_lazy_features, active_tool_dependencies, _windows_gateway_resume) -> None:
     """"Already up to date" path: restore stash/branch, repair the checkout, catch up the fleet.
     ``sys.exit(1)`` when the repair is incomplete (after gateway exit code + partial receipt)."""
@@ -1169,7 +1204,7 @@ def _finish_already_up_to_date(
 
     current_checkout_complete = _repair_current_checkout(
         assume_yes=assume_yes, gateway_mode=gateway_mode,
-        pre_update_snapshot_id=pre_update_snapshot_id, desktop_dir=desktop_dir,
+        pre_update_snapshot_id=pre_update_snapshot_id,
         had_desktop_app_before_update=had_desktop_app_before_update,
         active_lazy_features=active_lazy_features,
         active_tool_dependencies=active_tool_dependencies, upstream_checked=_plan.upstream_checked,
@@ -1253,7 +1288,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     opts = _resolve_update_options(args, gateway_mode)
     gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
 
-    print("⚕ Updating Hermes Agent...")
+    print("☤ Updating Hermes Agent...")
     print()
 
     _pre_update_plan = _begin_update_receipt_and_plan(args)
@@ -1312,6 +1347,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
         swept = clear_stale_tmp_packs(_m().PROJECT_ROOT)
         if swept:
             print("  (removed %d aborted-fetch pack temp file(s))" % len(swept))
+        # Shallow installer checkouts collect one `.git/shallow` graft per past depth-1 fetch
+        # (#105951); stale grafts break merge-base and push this run into the divergence path.
+        from hermes_cli.gitlock import repair_broken_shallow_boundaries, prune_stale_shallow_grafts
+        repaired = repair_broken_shallow_boundaries(_m().PROJECT_ROOT)
+        if repaired:
+            print(f"  (restored {repaired} broken shallow boundary(ies))")
+        pruned = prune_stale_shallow_grafts(_m().PROJECT_ROOT)
+        if pruned:
+            print(f"  (pruned {pruned} stale shallow graft(s) left by past depth-1 checks)")
 
         # Surface autostashes left by earlier updates (--keep-stash, failed restores).
         # Surface autostash entries left behind by earlier updates (#63717 problem 6) — parked --keep-stash
@@ -1335,7 +1379,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _finish_already_up_to_date(
                 git_cmd, branch, current_branch, _plan, assume_yes=assume_yes,
                 gateway_mode=gateway_mode, gw_input_fn=gw_input_fn,
-                pre_update_snapshot_id=pre_update_snapshot_id, desktop_dir=desktop_dir,
+                pre_update_snapshot_id=pre_update_snapshot_id,
                 had_desktop_app_before_update=had_desktop_app_before_update,
                 active_lazy_features=opts.active_lazy_features,
                 active_tool_dependencies=opts.active_tool_dependencies,

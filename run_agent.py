@@ -109,7 +109,7 @@ from agent.client_lifecycle import ClientLifecycleMixin
 from agent.stream_delivery import StreamDeliveryMixin
 from agent.status_output import StatusOutputMixin
 from agent.api_request_hooks import ApiRequestHooksMixin
-from agent.api_error_summary import ApiErrorSummaryMixin
+from agent.api_error_summary import PROVIDER_STREAM_PARSE_MARKERS, ApiErrorSummaryMixin
 from agent.interrupt_control import InterruptControlMixin
 from agent.turn_explainers import TurnExplainersMixin
 from agent.activity_tracking import ActivityTrackingMixin
@@ -250,7 +250,7 @@ class AIAgent(
         reasoning_callback: callable = None, clarify_callback: callable = None,
         read_terminal_callback: callable = None, read_preview_callback: callable = None,
         drive_preview_callback: callable = None, read_window_below_callback: callable = None,
-        setup_mcp_callback: callable = None, tour_callback: callable = None, step_callback: callable = None,
+        connection_callback: callable = None, tour_callback: callable = None, step_callback: callable = None,
         stream_delta_callback: callable = None, interim_assistant_callback: callable = None,
         tool_gen_callback: callable = None, status_callback: callable = None,
         notice_callback: callable = None, notice_clear_callback: callable = None,
@@ -404,6 +404,8 @@ class AIAgent(
 
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
+        # Who wrote the current turn. build_turn_context() sets it at the start of every turn.
+        self._turn_author = None
         # Copilot x-initiator: True for the first API call of a user turn, False for tool-loop follow-ups.
         self._is_user_initiated_turn = False
 
@@ -483,7 +485,7 @@ class AIAgent(
         that is wire trouble, not local validation, so it follows the truncated-JSON retry path."""
         return (getattr(self, "api_mode", None) == "anthropic_messages" and isinstance(error, ValueError)
                 and not isinstance(error, (UnicodeEncodeError, json.JSONDecodeError))
-                and "expected ident at line" in str(error).strip().lower())
+                and any(marker in str(error).strip().lower() for marker in PROVIDER_STREAM_PARSE_MARKERS))
 
     _log_stream_retry = _forward("agent.stream_diag", "log_stream_retry")
     _emit_stream_drop = _forward("agent.stream_diag", "emit_stream_drop")
@@ -634,10 +636,11 @@ class AIAgent(
     @staticmethod
     def _provider_model_requires_responses_api(model: str, *, provider: Optional[str] = None) -> bool:
         """Return True when this provider/model pair should use Responses API."""
+        from hermes_cli.providers import is_actual_route
         normalized_provider = (provider or "").strip().lower()
         # Nous serves GPT-5.x via chat completions (its /v1/responses returns 404); generic custom endpoints
         # may relay GPT-5 without full Responses semantics — only direct OpenAI/xAI URLs auto-upgrade.
-        if normalized_provider in ("nous", "custom"):
+        if normalized_provider in ("nous", "custom") or is_actual_route(provider):
             return False
         if normalized_provider == "copilot":
             try:
@@ -891,6 +894,10 @@ class AIAgent(
             return
         try:
             sync_kwargs = {"session_id": self.session_id or "", **({"messages": messages} if messages is not None else {})}
+            # Stashed by build_turn_context() for this turn, None on a human turn.
+            turn_author = getattr(self, "_turn_author", None)
+            if turn_author is not None:
+                sync_kwargs["turn_author"] = turn_author
             self._memory_manager.sync_all(user_text, response_text, **sync_kwargs)
             # Sibling of the build_turn_context() prefetch gate: don't key recall on zero-signal prompts.
             if not is_trivial_prompt(user_text):
@@ -1215,11 +1222,12 @@ class AIAgent(
             self._tool_guardrail_halt_decision = decision
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
+        # Shown to the user as the reply, so no decision codes; the code stays in result["guardrail"].
         return (
-            f"I stopped retrying {decision.tool_name or 'a tool'} because it hit the tool-call guardrail "
-            f"({decision.code}) after {decision.count} repeated non-progressing "
-            "attempts. The last tool result explains the blocker; the next step is "
-            "to change strategy instead of repeating the same call."
+            f"I stopped retrying because I kept running {decision.tool_name or 'the same tool'} "
+            f"{decision.count} times without making progress. The last result above shows what "
+            "blocked it. Tell me how you'd like to proceed, or send `continue` and I'll try a "
+            "different approach."
         )
 
     def _append_guardrail_observation(self, tool_name: str, function_args: dict, function_result: str, *,
@@ -1246,9 +1254,9 @@ class AIAgent(
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)
         else:
-            # observe_call may have raised the identical-call streak halt (hard_stop_enabled, tool-agnostic).
+            # observe_call may have raised the identical-call streak or batch-cycle halt (hard_stop_enabled, tool-agnostic).
             streak_halt = self._tool_guardrails.halt_decision
-            if streak_halt is not None and streak_halt.code == "identical_call_streak_halt":
+            if streak_halt is not None and streak_halt.code in ("identical_call_streak_halt", "identical_cycle_halt"):
                 function_result = append_toolguard_guidance(function_result, streak_halt)
                 self._set_tool_guardrail_halt(streak_halt)
         if stall_notice:
@@ -1298,7 +1306,8 @@ class AIAgent(
             goal=function_args.get("goal"), context=function_args.get("context"),
             tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
             max_iterations=function_args.get("max_iterations"), role=function_args.get("role"),
-            background=not (getattr(self, "_delegate_depth", 0) > 0), action=function_args.get("action"),
+            background=not (getattr(self, "_delegate_depth", 0) > 0), images=function_args.get("images"),
+            action=function_args.get("action"),
             subagent_id=function_args.get("subagent_id"), message=function_args.get("message"), parent_agent=self,
         )
 
@@ -1325,6 +1334,9 @@ class AIAgent(
     def _conversation_root_id(self) -> Optional[str]:
         """Session-lineage ROOT id for Portal usage attribution, so one conversation keeps a single
         ``conversation=`` tag across compression rotation; subagents resolve via ``_parent_session_id``."""
+        cached = getattr(self, "_cached_conversation_root", None)
+        if cached:
+            return str(cached)
         sid = getattr(self, "session_id", None)
         if not sid:
             return None

@@ -518,6 +518,92 @@ class TestSchemaConversion:
         assert "definitions" not in schema["parameters"]
 
 
+    def test_properties_map_entry_named_properties_is_not_injected_with_type(self):
+        """A ``properties`` map must be repaired per-entry, never as a schema node.
+
+        Regression: ``_repair_object_shape`` recursed over every value as a
+        schema node, including the ``properties`` map itself. When one of its
+        KEYS was literally named ``properties``/``required``, the
+        missing-``type`` heuristic fired on the map and injected
+        ``"type": "object"`` — a bare string, not a schema — as a *parameter*.
+        Strict providers then 400 the whole tool array with
+        ``"object" is not of types "boolean", "object"``. Real-world repro: a
+        Tencent Docs MCP server whose ``smartsheet_add_table`` tool has a
+        parameter named ``properties`` (#110530).
+        """
+        from tools.mcp_tool_schema import _normalize_mcp_input_schema
+
+        normalized = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "file_id": {"type": "string"},
+                "properties": {
+                    "type": "object",
+                    "properties": {"title": {"type": "string"}},
+                },
+            },
+        })
+
+        props = normalized["properties"]
+        # No bogus "type" parameter was injected into the properties map itself.
+        assert set(props) == {"file_id", "properties"}
+        # The legitimately-named `properties` parameter keeps its schema shape.
+        assert props["properties"]["type"] == "object"
+        assert props["properties"]["properties"] == {"title": {"type": "string"}}
+
+        # Same signature one level deeper (smartsheet add_view: items.properties map).
+        nested = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "condition_items": {
+                    "type": "object",
+                    "properties": {
+                        "properties": {"type": "string"},
+                        "value": {"type": "string"},
+                    },
+                },
+            },
+        })
+        inner = nested["properties"]["condition_items"]["properties"]
+        assert set(inner) == {"properties", "value"}
+
+        # ``$defs`` is a schema map too: an entry literally named ``properties`` must not
+        # gain a bogus ``type`` sibling inside the ``$defs`` map.
+        defs_case = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {"q": {"type": "string"}},
+            "$defs": {"properties": {"type": "string"}},
+        })
+        assert set(defs_case["$defs"]) == {"properties"}
+
+
+    def test_properties_map_entry_named_required_is_not_injected_with_type(self):
+        """A parameter literally named ``required`` keeps its map entry intact.
+
+        Same code path as the ``properties``-named collision above (#110530),
+        and the one where the keyword and the parameter name collide at the
+        same level: the map is repaired per-entry, so no phantom
+        ``properties`` entry appears inside it and no non-list ``required``
+        keyword is synthesised at the object level.
+        """
+        from tools.mcp_tool_schema import _normalize_mcp_input_schema
+
+        normalized = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "table": {"type": "string"},
+                "required": {"type": "array", "items": {"type": "string"}},
+            },
+        })
+
+        props = normalized["properties"]
+        assert set(props) == {"table", "required"}
+        # The legitimately-named `required` parameter keeps its array schema.
+        assert props["required"] == {"type": "array", "items": {"type": "string"}}
+        # No non-list `required` keyword was synthesised at the object level.
+        assert "required" not in normalized
+
+
     def test_optional_nullable_field_is_collapsed_to_non_null_schema(self):
         """Anthropic rejects MCP/Pydantic anyOf-null optional parameter schemas."""
         from tools.mcp_tool_schema import _normalize_mcp_input_schema
@@ -552,6 +638,33 @@ class TestSchemaConversion:
 
         assert schema["name"] == "mcp__my_server__get_sum"
         assert "-" not in schema["name"]
+
+    def test_long_names_are_clamped_to_64_chars(self):
+        """Portable Agent Plugin names can push mcp__<server>__<tool> past the
+        64-char limit OpenAI-compatible providers enforce on function names
+        (issue #81331). The registry name must be clamped with a stable hash
+        suffix, distinct long names must not collide, and the same inputs
+        must always produce the same shortened name.
+        """
+        from tools.mcp_tool_schema import _convert_mcp_schema, mcp_prefixed_tool_name
+
+        server_name = "agent_plugin_my_server_997167c9__my_server"
+        mcp_tool = _make_mcp_tool(name="reply_communication_todo")
+        schema = _convert_mcp_schema(server_name, mcp_tool)
+
+        assert len(schema["name"]) <= 64
+        assert schema["name"] == mcp_prefixed_tool_name(server_name, "reply_communication_todo")
+
+        other_tool = _make_mcp_tool(name="reply_communication_task")
+        other_schema = _convert_mcp_schema(server_name, other_tool)
+        assert other_schema["name"] != schema["name"]
+        assert len(other_schema["name"]) <= 64
+
+        # Deterministic across repeated calls with the same inputs.
+        assert (
+            mcp_prefixed_tool_name(server_name, "reply_communication_todo")
+            == schema["name"]
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1391,6 +1504,29 @@ class TestBuildSafeEnv:
         assert result["ALPACA_API_KEY"] == "from-bws-key"
         assert result["NOTION_TOKEN"] == "from-op"
         assert "UNTRACKED_SECRET_KEY" not in result
+
+    def test_secret_source_vars_resolve_through_active_profile_scope(self, monkeypatch):
+        """Under multiplex the stdio child gets the ROUTED profile's value for a source-tagged name,
+        never the launch profile's os.environ copy; a name the profile lacks is omitted."""
+        from agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
+        from hermes_cli import env_loader
+        from tools.mcp_tool_config import _build_safe_env
+
+        monkeypatch.setitem(env_loader._SECRET_SOURCES, "GITHUB_TOKEN", "bitwarden")
+        monkeypatch.setitem(env_loader._SECRET_SOURCES, "NOTION_TOKEN", "onepassword")
+        fake_env = {"PATH": "/usr/bin", "GITHUB_TOKEN": "default-profile", "NOTION_TOKEN": "default-notion"}
+        set_multiplex_active(True)
+        token = set_secret_scope({"GITHUB_TOKEN": "profile-b"})
+        try:
+            with patch.dict("os.environ", fake_env, clear=True):
+                result = _build_safe_env(None)
+        finally:
+            reset_secret_scope(token)
+            set_multiplex_active(False)
+
+        assert result["PATH"] == "/usr/bin"
+        assert result["GITHUB_TOKEN"] == "profile-b"
+        assert "NOTION_TOKEN" not in result
 
     def test_windows_location_vars_passed_without_secrets(self):
         """Windows launcher tools need location vars, but secrets stay filtered."""

@@ -120,12 +120,13 @@ _preset_cache: dict[tuple, Any] = {}
 
 
 def _resolve_preset_cached(preset_name: str) -> tuple[dict[str, Any], Any]:
-    """``(preset, raw moa config)``; the resolved preset is cached per config mtime
+    """``(preset, raw moa config)``; the resolved preset is cached per config file signature
     (skips resolve_moa_preset's full validation of the moa block on every create())."""
     from hermes_cli.config import get_config_path, load_config
     from hermes_cli.moa_config import resolve_moa_preset
+    from utils import file_signature
     try:
-        cfg_stamp = get_config_path().stat().st_mtime_ns
+        cfg_stamp = file_signature(get_config_path().stat())
     except OSError:
         cfg_stamp = None
     moa_raw = load_config().get("moa") or {}
@@ -142,7 +143,7 @@ def _resolve_preset_cached(preset_name: str) -> tuple[dict[str, Any], Any]:
 
 
 _runtime_cache_lock = threading.Lock()
-_runtime_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+_runtime_cache: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
 
 # Short TTL so rotated keys / base_url edits are picked up within 5 minutes.
 _RUNTIME_CACHE_TTL_SECONDS = 300.0
@@ -245,12 +246,15 @@ def _aggregator_reasoning_config(aggregator: dict[str, Any]) -> dict[str, Any] |
 def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     """Slot → ``call_llm`` kwargs with the provider's real api_mode/base_url/api_key.
 
-    Cached per (provider, model) with a short TTL. Falls back to bare provider/model
+    Cached per (profile home, provider, model) with a short TTL. Falls back to bare provider/model
     on error — never cached, or a transient error would pin bare kwargs for a TTL.
     """
     provider = str(slot.get("provider") or "").strip()
     model = str(slot.get("model") or "").strip()
-    cache_key = (provider, model)
+    # hermes_home_key() in the key: the resolved api_key/base_url are per-profile, and under a
+    # multiplex gateway two profiles can share (provider, model) with different accounts.
+    from hermes_constants import hermes_home_key
+    cache_key = (hermes_home_key(), provider, model)
     now = time.monotonic()
     with _runtime_cache_lock:
         entry = _runtime_cache.get(cache_key)

@@ -11,7 +11,7 @@ import re
 from typing import Any, Callable, Optional
 
 from agent.reasoning_effort import (
-    ACTUAL_RELAY_EFFORTS, CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS,
+    CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS,
     XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort, is_astra_model,
     # Same declared vocabulary + shared clamp as the main Codex transport (agent.reasoning_effort):
     # per-model — "max" is gpt-5.6-only, "minimal"/"ultra" always rejected (live-verified, #68365).
@@ -221,8 +221,6 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
 
         # Grok 4.6 accepts xhigh; older Grok tops out at high.
         supported = XAI_GROK46_EFFORTS if is_grok_46_family(model) else XAI_LEGACY_EFFORTS
-    elif (params.get("provider") or "").strip().lower() == "actual":
-        supported = ACTUAL_RELAY_EFFORTS
     else:
         declared = _profile_declared_efforts(params.get("provider"), model, params.get("base_url"))
         if declared is not None and not declared:
@@ -491,6 +489,7 @@ class ResponsesApiTransport(ProviderTransport):
 
     # Issuer kind of the most recent build_kwargs/convert_messages call (normalize_response fallback).
     _last_issuer_kind: Optional[str] = None
+    _last_issuer_model: Optional[str] = None
     # ``{wire_alias: original}`` of the most recent build_kwargs. None = no request built (legacy map).
     _last_wire_aliases: Optional[dict[str, str]] = None
 
@@ -512,13 +511,15 @@ class ResponsesApiTransport(ProviderTransport):
 
     def convert_messages(self, messages: list[dict[str, Any]], **kwargs) -> Any:
         """Convert OpenAI chat messages to Responses API input items."""
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from agent.codex_responses_adapter import _chat_messages_to_responses_input, _wire_model_identity
 
+        self._last_issuer_model = _wire_model_identity(kwargs.get("model"))
         return _chat_messages_to_responses_input(
             messages, is_xai_responses=kwargs.get("is_xai_responses") is True,
             is_github_responses=kwargs.get("is_github_responses") is True,
             replay_encrypted_reasoning=bool(kwargs.get("replay_encrypted_reasoning", True)),
             current_issuer_kind=self._resolve_issuer_kind(kwargs),
+            current_issuer_model=self._last_issuer_model,
             native_compaction_eligible=_native_compaction_active(kwargs.get("context_management")),
         )
 
@@ -582,14 +583,17 @@ class ResponsesApiTransport(ProviderTransport):
 
         # Lazy: provider plugins import this transport during model_metadata init.
         from agent.model_metadata import strip_codex_context_variant_suffix as _strip_ctx_variant
+        request_overrides = params.get("request_overrides") or {}
+        # An override may rewrite the wire model; provenance must be stamped with what actually goes out.
+        wire_model = _strip_ctx_variant(request_overrides.get("model", model))
         kwargs = {
             # ``-900k`` picker variants are Hermes-side aliases; the backend knows only the base slug.
-            "model": _strip_ctx_variant(model),
+            "model": wire_model,
             "instructions": instructions,
             "input": self.convert_messages(
                 payload_messages, is_xai_responses=is_xai_responses, is_github_responses=is_github_responses,
                 replay_encrypted_reasoning=replay_encrypted_reasoning, base_url=params.get("base_url"),
-                is_codex_backend=is_codex_backend, context_management=context_management,
+                is_codex_backend=is_codex_backend, context_management=context_management, model=wire_model,
             ),
             "store": False,
         }
@@ -619,8 +623,9 @@ class ResponsesApiTransport(ProviderTransport):
             replay_encrypted_reasoning=replay_encrypted_reasoning,
             is_xai_responses=is_xai_responses, is_github_responses=is_github_responses,
         ))
-        if params.get("request_overrides"):
-            kwargs.update(params["request_overrides"])
+        if request_overrides:
+            kwargs.update(request_overrides)
+            kwargs["model"] = wire_model
 
         _sanitize_astra_request_kwargs(kwargs, model, params.get("base_url"))
 
@@ -679,7 +684,8 @@ class ResponsesApiTransport(ProviderTransport):
         from agent.codex_responses_adapter import _normalize_codex_response
 
         msg, finish_reason = _normalize_codex_response(
-            response, issuer_kind=kwargs.get("issuer_kind") or self._last_issuer_kind
+            response, issuer_kind=kwargs.get("issuer_kind") or self._last_issuer_kind,
+            issuer_model=kwargs.get("issuer_model") or self._last_issuer_model,
         )
 
         tool_calls = None

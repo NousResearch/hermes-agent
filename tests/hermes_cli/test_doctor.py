@@ -66,6 +66,96 @@ class TestDoctorPlatformHints:
         assert "hermes update" not in hint
 
 
+class TestDoctorBytecodeCache:
+    """Checkout bytecode fingerprint diagnostics (issue #110292)."""
+
+    @staticmethod
+    def _configure_checkout(monkeypatch, tmp_path, fingerprint="current-revision"):
+        import hermes_cli.main as main_mod
+
+        monkeypatch.setattr(main_mod, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(main_mod, "_read_git_revision_fingerprint", lambda root: fingerprint)
+        cache_dir = tmp_path / "package" / "__pycache__"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "module.cpython-313.pyc").write_bytes(b"stale")
+        monkeypatch.setattr(main_mod, "_clear_bytecode_cache", lambda root: (shutil.rmtree(cache_dir), 1)[1])
+        monkeypatch.setattr(
+            main_mod,
+            "_record_bytecode_fingerprint",
+            lambda: (tmp_path / ".bytecode-fingerprint").write_text(fingerprint, encoding="utf-8"),
+        )
+        return cache_dir
+
+    def test_reports_current_fingerprint_for_relevant_cache(self, monkeypatch, tmp_path, capsys):
+        self._configure_checkout(monkeypatch, tmp_path)
+        (tmp_path / ".bytecode-fingerprint").write_text("current-revision", encoding="utf-8")
+
+        finding = doctor_platform._check_bytecode_cache(False, doctor_platform.Finding())
+
+        assert finding is None
+        assert "Python bytecode cache is current" in capsys.readouterr().out
+
+    def test_reports_stale_fingerprint_without_fixing(self, monkeypatch, tmp_path, capsys):
+        cache_dir = self._configure_checkout(monkeypatch, tmp_path)
+        (tmp_path / ".bytecode-fingerprint").write_text("previous-revision", encoding="utf-8")
+        finding = doctor_platform.Finding()
+
+        doctor_platform._check_bytecode_cache(False, finding)
+
+        assert cache_dir.exists()
+        assert finding.issues == ["Clear stale Python bytecode: run `hermes doctor --fix`"]
+        assert "checkout revision changed" in capsys.readouterr().out
+
+    def test_fails_open_when_recorded_fingerprint_is_unavailable(self, monkeypatch, tmp_path, capsys):
+        cache_dir = self._configure_checkout(monkeypatch, tmp_path)
+        finding = doctor_platform.Finding()
+
+        doctor_platform._check_bytecode_cache(False, finding)
+
+        assert cache_dir.exists()
+        assert not finding.issues
+        assert not capsys.readouterr().out
+
+    def test_fails_open_when_checkout_fingerprint_is_unavailable(self, monkeypatch, tmp_path, capsys):
+        cache_dir = self._configure_checkout(monkeypatch, tmp_path, fingerprint=None)
+        finding = doctor_platform.Finding()
+
+        doctor_platform._check_bytecode_cache(False, finding)
+
+        assert cache_dir.exists()
+        assert not finding.issues
+        assert not capsys.readouterr().out
+
+    def test_ignores_only_dependency_and_git_cache_directories(self, monkeypatch, tmp_path, capsys):
+        import hermes_cli.main as main_mod
+
+        monkeypatch.setattr(main_mod, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(main_mod, "_read_git_revision_fingerprint", lambda root: "current-revision")
+        (tmp_path / ".bytecode-fingerprint").write_text("previous-revision", encoding="utf-8")
+        for parent in (".venv/lib/python3.11/site-packages/dependency", ".git/internal"):
+            cache_dir = tmp_path / parent / "__pycache__"
+            cache_dir.mkdir(parents=True)
+            (cache_dir / "module.pyc").write_bytes(b"stale")
+
+        finding = doctor_platform.Finding()
+        doctor_platform._check_bytecode_cache(False, finding)
+
+        assert not finding.issues
+        assert not capsys.readouterr().out
+
+    def test_fix_clears_cache_and_records_current_fingerprint(self, monkeypatch, tmp_path, capsys):
+        cache_dir = self._configure_checkout(monkeypatch, tmp_path)
+        (tmp_path / ".bytecode-fingerprint").write_text("previous-revision", encoding="utf-8")
+        finding = doctor_platform.Finding()
+
+        doctor_platform._check_bytecode_cache(True, finding)
+
+        assert not cache_dir.exists()
+        assert (tmp_path / ".bytecode-fingerprint").read_text(encoding="utf-8") == "current-revision"
+        assert finding.fixed == 1
+        assert "cleared and fingerprint recorded" in capsys.readouterr().out
+
+
 class TestProviderEnvDetection:
     def test_detects_openai_api_key(self):
         content = "OPENAI_BASE_URL=http://localhost:1234/v1\nOPENAI_API_KEY=***"

@@ -88,7 +88,7 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
             flag("--no-verify", "Store without probing Bitwarden first (not recommended)"),
         )),
         ("sync", "Fetch secrets now and report what changed", cmd_sync, (
-            flag("--apply", "Actually export the secrets into the current shell's env (default: dry-run)"),
+            flag("--apply", "Actually export the secrets into this process/shell env (visible to this process and children; not the password-blind vault) (default: dry-run)"),
         )),
         ("disable", "Turn off the Bitwarden integration", cmd_disable, ()),
         ("install", f"Download and verify the pinned bws binary (v{_BWS_VERSION})", cmd_install, (

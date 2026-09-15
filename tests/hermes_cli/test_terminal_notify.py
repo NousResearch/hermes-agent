@@ -1,6 +1,10 @@
 """display.bell_on_prompt / bell_on_complete also drive OSC 9 + Warp OSC 777 via _ring_bell."""
 
+import io
 import json
+import sys
+
+import pytest
 
 from cli import HermesCLI
 from hermes_cli import terminal_notify
@@ -48,3 +52,45 @@ def test_warp_osc777_only_under_supported_warp_build(monkeypatch):
     # Not Warp at all → OSC 9 only.
     not_warp = dict(_WARP_OK, TERM_PROGRAM="ghostty")
     assert prefix not in _ring(monkeypatch, flag_on=True, env=not_warp, context="approval")
+
+
+def test_running_app_gets_bell_and_osc9_on_its_loop_never_a_second_tty_writer(monkeypatch):
+    """With the prompt_toolkit app live, the notification must reach the tty through the app's
+    output ON THE APP LOOP. A parallel /dev/tty or sys.stdout write from the agent thread splices
+    into an in-flight kitty pet frame and the terminal paints the frame's base64 as text."""
+    for key in _WARP_OK:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(terminal_notify, "_write_tty", lambda seq: pytest.fail(f"stray tty write: {seq!r}"))
+    fake_stdout = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", fake_stdout)
+
+    class _Output:
+        raw = []
+
+        def write_raw(self, data):
+            self.raw.append(data)
+
+        def flush(self):
+            self.raw.append("<flush>")
+
+    class _Loop:
+        queued = []
+
+        def call_soon_threadsafe(self, fn):
+            self.queued.append(fn)
+
+    class _App:
+        _is_running = True
+        loop = _Loop()
+        output = _Output()
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.bell_on_complete = True
+    cli.session_id = "sess-1"
+    cli._app = _App()
+    cli._ring_bell(context="turn complete")
+    # Nothing touched the tty from the calling thread; the write is queued for the loop.
+    assert _Output.raw == [] and fake_stdout.getvalue() == ""
+    assert len(_Loop.queued) == 1
+    _Loop.queued[0]()
+    assert _Output.raw == ["\a\x1b]9;Hermes: turn complete\x07", "<flush>"]

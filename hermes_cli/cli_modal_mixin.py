@@ -549,18 +549,29 @@ class CLIModalMixin:
         flag = "bell_on_prompt" if prompt else "bell_on_complete"
         if not getattr(self, flag, False):
             return
+        from hermes_cli.terminal_notify import notification_sequence, notify as _terminal_notify
+        body = context or ("input needed" if prompt else "turn complete")
+        session_id = getattr(self, "session_id", "") or ""
+        app = getattr(self, "_app", None)
+        if app is not None and getattr(app, "_is_running", False):
+            # Agent thread. The loop thread may be mid-write of a 12 KB kitty pet frame that the tty
+            # drains ~1 KB at a time; a second writer on the same tty (/dev/tty, sys.stdout) splices
+            # in, the foreign ESC aborts the APC, and the terminal paints the rest of the payload as
+            # base64 at the input cursor. Serialize behind the renderer instead.
+            from hermes_cli.cli_terminal_mixin import _run_on_app_loop, _write_terminal_sequence
+            try:
+                seq = "\a" + notification_sequence(body, prompt=prompt, session_id=session_id, detail=detail)
+                _run_on_app_loop(app, lambda: _write_terminal_sequence(app, seq))
+            except Exception:
+                pass
+            return
         try:
             sys.stdout.write("\a")
             sys.stdout.flush()
         except Exception:
             pass
         try:
-            from hermes_cli.terminal_notify import notify as _terminal_notify
-            _terminal_notify(
-                context or ("input needed" if prompt else "turn complete"),
-                prompt=prompt,
-                session_id=getattr(self, "session_id", "") or "",
-                detail=detail)
+            _terminal_notify(body, prompt=prompt, session_id=session_id, detail=detail)
         except Exception:
             pass
 

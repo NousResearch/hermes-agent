@@ -65,10 +65,16 @@ def warp_osc777(event: str, detail: str, session_id: str = "") -> str:
     return f"\x1b]777;notify;warp://cli-agent;{json.dumps(payload, separators=(',', ':'))}\x07"
 
 
-def notify(context: str, *, prompt: bool, session_id: str = "", detail: str = "") -> None:
-    """Emit OSC 9 (plus Warp OSC 777 when supported) for a blocking prompt or turn end."""
+def notification_sequence(context: str, *, prompt: bool, session_id: str = "", detail: str = "") -> str:
+    """OSC 9 (plus Warp OSC 777 when supported) for a blocking prompt or turn end."""
     seq = osc9(f"Hermes: {context}")
     if warp_supported():
         event = "permission_request" if prompt else "stop"
         seq += warp_osc777(event, detail or context, session_id)
-    _write_tty(seq)
+    return seq
+
+
+def notify(context: str, *, prompt: bool, session_id: str = "", detail: str = "") -> None:
+    """Emit the notification straight to the tty. Only for callers that do not own a running
+    prompt_toolkit app; inside the CLI, ``_ring_bell`` routes it through the app output instead."""
+    _write_tty(notification_sequence(context, prompt=prompt, session_id=session_id, detail=detail))

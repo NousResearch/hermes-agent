@@ -91,6 +91,9 @@ _BILLING_PATTERNS = (
     "account balance is too low", "no usable credits", "top up your credits", "payment required",
     "billing hard limit", "exceeded your current quota", "account is deactivated", "plan does not include",
     "out of extra usage", "out of funds", "run out of funds", "balance_depleted",
+    # Anthropic Console monthly spend cap: HTTP 400 invalid_request_error "You have
+    # reached your specified API usage limits. You will regain access on <date>" (#80553).
+    "specified api usage limits",
     "model_not_supported_on_free_tier", "not available on the free tier",
     # LiteLLM proxies word a hard cap as "hard billing limit" (structured twin:
     # ``terminal_quota_exhausted`` in _BILLING_ERROR_CODES). "terminal billing

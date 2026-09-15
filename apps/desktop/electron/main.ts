@@ -120,7 +120,6 @@ import {
   profileRemoteOverride,
   profileSshOverride,
   type RegistryBackendRequestScope,
-  remoteRequestMatchesBaseUrl,
   resolveAuthMode,
   resolveProfileApiRequest,
   resolveProfileBackendRoute,
@@ -345,6 +344,7 @@ import {
   revalidateSuspectPooledRemoteBackends
 } from './remote-liveness'
 import { resolveRemoteOauthTicket, rosterSourceEnumerationTimeoutMs } from './remote-oauth-ticket'
+import { headersForRemoteRequest as resolveRemoteRequestHeaders } from './remote-request-headers'
 import {
   applyRemoteRequestHeaders,
   createRegistryGatewayWsUrlHandler,
@@ -9188,16 +9188,9 @@ function headersForRemoteRequest(requestUrl) {
   }
 
   const config = readDesktopConnectionConfig()
+  const storedHeaders = resolveRemoteRequestHeaders(requestUrl, config, readDesktopConnectionsRegistry())
 
-  if (modeIsRemoteLike(config.mode) && config.remote?.url) {
-    const headers = decryptRemoteHeaders(config.remote.headers)
-
-    if (Object.keys(headers).length > 0 && remoteRequestMatchesBaseUrl(requestUrl, config.remote.url)) {
-      return headers
-    }
-  }
-
-  return {}
+  return decryptRemoteHeaders(storedHeaders)
 }
 
 function installRemoteHeaderRules() {

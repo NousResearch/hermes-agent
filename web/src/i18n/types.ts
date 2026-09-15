@@ -311,6 +311,9 @@ export interface Translations {
     toolCalls: string;
     noModelsData: string;
     startSession: string;
+    change?: string;
+    configure?: string;
+    setMainModel?: string;
   };
 
   // ── Logs page ──
@@ -539,6 +542,9 @@ export interface Translations {
     profileSelector?: string;
     currentProfile?: string;
     managingProfile?: string;
+    browseHub?: string;
+    learnASkill?: string;
+    newSkill?: string;
   };
 
   // ── Config page ──

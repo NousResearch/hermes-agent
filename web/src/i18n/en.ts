@@ -288,6 +288,9 @@ export const en: Translations = {
     toolCalls: "tool calls",
     noModelsData: "No model usage data for this period",
     startSession: "Start a session to see model data here",
+    change: "Change",
+    configure: "Configure",
+    setMainModel: "Set Main Model",
   },
 
   logs: {
@@ -517,6 +520,9 @@ export const en: Translations = {
     currentProfile: "current ({name})",
     managingProfile:
       "Managing profile \u201c{name}\u201d — toggles apply to that profile, not this dashboard\u2019s.",
+    browseHub: "Browse hub",
+    learnASkill: "Learn a skill",
+    newSkill: "New skill",
   },
 
   config: {

@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import os
+import re
 import sys
 import types
 from pathlib import Path
@@ -174,6 +175,16 @@ class TestFromGlobalConfig:
         assert config.ai_peer == "host-ai"
 
 
+    def test_workspace_id_that_is_not_a_valid_identifier_is_slugged(self, tmp_path):
+        """"hermes workspace" 422s every request, so a hand-edited workspace must still yield
+        a usable ID (slugged, with the file named in a warning)."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "key", "workspace": "hermes workspace"}))
+
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.workspace_id == "hermes-workspace"
+
+
     def test_context_tokens_explicit_sets_cap(self, tmp_path):
         """Explicit contextTokens in config sets the cap."""
         config_file = tmp_path / "config.json"
@@ -268,6 +279,32 @@ class TestResolveSessionName:
         ):
             result = config.resolve_session_name("/home/user/hermes-agent/subdir")
         assert result == "hermes-agent"
+
+
+class TestResolveSessionNameIdentifierSafety:
+    """Directory basenames, sessions-map entries and the workspace hit the Honcho API as IDs,
+    which must match ^[a-zA-Z0-9_-]+$. Raw names 422'd every call for that session and surfaced
+    only as a warning, so a checkout in "my project" silently lost its memory."""
+
+    ID = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+    def test_every_name_source_produces_a_valid_identifier(self):
+        with patch.object(HonchoClientConfig, "_git_repo_name", return_value=None):
+            per_directory = HonchoClientConfig().resolve_session_name("/home/user/my project")
+            per_repo = HonchoClientConfig(session_strategy="per-repo").resolve_session_name("/home/user/my project")
+        mapped = HonchoClientConfig(
+            sessions={"/home/user/proj": "my session"}
+        ).resolve_session_name("/home/user/proj")
+        # Names that sanitize to nothing keep separate sessions (hashed) rather than
+        # collapsing every such directory onto one shared name.
+        first_cjk = HonchoClientConfig().resolve_session_name("/home/user/\u6211\u7684\u5c08\u6848")
+        second_cjk = HonchoClientConfig().resolve_session_name("/home/user/\u4ed6\u7684\u5c08\u6848")
+
+        assert per_directory == "my-project"
+        assert per_repo == "my-project"
+        assert mapped == "my-session"
+        assert all(self.ID.match(name) for name in (per_directory, per_repo, mapped, first_cjk, second_cjk))
+        assert first_cjk != second_cjk
 
 
 class TestResolveConfigPath:

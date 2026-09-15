@@ -1103,10 +1103,11 @@ def _write_guard(adapter, request, expected, permission, dispatch=None):
             yield json.dumps({
                 "version": 1,
                 **{key: claims[key] for key in (
-                    "_token_sha256", "grant_id", "issued_at", "expires_at", "status_expires_at",
+                    "_token_sha256", "grant_id", "issued_at", "expires_at",
                     "room_id", "home_install_id", "authority_gateway_id", "authority_epoch",
                     "member_id", "target_install_id", "target_profile",
                 )},
+                "status_expires_at": claims.get("status_expires_at", claims["expires_at"]),
                 "receiver_home": authority.profile_id,
                 "receiver_epoch": authority.epoch,
                 "receiver_instance_id": authority.instance_id,

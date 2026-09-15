@@ -86,8 +86,14 @@ class TestNormalizedResponse:
 class TestBuildToolCall:
     def test_dict_arguments_serialized(self):
         tc = build_tool_call(id="call_1", name="terminal", arguments={"cmd": "ls"})
-        assert tc.arguments == json.dumps({"cmd": "ls"})
+        assert json.loads(tc.arguments) == {"cmd": "ls"}
         assert tc.provider_data is None
+
+    def test_dict_arguments_preserve_unicode(self):
+        """orjson's default does not escape non-ASCII characters."""
+        tc = build_tool_call(id="call_2", name="terminal", arguments={"cmd": "ls /tmp/みらい"})
+        assert json.loads(tc.arguments) == {"cmd": "ls /tmp/みらい"}
+        assert "みらい" in tc.arguments
 
 
 

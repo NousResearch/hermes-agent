@@ -155,6 +155,9 @@ dependencies = [
   # Ships prebuilt wheels bundling libheif for the common platforms (no system
   # libs needed), so it's safe in the base install alongside Pillow.
   "pillow-heif>=1.4.0,<2",
+  # Fast JSON serialization for tool-call argument hot paths. Native wheels
+  # for all supported platforms; exact pin to avoid surprise abi3 drift.
+  "orjson==3.11.9",
   # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
   # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on
   # Windows whenever any other process holds an append-mode handle on
@@ -536,6 +539,7 @@ openai = false
 opentelemetry-exporter-otlp-proto-http = false
 opentelemetry-sdk = false
 openwakeword = false
+orjson = false
 packaging = false
 parallel-web = false
 pathspec = false

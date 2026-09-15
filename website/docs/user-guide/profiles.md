@@ -16,6 +16,28 @@ Never point two agent processes at the same profile (the same Hermes home). Both
 
 When you create a profile, it automatically becomes its own command. Create a profile called `coder` and you immediately have `coder chat`, `coder setup`, `coder gateway start`, etc.
 
+### Profiles, agents, and bots
+
+These terms describe different parts of Hermes:
+
+- **Profile** is the persistent home for an assistant's configuration and data.
+  It keeps the same state across conversations and restarts.
+
+- **Agent** is the running Hermes assistant that uses that configuration and
+  state. "Hermes Agent" also names the product.
+
+- **Bot Mode bot** is a profile presented as a named entry in the desktop's
+  [Bot Mode](./bot-mode.md) roster, with an avatar and a persistent Bot Chat.
+  The same profile remains accessible from the CLI.
+
+- **Messaging bot** is an account on a platform such as Telegram, Discord, or
+  Slack, connected to Hermes through the gateway. Its
+  [bot token](#different-bot-tokens) identifies that platform account.
+
+- **Subagent** is a child assistant spawned by
+  [`delegate_task`](./features/delegation.md) for a task, with a fresh
+  conversation. A separate conversation is different from a separate profile.
+
 ## Quick start
 
 ```bash

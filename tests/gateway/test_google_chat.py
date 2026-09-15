@@ -139,7 +139,6 @@ from plugins.platforms.google_chat.adapter import (  # noqa: E402
 )
 from plugins.platforms.google_chat.cards import card_spec_to_cards_v2  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
@@ -777,6 +776,9 @@ class TestSend:
     @pytest.mark.asyncio
     async def test_with_typing_card_patches_instead_of_creating(self, adapter):
         adapter._typing_messages["spaces/S"] = "spaces/S/messages/THINK"
+        # Card lives in the same thread as the outbound — the
+        # cross-thread guard in send() only patches matching cards.
+        adapter._typing_card_threads["spaces/S"] = "spaces/S/threads/T"
         adapter._patch_message = AsyncMock(
             return_value=type("R", (), {"success": True,
                                         "message_id": "spaces/S/messages/THINK",
@@ -936,6 +938,7 @@ class TestTypingLifecycle:
         event = MagicMock()
         event.source = MagicMock()
         event.source.chat_id = "spaces/S"
+        event.source.thread_id = None
         await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
         # Both orphans patched (typing_messages cleared too).
         assert adapter._patch_message.await_count == 2
@@ -961,12 +964,12 @@ class TestTypingLifecycle:
         assert adapter._typing_messages["spaces/S"] == "spaces/S/messages/THINK"
         delete_mock.assert_not_called()
 
-
     @pytest.mark.asyncio
     async def test_on_processing_complete_patches_stranded_card(self, adapter):
         """CANCELLED path: send() never ran. Patch the typing card with a
         benign final state instead of deleting (no tombstone)."""
         adapter._typing_messages["spaces/S"] = "spaces/S/messages/THINK"
+        adapter._typing_card_threads["spaces/S"] = None
         adapter._patch_message = AsyncMock(
             return_value=type("R", (), {"success": True,
                                         "message_id": "spaces/S/messages/THINK",
@@ -975,6 +978,7 @@ class TestTypingLifecycle:
         event = MagicMock()
         event.source = MagicMock()
         event.source.chat_id = "spaces/S"
+        event.source.thread_id = None
         await adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
         adapter._patch_message.assert_awaited_once()
         # Patched with a final-state label, not deleted.
@@ -1150,10 +1154,10 @@ class TestUserOAuthHelper:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         users_dir = tmp_path / "google_chat_user_tokens"
         users_dir.mkdir(parents=True)
-        (users_dir / "alice@example.com.json").write_text("{}")
-        (users_dir / "bob@example.com.json").write_text("{}")
+        (users_dir / "alice@example.com.json").write_text("{}", encoding="utf-8")
+        (users_dir / "bob@example.com.json").write_text("{}", encoding="utf-8")
         # Legacy file should NOT appear in the list.
-        (tmp_path / "google_chat_user_token.json").write_text("{}")
+        (tmp_path / "google_chat_user_token.json").write_text("{}", encoding="utf-8")
 
         from plugins.platforms.google_chat.oauth import list_authorized_emails
         assert list_authorized_emails() == [
@@ -1292,7 +1296,7 @@ class TestThreadCountStore:
         as fresh, move on. The next incr() will overwrite."""
         from plugins.platforms.google_chat.adapter import _ThreadCountStore
         path = tmp_path / "counts.json"
-        path.write_text("not valid json {")
+        path.write_text("not valid json {", encoding="utf-8")
         store = _ThreadCountStore(path)
         store.load()
         assert store.get("spaces/X", "spaces/X/threads/T") == 0
@@ -1301,7 +1305,7 @@ class TestThreadCountStore:
         assert prev == 0
         # File now has valid JSON.
         import json
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         assert data == {"spaces/X": {"spaces/X/threads/T": 1}}
 
 
@@ -1408,6 +1412,116 @@ class TestOutboundThreadRouting:
             chat_id="spaces/X",
         )
         assert result == "spaces/X/threads/CACHED"
+
+
+class TestConcurrentSpaceThreadRouting:
+    """Regression coverage for the same-space cross-thread race —
+    concurrent @-mentions in different threads of the same Google Chat
+    space must NOT route either reply into the other thread (Issue
+    #24964). Two independent mechanisms can cause the symptom:
+
+      1. The single-slot ``_last_inbound_thread[chat_id]`` cache races
+         when two inbound messages land in different threads within the
+         same space — the slower outbound's ``_resolve_thread_id``
+         fallback would return whichever thread won the cache-write
+         race.
+      2. The single-slot ``_typing_messages[chat_id]`` typing-card
+         tracker may hold a card belonging to a SIBLING session in a
+         different thread. ``messages.patch`` cannot change a message's
+         thread, so patching that card would visibly drop the reply
+         into the sibling's thread.
+    """
+
+    @pytest.mark.asyncio
+    async def test_group_does_not_populate_inbound_thread_cache(self, adapter):
+        """In group spaces ``source.thread_id`` always carries the
+        thread to the outbound metadata, so the cache fallback is
+        unnecessary AND racy under concurrent mentions. Build the event
+        and verify the cache stays empty for groups."""
+        env = _make_chat_envelope(text="hi", thread_name="spaces/G/threads/T1")
+        env["chat"]["messagePayload"]["space"]["spaceType"] = "SPACE"
+        env["chat"]["messagePayload"]["message"]["space"]["spaceType"] = "SPACE"
+        msg = env["chat"]["messagePayload"]["message"]
+        event = await adapter._build_message_event(msg, env)
+        assert event.source.chat_type == "group"
+        assert event.source.thread_id == "spaces/G/threads/T1"
+        # The single-slot cache MUST stay empty for groups — populating
+        # it under concurrent inbound messages in different threads is
+        # what cross-threads the slower reply.
+        assert "spaces/G" not in adapter._last_inbound_thread
+
+    @pytest.mark.asyncio
+    async def test_group_second_thread_does_not_overwrite_first(self, adapter):
+        """Two inbound mentions in DIFFERENT threads of the same space:
+        the second must not race the first by overwriting
+        ``_last_inbound_thread``."""
+        for tid in ("T1", "T2"):
+            env = _make_chat_envelope(
+                text=f"msg in {tid}",
+                thread_name=f"spaces/G/threads/{tid}",
+            )
+            env["chat"]["messagePayload"]["space"]["spaceType"] = "SPACE"
+            env["chat"]["messagePayload"]["message"]["space"]["spaceType"] = "SPACE"
+            await adapter._build_message_event(
+                env["chat"]["messagePayload"]["message"], env,
+            )
+        # Neither thread should have leaked into the single-slot cache.
+        assert "spaces/G" not in adapter._last_inbound_thread
+
+    @pytest.mark.asyncio
+    async def test_send_does_not_patch_sibling_thread_typing_card(self, adapter):
+        """Session A's typing card lives in thread T_A. Session B finishes
+        first and calls ``send()`` with metadata pointing at T_B. The slot
+        still holds A's card. Patching would silently route B's reply
+        into T_A (``messages.patch`` cannot change the thread). The
+        thread-guard in ``send()`` must skip the patch and create a fresh
+        message in T_B instead."""
+        adapter._typing_messages["spaces/G"] = "spaces/G/messages/A_CARD"
+        adapter._typing_card_threads["spaces/G"] = "spaces/G/threads/T_A"
+        adapter._patch_message = AsyncMock()
+        adapter._create_message = AsyncMock(
+            return_value=type("R", (), {"success": True,
+                                        "message_id": "spaces/G/messages/B_REPLY",
+                                        "error": None})()
+        )
+        result = await adapter.send(
+            "spaces/G", "B's reply",
+            metadata={"thread_id": "spaces/G/threads/T_B"},
+        )
+        adapter._patch_message.assert_not_called()
+        adapter._create_message.assert_awaited_once()
+        # New message body must carry T_B's thread name.
+        _, args, kwargs = adapter._create_message.mock_calls[0]
+        body = args[1]
+        assert body.get("thread") == {"name": "spaces/G/threads/T_B"}
+        assert result.success is True
+        # A's card must STILL be in the slot so A's own send() / cleanup
+        # can finalize it.
+        assert adapter._typing_messages["spaces/G"] == "spaces/G/messages/A_CARD"
+        assert (
+            adapter._typing_card_threads["spaces/G"] == "spaces/G/threads/T_A"
+        )
+
+    @pytest.mark.asyncio
+    async def test_on_processing_complete_skips_sibling_thread_card(self, adapter):
+        """When session B's processing completes and the slot holds
+        session A's card in a different thread, the cleanup must NOT
+        pop or patch A's card — that would leave A unable to finalize
+        its own card on its turn."""
+        adapter._typing_messages["spaces/G"] = "spaces/G/messages/A_CARD"
+        adapter._typing_card_threads["spaces/G"] = "spaces/G/threads/T_A"
+        adapter._patch_message = AsyncMock()
+        event = MagicMock()
+        event.source = MagicMock()
+        event.source.chat_id = "spaces/G"
+        event.source.thread_id = "spaces/G/threads/T_B"
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        adapter._patch_message.assert_not_called()
+        # Sibling's slot left intact.
+        assert adapter._typing_messages["spaces/G"] == "spaces/G/messages/A_CARD"
+        assert (
+            adapter._typing_card_threads["spaces/G"] == "spaces/G/threads/T_A"
+        )
 
 
 # ===========================================================================
@@ -1841,4 +1955,3 @@ class TestGoogleChatStandaloneSend:
         assert url == "https://chat.googleapis.com/v1/spaces/AAAA-BBBB/messages"
         assert kwargs["headers"]["Authorization"] == "Bearer the-token"
         assert kwargs["json"] == {"text": "hello cron"}
-

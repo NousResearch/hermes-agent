@@ -147,3 +147,58 @@ def test_grandfather_entries_still_needed():
     """A grandfather entry whose violation is fixed must be removed."""
     for rel in GRANDFATHER:
         assert (REPO / rel / "SKILL.md").exists(), f"stale grandfather entry: {rel}"
+
+
+QR_PLACEHOLDER = "Quick reference patterns will be added as you use the skill."
+SCRAPER_MARK = "automatically generated from official documentation"
+
+
+@pytest.mark.parametrize("p", _params())
+def test_no_scraper_quick_reference_placeholder(p):
+    """Scraper leftover QR placeholder must not remain in any SKILL.md."""
+    content = p.read_text(encoding="utf-8")
+    if QR_PLACEHOLDER in content:
+        pytest.fail(
+            f"{_rel(p)}: leftover scraper placeholder {QR_PLACEHOLDER!r} — "
+            "fill Quick Reference with **Pattern N:** entries"
+        )
+
+
+def _scraper_generated_with_index():
+    for p in _skill_paths():
+        content = p.read_text(encoding="utf-8")
+        if SCRAPER_MARK not in content:
+            continue
+        index = p.parent / "references" / "index.md"
+        if index.is_file():
+            yield pytest.param(p, id=_rel(p))
+
+
+@pytest.mark.parametrize("p", list(_scraper_generated_with_index()))
+def test_scraper_reference_files_listed(p):
+    """Scraper skills with references/index.md must list every references/*.md.
+
+    Fail-open: handwritten skills and skills without index.md are skipped so a
+    repo-wide "every references/*.md appears as a SKILL.md bullet" rule cannot
+    fire the 77-FP sweep. Non-.md files are ignored; index.md is not required
+    to list itself.
+    """
+    skill = p.read_text(encoding="utf-8")
+    index_path = p.parent / "references" / "index.md"
+    index = index_path.read_text(encoding="utf-8")
+    missing_skill = []
+    missing_index = []
+    for ref in sorted((p.parent / "references").glob("*.md")):
+        if ref.name == "index.md":
+            continue
+        if ref.name not in skill:
+            missing_skill.append(ref.name)
+        if ref.name not in index:
+            missing_index.append(ref.name)
+    problems = []
+    if missing_skill:
+        problems.append(f"unlisted in SKILL.md: {missing_skill}")
+    if missing_index:
+        problems.append(f"unlisted in references/index.md: {missing_index}")
+    if problems:
+        pytest.fail(f"{_rel(p)}: {' | '.join(problems)}")

@@ -197,7 +197,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       // scrollbar-fade, NOT scrollbar-overlay: overlay opts out of the themed
       // thin scrollbar entirely, and on Windows (no native overlay scrollbars)
       // Chromium then paints the classic always-visible gutter. The themed
-      // fade bar reserves its 4px on every platform but stays invisible until
+      // fade bar reserves its 8px on every platform but stays invisible until
       // hover — and the wrapper no longer stacks a second scroller, so the
       // double-gutter this class change was reaching for is already gone.
       //

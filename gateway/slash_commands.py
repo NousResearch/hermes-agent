@@ -118,14 +118,43 @@ def _restart_notify_payload(event: MessageEvent) -> dict:
     return data
 
 
+def _detached_update_argv(update_cmd: str, *, now: float | None = None):
+    """argv that runs ``update_cmd`` so it survives the gateway restart it triggers.
+
+    Under a supervisor the gateway's unit restart tears down its whole cgroup
+    (``KillMode=mixed`` SIGKILLs every remaining member of the stop cgroup), so the
+    detached ``setsid`` child dies with it — the same failure class ``/restart`` already
+    avoids by handing the restart to the supervisor (see ``_handle_restart_command``).
+    When that happens the updater is killed after it prints ``draining``: the exit-code
+    file/receipt never lands and ``fleet_restart_pending`` is left behind, so every later
+    ``hermes doctor`` warns that the fleet was never restarted although it was.
+
+    ``systemd-run --user`` places the updater in its own transient unit, outside
+    ``hermes-gateway.service``, so the post-restart verify can still run. ``setsid`` stays
+    the portable fallback for hosts without a user D-Bus session (macOS, containers).
+    """
+    import shutil
+
+    from gateway.restart import is_gateway_supervisor_process
+
+    if is_gateway_supervisor_process():
+        runner = shutil.which("systemd-run")
+        if runner:
+            stamp = int(time.time() if now is None else now)
+            return [runner, "--user", "--unit", f"hermes-update-{stamp}", "--collect",
+                    "--quiet", "bash", "-c", update_cmd]
+    setsid_bin = shutil.which("setsid")
+    return [setsid_bin, "bash", "-c", update_cmd] if setsid_bin else ["bash", "-c", update_cmd]
+
+
 def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
     """Spawn ``hermes update --gateway`` detached so it survives the gateway restart it may trigger.
-    setsid is portable (works where ``systemd-run --user`` lacks a D-Bus session); ``--gateway``
+    ``systemd-run --user`` is preferred under a supervisor (own transient unit, see
+    ``_detached_update_argv``), setsid is the portable fallback; ``--gateway``
     enables file-based IPC so interactive prompts are forwarded; PYTHONUNBUFFERED lets the gateway
     stream output live.  Windows has no setsid: an inline helper runs the updater as a module under
     this interpreter (not venv\\Scripts\\hermes.exe — that shim holds its own file open, and the
     update must replace it), redirects both outputs to one file and writes the exit code."""
-    import shutil
     import subprocess
     if sys.platform == "win32":
         from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
@@ -141,12 +170,8 @@ def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
         # Avoid `status=$?`: `status` is read-only in zsh and this template is reused in
         # macOS/zsh operator wrappers, so keep it zsh-safe even though bash runs it here.
         f"rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path))}")
-    # Preferred: setsid creates a new session, fully detached; fallback start_new_session=True
-    # calls os.setsid() in the child.
-    setsid_bin = shutil.which("setsid")
-    argv = [setsid_bin, "bash", "-c", update_cmd] if setsid_bin else ["bash", "-c", update_cmd]
+    argv = _detached_update_argv(update_cmd)
     subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-
 
 def _home_thread_from_source(source) -> Optional[str]:
     """The thread id /sethome should persist on the home target, or None.  Slack thread-per-message

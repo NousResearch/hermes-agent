@@ -3,6 +3,7 @@ replayed-user dedupe. Mixin bound via the MRO, built on SessionDB's _read_ctx/_e
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 import logging
@@ -15,8 +16,7 @@ from agent.message_sanitization import _sanitize_surrogates
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
-    _id_chunks, _legacy_reset_child_sql, _placeholders, _sql_json_extract,
-    _SQL_IN_CHUNK)
+    _legacy_reset_child_sql, _placeholders, _sql_json_extract)
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -43,7 +43,6 @@ _SET_COUNTERS_SQL = "UPDATE sessions SET message_count = ?, tool_call_count = ?"
 _RESET_COUNTERS_SQL = "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?"
 _SET_DISPLAY_META_SQL = "UPDATE messages SET display_metadata = ? WHERE id = ?"
 _ARCHIVE_ACTIVE_SQL = "UPDATE messages SET active = 0, compacted = 1 WHERE session_id = ? AND active = 1"
-_SANITIZE_REPRESENTED_IDS_TEMP_TABLE = "temp.sanitize_represented_ids"
 _INVALID = object()  # _json_or sentinel where the fallback must be distinguishable from JSON null
 
 
@@ -586,6 +585,36 @@ class SessionMessagesMixin:
             if not _is_ephemeral_scaffolding(message)
         ]
 
+        def _insert_retained_row(conn, row: Dict[str, Any]) -> None:
+            conn.execute(
+                _INSERT_MESSAGE_SQL,
+                (
+                    session_id,
+                    row["role"],
+                    row["content"],
+                    row["tool_call_id"],
+                    row["tool_calls"],
+                    row["tool_name"],
+                    row["effect_disposition"],
+                    row["timestamp"],
+                    row["token_count"],
+                    row["finish_reason"],
+                    row["reasoning"],
+                    row["reasoning_content"],
+                    row["reasoning_details"],
+                    row["codex_reasoning_items"],
+                    row["codex_message_items"],
+                    row["platform_message_id"],
+                    row["observed"],
+                    row["_compressed_summary"],
+                    1,
+                    row["api_content"],
+                    row["display_kind"],
+                    row["display_metadata"],
+                    row["display_identity"],
+                ),
+            )
+
         def _do(conn):
             lock_row = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
             if (
@@ -601,6 +630,11 @@ class SessionMessagesMixin:
                 "SELECT 1 FROM sessions WHERE id = ?", (session_id,)
             ).fetchone() is None:
                 raise ValueError(f"Session not found: {session_id}")
+            active_rows = conn.execute(
+                "SELECT * FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
+                (session_id,),
+            ).fetchall()
+            active_ids = {int(row["id"]) for row in active_rows}
             if represented_row_ids is not None:
                 represented = tuple(
                     row_id
@@ -608,71 +642,42 @@ class SessionMessagesMixin:
                     if isinstance(row_id, int)
                     and not isinstance(row_id, bool)
                     and row_id > 0
-                )
-                if represented:
-                    conn.execute(
-                        "CREATE TEMP TABLE IF NOT EXISTS "
-                        f"{_SANITIZE_REPRESENTED_IDS_TEMP_TABLE} "
-                        "(id INTEGER PRIMARY KEY)"
-                    )
-                    conn.execute(
-                        f"DELETE FROM {_SANITIZE_REPRESENTED_IDS_TEMP_TABLE}"
-                    )
-                    for chunk in _id_chunks(represented, _SQL_IN_CHUNK):
-                        conn.executemany(
-                            "INSERT OR IGNORE INTO "
-                            f"{_SANITIZE_REPRESENTED_IDS_TEMP_TABLE} (id) "
-                            "VALUES (?)",
-                            ((row_id,) for row_id in chunk),
-                        )
-                    tail_ids, tail_tool_calls = self._tail_rows_after_watermark(
-                        conn,
-                        "SELECT m.id, m.tool_calls FROM messages AS m "
-                        f"LEFT JOIN {_SANITIZE_REPRESENTED_IDS_TEMP_TABLE} AS r "
-                        "ON r.id = m.id "
-                        "WHERE m.session_id = ? AND m.active = 1 "
-                        "AND r.id IS NULL ORDER BY m.id",
-                        (session_id,),
-                    )
-                    conn.execute(
-                        f"DELETE FROM {_SANITIZE_REPRESENTED_IDS_TEMP_TABLE}"
-                    )
-                else:
-                    tail_ids, tail_tool_calls = self._tail_rows_after_watermark(
-                        conn,
-                        "SELECT id, tool_calls FROM messages "
-                        "WHERE session_id = ? AND active = 1 ORDER BY id",
-                        (session_id,),
-                    )
-            else:
-                tail_ids, tail_tool_calls = self._tail_rows_after_watermark(
-                    conn,
-                    "SELECT id, tool_calls FROM messages "
-                    "WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
-                    (session_id, int(watermark)),
-                )
-            if tail_ids:
-                conn.execute(
-                    f"DELETE FROM messages WHERE session_id = ? "
-                    f"AND id NOT IN ({_placeholders(tail_ids)})",
-                    [session_id, *tail_ids],
+                    and row_id in active_ids
                 )
             else:
-                conn.execute(
-                    "DELETE FROM messages WHERE session_id = ?", (session_id,)
+                represented = tuple(
+                    int(row["id"])
+                    for row in active_rows
+                    if int(row["id"]) <= int(watermark)
                 )
-            inserted, tool_calls_total = self._insert_message_rows(
-                conn, session_id, durable_messages
-            )
-            if tail_ids:
-                self._clone_message_rows(conn, tail_ids)
-                conn.execute(
-                    f"DELETE FROM messages WHERE session_id = ? "
-                    f"AND id IN ({_placeholders(tail_ids)})",
-                    [session_id, *tail_ids],
+            represented_set = set(represented)
+            represented_sorted = sorted(represented_set)
+            retained_by_slot: Dict[int, List[Dict[str, Any]]] = {}
+            for row in active_rows:
+                row_id = int(row["id"])
+                if row_id in represented_set:
+                    continue
+                slot = min(
+                    bisect.bisect_left(represented_sorted, row_id),
+                    len(durable_messages),
                 )
-                inserted += len(tail_ids)
-                tool_calls_total += tail_tool_calls
+                retained_by_slot.setdefault(slot, []).append(dict(row))
+
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+
+            inserted = 0
+            tool_calls_total = 0
+            for slot in range(len(durable_messages) + 1):
+                for retained in retained_by_slot.get(slot, []):
+                    _insert_retained_row(conn, retained)
+                    inserted += 1
+                    tool_calls_total += _tool_calls_len(retained.get("tool_calls"))
+                if slot < len(durable_messages):
+                    row_inserted, row_tool_calls = self._insert_message_rows(
+                        conn, session_id, [durable_messages[slot]]
+                    )
+                    inserted += row_inserted
+                    tool_calls_total += row_tool_calls
             conn.execute(
                 f"{_SET_COUNTERS_SQL} WHERE id = ?",
                 (inserted, tool_calls_total, session_id),

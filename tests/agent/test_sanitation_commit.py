@@ -8,6 +8,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import patch
 
@@ -168,9 +169,6 @@ class _ExternalEngine:
         self.expected_messages: list[dict] | None = None
         self.after_compress = None
         self.failure_cooldown_calls = 0
-
-    def pending_compression_operation(self, _messages):
-        return self.current_operation
 
     def prepare_compression_operation(
         self,
@@ -442,6 +440,95 @@ def test_sanitation_claim_is_passed_and_current_result_proves_exact_claim(tmp_pa
         harness.candidate
     )
     assert harness.memory.pre_compress_calls == 0
+
+
+def test_claimed_sanitation_skips_aux_feasibility_probe(tmp_path, monkeypatch):
+    import agent.conversation_compression as compression
+    import agent.model_metadata as model_metadata
+    import yaml
+
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "auxiliary": {
+                    "compression": {
+                        "provider": "openrouter",
+                        "model": "auxiliary/small",
+                        "context_length": model_metadata.MINIMUM_CONTEXT_LENGTH - 1,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    harness = _make_harness(tmp_path, rounds=1, initial_status=None)
+    harness.agent._compression_feasibility_checked = False
+    assert (
+        harness.agent._aux_compression_context_length_config
+        < model_metadata.MINIMUM_CONTEXT_LENGTH
+    )
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert _without_persistence_markers(returned) == _without_persistence_markers(
+        harness.candidate
+    )
+    assert harness.agent.context_compressor.operation_claims[0] is not None
+
+
+def test_generic_compression_still_enforces_aux_feasibility_probe(
+    tmp_path, monkeypatch
+):
+    import agent.auxiliary_client as aux_client
+    import agent.conversation_compression as compression
+    import agent.model_metadata as model_metadata
+
+    harness = _make_harness(
+        tmp_path,
+        rounds=1,
+        status="reassembled",
+        current_operation=None,
+    )
+    harness.agent.context_compressor.candidate = [
+        {"role": "user", "content": "generic compressed context"}
+    ]
+    harness.agent._compression_feasibility_checked = False
+    minimum_context = model_metadata.MINIMUM_CONTEXT_LENGTH
+    fake_client = SimpleNamespace(
+        base_url="https://auxiliary.invalid/v1",
+        api_key="test-key",
+    )
+    monkeypatch.setattr(
+        aux_client,
+        "_resolve_task_provider_model",
+        lambda _task: ("openrouter", "", "", "", ""),
+    )
+    monkeypatch.setattr(
+        aux_client,
+        "get_text_auxiliary_client",
+        lambda *_args, **_kwargs: (fake_client, "auxiliary/small"),
+    )
+    monkeypatch.setattr(
+        model_metadata,
+        "get_model_context_length",
+        lambda *_args, **_kwargs: minimum_context - 1,
+    )
+
+    with pytest.raises(ValueError, match="Auxiliary compression model"):
+        compression.compress_context(
+            harness.agent,
+            harness.messages,
+            "system",
+            approx_tokens=100_000,
+        )
 
 
 def test_prepare_hook_mutation_is_validated_against_pre_hook_snapshot(tmp_path):
@@ -1026,7 +1113,20 @@ def test_externalization_marker_byte_count_normalizes_lone_surrogates():
         f"ref=20260915_call-real_{digest}_abc123.json]"
     )
 
-    assert validate_sanitation_candidate(original, candidate) is not None
+    assert (
+        validate_sanitation_candidate(
+            original,
+            candidate,
+            externalized_payload_loader=lambda _ref: {
+                "kind": "tool_result",
+                "tool_call_id": "call-real",
+                "content": normalized,
+                "content_chars": len(normalized),
+                "content_bytes": len(normalized.encode()),
+            },
+        )
+        is not None
+    )
 
 
 def test_redacted_externalization_requires_matching_sidecar_payload():
@@ -1141,7 +1241,20 @@ def test_externalization_marker_must_match_original_identity_and_size():
     )
     candidate = copy.deepcopy(original)
     candidate[0]["content"] = valid
-    assert validate_sanitation_candidate(original, candidate) is not None
+    assert (
+        validate_sanitation_candidate(
+            original,
+            candidate,
+            externalized_payload_loader=lambda _ref: {
+                "kind": "tool_result",
+                "tool_call_id": "call-real",
+                "content": original[0]["content"],
+                "content_chars": len(original[0]["content"]),
+                "content_bytes": len(original[0]["content"].encode()),
+            },
+        )
+        is not None
+    )
 
     for malformed in (
         valid.replace("call-real", "call-other"),
@@ -1156,6 +1269,116 @@ def test_externalization_marker_must_match_original_identity_and_size():
     ):
         candidate[0]["content"] = malformed
         assert validate_sanitation_candidate(original, candidate) is None
+
+
+def test_externalized_marker_requires_readable_sidecar_when_loader_available():
+    original = [
+        {
+            "role": "tool",
+            "tool_call_id": "call-real",
+            "content": "sensitive output",
+        }
+    ]
+    marker = (
+        "[Externalized tool output: tool_call_id=call-real; "
+        f"chars={len(original[0]['content'])}; "
+        f"bytes={len(original[0]['content'].encode())}; "
+        f"ref=20260915_call-real_"
+        f"{hashlib.sha256(original[0]['content'].encode()).hexdigest()[:12]}"
+        "_abc123.json]"
+    )
+    candidate = copy.deepcopy(original)
+    candidate[0]["content"] = marker
+
+    assert validate_sanitation_candidate(original, candidate) is None
+    assert (
+        validate_sanitation_candidate(
+            original,
+            candidate,
+            externalized_payload_loader=lambda _ref: None,
+        )
+        is None
+    )
+    assert (
+        validate_sanitation_candidate(
+            original,
+            candidate,
+            externalized_payload_loader=lambda _ref: {"kind": "tool_result"},
+        )
+        is None
+    )
+    assert (
+        validate_sanitation_candidate(
+            original,
+            candidate,
+            externalized_payload_loader=lambda _ref: (_ for _ in ()).throw(
+                RuntimeError("cannot read sidecar")
+            ),
+        )
+        is None
+    )
+
+
+def test_externalized_marker_fails_closed_when_engine_has_no_sidecar_contract():
+    import agent.conversation_sanitation as sanitation
+
+    original = [
+        {
+            "role": "tool",
+            "tool_call_id": "call-real",
+            "content": "sensitive output",
+        }
+    ]
+    marker = (
+        "[Externalized tool output: tool_call_id=call-real; "
+        f"chars={len(original[0]['content'])}; "
+        f"bytes={len(original[0]['content'].encode())}; "
+        f"ref=20260915_call-real_"
+        f"{hashlib.sha256(original[0]['content'].encode()).hexdigest()[:12]}"
+        "_abc123.json]"
+    )
+    candidate = copy.deepcopy(original)
+    candidate[0]["content"] = marker
+    agent = SimpleNamespace(context_compressor=object())
+
+    loader = sanitation.externalized_payload_loader(agent)
+
+    assert loader is None
+    assert (
+        validate_sanitation_candidate(
+            original,
+            candidate,
+            externalized_payload_loader=loader,
+        )
+        is None
+    )
+
+
+def test_externalized_payload_loader_uses_context_engine_contract():
+    import agent.conversation_sanitation as sanitation
+
+    class _ContractEngine:
+        def __init__(self):
+            self.refs = []
+
+        def load_externalized_payload_sidecar(self, ref):
+            self.refs.append(ref)
+            return {"content": "verified"}
+
+    engine = _ContractEngine()
+    loader = sanitation.externalized_payload_loader(
+        SimpleNamespace(context_compressor=engine)
+    )
+
+    assert callable(loader)
+    assert loader("externalized.json") == {"content": "verified"}
+    assert engine.refs == ["externalized.json"]
+    assert (
+        sanitation.externalized_payload_loader(
+            SimpleNamespace(context_compressor=object())
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(
@@ -1571,6 +1794,35 @@ def test_valid_in_place_sanitation_mutation_commits_snapshot(tmp_path):
     assert _without_persistence_markers(
         harness.db.get_messages_as_conversation(harness.agent.session_id)
     ) == _without_persistence_markers(returned)
+
+
+def test_facade_snapshot_worker_returns_distinct_in_place_sanitation_snapshot(
+    tmp_path,
+):
+    harness = _make_harness(tmp_path, rounds=1)
+    original = copy.deepcopy(harness.messages)
+
+    def _mutate(messages, **kwargs):
+        messages[:] = copy.deepcopy(harness.candidate)
+        return messages, kwargs["operation_claim"]
+
+    harness.agent.context_compressor.compress = _mutate
+    returned, _ = harness.agent._compress_context(
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert returned is not harness.messages
+    assert _without_persistence_markers(returned) == _without_persistence_markers(
+        harness.candidate
+    )
+    assert _without_persistence_markers(harness.messages) == _without_persistence_markers(
+        original
+    )
+    assert _without_persistence_markers(
+        harness.db.get_messages_as_conversation(harness.agent.session_id)
+    ) == _without_persistence_markers(harness.candidate)
 
 
 @pytest.mark.parametrize(

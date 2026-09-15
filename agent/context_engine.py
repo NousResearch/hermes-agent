@@ -156,12 +156,6 @@ class ContextEngine(ABC):
         """Cheap rough check before the API call (no real token count yet); default skips."""
         return False
 
-    def pending_compression_operation(
-        self, messages: List[Dict[str, Any]]
-    ) -> str | None:
-        """Legacy operation hint; Hermes does not use it for commit classification."""
-        return None
-
     def prepare_compression_operation(
         self,
         messages: List[Dict[str, Any]],
@@ -177,6 +171,15 @@ class ContextEngine(ABC):
         same object to ``compress(..., operation_claim=claim)`` and return
         ``(messages, claim)`` only when that invocation performed pure sanitation.
         The default keeps existing engines on generic compression semantics.
+        """
+        return None
+
+    def load_externalized_payload_sidecar(self, ref: str) -> Dict[str, Any] | None:
+        """Optional sanitation sidecar loader used to verify externalization markers.
+
+        Return a dict describing the referenced payload or ``None`` when unavailable.
+        The host treats missing/invalid/exception results as an unverifiable marker and
+        fails the sanitation commit closed.
         """
         return None
 

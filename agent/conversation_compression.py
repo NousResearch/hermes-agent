@@ -3617,6 +3617,7 @@ def _run_summary_phase(
     approx_tokens: Optional[int], focus_topic: Optional[str], force: bool, bypass_cooldown: bool,
     commit_fence: Optional[CompressionCommitFence], hard_cancel_event: Any, system_message: str,
     attempt: _Attempt,
+    prepared_operation: Optional[sanitation.PreparedCompressionOperation] = None,
 ) -> _SummaryPhase:
     """Adopt a grown durable parent, gather memory context and run the summarizer.
     A hard cancel restores the compressor snapshot + live list, records a stall backoff while the lease is
@@ -3649,8 +3650,7 @@ def _run_summary_phase(
             if not force and not bypass_cooldown
             else None
         )
-        prepared_operation = None
-        if retry_candidate is None:
+        if retry_candidate is None and prepared_operation is None:
             try:
                 prepared_operation = sanitation.prepare_automatic_compression_operation(
                     agent,
@@ -3690,7 +3690,10 @@ def _run_summary_phase(
             )
         if prepared_operation is not None:
             claimed_result = sanitation.accept_prepared_sanitation_result(
-                agent, prepared_operation, compressed
+                agent,
+                prepared_operation,
+                compressed,
+                invocation_messages=messages,
             )
             if claimed_result is None:
                 _restore_messages_snapshot(messages, messages_before_compression)
@@ -3886,12 +3889,6 @@ def compress_context(
     if not force and _automatic_compression_gate_blocks(agent, bypass_cooldown):
         return messages, _existing_system_prompt(agent, system_message)
 
-    # Lazy feasibility probe (~400ms cold) on first attempt, not __init__; it sets
-    # _compression_warning so status replay still surfaces the warning. Marked checked
-    # only after the probe completes (transient failures are swallowed inside).
-    if not getattr(agent, "_compression_feasibility_checked", False):
-        check_compression_model_feasibility(agent)
-        agent._compression_feasibility_checked = True
     _pre_msg_count = len(messages)
     # In-place keeps the SAME session_id (no rotation/child/renumber/re-sync). A
     # missing attribute must default True, not rotation, which can wedge sessions.
@@ -3909,6 +3906,7 @@ def compress_context(
     # Publish the holder-qualified release hook before a timeout can win the
     # fence. If no durable lock was acquired there is no hook to publish.
     lease.finish_lock_setup()
+    lease.start_refresher()
     _adopted = _adopt_if_parent_rotated(agent, lease, messages, system_message)
     if _adopted is not None:
         return _adopted
@@ -3930,6 +3928,39 @@ def compress_context(
         lease.release()
         return messages, _existing_system_prompt(agent, system_message)
 
+    prechecked_prepared_operation = None
+    if (
+        not force
+        and not bypass_cooldown
+        and not sanitation.has_sanitation_retry(agent, messages)
+    ):
+        messages_before_prepare = copy.deepcopy(messages)
+        try:
+            prechecked_prepared_operation = (
+                sanitation.prepare_automatic_compression_operation(
+                    agent,
+                    messages,
+                    attempt_generation=attempt.generation,
+                    force=force,
+                    bypass_cooldown=bypass_cooldown,
+                )
+            )
+        finally:
+            _restore_messages_snapshot(messages, messages_before_prepare)
+
+    # Pure sanitation does not use the auxiliary summary route. Retained retries
+    # and generic compression still run the normal lazy feasibility check.
+    if (
+        not getattr(agent, "_compression_feasibility_checked", False)
+        and prechecked_prepared_operation is None
+    ):
+        try:
+            check_compression_model_feasibility(agent)
+        except BaseException:
+            lease.release()
+            raise
+        agent._compression_feasibility_checked = True
+
     # Interrupts/redirects must not tear a summary in half. Use the explicit stop
     # Event (message fields race) + fence timeout so pool slots free promptly.
     # Explicit stop surfaces set a separate Event atomically; never infer cause from the racy message
@@ -3942,6 +3973,7 @@ def compress_context(
         agent, messages, lease=lease, in_place=in_place, checkpoint_required=checkpoint_required,
         approx_tokens=approx_tokens, focus_topic=focus_topic, force=force, bypass_cooldown=bypass_cooldown,
         commit_fence=commit_fence, hard_cancel_event=_hard_cancel_event, system_message=system_message, attempt=attempt,
+        prepared_operation=prechecked_prepared_operation,
     )
     if phase.abort_prompt is not None:
         return phase.messages, phase.abort_prompt

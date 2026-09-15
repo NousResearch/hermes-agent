@@ -101,7 +101,7 @@ These have sensible defaults in the ABC. Override as needed:
 | `handle_tool_call(name, args, **kwargs)` | Returns error JSON | You implement tool handlers |
 | `should_compress_preflight(messages)` | Returns `False` | You can do a cheap pre-API-call estimate |
 | `prepare_compression_operation(messages, *, session_id=None, attempt_generation=None)` | Returns `None` | Your preflight can atomically claim that the next automatic call is pure sanitation |
-| `pending_compression_operation(messages)` | Returns `None` | Legacy hint only; Hermes does not use it for commit classification |
+| `load_externalized_payload_sidecar(ref)` | Returns `None` | You externalize payload markers and need host-side verification before a destructive sanitation commit |
 | `get_status()` | Standard token/threshold dict | You have custom metrics to expose |
 | `select_context(request_messages, *, conversation_messages, incoming_message, budget_tokens)` | Returns `None` (no-op) | You select/route which context enters **this** request (retrieval, topic routing) — see below |
 | `on_turn_complete(messages, usage=None, **kwargs)` | No-op | You ingest/index/observe the finished turn — see below |
@@ -146,8 +146,24 @@ result carries that exact object. A replayed or substituted claim is refused.
 A missing method, `None`, malformed return, exception, or `compress()` signature
 without `operation_claim` keeps generic compression behavior, including pre-call
 memory context. Manual/forced and overflow-recovery calls are always generic.
-The legacy `pending_compression_operation()` string hint and mutable
-`last_compression_status` are never sanitation proof.
+Mutable `last_compression_status` is never sanitation proof.
+
+`load_externalized_payload_sidecar(ref)` is the narrow verification contract for
+externalization markers. If your sanitizer emits strings like
+`[Externalized tool output: ... ref=<file>.json]` or
+`[Externalized payload: ... ref=<file>.json]`, implement this hook to return the
+referenced payload dict (or `None` when missing). Hermes validates marker
+identity and sizes against this payload before deleting original transcript
+content; unreadable/malformed sidecars fail closed.
+
+For the coordinated LCM release, `LCMEngine` must implement the hook by resolving
+`ref` inside its configured externalization directory with the plugin's safe
+reader. A tool-output sidecar must return `kind: "tool_result"`, `content`,
+`content_chars`, `content_bytes`, and the matching `tool_call_id`; a structured
+message sidecar must return `kind: "raw_payload"`, `content`, `content_chars`,
+`content_bytes`, and the matching `role`. `content` is the stored JSON text for
+structured payloads. The implementation must reject paths outside the storage
+directory and return `None` for missing or malformed files.
 
 ## Per-turn context selection and observation
 

@@ -98,15 +98,15 @@ def test_sanitation_preserves_active_rows_absent_from_noncontiguous_snapshot(
     db: SessionDB,
 ) -> None:
     first = db.append_message("sess1", role="user", content="represented-first")
-    db.append_message("sess1", role="user", content="concurrent-middle")
-    last = db.append_message("sess1", role="assistant", content="represented-last")
+    db.append_message("sess1", role="assistant", content="concurrent-middle")
+    last = db.append_message("sess1", role="user", content="represented-last")
     assert db.try_acquire_compression_lock("sess1", "sanitizer")
 
     db.sanitize_and_compact(
         "sess1",
         [
             {"role": "user", "content": "clean-first"},
-            {"role": "assistant", "content": "clean-last"},
+            {"role": "user", "content": "clean-last"},
         ],
         watermark=last,
         represented_row_ids=(first, last),
@@ -115,8 +115,13 @@ def test_sanitation_preserves_active_rows_absent_from_noncontiguous_snapshot(
 
     assert [row["content"] for row in db.get_messages("sess1")] == [
         "clean-first",
-        "clean-last",
         "concurrent-middle",
+        "clean-last",
+    ]
+    assert [row["role"] for row in db.get_messages("sess1")] == [
+        "user",
+        "assistant",
+        "user",
     ]
 
 
@@ -137,6 +142,38 @@ def test_sanitation_accepts_large_represented_row_id_sets(db: SessionDB) -> None
     )
 
     assert [row["content"] for row in db.get_messages("sess1")] == ["clean"]
+
+
+def test_sanitation_accepts_large_absent_tail_row_sets(db: SessionDB) -> None:
+    first = db.append_message("sess1", role="user", content="represented-first")
+    concurrent_rows = [
+        db.append_message(
+            "sess1",
+            role="user",
+            content=f"concurrent-{index:04d}",
+        )
+        for index in range(1_005)
+    ]
+    last = db.append_message("sess1", role="assistant", content="represented-last")
+    db._conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 600)
+    assert db.try_acquire_compression_lock("sess1", "sanitizer")
+
+    db.sanitize_and_compact(
+        "sess1",
+        [
+            {"role": "user", "content": "clean-first"},
+            {"role": "assistant", "content": "clean-last"},
+        ],
+        watermark=last,
+        represented_row_ids=(first, last),
+        lock_holder="sanitizer",
+    )
+
+    contents = [row["content"] for row in db.get_messages("sess1")]
+    assert contents[0] == "clean-first"
+    assert contents[-1] == "clean-last"
+    assert contents[1:-1] == [f"concurrent-{index:04d}" for index in range(1_005)]
+    assert concurrent_rows
 
 
 def test_sanitation_does_not_insert_ephemeral_recovery_scaffolding(db: SessionDB) -> None:

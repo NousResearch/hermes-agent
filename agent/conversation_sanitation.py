@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import dataclasses
 import hashlib
-import importlib
 import inspect
 import json
 import logging
@@ -510,14 +509,30 @@ def _verified_externalized_content(
     return normalized
 
 
+def _is_externalization_marker(candidate: str, *, role: str) -> bool:
+    if role == "tool" and _LCM_EXTERNALIZED_TOOL_OUTPUT_RE.fullmatch(candidate):
+        return True
+    return _LCM_EXTERNALIZED_PAYLOAD_RE.fullmatch(candidate) is not None
+
+
 def _validation_views(
     original: list,
     candidate: list,
     externalized_payload_loader: Callable[[str], Any] | None = None,
-) -> tuple[list, list, int]:
+) -> tuple[list, list, int, bool]:
     original_view = copy.deepcopy(_strip_persistence_marker(original))
     candidate_view = copy.deepcopy(_strip_persistence_marker(candidate))
     verified_externalizations = 0
+    failed_externalization_verification = False
+    if externalized_payload_loader is None:
+        for candidate_message in candidate_view:
+            content = candidate_message.get("content")
+            if isinstance(content, str) and _is_externalization_marker(
+                content,
+                role=str(candidate_message.get("role", "")),
+            ):
+                failed_externalization_verification = True
+                break
     for original_message, candidate_message in zip(original_view, candidate_view):
         if (
             externalized_payload_loader is not None
@@ -526,9 +541,10 @@ def _validation_views(
             and isinstance(candidate_message.get("content"), str)
             and original_message.get("role") == candidate_message.get("role")
         ):
+            role = str(original_message.get("role", ""))
             verified = _verified_externalized_content(
                 candidate_message["content"],
-                role=str(original_message.get("role", "")),
+                role=role,
                 tool_call_id=(
                     str(original_message.get("tool_call_id"))
                     if isinstance(original_message.get("tool_call_id"), str)
@@ -536,6 +552,14 @@ def _validation_views(
                 ),
                 loader=externalized_payload_loader,
             )
+            if (
+                verified is None
+                and _is_externalization_marker(
+                    candidate_message["content"],
+                    role=role,
+                )
+            ):
+                failed_externalization_verification = True
             if verified is not None and (
                 not isinstance(original_message.get("content"), str)
                 or verified != _normalized_text(original_message["content"])
@@ -556,7 +580,12 @@ def _validation_views(
         ):
             original_message.pop("api_content", None)
             candidate_message.pop("api_content", None)
-    return original_view, candidate_view, verified_externalizations
+    return (
+        original_view,
+        candidate_view,
+        verified_externalizations,
+        failed_externalization_verification,
+    )
 
 
 def validate_sanitation_candidate(
@@ -565,11 +594,18 @@ def validate_sanitation_candidate(
     *,
     externalized_payload_loader: Callable[[str], Any] | None = None,
 ) -> Optional[SanitationChanges]:
-    original_view, candidate_view, verified_externalizations = _validation_views(
+    (
+        original_view,
+        candidate_view,
+        verified_externalizations,
+        failed_externalization_verification,
+    ) = _validation_views(
         messages,
         candidate,
         externalized_payload_loader,
     )
+    if failed_externalization_verification:
+        return None
     changes = _validate_sanitized_value(
         original_view,
         candidate_view,
@@ -613,27 +649,12 @@ def prepare_sanitation_commit(
 
 
 def externalized_payload_loader(agent: Any) -> Callable[[str], Any] | None:
-    """Adapt the paired LCM sidecar reader without adding a host protocol."""
+    """Context-engine contract for sidecar verification during sanitation."""
     compressor = getattr(agent, "context_compressor", None)
-    module_name = type(compressor).__module__
-    package_name = module_name.split(".", 1)[0]
-    if package_name != "hermes_lcm":
+    loader = getattr(compressor, "load_externalized_payload_sidecar", None)
+    if not callable(loader):
         return None
-    try:
-        externalize = importlib.import_module(f"{package_name}.externalize")
-        config = compressor._config
-        storage_dir = externalize.get_large_output_storage_dir(
-            config,
-            hermes_home=str(getattr(compressor, "_hermes_home", "") or ""),
-            create=False,
-        )
-        safe_read = externalize._read_legacy_externalized_payload_json
-    except (AttributeError, ImportError, OSError):
-        return None
-    return lambda ref: safe_read(
-        storage_dir / ref,
-        storage_dir=storage_dir,
-    )
+    return loader
 
 
 def remember_sanitation_retry(
@@ -748,6 +769,8 @@ def accept_prepared_sanitation_result(
     agent: Any,
     prepared: PreparedCompressionOperation,
     result: Any,
+    *,
+    invocation_messages: list | None = None,
 ) -> Optional[list]:
     """Unwrap only a result carrying the exact one-shot invocation claim."""
     if (
@@ -758,7 +781,10 @@ def accept_prepared_sanitation_result(
         or agent.session_id != prepared.session_id
     ):
         return None
-    return result[0]
+    accepted = result[0]
+    if invocation_messages is not None and accepted is invocation_messages:
+        return copy.deepcopy(accepted)
+    return accepted
 
 
 def finish_sanitation_commit(

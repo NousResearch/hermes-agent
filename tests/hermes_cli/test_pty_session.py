@@ -338,3 +338,53 @@ async def test_close_all_survives_key_popped_by_concurrent_reap():
 
     assert not reg._sessions
     assert all(b.closed for b in bridges)
+
+
+class DroppedClientWS(FakeWS):
+    """A socket whose client already disconnected: binary sends raise like a dropped client."""
+
+    async def send_bytes(self, data):
+        raise RuntimeError("WebSocketDisconnect")
+
+
+@pytest.mark.asyncio
+async def test_attach_mid_replay_drop_rolls_back_to_detached_idle():
+    """A client dying during the replay buffer write must not leave the session
+    attached forever: the caller's handler unwinds before its writer-loop
+    finally, so the committed attach state has to be undone here for
+    reap_idle() to eventually reclaim the PTY process group (#110849)."""
+    from hermes_cli.pty_session import PtySession
+
+    bridge = FakeBridge([b"partial differential frame", b""])
+    s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    await asyncio.sleep(0.05)                     # buffer the frame before attaching
+
+    ws = DroppedClientWS()
+    assert await s.attach(ws) is False
+    assert s.attached is False
+    assert s._ws is None
+    assert s.last_detached_at is not None
+    assert s.alive is True                        # the PTY child itself is fine; TTL reaps it
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_attach_mid_replay_drop_does_not_poison_a_replacement_socket():
+    """After a dropped replay the session is detached, so the next attach must
+    replay to the new socket as if nothing committed against the dead one."""
+    from hermes_cli.pty_session import PtySession
+
+    bridge = FakeBridge([b"frame one", b""])
+    s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    await asyncio.sleep(0.05)
+
+    assert await s.attach(DroppedClientWS()) is False
+
+    replacement = FakeWS()
+    assert await s.attach(replacement) is True
+    replay = b"".join(p for kind, p in replacement.sent if kind == "bytes")
+    assert b"frame one" in replay
+    assert s.attached is True
+    await s.close()

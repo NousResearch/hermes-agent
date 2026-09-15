@@ -159,7 +159,7 @@ If no provider is registered and the bind is non-loopback, the dashboard **fails
 An unauthenticated public dashboard was the entry point for the June 2026 MCP-config persistence campaign: internet scanners reached exposed dashboards (and OpenAI API servers) and drove the agent into planting an SSH-key backdoor. The auth gate is now mandatory on every non-loopback bind. For a trusted-LAN / homelab box, the bundled username/password provider (`HERMES_DASHBOARD_BASIC_AUTH_USERNAME` + `_PASSWORD`) is the zero-infra way to satisfy it.
 :::
 
-Running the dashboard as a separate container **is** supported when that container shares the host PID and network namespace (e.g. `network_mode: host`, as the repo's own `docker-compose.yml` does — see its `dashboard` service). Its gateway-liveness detection requires a shared PID namespace with the gateway process, so the limitation only applies to dashboards run in isolated bridge-network containers without a shared PID namespace.
+Running the dashboard as a separate container **is** supported when that container shares the host PID and network namespace (e.g. `network_mode: host`, as the repo's own `docker-compose.yml` does — see its `dashboard` service). Its gateway-liveness detection requires a shared PID namespace with the gateway process, so the limitation only applies to dashboards run in isolated bridge-network containers without a shared PID namespace. The same sharing (`pid: "service:gateway"` in Compose) is what lets the dashboard's dispatch nudge reclaim the gateway's crashed workers on the first tick; without it, kanban treats the gateway's worker PIDs as unverifiable from the dashboard and leaves those claims to the claim TTL rather than guessing.
 
 ## Running interactively (CLI chat)
 

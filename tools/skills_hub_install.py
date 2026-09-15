@@ -57,6 +57,11 @@ def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
     return target
 
 
+def _bundle_bytes(content: str | bytes) -> bytes:
+    """Return the exact bytes represented by an in-memory bundle entry."""
+    return content if isinstance(content, bytes) else content.encode("utf-8")
+
+
 def quarantine_bundle(bundle: SkillBundle) -> Path:
     """Write a skill bundle to the quarantine directory for scanning."""
     from tools.skills_hub import _quarantine_dir, ensure_hub_dirs
@@ -71,10 +76,7 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
     for rel_path, file_content in validated_files:
         file_dest = dest.joinpath(*rel_path.split("/"))
         file_dest.parent.mkdir(parents=True, exist_ok=True)
-        if isinstance(file_content, bytes):
-            file_dest.write_bytes(file_content)
-        else:
-            file_dest.write_text(file_content, encoding="utf-8")
+        file_dest.write_bytes(_bundle_bytes(file_content))
     return dest
 
 
@@ -236,8 +238,7 @@ def bundle_content_hash(bundle: SkillBundle) -> str:
     for rel_path in sorted(normalized):
         h.update(rel_path.encode("utf-8"))
         h.update(b"\x00")
-        content = normalized[rel_path]
-        h.update(content if isinstance(content, bytes) else content.encode("utf-8"))
+        h.update(_bundle_bytes(normalized[rel_path]))
     return f"sha256:{h.hexdigest()[:16]}"
 
 

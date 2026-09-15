@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
@@ -196,7 +197,15 @@ def _toggle_suppressed_name(skill_name: str, *, add: bool) -> None:
 def _iter_skill_mds(base: Path, *, local_only: bool) -> Iterator[Tuple[str, Path]]:
     """``(frontmatter name, SKILL.md)`` under *base* minus metadata/VCS/venv/cache dirs; *local_only* also skips
     external skill dirs mounted below the tree (curation must not touch them)."""
-    for skill_md in base.rglob("SKILL.md"):
+    # Walk with dir pruning. Path.rglob visits every dependency/archive
+    # directory before the match filter, so a skills tree with node_modules
+    # or vendor archives pays a full recursive listing on every curator scan.
+    for root, dirs, files in os.walk(base):
+        dirs[:] = [d for d in dirs if not is_excluded_skill_path(Path(root) / d)
+                   and not (local_only and is_external_skill_path(Path(root) / d))]
+        if "SKILL.md" not in files:
+            continue
+        skill_md = Path(root) / "SKILL.md"
         if not (is_excluded_skill_path(skill_md) or (local_only and is_external_skill_path(skill_md))):
             yield _read_skill_name(skill_md, fallback=skill_md.parent.name), skill_md
 
@@ -227,7 +236,8 @@ def list_archived_skill_names() -> List[str]:
 def _read_skill_name(skill_md: Path, fallback: str) -> str:
     """The frontmatter ``name:`` field of a SKILL.md (first 4000 chars), else *fallback*."""
     try:
-        lines = [line.strip() for line in skill_md.read_text(encoding="utf-8", errors="replace")[:4000].split("\n")]
+        with skill_md.open(encoding="utf-8", errors="replace") as stream:
+            lines = [line.strip() for line in stream.read(4000).split("\n")]
     except OSError:
         return fallback
     if "---" not in lines:
@@ -286,9 +296,10 @@ def list_unmanaged_skill_names() -> List[str]:
     """Curation-ELIGIBLE skills without a provenance marker (pre-``created_by`` records, or foreground creates that
     belong to the user). Invisible to ``curated_report()`` and auto transitions; only ``curator adopt`` hands
     them over — provenance is declared, never inferred from activity."""
+    # _scan_local_skills already excludes hub, protected and external paths.
+    # Re-resolving each known-local name here caused a quadratic full-tree scan.
     return _scan_local_skills(
-        lambda name, md, bundled, usage: name not in bundled and not _is_curator_managed_record(usage.get(name))
-        and is_curation_eligible(name, md))
+        lambda name, md, bundled, usage: name not in bundled and not _is_curator_managed_record(usage.get(name)))
 
 
 def unmanaged_report() -> List[Dict[str, Any]]:

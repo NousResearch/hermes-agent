@@ -5,7 +5,8 @@ kill every command with ``PermissionError: [Errno 13] Permission denied:
 '/root'`` — ``os.path.isdir('/root')`` is True for a non-root user (stat only
 needs search permission on ``/``), so the old existence-only check in
 ``_resolve_safe_cwd`` happily returned a directory ``subprocess.Popen`` could
-not enter. The fix checks X_OK and falls back to the nearest usable ancestor.
+not enter. The fix checks X_OK and falls back to a writable ancestor when the
+configured path itself is missing or unenterable.
 """
 
 import os
@@ -14,7 +15,12 @@ import tempfile
 
 import pytest
 
-from tools.environments.local import LocalEnvironment, _cwd_usable, _resolve_safe_cwd
+from tools.environments.local import (
+    LocalEnvironment,
+    _cwd_fallback_usable,
+    _cwd_usable,
+    _resolve_safe_cwd,
+)
 
 
 @pytest.fixture
@@ -61,6 +67,49 @@ class TestInaccessibleCwdFallback:
                 env.cleanup()
             except Exception:
                 pass
+
+
+class TestWritableCwdFallback:
+    def test_resolve_safe_cwd_skips_searchable_but_non_writable_directory(
+        self, tmp_path, monkeypatch
+    ):
+        read_only = tmp_path / "read-only"
+        read_only.mkdir()
+        real_access = os.access
+
+        def access(path, mode):
+            if os.fspath(path) == str(read_only) and mode & os.W_OK:
+                return False
+            return real_access(path, mode)
+
+        monkeypatch.setattr(os, "access", access)
+
+        assert real_access(read_only, os.X_OK)
+        assert _cwd_usable(str(read_only)) is True
+        assert _cwd_fallback_usable(str(read_only)) is False
+        # Read-only but enterable configured CWDs retain their semantics.
+        assert _resolve_safe_cwd(str(read_only)) == str(read_only)
+        assert _resolve_safe_cwd(str(read_only / "missing")) == str(tmp_path)
+
+    def test_local_environment_uses_resolved_fallback_in_wrapper(self, tmp_path, monkeypatch):
+        read_only = tmp_path / "read-only"
+        read_only.mkdir()
+        missing = read_only / "missing"
+        real_access = os.access
+
+        def access(path, mode):
+            if os.fspath(path) == str(read_only) and mode & os.W_OK:
+                return False
+            return real_access(path, mode)
+
+        monkeypatch.setattr(os, "access", access)
+        env = LocalEnvironment(cwd=str(missing), timeout=30)
+        try:
+            result = env.execute("pwd")
+            assert result["returncode"] == 0
+            assert result["output"].strip() == str(tmp_path)
+        finally:
+            env.cleanup()
 
 
 class TestUsableCwdBehaviorUnchanged:

@@ -1204,15 +1204,63 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    Exception, mirroring check 3: an explicit requeue AFTER the PR comment
+    #    (a reviewer's ``changes_requested``/``review_reopened``, or an operator
+    #    ``unblock``/``promote``/``reclaim``/``status`` move) means the PR is to be
+    #    UPDATED by the implementer, not duplicated. Without it a card sent back
+    #    for rework with an open draft PR deadlocks in ``ready`` for the whole
+    #    PR window — the dispatcher re-emits ``respawn_guarded`` every tick and
+    #    nobody can clear it (observed on t_e434c6d8, 2026-09-11).
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+            if _requeued_after_event(conn, task_id, c["created_at"]):
+                continue
             return "active_pr"
 
     return None
+
+
+# Explicit "run it again" signals. ``changes_requested``/``review_reopened`` are
+# the review-lane verdicts that hand a card back to its implementer; the rest are
+# operator moves (done→ready drag, re-promotion, unblock, reclaim).
+_REQUEUE_EVENT_KINDS = (
+    "status", "promoted", "unblocked", "reclaimed",
+    "changes_requested", "review_reopened",
+)
+
+
+def _requeued_after_event(
+    conn: sqlite3.Connection, task_id: str, since: Optional[int],
+) -> bool:
+    """True when a requeue event was recorded after the comment at ``since``.
+
+    ``since`` is epoch seconds, so the comment and a later requeue can share
+    one timestamp. The anchor is therefore the newest *comment* event at or
+    before ``since``, and the comparison is by ``task_events.id`` (monotonic):
+    anchoring on any event at or before ``since`` lets a same-second requeue
+    swallow its own anchor, and comparing the two timestamps directly reads
+    that requeue as preceding the comment. A same-second comment that is not
+    the one under test can only move the anchor forward, which leaves the guard
+    ON — the safe direction, since this guard exists to prevent a duplicate PR.
+    """
+    if not since:
+        return False
+    anchor = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) FROM task_events "
+        "WHERE task_id = ? AND kind = 'commented' AND created_at <= ?",
+        (task_id, int(since)),
+    ).fetchone()[0]
+    placeholders = ", ".join("?" for _ in _REQUEUE_EVENT_KINDS)
+    return conn.execute(
+        f"SELECT 1 FROM task_events WHERE task_id = ? AND id > ? "
+        f"AND kind IN ({placeholders}) LIMIT 1",
+        (task_id, anchor, *_REQUEUE_EVENT_KINDS),
+    ).fetchone() is not None
 
 
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:

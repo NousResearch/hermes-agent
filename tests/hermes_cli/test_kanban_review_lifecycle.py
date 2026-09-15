@@ -478,6 +478,55 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         ) == "rate_limit_cooldown"
 
 
+def test_active_pr_guard_yields_to_operator_requeue(kanban_home: Path) -> None:
+    """Invariant: a PR-URL comment defers the re-spawn only while it is the last
+    word on the card.
+
+    An explicit operator requeue *after* the comment means the PR is to be
+    UPDATED, not duplicated, so ``active_pr`` must stand down. Without this the
+    card deadlocks in ``ready`` for the whole 24h PR window: the dispatcher
+    re-emits ``respawn_guarded`` every tick and nothing the operator does
+    (unblock, promote, drag to ready) clears it.
+    """
+    pr_comment = "Opened https://github.com/example/repo/pull/123 for review."
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="rework me", assignee="worker")
+        kb.add_comment(conn, tid, author="worker", body=pr_comment)
+
+        # Before any requeue the duplicate-PR protection still holds.
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+        assert kb.block_task(conn, tid, reason="needs rework", kind="needs_input")
+        assert kb.unblock_task(conn, tid)
+
+        # The operator's explicit "run it again" outranks the guard.
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_stale_requeue_before_pr_comment_does_not_suspend_guard(
+    kanban_home: Path,
+) -> None:
+    """Negative control for the exemption: it is ORDERED, not presence-based.
+
+    A requeue that happened *before* the PR comment must not excuse a PR that
+    arrived afterwards — the card has been re-spawned, opened a PR and has not
+    been asked to run again since.
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="rework me", assignee="worker")
+        assert kb.block_task(conn, tid, reason="needs rework", kind="needs_input")
+        assert kb.unblock_task(conn, tid)
+
+        kb.add_comment(
+            conn,
+            tid,
+            author="worker",
+            body="Opened https://github.com/example/repo/pull/7 for review.",
+        )
+
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+
 def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

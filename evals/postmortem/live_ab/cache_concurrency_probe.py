@@ -35,6 +35,7 @@ import collections
 import hashlib
 import json
 import os
+import re as _re
 import sys
 import tempfile
 import threading
@@ -98,10 +99,18 @@ class _Ctx:
     def __exit__(self, *a): return self.mgr.__exit__(*a)
     def __getattr__(self, n): return getattr(self.mgr, n)
 
+def _probe_fields(msgs, system):
+    """worker id (from the ``[probe-session N]`` marker) and content hashes shared by both patched clients."""
+    f0 = msgs[0] if msgs else {}
+    ftxt = f0.get("content") if isinstance(f0.get("content"), str) else "".join(b.get("text", "") for b in (f0.get("content") or []) if isinstance(b, dict))
+    m = _re.search(r"\[probe-session (\d+)\]", ftxt or "")
+    sha = lambda o: hashlib.sha256(json.dumps(o, sort_keys=True, default=str).encode()).hexdigest()[:10]
+    return dict(worker=int(m.group(1)) if m else None, system_sha=sha(system), msg_shas=[sha(x) for x in msgs]), sha
+
 def patched_stream(self, **kw):
     msgs = kw.get("messages") or []
-    rec = dict(worker=int(m.group(1)) if m else None, call=len(msgs), t_start=time.time(), model=kw.get("model"),
-               n_msgs=len(msgs), system_sha=sys_sha, tools_sha=tools_sha, msg_shas=msg_shas)
+    fields, sha = _probe_fields(msgs, kw.get("system"))
+    rec = dict(**fields, call=len(msgs), t_start=time.time(), model=kw.get("model"), n_msgs=len(msgs), tools_sha=sha(kw.get("tools")))
     if SETTLE_S > 0 and len(msgs) > 1:
         time.sleep(SETTLE_S); rec["settle_s"] = SETTLE_S
     return _Ctx(_orig_stream(self, **kw), rec)
@@ -130,7 +139,6 @@ class _OAStream:
     def __getattr__(self, n): return getattr(self.inner, n)
 def patched_create(self, *a, **kw):
     msgs = kw.get("messages") or []
-    import re as _re
     first = msgs[0] if msgs else {}
     sysm = next((m for m in msgs if m.get("role") == "system"), None)
     nonsys = [m for m in msgs if m.get("role") != "system"]

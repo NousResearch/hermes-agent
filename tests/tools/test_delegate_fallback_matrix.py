@@ -239,6 +239,3 @@ def test_declared_child_chain_activates_on_primary_failure():
     assert child.model == "deepseek-chat"
     assert child.provider == "deepseek"
 
-
-if __name__ == "__main__":
-    unittest.main()

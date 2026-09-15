@@ -17,6 +17,11 @@ logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with th
 
 _ORPHAN_RESCUE_REFS_TO_KEEP = 10
 _ORPHAN_RESCUE_REF_MAX_AGE_DAYS = 30
+# Retention for the ordinary local-commit backup refs (``<branch>-<stamp>-<sha>``). Same policy as the
+# orphan rescue refs, tracked separately so the user-visible lifetime of each family can be stated
+# without one number silently governing both.
+_LOCAL_COMMIT_BACKUP_REFS_TO_KEEP = 10
+_LOCAL_COMMIT_BACKUP_REF_MAX_AGE_DAYS = 30
 
 _GIT_TEXT_KW = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
 _BAR = "=" * 68
@@ -38,23 +43,23 @@ def _git_stdout(git_cmd, args, cwd, **kw) -> Optional[str]:
     return None
 
 
-def _prune_orphan_rescue_refs(
-    git_cmd, cwd, branch, keep=_ORPHAN_RESCUE_REFS_TO_KEEP, max_age_days=_ORPHAN_RESCUE_REF_MAX_AGE_DAYS
+def _prune_backup_refs(
+    git_cmd, cwd, prefix, keep=_LOCAL_COMMIT_BACKUP_REFS_TO_KEEP,
+    max_age_days=_LOCAL_COMMIT_BACKUP_REF_MAX_AGE_DAYS,
 ) -> None:
-    """Expire old orphan rescue refs (``refs/hermes-update-backups/orphan-<branch>-<ts>-<sha>``).
+    """Expire old update-backup refs under *prefix* (``<prefix><YYYYMMDD>-<HHMMSS>[-<sha>]``).
 
-    Each ref pins a possibly multi-GB snapshot against ``git gc``, so a repeatedly corrupted install would
+    Each ref pins a possibly multi-GB snapshot against ``git gc``, so a repeatedly diverged install would
     grow ``.git`` unbounded. Keep the ``keep`` newest AND drop any older than ``max_age_days`` by the
     ``YYYYMMDD-HHMMSS`` stamp (unparseable names left alone); names sort chronologically so
     ``for-each-ref`` order is creation order. Best-effort, never blocks.
 
-    A rescue ref pins every object reachable from that commit against ``git gc`` — and in the incident shape
+    A backup ref pins every object reachable from that commit against ``git gc`` — and in the incident shape
     those objects include a full working-tree snapshot (the autostash orphan commit), which can be multi-GB
     when the tree holds large stray files. See #87694.
     """
     from hermes_cli.update_cmd import _git_run
     with suppress(OSError):
-        prefix = f"refs/hermes-update-backups/orphan-{branch}-"
         list_result = _git_run(git_cmd, ["for-each-ref", "--format=%(refname)", "--sort=refname", f"{prefix}*"], cwd)
         if list_result.returncode != 0:
             return
@@ -68,6 +73,46 @@ def _prune_orphan_rescue_refs(
                         stale.add(ref)
         for ref in sorted(stale):
             _git_run(git_cmd, ["update-ref", "-d", ref], cwd)
+
+
+def _prune_orphan_rescue_refs(
+    git_cmd, cwd, branch, keep=_ORPHAN_RESCUE_REFS_TO_KEEP, max_age_days=_ORPHAN_RESCUE_REF_MAX_AGE_DAYS
+) -> None:
+    """Expire old orphan rescue refs (``refs/hermes-update-backups/orphan-<branch>-<ts>-<sha>``).
+
+    The orphan family is one prefix of the shared backup namespace; the ordinary local-commit backups
+    (``refs/hermes-update-backups/<branch>-<ts>-<sha>``) prune through ``_prune_backup_refs`` directly, so
+    every ref a failed update can create has a bounded lifetime.
+    """
+    _prune_backup_refs(git_cmd, cwd, f"refs/hermes-update-backups/orphan-{branch}-", keep, max_age_days)
+
+
+def _create_backup_ref(git_cmd, cwd, ref, value, attempts: int = 3) -> tuple[bool, str]:
+    """Point *ref* at *value* WITHOUT overwriting an existing ref; returns ``(ok, ref_used)``.
+
+    ``git update-ref <ref> <newvalue>`` silently overwrites, so a second update in the same second — or
+    any name collision — could replace the only recovery pointer to earlier local commits while reporting
+    success: exactly the failure the backup exists to prevent. Passing an empty ``<oldvalue>`` makes the
+    write create-only. A refused write is then classified by probing the ref:
+
+    * exists and already resolves to *value* → the backup we wanted is present (success);
+    * exists but points elsewhere → a name collision, retried with a numeric suffix (reachable only for a
+      name that cannot encode the object id);
+    * absent → the write failed for some other reason (permissions, disk) and NO retry can help, so report
+      the failure rather than burning attempts.
+    """
+    from hermes_cli.update_cmd import _git_run
+    for attempt in range(max(1, attempts)):
+        candidate = ref if attempt == 0 else f"{ref}-{attempt + 1}"
+        result = _git_run(git_cmd, ["update-ref", candidate, value, ""], cwd)
+        if result.returncode == 0:
+            return True, candidate
+        existing = _git_run(git_cmd, ["rev-parse", "--verify", "--quiet", candidate], cwd)
+        if existing.returncode != 0 or not existing.stdout.strip():
+            return False, ref
+        if existing.stdout.strip() == value:
+            return True, candidate
+    return False, ref
 
 
 def _branch_head_label(git_cmd=None, cwd=None) -> str | None:

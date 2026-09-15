@@ -14154,6 +14154,7 @@
           "disabled",
           "connecting",
           "failed",
+          "lazy",
           "configured"
         ],
         "title": "McpRuntimeStatus",

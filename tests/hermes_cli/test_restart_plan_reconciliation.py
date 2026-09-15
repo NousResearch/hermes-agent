@@ -329,3 +329,44 @@ def test_mixed_fleet_only_the_missed_one_escalates(capsys):
     assert "ghost" in missed_block
     assert "[default]" not in missed_block
     assert "[work]" not in missed_block
+
+
+def test_external_supervisor_maps_to_external_supervisor_mechanism():
+    """A gateway declaring supervisor "external" is supervised — never "manual".
+
+    The plan/receipt mechanism for an ``--external-supervisor`` gateway must name the
+    external supervisor that owns its relaunch; the old ``.get(supervisor, "manual")``
+    fallback claimed no supervisor relaunch authority existed at all.
+    """
+    assert _restart_mechanism("external", "default") == "external-supervisor"
+    # display derives FROM the id — no silent fallback to the manual recovery hint
+    assert "external supervisor" in describe_restart_mechanism("external-supervisor", "default")
+    # the runtime record built from a declared "external" supervisor carries the honest id
+    assert _rt("default", 1, supervisor="external").restart_via == "external-supervisor"
+
+
+def test_every_mechanism_id_has_a_description():
+    """Policy-table contract: each id _RESTART_MECHANISMS can emit has display prose."""
+    from hermes_cli.update_inventory import _MECHANISM_DESCRIPTIONS, _RESTART_MECHANISMS
+
+    assert set(_RESTART_MECHANISMS.values()) <= set(_MECHANISM_DESCRIPTIONS)
+
+
+def test_external_gateway_partition_gets_external_skip_reason():
+    """Abort recovery explains an external-supervisor gateway by its own contract."""
+    from types import SimpleNamespace
+
+    from hermes_cli.update_cmd_fleet import _EXTERNAL_GATEWAY_SKIP_REASON, _gateway_recovery_partition
+
+    plan = SimpleNamespace(
+        runtimes=[
+            SimpleNamespace(
+                kind="gateway", profile="default", pid=1,
+                supervisor="external", restart_via="external-supervisor",
+            ),
+        ]
+    )
+    candidates, skipped = _gateway_recovery_partition(plan)
+    assert candidates == {}
+    assert len(skipped) == 1
+    assert skipped[0]["reason"] == _EXTERNAL_GATEWAY_SKIP_REASON

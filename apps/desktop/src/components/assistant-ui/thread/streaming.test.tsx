@@ -643,6 +643,36 @@ describe('assistant-ui streaming renderer', () => {
     expect(settled).not.toMatch(/\boverflow-hidden\b/)
   })
 
+  it('never overscroll-contains the thinking body — preview or expanded', async () => {
+    const { container } = render(<RunningReasoningHarness />)
+    const ui = within(container)
+    const toggle = ui.getByRole('button', { name: /thinking/i })
+
+    // The live preview is height-capped, but it must NOT carry
+    // overscroll-contain: a body that can't scroll itself (expanded, or
+    // content shorter than the cap) would swallow the wheel instead of
+    // chaining it to the thread viewport, and a scrollable preview must
+    // chain past its own edge once it hits top/bottom — matching every
+    // other scroller in the app (#84964-style dead zone otherwise).
+    const preview = container.querySelector('[data-slot="aui_thinking-body"]')?.className ?? ''
+    expect(preview).toContain('max-h-40')
+    expect(preview).toMatch(/\boverflow-auto\b/)
+    expect(preview).not.toMatch(/\boverscroll-contain\b/)
+
+    // Collapse, then expand by hand: the body loses the cap but keeps
+    // chaining — still no contain.
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+
+    const expanded = container.querySelector('[data-slot="aui_thinking-body"]')?.className ?? ''
+    expect(expanded).toMatch(/\boverflow-auto\b/)
+    expect(expanded).not.toContain('max-h-40')
+    expect(expanded).not.toMatch(/\boverscroll-contain\b/)
+  })
+
   it('does not collapse a live thinking preview when the turn settles', async () => {
     const { container, settle } = renderSettlingReasoning()
     const toggle = within(container).getByRole('button', { name: /thinking/i })

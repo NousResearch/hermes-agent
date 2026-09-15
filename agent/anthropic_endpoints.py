@@ -122,8 +122,8 @@ def _is_nous_portal_endpoint(base_url: str | None) -> bool:
 
 def _requires_bearer_auth(base_url: str | None) -> bool:
     """Providers needing ``Authorization: Bearer`` instead of ``x-api-key``: MiniMax, Azure AI
-    Foundry, Palantir Foundry's LLM proxy, CommandCode, Nous Portal. Palantir/CommandCode use
-    hostname matching (not substring) so ``evil.com/palantirfoundry`` paths don't trigger it."""
+    Foundry, Palantir Foundry's LLM proxy, CommandCode, Nous Portal, xKiro. Palantir/CommandCode/xKiro
+    use hostname matching (not substring) so ``evil.com/palantirfoundry`` paths don't trigger it."""
     normalized = _normalized_lower(base_url)
     return (
         _is_nous_portal_endpoint(base_url)
@@ -131,6 +131,7 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
         or "azure.com" in normalized
         or base_url_host_matches(normalized, "palantirfoundry.com")
         or base_url_host_matches(normalized, "api.commandcode.ai")
+        or base_url_host_matches(normalized, "api.xkiro.com")
     )
 
 

@@ -1,5 +1,6 @@
 import { atom, computed } from 'nanostores'
 
+import { getProfiles } from '@/api/profiles'
 import type { DesktopConnectionsRegistry } from '@/global'
 import { persistStringRecord, storedStringRecord } from '@/lib/storage'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, isTimeoutError, withTimeout } from '@/lib/with-timeout'
@@ -242,8 +243,9 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
  * never probes or opens remote gateways.
  *
  * Two phases, same commit contract as a Settings → Gateway apply (softSwitch):
- *  1. Dial the target WITHOUT activating it. The previous source stays fully
- *     bound and painted, so a dead target fails with nothing lost.
+ *  1. Dial the target — and for OAuth remotes prove a protected REST read —
+ *     WITHOUT activating it. The previous source stays fully bound and
+ *     painted, so a dead target loses nothing.
  *  2. Commit: beginGatewaySwitch() — barrier up, machine-context reset,
  *     session bindings wiped — then activate the already-open socket. The
  *     wipe runs inside the activation's serialized section, synchronously
@@ -348,6 +350,24 @@ export async function selectConnection(connectionId: string, options: SelectConn
     // they picked last; its socket stays warm for that click or idles out.
     if (revision !== switchRevision) {
       return
+    }
+
+    if (
+      targetConnection.authMode === 'oauth' &&
+      (targetConnection.kind === 'remote' || targetConnection.kind === 'cloud')
+    ) {
+      // Retained sockets can outlive cookie/native OAuth REST auth. Prove the
+      // cheapest protected read the target always serves before wiping. Keep
+      // the exact failure for caller UX (network failures are not sign-in errors).
+      await withTimeout(
+        getProfiles({ connectionId, profile: targetProfile }),
+        SWITCH_DIAL_TIMEOUT_MS,
+        `Timed out connecting to "${targetConnection.label}".`
+      )
+
+      if (revision !== switchRevision) {
+        return
+      }
     }
 
     // Phase 2 — commit. The hook runs inside the activation's serialized

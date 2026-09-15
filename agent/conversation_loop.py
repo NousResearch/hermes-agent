@@ -39,6 +39,7 @@ from agent.turn_retry_state import TurnRetryState
 from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
 from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
+from agent.turn_failure_copy import site_copy
 from agent.turn_final_response import finish_text_response
 from agent.turn_finalizer import finalize_turn
 from agent.turn_iteration_prep import (
@@ -876,11 +877,6 @@ _EMPTY_TOOL_RESPONSE_NUDGE = (
 )
 
 
-# Shared trailer for both content-policy refusal paths so guidance cannot drift.
-_CONTENT_POLICY_RECOVERY_HINT = (
-    "Try rephrasing the request, narrowing the context, or adding a fallback provider with "
-    "`hermes fallback add`."
-)
 
 
 # Memo for send-path tool-call argument canonicalization (re-run on every historical call
@@ -970,6 +966,7 @@ def _content_policy_blocked_result(
     return {
         "final_response": final_response, "messages": messages, "api_calls": api_call_count,
         "completed": False, "failed": True, "error": f"content_policy_blocked: {error_detail}",
+        "failure_reason": "content_policy_blocked", "failure_retryable": False,
     }
 
 
@@ -1040,9 +1037,10 @@ def _provider_overflow_exhausted_result(
     # providers.
     agent._persist_session(messages, conversation_history)
     return _partial_turn_result(
-        "Context length exceeded: compression could not reduce the rebuilt request below the safe threshold.",
+        site_copy("context_overflow", model=agent.model),
         messages, api_call_count, failed=True, compression_exhausted=True,
         turn_exit_reason="context_compression_exhausted",
+        failure_reason="context_overflow", failure_retryable=False,
     )
 
 
@@ -1268,6 +1266,7 @@ def _preflight_timeout_result(agent, exc, conversation_history) -> Dict[str, Any
     return _partial_turn_result(
         str(exc), list(conversation_history or []), 0,
         failed=True, compression_exhausted=True, turn_exit_reason="context_compression_timeout",
+        failure_reason="context_overflow", failure_retryable=False,
     )
 
 

@@ -21,21 +21,22 @@ from agent.message_sanitization import (
 )
 from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
+from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
     STATUS_EXHAUSTED, credential_pool_matches_provider, resolve_runtime_pool_key
 )
 from agent.error_classifier import FailoverReason
+from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
 from agent.turn_context import drop_stale_api_content
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
 # Cap same-entry OAuth refreshes on a persistent auth failure, else a single-entry pool re-mints forever.
 _MAX_AUTH_REFRESH_ATTEMPTS = 2
-_REASONING_TAG_NAMES = ("think", "thinking", "reasoning", "REASONING_SCRATCHPAD", "thought")
 _TOOL_CALL_TAG_NAMES = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls")
 _REASONING_BLOCK_PATTERNS = tuple(
-    re.compile(rf"<{name}>.*?</{name}>", re.DOTALL | re.IGNORECASE) for name in _REASONING_TAG_NAMES
+    re.compile(rf"<{name}>.*?</{name}>", re.DOTALL | re.IGNORECASE) for name in THINK_TAG_NAMES
 )
 _TOOL_CALL_BLOCK_PATTERNS = tuple(
     re.compile(rf"<{name}\b[^>]*>.*?</{name}>", re.DOTALL | re.IGNORECASE)
@@ -49,10 +50,10 @@ _NAMED_FUNCTION_BLOCK_PATTERN = re.compile(
     r'(?:(?:(?!</function>).)*)</function>', re.DOTALL | re.IGNORECASE,
 )
 _UNTERMINATED_REASONING_BLOCK_PATTERN = re.compile(
-    rf'(?:^|\n)[ \t]*<(?:{"|".join(_REASONING_TAG_NAMES)})\b[^>]*>.*$', re.DOTALL | re.IGNORECASE
+    rf'(?:^|\n)[ \t]*<(?:{"|".join(THINK_TAG_NAMES)})\b[^>]*>.*$', re.DOTALL | re.IGNORECASE
 )
 _ORPHAN_REASONING_TAG_PATTERN = re.compile(
-    rf'</?(?:{"|".join(_REASONING_TAG_NAMES)})>\s*', re.IGNORECASE
+    rf'</?(?:{"|".join(THINK_TAG_NAMES)})>\s*', re.IGNORECASE
 )
 _STRAY_TOOL_CALL_CLOSER_PATTERN = re.compile(
     rf'</(?:{"|".join(_TOOL_CALL_TAG_NAMES)}|function)>\s*', re.IGNORECASE
@@ -78,7 +79,8 @@ def _ra():
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset({
     "todo_list", "session_search", "memory", "clarify", "read_terminal", "desktop_preview",
-    "drive_preview", "annotate_preview", "read_window_below", "setup_mcp", "gui_tour", "delegate_task",
+    "drive_preview", "annotate_preview", "read_window_below", "manage_connections", "setup_mcp", "gui_tour",
+    "delegate_task",
 })
 
 _TRAJECTORY_SYSTEM_PROMPT = (
@@ -1201,12 +1203,12 @@ def restore_primary_runtime(agent) -> bool:
 
 # Transient transport failures worth one more attempt with a rebuilt client / connection pool.
 _TRANSIENT_TRANSPORT_ERRORS = frozenset({
-    "ReadTimeout", "ConnectTimeout", "PoolTimeout", "ConnectError", "RemoteProtocolError",
+    "ReadTimeout", "ConnectTimeout", "PoolTimeout", "ConnectError", "ReadError", "RemoteProtocolError",
     "APIConnectionError", "APITimeoutError",
 })
 _INLINE_REASONING_PATTERNS = tuple(
     re.compile(rf"<{tag}>(.*?)</{tag}>", re.DOTALL | re.IGNORECASE)
-    for tag in ("think", "thinking", "thought", "reasoning", "REASONING_SCRATCHPAD")
+    for tag in THINK_TAG_NAMES
 )
 
 
@@ -1734,7 +1736,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             return client
     # TCP keepalives so dead provider connections are detected (~60s) instead of hanging in
     # CLOSE-WAIT. Injected into the local copy only, so each client gets its own httpx.Client;
-    # pinned by tests/run_agent/test_create_openai_client_reuse.py and
+    # pinned by tests/agent/test_create_openai_client_reuse.py and
     # test_sequential_chats_live.py. What IS shared across those per-client wrappers is the
     # connection pool: ``build_keepalive_http_client`` mounts a process-shared ``HTTPTransport``
     # behind a per-client view whose ``close()`` is a no-op for the pool, so a closed wrapper
@@ -1772,9 +1774,12 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     client_kwargs.setdefault("max_retries", 0)
     _ensure_copilot_headers(client_kwargs)
     # OpenCode Free is served anonymously: any unrecognized bearer is a 401, so an empty
-    # Authorization default_header overrides the SDK's "Bearer <api_key>".
-    if agent.provider == "opencode-free":
-        from hermes_cli.models import opencode_zen_free_headers
+    # Authorization default_header overrides the SDK's "Bearer <api_key>". Key on the keyless
+    # placeholder as well as the provider: a free slug picked under the paid ``opencode`` profile
+    # resolves to the placeholder too, and shipping it as a bearer 401s every request with an
+    # empty pool to rotate (#110831).
+    from hermes_cli.models import OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER, opencode_zen_free_headers
+    if agent.provider == "opencode-free" or client_kwargs.get("api_key") == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
         client_kwargs["default_headers"] = {**(client_kwargs.get("default_headers") or {}), **opencode_zen_free_headers()}
     # All primary construction and recovery paths must identify Hermes to the official Codex
     # endpoint, including snapshots with custom header overrides.
@@ -2319,7 +2324,7 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     # character so the rest of the repair pipeline (lowercase / snake_case / fuzzy match) can resolve the
     # cleaned name to a real tool. Crucially we DO NOT split on whitespace: legitimate inputs like "write
     # file" must keep flowing through ``_norm`` -> ``write_file`` (covered by test_space_to_underscore in
-    # tests/run_agent/test_repair_tool_call_name.py). See #33007.
+    # tests/agent/test_repair_tool_call_name.py). See #33007.
     for _xml_sep in ('"', "'", "<", ">"):
         _idx = tool_name.find(_xml_sep)
         if _idx > 0:
@@ -3008,12 +3013,28 @@ def _iter_httpx_pool_objects(http_client: Any):
 
 
 def _connection_candidates(conn: Any):
-    """Walk nested ``_connection`` wrappers (proxy tunnel → HTTP11/2)."""
+    """Walk nested wrappers: proxy tunnels (``_connection``) plus httpx/httpcore
+    stream envelopes (``_stream``/``_httpcore_stream``: BoundSyncStream →
+    ResponseStream → connection byte stream → HTTP11/2 connection)."""
     seen: set[int] = set()
-    while conn is not None and id(conn) not in seen:
-        seen.add(id(conn))
-        yield conn
-        conn = getattr(conn, "_connection", None)
+    stack = [conn]
+    while stack:
+        obj = stack.pop()
+        if obj is None or id(obj) in seen:
+            continue
+        seen.add(id(obj))
+        yield obj
+        for attr in ("_connection", "_stream", "_httpcore_stream"):
+            nxt = getattr(obj, attr, None)
+            if nxt is not None:
+                stack.append(nxt)
+
+
+def _socket_from_candidate(candidate: Any):
+    """Raw socket behind a connection/stream wrapper yielded by ``_connection_candidates``."""
+    stream = getattr(candidate, "_network_stream", None) or getattr(candidate, "_stream", None)
+    sock = _socket_from_stream(stream) if stream is not None else None
+    return sock if sock is not None else _socket_from_stream(candidate)
 
 
 def _socket_from_stream(stream: Any):
@@ -3066,8 +3087,7 @@ def _iter_pool_sockets(client: Any):
                 connections.append(conn)
         for conn in connections:
             for candidate in _connection_candidates(conn):
-                stream = getattr(candidate, "_network_stream", None) or getattr(candidate, "_stream", None)
-                sock = _socket_from_stream(stream) if stream is not None else None
+                sock = _socket_from_candidate(candidate)
                 if sock is not None and id(sock) not in seen:
                     seen.add(id(sock))
                     yield sock
@@ -3104,34 +3124,12 @@ def cleanup_dead_connections(agent) -> bool:
     return False
 
 
-_QUOTA_RESET_DELAY_RE = re.compile(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", re.IGNORECASE)
-_RESETS_IN_RE = re.compile(
-    r"resets?\s+in\s+"
-    r"(?:(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b\s*)?"
-    r"(?:(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b\s*)?"
-    r"(?:(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b)?", re.IGNORECASE,
-)
-_RETRY_AFTER_SECONDS_RE = re.compile(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", re.IGNORECASE)
-
-
-def _reset_delay_from_message(message: str) -> Optional[float]:
-    """Seconds-until-reset parsed from free-text provider messages, or None."""
-    m = _QUOTA_RESET_DELAY_RE.search(message)
-    if m:
-        value = float(m.group(1))
-        return value / 1000.0 if m.group(2).lower() == "ms" else value
-    m = _RESETS_IN_RE.search(message)
-    if m and any(m.groups()):
-        return float(m.group(1) or 0) * 3600 + float(m.group(2) or 0) * 60 + float(m.group(3) or 0)
-    m = _RETRY_AFTER_SECONDS_RE.search(message)
-    return float(m.group(1)) if m else None
-
-
 def _set_reset_from_retry_after(context: Dict[str, Any], retry_after: Any) -> None:
-    if retry_after in {None, ""} or "reset_at" in context:
+    if "reset_at" in context:
         return
-    with contextlib.suppress(TypeError, ValueError):
-        context["reset_at"] = time.time() + float(retry_after)
+    seconds = parse_retry_after_seconds(retry_after)
+    if seconds is not None:
+        context["reset_at"] = time.time() + seconds
 
 
 def extract_api_error_context(error: Exception) -> Dict[str, Any]:
@@ -3155,14 +3153,14 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
         _set_reset_from_retry_after(context, payload.get("retry_after"))
     headers = getattr(getattr(error, "response", None), "headers", None)
     if headers:
-        _set_reset_from_retry_after(context, headers.get("retry-after") or headers.get("Retry-After") or None)
+        _set_reset_from_retry_after(context, headers)
         ratelimit_reset = headers.get("x-ratelimit-reset")
         if ratelimit_reset and "reset_at" not in context:
             context["reset_at"] = ratelimit_reset
     if "message" not in context and str(error).strip():
         context["message"] = str(error).strip()[:500]
     if "reset_at" not in context and isinstance(context.get("message") or "", str):
-        delay = _reset_delay_from_message(context.get("message") or "")
+        delay = reset_delay_from_message(context.get("message") or "")
         if delay is not None:
             context["reset_at"] = time.time() + delay
     return context
@@ -3226,24 +3224,30 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     )
 
 
-def force_close_tcp_sockets(client: Any) -> int:
-    """Abort in-flight TCP I/O via ``shutdown(SHUT_RDWR)`` WITHOUT closing FDs. ``close()`` from
-    a non-owner thread is unsafe: the SSL BIO caches the raw FD, the kernel recycles it, and a
-    flushed TLS record lands in the wrong file (once clobbered a SQLite header). ``shutdown()``
-    is FD-safe from any thread. Returns the count (logged as ``tcp_force_closed=N``)."""
+def _shutdown_socket(sock: Any) -> None:
+    """``shutdown(SHUT_RDWR)`` WITHOUT closing the FD. ``close()`` from a non-owner thread is
+    unsafe: the SSL BIO caches the raw FD, the kernel recycles it, and a flushed TLS record lands
+    in the wrong file (once clobbered a SQLite header). ``shutdown()`` is FD-safe from any thread.
+    Already shut down / not connected / FD invalid are all benign."""
     import socket as _socket
+    try:
+        # Clear a blocking timeout so a hung SSL_read notices the shutdown. Still no close().
+        settimeout = getattr(sock, "settimeout", None)
+        if callable(settimeout):
+            with contextlib.suppress(OSError):
+                settimeout(0)
+        sock.shutdown(_socket.SHUT_RDWR)
+    except OSError:
+        pass
+
+
+def force_close_tcp_sockets(client: Any) -> int:
+    """Abort in-flight TCP I/O on every pool socket via ``_shutdown_socket``. Returns the count
+    (logged as ``tcp_force_closed=N``)."""
     shutdown_count = 0
     try:
         for sock in _iter_pool_sockets(client):
-            try:
-                # Clear a blocking timeout so a hung SSL_read notices the shutdown. Still no close().
-                settimeout = getattr(sock, "settimeout", None)
-                if callable(settimeout):
-                    with contextlib.suppress(OSError):
-                        settimeout(0)
-                sock.shutdown(_socket.SHUT_RDWR)
-            except OSError:
-                pass  # already shut down / not connected / FD invalid: all benign
+            _shutdown_socket(sock)
             shutdown_count += 1
     except Exception as exc:
         _ra().logger.debug("Force-close TCP sockets sweep error: %s", exc)

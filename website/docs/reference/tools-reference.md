@@ -22,7 +22,7 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 | `browser_click` | Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). The ref IDs are shown in square brackets in the snapshot output. Requires browser_navigate and browser_snapshot to be called first. | — |
 | `browser_console` | Get browser console output and JavaScript errors from the current page. Returns console.log/warn/error/info messages and uncaught JS exceptions. Use this to detect silent JavaScript errors, failed API calls, and application warnings. Requi… | — |
 | `browser_get_images` | Get a list of all images on the current page with their URLs and alt text. Useful for finding images to analyze with the vision tool. Requires browser_navigate to be called first. | — |
-| `browser_navigate` | Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer web_search or web_extract (faster, cheaper). Use browser tools when you need… | — |
+| `browser_navigate` | Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer a lightweight retrieval tool when one is available (faster, cheaper). Use browser tools when you need… | — |
 | `browser_press` | Press a keyboard key. Useful for submitting forms (Enter), navigating (Tab), or keyboard shortcuts. Requires browser_navigate to be called first. | — |
 | `browser_scroll` | Scroll the page in a direction. Use this to reveal more content that may be below or above the current viewport. Requires browser_navigate to be called first. | — |
 | `browser_snapshot` | Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (like @e1, @e2) for browser_click and browser_type. full=false (default): compact view with interactive elements. full=true: comp… | — |
@@ -55,6 +55,21 @@ Per-surface behavior:
 - **Messaging platforms** (Telegram, Discord, …) fall back to asking the questions one at a time through the existing single-question prompt. If the user stops responding, the remaining questions are not sent.
 
 If the prompt times out part-way, answers the user already locked are kept: the tool result carries them plus `"timed_out": true`, with the unanswered entries left blank, so the agent can distinguish a deliberate skip from an absent user.
+
+## `connections` toolset
+
+One tool for both kinds of external app. A target is a managed connector (`"gmail"` or
+`{"name": "gmail"}`, authorized through the Nous gateway) or a local MCP server
+(`{"name": "linear", "mcp": true}`, an entry in `mcp_servers`).
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `manage_connections` | Managed actions: `status`, `connect`, `reconnect` (repairs only what is not connected; `force: true` restarts a working one). MCP actions, for `mcp: true` targets only: `install` a catalog entry, `enable` a disabled configured server, `authorize` (OAuth). On the desktop every action shows a card and blocks until each target is connected, skipped, or the deadline passes; the result lists targets as `connected`, `skipped` or `not_connected` and carries no link. On surfaces with no card (CLI, TUI, messaging) managed targets return a `connect_url` per app for the user to open, and MCP targets return `unavailable` with the `hermes mcp install <name>` / `hermes mcp login <name>` commands. Cannot disconnect or revoke an account. | — |
+
+The deadline for one call is five minutes, fixed by the backend when the call starts;
+reopening the chat or restarting the desktop never extends it. The tool is present only when the
+Nous Portal has enabled connectors for the signed-in account (the `managed_tools` claim on its
+token). Other sessions do not see it.
 
 ## `code_execution` toolset
 
@@ -100,7 +115,7 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 | `patch` | Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. Returns a unified diff. Auto-runs syntax checks after editing… | — |
 | `read_file` | Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM\|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset. Jupyter notebooks (.ipynb), Word documents (.docx), and Excel workbooks (.xlsx) a… | — |
 | `search_files` | Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents. Content search (target='content'): Regex search inside files. Output modes: full matches with line… | — |
-| `write_file` | Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by the write are surfaced. | — |
+| `write_file` | Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For an existing file, call read_file first: write_file refuses (file untouched) when the task has no current full read/write of the file or the file changed on disk since — on refusal, read_file, merge, retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by the write are surfaced. | — |
 
 ## `homeassistant` toolset
 
@@ -169,7 +184,7 @@ Tools for driving desktop [Projects](../user-guide/cli.md) — named, multi-fold
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `session_search` | Search past sessions stored in the local session DB, or scroll inside one. FTS5-backed retrieval; returns actual messages from the DB (no LLM calls). Four shapes: discovery (pass `query`), scroll (pass `session_id` + `around_message_id`), read (pass `session_id` only), browse (no args). | — |
+| `session_search` | Search past sessions stored in the local session DB, or scroll inside one. FTS5-backed retrieval; returns actual messages from the DB (no LLM calls). Four shapes: discovery (pass `query`), scroll (pass `session_id` + `around_message_id`), read (pass `session_id` only), browse (no args). Discovery supports time bounds (`after`/`before` — ISO dates or relative durations like `7d`, `24h`, `2w`) and `exclude_session_ids` for iterative re-finding. | — |
 
 ## `skills` toolset
 
@@ -308,7 +323,9 @@ Opt-in toolset (not loaded in the default `hermes-cli` set). Add via `--toolsets
 Backends ship as plugins under `plugins/video_gen/<name>/`:
 
 - **xAI Grok-Imagine** — text-to-video and image-to-video (SuperGrok OAuth or `XAI_API_KEY`).
-- **FAL.ai** — Veo 3.1, Pixverse v6, Kling O3 (requires `FAL_KEY`).
+- **FAL.ai** — Veo 3.1, Pixverse v6, Kling 3.0 / O3 (requires `FAL_KEY`).
+- **OpenRouter** — every generative model on OpenRouter's video API (Veo 3.1, Sora 2 Pro, Kling 3, Seedance 2, Wan 3, Hailuo 3, Grok Imagine, FLUX 3 Video, …); text-to-video, image-to-video and reference-to-video; catalog and per-model limits fetched live (requires `OPENROUTER_API_KEY`, billed to your OpenRouter credit).
+- **DeepInfra** — live `video-gen` catalog over the OpenAI-compatible videos endpoint (requires `DEEPINFRA_API_KEY`).
 
 The single `video_generate` tool covers both modalities — pass `image_url` to animate a still, omit it to generate from text alone. The active backend auto-routes to the right endpoint. The tool's description is rebuilt at session start to reflect the active backend's actual capabilities (modalities, aspect ratios, resolutions, duration range, max reference images, audio support). See [Video Generation Provider Plugins](/developer-guide/video-gen-provider-plugin) for backend authoring.
 

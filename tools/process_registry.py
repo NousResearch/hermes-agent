@@ -27,7 +27,7 @@ _IS_LINUX = platform.system() == "Linux"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
 from hermes_cli.config import get_hermes_home
 
@@ -39,6 +39,15 @@ logger = logging.getLogger(__name__)
 
 # Crash-recovery checkpoint (gateway only)
 CHECKPOINT_PATH = get_hermes_home() / "processes.json"
+_CHECKPOINT_PATH_AT_IMPORT = CHECKPOINT_PATH
+
+
+def _checkpoint_path() -> Path:
+    """Active profile's checkpoint file at call time: the patched ``CHECKPOINT_PATH`` when a test
+    changed it, else live profile-scoped HERMES_HOME — the multiplexed gateway serves every
+    profile from one process, so the import-time constant would pin every profile's process
+    checkpoint to the launch home."""
+    return CHECKPOINT_PATH if CHECKPOINT_PATH != _CHECKPOINT_PATH_AT_IMPORT else get_hermes_home() / "processes.json"
 
 MAX_OUTPUT_CHARS = 200_000      # rolling output buffer
 FINISHED_TTL_SECONDS = 1800     # keep finished processes 30 minutes
@@ -282,36 +291,74 @@ def _build_systemd_scope_argv(shell_argv: List[str], unit_suffix: str) -> List[s
     return _systemd_scope_argv(binary, f"hermes-worker-{unit_suffix}", *shell_argv)
 
 
+_scope_degraded_warned = False
+
+
+def _warn_scope_degraded_once(detail: str) -> None:
+    """Warn once per process: the condition is host-level and the probe verdict
+    is cached, so this would otherwise fire on every cron dispatch."""
+    global _scope_degraded_warned
+    if _scope_degraded_warned:
+        return
+    _scope_degraded_warned = True
+    logger.warning(
+        "managed gateway: %s; cron children are dispatched as direct external subprocesses "
+        "without restart-safe cgroup isolation (killed if the gateway restarts mid-job). "
+        "Set cron.require_restart_safe_scope=true in config.yaml to fail closed instead.",
+        detail,
+    )
+
+
+class GatewayChildDispatch(NamedTuple):
+    """How a managed-gateway child is launched.
+
+    ``in_process``: not a managed systemd gateway, ``argv is command``, the caller
+    keeps its in-process path.  ``scoped``: ``argv`` is the systemd-run wrapper.
+    ``degraded``: no user scope could be created; ``argv`` is the direct command but
+    the caller MUST still launch it as an external subprocess — the distinct mode
+    exists so this case can never collapse into ``in_process`` and recreate the
+    restart interruption #101940 closed.
+    """
+
+    mode: Literal["in_process", "scoped", "degraded"]
+    argv: List[str]
+
+
 def restart_safe_gateway_child_argv(
-    command: List[str], *, unit_suffix: str
-) -> List[str]:
+    command: List[str], *, unit_suffix: str, require_restart_safe_scope: bool,
+) -> GatewayChildDispatch:
     """Place a managed-systemd gateway child outside the gateway cgroup.
 
-    Children that must survive an intentional gateway restart cannot rely on
-    ``start_new_session`` alone: systemd still kills every process in the
-    service cgroup.  In that topology, require a transient user scope and fail
-    closed if it cannot be established.  Standalone processes, non-systemd
-    supervisors, and non-Linux hosts retain the direct command.
+    A systemd-supervised gateway restart kills every process in the service
+    cgroup, so children that must survive it run in a transient user scope.
+    Hosts with no user systemd session (containers, LXCs without linger) cannot
+    create one; hard-failing there is a silent cron outage, so callers state the
+    policy: ``require_restart_safe_scope=True`` raises (kanban's long-lived
+    workers), ``False`` degrades to a direct external subprocess with a
+    once-per-process warning (cron, behind ``cron.require_restart_safe_scope``).
     """
     if not _IS_LINUX:
-        return command
+        return GatewayChildDispatch("in_process", command)
     if not _is_supervised_gateway_process() or not os.environ.get("INVOCATION_ID"):
-        return command
+        return GatewayChildDispatch("in_process", command)
+
+    def _degrade(detail: str) -> GatewayChildDispatch:
+        if require_restart_safe_scope:
+            # Stored as the cron execution's error and shown on the job row: name the remedy.
+            raise RuntimeError(f"cannot create restart-safe systemd scope for gateway child: {detail}")
+        _warn_scope_degraded_once(detail)
+        return GatewayChildDispatch("degraded", command)
+
     if not _systemd_run_user_scope_available():
-        # Stored as the cron execution's error and shown on the job row: name the remedy.
-        raise RuntimeError(
-            "cannot create restart-safe systemd scope for gateway child: "
+        return _degrade(
             "systemd-run --user --scope is unavailable (usually no reachable user D-Bus session at "
             f"/run/user/{os.getuid()}/bus). On a system-level service install, run "  # windows-footgun: ok — behind the _IS_LINUX return above
             "`sudo loginctl enable-linger <gateway-user>` and restart the gateway."
         )
     scoped = _build_systemd_scope_argv(command, unit_suffix=unit_suffix)
     if scoped == command:
-        raise RuntimeError(
-            "cannot create restart-safe systemd scope for gateway child: "
-            "systemd-run disappeared after the availability probe"
-        )
-    return scoped
+        return _degrade("systemd-run disappeared after the availability probe")
+    return GatewayChildDispatch("scoped", scoped)
 
 
 def _stop_systemd_unit(unit_name: str) -> bool:
@@ -1114,11 +1161,16 @@ class ProcessRegistry(ProcessCheckpointMixin):
         finally:
             self._finish_reader(
                 session, decoder, _append_chunk, "Process",
-                lambda: session.process.wait(timeout=5), lambda: session.process.returncode)
+                session.process.wait, lambda: session.process.returncode)
 
     def _finish_reader(self, session, decoder, append, label, wait, exit_code) -> None:
         """Reader-thread teardown: flush the decoder (a truncated multibyte tail becomes
-        one U+FFFD instead of vanishing), reap the child (no zombies), record the exit."""
+        one U+FFFD instead of vanishing), reap the child (no zombies), record the exit.
+
+        A process may close stdout long before it exits.  The reader owns a dedicated
+        daemon thread, so it must keep waiting rather than publish a false completion
+        and discard the only ``Popen`` handle that can reap the child.
+        """
         with suppress(Exception):
             tail = decoder.decode(b"", final=True)
             if tail:
@@ -1126,7 +1178,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
         try:
             wait()
         except Exception as e:
-            logger.debug("%s wait timed out or failed: %s", label, e)
+            # A PTY child reaped by isalive() already has its exitstatus; only an
+            # unknown status must stay tracked for later reconciliation.
+            if exit_code() is None:
+                logger.warning("%s wait failed; leaving process tracked: %s", label, e)
+                return
+            logger.warning("%s wait failed; recording known exit status: %s", label, e)
         self._finish_exited(session, exit_code())
 
     @staticmethod
@@ -1225,12 +1282,30 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # PTY reads can split a multibyte UTF-8 character across chunks just like pipe reads — hold partial
         # sequences until the rest arrives. (Ported from openclaw/openclaw#112325.)
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        # Programs in a PTY can block waiting for replies to device-status / window-size /
+        # cursor-position / DEC private-mode queries. Answer the bounded set and strip the
+        # queries from captured output. POSIX only: Windows ConPTY is a real console host that
+        # answers itself (and pywinpty yields str chunks, not bytes).
+        responder = None
+        if not _IS_WINDOWS:
+            from tools.pty_query_responder import PtyQueryResponder
+            responder = PtyQueryResponder(rows=30, cols=120)
         try:
             while pty.isalive():
                 try:
                     chunk = pty.read(4096)
                     if chunk:
                         # ptyprocess returns bytes; pywinpty returns str
+                        if responder is not None and isinstance(chunk, bytes):
+                            chunk, replies = responder.process(chunk)
+                            if replies:
+                                try:
+                                    pty.write(replies)
+                                except Exception:
+                                    logger.debug(
+                                        "PTY query response write failed",
+                                        exc_info=True,
+                                    )
                         text = chunk if isinstance(chunk, str) else decoder.decode(chunk)
                         if text:
                             self._ingest_output(session, text)
@@ -1238,6 +1313,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     break
         except Exception as e:
             logger.debug("PTY stdout reader ended: %s", e)
+        if responder is not None:
+            # A query prefix split across the final reads is plain output after all.
+            tail = decoder.decode(responder.flush())
+            if tail:
+                self._ingest_output(session, tail)
         self._finish_reader(
             session, decoder, lambda t: self._ingest_output(session, t), "PTY",
             pty.wait, lambda: pty.exitstatus if hasattr(pty, 'exitstatus') else -1)
@@ -1265,6 +1345,16 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 save_completed_result(session)
                 self._running.pop(session.id)
             self._finished[session.id] = session
+        # Release the retained Popen/PTY handles now: otherwise every
+        # finished-but-unpruned session keeps its stdout pipe (or PTY master)
+        # FD open until FINISHED_TTL_SECONDS elapses, and heavy background
+        # churn can exhaust the gateway's FD limit. On the reader-thread path
+        # the pipe is already at EOF; on the kill/reconcile paths the reader
+        # may still be draining — its next read raises on the closed stream
+        # and the loop exits, dropping at most the unread tail of a process
+        # that was just killed. poll()/wait()/read_log() serve from the
+        # buffered ``output_buffer``, never from the pipe.
+        self._release_finished_handles(session)
         self._write_checkpoint()
         if was_running and session.notify_on_complete:
             notification = {
@@ -1292,6 +1382,28 @@ class ProcessRegistry(ProcessCheckpointMixin):
             "completion_reason": session.completion_reason,
             "termination_source": session.termination_source,
         }
+
+    def _release_finished_handles(self, session: ProcessSession):
+        """Close a finished session's OS handles (Popen pipes / PTY master).
+
+        Best-effort and idempotent: the session may have no local Popen (env
+        backends, detached recovery), or the handles may already be closed by
+        the reader loop / kill path. Closing a Popen's stream objects does not
+        kill anything — the child has already exited — it only releases the
+        parent's pipe FDs, which is exactly the retained-resource leak.
+        """
+        proc = session.process
+        if proc is not None:
+            for stream in (proc.stdout, proc.stderr, proc.stdin):
+                if stream is not None:
+                    with suppress(OSError, ValueError):  # a stdin flush can hit EPIPE
+                        stream.close()
+        if session._pty is not None:
+            # ptyprocess/pywinpty close() is idempotent (``closed`` flag) and
+            # closes the master fd exactly once; it raises only if the child
+            # ignores SIGKILL, which we don't want to surface on the finish path.
+            with suppress(Exception):
+                session._pty.close()
 
     # ----- Query Methods -----
 
@@ -1336,8 +1448,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
             timeout = self._oneshot_completion_wait_seconds()
         result: dict = {"waited": [], "completed": [], "timed_out": []}
         with self._lock:
+            # `_finished` too: `_move_to_finished` pops a session from `_running` and enqueues its completion
+            # only after releasing handles and writing the checkpoint. A parent whose turn ends inside that
+            # window would otherwise see nothing pending, drain nothing and exit without the follow-up turn.
             pending = [
-                s for s in self._running.values()
+                s for store in (self._running, self._finished) for s in store.values()
                 if s.notify_on_complete and not s._completion_event.is_set() and (task_id is None or s.task_id == task_id)
             ]
         if not pending or timeout <= 0:
@@ -1626,10 +1741,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         return result
 
     def wait(self, session_id: str, timeout: int = None) -> dict:
-        """Block until the process exits, the timeout elapses, or the user interrupts.
+        """Block until the process exits, the timeout elapses, the user interrupts, or a
+        mid-turn user message (steer/redirect → ``request_yield``) releases the wait.
         ``timeout`` defaults to (and is clamped by) TERMINAL_TIMEOUT. Returns a dict
         with status exited|timeout|interrupted|not_found|error and an output snapshot."""
-        from tools.interrupt import is_interrupted as _is_interrupted
+        from tools.interrupt import consume_yield as _consume_yield, is_interrupted as _is_interrupted
 
         try:
             max_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
@@ -1661,6 +1777,16 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 result = {
                     "status": "interrupted", "command": session.command, "output": _output_tail(session, 1000),
                     "note": "User sent a new message -- wait interrupted"}
+            elif _consume_yield(threading.current_thread().ident):
+                # A steer/redirect landed mid-turn: redirect() asks tool workers to YIELD so
+                # the user's message is delivered instead of parked behind this wait. The
+                # process is untouched and still notify-tracked; the model should read the
+                # steer text and respond, not re-issue the wait (kimi-code#3697 class).
+                result = {
+                    "status": "interrupted", "command": session.command, "output": _output_tail(session, 1000),
+                    "process_running": True,
+                    "note": ("User sent a new message -- wait released; the process is still "
+                             "running and you will be notified on exit. Respond to the user now.")}
             if result is not None:
                 if timeout_note:
                     result["timeout_note"] = timeout_note
@@ -1892,6 +2018,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
             ]
         result = []
         for s in all_sessions:
+            # List-only refreshes must observe child exit even while descendants
+            # keep the capture pipe open; retain the existing completion owner.
+            self._reconcile_local_exit(s)
             entry = {
                 "session_id": s.id,
                 "command": s.command[:200],
@@ -2017,6 +2146,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if over_cap and (survivors := [sid for sid in self._finished if sid not in expired]):
             expired.append(min(survivors, key=lambda sid: self._finished[sid].started_at))
         for sid in expired:
+            # Belt-and-suspenders handle release: sessions normally arrive in
+            # _finished via _move_to_finished(), which already released their
+            # Popen/PTY handles — but any session inserted into _finished
+            # directly (defensive paths, historical checkpoints) would
+            # otherwise carry its OS handles to the grave unreleased. The
+            # release is idempotent, so double-closing is safe.
+            self._release_finished_handles(self._finished[sid])
             del self._finished[sid]
         # Belt-and-suspenders against module-lifetime growth: forget consumed /
         # poll-observed marks for any session no longer tracked at all.

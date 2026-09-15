@@ -65,7 +65,7 @@ describe('toast titles', () => {
       </I18nProvider>
     )
 
-    expect(screen.getByText(/All local profile backend slots are busy/)).toBeTruthy()
+    expect(screen.getByText(/Too many bots are running at once/)).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Open Advanced Settings' }))
 

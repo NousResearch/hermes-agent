@@ -33,6 +33,7 @@ from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
 from agent.usage_anchor import set_usage_anchor
+from hermes_state_ids import new_session_id as mint_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -1807,15 +1808,14 @@ def check_compression_model_feasibility(agent: Any) -> None:
         if client is None or not aux_model:
             if _aux_cfg_provider and _aux_cfg_provider != "auto":
                 msg = (
-                    "⚠ Configured auxiliary compression provider "
-                    f"'{_aux_cfg_provider}' is unavailable — context "
-                    "compression will drop middle turns without a summary. "
-                    "Check auxiliary.compression in config.yaml and reauthenticate that provider."
+                    f"⚠ Configured auxiliary compression provider '{_aux_cfg_provider}' is unavailable, "
+                    "so older messages in long chats will be cut without a summary. Sign in to that "
+                    "provider again, or change auxiliary.compression in your config."
                 )
             else:
                 msg = (
-                    "⚠ No auxiliary LLM provider configured — context compression will drop middle turns without a summary. "
-                    "Run `hermes setup` or set OPENROUTER_API_KEY."
+                    "⚠ No auxiliary LLM provider configured: Hermes has no helper model for summarising "
+                    "long chats, so older messages will be cut without a summary. Run `hermes setup` to add one."
                 )
             agent._compression_warning = msg
             agent._emit_status(msg)
@@ -2980,7 +2980,7 @@ def _publish_rotated_compaction(
     if _profile_for_child == "default":
         _profile_for_child = None
     old_title = agent._session_db.get_session_title(agent.session_id)
-    new_session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    new_session_id = mint_session_id()
     from agent.context_compressor import _DB_PERSISTED_MARKER
     agent._session_db.publish_compression_child(
         parent_session_id=old_session_id, child_session_id=new_session_id,
@@ -3032,21 +3032,29 @@ def _warn_summary_or_aux_fallback(agent: Any) -> None:
         _aux_key = (_aux_fail_model, _aux_fail_err)
         if _aux_fail_model and getattr(agent, "_last_aux_fallback_warning_key", None) != _aux_key:
             agent._last_aux_fallback_warning_key = _aux_key
+            logger.warning(
+                "Configured compression model %r failed (%s); recovered using the main model.",
+                _aux_fail_model, _aux_fail_err or "unknown error",
+            )
             agent._emit_warning(
-                f"ℹ Configured compression model '{_aux_fail_model}' failed "
-                f"({_aux_fail_err or 'unknown error'}). Recovered using main model — "
-                "check auxiliary.compression.model in config.yaml."
+                f"ℹ Configured compression model '{_aux_fail_model}' failed, so Hermes summarised "
+                "with your main model instead. Check auxiliary.compression.model in your config."
             )
 
 
-def _reset_read_dedup_caches(task_id: str, *, skills: bool = True) -> None:
+def _reset_read_dedup_caches(task_id: str, *, session_id: str = "", skills: bool = True) -> None:
     """Advance the file-read (and skill_view) repeat-read dedup to a fresh generation after a boundary.
     The mtime map is kept: the first read of each unchanged key returns full content compaction may have
     omitted; later reads return stubs, and stub-hit counters restart at the same boundary (#84857).
+    The computer_use screenshot dedup is session-keyed and forgets its last frame for the same reason.
     """
     with contextlib.suppress(Exception):
         from tools.file_tools_read_tracking import reset_file_dedup
         reset_file_dedup(task_id)
+    if session_id:
+        with contextlib.suppress(Exception):
+            from tools.computer_use.tool import reset_screenshot_dedup
+            reset_screenshot_dedup(session_id)
     if not skills:
         return
     with contextlib.suppress(Exception):
@@ -3144,7 +3152,7 @@ def _finish_compaction_boundary(
             )
         else:
             compressor._verify_compaction_cleared_threshold = True
-    _reset_read_dedup_caches(task_id)
+    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
     return _compressed_est
 
 
@@ -3603,19 +3611,27 @@ def compress_context(
     if not force and _automatic_compression_gate_blocks(agent, bypass_cooldown):
         return messages, _existing_system_prompt(agent, system_message)
 
-    # Lazy feasibility probe (~400ms cold) on first attempt, not __init__; it sets
-    # _compression_warning so status replay still surfaces the warning. Marked checked
-    # only after the probe completes (transient failures are swallowed inside).
-    if not getattr(agent, "_compression_feasibility_checked", False):
-        check_compression_model_feasibility(agent)
-        agent._compression_feasibility_checked = True
     _pre_msg_count = len(messages)
     # In-place keeps the SAME session_id (no rotation/child/renumber/re-sync). A
     # missing attribute must default True, not rotation, which can wedge sessions.
     in_place = bool(getattr(agent, "compression_in_place", True))
+    # Announce BEFORE the lazy feasibility probe: its live catalog / provider lookups are
+    # network-bound (connect timeouts stack up through proxies), and until this status lands
+    # the Desktop working row is a bare spinner with no "Summarizing thread" label (#111294).
     lifecycle = _announce_compression_start(
         agent, message_count=_pre_msg_count, approx_tokens=approx_tokens, focus_topic=focus_topic, force=force
     )
+    # Lazy feasibility probe (~400ms cold) on first attempt, not __init__; it sets
+    # _compression_warning so status replay still surfaces the warning. Marked checked
+    # only after the probe completes (transient failures are swallowed inside). A hard
+    # rejection propagates; retire the announced phase first so the client is not left compacting.
+    if not getattr(agent, "_compression_feasibility_checked", False):
+        try:
+            check_compression_model_feasibility(agent)
+        except Exception:
+            lifecycle.complete(force_terminal=True)
+            raise
+        agent._compression_feasibility_checked = True
     lease, _abort_prompt = _acquire_compression_lease(
         agent, commit_fence=commit_fence, lifecycle=lifecycle, system_message=system_message,
         approx_tokens=approx_tokens, attempt_started_at=attempt.started_at,
@@ -3831,7 +3847,7 @@ def _compress_context_via_codex_app_server(
         # armed until a later turn; minimal test engines may lack update_from_response.
         if hasattr(agent.context_compressor, "update_from_response"):
             _record_codex_app_server_usage(agent, result, messages=messages)
-    _reset_read_dedup_caches(task_id, skills=False)
+    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "", skills=False)
     logger.info(
         "codex app-server compaction done: session=%s thread=%s turn=%s", _sid,
         getattr(result, "thread_id", None) or "", getattr(result, "turn_id", None) or "",

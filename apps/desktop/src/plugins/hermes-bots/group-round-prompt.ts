@@ -6,8 +6,7 @@ import type { GroupMember, GroupMessage, GroupMessageAuthor } from './types'
 /** Viewer identity for a room-log line. A bare string is the local, unsourced
  *  profile name (legacy call sites and single-connection jobs). */
 export type GroupChatLineViewer =
-  | string
-  | (Pick<GroupMember, 'name'> & Partial<Pick<GroupMember, 'connectionId' | 'connectionLabel' | 'remoteSource'>>)
+  string | (Pick<GroupMember, 'name'> & Partial<Pick<GroupMember, 'connectionId' | 'connectionLabel' | 'remoteSource'>>)
 
 /** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
  *  `Name (you): …`. */

@@ -11,7 +11,7 @@ approval:
   prompt_smart_deny: "      선택 [o/D]: "
   smart_deny_once_inputs: "o,once"
   smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ 시간 초과 - 명령을 거부합니다"
+  timeout:         "      ⏱ {waited} 동안 응답이 없어 명령을 실행하지 않았습니다. 다시 요청해 재시도하거나 제한을 늘리세요: hermes config set approvals.timeout {suggested}"
   allowed_once:    "      ✓ 한 번 허용됨"
   allowed_session: "      ✓ 이 세션에서 허용됨"
   allowed_always:  "      ✓ 영구 허용 목록에 추가됨"
@@ -179,7 +179,7 @@ gateway:
       blocked:             "blocked; needs attention"
       review_requested:    "handed off for review; the implementation is done"
       changes_requested:   "review requested changes (BLOCK); implementation is not approved"
-      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
+      block_loop_detected: "routed to triage after repeated blocks; orchestration attention needed"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
@@ -387,7 +387,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     not_git_repo:            "✗ git 저장소가 아닙니다 — 업데이트할 수 없습니다."
     hermes_cmd_not_found:    "✗ `hermes` 명령을 찾을 수 없습니다. Hermes는 실행 중이지만 PATH나 현재 Python 인터프리터를 통해 실행 파일을 찾을 수 없습니다. 터미널에서 `hermes update`를 직접 실행해 보세요."
     start_failed:            "✗ 업데이트 시작 실패: {error}"
-    starting:                "⚕ Hermes 업데이트를 시작합니다… 진행 상황을 여기에 스트리밍하겠습니다."
+    starting:                "☤ Hermes 업데이트를 시작합니다… 진행 상황을 여기에 스트리밍하겠습니다."
 
   usage:
     rate_limits:              "⏱️ **요청 제한:** {state}"

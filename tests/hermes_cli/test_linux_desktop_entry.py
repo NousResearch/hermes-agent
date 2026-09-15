@@ -421,6 +421,54 @@ def test_exec_uses_known_wrapper_when_path_lookup_misses(
     assert exec_line == f"{known_wrapper} desktop"
 
 
+def test_exec_finds_known_wrapper_when_resolver_has_no_candidate(
+    tmp_path, xdg_home, monkeypatch
+):
+    """`None` from the resolver must still probe known wrapper locations.
+
+    A cold relaunch (argv[0] is not an executable file, e.g. `-c` under
+    `python -m`, and PATH has no `hermes`) makes resolve_hermes_bin return
+    None outright. The early `return primary` that used to fire here skipped
+    the durable-wrapper probe, so the persisted Exec flipped to the bare
+    `<python> -m hermes_cli.main desktop` module form. Each flip between the
+    wrapper and module forms rewrites hermes.desktop on the next launch; any
+    rewrite that lands while gnome-shell's ShellApp for the entry is still
+    STARTING crashes the shell (shell_app_dispose `state == STOPPED`
+    assertion, gnome-shell 50.4). The entry must converge on the durable
+    wrapper wherever it exists.
+    """
+    root = _make_project(tmp_path)
+
+    known_wrapper = tmp_path / "cold-home" / ".local" / "bin" / "hermes"
+    known_wrapper.parent.mkdir(parents=True)
+    known_wrapper.write_text(
+        f'#!/bin/bash\nexec {root / "venv" / "bin" / "python"} {root / "hermes"} "$@"\n',
+        encoding="utf-8",
+    )
+    known_wrapper.chmod(0o755)
+    monkeypatch.setenv("HOME", str(tmp_path / "cold-home"))
+
+    # argv[0] is not an executable path at all — the resolver's own chain
+    # yields None with or without argv[0].
+    _argv0_context(monkeypatch, "-c")
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    monkeypatch.setattr("hermes_cli.relaunch.resolve_hermes_bin", lambda: None)
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    assert entry is not None
+    exec_line = _parse(entry.read_text(encoding="utf-8"))["Exec"]
+
+    assert exec_line == f"{known_wrapper} desktop"
+
+    # …and the SAME context a second time re-renders byte-identical content:
+    # the no-op guard in install_desktop_entry then skips the rewrite.
+    lde._probe_cache.clear()
+    entry2 = lde.install_desktop_entry(root)
+    assert entry2 is not None
+    assert entry2.read_text(encoding="utf-8") == entry.read_text(encoding="utf-8")
+
+
 def test_exec_rejects_known_wrapper_from_another_checkout(
     tmp_path, xdg_home, monkeypatch
 ):

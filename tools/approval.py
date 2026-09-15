@@ -52,6 +52,8 @@ _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
 _permanent_approved: set = set()
+# Routed multiplex profiles: one permanent allowlist per profile home (see ``_permanent_set``).
+_permanent_approved_by_home: dict[str, set] = {}
 
 # --- Consecutive-denial circuit breaker for smart approvals ---------------------------------------------------------
 # Each retry of a smart-denied command burns another guardian LLM call. After ``approvals.denial_breaker_threshold``
@@ -175,6 +177,17 @@ def list_gateway_approvals(session_key: str) -> list[dict]:
         return [dict(entry.data) for entry in _gateway_queues.get(session_key, [])]
 
 
+def register_gateway_settle(session_key: str, request_id: str, settle) -> bool:
+    """Attach ``settle(reason)`` to one pending approval; it runs once when that wait ends by any path.
+    False when the request is no longer pending (the surface should withdraw its prompt itself)."""
+    with _lock:
+        for entry in _gateway_queues.get(session_key, []):
+            if entry.data.get("request_id") == request_id:
+                entry.settle = settle
+                return True
+    return False
+
+
 def ack_gateway_approval(session_key: str, request_id: str) -> bool:
     """Record that a client received a particular pending approval request."""
     with _lock:
@@ -288,25 +301,56 @@ def _yolo_active() -> bool:
     return _YOLO_MODE_FROZEN or is_current_session_yolo_enabled()
 
 
+def _permanent_set() -> set:
+    """The permanent allowlist that governs the ACTIVE profile. Unscoped (single-profile process,
+    or the multiplexer's own launch profile) → the module-level set tests and the CLI seed. A routed
+    profile (HERMES_HOME override) → its own set, lazily loaded from ITS ``command_allowlist``: the
+    launch profile's "always" approvals must not pre-approve commands for a secondary, nor may a
+    secondary's "always" choice be written back into the launch profile's config. Callers hold ``_lock``.
+    """
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    if get_hermes_home_override() is None:
+        return _permanent_approved
+    home_key = hermes_home_key()
+    approved = _permanent_approved_by_home.get(home_key)
+    if approved is None:
+        try:
+            approved = _read_permanent_allowlist()
+        except Exception as e:
+            logger.warning("Failed to load permanent allowlist: %s", e)
+            approved = set()
+        _permanent_approved_by_home[home_key] = approved
+    return approved
+
+
 def is_approved(session_key: str, pattern_key: str) -> bool:
     """Session-scoped or permanent approval. Accepts the canonical key and the legacy
     regex-derived key so existing command_allowlist entries survive key migrations."""
     aliases = _approval_key_aliases(pattern_key)
     with _lock:
-        approved = _permanent_approved | _session_approved.get(session_key, set())
+        approved = _permanent_set() | _session_approved.get(session_key, set())
     return any(alias in approved for alias in aliases)
+
+
+def _is_permanently_approved(pattern_key: str) -> bool:
+    """Permanent approval only, with compatibility for migrated pattern keys."""
+    aliases = _approval_key_aliases(pattern_key)
+    with _lock:
+        return any(alias in _permanent_set() for alias in aliases)
 
 
 def approve_permanent(pattern_key: str):
     """Add a pattern to the permanent allowlist."""
     with _lock:
-        _permanent_approved.add(pattern_key)
+        _permanent_set().add(pattern_key)
 
 
 def load_permanent(patterns: set):
     """Bulk-load permanent allowlist entries from config."""
     with _lock:
-        _permanent_approved.update(patterns)
+        governing = _permanent_set()
+        governing.clear()
+        governing.update(patterns)
 
 
 def _persist_choice(session_key: str, choice: str, warnings: list[tuple]) -> None:
@@ -319,36 +363,58 @@ def _persist_choice(session_key: str, choice: str, warnings: list[tuple]) -> Non
         approve_session(session_key, key)
         if choice == "always" and not is_tirith:
             approve_permanent(key)
-            save_permanent_allowlist(_permanent_approved)
+            with _lock:
+                snapshot = set(_permanent_set())
+            save_permanent_allowlist(snapshot)
 
 
 # --- Config persistence for permanent allowlist ---------------------------------------------------------------------
+
+def _read_permanent_allowlist() -> set:
+    """``command_allowlist`` of the active profile's config as a set (empty on malformed input)."""
+    from hermes_cli.config import load_config_readonly
+    config = load_config_readonly()
+    raw = config.get("command_allowlist")
+    legacy = isinstance(raw, str)
+    if legacy:
+        # Old config-set versions serialized list values as scalar strings.
+        import yaml
+        try:
+            raw = yaml.safe_load(raw)
+        except yaml.YAMLError:
+            raw = False
+    if raw is None and not legacy:
+        raw = []
+    if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+        logger.warning("Ignoring malformed command_allowlist; configure a list of strings.")
+        return set()
+    if legacy:
+        logger.warning("Recovered legacy string command_allowlist; re-save it as a list of strings.")
+    return set(raw)
+
+
+# What ``command_allowlist`` held the last time this process synchronised with the
+# file, per profile home ("" = the unscoped launch profile). Everything in the
+# governing permanent set beyond it is an approval THIS process made, and is the
+# only thing a save is entitled to add: the difference separates "the operator
+# granted this here" from "this was on disk when we started, and may since have
+# been revoked".
+_permanent_baseline_by_home: dict[str, set] = {}
+
+
+def _baseline_key() -> str:
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    return "" if get_hermes_home_override() is None else hermes_home_key()
+
 
 def load_permanent_allowlist() -> set:
     """Load ``command_allowlist`` from config and sync it into the approval state
     so is_approved() honors 'always' choices from previous sessions."""
     try:
-        from hermes_cli.config import load_config_readonly
-        config = load_config_readonly()
-        raw = config.get("command_allowlist")
-        legacy = isinstance(raw, str)
-        if legacy:
-            # Old config-set versions serialized list values as scalar strings.
-            import yaml
-            try:
-                raw = yaml.safe_load(raw)
-            except yaml.YAMLError:
-                raw = False
-        if raw is None and not legacy:
-            raw = []
-        if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
-            logger.warning("Ignoring malformed command_allowlist; configure a list of strings.")
-            return set()
-        if legacy:
-            logger.warning("Recovered legacy string command_allowlist; re-save it as a list of strings.")
-        patterns = set(raw)
-        if patterns:
-            load_permanent(patterns)
+        patterns = _read_permanent_allowlist()
+        load_permanent(patterns)
+        with _lock:
+            _permanent_baseline_by_home[_baseline_key()] = set(patterns)
         return patterns
     except Exception as e:
         logger.warning("Failed to load permanent allowlist: %s", e)
@@ -356,12 +422,35 @@ def load_permanent_allowlist() -> set:
 
 
 def save_permanent_allowlist(patterns: set):
-    """Save permanently allowed command patterns to config."""
+    """Save permanently allowed command patterns to config, reconciling with the file.
+
+    ``command_allowlist`` is a file an operator edits by hand; removing an entry
+    there is the documented way to withdraw a standing approval. This process read
+    it once at import and ``load_permanent`` only ever unions, so writing the
+    in-memory set straight back deleted entries added on disk since import and
+    resurrected the ones removed. The result written is ``what is on disk now``
+    plus ``what this process approved since its own baseline``; revoked entries are
+    also dropped from the governing permanent set so ``is_approved()`` stops
+    honouring them. Nothing re-reads the file on the approval hot path.
+
+    ``patterns`` may only ADD: an entry left out of it is not removed, because the
+    on-disk list wins for anything this process did not approve itself. Remove
+    entries by editing ``command_allowlist`` in config.yaml.
+    """
     try:
         from hermes_cli.config import load_config, save_config
         config = load_config()
-        config["command_allowlist"] = list(patterns)
-        save_config(config)
+        on_disk = set(config.get("command_allowlist", []) or [])
+        with _lock:
+            key = _baseline_key()
+            baseline = _permanent_baseline_by_home.get(key, set())
+            merged = on_disk | (set(patterns) - baseline)
+            config["command_allowlist"] = sorted(merged)
+            save_config(config)
+            _permanent_baseline_by_home[key] = set(merged)
+            governing = _permanent_set()
+            governing.clear()
+            governing.update(merged)
     except Exception as e:
         logger.warning("Could not save allowlist: %s", e)
 
@@ -386,10 +475,30 @@ def _approved() -> dict:
     return {"approved": True, "message": None}
 
 
-def _denied(message: str, *, pattern_key: str, description: str, outcome: str, **extra) -> dict:
-    """Standard non-consent result: the agent must not retry or rephrase."""
+# ``outcome`` -> one plain sentence for the person who just answered (or did not). ``message`` is
+# addressed to the model ("Do NOT retry ..."); surfaces render ``user_summary`` first and fold the
+# model text away, so a Reject click does not read like an error the user caused.
+_USER_SUMMARIES = {
+    "denied": "You denied this {noun} — it did not run.",
+    "timeout": "No answer within {minutes} — the {noun} did not run.",
+    "notify_failed": "The approval request could not be delivered — the {noun} did not run.",
+    "blocked": "This {noun} is not allowed in an unattended session — it did not run.",
+}
+
+
+def _user_summary(outcome: str, noun: str = "command") -> str:
+    from tools.approval_context import _get_approval_timeout, format_approval_window
+    window = format_approval_window(_get_approval_timeout())
+    return _USER_SUMMARIES.get(outcome, "This {noun} did not run.").format(noun=noun, minutes=window)
+
+
+def _denied(message: str, *, pattern_key: str, description: str, outcome: str, noun: str = "command",
+            **extra) -> dict:
+    """Standard non-consent result: the agent must not retry or rephrase. ``user_summary`` is the
+    one-line human reading of the same outcome (see ``_USER_SUMMARIES``)."""
     return {"approved": False, "message": message, "pattern_key": pattern_key,
-            "description": description, "outcome": outcome, "user_consent": False, **extra}
+            "description": description, "outcome": outcome, "user_consent": False,
+            "user_summary": _user_summary(outcome, noun), **extra}
 
 
 def _blocked(message: str, *, pattern_key: str, description: str) -> dict:
@@ -516,11 +625,11 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
             subject, noun="dangerous commands",
             advice="Find an alternative approach that avoids this command.")}
 
-    is_dangerous, _pk, description = detect_dangerous_command(command)
-    if is_dangerous:
+    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    if is_dangerous and not _is_permanently_approved(pattern_key):
         result = block(f"Command flagged as dangerous ({description})")
         if ctx.name == "single_query":
-            result.update(pattern_key=_pk, description=description)
+            result.update(pattern_key=pattern_key, description=description)
         return result
     try:
         from tools.tirith_security import check_command_security
@@ -688,7 +797,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         extra = {"deny_reason": deny_reason} if "reason" in fmt else {}
         return _denied(template.format(description=description, breaker=breaker, **fmt),
                        pattern_key=pattern_key, description=description,
-                       outcome=outcome, **extra)
+                       outcome=outcome, noun=spec.noun, **extra)
 
     def grant(choice: str) -> dict:
         # A smart-DENY owner override is always one operation, even if an older client returns "session" or "always".
@@ -736,7 +845,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             decision = _await_gateway_decision(session_key, notify_cb, data, surface="gateway")
             if decision.get("notify_failed"):
                 return _denied(spec.notify_failed, pattern_key=pattern_key,
-                               description=description, outcome="notify_failed")
+                               description=description, outcome="notify_failed", noun=spec.noun)
             # Consent contract: silence is NOT consent, and an explicit deny is a hard
             # halt — both produce a BLOCKED outcome. ``/deny <reason>`` free text is
             # relayed verbatim so the agent can adapt rather than only hearing "denied".
@@ -785,13 +894,18 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
 
 
 def _presence(approval_callback=None) -> tuple:
-    """``(approval_callback, is_cli, is_gateway, is_ask)`` for the current context. Single-query
-    (-q) exports HERMES_INTERACTIVE=1 but nobody answers prompts, and HERMES_EXEC_ASK has no
-    human either — both are cleared so single_query_mode actually takes effect."""
+    """``(approval_callback, is_cli, is_gateway, is_ask)`` for the current context.
+
+    Single-query ``-q`` and cron clear the presence trio: ``hermes chat -q`` exports
+    HERMES_INTERACTIVE=1 for sudo prompts, and a gateway sets HERMES_EXEC_ASK=1 at startup and
+    passes its environ to every external cron worker (#110932) — in neither can a human answer
+    the card, so the gate must resolve from ``approvals.<ctx>_mode`` instead of parking on a
+    pending approval. Unattended *platforms* keep ``is_ask``: api_server relies on it for the
+    ``/v1/runs`` approval bridge (``approval.request`` → ``POST /v1/runs/{id}/approval``)."""
     approval_callback = _resolve_cli_approval_callback(approval_callback)
     is_cli, is_gateway = _is_interactive_cli(), _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
-    if _is_single_query_approval_context():
+    if _is_single_query_approval_context() or _is_cron_approval_context():
         is_cli = is_gateway = is_ask = False
     return approval_callback, is_cli, is_gateway, is_ask
 
@@ -814,7 +928,10 @@ def _run_approval_gate(
     an explicit ``*_deny_message`` (the file-tool write gates word their own).
     """
     # Hardline blocks are the caller's job BEFORE this gate, so yolo here only skips the recoverable approval layer.
-    if _yolo_active():
+    # ``approvals.mode: off`` is the third bypass source (the Desktop "Approvals: off" toggle writes it); the shell
+    # guards honour it, so every action routed through this gate (computer_use, plugin rules, SSH-config writes,
+    # dangerous-pattern prompts) must too, or "off" still prompts on those surfaces.
+    if _yolo_active() or approval_context._get_approval_mode() == "off":
         return _approved()
     session_key = get_current_session_key()
     if is_approved(session_key, pattern_key):
@@ -1096,7 +1213,7 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
             return _denied(
                 "BLOCKED: execute_code runs arbitrary local Python (including "
                 "subprocess calls that bypass shell-string approval checks). " + ctx.exec_tail,
-                pattern_key=pattern_key, description=description, outcome="blocked",
+                pattern_key=pattern_key, description=description, outcome="blocked", noun="code",
             )
         return _approved()
 

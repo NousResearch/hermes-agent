@@ -1,11 +1,11 @@
 /**
- * The main renderer owns the phase; the native overlay owns the clock because
- * animation frames in the hidden main window are throttled. Native skip/close
- * events return here so every exit records seen and restores the main window.
+ * The phase lives in this store, in the main renderer; the clock runs in the native overlay, because
+ * animation frames in the hidden main window are throttled. Native skip and close events come back here, so
+ * every exit records the seen key and restores the main window.
  *
- * This store alone owns hermes-intro-reveal-seen-v1. First-run eligibility is
- * guest onboarding enabled, not explicitly skipped, and not seen. The gate
- * observes completion to queue the guided chat without coupling this store to it.
+ * This store is the only writer of hermes-intro-reveal-seen-v1. First-run eligibility is guest onboarding
+ * enabled, not explicitly skipped, and not seen. The gate observes completion to queue the guided chat, so
+ * this store does not depend on the gate.
  */
 import { atom } from 'nanostores'
 
@@ -31,8 +31,22 @@ export function hasSeenIntroReveal(): boolean {
   return readKey(SEEN_KEY) === '1'
 }
 
+/** The film will never play for this identity (HERMES_SKIP_INTRO). Record it
+ * as seen so a later launch without the flag cannot replay it over the
+ * guided flow that ran in its place. */
+export function markIntroRevealSeen(): void {
+  writeKey(SEEN_KEY, '1')
+}
+
 export function isIntroRevealEnabled(): boolean {
-  return isOnboardingEnabled()
+  return isOnboardingEnabled() && window.hermesDesktop?.skipIntro !== true
+}
+
+/** The guided flow is on but its intro film was turned off at launch
+ * (HERMES_SKIP_INTRO). Distinct from isIntroRevealEnabled(): false there also
+ * covers onboarding being off entirely, where nothing may queue. */
+export function isIntroRevealSkipped(): boolean {
+  return isOnboardingEnabled() && window.hermesDesktop?.skipIntro === true
 }
 
 export function shouldPlayFirstRunIntro(firstRunSkipped: boolean): boolean {
@@ -45,7 +59,7 @@ export function startIntroReveal(): void {
   }
 
   $introReveal.set({ phase: 'playing' })
-  // The film plays over the desktop; every exit path must restore the app.
+  // The overlay covers the desktop, so every exit path has to restore the main window.
   void window.hermesDesktop?.introReveal?.open({ hideMain: true }).catch(finishIntroReveal)
 }
 
@@ -62,6 +76,10 @@ export function finishIntroReveal(): void {
 
   writeKey(SEEN_KEY, '1')
   $introReveal.set(INITIAL)
+  // The gate's listener on that edge queues the guide and takes the solo
+  // shape (small window, greeting layout) synchronously, so the main window
+  // is already the guide when it is shown. Showing first and shrinking after
+  // is what flashed the full app between the film and the greeting.
   void window.hermesDesktop?.introReveal?.close({ showMain: true }).catch(() => undefined)
 }
 

@@ -7,10 +7,11 @@ context-local secret scope: ``set_secret_scope(mapping)`` installs the active
 profile's secrets for the current task (a contextvar, so it propagates into the
 agent's worker thread via ``copy_context()``); ``get_secret(name)`` reads from
 it and, when multiplexing is active with no scope set, RAISES rather than
-falling back to ``os.environ``. Design: ``docs/design/multiplexing-gateway.md``.
+falling back to ``os.environ``. Design: ``website/docs/developer-guide/multiplexing-gateway.md``.
 """
 from __future__ import annotations
 
+import codecs
 import os
 import re
 from contextvars import ContextVar, Token
@@ -33,6 +34,18 @@ def is_multiplex_active() -> bool:
     return _MULTIPLEX_ACTIVE
 
 
+def serves_routed_profile() -> bool:
+    """True when the current task runs for a profile other than the process's own: always under
+    multiplexing, else when a HERMES_HOME override names another home (dashboard/desktop backend,
+    per-profile cron ticker). The MCP registry scope and the check_fn cache key both follow this
+    predicate so a served profile's view never aliases the launch profile's (#111151)."""
+    if is_multiplex_active():
+        return True
+    from hermes_constants import get_hermes_home_override, get_process_hermes_home, hermes_home_key
+    override = get_hermes_home_override()
+    return override is not None and hermes_home_key(override) != hermes_home_key(get_process_hermes_home())
+
+
 _SECRET_SCOPE: ContextVar[Optional[Mapping[str, str]]] = ContextVar("_SECRET_SCOPE", default=None)
 
 
@@ -41,7 +54,27 @@ class UnscopedSecretError(RuntimeError):
 
     The fix is to wrap the call path in ``set_secret_scope(...)`` (the per-turn
     / per-adapter profile scope), not to widen the global allowlist.
+
+    ``str(exc)`` is the ONE sentence an end user can act on; the developer diagnosis
+    (which secret, which doc) rides ``__notes__`` so tracebacks and logs keep it.
     """
+
+    def __init__(self, secret_name: str = "", developer_detail: str = ""):
+        # Older callers passed the whole developer sentence positionally
+        # (``UnscopedSecretError("get_secret('X') called with no scope ...")``); a secret
+        # name never contains whitespace, so treat such a string as the detail.
+        if secret_name and not developer_detail and any(ch.isspace() for ch in secret_name):
+            secret_name, developer_detail = "", secret_name
+        what = f"this profile's {secret_name}" if secret_name else "this profile's API key"
+        super().__init__(
+            f"Hermes could not read {what} (an internal profile-scoping bug on the multiplexed "
+            "gateway, not your configuration). Run `hermes gateway restart`; if it keeps happening, "
+            "report it with `hermes debug share`."
+        )
+        self.secret_name = secret_name
+        self.developer_detail = developer_detail
+        if developer_detail:
+            self.add_note(developer_detail)
 
 
 def set_secret_scope(secrets: Optional[Mapping[str, str]]) -> Token:
@@ -127,14 +160,22 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
         return default if _MULTIPLEX_ACTIVE else _environ_or(name, default)
     if _MULTIPLEX_ACTIVE:
         raise UnscopedSecretError(
+            name,
             f"get_secret({name!r}) called with no profile secret scope active "
             f"while multiplexing is on. This credential read must run inside a "
             f"set_secret_scope(...) block (the per-turn / per-adapter profile "
             f"scope). Reading os.environ here would risk leaking another "
-            f"profile's value. See docs/design/multiplexing-gateway.md "
-            f"(Workstream A)."
+            f"profile's value. See website/docs/developer-guide/multiplexing-gateway.md "
+            f"(Workstream A).",
         )
     return _environ_or(name, default)
+
+
+def get_secret_str(name: str, default: str = "") -> str:
+    """``get_secret`` for callers that want a ``str``: ``default`` only when the secret is genuinely
+    unset. Still raises ``UnscopedSecretError`` — swallowing it hides a spawn-site bug."""
+    val = get_secret(name, default)
+    return default if val is None else val
 
 
 def _strip_inline_comment(value: str) -> str:
@@ -160,17 +201,42 @@ def _strip_inline_comment(value: str) -> str:
     return re.split(r"\s+#", value, maxsplit=1)[0].strip()
 
 
+def _parse_env_value(raw_value: str) -> str:
+    """Parse the small .env value subset Hermes writes itself (bare, 'single', or "double" with
+    ``\\"`` / ``\\\\`` escapes)."""
+    value = raw_value.strip()
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        quoted = value[1:-1]
+        parsed: list[str] = []
+        i = 0
+        while i < len(quoted):
+            escaped = quoted[i] == "\\" and quoted[i + 1:i + 2] in ('"', "\\")
+            parsed.append(quoted[i + 1] if escaped else quoted[i])
+            i += 2 if escaped else 1
+        return "".join(parsed)
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        return value[1:-1]
+    return value
+
+
 def load_env_file(env_path: Path) -> Dict[str, str]:
-    """Parse a ``.env`` file into a dict WITHOUT touching ``os.environ``: ``export``
-    prefix, ``#`` comments, and the writer's quote escapes reversed via the canonical
-    ``_parse_env_value``. ``utf-8-sig`` so a BOM doesn't prefix the first key."""
+    """THE ``.env`` tokenizer: every reader (profile scope, ``hermes_cli.config.load_env``, the dashboard
+    scrub, skill secret capture, managed .env, setup prompts) parses through here so no two boundaries
+    disagree on which keys/values a file defines. Dict only — never touches ``os.environ``. ``export``
+    prefix, ``#`` comments, quote escapes reversed; ``utf-8-sig`` so a BOM doesn't prefix the first key.
+    Invalid UTF-8 decodes as latin-1, exactly like ``env_loader._load_dotenv_with_fallback`` installs it
+    into ``os.environ``. Absent/unreadable → ``{}``."""
     secrets: Dict[str, str] = {}
     try:
-        text = env_path.read_text(encoding="utf-8-sig")
-    except (FileNotFoundError, OSError, UnicodeDecodeError):
+        raw = env_path.read_bytes()
+    except OSError:
         return secrets
-
-    from hermes_cli.config import _parse_env_value
+    if raw.startswith(codecs.BOM_UTF8):
+        raw = raw[len(codecs.BOM_UTF8):]
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1")
 
     for raw in text.splitlines():
         line = raw.strip()
@@ -196,4 +262,19 @@ def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
     except Exception:
         external_secrets = {}
     secrets.update((k, v) for k, v in external_secrets.items() if not _is_global_env(k))
+    # The DEFAULT profile's config.yaml allow_all_users grant lives only in os.environ (bridged by
+    # gateway.config_loader); scoped gate readers under multiplex never fall to os.environ, so seed it
+    # into that profile's own mapping. A secondary never inherits it (#80099 class).
+    from gateway.config_loader import bridged_allow_all_users
+    bridged = bridged_allow_all_users()
+    if bridged is not None and _is_process_home(hermes_home):
+        secrets.setdefault("GATEWAY_ALLOW_ALL_USERS", bridged)
     return secrets
+
+
+def _is_process_home(hermes_home: Path) -> bool:
+    from hermes_constants import get_process_hermes_home
+    try:
+        return Path(hermes_home).resolve() == get_process_hermes_home().resolve()
+    except OSError:
+        return False

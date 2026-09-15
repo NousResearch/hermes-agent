@@ -247,7 +247,7 @@ def test_created_skill_does_not_inherit_stale_identity_or_continuity(
     skill_usage.bump_use("recreated")
 
     record = skill_usage.get_record("recreated")
-    assert record["created_by"] is None
+    assert record["created_by"] == "learn"  # foreground re-create: learning-signal marker, not curator opt-in
     assert record["use_count"] == 1
     assert record["patch_count"] == 0
     assert record["patch_generation"] == 0
@@ -556,3 +556,18 @@ def test_adopt_rejects_empty_name(skills_home):
     from tools.skill_usage import adopt_skill
 
     assert adopt_skill("")[0] is False
+
+
+def test_foreground_create_stamps_learn_provenance_not_agent(skills_home):
+    """A foreground create (e.g. /learn) gets a learning-signal marker ("learn"), never the
+    curator-management opt-in ("agent") — /journey shows it, autonomous curation stays off."""
+    from tools import skill_usage
+
+    skill_usage.record_created("taught-skill", agent_created=False)
+    rec = skill_usage.get_record("taught-skill")
+    assert rec["created_by"] == "learn"
+    assert not skill_usage.is_curator_managed("taught-skill")
+    # And the background path is unchanged.
+    skill_usage.record_created("agent-skill", agent_created=True)
+    assert skill_usage.get_record("agent-skill")["created_by"] == "agent"
+    assert skill_usage.is_curator_managed("agent-skill")

@@ -314,6 +314,73 @@ def test_reader_loop_streams_incremental_chunks_from_read1(registry, monkeypatch
     assert moved == ["proc_reader_live"]
 
 
+def test_reader_waits_past_early_stdout_eof_before_publishing_completion(registry, monkeypatch):
+    """Closing stdout is not process completion; the reader must still reap the child."""
+
+    class _EarlyEofStdout:
+        def read(self, _n):
+            return ""
+
+    class _StillRunningProcess:
+        stdout = _EarlyEofStdout()
+        returncode = None
+
+        def wait(self, timeout=None):
+            # A bounded wait expires: the child outlives its stdout by more than the old 5 s cap.
+            if timeout is not None:
+                raise subprocess.TimeoutExpired("render", timeout)
+            self.returncode = 0
+            return 0
+
+    session = _make_session(sid="proc_early_eof")
+    session.process = _StillRunningProcess()
+    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: None)
+
+    registry._reader_loop(session)
+
+    assert session.exited is True
+    assert session.exit_code == 0
+
+
+def test_failed_reader_wait_does_not_publish_false_completion(registry, monkeypatch):
+    """A failed reap must leave the session running for later reconciliation."""
+    session = _make_session(sid="proc_wait_failed")
+    moved = []
+    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: moved.append(_s.id))
+
+    registry._finish_reader(
+        session,
+        MagicMock(decode=MagicMock(return_value="")),
+        lambda _text: None,
+        "Process",
+        MagicMock(side_effect=OSError("wait failed")),
+        lambda: None,
+    )
+
+    assert session.exited is False
+    assert moved == []
+
+
+def test_failed_reader_wait_still_records_known_exit_status(registry, monkeypatch):
+    """A PTY child reaped by isalive() has its status; a raising wait must not lose it."""
+    session = _make_session(sid="proc_pty_wait_failed")
+    moved = []
+    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: moved.append(_s.id))
+
+    registry._finish_reader(
+        session,
+        MagicMock(decode=MagicMock(return_value="")),
+        lambda _text: None,
+        "PTY",
+        MagicMock(side_effect=OSError("waitpid ECHILD")),
+        lambda: 9,
+    )
+
+    assert session.exited is True
+    assert session.exit_code == 9
+    assert moved == [session.id]
+
+
 # =========================================================================
 # Incremental UTF-8 decoding across chunk boundaries
 # (ported from openclaw/openclaw#112325)
@@ -701,6 +768,117 @@ class TestPruning:
 
         total = len(registry._running) + len(registry._finished)
         assert total <= MAX_PROCESSES
+
+
+class TestFinishedHandleRelease:
+    """Finished sessions must release their Popen/PTY OS handles immediately.
+
+    Regression for the "file descriptor limit" symptom: a finished-but-
+    unpruned session previously kept its Popen stdout pipe (or PTY master)
+    FD open until the finished-process TTL (FINISHED_TTL_SECONDS) elapsed.
+    Under heavy background churn the gateway could exhaust its FD limit even
+    though the registry never rejects spawns (it prunes oldest-finished at
+    MAX_PROCESSES instead) — the symptom was a retained-handle leak, not a
+    registry-cap rejection. poll()/wait()/read_log() serve from the buffered
+    output_buffer, never from the pipe, so closing the handles at finish is
+    lossless.
+    """
+
+    def test_move_to_finished_closes_popen_pipes(self, registry):
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(0.2)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+        )
+        session = _make_session(sid="proc_handle_close", exited=False)
+        session.process = proc
+        registry._running[session.id] = session
+
+        assert proc.stdout is not None
+        assert not proc.stdout.closed
+
+        # Simulate the reader loop finishing (process exits, EOF drained).
+        proc.wait(timeout=5)
+        session.exited = True
+        session.exit_code = proc.returncode
+        session.completion_reason = "exited"
+        registry._move_to_finished(session)
+
+        assert session.id in registry._finished
+        assert proc.stdout.closed, "finished session must release its stdout pipe FD"  # type: ignore[union-attr]
+
+    def test_move_to_finished_closes_pty(self, registry):
+        """PTY-backed sessions release the PTY master on finish too."""
+        pty_closed = {"closed": False}
+
+        class _FakePty:
+            def close(self):
+                pty_closed["closed"] = True
+
+        session = _make_session(sid="proc_pty_close", exited=True)
+        session._pty = _FakePty()
+        registry._finished[session.id] = session
+
+        registry._move_to_finished(session)
+        assert pty_closed["closed"]
+
+    def test_poll_still_serves_output_after_handle_release(self, registry):
+        """Output remains queryable after the pipes close — poll() reads the
+        buffered output, never the (now-closed) pipe."""
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "print('hello-finish'); import time; time.sleep(0.2)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            text=True,
+        )
+        session = _make_session(sid="proc_poll_after_close", exited=False)
+        session.process = proc
+        registry._running[session.id] = session
+
+        # Drain output like the reader loop would.
+        proc.wait(timeout=5)
+        try:
+            tail = proc.stdout.read() if proc.stdout else ""
+        except ValueError:
+            tail = ""
+        session.output_buffer = tail or ""
+        session.exited = True
+        session.exit_code = proc.returncode
+        session.completion_reason = "exited"
+        registry._move_to_finished(session)
+
+        assert proc.stdout.closed
+        result = registry.poll("proc_poll_after_close")
+        assert result["status"] == "exited"
+        assert "hello-finish" in result["output_preview"]
+
+    def test_prune_releases_handles_of_dropped_sessions(self, registry):
+        """TTL-prune must release handles of sessions that landed in
+        _finished without passing through _move_to_finished (direct inserts).
+        The release is idempotent, so double-close on the normal path is safe.
+        """
+        import time as _time
+
+        pty_closed = {"closed": False}
+
+        class _FakePty:
+            def close(self):
+                pty_closed["closed"] = True
+
+        session = _make_session(sid="proc_prune_release", exited=True)
+        session._pty = _FakePty()
+        # Force TTL expiry.
+        session.started_at = _time.time() - (FINISHED_TTL_SECONDS + 60)
+        registry._finished[session.id] = session
+
+        with registry._lock:
+            registry._prune_if_needed()
+
+        assert session.id not in registry._finished
+        assert pty_closed["closed"], "pruned session must release its PTY handle"
+
 
 
 # =========================================================================

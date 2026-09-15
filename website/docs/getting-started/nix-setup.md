@@ -223,6 +223,10 @@ To enable container mode, add one line:
 Container mode auto-enables `virtualisation.docker.enable` via `mkDefault`. If you use Podman instead, set `container.backend = "podman"` and `virtualisation.docker.enable = false`.
 :::
 
+:::note Cron on a native install needs a lingering service user
+Scheduled cron jobs are launched in a transient `systemd-run --user --scope` so a gateway restart cannot kill a running job. That needs a systemd user manager for the service uid, which a system service only gets when the uid lingers. With `createUser = true` the module sets `users.users.<user>.linger = true` (nixpkgs ≥ 25.05), orders the gateway after `linger-users.service`, and waits briefly for `/run/user/<uid>/bus` before starting. If you declare the user yourself (`createUser = false`), set `linger = true` on it or run `sudo loginctl enable-linger <user>` once; otherwise cron degrades to unscoped workers (or fails closed under `cron.require_restart_safe_scope: true`).
+:::
+
 ---
 
 ## Configuration

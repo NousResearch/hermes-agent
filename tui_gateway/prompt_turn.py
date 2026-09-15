@@ -251,16 +251,17 @@ def _result_status(result: dict) -> str:
         else "error" if result.get("error") else "complete")
 
 
-def _turn_outcome(result: Any) -> tuple[Any, str, str | None]:
+def _turn_outcome(result: Any, error_surface: dict | None = None) -> tuple[Any, str, str | None]:
     """Reduce a run_conversation result to ``(raw_text, status, last_reasoning)``."""
     if not isinstance(result, dict):
         return str(result), "complete", None
     raw = result.get("final_response", "")
     status = _result_status(result)
-    # No visible response AND a real error: surface the error as the text (classic CLI
-    # parity).  An empty successful turn still renders as empty.
+    # No visible response AND a real error: the assistant slot carries a plain account of the
+    # failure (title from ``error_surface``, raw provider detail on a ``Details:`` line, next
+    # step) rather than the bare provider body.  An empty successful turn still renders as empty.
     if (not raw) and result.get("error") and (result.get("failed") or result.get("partial")):
-        raw = f"Error: {result.get('error')}"
+        raw = turn_error_text(result.get("error"), error_surface)
     # "Operation interrupted: waiting for model response (…)" is cancellation
     # metadata, not assistant prose (gateway/run.py and ACP suppress it too).
     # "Operation interrupted: waiting for model response (…)" is cancellation metadata, not assistant prose.
@@ -444,12 +445,14 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     scopes = st.scopes
     scopes.approval = set_current_session_key(session["session_key"])
     scopes.session_tokens = _set_session_context(session["session_key"], ui_session_id=sid)
-    profile_home = session.get("profile_home")
-    if profile_home:
-        scopes.home = set_hermes_home_override(profile_home)
-        scopes.secret = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
-        from tools.terminal_scope import install_profile_terminal_scope
-        scopes.terminal = install_profile_terminal_scope(Path(profile_home))
+    # Profile turn: that profile's home + secrets + terminal policy. Launch-profile turn: unscoped in a
+    # single-profile process; once multiplexing is active (#68559 / #107422 residual) its OWN scope,
+    # built from the env frozen at activation — get_secret() fails closed then, so an unscoped default
+    # member's hosted-room turn otherwise died with UnscopedSecretError, and ambient TERMINAL_* a
+    # secondary context poisoned must never become the launch turn's authority.
+    bound = _profile_runtime_scope_tokens(session.get("profile_home"))
+    if bound is not None:
+        scopes.home, scopes.secret, scopes.terminal = bound.home, bound.secret, bound.terminal
     # The sudo password callback is thread-local: without re-wiring here, sudo prompts
     # fall through to /dev/tty and hang the headless gateway (re-run is a no-op).
     _wire_callbacks(sid)
@@ -623,7 +626,18 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     """``(payload, raw, status)`` for message.complete; retains/clears the inflight turn and
     settles the hosted-room terminal receipt."""
     result, agent = st.result, st.agent
-    raw, status, last_reasoning = _turn_outcome(result)
+    # Advisory {layer, code, retryable} descriptor; computed before the retain so resume
+    # replay carries the same one, and before the text so the fallback copy can use it.
+    _error_surface = None
+    if _result_status(result) == "error":
+        try:
+            from agent.error_surface import build_error_surface_from_result
+            _error_surface = build_error_surface_from_result(
+                result, provider=str(getattr(agent, "provider", "") or ""),
+                model=str(getattr(agent, "model", "") or ""))
+        except Exception:
+            _error_surface = None
+    raw, status, last_reasoning = _turn_outcome(result, _error_surface)
     payload = {"text": raw, "usage": _get_usage(agent), "status": status}
     if last_reasoning:
         payload["reasoning"] = last_reasoning
@@ -637,17 +651,6 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
         payload["failure_reason"] = result.get("failure_reason")
     if rendered := render_message(raw, cols):
         payload["rendered"] = rendered
-    # Advisory {layer, code, retryable} descriptor; computed before the retain so resume
-    # replay carries the same one.
-    _error_surface = None
-    if status == "error":
-        try:
-            from agent.error_surface import build_error_surface_from_result
-            _error_surface = build_error_surface_from_result(
-                result, provider=str(getattr(agent, "provider", "") or ""),
-                model=str(getattr(agent, "model", "") or ""))
-        except Exception:
-            _error_surface = None
     error_value = result.get("error")
     with session["history_lock"]:
         if status == "error":

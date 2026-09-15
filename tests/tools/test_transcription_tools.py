@@ -355,6 +355,64 @@ class TestTranscribeLocalCommand:
     not __import__("importlib").util.find_spec("faster_whisper"),
     reason="faster_whisper not installed",
 )
+class TestLocalModelLoading:
+    def test_cached_model_load_never_uses_online_resolution(self):
+        cached_model = object()
+
+        with patch("faster_whisper.WhisperModel", return_value=cached_model) as model_cls:
+            from tools.transcription_local import _create_whisper_model
+
+            assert _create_whisper_model("base", device="cpu", compute_type="int8") is cached_model
+
+        model_cls.assert_called_once_with(
+            "base", local_files_only=True, device="cpu", compute_type="int8"
+        )
+
+    @pytest.mark.parametrize("download_error", [None, "Got: ConnectTimeout: [Errno 110] Connection timed out"])
+    def test_cache_miss_falls_back_with_actionable_download_failure(self, download_error):
+        from tools.transcription_local import _create_whisper_model, _hub_cache_miss_error
+
+        LocalEntryNotFoundError = _hub_cache_miss_error()
+        if download_error:
+            download_error = LocalEntryNotFoundError(download_error)
+
+        downloaded_model = object()
+        online_result = download_error or downloaded_model
+        side_effect = [LocalEntryNotFoundError("not cached"), online_result]
+        with patch("faster_whisper.WhisperModel", side_effect=side_effect) as model_cls:
+            if download_error:
+                with pytest.raises(RuntimeError) as exc_info:
+                    _create_whisper_model("base", device="auto", compute_type="auto")
+                assert "HF_ENDPOINT" in str(exc_info.value)
+                assert "HF_HUB_DISABLE_XET=1" in str(exc_info.value)
+            else:
+                assert _create_whisper_model(
+                    "base", device="auto", compute_type="auto"
+                ) is downloaded_model
+
+        assert model_cls.call_args_list == [
+            call("base", local_files_only=True, device="auto", compute_type="auto"),
+            call("base", local_files_only=False, device="auto", compute_type="auto"),
+        ]
+
+    def test_partial_cache_is_treated_as_a_cache_miss(self):
+        # An interrupted first download leaves refs/main + a snapshot without model.bin;
+        # snapshot_download(local_files_only=True) returns that folder and ctranslate2
+        # raises RuntimeError, so the online path must still run.
+        from tools.transcription_local import _create_whisper_model
+
+        downloaded_model = object()
+        side_effect = [RuntimeError("Unable to open file 'model.bin' in model '/cache/snap'"), downloaded_model]
+        with patch("faster_whisper.WhisperModel", side_effect=side_effect) as model_cls:
+            assert _create_whisper_model("base", device="cpu", compute_type="int8") is downloaded_model
+
+        assert [c.kwargs["local_files_only"] for c in model_cls.call_args_list] == [True, False]
+
+
+@pytest.mark.skipif(
+    not __import__("importlib").util.find_spec("faster_whisper"),
+    reason="faster_whisper not installed",
+)
 class TestTranscribeLocalExtended:
     def test_model_reuse_on_second_call(self, tmp_path):
         """Second call with same model should NOT reload the model."""
@@ -416,7 +474,9 @@ class TestTranscribeLocalExtended:
             result = _transcribe_local(str(audio), "base")
 
         assert result["success"] is True
-        mock_whisper_cls.assert_called_once_with("base", device="cpu", compute_type="float32")
+        mock_whisper_cls.assert_called_once_with(
+            "base", local_files_only=True, device="cpu", compute_type="float32"
+        )
 
 
     def test_cuda_out_of_memory_does_not_trigger_cpu_fallback(self, tmp_path):
@@ -1203,12 +1263,20 @@ class TestRunCommandSttIdleTimeout:
         from tools.transcription_command import _run_command_stt
 
         script = tmp_path / "progress_then_exit.py"
+        # The de-flake is budget, not ordering: the first tick was always
+        # printed before the first sleep. What changed is the idle window
+        # (0.1s -> 0.25s, 5x the 50ms tick period) so process spawn latency
+        # under loaded CI or on Windows can no longer eat the whole window
+        # before the first stderr chunk is read, plus a longer heartbeat
+        # sequence whose ~400ms runtime still exceeds the idle window, so a
+        # pass still proves the progress extension.
         script.write_text(
             "\n".join([
                 "import sys, time",
-                "for idx in range(4):",
+                "print('tick 0', file=sys.stderr, flush=True)",
+                "for idx in range(1, 9):",
+                "    time.sleep(0.05)",
                 "    print(f'tick {idx}', file=sys.stderr, flush=True)",
-                "    time.sleep(0.04)",
                 "print('done', flush=True)",
             ]),
             encoding="utf-8",
@@ -1216,11 +1284,11 @@ class TestRunCommandSttIdleTimeout:
 
         result = _run_command_stt(
             self._shell_command(sys.executable, "-u", str(script)),
-            timeout=0.1,
+            timeout=0.25,
         )
 
         assert result.returncode == 0
-        assert "tick 3" in result.stderr
+        assert "tick 8" in result.stderr
         assert "done" in result.stdout
 
     def test_silent_stall_still_times_out(self, tmp_path):
@@ -1238,10 +1306,15 @@ class TestRunCommandSttIdleTimeout:
             encoding="utf-8",
         )
 
+        # Same budget rule as the progress test above: the idle window must
+        # comfortably exceed process spawn latency on a loaded runner, or the
+        # child is killed before its first stderr line is ever read and the
+        # pre-stall-output assertion fails spuriously. 30s of silence still
+        # trips a 0.25s window by a wide margin.
         with pytest.raises(subprocess.TimeoutExpired) as excinfo:
             _run_command_stt(
                 self._shell_command(sys.executable, "-u", str(script)),
-                timeout=0.1,
+                timeout=0.25,
             )
 
         assert "starting pass 1" in (excinfo.value.stderr or "")

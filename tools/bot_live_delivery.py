@@ -10,10 +10,11 @@ from __future__ import annotations
 import json
 import os
 import re
-import tempfile
 import time
 import uuid
 from contextlib import contextmanager
+
+from utils import atomic_json_write, fsync_directory
 from pathlib import Path
 from typing import Any
 
@@ -24,12 +25,8 @@ _OWNER_KEYS = ("profile_home", "session_id", "lease_id", "live_session_id")
 _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
 
 
-def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None:
-    """Resolve exact Bot Chat's compression tip without creating/migrating its DB.
-
-    Capability advertisement is mandatory; old Desktop/TUI processes must not
-    receive work they cannot consume. Registry errors propagate, failing closed.
-    """
+def find_canonical_owner(profile_home: Path | str) -> dict[str, Any] | None:
+    """Return the exact Bot Chat tip's lease, including unsupported CLI owners."""
     from hermes_cli.active_sessions import active_session_registry_snapshot
     from hermes_state import SessionDB
 
@@ -45,12 +42,18 @@ def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None
     if not session_id:
         return None
     for entry in active_session_registry_snapshot(registry_home=home):
-        meta = entry.get("metadata") or {}
-        if (entry["session_id"] == session_id
-                and meta.get("bot_live_delivery_consumer") is True
-                and meta.get("live_session_id")):
-            return dict(profile_home=str(home), session_id=session_id,
-                        lease_id=entry["lease_id"], live_session_id=meta["live_session_id"])
+        if entry["session_id"] == session_id:
+            return {**entry, "profile_home": str(home)}
+    return None
+
+
+def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None:
+    """Only advertised consumers may receive owner-pinned mailbox deliveries."""
+    entry = find_canonical_owner(profile_home)
+    meta = (entry or {}).get("metadata") or {}
+    if entry and meta.get("bot_live_delivery_consumer") is True and meta.get("live_session_id"):
+        return {key: entry[key] for key in ("profile_home", "session_id", "lease_id")} | {
+            "live_session_id": meta["live_session_id"]}
     return None
 
 
@@ -73,25 +76,14 @@ def _root(home: Path | str) -> Path:
     return Path(home).resolve() / "runtime" / DELIVERY_DIR_NAME
 
 
-def _fsync_dir(path: Path) -> None:
-    # Windows cannot open directories with os.open; file fsync still applies.
-    if os.name == "nt":
-        return
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
 @contextmanager
 def _locked(home: Path | str):
     root = _root(home)
     root.parent.mkdir(parents=True, exist_ok=True)
     root.mkdir(mode=0o700, exist_ok=True)
     root.chmod(0o700)
-    _fsync_dir(root.parent)
-    _fsync_dir(root.parent.parent)
+    fsync_directory(root.parent)
+    fsync_directory(root.parent.parent)
     lock = root / ".lock"
     fd = os.open(lock, os.O_CREAT | os.O_WRONLY, 0o600)
     os.close(fd)
@@ -107,16 +99,7 @@ def _read(path: Path) -> dict[str, Any] | None:
 
 
 def _write(path: Path, record: dict[str, Any]) -> None:
-    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".delivery-")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump(record, stream, ensure_ascii=False, sort_keys=True)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        _fsync_dir(path.parent)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
+    atomic_json_write(path, record, indent=None, sort_keys=True, fsync_dir=True, mode=0o600)
 
 
 def deliver_to_live_owner(

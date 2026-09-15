@@ -150,20 +150,19 @@ class TestSessionHygieneThresholds:
         assert approx_tokens < huge_model_threshold
 
 
-def test_hygiene_total_ceiling_warning_reports_elapsed_and_progress():
+@pytest.mark.parametrize("total_exhausted", [True, False])
+def test_hygiene_timeout_warning_names_chat_commands_not_config(total_exhausted):
+    """The chat user cannot edit model config or read second counts; the notice names the
+    slash commands they can run and keeps the timing detail in the log."""
     from gateway.run import _hygiene_compression_timeout_message
 
     warning = _hygiene_compression_timeout_message(
-        total_exhausted=True,
-        elapsed=600.4,
-        idle_timeout=30.0,
-        progress_observed=True,
+        total_exhausted=total_exhausted, elapsed=600.4, idle_timeout=30.0, progress_observed=True,
     )
 
-    assert "total ceiling after 600.4s" in warning
-    assert "summary output was observed" in warning
-    assert "30.0s" not in warning
-    assert "no output" not in warning
+    assert "/compress" in warning and "/new" in warning
+    assert "600.4" not in warning and "30.0" not in warning
+    assert "auxiliary" not in warning and "/reset" not in warning
 
 
 class TestSessionHygieneWarnThreshold:
@@ -631,7 +630,7 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
     _cd_args = fake_db.record_compression_failure_cooldown.call_args[0]
     assert _cd_args[0] == "sess-timeout"
     assert _cd_args[1] > time.time()
-    timeout_warnings = [s for s in adapter.sent if "Context compression timed out" in s["content"]]
+    timeout_warnings = [s for s in adapter.sent if "took too long" in s["content"]]
     assert len(timeout_warnings) == 1
     fake_db.archive_and_compact.assert_not_called()
     assert lease_released.is_set()
@@ -808,8 +807,9 @@ async def test_session_hygiene_turn_hold_budget_abandons_streaming_wait(
     # Behavior witness 1: turn-hold expiry must NOT stamp the idle-timeout
     # provenance or send the "no output" user message.
     sent_contents = [m["content"] for m in adapter.sent]
+    # The idle-timeout copy is the only one that adds the `hermes doctor` pointer.
     assert not any(
-        "timed out" in c.lower() and "no output" in c.lower()
+        "took too long" in c.lower() and "hermes doctor" in c.lower()
         for c in sent_contents
     ), f"turn-hold must not send idle-timeout message, got: {sent_contents}"
     assert any(
@@ -843,7 +843,7 @@ async def test_session_hygiene_turn_hold_budget_abandons_streaming_wait(
     # timeout, not a turn-hold deferral. The turn-hold path must use a
     # distinct provenance stamp.
     # (Verified indirectly: the idle-timeout path would have sent the
-    # "no output" message, which we already asserted absent above.)
+    # idle-timeout message, which we already asserted absent above.)
 
 
 @pytest.mark.asyncio
@@ -975,12 +975,12 @@ async def test_session_hygiene_idle_timeout_still_takes_failure_path(
     assert worker_started.is_set()
     assert runner._run_agent.await_count == 1
 
-    # Behavior witness: idle timeout MUST send the "no output" message.
+    # Behavior witness: idle timeout MUST send the idle-timeout message (with the `hermes doctor` pointer).
     sent_contents = [m["content"] for m in adapter.sent]
     assert any(
-        "timed out" in c.lower() and "no output" in c.lower()
+        "took too long" in c.lower() and "hermes doctor" in c.lower()
         for c in sent_contents
-    ), f"idle timeout must send 'no output' message, got: {sent_contents}"
+    ), f"idle timeout must send the took-too-long + hermes doctor message, got: {sent_contents}"
 
     # Behavior witness: idle timeout MUST advance the failure cooldown.
     # The gateway calls _hygiene_cooldown_for_failure + _record_hygiene_cooldown.
@@ -1614,7 +1614,7 @@ async def test_hygiene_fence_cancel_records_cooldown_without_abort_flag(
             f"got {state!r}"
         )
         assert not any(
-            "Context compression aborted" in s["content"] for s in adapter1.sent
+            "Shortening the conversation history failed" in s["content"] for s in adapter1.sent
         ), "fence-cancel during /stop or /restart must not toast an abort"
 
         class ShouldNotRunAgent:
@@ -1713,7 +1713,7 @@ async def test_hygiene_does_not_wait_ceiling_after_fence_cancel(
         state = db.get_compression_failure_cooldown(session_id)
         assert state is not None and state["remaining_seconds"] > 0
         assert not any(
-            "Context compression timed out" in s["content"] for s in adapter.sent
+            "took too long" in s["content"] for s in adapter.sent
         ), "fence-cancel is not a summary-model timeout; no timeout toast"
         release_worker.set()
         await asyncio.wait_for(asyncio.to_thread(cleanup_done.wait), timeout=2)

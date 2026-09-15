@@ -1,5 +1,5 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -200,5 +200,71 @@ describe('VaultSettings', () => {
     await waitFor(() => expect(screen.getByText('Unlocked')).toBeTruthy())
     expect(screen.queryByPlaceholderText('Master password')).toBeNull()
     expect(screen.getByRole('button', { name: 'Lock' })).toBeTruthy()
+  })
+
+  it('refreshes password-manager detection when the page is reopened', async () => {
+    let installed = false
+    requestGateway.mockImplementation(async (method: string) => {
+      if (method === 'vault.sources') {
+        return {
+          sources: [
+            {
+              name: 'onepassword',
+              display_name: '1Password',
+              enabled: false,
+              needs_unlock: true,
+              unlocked: false,
+              installed
+            }
+          ]
+        }
+      }
+
+      return { items: [] }
+    })
+
+    const first = renderVault()
+    await screen.findByText('Not detected')
+    first.unmount()
+
+    installed = true
+    renderVault()
+
+    await waitFor(() => expect(screen.getByRole('switch', { name: '1Password' })).toBeTruthy())
+    expect(requestGateway.mock.calls.filter(([method]) => method === 'vault.sources')).toHaveLength(2)
+  })
+
+  it('refreshes password-manager detection after remounting while the gateway is closed', async () => {
+    let installed = false
+    requestGateway.mockImplementation(async (method: string) => {
+      if (method === 'vault.sources') {
+        return {
+          sources: [
+            {
+              name: 'onepassword',
+              display_name: '1Password',
+              enabled: false,
+              needs_unlock: true,
+              unlocked: false,
+              installed
+            }
+          ]
+        }
+      }
+
+      return { items: [] }
+    })
+
+    const first = renderVault()
+    await screen.findByText('Not detected')
+    first.unmount()
+
+    installed = true
+    $gatewayState.set('closed')
+    renderVault()
+    act(() => $gatewayState.set('open'))
+
+    await waitFor(() => expect(screen.getByRole('switch', { name: '1Password' })).toBeTruthy())
+    expect(requestGateway.mock.calls.filter(([method]) => method === 'vault.sources')).toHaveLength(2)
   })
 })

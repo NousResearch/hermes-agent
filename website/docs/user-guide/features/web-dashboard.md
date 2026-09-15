@@ -374,7 +374,7 @@ the API server and webhook endpoints) with its live connection status.
 - **Configure** — open a per-platform form with exactly the fields that channel needs (bot token, app token, server URL, allowlist, etc.). Secrets render as password inputs and are stored redacted; leaving a field blank keeps the existing value. Required fields are marked and validated. A "Setup guide" link points to the platform's credential docs.
 - **Enable / disable** — toggle a channel on or off. The credential stays on disk; only the active state changes.
 - **Test** — check whether the channel is configured, enabled, and reporting a live connection from the gateway.
-- **Restart gateway** — credentials are written to `~/.hermes/.env` and the enabled flag to `config.yaml`; the gateway connects each enabled channel on its next restart, which you can trigger right from the page.
+- **Restart gateway** — credentials are written to `~/.hermes/.env` and the enabled flag to `config.yaml`; the gateway connects each enabled channel on its next restart, which you can trigger right from the page. On a system-scope install (`hermes gateway install --system`) the dashboard runs the restart under `sudo -n`, so the dashboard user needs passwordless sudo; without it the request fails immediately instead of reporting a restart that the CLI then refuses.
 
 ![Channels admin page — every messaging platform with status, enable toggles, and per-platform setup forms](/img/dashboard/admin-channels.png)
 

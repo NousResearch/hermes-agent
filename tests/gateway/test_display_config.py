@@ -5,6 +5,25 @@
 # Resolver: resolution order
 # ---------------------------------------------------------------------------
 
+class TestToolProgressProvenance:
+    def test_winning_source_controls_mode_and_intent(self):
+        from gateway.display_config import resolve_tool_progress
+
+        cases = [
+            ({}, None, ("off", False)),
+            ({}, "all", ("all", True)),
+            ({"tool_progress": None}, "all", ("all", True)),
+            ({"platforms": {"slack": {"tool_progress": None}}}, "off", ("off", True)),
+            ({"tool_progress_overrides": {"slack": None}}, "new", ("new", True)),
+            ({"tool_progress": False}, "all", ("off", True)),
+            ({"tool_progress": "all", "platforms": {"slack": {"tool_progress": None}}}, "off", ("all", True)),
+            ({"tool_progress": "off", "tool_progress_overrides": {"slack": "new"}}, "all", ("new", True)),
+            ({"tool_progress_overrides": {"slack": "off"}, "platforms": {"slack": {"tool_progress": "all"}}}, None, ("all", True)),
+        ]
+        for display, env, expected in cases:
+            assert resolve_tool_progress({"display": display}, "slack", env) == expected
+
+
 class TestResolveDisplaySetting:
     """resolve_display_setting() resolves with correct priority."""
 

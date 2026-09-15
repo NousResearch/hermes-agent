@@ -724,6 +724,42 @@ class TestBuildCodexClient:
         assert mock_openai.call_args.kwargs["api_key"] == "codex-auth-token"
         assert mock_openai.call_args.kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
 
+    def test_profile_codex_base_url_overrides_pool_endpoint(self, monkeypatch):
+        """Auxiliary Codex calls use the same profile endpoint override as the main client."""
+        entry = SimpleNamespace(
+            runtime_api_key="codex-pool-token",
+            runtime_base_url="https://chatgpt.com/backend-api/codex",
+        )
+        with (
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(True, entry)),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/v1")
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import _build_codex_client
+
+            client, model = _build_codex_client("gpt-5.4")
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert mock_openai.call_args.kwargs["base_url"] == "http://127.0.0.1:8787/v1"
+
+    def test_profile_codex_base_url_applies_to_raw_codex_client(self, monkeypatch):
+        """The main agent's raw Codex client honours the same endpoint override."""
+        with (
+            patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-auth-token"),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/v1")
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client("openai-codex", "gpt-5.4", raw_codex=True)
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert mock_openai.call_args.kwargs["base_url"] == "http://127.0.0.1:8787/v1"
+
     def test_rejects_missing_model(self):
         """Callers must pass an explicit model; no hardcoded default."""
         from agent.auxiliary_client import _build_codex_client
@@ -2945,6 +2981,37 @@ class TestAnthropicAuxiliaryReasoningTranslation:
             base_url="https://example.test/v1",
         )
         assert "_reasoning_config" not in openai_wire_kwargs
+
+    def test_anthropic_messages_profile_keeps_reasoning_reachable(self):
+        # commandcode-anthropic: OpenAI-shaped URL, anthropic_messages api_mode, and a profile
+        # class that overrides build_api_kwargs_extras (so the generic extra_body.reasoning
+        # fallback the adapter used to read is suppressed). The adapter must still be told.
+        import model_tools  # noqa: F401 — triggers provider discovery
+        import providers
+
+        assert providers.get_provider_profile("commandcode-anthropic") is not None
+        rc = {"enabled": False}
+        kwargs = _build_call_kwargs(
+            "commandcode-anthropic", "claude-haiku-4-5-20251001", [{"role": "user", "content": "hi"}],
+            reasoning_config=rc, base_url="https://api.commandcode.ai/provider/v1",
+        )
+        assert kwargs["_reasoning_config"] == rc
+        chat_kwargs = _build_call_kwargs(
+            "commandcode", "Qwen/Qwen3.7-Max", [{"role": "user", "content": "hi"}],
+            reasoning_config=rc, base_url="https://api.commandcode.ai/provider/v1",
+        )
+        assert "_reasoning_config" not in chat_kwargs
+
+    def test_anthropic_messages_profile_resolves_to_messages_adapter(self, monkeypatch):
+        # Bare ``provider: commandcode-anthropic`` (no api_mode) must wrap the client on the
+        # profile's declared wire, or the ``_reasoning_config`` kwarg above would reach a plain
+        # OpenAI client and TypeError.
+        import model_tools  # noqa: F401
+        from agent.auxiliary_client import AnthropicAuxiliaryClient, resolve_provider_client
+
+        monkeypatch.setenv("COMMANDCODE_API_KEY", "sk-test-" + "x" * 20)
+        client, _ = resolve_provider_client("commandcode-anthropic", model="claude-haiku-4-5-20251001")
+        assert isinstance(client, AnthropicAuxiliaryClient)
 
 
 class TestAuxiliaryProviderProfileReasoning:

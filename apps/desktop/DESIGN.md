@@ -177,6 +177,14 @@ Notes:
 `warn`, `destructive`, `outline`, `solid` (primary fill — icon-corner counts).
 Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 
+## Context-sensitive dialogs
+
+Sudo password dialogs keep the backdrop unblurred (`DialogContent`'s
+`blurBackdrop={false}`) and show the complete, selectable command before the
+password field. Long commands wrap and scroll; missing backend context is
+explicit, never inferred from another tool row. Other dialogs retain the shared
+blurred backdrop.
+
 ## Form controls
 
 - **`controlVariants`** (`src/components/ui/control.ts`) is the shared shape for
@@ -271,6 +279,10 @@ so glass and message-bubble transparency do not reveal scrolling text.
   from the chip to the floating pill; leaving both dismisses it.
 - A tool result may expose an inline action that opens a preview. It must not
   open the rail automatically.
+- Tool rows reserve destructive red for explicit failures. Missing read paths and
+  ambiguous exit-1 results use neutral notices, with details still available.
+  Errors described inside returned data are not tool failures. Expanded failures
+  show the actual explanation; supporting output keeps its normal text color.
 - Composer status groups start collapsed except todos. Progress updates and queue
   pause/resume preserve the user's disclosure choice. Error banners meet the
   stack's top edge without a blank padding strip. File and preview links remain

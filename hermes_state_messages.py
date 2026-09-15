@@ -458,6 +458,15 @@ class SessionMessagesMixin:
             (session_id, role, int(offset)))
         return row[0] if row else None
 
+    def latest_conversation_role(self, session_id: str) -> Optional[str]:
+        """Role of the newest active user/assistant/tool row, or ``None``. ``session_meta`` /
+        ``system`` rows are transcript bookkeeping stripped before the model sees history, so
+        they must not hide an open user tail from the failed-turn boundary check."""
+        row = self._read_one(
+            "SELECT role FROM messages WHERE session_id = ? AND active = 1 "
+            "AND role NOT IN ('session_meta', 'system') ORDER BY id DESC LIMIT 1", (session_id,))
+        return row[0] if row else None
+
     def get_message_role(self, session_id: str, row_id: int) -> Optional[str]:
         """Role of the active message at *row_id* in *session_id*, or ``None``."""
         if not session_id:
@@ -733,10 +742,16 @@ class SessionMessagesMixin:
             for row in rows:
                 key = self._display_dedupe_key(row)
                 first_id[key] = min(first_id.get(key, row["id"]), row["id"])
-                keyed_rows.append((row["id"], key))
+                keyed_rows.append((row, key))
+            updates = []
+            for row, key in keyed_rows:
+                order = first_id[key]
+                identity = self._display_identity(key)
+                if order != row["display_order"] or identity != row["display_identity"]:
+                    updates.append((order, identity, row["id"]))
             conn.executemany(
                 "UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?",
-                [(first_id[key], self._display_identity(key), row_id) for row_id, key in keyed_rows])
+                updates)
             return True
 
         return bool(self._execute_write(_do))

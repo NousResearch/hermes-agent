@@ -317,6 +317,8 @@ class SessionKernel:
         # cell settles). Reaping/cap-eviction skip attached kernels: tearing one down mid-spawn
         # rmtree'd the staging dir under the spawner and killed live cells.
         self.attached: int = 0
+        # Owned by a live delegate_task child: exempt from LRU eviction (the child's teardown disposes it).
+        self.pinned: bool = False
         self.response_q: "queue.Queue[dict]" = queue.Queue()
         self.raw, self.stderr = _BoundedBuffer(), _BoundedBuffer()
         self.execution_count, self.last_used = 0, time.monotonic()
@@ -363,11 +365,13 @@ class KernelRegistry:
         self.kernels: Dict[Tuple, Any] = {}
         self.lock, self._teardown = threading.Lock(), teardown
 
-    def shutdown(self, owner: Optional[str] = None) -> None:
-        """Tear down every kernel, or every kernel one owner (key[0]) holds."""
+    def shutdown(self, owner: Optional[str] = None, *, owner_matches: Optional[Callable[[str], bool]] = None) -> None:
+        """Tear down every kernel, every kernel one owner (key[0]) holds, or every kernel whose owner
+        satisfies ``owner_matches``."""
         with self.lock:
             doomed = [self.kernels.pop(key) for key in list(self.kernels)
-                      if owner is None or key[0] == owner]
+                      if (owner is None and owner_matches is None) or key[0] == owner
+                      or (owner_matches is not None and owner_matches(key[0]))]
         for kernel in doomed:
             self._teardown(kernel)
 
@@ -402,6 +406,9 @@ def _lifecycle_limits() -> Tuple[int, int]:
     return limit("max_session_kernels", DEFAULT_MAX_SESSION_KERNELS), limit("kernel_idle_timeout", DEFAULT_KERNEL_IDLE_TIMEOUT)
 
 
+_CHILD_OWNER_QUALIFIER = "::child::"
+
+
 def _resolve_owner(task_id: str) -> str:
     """The stable identity a session kernel belongs to: the conversation's approval session key
     (context-propagated, stable across turns, distinct per session). ``run_agent`` mints a fresh
@@ -423,7 +430,7 @@ def _resolve_owner(task_id: str) -> str:
         if is_delegated_child_context():
             from gateway.session_context import get_session_env
             child_id = get_session_env("HERMES_SESSION_ID", "") or (task_id or "")
-            owner = f"{owner}::child::{child_id}"
+            owner = f"{owner}{_CHILD_OWNER_QUALIFIER}{child_id}"
     except Exception:
         pass
     return owner
@@ -442,6 +449,26 @@ def shutdown_kernels_for_owner(owner: str) -> None:
     """
     if owner:
         _REGISTRY.shutdown(owner)
+
+
+def delegated_child_owner_matcher(child_session_id: str) -> Callable[[str], bool]:
+    """Predicate for the kernels a delegate_task child owns (``_resolve_owner`` qualifies a child's
+    owner with its delegation session id). Shared with the remote registry."""
+    suffix = f"{_CHILD_OWNER_QUALIFIER}{child_session_id}"
+    return lambda owner: owner.endswith(suffix)
+
+
+def shutdown_kernels_for_delegated_child(child_session_id: str) -> None:
+    """Dispose a finished child's kernels (local and remote). A child's kernel lives exactly as long as the
+    child: pinned against LRU eviction while it runs, torn down here — otherwise finished children's
+    kernels squatted the process-wide cap for ``kernel_idle_timeout`` and evicted LIVE children's kernels,
+    which then lost their state mid-task with no signal but ``reused: false``."""
+    if not child_session_id:
+        return
+    matcher = delegated_child_owner_matcher(child_session_id)
+    _REGISTRY.shutdown(owner_matches=matcher)
+    from tools.code_kernel_remote import shutdown_remote_kernels_where
+    shutdown_remote_kernels_where(matcher)
 
 
 atexit.register(shutdown_all_kernels)
@@ -625,10 +652,12 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
         threading.Thread(target=target, args=args, daemon=True).start()
 
 
-def _acquire_kernel(key: Tuple, reset: bool) -> Tuple[SessionKernel, bool]:
+def _acquire_kernel(key: Tuple, reset: bool, *, pinned: bool = False) -> Tuple[SessionKernel, bool]:
     """Look up or register the kernel for *key*; returns (kernel, state_reset). Every entry also
     sweeps idle-expired kernels and enforces the process-wide LRU cap (doomed kernels are popped
-    under the lock, torn down outside it), so a long-lived host stays bounded."""
+    under the lock, torn down outside it), so a long-lived host stays bounded. ``pinned`` kernels
+    (live delegate_task children) are exempt from the cap: their lifetime is the child's, ended by
+    ``shutdown_kernels_for_delegated_child``, so the cap has nothing to bound for them."""
     cap, idle_timeout = _lifecycle_limits()
     with _REGISTRY.lock:
         now = time.monotonic()
@@ -644,11 +673,13 @@ def _acquire_kernel(key: Tuple, reset: bool) -> Tuple[SessionKernel, bool]:
             kernel = None
         if kernel is None:
             kernel = _KERNELS[key] = SessionKernel(key)
+            kernel.pinned = pinned
         kernel.last_used = time.monotonic()
         kernel.attached += 1
-        by_age = sorted((k for k in _KERNELS if k != key and _KERNELS[k].attached == 0),
+        unpinned = [k for k in _KERNELS if not _KERNELS[k].pinned]
+        by_age = sorted((k for k in unpinned if k != key and _KERNELS[k].attached == 0),
                         key=lambda k: _KERNELS[k].last_used)
-        expired.extend(_KERNELS.pop(k) for k in by_age[: max(0, len(_KERNELS) - cap)])
+        expired.extend(_KERNELS.pop(k) for k in by_age[: max(0, len(unpinned) - cap)])
     for doomed in expired:
         doomed.teardown()
     return kernel, state_reset
@@ -748,7 +779,8 @@ def execute_in_session_kernel(
     session key (``_resolve_owner``), not the per-turn task id, so state survives across turns."""
     key = (_resolve_owner(task_id) or "", mode, child_python, child_cwd, tuple(sorted(sandbox_tools)))
     exec_start = time.monotonic()
-    kernel, state_reset = _acquire_kernel(key, reset)
+    from agent.delegation_context import is_delegated_child_context
+    kernel, state_reset = _acquire_kernel(key, reset, pinned=is_delegated_child_context())
     try:
         return _run_cell(kernel, key, code, task_id=task_id, child_python=child_python, child_cwd=child_cwd,
                          sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,

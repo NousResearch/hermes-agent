@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import importlib
 import json
 import logging
@@ -24,7 +25,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from agent.secret_scope import is_multiplex_active
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import (
+    get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
+)
 
 from .cards import card_spec_to_cards_v2, format_message as _format_message
 
@@ -183,7 +186,25 @@ def _is_retryable_error(exc: BaseException) -> bool:
 
 
 def check_google_chat_requirements() -> bool:
-    """Canonical "are the optional deps available" probe; triggers the lazy import."""
+    """PASSIVE deps probe; must never install. Registry ``check_fn`` uses this via ``_check_for_registry``."""
+    return _load_google_modules()
+
+
+def ensure_google_chat_deps() -> bool:
+    """ACTIVE installer (registry ``ensure_deps_fn``).
+
+    Routes through ``tools.lazy_deps`` so sealed hosted/Docker images write
+    ``HERMES_LAZY_INSTALL_TARGET`` instead of the read-only venv. Resets the
+    failed-import cache so ``create_adapter()`` can load modules after install.
+    ``FeatureUnavailable`` propagates: the registry logs its ``reason`` (quarantine
+    404, no writable target, network), which is exactly what a hosted operator needs.
+    """
+    global _google_modules_loaded, GOOGLE_CHAT_AVAILABLE
+    if GOOGLE_CHAT_AVAILABLE:
+        return True
+    from tools.lazy_deps import ensure as _lazy_ensure
+    _lazy_ensure("platform.google_chat", prompt=False)
+    _google_modules_loaded = False
     return _load_google_modules()
 
 
@@ -364,6 +385,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
         self._project_id = self._subscription_path = self._bot_user_id = None  # bot id is users/{id}
         self._supervisor_task: Optional[asyncio.Task] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        # The profile scope this adapter was connected under (multiplex: HERMES_HOME override + secret
+        # scope). Pub/Sub callbacks arrive on the gRPC SubscriberClient's own threads with an EMPTY
+        # context, and ``run_coroutine_threadsafe`` copies THAT context onto the loop task — so
+        # ``_dispatch_message`` and everything it reaches (attachment cache, per-user OAuth token
+        # store, delivery ledger, TTS keys) would resolve the launch profile. Captured in ``connect()``.
+        self._scope_ctx: Optional[contextvars.Context] = None
         # User-authed Chat clients for native ``media.upload`` (bot identity is rejected
         # there) keyed by sender email; ``_user_credentials``/``_user_chat_api`` = LEGACY fallback.
         self._user_chat_api = self._user_credentials = None
@@ -378,12 +405,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # Last inbound thread per space: DMs get a NEW thread per top-level message but users
         # see one conversation, so thread_id leaves the source (stable session key) and is cached here.
         self._last_inbound_thread: Dict[str, str] = {}
-        try:
-            from hermes_constants import get_hermes_home as _get_hermes_home
-            _hermes_home = _get_hermes_home()
-        except (ModuleNotFoundError, ImportError):
-            _hermes_home = _Path.home() / ".hermes"
-        self._thread_count_store = _ThreadCountStore(_hermes_home / "google_chat_thread_counts.json")
+        from hermes_constants import get_hermes_home as _get_hermes_home
+        self._thread_count_store = _ThreadCountStore(_get_hermes_home() / "google_chat_thread_counts.json")
         # In-flight typing-card creates per chat_id: reserved BEFORE the API call so
         # concurrent _keep_typing calls wait instead of duplicating cards.
         self._typing_card_inflight: Dict[str, asyncio.Event] = {}
@@ -480,9 +503,13 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return
         try:
             from agent.async_utils import safe_schedule_threadsafe
-            future = safe_schedule_threadsafe(
-                coro, loop, logger=logger, log_message="[GoogleChat] Failed to schedule background callback",
-                log_level=logging.WARNING,
+            # run_coroutine_threadsafe copies the CALLING thread's context onto the loop task; from the
+            # gRPC callback thread that is empty. Run the scheduling inside the adapter's connect-time
+            # scope so the task (and every to_thread/create_task under it) carries the profile.
+            ctx = self._scope_ctx.copy() if self._scope_ctx is not None else contextvars.copy_context()
+            future = ctx.run(
+                safe_schedule_threadsafe, coro, loop, logger=logger,
+                log_message="[GoogleChat] Failed to schedule background callback", log_level=logging.WARNING,
             )
         except RuntimeError:
             logger.warning("[GoogleChat] Loop closed between check and submit")
@@ -592,6 +619,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                                   message="google-cloud-pubsub / google-api-python-client not installed")
             return False
         self._loop = asyncio.get_running_loop()
+        self._scope_ctx = contextvars.copy_context()  # the profile scope connect() runs under (see __init__)
         try:
             project_id, subscription_path = self._validate_config()
             credentials = self._load_sa_credentials()
@@ -766,7 +794,13 @@ class GoogleChatAdapter(BasePlatformAdapter):
     def _on_pubsub_message(self, message: Any) -> None:
         """Pub/Sub callback — parse envelope and dispatch to the asyncio loop.
         Runs in a SubscriberClient worker thread: never block, never raise (that
-        triggers nack + infinite redelivery). Event type comes from ``ce-type``."""
+        triggers nack + infinite redelivery). Event type comes from ``ce-type``. The body runs under
+        the adapter's profile scope (a per-callback copy: a Context cannot be entered concurrently) so
+        ``_save_cached_bot_id`` and the loop hand-off resolve the served profile, not the launch one."""
+        ctx = self._scope_ctx.copy() if self._scope_ctx is not None else contextvars.copy_context()
+        ctx.run(self._handle_pubsub_message, message)
+
+    def _handle_pubsub_message(self, message: Any) -> None:
         if self._shutting_down:
             message.nack()
             return
@@ -920,7 +954,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             # Email is the canonical id (allowlists use emails); the ``users/{id}``
             # resource name moves to user_id_alt.
             user_id=(sender_email or sender_name), user_name=sender.get("displayName") or sender_email or sender_name,
-            thread_id=session_thread_id, user_id_alt=(sender_name or None),
+            thread_id=session_thread_id, user_id_alt=(sender_name or None), message_id=msg.get("name") or None,
         )
         return MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=msg, message_id=msg.get("name") or None,
@@ -1536,30 +1570,27 @@ def _is_connected(config: PlatformConfig) -> bool:
     return bool(getattr(config, "enabled", False)) and _validate_config(config)
 
 
-_ENV_SEED_KEYS = (
-    ("http_events_audience", "GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE"),
-    ("http_events_service_account_email", "GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL"),
-    ("max_messages", "GOOGLE_CHAT_MAX_MESSAGES"), ("max_bytes", "GOOGLE_CHAT_MAX_BYTES"),
-    ("bootstrap_spaces", "GOOGLE_CHAT_BOOTSTRAP_SPACES"), ("debug_raw", "GOOGLE_CHAT_DEBUG_RAW"),
+_ENV_SEED_KEYS = (  # (env var, extra key, conv) for seed_extra_from_env
+    ("GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE", "http_events_audience", None),
+    ("GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL", "http_events_service_account_email", None),
+    ("GOOGLE_CHAT_MAX_MESSAGES", "max_messages", None), ("GOOGLE_CHAT_MAX_BYTES", "max_bytes", None),
+    ("GOOGLE_CHAT_BOOTSTRAP_SPACES", "bootstrap_spaces", None), ("GOOGLE_CHAT_DEBUG_RAW", "debug_raw", None),
 )
 
 
 def _env_enablement() -> Optional[Dict[str, Any]]:
-    """Seed ``PlatformConfig.extra`` from env during ``_apply_env_overrides`` (before the
-    adapter exists, so ``gateway status`` reflects env-only config). None when the minimum
-    inbound settings are absent; ``home_channel`` becomes a ``HomeChannel`` in the core hook."""
+    """``env_enablement_fn``: seed ``PlatformConfig.extra`` from the profile's env before the adapter exists
+    (so ``gateway status`` reflects env-only config); ``None`` when the minimum inbound settings are absent."""
     if not _env_inbound_configured():
         return None
     project, subscription, http_events_url = _env_inbound_settings()
-    values = [("project_id", project), ("subscription_name", subscription), ("http_events_url", http_events_url)]
-    values += [(extra_name, _get_scoped_secret(env)) for extra_name, env in _ENV_SEED_KEYS]
-    values.append(("service_account_json", _get_scoped_secret("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
-                   or _get_scoped_secret("GOOGLE_APPLICATION_CREDENTIALS")))
-    seed: Dict[str, Any] = {extra_name: value for extra_name, value in values if value}
-    home = _get_scoped_secret("GOOGLE_CHAT_HOME_CHANNEL")
-    if home:
-        seed["home_channel"] = {"chat_id": home, "name": _get_scoped_secret("GOOGLE_CHAT_HOME_CHANNEL_NAME", "Home")}
+    values = [("project_id", project), ("subscription_name", subscription), ("http_events_url", http_events_url),
+              ("service_account_json", _get_scoped_secret("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
+               or _get_scoped_secret("GOOGLE_APPLICATION_CREDENTIALS"))]
+    seed = {extra_name: value for extra_name, value in values if value}
+    seed.update(_seed_extra_from_env(_ENV_SEED_KEYS, home_env="GOOGLE_CHAT_HOME_CHANNEL"))
     return seed
+
 
 
 _SETUP_WALKTHROUGH = """Google Chat needs a GCP project, a Pub/Sub topic + subscription,
@@ -1583,11 +1614,9 @@ def interactive_setup() -> None:
     """``hermes setup`` wizard: print GCP instructions, prompt for env vars, persist to ``~/.hermes/.env``."""
     from hermes_cli.cli_output import print_info, print_success, print_warning, prompt, prompt_yes_no
     from hermes_cli.config import get_env_value, save_env_value
-    existing_sub = get_env_value("GOOGLE_CHAT_SUBSCRIPTION_NAME")
-    if existing_sub:
-        print_info(f"Google Chat: already configured (subscription: {existing_sub})")
-        if not prompt_yes_no("Reconfigure Google Chat?", False):
-            return
+    from hermes_cli.setup_platforms import declines_reconfigure
+    if declines_reconfigure("Google Chat", "Reconfigure Google Chat?", "GOOGLE_CHAT_SUBSCRIPTION_NAME"):
+        return
     for line in _SETUP_WALKTHROUGH.splitlines():
         print_info(line)
     for question, env_name, required_label, password in (
@@ -1641,7 +1670,7 @@ _STANDALONE_SA_ERRORS = {
 
 
 def _standalone_error(detail: str) -> Dict[str, Any]:
-    return {"error": f"Google Chat standalone send: {detail}"}
+    return send_error(f"Google Chat standalone send: {detail}")
 
 
 async def _standalone_send(
@@ -1701,7 +1730,7 @@ async def _standalone_send(
         return {"success": True, "message_id": payload.get("name")}
     except Exception as e:
         logger.debug("Google Chat standalone send raised", exc_info=True)
-        return {"error": f"Google Chat standalone send failed: {e}"}
+        return send_error(f"Google Chat standalone send failed: {e}")
 
 
 def register(ctx) -> None:
@@ -1711,6 +1740,7 @@ def register(ctx) -> None:
         label="Google Chat",
         adapter_factory=lambda cfg: GoogleChatAdapter(cfg),
         check_fn=_check_for_registry,
+        ensure_deps_fn=ensure_google_chat_deps,
         validate_config=_validate_config,
         is_connected=_is_connected,
         required_env=["GOOGLE_CHAT_SERVICE_ACCOUNT_JSON"],

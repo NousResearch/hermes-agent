@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatErrorDiagnostics, parseErrorSurface } from './error-surface'
+import { en } from '@/i18n/en'
+
+import { ERROR_CODE_KEYS, errorRecoveryPlan, type ErrorSurface, formatErrorDiagnostics, parseErrorSurface } from './error-surface'
+import { errorCardText } from './error-surface-copy'
 
 describe('parseErrorSurface', () => {
   it('accepts a valid descriptor', () => {
@@ -82,5 +85,56 @@ describe('formatErrorDiagnostics', () => {
     expect(text).not.toContain('layer:')
     expect(text).not.toContain('model:')
     expect(text.split('\n').every(line => line.trim().length > 0)).toBe(true)
+  })
+})
+
+// The card body and the buttons under it must agree: a body that says "retry"
+// while the plan hides the Retry button leaves the user with an instruction
+// they cannot follow. Walks every code the backend can send (plus the layer
+// fallbacks) with the non-retryable verdict the classifier stamps for it.
+describe('error copy never names a hidden Retry', () => {
+  const thread = en.assistant.thread
+  const RETRY_WORDS = /\bretry\b|\btry again\b/i
+
+  // Verdicts the classifier stamps as deterministic (agent/error_surface.py
+  // `_NON_RETRYABLE_REASONS`); everything else arrives retryable.
+  const NON_RETRYABLE = new Set([
+    'auth',
+    'auth_permanent',
+    'billing',
+    'content_policy_blocked',
+    'provider_policy_blocked',
+    'model_not_found',
+    'format_error',
+    'ssl_cert_verification',
+    'context_overflow',
+    'interpreter_shutdown'
+  ])
+
+  const surfaces: ErrorSurface[] = [
+    ...ERROR_CODE_KEYS.map(code => ({ code, layer: 'provider' as const, retryable: !NON_RETRYABLE.has(code) })),
+    { code: 'auth', layer: 'auth', retryable: false },
+    { code: 'auth_permanent', layer: 'auth', retryable: false },
+    { code: 'ssl_cert_verification', layer: 'endpoint', retryable: false },
+    { code: 'interpreter_shutdown', layer: 'gateway', retryable: false },
+    { code: 'interpreter_shutdown', layer: 'runtime', retryable: false },
+    { code: 'unknown', layer: 'endpoint', retryable: false }
+  ]
+
+  it.each(surfaces.map(surface => [surface.code, surface.layer, surface] as const))(
+    '%s on %s',
+    (_code, _layer, surface) => {
+      const plan = errorRecoveryPlan(surface)
+      const { body } = errorCardText(thread, surface)
+
+      if (!plan.retry) {
+        expect(body).not.toMatch(RETRY_WORDS)
+      }
+    }
+  )
+
+  it('a credential rejection keeps Retry, so its body may still say retry', () => {
+    const surface: ErrorSurface = { authKind: 'api_key', code: 'auth', layer: 'auth', provider: 'openai', retryable: false }
+    expect(errorRecoveryPlan(surface).retry).toBe(true)
   })
 })

@@ -20,7 +20,7 @@ import time
 from typing import Dict, Any, Optional, Union
 from pathlib import Path
 from agent.redact import redact_cdp_url
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, hermes_home_key
 from utils import env_int
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 
@@ -37,11 +37,20 @@ _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
 
 def _build_browser_env() -> dict:
     """Credential-scrubbed env for an agent-browser subprocess (deferred import: test
-    harnesses stub the ``tools`` package)."""
-    from tools.environments.local import hermes_subprocess_env
+    harnesses stub the ``tools`` package). The passthrough keys are re-added from the active
+    profile's secret scope, never ``os.environ``: under multiplex that holds the LAUNCH profile's
+    Browserbase/Firecrawl keys, and a served profile's browser must run on its own (or none)."""
+    from agent.secret_scope import UnscopedSecretError, get_secret
+    from tools.environments.local import served_profile_child_env
 
-    env = hermes_subprocess_env(inherit_credentials=False)
-    env.update({k: os.environ[k] for k in _BROWSER_PASSTHROUGH_KEYS if k in os.environ})
+    env = served_profile_child_env(inherit_credentials=False)
+    for key in _BROWSER_PASSTHROUGH_KEYS:
+        try:
+            value = get_secret(key)
+        except UnscopedSecretError:
+            value = None  # multiplex, no scope bound: no key rather than a sibling profile's
+        if value is not None:
+            env[key] = value
     return env
 
 
@@ -125,11 +134,14 @@ AGENT_BROWSER_NPX_SPEC = "agent-browser@^0.26.0"
 
 # Process caches (``_cached_X`` + ``_X_resolved`` pairs) for config-derived lookups;
 # reset by ``cleanup_all_browsers``. Written/read by the sibling modules via ``browser_tool_origin``.
-_cached_command_timeout: Optional[int] = None
+# The config-derived ones are keyed by profile home (``hermes_home_key()``): the multiplexed
+# gateway serves every profile from one process, so a single slot would hand the launch
+# profile's browser settings to every other profile.
+_cached_command_timeout: Optional[Dict[str, int]] = None
 # Flip the resolved flag BEFORE nulling the cache so a concurrent reader never sees ``resolved=True`` with
 # ``cache=None`` (#14331).
 _command_timeout_resolved = False
-_cached_snapshot_threshold: Optional[int] = None
+_cached_snapshot_threshold: Optional[Dict[str, int]] = None
 _snapshot_threshold_resolved = False
 _cached_cloud_provider: Optional[BrowserProvider] = None
 _cloud_provider_resolved = False
@@ -167,14 +179,18 @@ def _browser_cfg(key: str, default, parse, log_label: str):
 
 
 def _cached_browser_cfg(cache_name: str, flag_name: str, key: str, default, parse, log_label: str):
-    """Process-cached ``_browser_cfg`` read (cleared by ``cleanup_all_browsers``). The value is
-    stored BEFORE the resolved flag flips so a concurrent reader never sees ``resolved=True``
-    with a ``None`` cache."""
+    """Process-cached ``_browser_cfg`` read, one slot per profile home (cleared by
+    ``cleanup_all_browsers``). The value is stored BEFORE the resolved flag flips so a
+    concurrent reader never sees ``resolved=True`` with an empty cache."""
     g = globals()
-    if g[flag_name] and g[cache_name] is not None:
-        return g[cache_name]
+    home = hermes_home_key()
+    cache = g[cache_name]
+    if cache is None:
+        cache = g[cache_name] = {}
+    if g[flag_name] and cache.get(home) is not None:
+        return cache[home]
     result = _browser_cfg(key, default, parse, log_label)
-    g[cache_name] = result
+    cache[home] = result
     g[flag_name] = True
     return result
 
@@ -430,7 +446,7 @@ atexit.register(_lifecycle._stop_browser_cleanup_thread)
 BROWSER_TOOL_SCHEMAS = [
     {
         "name": "browser_navigate",
-        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer web_search or web_extract (faster, cheaper). For plain-text endpoints — URLs ending in .md, .txt, .json, .yaml, .yml, .csv, .xml, raw.githubusercontent.com, or any documented API endpoint — prefer curl via the terminal tool or web_extract; the browser stack is overkill and much slower for these. Use browser tools when you need to interact with a page (click, fill forms, dynamic content). Returns a compact page snapshot with interactive elements and ref IDs — no need to call browser_snapshot separately after navigating.",
+        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer a lightweight retrieval tool when one is available (faster, cheaper). For plain-text endpoints — URLs ending in .md, .txt, .json, .yaml, .yml, .csv, .xml, raw.githubusercontent.com, or any documented API endpoint — prefer an available text-extraction or terminal-fetch tool; the browser stack is overkill and much slower for these. Use browser tools when you need to interact with a page (click, fill forms, dynamic content). Returns a compact page snapshot with interactive elements and ref IDs — no need to call browser_snapshot separately after navigating.",
         "parameters": {
             "type": "object",
             "properties": {

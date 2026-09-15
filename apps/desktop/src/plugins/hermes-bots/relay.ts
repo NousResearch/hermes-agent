@@ -80,6 +80,8 @@ interface RelayLifecycle {
   pushDebounceTimer: null | ReturnType<typeof setTimeout>
   pushUnsub: (() => void) | null
   rosterBusy: boolean
+  /** Id of the sole connection whose roster clear went out; null once the peer set relays again. */
+  rosterClearedFor: null | string
   rosterTimer: null | ReturnType<typeof setInterval>
 }
 
@@ -91,6 +93,7 @@ const relay: RelayLifecycle = {
   pushDebounceTimer: null,
   pushUnsub: null,
   rosterBusy: false,
+  rosterClearedFor: null,
   rosterTimer: null
 }
 
@@ -258,8 +261,29 @@ async function syncRelayRosters() {
     const connections = await relayConnections()
 
     if (connections.length < 2) {
+      // Nothing to relay — but the gateways that remain still hold the last
+      // pushed roster, so a departed machine's agents would stay in every
+      // bot's prompt (and as message_agent targets) until a second connection
+      // reappears. Push the now-empty roster once per sole connection so it
+      // forgets it — a replacement sole connection has never been told. An
+      // empty route list (registry not loaded yet) must not spend the clear.
+      if (connections.length === 1 && connections[0].id !== relay.rosterClearedFor) {
+        relay.rosterClearedFor = connections[0].id
+        await Promise.all(
+          connections.map(async connection => {
+            try {
+              await host.requestProfile(connection.route, 'bot_relay.roster.sync', { agents: [] })
+            } catch {
+              // Older backend without the relay RPCs — skip this connection.
+            }
+          })
+        )
+      }
+
       return
     }
+
+    relay.rosterClearedFor = null
 
     const agentsByConnection = new Map<string, RelayAgentRow[]>()
     await Promise.all(
@@ -463,6 +487,7 @@ function scheduleRelayPushDrain() {
 
 export function startBotRelay() {
   relay.disposed = false
+  relay.rosterClearedFor = null
 
   // Source-shape test harnesses evaluate plugin.js without DOM timers —
   // the relay only runs where a real event loop exists.

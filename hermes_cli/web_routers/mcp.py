@@ -7,6 +7,7 @@ web_server — reached via the late-binding seam so tests that mutate
 
 import asyncio
 import hashlib
+from contextlib import contextmanager
 import re
 import secrets
 import threading
@@ -16,7 +17,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from hermes_cli.web_deps import LateState, late
+from hermes_cli.web_deps import late
 from hermes_cli.web_server_mcp import _mcp_oauth_flows, _mcp_server_summary, _normalize_mcp_server_create
 from hermes_cli.web_models import MCPCatalogInstall, MCPEnabledToggle, MCPServerCreate, MCPServersReplace
 from hermes_cli.web_routers._common import (
@@ -36,6 +37,23 @@ save_env_value = late("save_env_value", "hermes_cli.config")
 _mcp_oauth_flows_lock = threading.Lock()
 _MCP_DASHBOARD_OAUTH_TTL = 15 * 60
 _MAX_PENDING_MCP_OAUTH_FLOWS = 8
+
+
+@contextmanager
+def _profile_secret_scope(profile: Optional[str]):
+    """Home + secret scope for a probe-class request (#109901). ``_config_profile_scope`` now binds
+    the secret scope itself; this stays the probe/OAuth callers' name. Home-only, NOT
+    ``_profile_scope``: the body can block for seconds and the latter holds the process-global
+    skills lock."""
+    with _config_profile_scope(profile):
+        yield
+
+
+def _secret_scoped(profile: Optional[str], fn):
+    def _run():
+        with _profile_secret_scope(profile):
+            return fn()
+    return _run
 
 
 def _gc_mcp_oauth_flows() -> None:
@@ -77,7 +95,8 @@ def _mcp_install_action_name(name: str) -> str:
 async def list_mcp_servers(profile: Optional[str] = None):
     from hermes_cli.mcp_config import _get_mcp_servers
 
-    servers = await scoped_to_thread(profile, _get_mcp_servers)
+    # ``url`` may carry a ``${VAR}`` ref — expand it against the requested profile, not this process.
+    servers = await asyncio.to_thread(_secret_scoped(profile, _get_mcp_servers))
     return {"servers": [_mcp_server_summary(name, cfg) for name, cfg in sorted(servers.items())]}
 
 
@@ -149,7 +168,7 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
     """Connect to the server, list its tools, disconnect."""
     from hermes_cli.mcp_config import _get_mcp_servers, _oauth_tokens_present, _probe_single_server
 
-    servers = await scoped_to_thread(profile, _get_mcp_servers)
+    servers = await asyncio.to_thread(_secret_scoped(profile, _get_mcp_servers))
     if name not in servers:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
 
@@ -158,19 +177,16 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
     # with no token — a false green. Require a token on disk, matching /auth.
     needs_oauth_token = servers[name].get("auth") == "oauth"
 
-    def _probe_scoped():
-        # Home-only scope (contextvar), NOT _profile_scope: a probe can block for
-        # seconds (stdio `npx` cold start) and _profile_scope holds the
-        # process-global skills lock for its whole body, serializing every other
-        # endpoint. The probe only needs HERMES_HOME for .env + token resolution.
-        with _config_profile_scope(profile):
-            tools = _probe_single_server(name, servers[name], details=details)
-            return tools, (_oauth_tokens_present(name) if needs_oauth_token else True)
+    def _probe():
+        tools = _probe_single_server(name, servers[name], details=details)
+        return tools, (_oauth_tokens_present(name) if needs_oauth_token else True)
 
     try:  # probe blocks on a dedicated MCP event loop — keep it off the FastAPI loop
-        tools, token_present = await asyncio.to_thread(_probe_scoped)
+        tools, token_present = await asyncio.to_thread(_secret_scoped(profile, _probe))
     except Exception as exc:
-        return {"ok": False, "error": str(exc), "tools": []}
+        from hermes_cli.mcp_config import redact_mcp_probe_text
+
+        return {"ok": False, "error": redact_mcp_probe_text(exc), "tools": []}
     if not token_present:
         return {"ok": False, "error": "OAuth authentication required — no token found.", "tools": []}
     # Optional per-tool schema size (chars) for the desktop's cost overlay;
@@ -207,7 +223,7 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
     process_home = _home()
 
     def _read():
-        with _profile_scope(profile):
+        with _profile_secret_scope(profile):
             return _get_mcp_servers(), _home()
 
     servers, flow_home = await asyncio.to_thread(_read)
@@ -276,6 +292,7 @@ async def mcp_oauth_callback(
     code: Optional[str] = None,
     state: Optional[str] = None,
     error: Optional[str] = None,
+    iss: Optional[str] = None,
 ):
     _gc_mcp_oauth_flows()
     with _mcp_oauth_flows_lock:
@@ -291,7 +308,7 @@ async def mcp_oauth_callback(
     if flow is None:
         return HTMLResponse("<h1>OAuth flow expired</h1><p>Return to Hermes and try again.</p>", status_code=404)
     try:
-        flow.deliver_callback(code=code, state=state, error=error)
+        flow.deliver_callback(code=code, state=state, error=error, iss=iss)
     except ValueError as exc:
         return HTMLResponse(
             "<h1>OAuth callback rejected</h1><p>The callback was invalid or already used.</p>",

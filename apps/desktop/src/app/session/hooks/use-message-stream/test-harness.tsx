@@ -1,3 +1,4 @@
+import type { GatewayEvent } from '@hermes/shared'
 import { QueryClient } from '@tanstack/react-query'
 import { render } from '@testing-library/react'
 import { useEffect, useRef } from 'react'
@@ -5,7 +6,7 @@ import { vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import type { RpcEvent } from '@/types/hermes'
+import type { ScopedServerRequest } from '@/store/gateway'
 
 import { useMessageStream } from './index'
 
@@ -16,7 +17,10 @@ export interface MessageStreamHarnessOptions extends Partial<Parameters<typeof u
 
 export interface MessageStreamHarness {
   /** Feed a gateway event into the mounted hook. */
-  handleEvent: (event: RpcEvent) => void
+  handleEvent: (event: GatewayEvent) => void
+  /** Feed a server→client request (clarify, approval, …) into the mounted hook;
+   *  returns the `respond` spy so a test can assert the answer frame. */
+  handleRequest: (method: string, params: Record<string, unknown>, id?: string) => ReturnType<typeof vi.fn>
   /** Push streaming assistant text, bypassing the event envelope. For the specs
    *  about flush scheduling rather than about a particular event. */
   appendDelta: (sessionId: string, delta: string) => void
@@ -47,7 +51,8 @@ export function renderMessageStream(
   sessionId: string | null,
   { states = new Map<string, ClientSessionState>(), ...overrides }: MessageStreamHarnessOptions = {}
 ): MessageStreamHarness {
-  let dispatch: ((event: RpcEvent) => void) | null = null
+  let dispatch: ((event: GatewayEvent) => void) | null = null
+  let dispatchRequest: ((request: ScopedServerRequest) => boolean) | null = null
   let appendDelta: ((sessionId: string, delta: string) => void) | null = null
   let latest: ClientSessionState | null = null
 
@@ -75,8 +80,9 @@ export function renderMessageStream(
 
     useEffect(() => {
       dispatch = stream.handleGatewayEvent
+      dispatchRequest = stream.handleServerRequest
       appendDelta = stream.appendAssistantDelta
-    }, [stream.appendAssistantDelta, stream.handleGatewayEvent])
+    }, [stream.appendAssistantDelta, stream.handleGatewayEvent, stream.handleServerRequest])
 
     return null
   }
@@ -92,6 +98,17 @@ export function renderMessageStream(
       }
 
       dispatch(event)
+    },
+    handleRequest: (method, params, id = `srq-${method}`) => {
+      const respond = vi.fn()
+
+      if (!dispatchRequest) {
+        throw new Error('renderMessageStream: the hook never mounted')
+      }
+
+      dispatchRequest({ fail: vi.fn(), id, method, params, profile: 'default', respond })
+
+      return respond
     },
     appendDelta: (id, delta) => {
       if (!appendDelta) {

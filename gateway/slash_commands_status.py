@@ -16,6 +16,7 @@ from agent.i18n import t
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session_transcript import TranscriptReadError
+from hermes_cli.status_report import build_status_fields
 
 # Log-record parity with gateway/run.py and the origin module.
 logger = logging.getLogger("gateway.run")
@@ -67,8 +68,9 @@ async def _quiet(call, default=None):
         return default
 
 
-HISTORY_UNREADABLE = ("⚠️ Conversation history is unreadable (state.db). "
-                      "This is not a new conversation — earlier messages exist but cannot be loaded.")
+HISTORY_UNREADABLE = ("⚠️ I can't read this conversation's history right now (your earlier messages "
+                      "exist but cannot be loaded). Run `hermes doctor --fix` on the host, or use /new "
+                      "to start fresh.")
 
 
 def _quiet_sync(call, default=None):
@@ -79,11 +81,13 @@ def _quiet_sync(call, default=None):
         return default
 
 
-def _status_model_route(status_agent, persisted_route: dict, session_row: dict, session_entry):
+def _status_model_route(
+    status_agent, active_override: dict, persisted_route: dict, session_row: dict, session_entry
+):
     """``(model, provider, context_used, context_total)`` for /status.
 
-    Order: live/cached agent route -> persisted dominant route -> SessionDB row -> gateway config
-    (only loaded when something is still missing).
+    Order: live/cached agent route -> active session override -> persisted recent route ->
+    SessionDB row -> gateway config (only loaded when something is still missing).
     """
     from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
     context_used = context_total = 0
@@ -95,6 +99,8 @@ def _status_model_route(status_agent, persisted_route: dict, session_row: dict, 
         if ctx is not None:
             context_used = max(0, _int_value(getattr(ctx, "last_prompt_tokens", 0)))
             context_total = _int_value(getattr(ctx, "context_length", 0))
+    routes.append((_clean_str(active_override.get("model")),
+                   _clean_str(active_override.get("provider"))))
     routes.append((_clean_str(persisted_route.get("model")),
                    _clean_str(persisted_route.get("billing_provider"))))
     row_route = (_clean_str(session_row.get("model")), _clean_str(session_row.get("billing_provider")))
@@ -230,23 +236,30 @@ class GatewayStatusCommandsMixin:
             session_entry.session_id
         )
         # Prefer the live or cached agent (actual runtime route + context compressor); fall back
-        # to SessionDB metadata + last_prompt_tokens so /status stays useful between turns.
+        # to an active /model override, then SessionDB metadata + last_prompt_tokens so /status
+        # stays useful between turns. Rehydrate first so this precedence survives gateway restarts.
         status_agent = agent if is_running else self._cached_agent_for(session_key)
+        self._rehydrate_session_model_override(session_key)
+        active_override = self._session_model_override(session_key) or {}
         model_name, provider_name, context_used, context_total = _status_model_route(
-            status_agent, persisted_route, session_row, session_entry
+            status_agent, active_override, persisted_route, session_row, session_entry
         )
 
-        stamp = "%Y-%m-%d %H:%M"
+        fields = build_status_fields(
+            session_entry.session_id, None, session_row, title=title, model=model_name, provider=provider_name,
+            created=session_entry.created_at, last_activity=session_entry.updated_at,
+            tokens=db_total_tokens, agent_running=is_running,
+        )
         lines = [t("gateway.status.header"), "",
-                 t("gateway.status.session_id", session_id=session_entry.session_id)]
-        if title:
-            lines.append(t("gateway.status.title", title=title))
-        lines += [t("gateway.status.created", timestamp=session_entry.created_at.strftime(stamp)),
-                  t("gateway.status.last_activity", timestamp=session_entry.updated_at.strftime(stamp))]
-        if model_name and provider_name:
-            lines.append(t("gateway.status.model_provider", model=model_name, provider=provider_name))
-        elif model_name:
-            lines.append(t("gateway.status.model", model=model_name))
+                 t("gateway.status.session_id", session_id=fields["session_id"])]
+        if fields["title"]:
+            lines.append(t("gateway.status.title", title=fields["title"]))
+        lines += [t("gateway.status.created", timestamp=fields["created"]),
+                  t("gateway.status.last_activity", timestamp=fields["last_activity"])]
+        if fields["model"] and fields["provider"]:
+            lines.append(t("gateway.status.model_provider", model=fields["model"], provider=fields["provider"]))
+        elif fields["model"]:
+            lines.append(t("gateway.status.model", model=fields["model"]))
         try:
             from hermes_cli.auth import resolve_provider
             from hermes_cli.anon_auth import guest_carries_inference
@@ -266,8 +279,8 @@ class GatewayStatusCommandsMixin:
                            pct=f"{mark}{pct}"))
         elif context_used:
             lines.append(t("gateway.status.context_used", used=mark + _fmt(context_used)))
-        state = t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")
-        lines += [t("gateway.status.tokens", tokens=_fmt(db_total_tokens)),
+        state = t("gateway.status.state_yes") if fields["agent_running"] else t("gateway.status.state_no")
+        lines += [t("gateway.status.tokens", tokens=fields["tokens"]),
                   t("gateway.status.agent_running", state=state)]
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))
@@ -303,7 +316,7 @@ class GatewayStatusCommandsMixin:
             _int_value(session_row.get(k))
             for k in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
         )
-        route = await _quiet(lambda: db.get_dominant_session_model_route(session_id))
+        route = await _quiet(lambda: db.get_recent_session_model_route(session_id))
         return title, session_row, db_total_tokens, route if isinstance(route, dict) else {}
 
     @staticmethod
@@ -476,7 +489,9 @@ class GatewayStatusCommandsMixin:
             if not (payload.get("categories") or []):
                 return []
             details = _quiet_sync(lambda: compute_context_details(agent), {"skills": [], "toolsets": []}) if expanded else None
-            return render_context_breakdown_lines(payload, details=details, grid=False)
+            from agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
+            file_lines = _quiet_sync(lambda: render_context_file_lines(context_file_sources_for_agent(agent)), [])
+            return render_context_breakdown_lines(payload, details=details, grid=False) + ([""] + file_lines if file_lines else [])
         except Exception:
             return []
 
@@ -600,14 +615,14 @@ class GatewayStatusCommandsMixin:
         return t("gateway.usage.no_data")
 
     async def _persisted_billing_route(self, source):
-        """``(provider, base_url)`` from the SessionDB row / dominant route when no agent is resident."""
+        """``(provider, base_url)`` from the SessionDB row / most recent route when no agent is resident."""
         async def _rows():
             entry = await self.async_session_store.get_or_create_session(source)
             persisted = await self._session_db.get_session(entry.session_id) or {}
-            route = await self._session_db.get_dominant_session_model_route(entry.session_id)
+            route = await self._session_db.get_recent_session_model_route(entry.session_id)
             return persisted, route if isinstance(route, dict) else {}
-        persisted, dominant = await _quiet(_rows, ({}, {}))
-        row = dominant if dominant.get("billing_provider") else persisted
+        persisted, recent = await _quiet(_rows, ({}, {}))
+        row = recent if recent.get("billing_provider") else persisted
         return row.get("billing_provider"), row.get("billing_base_url")
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:

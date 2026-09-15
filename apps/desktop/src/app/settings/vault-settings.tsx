@@ -188,6 +188,10 @@ export function VaultSettings() {
   const { data: sourcesData } = useQuery({
     enabled: gatewayState === 'open',
     queryKey: VAULT_SOURCES_QUERY_KEY,
+    // Manager detection can change while this settings page is closed. Mark this
+    // metadata query immediately stale so remount and closed-to-open recovery
+    // refetch instead of honouring the shared 60s cache.
+    staleTime: 0,
     queryFn: async () => {
       const result = await requestGateway<{ sources: VaultSource[] }>('vault.sources', {})
 

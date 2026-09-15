@@ -1,9 +1,190 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest'
+import { act, cleanup, renderHook } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { chunkForCommentary, toLiveHistory } from '@/lib/voice-live'
+import { en } from '@/i18n/en'
+import { chunkForCommentary, toLiveHistory, type VoiceLiveHandlers } from '@/lib/voice-live'
+import { $notifications, clearNotifications } from '@/store/notifications'
 
-import { delegationPrompt } from './use-voice-live-conversation'
+import { delegationPrompt, useVoiceLiveConversation } from './use-voice-live-conversation'
+
+// Issue #111987: the live-voice toasts must not show machine strings — neither
+// the wire close reasons (`connection_lost`, `closed`) nor the raw
+// `DOMException` text a denied `getUserMedia` throws.
+//
+// The transport is the only seam in the live hook, so the fake session records
+// the handlers it registers (tests drive the close/error paths directly) and
+// lets `start` reject with exactly what the real `getUserMedia` would throw.
+const transport = vi.hoisted(() => ({ failure: null as unknown, handlers: [] as VoiceLiveHandlers[] }))
+
+vi.mock('@/lib/voice-live', async importOriginal => {
+  const actual = (await importOriginal()) as Record<string, unknown>
+
+  return {
+    ...actual,
+    VoiceLiveSession: class {
+      close = vi.fn()
+      instruct = vi.fn()
+      setMuted = vi.fn()
+      speak = vi.fn()
+      think = vi.fn()
+
+      constructor(handlers: VoiceLiveHandlers) {
+        transport.handlers.push(handlers)
+      }
+
+      async start(): Promise<void> {
+        if (transport.failure) {
+          throw transport.failure
+        }
+      }
+    }
+  }
+})
+
+const voice = en.notifications.voice
+
+function mountLive() {
+  return renderHook(() =>
+    useVoiceLiveConversation({
+      busy: false,
+      consumePendingResponse: vi.fn(),
+      enabled: true,
+      onSubmit: vi.fn(),
+      pendingResponse: () => null,
+      seedHistory: () => []
+    })
+  )
+}
+
+/** Mount, start, and hand back the handlers the started session registered. */
+async function openSession(): Promise<VoiceLiveHandlers> {
+  const hook = mountLive()
+
+  await act(async () => {
+    await hook.result.current.start()
+  })
+
+  return transport.handlers.at(-1) as VoiceLiveHandlers
+}
+
+/** Start a session whose transport fails the way the real one can. */
+async function failedStart(failure: unknown): Promise<void> {
+  transport.failure = failure
+  const hook = mountLive()
+
+  await act(async () => {
+    await hook.result.current.start()
+  })
+}
+
+function resetToasts() {
+  clearNotifications()
+  transport.failure = null
+  transport.handlers.length = 0
+}
+
+describe('Voice-live session-end toast copy (#111987)', () => {
+  beforeEach(resetToasts)
+  afterEach(cleanup)
+
+  it('names the lost connection in copy instead of the internal reason code', async () => {
+    const handlers = await openSession()
+
+    act(() => {
+      handlers.onClosed('connection_lost', 127)
+    })
+
+    const toast = $notifications.get()[0]
+
+    expect(toast.title).toBe(voice.liveEnded)
+    expect(toast.message).toBe(`${voice.liveEndedConnectionLost} (127s)`)
+    expect(toast.message).not.toContain('connection_lost')
+  })
+
+  it('names the vendor-side close in copy instead of the "closed" fallback code', async () => {
+    const handlers = await openSession()
+
+    act(() => {
+      handlers.onClosed('closed', null)
+    })
+
+    const toast = $notifications.get()[0]
+
+    expect(toast.kind).toBe('warning')
+    expect(toast.message).toBe(voice.liveEndedClosed)
+  })
+
+  it('falls back to the ended copy when the wire reason is blank', async () => {
+    const handlers = await openSession()
+
+    act(() => {
+      handlers.onClosed('', null)
+    })
+
+    expect($notifications.get()[0].message).toBe(voice.liveEndedClosed)
+  })
+
+  it('passes an unrecognized server-sent reason through verbatim (unbounded by contract)', async () => {
+    const handlers = await openSession()
+
+    act(() => {
+      handlers.onClosed('quota_exhausted', 12)
+    })
+
+    expect($notifications.get()[0].message).toBe('quota_exhausted (12s)')
+  })
+
+  it('still drops close_requested (our own close) without a toast', async () => {
+    const handlers = await openSession()
+
+    act(() => {
+      handlers.onClosed('close_requested', 30)
+    })
+
+    expect($notifications.get()).toHaveLength(0)
+  })
+})
+
+describe('Voice-live mic failure toast copy (#111987)', () => {
+  beforeEach(resetToasts)
+  afterEach(cleanup)
+
+  it('reuses the recorder mic copy for a getUserMedia DOMException', async () => {
+    const cases: Array<[string, string]> = [
+      ['NotAllowedError', voice.microphonePermissionDenied],
+      ['NotFoundError', voice.noMicrophone],
+      ['NotReadableError', voice.microphoneInUse],
+      ['OverconstrainedError', voice.microphoneConstraintsUnsupported]
+    ]
+
+    for (const [name, copy] of cases) {
+      await failedStart(
+        new DOMException('The request is not allowed by the user agent or the platform in the current context.', name)
+      )
+
+      const toast = $notifications.get()[0]
+
+      expect(toast.title).toBe(voice.couldNotStartSession)
+      expect(toast.message).toBe(copy)
+      expect(toast.message).not.toContain('user agent')
+
+      cleanup()
+      resetToasts()
+    }
+  })
+
+  it('keeps a non-mic start failure message untouched', async () => {
+    for (const message of ['GPT-Live session already started', 'Missing local SDP offer']) {
+      await failedStart(new Error(message))
+
+      expect($notifications.get()[0].message).toBe(message)
+
+      cleanup()
+      resetToasts()
+    }
+  })
+})
 
 describe('GPT-Live delegation → Hermes turn', () => {
   it('sends the latest user words as the turn and the exchange as model-only context', () => {

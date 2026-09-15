@@ -210,6 +210,109 @@ class TestTelegramClarifyCallback:
         assert adapter._clarify_state["cidC"] == "sk-auth"
 
 
+class TestTelegramClarifyBatch:
+    """A batch keeps partial answers while explicit controls drive its lifecycle."""
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    @pytest.mark.asyncio
+    async def test_batch_progress_does_not_consume_open_answer_and_continue_skips_remaining(self):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=100))
+        cm.register("cid-budget", "sk-batch", "Budget?", ["850", "500"], require_text_reply_binding=True)
+        cm.register("cid-shot", "sk-batch", "Screenshot?", None, require_text_reply_binding=True)
+
+        result = await adapter.send_clarify_batch(
+            chat_id="12345",
+            questions=[
+                {"qid": "q0", "question": "Budget?", "choices": ["850", "500"]},
+                {"qid": "q1", "question": "Screenshot?", "choices": None},
+            ],
+            clarify_ids=["cid-budget", "cid-shot"],
+            batch_id="batch1",
+            session_key="sk-batch",
+        )
+        assert result.success is True
+        assert adapter._bot.send_message.await_count == 2
+        with cm._lock:
+            assert cm._entries["cid-shot"].requires_text_reply_binding is True
+            assert cm._entries["cid-shot"].text_reply_to_message_id == "100"
+
+        # The user has answered the choice; the screenshot remains open.
+        assert cm.resolve_gateway_clarify("cid-budget", "850") is True
+        query = AsyncMock()
+        query.data = "clb:batch1:status"
+        query.message = MagicMock(chat_id=12345)
+        query.from_user = MagicMock(id="777", first_name="Tester")
+        query.answer = AsyncMock()
+        update = MagicMock(callback_query=query)
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_callback_query(update, MagicMock())
+
+        with cm._lock:
+            assert cm._entries["cid-shot"].event.is_set() is False
+        assert "1/2" in query.answer.call_args.kwargs["text"]
+
+        query.data = "clb:batch1:continue"
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_callback_query(update, MagicMock())
+        with cm._lock:
+            assert cm._entries["cid-shot"].response == ""
+            assert cm._entries["cid-shot"].event.is_set() is True
+
+    @pytest.mark.asyncio
+    async def test_batch_card_binds_chat_user_and_invalidation_edits_visible_cards(self):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=100))
+        adapter._bot.edit_message_text = AsyncMock()
+        cm.register("cid-shot", "sk-batch", "Screenshot?", None, require_text_reply_binding=True)
+
+        result = await adapter.send_clarify_batch(
+            chat_id="12345", questions=[{"qid": "q1", "question": "Screenshot?", "choices": None}],
+            clarify_ids=["cid-shot"], batch_id="batch1", session_key="sk-batch",
+            metadata={"_clarify_initiator_user_id": "user1", "_clarify_initiator_thread_id": "topic7"},
+        )
+        assert result.success is True
+        with cm._lock:
+            entry = cm._entries["cid-shot"]
+            assert (entry.text_reply_chat_id, entry.text_reply_user_id, entry.text_reply_thread_id) == (
+                "12345", "user1", "topic7")
+
+        await adapter.invalidate_clarify_batch_for_session("sk-batch")
+        adapter._bot.edit_message_text.assert_awaited_once()
+        kwargs = adapter._bot.edit_message_text.call_args.kwargs
+        assert kwargs["reply_markup"] is None
+        assert "Abgebrochen" in kwargs["text"]
+        assert "batch1" not in adapter._clarify_batch_state
+
+    @pytest.mark.asyncio
+    async def test_other_authorized_user_cannot_tap_bound_batch_card(self):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        cm.register("cid-shot", "sk-batch", "Screenshot?", None, require_text_reply_binding=True)
+        assert cm.bind_text_reply_to("cid-shot", "100", user_id="user1")
+        adapter._clarify_state["cid-shot"] = "sk-batch"
+        query = AsyncMock()
+        query.data = "cl:cid-shot:skip"
+        query.message = MagicMock(chat_id=12345)
+        query.from_user = MagicMock(id="user2", first_name="Other")
+        query.answer = AsyncMock()
+        update = MagicMock(callback_query=query)
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_callback_query(update, MagicMock())
+
+        assert not cm._entries["cid-shot"].event.is_set()
+        assert "nicht beantworten" in query.answer.call_args.kwargs["text"]
+
+
 # ===========================================================================
 # Base adapter fallback render — text numbered list
 # ===========================================================================

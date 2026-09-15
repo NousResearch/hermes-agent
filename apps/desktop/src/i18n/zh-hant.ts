@@ -1180,7 +1180,9 @@ export const zhHant = defineLocale({
       providerDefault: '(提供方預設)',
       moaTitle: '混合代理（Mixture of Agents）',
       moaPreset: '預設',
-      moaAggregator: '聚合模型',
+      moaDescription: '聚合模型是執行整個流程並計費的模型。參考模型只會在每則使用者訊息時提供建議。',
+      moaReference: (number: number) => `參考模型 ${number}（顧問；每則使用者訊息執行一次）`,
+      moaAggregator: '聚合模型（執行模型；整個流程由此計費）',
       tasks: {
         vision: { label: '視覺', hint: '圖片分析' },
         compression: { label: '壓縮', hint: '上下文壓縮' },

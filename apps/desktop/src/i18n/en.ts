@@ -1344,7 +1344,9 @@ export const en: Translations = {
       notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
       moaTitle: 'Mixture of Agents',
       moaPreset: 'Preset',
-      moaAggregator: 'Aggregator',
+      moaDescription: 'The aggregator is the acting model billed for the whole run. Reference models advise once per user message.',
+      moaReference: (number: number) => `Reference ${number} (advisor; runs once per user message)`,
+      moaAggregator: 'Aggregator (acting model; billed for the whole run)',
       tasks: {
         vision: { label: 'Vision', hint: 'Image analysis' },
         compression: { label: 'Compression', hint: 'Context compaction' },

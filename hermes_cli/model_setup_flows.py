@@ -120,7 +120,7 @@ def _model_flow_moa(config, current_model=""):
         agg_label = f"{agg.get('provider')}:{agg.get('model')}" if agg else ""
         ref_count = len(presets[n].get("reference_models") or [])
         suffix = "  ← default" if n == default_name else ""
-        rows.append(f"{n}  (agg {agg_label}, {ref_count} refs){suffix}")
+        rows.append(f"{n}  (acting/billed aggregator {agg_label}, {ref_count} advisor refs){suffix}")
     default_idx = names.index(default_name) if default_name in names else 0
 
     title = "Select a Mixture of Agents preset:"
@@ -151,11 +151,12 @@ def _model_flow_moa(config, current_model=""):
     _save_model_choice(selected_name)
 
     preset = presets[selected_name]
-    _say("", f"Default model set to: {selected_name} (via Mixture of Agents)", f"  Preset: {selected_name}", "  Reference models:")
+    _say("", f"Default model set to: {selected_name} (via Mixture of Agents)", f"  Preset: {selected_name}",
+         "  Reference models (advisors; each runs once per user message):")
     for i, slot in enumerate(preset.get("reference_models") or [], start=1):
         print(f"    {i}. {slot.get('provider')}:{slot.get('model')}")
     agg = preset.get("aggregator") or {}
-    print(f"  Aggregator:  {agg.get('provider')}:{agg.get('model')}")
+    print(f"  Aggregator (acting model; billed for the whole run):  {agg.get('provider')}:{agg.get('model')}")
 
 
 def _nous_login_args(args) -> argparse.Namespace:

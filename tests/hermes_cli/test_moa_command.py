@@ -73,6 +73,32 @@ def test_moa_non_preset_is_one_shot_prompt():
     assert cli._pending_moa_restore_model["provider"] != "moa"
 
 
+def test_moa_list_identifies_the_billed_aggregator_and_advisor_references(capsys):
+    from hermes_cli.moa_cmd import _print_config
+
+    _print_config(_make_cli().config)
+
+    output = capsys.readouterr().out
+    assert "Reference models (advisors; each runs once per user message):" in output
+    assert "Aggregator (acting model; billed for the whole run):" in output
+
+
+def test_moa_picker_identifies_the_acting_billed_aggregator(monkeypatch):
+    from hermes_cli import model_setup_flows
+
+    captured: list[str] = []
+
+    def cancel_picker(_title, rows, _default):
+        captured.extend(rows)
+        return -1
+
+    monkeypatch.setattr(model_setup_flows, "_curses_choice", cancel_picker)
+    model_setup_flows._model_flow_moa(_make_cli().config)
+
+    assert "acting/billed aggregator openrouter:anthropic/claude-opus-4.8" in captured[0]
+    assert "advisor refs" in captured[0]
+
+
 
 
 class TestNormalizeMoaModel:
@@ -112,4 +138,3 @@ class TestNormalizeMoaModel:
         requested_provider = override or "deepseek" or "auto"
         assert requested_provider == "moa"
         assert model == "strategy"
-

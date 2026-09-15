@@ -76,10 +76,10 @@ def _print_config(config: dict[str, Any]) -> None:
     print(f"Active in config: {cfg.get('active_preset') or '(off)'}")
     for name, preset in cfg["presets"].items():
         print(f"\n{'*' if name == cfg['default_preset'] else ' '} {name}")
-        print("  Reference models:")
+        print("  Reference models (advisors; each runs once per user message):")
         for idx, slot in enumerate(preset["reference_models"], start=1):
             print(f"    {idx}. {_format_slot(slot)}")
-        print(f"  Aggregator: {_format_slot(preset['aggregator'])}")
+        print(f"  Aggregator (acting model; billed for the whole run): {_format_slot(preset['aggregator'])}")
 
 
 def _moa_section(cfg: Any) -> dict[str, Any]:
@@ -110,7 +110,7 @@ def _cmd_configure(cfg: dict, args) -> None:
         refs.append(picked)
         if _prompt_choice("Add another reference model?", ["Add another", "Done"], 1) == 1:
             break
-    print("Configure aggregator model.")
+    print("Configure aggregator model (it acts for the whole run and is billed for it).")
     current = dict(current)
     current["reference_models"] = refs
     current["aggregator"] = _pick_slot(current.get("aggregator"))

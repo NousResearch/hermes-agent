@@ -1191,6 +1191,8 @@ export interface Translations {
       notInCatalog: string
       moaTitle: string
       moaPreset: string
+      moaDescription: string
+      moaReference: (number: number) => string
       moaAggregator: string
       tasks: Record<string, AuxTaskCopy>
     }

@@ -548,8 +548,16 @@ describe('ModelSettings MoA preset editor', () => {
 
   async function openReferenceEditor() {
     await renderModelSettings()
-    expect(await screen.findByText('Reference 1')).toBeTruthy()
+    expect(await screen.findByText(/Reference 1/)).toBeTruthy()
   }
+
+  it('explains that the aggregator runs and is billed while references only advise', async () => {
+    await openReferenceEditor()
+
+    expect(screen.getAllByText(/billed for the whole run/i)).not.toHaveLength(0)
+    expect(screen.getAllByText(/advisor; runs once per user message/i)).not.toHaveLength(0)
+    expect(screen.getByText(/Aggregator .* acting model/i)).toBeTruthy()
+  })
 
   function slotSelects() {
     // Combobox order in the MoA section (last 7 on the page): preset select,

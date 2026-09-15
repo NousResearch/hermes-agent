@@ -13,20 +13,11 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import yaml
 
-
-def file_signature(st: "os.stat_result") -> Tuple[int, int, int, int]:
-    """Stat signature for cache invalidation: ``(st_mtime_ns, st_size, st_ino, st_ctime_ns)``.
-
-    ``mtime_ns`` + ``size`` alone miss replacements that preserve both (``cp -p``,
-    ``rsync -t``, timestamp-pinning scripts, sync clients). ``st_ino`` changes on an
-    atomic replace (fresh inode); ``st_ctime_ns`` cannot be backdated via ``os.utime``,
-    catching writers that pin mtime. macOS and Linux both expose these fields.
-    """
-    return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)
+from utils import file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +25,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MANAGED_DIR = Path("/etc/hermes")
 
 _CACHE_LOCK = threading.Lock()
-# path_key -> (mtime_ns, size, parsed)
+# path_key -> (*file_signature, parsed)
 _CONFIG_CACHE: Dict[str, tuple] = {}
 _ENV_CACHE: Dict[str, tuple] = {}
 

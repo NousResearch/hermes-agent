@@ -30,7 +30,7 @@ from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 from hermes_cli.secret_prompt import masked_secret_prompt
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F401
-from utils import atomic_replace, atomic_yaml_write, fast_safe_load
+from utils import atomic_replace, atomic_yaml_write, fast_safe_load, file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ def _warn_config_parse_failure(
     """
     try:
         st = config_path.stat()
-        sig = managed_scope.file_signature(st)
+        sig = file_signature(st)
         key = (str(config_path), *sig)
         _CONFIG_PARSE_FAILURES[str(config_path)] = (*sig, str(exc))
     except OSError:
@@ -120,7 +120,7 @@ def get_active_config_parse_failure() -> Optional[str]:
     try:
         record = _CONFIG_PARSE_FAILURES[str(path := get_config_path())]
         st = path.stat()
-        return record[4] if managed_scope.file_signature(st) == record[:4] else None
+        return record[4] if file_signature(st) == record[:4] else None
     except Exception:
         return None
 
@@ -1901,7 +1901,7 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         try:
             config_path = get_config_path()
             st = config_path.stat()
-            cache_key = managed_scope.file_signature(st)
+            cache_key = file_signature(st)
         except (FileNotFoundError, OSError):
             return {}
 
@@ -2145,13 +2145,13 @@ def _load_config_cache_sig(config_path: Path) -> Tuple[Optional[Tuple[int, int, 
     the merged result. ``cache_sig`` is None only when neither file exists (nothing to cache on)."""
     try:
         st = config_path.stat()
-        user_sig: Optional[Tuple[int, int, int, int]] = managed_scope.file_signature(st)
+        user_sig: Optional[Tuple[int, int, int, int]] = file_signature(st)
     except FileNotFoundError:
         user_sig = None
     managed_dir = managed_scope.get_managed_dir()
     try:
         mst = (managed_dir / "config.yaml").stat() if managed_dir else None
-        managed_sig = managed_scope.file_signature(mst) if mst else (0, 0, 0, 0)
+        managed_sig = file_signature(mst) if mst else (0, 0, 0, 0)
     except OSError:
         managed_sig = (0, 0, 0, 0)
     if user_sig is None and managed_sig == (0, 0, 0, 0):
@@ -2390,7 +2390,7 @@ def save_config(
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
 
 
-# load_env() memo keyed on (path, mtime, size). Editing .env bumps mtime -> rebuild;
+# load_env() memo keyed on (path, *file_signature). Editing .env bumps mtime/inode -> rebuild;
 # invalidate_env_cache() is the explicit knob for writers on coarse-mtime filesystems.
 _env_cache: Optional[Tuple[Tuple[str, Optional[float], Optional[int]], Dict[str, str]]] = None
 
@@ -2403,9 +2403,9 @@ def load_env() -> Dict[str, str]:
 
     try:
         st = env_path.stat()
-        cache_key = (str(env_path), st.st_mtime, st.st_size)
+        cache_key = (str(env_path), file_signature(st))
     except FileNotFoundError:
-        cache_key = (str(env_path), None, None)
+        cache_key = (str(env_path), None)
     except Exception:
         cache_key = None
     if cache_key is not None and _env_cache is not None and _env_cache[0] == cache_key:

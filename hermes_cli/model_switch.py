@@ -18,7 +18,7 @@ from hermes_cli.providers import (
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
-from utils import base_url_host_matches, base_url_hostname, base_url_origin
+from utils import base_url_host_matches, base_url_hostname, base_url_origin, file_signature
 # Re-exported: callers/tests patch hermes_cli.model_switch.<name>.
 from hermes_cli.model_switch_providers import list_authenticated_providers
 
@@ -270,10 +270,10 @@ def _direct_alias_source_identity() -> Optional[tuple]:
         stat = path.stat()
     except OSError:
         # A missing config is still a definite identity for this profile.
-        return (str(path), None, None)
+        return (str(path), None)
     except Exception:
         return None
-    return (str(path), stat.st_mtime_ns, stat.st_size)
+    return (str(path), file_signature(stat))
 
 
 def _ensure_direct_aliases() -> None:

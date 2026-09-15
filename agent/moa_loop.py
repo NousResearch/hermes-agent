@@ -120,12 +120,13 @@ _preset_cache: dict[tuple, Any] = {}
 
 
 def _resolve_preset_cached(preset_name: str) -> tuple[dict[str, Any], Any]:
-    """``(preset, raw moa config)``; the resolved preset is cached per config mtime
+    """``(preset, raw moa config)``; the resolved preset is cached per config file signature
     (skips resolve_moa_preset's full validation of the moa block on every create())."""
     from hermes_cli.config import get_config_path, load_config
     from hermes_cli.moa_config import resolve_moa_preset
+    from utils import file_signature
     try:
-        cfg_stamp = get_config_path().stat().st_mtime_ns
+        cfg_stamp = file_signature(get_config_path().stat())
     except OSError:
         cfg_stamp = None
     moa_raw = load_config().get("moa") or {}

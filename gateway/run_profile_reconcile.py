@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from gateway.run_shutdown import _log_suppressed
-from hermes_cli.managed_scope import file_signature
+from utils import file_signature
 
 logger = logging.getLogger(__name__)
 

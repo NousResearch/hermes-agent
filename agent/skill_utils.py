@@ -208,7 +208,7 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
     return any(_detect_environment(tag) for tag in tags if tag)
 
 
-_RAW_CONFIG_CACHE: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
+_RAW_CONFIG_CACHE: Dict[Tuple[str, int, int, int, int], Dict[str, Any]] = {}
 
 
 def _raw_config_cache_clear() -> None:
@@ -216,11 +216,11 @@ def _raw_config_cache_clear() -> None:
     _RAW_CONFIG_CACHE.clear()
 
 
-def _config_cache_key(config_path: Path) -> Optional[Tuple[str, int, int]]:
-    """``(path, mtime_ns, size)`` identity of config.yaml, or None when unreadable/absent."""
+def _config_cache_key(config_path: Path) -> Optional[Tuple[str, int, int, int, int]]:
+    """``(path, *file_signature)`` identity of config.yaml, or None when unreadable/absent."""
     try:
-        stat = config_path.stat()
-        return (str(config_path), stat.st_mtime_ns, stat.st_size)
+        from utils import file_signature
+        return (str(config_path), *file_signature(config_path.stat()))
     except OSError:
         return None
 
@@ -316,7 +316,7 @@ def _normalize_string_set(values) -> Set[str]:
 
 # config identity -> resolved external dirs. Called once per skill during
 # banner / tool-registry scans; re-resolving each time dominated cold-start.
-_EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int], List[Path]] = {}
+_EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int, int, int, int], List[Path]] = {}
 
 
 def _external_dirs_cache_clear() -> None:
@@ -341,7 +341,7 @@ def get_external_skills_dirs() -> List[Path]:
     if not config_path.exists():
         return []
     full_key = _config_cache_key(config_path)
-    cache_key = full_key[:2] if full_key is not None else None
+    cache_key = full_key
     cached = _EXTERNAL_DIRS_CACHE.get(cache_key) if cache_key is not None else None
     if cached is not None:
         return list(cached)  # copy so callers can't mutate the cache

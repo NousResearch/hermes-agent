@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from hermes_cli.auth_constants import _decode_jwt_claims
-from hermes_cli.managed_scope import file_signature
+from utils import file_signature
 
 # Log-record parity with the origin module (caplog tests pin "hermes_cli.auth").
 logger = logging.getLogger("hermes_cli.auth")

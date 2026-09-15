@@ -262,8 +262,11 @@ class TestModelStateIncludesNamedProviders:
             return_value=[("custom:relay", "Relay", [("model-a", "")])],
         ):
             resp = await acp_agent.new_session(cwd="/tmp")
-            choice_ids = [item.model_id for item in resp.models.available_models]
-            provider, model = parse_model_input(resp.models.current_model_id, "relay")
+            assert resp.config_options is not None
+            model_option = resp.config_options[0]
+            assert isinstance(model_option, SessionConfigOptionSelect)
+            choice_ids = [item.value for item in model_option.options]
+            provider, model = parse_model_input(model_option.current_value, "relay")
 
         assert choice_ids == ["custom:relay:model-a"]
         assert provider == "custom:relay"
@@ -328,5 +331,11 @@ class TestModelStateIncludesNamedProviders:
         ):
             resp = await acp_agent.new_session(cwd="/tmp")
 
-        assert resp.models.current_model_id == "openrouter:model-c"
-        assert [m.model_id for m in resp.models.available_models] == ["openrouter:model-c", "custom:openrouter:model-a"]
+        assert resp.config_options is not None
+        model_option = resp.config_options[0]
+        assert isinstance(model_option, SessionConfigOptionSelect)
+        assert model_option.current_value == "openrouter:model-c"
+        assert [opt.value for opt in model_option.options] == [
+            "openrouter:model-c",
+            "custom:openrouter:model-a",
+        ]

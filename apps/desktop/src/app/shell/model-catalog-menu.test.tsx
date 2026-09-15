@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
+import { $pickerStyle, DEFAULT_PICKER_STYLE } from '@/store/picker-style'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $localRuntimeJobs } from '@/store/local-runtime-jobs'
 import {
@@ -40,6 +41,7 @@ vi.mock('@/hermes', () => ({
 }))
 
 beforeEach(() => {
+  $pickerStyle.set(DEFAULT_PICKER_STYLE)
   $visibleModels.set(null)
   $localRuntimeJobs.set([])
   // These suites exercise the local-models rows, which ship behind --local.
@@ -205,5 +207,37 @@ describe('in-flight local downloads', () => {
     expect(screen.queryByText(/Qwen3\.6 27B/i)).toBeNull()
     expect(screen.queryByText('Qwen3.8 Flash Next (UD-Q4_K_XL)')).toBeNull()
     expect(screen.queryByText('Local')).toBeNull()
+  })
+})
+
+describe('picker style', () => {
+  it('separated keeps plain model rows selectable without a submenu', async () => {
+    $pickerStyle.set('separated')
+    const select = renderMenu()
+    const row = (await screen.findByText('Gemini 3.1 pro')).closest('[role="menuitem"]')!
+    expect(row.hasAttribute('aria-haspopup')).toBe(false)
+    fireEvent.keyDown(row, { key: 'ArrowRight' })
+    expect(screen.queryByRole('menuitemradio')).toBeNull()
+    fireEvent.click(row)
+    await waitFor(() => expect(select).toHaveBeenCalledWith('gemini-3.1-pro', 'google', expect.any(Function)))
+  })
+
+  it.each([true, false])('unified sends model and effort together (accepted=%s)', async accepted => {
+    $pickerStyle.set('unified')
+    const selectChoice = vi.fn().mockResolvedValue(accepted)
+    const setOptions = vi.fn()
+    const select = renderMenu({ selectChoice, setOptions })
+    const row = (await screen.findByText('Gemini 3.1 pro')).closest('[role="menuitem"]')!
+    fireEvent.keyDown(row, { key: 'ArrowRight' })
+    const high = await screen.findByRole('menuitemradio', { name: /^High$/ })
+    fireEvent.click(high)
+    await waitFor(() =>
+      expect(selectChoice).toHaveBeenCalledWith(
+        expect.objectContaining({ effort: 'high' }),
+        expect.objectContaining({ model: 'gemini-3.1-pro', provider: 'google' })
+      )
+    )
+    expect(select).not.toHaveBeenCalled()
+    expect(setOptions).not.toHaveBeenCalled()
   })
 })

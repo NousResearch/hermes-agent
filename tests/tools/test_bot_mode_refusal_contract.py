@@ -11,14 +11,16 @@ def test_delivery_uses_refusal_code_before_human_wording(tmp_path, capsys):
         ("SESSION_COORDINATION_UNAVAILABLE", "Cannot verify whether session already has a live owner", False),
         ("SESSION_NOT_OWNED_EXTRA", "Different failure", False),
     ):
-        dm = tmp_path / "message.txt"
+        dm = tmp_path / f"message-{code}.txt"
         dm.write_text("isolated probe", encoding="utf-8")
-        child = tmp_path / "child.py"
+        child = tmp_path / f"child-{code}.py"
         child.write_text(f"import sys\nprint({f'hermes-refusal-reason: {code}'!r}, file=sys.stderr)\nprint({message!r}, file=sys.stderr)\nraise SystemExit(1)\n", encoding="utf-8")
         assert bot_mode_dm._run_delivery([sys.executable, str(child)], str(dm), stdin_file=False) == 1
         output = capsys.readouterr()
-        assert (json.loads(output.out)["reason"] == "target_busy") if busy else not output.out
-        assert not dm.exists()
+        payload = json.loads(output.out)
+        assert (payload["reason"] == "target_busy") is busy
+        assert payload["payload_file"] == str(dm)
+        assert dm.exists()
 
 
 def test_one_shot_cli_preserves_refusal_reason(monkeypatch, capsys):

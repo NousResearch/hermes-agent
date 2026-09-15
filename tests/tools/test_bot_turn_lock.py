@@ -203,10 +203,11 @@ def test_delivery_main_reports_target_busy_json(root, tmp_path, monkeypatch, cap
         payload = json.loads(capsys.readouterr().out.strip())
         assert payload["reason"] == "target_busy"  # #93091 item-1 enum extension
         assert "ops" in payload["error"]
+        assert payload["payload_file"] == str(dm)
     finally:
         release.set()
         t.join(timeout=5)
-    assert not dm.exists(), "DM plaintext must be reclaimed even on refusal"
+    assert dm.exists(), "failed CLI delivery retains the payload for replay"
 
 
 def test_peer_stdin_delivery_skips_local_lock(root, tmp_path, monkeypatch):

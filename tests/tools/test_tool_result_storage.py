@@ -361,6 +361,47 @@ class TestSpillover:
         assert spill_file.read_text(encoding="utf-8") == content
         assert str(spill_file) in result
 
+    def test_scope_isolated_content_addressed_result_reuses_stable_output(self):
+        """Repeated large content becomes a handle, never a second raw blob."""
+        content = "repeated deterministic output\n" * 3_000
+        first = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="first-call",
+            env=None,
+            threshold=10,
+            result_scope="task:session-a",
+        )
+        second = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="second-call",
+            env=None,
+            threshold=10,
+            result_scope="task:session-a",
+        )
+        other_scope = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="third-call",
+            env=None,
+            threshold=10,
+            result_scope="task:session-b",
+        )
+
+        assert "cache_status: miss" in first
+        assert "cache_status: hit" in second
+        assert "status: unchanged" in second
+        assert "content_hash: sha256:" in first
+        assert "result_ref: result://" in first
+        assert content not in first and content not in second
+
+        first_ref = next(line for line in first.splitlines() if line.startswith("result_ref:"))
+        second_ref = next(line for line in second.splitlines() if line.startswith("result_ref:"))
+        other_ref = next(line for line in other_scope.splitlines() if line.startswith("result_ref:"))
+        assert first_ref == second_ref
+        assert other_ref != first_ref
+
     def test_local_env_persists_to_spillover_not_sandbox(self):
         """LocalEnvironment routes host-side: no env.execute() shell-out."""
         from tools.environments.local import LocalEnvironment

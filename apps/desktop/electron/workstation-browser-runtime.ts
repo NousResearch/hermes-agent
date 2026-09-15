@@ -136,6 +136,57 @@ interface BrowserEntry {
   recoveryReason: BrowserSessionTabRecoveryReason
 }
 
+export interface WorkstationControllerError {
+  error_code:
+    | 'STALE_REF'
+    | 'NO_BOUND_TAB'
+    | 'AUTH_REQUIRED'
+    | 'USER_CONTROL_ACTIVE'
+    | 'CAPABILITY_MISSING'
+    | 'TIMEOUT'
+    | 'INVALID_ARGUMENT'
+    | 'CONTROLLER_DOWN'
+  message: string
+  retryable: boolean
+  retry_after_ms: number
+  state_changed: boolean
+  recommended_action: string
+  resource_ref?: string | undefined
+  details: Record<string, unknown>
+}
+
+/** Map controller failures to remediation data without changing task ownership. */
+export function normalizeWorkstationControllerError(error: unknown, resourceRef?: string): WorkstationControllerError {
+  const message = error instanceof Error ? error.message : String(error)
+  const lower = message.toLowerCase()
+  const base = {
+    message,
+    retry_after_ms: 0,
+    resource_ref: resourceRef,
+    details: {}
+  }
+
+  if (lower.includes('human control')) {
+    return { ...base, error_code: 'USER_CONTROL_ACTIVE', retryable: true, state_changed: true, recommended_action: 'WAIT_FOR_RELEASE' }
+  }
+  if (lower.includes('no_bound_browser_tab') || lower.includes('no active tab')) {
+    return { ...base, error_code: 'NO_BOUND_TAB', retryable: true, state_changed: true, recommended_action: 'BIND_OR_NAVIGATE' }
+  }
+  if (lower.includes('ref_required') || lower.includes('element_unavailable') || lower.includes('browser_tab_destroyed')) {
+    return { ...base, error_code: 'STALE_REF', retryable: true, state_changed: true, recommended_action: 'RESNAPSHOT' }
+  }
+  if (lower.includes('timed out') || lower.includes('timeout')) {
+    return { ...base, error_code: 'TIMEOUT', retryable: true, state_changed: false, recommended_action: 'RETRY_WITH_BACKOFF' }
+  }
+  if (lower.includes('unavailable') || lower.includes('could not bind')) {
+    return { ...base, error_code: 'CONTROLLER_DOWN', retryable: true, state_changed: true, recommended_action: 'RECONCILE_CONTROLLER' }
+  }
+  if (lower.includes('unsupported') || lower.includes('invalid') || lower.includes('required')) {
+    return { ...base, error_code: 'INVALID_ARGUMENT', retryable: false, state_changed: false, recommended_action: 'CORRECT_REQUEST' }
+  }
+  return { ...base, error_code: 'CAPABILITY_MISSING', retryable: false, state_changed: false, recommended_action: 'ESCALATE' }
+}
+
 interface ControlHandle {
   server: Server
   url: string
@@ -1326,7 +1377,11 @@ export class WorkstationBrowserRuntime {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         this.recordError(error)
-        sendJson(res, 400, { success: false, error: message })
+        const structured = normalizeWorkstationControllerError(error)
+        const status = structured.error_code === 'USER_CONTROL_ACTIVE' || structured.error_code === 'NO_BOUND_TAB' || structured.error_code === 'STALE_REF' ? 409 : 400
+        // Keep `error` for older controller clients while new clients receive
+        // a stable code and a recovery action rather than retrying blindly.
+        sendJson(res, status, { success: false, error: message, ...structured })
       }
     })
 

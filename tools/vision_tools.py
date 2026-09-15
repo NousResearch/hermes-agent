@@ -8,11 +8,13 @@ model (multimodal tool-result envelope) or are described by the auxiliary vision
 
 import base64
 import asyncio
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 import logging
 import os
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, NamedTuple, Optional
@@ -577,6 +579,99 @@ async def _resize_prepared(prepared: _PreparedImage, scale_info: dict, **kwargs)
     )
 
 
+# Per-image repeat guard for the native fast path (#112095). Every native-path
+# load bakes the full image into conversation history, where it is re-sent on
+# every later API call — a subagent that keeps re-requesting the same
+# screenshot compounds context cost without gaining information (observed
+# incident: 158 vision_analyze calls / ~4M input tokens in 15 minutes).
+# Keyed by (session, normalized source); only successful loads count, so a
+# transient download failure never eats the cap.
+_NATIVE_VISION_REPEAT_CAP_DEFAULT = 3
+_NATIVE_VISION_LOADS_MAX_KEYS = 4096
+_native_vision_loads: Dict[tuple, int] = {}
+_native_vision_loads_lock = threading.Lock()
+
+
+def _native_vision_session_key() -> str:
+    """Session identity for scoping the repeat guard (best-effort)."""
+    try:
+        from tools.approval import get_current_session_key
+
+        return get_current_session_key(default="") or ""
+    except Exception:
+        return ""
+
+
+def _native_vision_image_key(image_url: str) -> str:
+    """Stable per-session dedup key for an image source.
+
+    Local paths canonicalize to an absolute path, remote URLs drop the
+    fragment, and data URLs hash to a short digest (the raw payload would
+    make the key enormous). Region crops share their source's key: the
+    incident loop alternated full-load and region crops of the same files,
+    and both bake image bytes into history the same way.
+    """
+    if image_url.startswith("data:"):
+        digest = hashlib.sha256(image_url.encode("utf-8", "ignore")).hexdigest()[:32]
+        return f"data:{digest}"
+    stripped = image_url.split("#", 1)[0]
+    if stripped.startswith("file://"):
+        stripped = stripped[len("file://"):]
+    local_path = Path(os.path.expanduser(stripped))
+    if local_path.is_file():
+        return f"file:{local_path.resolve()}"
+    return f"url:{stripped}"
+
+
+def _native_vision_repeat_cap() -> int:
+    """``vision.max_calls_per_image`` — 0 disables the guard.
+
+    The incident ran on the shipped default, so the shipped default must
+    protect it (issue #112095 explicitly argues for a non-zero default).
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        raw = cfg_get(
+            load_config(), "vision", "max_calls_per_image",
+            default=_NATIVE_VISION_REPEAT_CAP_DEFAULT,
+        )
+        cap = int(raw) if raw is not None else _NATIVE_VISION_REPEAT_CAP_DEFAULT
+        return max(cap, 0)
+    except Exception:
+        return _NATIVE_VISION_REPEAT_CAP_DEFAULT
+
+
+def _native_vision_repeat_refusal(session_key: str, image_key: str) -> Optional[str]:
+    """Refusal JSON string when this image already hit its load cap, else ``None``."""
+    cap = _native_vision_repeat_cap()
+    if cap <= 0:
+        return None
+    with _native_vision_loads_lock:
+        count = _native_vision_loads.get((session_key, image_key), 0)
+    if count < cap:
+        return None
+    return tool_error(
+        f"vision_analyze skipped: this image has already been loaded into "
+        f"context {count} time(s) in this session, and every native-path "
+        f"load re-sends the full image on each later API call. The pixels "
+        f"are already in the conversation — answer from what you can see "
+        f"instead of re-loading it. (vision.max_calls_per_image = {cap}; "
+        f"set 0 for unlimited)",
+        success=False,
+    )
+
+
+def _record_native_vision_load(session_key: str, image_key: str) -> None:
+    """Count one successful native embed for ``(session, image)``."""
+    with _native_vision_loads_lock:
+        key = (session_key, image_key)
+        _native_vision_loads[key] = _native_vision_loads.get(key, 0) + 1
+        # Bound gateway memory: drop the oldest entries past the cap.
+        while len(_native_vision_loads) > _NATIVE_VISION_LOADS_MAX_KEYS:
+            _native_vision_loads.pop(next(iter(_native_vision_loads)))
+
+
 async def _vision_analyze_native(
     image_url: str, question: str, task_id: Optional[str] = None, region: Optional[list] = None,
 ) -> Any:
@@ -584,6 +679,11 @@ async def _vision_analyze_native(
     or a JSON error string (the normal tool-result contract) on failure."""
     if not isinstance(image_url, str) or not image_url.strip():
         return tool_error("image_url is required", success=False)
+    _session_key = _native_vision_session_key()
+    _image_key = _native_vision_image_key(image_url)
+    _refusal = _native_vision_repeat_refusal(_session_key, _image_key)
+    if _refusal is not None:
+        return _refusal
     prepared: Optional[_PreparedImage] = None
     try:
         from tools.interrupt import is_interrupted
@@ -610,6 +710,7 @@ async def _vision_analyze_native(
             # Reject rather than embed a session-wedging payload.
             if len(image_data_url) > _MAX_BASE64_BYTES:
                 return tool_error(_too_large_message(image_data_url), success=False)
+        _record_native_vision_load(_session_key, _image_key)
         return _build_native_vision_tool_result(
             image_url=image_url, question=question, image_data_url=image_data_url,
             image_size_bytes=prepared.size_bytes,

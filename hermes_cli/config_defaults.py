@@ -1160,6 +1160,15 @@ DEFAULT_CONFIG = {
         # instead of going to the agent. [] disables.
         "stop_phrases": ["stop"],
     },
+    "vision": {
+        # Per-image repeat cap for the native vision_analyze fast path. Each native-path
+        # load bakes the full image into conversation history, where it is re-sent on every
+        # subsequent API call, so a re-analysis loop compounds context cost (issue #112095:
+        # 158 vision calls / ~4M input tokens in 15 minutes). A positive cap refuses further
+        # loads of the same image in one session with an explicit "already loaded" message.
+        # 0 = unlimited (the legacy behavior).
+        "max_calls_per_image": 3,
+    },
     # "Hey Hermes" hands-free wake word: always-on, on-device hotword detection that starts a fresh
     # voice session. Off by default; toggle with /wake.
     "wake_word": {

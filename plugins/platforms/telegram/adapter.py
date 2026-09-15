@@ -39,19 +39,6 @@ def _redact_telegram_error_text(error: object) -> str:
         return "<telegram error redacted>"
 
 
-def _build_telegram_command_menu() -> tuple[list[tuple[str, str]], int, int]:
-    """Build the Telegram menu off the gateway event loop.
-
-    Skill discovery resolves configured paths and can touch a slow filesystem, so it
-    must not run inline with reconnect housekeeping.
-    """
-    from hermes_cli.commands_platforms import telegram_menu_commands, telegram_menu_max_commands
-
-    max_commands = telegram_menu_max_commands()
-    menu_commands, hidden_count = telegram_menu_commands(max_commands=max_commands)
-    return menu_commands, hidden_count, max_commands
-
-
 def _consume_abandoned_task(task: asyncio.Task) -> None:
     """Observe a detached task's terminal exception to avoid noisy loop logs."""
     try:
@@ -2599,10 +2586,14 @@ class TelegramAdapter(BasePlatformAdapter):
         """Register the command menu (from COMMAND_REGISTRY) in every scope — Telegram picks the
         narrowest matching one per chat type; forum topics are handled lazily by _ensure_forum_commands."""
         from telegram import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats, BotCommandScopeDefault
+        from hermes_cli.commands_platforms import telegram_menu_commands, telegram_menu_max_commands
         if not self._bot:
             return
         # Telegram allows 100 commands but has an undocumented ~4KB payload limit; default cap 60.
-        menu_commands, hidden_count, max_commands = await asyncio.to_thread(_build_telegram_command_menu)
+        max_commands = telegram_menu_max_commands()
+        # Skill discovery resolves every skill path on disk; a slow filesystem after a reconnect must
+        # not hold the gateway loop past the liveness watchdog (#110707). Only the Bot API call stays here.
+        menu_commands, hidden_count = await asyncio.to_thread(telegram_menu_commands, max_commands=max_commands)
         bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
         for scope_cls in (BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats):
             scope_name = getattr(scope_cls, "__name__", str(scope_cls))
@@ -5895,7 +5886,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
                 from telegram import BotCommand, BotCommandScopeChat
                 from hermes_cli.commands_platforms import telegram_menu_commands, telegram_menu_max_commands
-                menu_commands, _ = telegram_menu_commands(max_commands=telegram_menu_max_commands())
+                menu_commands, _ = await asyncio.to_thread(
+                    telegram_menu_commands, max_commands=telegram_menu_max_commands())
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
                 await self._bot.set_my_commands(bot_commands, scope=BotCommandScopeChat(chat_id=chat_id))
                 self._forum_command_registered.add(chat_id)

@@ -86,45 +86,35 @@ async def test_ensure_forum_commands_race_safety():
     assert adapter._bot.set_my_commands.await_count == 1
 
 
-@pytest.mark.asyncio
-async def test_register_command_menu_builds_skill_menu_off_event_loop(monkeypatch):
-    """A slow skill scan must not starve Telegram's reconnect event loop."""
-    import telegram
-
-    adapter = _make_test_adapter()
+async def _menu_build_leaves_loop_free(adapter, run_site):
+    """Drive ``run_site`` while the menu builder blocks; return whether the loop kept ticking."""
     scan_started = threading.Event()
-    release_scan = threading.Event()
-    loop_progressed = threading.Event()
-    observed = {}
+    loop_ticked = threading.Event()
 
     def _blocking_menu(*, max_commands):
-        assert max_commands == 60
         scan_started.set()
-        release_scan.wait(timeout=1)
-        observed["loop_progressed"] = loop_progressed.is_set()
-        return [("help", "Show help"), ("skill", "Run a skill")], 0
+        return ([("help", "Show help")], 0) if loop_ticked.wait(timeout=1) else ([], 0)
 
-    monkeypatch.setattr("hermes_cli.commands_platforms.telegram_menu_max_commands", lambda: 60)
-    monkeypatch.setattr("hermes_cli.commands_platforms.telegram_menu_commands", _blocking_menu)
-    monkeypatch.setattr(
-        telegram, "BotCommand", lambda command, description: SimpleNamespace(command=command, description=description))
-    # This releases a pre-fix synchronous scan so the regression test cannot hang the suite.
-    safety_release = threading.Timer(0.2, release_scan.set)
-    safety_release.start()
-    task = asyncio.create_task(adapter._register_command_menu())
-    try:
-        await asyncio.to_thread(scan_started.wait)
-        loop_progressed.set()
-        release_scan.set()
+    with patch("hermes_cli.commands_platforms.telegram_menu_commands", _blocking_menu), \
+            patch("hermes_cli.commands_platforms.telegram_menu_max_commands", lambda: 60), \
+            patch("telegram.BotCommand", lambda c, d: SimpleNamespace(command=c, description=d)), \
+            patch("telegram.BotCommandScopeChat", lambda chat_id: SimpleNamespace(chat_id=chat_id)):
+        task = asyncio.create_task(run_site())
+        await asyncio.to_thread(scan_started.wait, 1)
+        # This line only runs while the builder is still inside the wait if the loop is free.
+        loop_ticked.set()
         await task
-    finally:
-        release_scan.set()
-        safety_release.cancel()
-        if not task.done():
-            task.cancel()
-            await task
+    return all(
+        [c.command for c in call.args[0]] == ["help"] for call in adapter._bot.set_my_commands.await_args_list
+    ) and adapter._bot.set_my_commands.await_count > 0
 
-    assert observed["loop_progressed"] is True
-    assert adapter._bot.set_my_commands.await_count == 3
-    for call in adapter._bot.set_my_commands.await_args_list:
-        assert [command.command for command in call.args[0]] == ["help", "skill"]
+
+@pytest.mark.asyncio
+async def test_command_menu_skill_scan_runs_off_the_event_loop():
+    """A slow skill scan (#110707) must not block the gateway loop from either menu site:
+    post-connect registration and lazy forum registration on an inbound message."""
+    adapter = _make_test_adapter()
+    assert await _menu_build_leaves_loop_free(adapter, adapter._register_command_menu)
+    adapter = _make_test_adapter()
+    forum_msg = _forum_message(chat_id=-123, is_forum=True)
+    assert await _menu_build_leaves_loop_free(adapter, lambda: adapter._ensure_forum_commands(forum_msg))

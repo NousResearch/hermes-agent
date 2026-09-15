@@ -33,3 +33,11 @@ def test_translated_sentinel_is_silence_in_every_form_the_english_one_is():
 def test_prose_mentioning_the_translated_sentinel_is_delivered():
     assert not is_intentional_silence_response("status: 静默 means the lane is quiet")
     assert not is_autonomous_silence_response("the lane said 静默 mid-sentence and kept talking")
+
+
+def test_autonomous_lane_agrees_with_interactive_lane_on_cjk_punctuation_variants():
+    """A Chinese lane emits fullwidth brackets or a trailing ``。``; cron/webhook must suppress
+    exactly what the interactive predicate suppresses, or the two lanes drift on the new tokens."""
+    for variant in ("【静默】", "静默。", "【沉默】", "沉默。", "**[静默]**", "NO_REPLY."):
+        assert is_intentional_silence_response(variant)
+        assert is_autonomous_silence_response(variant) == is_intentional_silence_response(variant), variant

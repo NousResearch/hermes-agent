@@ -84,8 +84,10 @@ def is_autonomous_silence_response(response: Any) -> bool:
         return False
     lines = [ln for ln in stripped.splitlines() if ln.strip()]
     # Bracketed form only for the prefix rule, so a bare "Silent retry succeeded" is NOT swallowed.
+    # Same de-punctuating forms as the interactive rule, so ``【静默】`` / ``静默。`` cannot
+    # be suppressed in chat yet delivered by cron.
     return stripped.upper().startswith(_BRACKETED_SILENCE_MARKERS) or any(
-        _canonical_silence_candidate(c) in LIVE_GATEWAY_SILENT_MARKERS for c in (stripped, lines[0], lines[-1])
+        is_intentional_silence_response(c) for c in (stripped, lines[0], lines[-1])
     )
 
 

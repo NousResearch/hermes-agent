@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 # ``tests/agent/test_tts_registry.py`` fails on drift); importing it directly
 # would be a circular import.
 _BUILTIN_NAMES = frozenset({
-    "edge", "elevenlabs", "openai", "minimax", "xai", "mistral", "gemini", "neutts", "kittentts",
-    "piper", "deepinfra",
+    "edge", "elevenlabs", "openai", "openrouter", "minimax", "xai", "mistral", "gemini", "neutts",
+    "kittentts", "piper", "deepinfra",
 })
 
 

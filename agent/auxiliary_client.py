@@ -1080,8 +1080,13 @@ def _parse_codex_final_response(final: Any) -> Tuple[List[str], List[Any], Any]:
         item_type = _field(item, "type")
         if item_type == "message":
             for part in (_field(item, "content") or []):
-                if _field(part, "type") in {"output_text", "text"}:
+                part_type = _field(part, "type")
+                if part_type in {"output_text", "text"}:
                     text_parts.append(_field(part, "text", ""))
+                elif part_type == "refusal":
+                    # A refusal part carries the model's explanation; dropping it turns a
+                    # refusal-only turn into an empty response that gets retried.
+                    text_parts.append(_field(part, "refusal", ""))
         elif item_type == "function_call":
             tool_calls_raw.append(SimpleNamespace(
                 id=_field(item, "call_id", ""), type="function",

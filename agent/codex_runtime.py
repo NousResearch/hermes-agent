@@ -533,6 +533,7 @@ def _event_field(event: Any, name: str, default: Any = None) -> Any:
 _CODEX_PROGRESS_DELTA_TYPES = frozenset({
     "response.output_text.delta", "response.reasoning_summary_text.delta", "response.text.delta",
     "response.audio.delta", "response.function_call_arguments.delta", "response.reasoning_text.delta",
+    "response.refusal.delta",
 })
 
 

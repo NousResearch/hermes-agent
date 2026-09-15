@@ -848,7 +848,7 @@ def test_consume_codex_stream_routes_commentary_phase_deltas_to_reasoning(monkey
 def test_consume_codex_stream_collects_refusal_deltas_as_text(monkeypatch):
     """A refusal-only Responses stream yields usable text, not RuntimeError.
 
-    Port of anomalyco/opencode#43343: the model declines and streams the
+    The model declines and streams the
     explanation via ``response.refusal.delta`` with no output_text and (on
     some compatible backends) no output_item.done — without collecting the
     refusal the consumer sees zero usable content.
@@ -2173,7 +2173,7 @@ def test_dump_api_request_debug_uses_responses_url(monkeypatch, tmp_path):
 
     dump_file = agent._dump_api_request_debug(_codex_request_kwargs(), reason="preflight")
 
-    payload = json.loads(dump_file.read_text())
+    payload = json.loads(dump_file.read_text(encoding="utf-8"))
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/responses"
 
 
@@ -2197,7 +2197,7 @@ def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path)
         reason="preflight",
     )
 
-    payload = json.loads(dump_file.read_text())
+    payload = json.loads(dump_file.read_text(encoding="utf-8"))
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/chat/completions"
 
 

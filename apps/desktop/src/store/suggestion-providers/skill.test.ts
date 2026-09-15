@@ -2,11 +2,15 @@ import { describe, expect, it } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 
-import { collidesWithWorkspace, skillHit, skillPattern, skillTouchedInMessages } from './skill'
+import { collidesWithWorkspace, skillHit, skillPattern, skillTouchedInMessages, stripSlashTokens } from './skill'
 
 // skillHit is the provider's real predicate: a whole-word match that the user
 // has finished typing (at least one character follows it).
 const hits = (name: string, draft: string) => skillHit(skillPattern(name), draft.toLowerCase())
+
+// Exercises the provider's real haystack sanitizer, not a copy of it.
+const hitsAfterSanitize = (name: string, draft: string) =>
+  skillHit(skillPattern(name), stripSlashTokens(draft).toLowerCase())
 
 describe('skillPattern + skillHit', () => {
   it('matches the exact name as a completed whole word', () => {
@@ -125,3 +129,25 @@ describe('skillTouchedInMessages', () => {
     expect(skillTouchedInMessages('pr-ready', [])).toBe(false)
   })
 })
+
+describe('draft haystack sanitization (slash-prefixed skills)', () => {
+  it('strips slash commands mid-message before scanning', () => {
+    // The bug: "please run /github-auth on this" triggered "Use skill: github-auth"
+    // because skillHit matched "github-auth" inside the slash command.
+    expect(hitsAfterSanitize('github-auth', 'please run /github-auth on this')).toBe(false)
+    expect(hitsAfterSanitize('vault', 'When I trigger /vault and /github-auth please')).toBe(false)
+  })
+
+  it('preserves URL fragments mid-prose (no leading whitespace)', () => {
+    // https://example.com/api/v1 is not stripped because there's no \s before /api.
+    // The regex only strips whitespace-bounded slash commands.
+    expect(hitsAfterSanitize('api', 'visit https://example.com/api/v1 for api docs ')).toBe(true)
+  })
+
+  it('a real prose mention after a slash command still hits', () => {
+    // Once a real prose mention of github-auth appears after the slash command,
+    // that mention still hits (the slash token is stripped, the prose mention remains).
+    expect(hitsAfterSanitize('github-auth', '/github-auth loaded. Is github-auth any good? ')).toBe(true)
+  })
+})
+

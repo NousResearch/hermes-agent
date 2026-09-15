@@ -516,13 +516,44 @@ def _mask_markdown_link_destinations(line: str) -> str:
 
 
 def _mask_prose_link_destinations(lines: List[str]) -> List[str]:
-    """Mask link destinations only in Markdown prose. Inside a fenced code block a ``[x](../..)`` is
-    an argument to whatever command surrounds it, not a hyperlink, so those lines scan verbatim."""
-    out, in_fence = [], False
+    """Mask link destinations only in Markdown prose.
+
+    Track fenced code blocks by marker and length, as required by CommonMark:
+    a tilde line does not close a backtick fence, and a shorter fence does not
+    close a longer one. Four-space/tab-indented blocks are code too.
+    """
+    out: List[str] = []
+    fence: Optional[Tuple[str, int]] = None
+    indented_code = False
     for line in lines:
-        if line.lstrip().startswith(("```", "~~~")):
-            in_fence = not in_fence
-        out.append(line if in_fence else _mask_markdown_link_destinations(line))
+        content = line.rstrip("\\r\\n")
+        if fence is not None:
+            marker, length = fence
+            closing = re.match(rf"^ {{0,3}}{re.escape(marker)}{{{length},}}[ \\t]*$", content)
+            out.append(line)
+            if closing:
+                fence = None
+            continue
+
+        if indented_code:
+            if content.strip() == "" or content.startswith("    ") or content.startswith("\\t"):
+                out.append(line)
+                continue
+            indented_code = False
+
+        if content.startswith("\\t") or content.startswith("    "):
+            indented_code = True
+            out.append(line)
+            continue
+
+        opening = re.match(r"^ {0,3}(`{3,}|~{3,})([^`\\n]*)$", content)
+        if opening:
+            marker = opening.group(1)[0]
+            fence = (marker, len(opening.group(1)))
+            out.append(line)
+            continue
+
+        out.append(_mask_markdown_link_destinations(line))
     return out
 
 

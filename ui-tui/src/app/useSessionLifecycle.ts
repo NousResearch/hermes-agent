@@ -148,7 +148,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     turnController.fullReset()
     setVoiceRecording(false)
     setVoiceProcessing(false)
-    patchUiState({ bgTasks: new Set(), info: null, sid: null, usage: ZERO })
+    patchUiState({ bgTasks: new Set(), info: null, sid: null, storedSid: null, usage: ZERO })
     setHistoryItems([])
     setLastUserMsg('')
     setStickyPrompt('')
@@ -222,6 +222,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         info,
         sid: r.session_id,
         status: info?.version ? 'ready' : 'starting agent…',
+        storedSid,
         usage: usageFrom(info)
       })
 
@@ -303,18 +304,22 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           }
 
           const info = r.info ?? null
+          // Agent-less (lazy) activations answer with `_fallback_session_info`, which
+          // has no stored_session_id; the durable id is the response's session_key.
+          const storedSid = r.session_key || r.session_id
           const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
 
           resetSession()
           setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
           const transcript = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]
           setHistoryItems(info ? [introMsg(info), ...transcript] : transcript)
-          writeActiveSessionFile(r.session_key ?? r.session_id)
+          writeActiveSessionFile(storedSid)
           patchUiState({
             busy: running,
             info,
             sid: r.session_id,
             status: statusFromLiveSession(r.status, running),
+            storedSid,
             usage: usageFrom(info)
           })
           hydrateLiveSessionInflight(r.inflight)
@@ -354,9 +359,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               return patchUiState({ status: 'ready' })
             }
 
-            const info = r.info
-              ? { ...r.info, stored_session_id: r.info.stored_session_id || r.stored_session_id || r.resumed || id }
-              : null
+            const storedSid = r.info?.stored_session_id || r.stored_session_id || r.resumed || id
+            const info = r.info ? { ...r.info, stored_session_id: storedSid } : null
 
             const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
 
@@ -366,12 +370,13 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             const resumed = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]
 
             setHistoryItems(info ? [introMsg(info), ...resumed] : resumed)
-            writeActiveSessionFile(info?.stored_session_id || r.resumed || id)
+            writeActiveSessionFile(storedSid)
             patchUiState({
               busy: running,
               info,
               sid: r.session_id,
               status: statusFromLiveSession(r.status ?? undefined, running),
+              storedSid,
               usage: usageFrom(info)
             })
             hydrateLiveSessionInflight(r.inflight)

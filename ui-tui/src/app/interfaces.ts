@@ -348,6 +348,10 @@ export interface UiState {
   sid: null | string
   status: string
   statusBar: StatusBarMode
+  // Durable session id (state.db row) of the live session — what session.resume
+  // and the exit epilogue take. Kept apart from `info`, which producers replace
+  // wholesale with payloads that may omit `stored_session_id`.
+  storedSid: null | string
   // display.status_bar.fields — visibility filter for status-rule segments,
   // shared with the classic CLI bar. null = user has not customized (show
   // the default set).

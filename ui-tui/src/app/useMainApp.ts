@@ -965,7 +965,7 @@ export function useMainApp(gw: GatewayClient) {
     const exitHandler = (code: null | number) => {
       turnController.reset()
       const state = getUiState()
-      const storedSid = state.info?.stored_session_id || null
+      const storedSid = state.storedSid
 
       // Attached socket closed: the backend (and any live turn) is still there —
       // GatewayClient owns the backoff reconnect, and the next gateway.ready

@@ -800,7 +800,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
       case 'session.info': {
-        const info = ev.payload as SessionInfo | undefined
+        let info = ev.payload as SessionInfo | undefined
 
         if (!info) {
           return
@@ -814,10 +814,20 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           setStatus('ready')
         }
 
+        // Agent-less producers (lazy cwd switches, `_fallback_session_info`) send
+        // payloads without a durable id — keep the one we already track so a
+        // later reconnect still resumes this session.
+        const storedSid = info.stored_session_id || getUiState().storedSid
+
+        if (storedSid) {
+          info = { ...info, stored_session_id: storedSid }
+        }
+
         patchUiState(state => ({
           ...state,
           info,
           status: state.status === 'starting agent…' ? 'ready' : state.status,
+          storedSid,
           usage: info.usage ? mergeUsageStable(state.usage, info.usage) : state.usage
         }))
 

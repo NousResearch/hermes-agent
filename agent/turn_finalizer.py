@@ -172,6 +172,50 @@ def _resolve_budget_fallback(
     return final_response, _turn_exit_reason, preserved_verification_fallback
 
 
+def _refuse_uncomposed_tool_output(
+    messages, final_response, _turn_exit_reason, interrupted, failed, logger,
+) -> Tuple[Any, Any]:
+    """#102806 (defect 1): a tool result must never be the user-visible reply.
+
+    The reporter registers ``archive_search`` with ``direct_result=True`` in an
+    out-of-tree plugin, so its raw FTS output gets promoted to the turn's final
+    response and forwarded to the platform verbatim — the user sees stale hits from
+    other sessions instead of the model's ``Saved and verified.``. ``direct_result``
+    has no consumer in core, so the class-level guard lives at the chokepoint every
+    turn flows through: when the reply is byte-identical to the newest tool row's
+    content and no assistant row with visible text follows it, the model never
+    composed a reply. Withhold the raw output (the turn-completion explainer then
+    surfaces why) instead of shipping tool output as the answer.
+
+    Returns ``(final_response, _turn_exit_reason)``; untouched when the reply is
+    model-composed text, absent, or from a prior turn. Interrupted/failed turns own
+    their own delivery path and are left alone.
+    """
+    if interrupted or failed or not isinstance(final_response, str) or not final_response.strip():
+        return final_response, _turn_exit_reason
+    target = final_response.strip()
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "user":
+            return final_response, _turn_exit_reason  # turn boundary: prior-turn tool row
+        if role == "assistant":
+            if not _assistant_row_missing_visible_text(msg):
+                return final_response, _turn_exit_reason  # the model composed text
+            continue
+        if role == "tool":
+            content = msg.get("content")
+            if isinstance(content, str) and content.strip() == target:
+                logger.warning(
+                    "Withholding raw tool output as the turn reply (#102806): %.160s",
+                    target.replace("\n", " "),
+                )
+                return "", "uncomposed_tool_output"
+            return final_response, _turn_exit_reason  # a tool row, but not this text
+    return final_response, _turn_exit_reason
+
+
 def _rollback_interrupted_preflight_display(agent, interrupted) -> None:
     """Roll back the preflight-seeded display count only when an interrupt wins before
     any provider response; compaction state (incl. ``-1``) stays with the real-usage
@@ -448,6 +492,14 @@ def finalize_turn(
         _pending_verification_response=_pending_verification_response,
         _pending_verification_response_previewed=_pending_verification_response_previewed,
         logger=logger,
+    )
+
+    # #102806 (defect 1): whatever the caller put in ``final_response`` (a fork's
+    # ``direct_result`` promotion, a plugin harness), raw tool output must never reach
+    # the user as the reply. Runs before ``completed`` and the persist step so the
+    # durable transcript gets the explanation, not the tool echo.
+    final_response, _turn_exit_reason = _refuse_uncomposed_tool_output(
+        messages, final_response, _turn_exit_reason, interrupted, failed, logger,
     )
 
     completed = (

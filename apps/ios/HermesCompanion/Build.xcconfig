@@ -1,0 +1,2 @@
+// Optional, machine-local signing settings survive XcodeGen regeneration.
+#include? "Local.xcconfig"

@@ -19,7 +19,9 @@ const board: BoardMeta = { slug: 'widget', name: 'Widget' }
 let client: QueryClient
 let disposeApi: () => void
 let disposeLocales: () => void
-let rest: ReturnType<typeof vi.fn>
+type RestMock = ReturnType<typeof vi.fn<(path: string, options?: PluginRestOptions) => Promise<unknown>>>
+
+let rest: RestMock
 
 beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } })

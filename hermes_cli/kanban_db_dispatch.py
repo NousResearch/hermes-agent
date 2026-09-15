@@ -8,9 +8,11 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -495,7 +497,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
     host_prefix = _kb._host_prefix()
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.worker_started_at, "
+        "SELECT t.id, t.worker_pid, t.worker_started_at, t.assignee, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
         "       t.max_runtime_seconds, t.claim_lock "
         "FROM tasks t "
@@ -532,6 +534,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                 killed = _sigkill(kill, pid)
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
+        run_id = None
         with _kb.write_txn(conn):
             retry_status = _kb._retry_status_for_run(conn, tid)
             cur = conn.execute(
@@ -567,6 +570,12 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "sigkill": killed, "retry_status": retry_status},
+            )
+            _kb._fire_kanban_lifecycle_hook(
+                "on_kanban_worker_exited", tid,
+                board=_kb.get_current_board(), assignee=row["assignee"], run_id=run_id,
+                worker_pid=pid, exit_kind="timed_out", exit_code=None,
+                outcome="timed_out", retry_status=retry_status,
             )
     return timed_out
 
@@ -1693,6 +1702,61 @@ def _retry_cap_gate_ok(board: Optional[str], task_id: str, consecutive_failures:
     )
 
 
+def _projected_workspace(
+    task: "Task", *, board: Optional[str], destination_root: Optional[Path] = None,
+) -> Path:
+    """Materialize a fresh, bounded workspace for a ``projected`` task.
+
+    Projection inputs are durable task/board metadata rather than process state:
+    callers may put ``{"projection": {"repo", "base_sha", "ceiling"}}`` in
+    the task body, or use the board's ``projection`` object.  This makes a
+    respawn re-derive the tree from the same pinned inputs and never trust a
+    prior ``workspace_path`` (which is replaced with the projection path).
+    """
+    from hermes_cli.kanban_ceiling import ScopeError, resolve_scope
+    from hermes_cli.kanban_projection import build_projection
+
+    metadata = _kb.read_board_metadata(board=board)
+    board_projection = metadata.get("projection")
+    if not isinstance(board_projection, dict):
+        board_projection = {}
+    task_projection: dict[str, Any] = {}
+    if task.body:
+        try:
+            body = json.loads(task.body)
+            if isinstance(body, dict) and isinstance(body.get("projection"), dict):
+                task_projection = body["projection"]
+        except (TypeError, ValueError):
+            pass
+    config = {**board_projection, **task_projection}
+    repo_value = config.get("repo") or config.get("source_repo")
+    if not repo_value:
+        # The initial workspace path is the source-repository contract.  Once
+        # persisted as a projection it must not be used as an implicit source.
+        repo_value = task.workspace_path
+    base_sha = config.get("base_sha") or metadata.get("projection_base_sha")
+    ceiling = config.get("ceiling") or metadata.get("projection_ceiling")
+    if not repo_value or not base_sha or not ceiling:
+        raise ScopeError(
+            "projected task requires projection.repo, projection.base_sha, and projection.ceiling"
+        )
+    repo = Path(str(repo_value)).expanduser().resolve()
+    if not (repo / ".git").exists() and not (repo / "HEAD").exists():
+        raise ScopeError(f"projection repo is not a git repository: {repo}")
+    scope = resolve_scope(task, ceiling, repo=repo, base_sha=str(base_sha))
+    if destination_root is None:
+        destination_root = _kb.board_dir(board) / "workspaces"
+    destination = Path(destination_root) / task.id
+    # Re-claim is a new materialization, not reuse of potentially stale bytes.
+    if destination.exists():
+        if not destination.is_dir():
+            raise ScopeError(f"projection destination is not a directory: {destination}")
+        shutil.rmtree(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    handle = build_projection(str(base_sha), scope, destination, repo=repo)
+    return handle.path
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -1791,7 +1855,9 @@ def _dispatch_lane_task(
         return False
     try:
         resolved_branch_name = None
-        if claimed.workspace_kind == "worktree":
+        if claimed.workspace_kind == "projected":
+            workspace = _projected_workspace(claimed, board=board)
+        elif claimed.workspace_kind == "worktree":
             workspace, resolved_branch_name = _kbw._resolve_worktree_workspace(claimed, board=board)
         else:
             workspace = _kbw.resolve_workspace(claimed, board=board)

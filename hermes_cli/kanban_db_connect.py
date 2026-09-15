@@ -823,6 +823,9 @@ _LATER_TASK_COLUMNS = (
     # Rule 2: heuristic verification-rigor mode set by the decomposer at
     # creation time; additive nullable column, see SCHEMA_SQL for semantics.
     ("task_mode", "task_mode TEXT"),
+    ("role", "role TEXT"),
+    ("card_class", "card_class TEXT"),
+    ("scope_manifest", "scope_manifest TEXT"),
 )
 
 _NOTIFY_SUB_COLUMNS = (
@@ -846,6 +849,43 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return conn.execute(
         f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'"
     ).fetchone() is not None
+
+
+_FROZEN_EXECUTION_TUPLE_COLUMNS = (
+    ("exec_tuple_hash", "exec_tuple_hash TEXT"),
+    ("base_sha", "base_sha TEXT"),
+    ("spec_rev", "spec_rev TEXT"),
+    ("ceiling_rev", "ceiling_rev TEXT"),
+    ("manifest_hash", "manifest_hash TEXT"),
+    ("toolchain_hash", "toolchain_hash TEXT"),
+    ("sandbox_policy_hash", "sandbox_policy_hash TEXT"),
+)
+
+
+def migrate_frozen_execution_tuple(
+    conn: sqlite3.Connection, *, downgrade: bool = False,
+) -> None:
+    """Apply or reverse decision 6's attempt-scoped tuple migration.
+
+    Upgrade is additive and preserves all existing runs.  Downgrade deliberately
+    drops only these nullable columns (and their index), so it is safe for a
+    backup/restore rollback but necessarily discards tuple provenance.
+    """
+    if downgrade:
+        conn.execute("DROP INDEX IF EXISTS idx_task_runs_exec_tuple_hash")
+        columns = _column_names(conn, "task_runs")
+        for name, _ddl in reversed(_FROZEN_EXECUTION_TUPLE_COLUMNS):
+            if name in columns:
+                conn.execute(f"ALTER TABLE task_runs DROP COLUMN {name}")
+        return
+    columns = _column_names(conn, "task_runs")
+    for name, ddl in _FROZEN_EXECUTION_TUPLE_COLUMNS:
+        if name not in columns:
+            _add_column_if_missing(conn, "task_runs", name, ddl)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_task_runs_exec_tuple_hash "
+        "ON task_runs(exec_tuple_hash)"
+    )
 
 
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
@@ -908,6 +948,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 )
 
     if _table_exists(conn, "task_runs"):
+        migrate_frozen_execution_tuple(conn)
         _backfill_legacy_inflight_runs(conn)
 
     # One-shot event-kind rename: old names still worked but were awkward on

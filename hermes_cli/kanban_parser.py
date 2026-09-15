@@ -103,13 +103,28 @@ _BOARD_SPECS = [
                   "Default is to move it to boards/_archived/ so it's recoverable."),
     ], aliases=["remove", "delete"], help="Archive (default) or delete a board"),
     _cmd("switch", [_SLUG], aliases=["use"], help="Set the active board for subsequent CLI calls"),
-    _cmd("show", aliases=["current"], help="Print the currently-active board slug"),
+    _cmd("show", [
+        _arg("slug", nargs="?", help="Board slug to show (default: the current board)"),
+        _json_flag(),
+    ], aliases=["current"], help="Print the currently-active board slug"),
     _cmd("rename", [_SLUG, _arg("name", help="New display name")],
          help="Change a board's human-readable display name (slug is immutable)"),
     _cmd("set-default-workdir", [
         _SLUG,
         _arg("path", nargs="?", help="Absolute path to use as default workdir. Omit to clear."),
     ], help="Set the default workspace path for tasks on a board"),
+    _cmd("set-dispatch", [
+        _SLUG,
+        _arg("state", choices=("on", "off"), help="Enable or disable dispatch for this board"),
+    ], help="Enable or disable worker dispatch for a board"),
+    _cmd("set-auto-decompose", [
+        _SLUG,
+        _arg("state", choices=("on", "off"), help="Enable or disable auto-decompose for this board"),
+    ], help="Enable or disable auto-decompose for a board"),
+    _cmd("set-review-dispatch", [
+        _SLUG,
+        _arg("state", choices=("on", "off"), help="Enable or disable review dispatch for this board"),
+    ], help="Enable or disable review dispatch for a board"),
     _cmd("export", [
         _arg("slug", nargs="?", help="Board to export (default: the current board)"),
         _arg("-o", "--output", help="Archive path (default: ./<slug>.tar.gz)"),

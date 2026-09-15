@@ -123,9 +123,29 @@ def _cmd_boards_switch(args: argparse.Namespace) -> int:
 
 
 def _cmd_boards_show(args: argparse.Namespace) -> int:
-    current = kb.get_current_board()
+    requested = getattr(args, "slug", None)
+    if requested:
+        normed, rc = _board_slug_arg(args, "show", must_exist=True)
+        if rc:
+            return rc
+        assert normed is not None
+        current = normed
+    else:
+        current = kb.get_current_board()
     meta = kb.read_board_metadata(current)
     counts = _board_task_counts(current)
+    if _json_out(args, {
+        "slug": current,
+        "name": meta.get("name", ""),
+        "description": meta.get("description"),
+        "db_path": meta["db_path"],
+        "counts": counts,
+        "total": sum(counts.values()),
+        "dispatch_enabled": meta.get("dispatch_enabled", True),
+        "auto_decompose_enabled": meta.get("auto_decompose_enabled", True),
+        "review_dispatch_enabled": meta.get("review_dispatch_enabled", True),
+    }):
+        return 0
     print(f"Current board: {current}\n  Display name: {meta.get('name', '')}")
     if meta.get("description"):
         print(f"  Description:  {meta['description']}")
@@ -152,6 +172,36 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
         print(f"Board {normed!r} default workdir set to {new_val!r}.")
     else:
         print(f"Board {normed!r} default workdir cleared.")
+    return 0
+
+
+def _cmd_boards_set_dispatch(args: argparse.Namespace) -> int:
+    normed, rc = _board_slug_arg(args, "set-dispatch", must_exist=True)
+    if rc:
+        return rc
+    enabled = args.state == "on"
+    meta = kb.write_board_metadata(normed, dispatch_enabled=enabled)
+    print(f"Board {normed!r} dispatch {'enabled' if meta['dispatch_enabled'] else 'disabled'}.")
+    return 0
+
+
+def _cmd_boards_set_auto_decompose(args: argparse.Namespace) -> int:
+    normed, rc = _board_slug_arg(args, "set-auto-decompose", must_exist=True)
+    if rc:
+        return rc
+    enabled = args.state == "on"
+    meta = kb.write_board_metadata(normed, auto_decompose_enabled=enabled)
+    print(f"Board {normed!r} auto-decompose {'enabled' if meta['auto_decompose_enabled'] else 'disabled'}.")
+    return 0
+
+
+def _cmd_boards_set_review_dispatch(args: argparse.Namespace) -> int:
+    normed, rc = _board_slug_arg(args, "set-review-dispatch", must_exist=True)
+    if rc:
+        return rc
+    enabled = args.state == "on"
+    meta = kb.write_board_metadata(normed, review_dispatch_enabled=enabled)
+    print(f"Board {normed!r} review-dispatch {'enabled' if meta['review_dispatch_enabled'] else 'disabled'}.")
     return 0
 
 
@@ -209,6 +259,9 @@ _BOARD_HANDLERS = {
     "show": _cmd_boards_show, "current": _cmd_boards_show,
     "rename": _cmd_boards_rename,
     "set-default-workdir": _cmd_boards_set_default_workdir,
+    "set-dispatch": _cmd_boards_set_dispatch,
+    "set-auto-decompose": _cmd_boards_set_auto_decompose,
+    "set-review-dispatch": _cmd_boards_set_review_dispatch,
     "export": _cmd_boards_export,
     "import": _cmd_boards_import,
 }

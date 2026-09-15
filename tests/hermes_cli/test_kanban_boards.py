@@ -344,5 +344,43 @@ class TestCLI:
         assert titlesB == ["Task B"]
         assert titlesD == []
 
+    def test_boards_show_accepts_slug_and_json(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        created = _cli(["boards", "create", "shattered-flames-server"], env_extra=env)
+        assert created.returncode == 0, created.stderr
+
+        shown = _cli(
+            ["boards", "show", "shattered-flames-server", "--json"],
+            env_extra=env,
+        )
+        assert shown.returncode == 0, shown.stderr
+        data = json.loads(shown.stdout)
+        assert data["slug"] == "shattered-flames-server"
+        assert data["dispatch_enabled"] is True
+        assert data["auto_decompose_enabled"] is True
+        assert data["review_dispatch_enabled"] is True
+
+    def test_board_toggle_commands_round_trip_through_json_show(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        created = _cli(["boards", "create", "shattered-flames-server"], env_extra=env)
+        assert created.returncode == 0, created.stderr
+
+        for command in ("set-dispatch", "set-auto-decompose", "set-review-dispatch"):
+            result = _cli(
+                ["boards", command, "shattered-flames-server", "off"],
+                env_extra=env,
+            )
+            assert result.returncode == 0, result.stderr
+
+        shown = _cli(
+            ["boards", "show", "shattered-flames-server", "--json"],
+            env_extra=env,
+        )
+        assert shown.returncode == 0, shown.stderr
+        data = json.loads(shown.stdout)
+        assert data["dispatch_enabled"] is False
+        assert data["auto_decompose_enabled"] is False
+        assert data["review_dispatch_enabled"] is False
+
 
 

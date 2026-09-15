@@ -13,8 +13,11 @@ import sqlite3
 import subprocess
 from pathlib import Path
 from typing import Optional
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 import contextlib
+import hashlib
+import json
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -30,6 +33,63 @@ _ACTIVE_CHILDREN_SQL = (
 )
 
 _WORKSPACE_ROW_SQL = "SELECT workspace_kind, workspace_path, branch_name FROM tasks WHERE id = ?"
+
+
+@dataclass(frozen=True)
+class ExecTuple:
+    """Canonical execution inputs frozen for exactly one task_runs attempt."""
+    exec_tuple_hash: str
+    base_sha: str
+    spec_rev: str
+    ceiling_rev: str
+    manifest_hash: str
+    toolchain_hash: str
+    sandbox_policy_hash: str
+
+
+def _sha256(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _value_hash(value: object) -> str:
+    return _sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode())
+
+
+def resolve_exec_tuple(task: "Task", conn: sqlite3.Connection) -> ExecTuple:
+    """Resolve a deterministic tuple without consulting a running session.
+
+    Missing isolation inputs are represented by stable empty values; later
+    isolation phases can replace those sources without changing the row shape.
+    The result must be persisted on the new ``task_runs`` row before spawn.
+    """
+    del conn  # reserved for policy/project resolvers; no live session state
+    workspace = Path(getattr(task, "workspace_path", "") or "").expanduser()
+    base_sha = ""
+    if workspace.is_dir() and (_git(workspace, "rev-parse", "HEAD", timeout=10).returncode == 0):
+        base_sha = _git(workspace, "rev-parse", "HEAD", timeout=10).stdout.strip()
+    manifest = getattr(task, "scope_manifest", None)
+    if manifest is None:
+        manifest = getattr(task, "scope_paths", None)
+    if isinstance(manifest, str):
+        try:
+            manifest = json.loads(manifest)
+        except json.JSONDecodeError:
+            pass
+    manifest_hash = _value_hash(manifest if manifest is not None else {})
+    spec_rev = _value_hash({"body": getattr(task, "body", None), "title": getattr(task, "title", None)})
+    ceiling_rev = _value_hash(os.environ.get("HERMES_ISOLATION_CEILING", ""))
+    toolchain_hash = _value_hash(os.environ.get("HERMES_ISOLATION_TOOLCHAIN", ""))
+    sandbox_policy_hash = _value_hash(os.environ.get("HERMES_ISOLATION_SANDBOX_POLICY", ""))
+    fields = (base_sha, spec_rev, ceiling_rev, manifest_hash, toolchain_hash, sandbox_policy_hash)
+    digest = _sha256("\x1f".join(fields).encode())
+    return ExecTuple(digest, *fields)
+
+
+def exec_tuple_values(tuple_: ExecTuple) -> tuple[str, ...]:
+    """Return DB insertion order for the frozen tuple columns."""
+    return (tuple_.exec_tuple_hash, tuple_.base_sha, tuple_.spec_rev,
+            tuple_.ceiling_rev, tuple_.manifest_hash, tuple_.toolchain_hash,
+            tuple_.sandbox_policy_hash)
 
 
 def _git(repo_root: Path, *args: str, timeout: int) -> subprocess.CompletedProcess:

@@ -18,7 +18,6 @@ import {
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuTrigger,
-  Contribute,
   Dialog,
   DialogContent,
   DialogFooter,
@@ -44,7 +43,6 @@ import {
   Switch,
   Textarea,
   Tip,
-  TITLEBAR_AREAS,
   useGrabScroll,
   useMutation,
   useQuery,
@@ -83,7 +81,7 @@ import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
-import { columnMeta, type BoardMeta, type BoardsResponse, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
+import { type BoardMeta, type BoardsResponse, columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
   $newTaskLane,
   ago,
@@ -1395,11 +1393,6 @@ export function KanbanBoardPage() {
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-(--ui-surface-background)">
-      {/* Page-owned titlebar chrome: exists exactly while this page is mounted. */}
-      <Contribute area={TITLEBAR_AREAS.center} id="kanban:board-switcher">
-        <BoardSwitcher />
-      </Contribute>
-
       <header className="flex shrink-0 flex-wrap items-center gap-2 px-4 py-2">
         <h1 className="text-sm font-semibold text-foreground">{k.title}</h1>
         <span className="rounded-full bg-(--ui-bg-quaternary) px-1.5 py-px text-[0.625rem] tabular-nums text-(--ui-text-tertiary)">
@@ -1417,6 +1410,7 @@ export function KanbanBoardPage() {
           />
         )}
         <SearchField aria-label={k.filterCards} onChange={setSearch} placeholder={k.filterCards} value={search} />
+        <BoardSwitcher />
         {currentBoardMeta && <BoardHeaderToggles board={currentBoardMeta} />}
         <div className="ml-auto flex items-center gap-1">
           <Tip label={k.orchestrationSettings}>

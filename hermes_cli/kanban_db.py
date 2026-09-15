@@ -91,12 +91,12 @@ VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", 
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
-VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
+VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient", "scope"}
 
 # Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
 BLOCK_RECURRENCE_LIMIT = 2
-VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir", "projected"}
 
 
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
@@ -828,6 +828,10 @@ class Task:
     # set by the decomposer at creation time; NULL if unset. Schema-population
     # only — see kanban_task_mode.py.
     task_mode: Optional[str] = None
+    # Isolation policy is task-level metadata, never inferred from an assignee profile.
+    role: Optional[str] = None
+    card_class: Optional[str] = None
+    scope_manifest: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -836,6 +840,8 @@ class Task:
         skills_value = [str(s) for s in parsed if s] if isinstance(parsed, list) else None
         scope_parsed = _json_or(g("scope_paths"))
         scope_paths_value = list(scope_parsed) if isinstance(scope_parsed, list) else None
+        manifest_parsed = _json_or(g("scope_manifest"))
+        scope_manifest_value = manifest_parsed if isinstance(manifest_parsed, dict) else None
         return cls(
             **{col: row[col] for col in _TASK_REQUIRED_COLUMNS},
             **{col: g(col) for col in _TASK_OPTIONAL_COLUMNS},
@@ -846,6 +852,7 @@ class Task:
             last_failure_error=g("last_failure_error", g("last_spawn_error")),
             skills=skills_value,
             scope_paths=scope_paths_value,
+            scope_manifest=scope_manifest_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
         )
@@ -861,7 +868,7 @@ _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
-    "ears_sentence", "task_mode",
+    "ears_sentence", "task_mode", "role", "card_class",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -890,6 +897,14 @@ class Run:
     summary: Optional[str]
     metadata: Optional[dict]
     error: Optional[str]
+    # Frozen execution tuple: immutable per-attempt inputs captured before spawn.
+    exec_tuple_hash: Optional[str] = None
+    base_sha: Optional[str] = None
+    spec_rev: Optional[str] = None
+    ceiling_rev: Optional[str] = None
+    manifest_hash: Optional[str] = None
+    toolchain_hash: Optional[str] = None
+    sandbox_policy_hash: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Run":
@@ -904,6 +919,13 @@ class Run:
             started_at=int(row["started_at"]),
             ended_at=_opt_int(row["ended_at"]),
             metadata=_json_or(row["metadata"]),
+            exec_tuple_hash=_row_get(row, "exec_tuple_hash"),
+            base_sha=_row_get(row, "base_sha"),
+            spec_rev=_row_get(row, "spec_rev"),
+            ceiling_rev=_row_get(row, "ceiling_rev"),
+            manifest_hash=_row_get(row, "manifest_hash"),
+            toolchain_hash=_row_get(row, "toolchain_hash"),
+            sandbox_policy_hash=_row_get(row, "sandbox_policy_hash"),
         )
 
 
@@ -1079,7 +1101,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- created outside the decomposer (CLI, dashboard) or on legacy rows.
     -- Schema-population only today: no dispatch/gate/enforcement logic
     -- reads this column.
-    task_mode            TEXT
+    task_mode            TEXT,
+    -- Isolation policy is explicit task metadata. A missing manifest is a hard failure
+    -- for isolation-implying roles/card classes; never treat it as an opt-in check.
+    role                 TEXT,
+    card_class           TEXT,
+    scope_manifest       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1131,7 +1158,16 @@ CREATE TABLE IF NOT EXISTS task_runs (
     --          gave_up | reclaimed | (null while still running)
     summary             TEXT,
     metadata            TEXT,
-    error               TEXT
+    error               TEXT,
+    -- Frozen execution tuple, captured before each worker session starts.
+    -- These are nullable for legacy/terminal runs that predate isolation.
+    exec_tuple_hash     TEXT,
+    base_sha            TEXT,
+    spec_rev            TEXT,
+    ceiling_rev         TEXT,
+    manifest_hash       TEXT,
+    toolchain_hash      TEXT,
+    sandbox_policy_hash TEXT
 );
 
 -- Files attached to a task (PDFs, images, source documents). The blob
@@ -1372,6 +1408,8 @@ def create_task(
     completion_contract: Optional[str] = None,
     ears_sentence: Optional[str] = None,
     scope_paths: Optional[Iterable[str]] = None,
+    role: Optional[str] = None, card_class: Optional[str] = None,
+    scope_manifest: Optional[dict] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1473,8 +1511,8 @@ def create_task(
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
                         goal_mode, goal_max_turns, session_id, completion_contract,
-                        ears_sentence, scope_paths
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ears_sentence, scope_paths, role, card_class, scope_manifest
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1486,6 +1524,9 @@ def create_task(
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
                         ears_sentence,
                         json.dumps(scope_paths_list) if scope_paths_list is not None else None,
+                        role.strip() if isinstance(role, str) and role.strip() else None,
+                        card_class.strip() if isinstance(card_class, str) and card_class.strip() else None,
+                        json.dumps(scope_manifest, ensure_ascii=False) if scope_manifest is not None else None,
                     ),
                 )
                 for pid in parents:
@@ -1531,6 +1572,11 @@ def create_task(
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
                 inherit_creator_origin(conn, task_id, creator_task_id, created_at=now)
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
+            _fire_kanban_lifecycle_hook(
+                "on_kanban_task_created", task_id,
+                board=board or get_current_board(), assignee=assignee, run_id=None,
+                project_id=project_id, workspace_kind=workspace_kind,
+            )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -2300,17 +2346,22 @@ def _claim_and_open_run(
         "SELECT assignee, max_runtime_seconds, current_step_key "
         "FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
+    task = get_task(conn, task_id)
+    from hermes_cli.kanban_db_workspace import exec_tuple_values, resolve_exec_tuple
+    frozen = resolve_exec_tuple(task, conn) if task is not None else None
     run_cur = conn.execute(
         """
         INSERT INTO task_runs (
             task_id, profile, step_key, status,
             claim_lock, claim_expires, max_runtime_seconds,
-            started_at
-        ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+            started_at, exec_tuple_hash, base_sha, spec_rev, ceiling_rev,
+            manifest_hash, toolchain_hash, sandbox_policy_hash
+        ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             task_id, trow["assignee"] if trow else None, trow["current_step_key"] if trow else None,
             lock, expires, trow["max_runtime_seconds"] if trow else None, now,
+            *(exec_tuple_values(frozen) if frozen is not None else (None,) * 7),
         ),
     )
     run_id = run_cur.lastrowid
@@ -2758,6 +2809,12 @@ def complete_task(
     prose is scanned for unresolvable ``t_<hex>`` refs (advisory event only).
     """
     now = int(time.time())
+    # Isolation ingest is a mandatory pre-completion gate. It quarantines on
+    # malformed/missing scope or unauthorized diff; callers cannot opt out.
+    from hermes_cli.kanban_ingest import run_ingest_pipeline
+    ingest = run_ingest_pipeline(conn, get_task(conn, task_id), expected_run_id=expected_run_id)
+    if not ingest.ok:
+        return False
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
@@ -2827,7 +2884,10 @@ def complete_task(
     _cleanup_workspace(conn, task_id)
     _done_task = get_task(conn, task_id)
     if fire_lifecycle_hook:
-        _fire_task_hook("kanban_task_completed", _done_task, task_id, run_id, summary=handoff_summary)
+        _fire_task_hook(
+            "kanban_task_completed", _done_task, task_id, run_id,
+            summary=handoff_summary, outcome="completed",
+        )
     return True
 
 
@@ -3805,6 +3865,11 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     recompute_ready(conn)
     # Reap the workspace on archive too (never-completed tasks kept it forever).
     _cleanup_workspace(conn, task_id)
+    if _kanban_observer_consumed("kanban_task_completed"):
+        _fire_task_hook(
+            "kanban_task_completed", get_task(conn, task_id), task_id, run_id,
+            summary=None, outcome="archived",
+        )
     return True
 
 

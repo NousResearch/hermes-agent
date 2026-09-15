@@ -187,10 +187,11 @@ KANBAN_BLOCK_SCHEMA = _schema(
         )),
         "kind": {
             "type": "string",
-            "enum": ["dependency", "needs_input", "capability", "transient"],
+            "enum": ["dependency", "needs_input", "capability", "transient", "scope"],
             "description": (
                 "Why you're blocked. 'dependency' waits in todo and "
-                "resumes automatically; the others surface to a human. "
+                "resumes automatically; 'scope' requests a scope/manifest review; "
+                "the other kinds surface to a human. "
                 "Omit only if none apply."
             ),
         },

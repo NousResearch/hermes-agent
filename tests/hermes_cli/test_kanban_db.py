@@ -33,6 +33,40 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+def test_frozen_tuple_is_attempt_scoped_and_deterministic(kanban_home):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="tuple", assignee="builder")
+        first = kb.claim_task(conn, task_id, claimer="test:first")
+        assert first is not None
+        run_a = conn.execute(
+            "SELECT * FROM task_runs WHERE id = ?", (first.current_run_id,)
+        ).fetchone()
+        assert run_a["exec_tuple_hash"]
+        assert run_a["base_sha"] is not None
+        assert kb._end_run(conn, task_id, outcome="crashed") == first.current_run_id
+        conn.execute("UPDATE tasks SET status='ready', claim_lock=NULL WHERE id=?", (task_id,))
+        conn.commit()
+        second = kb.claim_task(conn, task_id, claimer="test:second")
+        assert second is not None
+        run_b = conn.execute(
+            "SELECT exec_tuple_hash FROM task_runs WHERE id = ?", (second.current_run_id,)
+        ).fetchone()
+        assert run_b["exec_tuple_hash"] == run_a["exec_tuple_hash"]
+        assert conn.execute("SELECT COUNT(*) FROM task_runs WHERE task_id=?", (task_id,)).fetchone()[0] == 2
+
+
+def test_frozen_tuple_migration_can_be_reversed(tmp_path):
+    db_path = tmp_path / "tuple.db"
+    kbc.init_db(db_path)
+    with kbc.connect(db_path) as conn:
+        names = {r["name"] for r in conn.execute("PRAGMA table_info(task_runs)")}
+        assert {"exec_tuple_hash", "base_sha", "spec_rev", "ceiling_rev", "manifest_hash", "toolchain_hash", "sandbox_policy_hash"} <= names
+        kbc.migrate_frozen_execution_tuple(conn, downgrade=True)
+        conn.commit()
+        names = {r["name"] for r in conn.execute("PRAGMA table_info(task_runs)")}
+        assert not ({"exec_tuple_hash", "base_sha", "spec_rev", "ceiling_rev", "manifest_hash", "toolchain_hash", "sandbox_policy_hash"} & names)
+
+
 def _init_git_repo(repo: Path) -> None:
     repo.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)

@@ -79,6 +79,51 @@ def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
         assert payload.get("kind") == "capability"
 
 
+def test_block_recurrence_limit_zero_never_routes_to_triage(kanban_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``kanban.block_recurrence_limit: 0`` keeps every same-cause re-block in ``blocked``."""
+    monkeypatch.setattr(kb, "block_recurrence_limit", lambda: 0)
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn)
+        for _ in range(5):
+            kb.block_task(conn, tid, reason="x", kind="needs_input")
+            assert kb.get_task(conn, tid).status == "blocked"
+            kb.unblock_task(conn, tid)
+            _make_running_again(conn, tid)
+        kb.block_task(conn, tid, reason="x", kind="needs_input")
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.block_recurrences == 6
+        assert not [e for e in kb.list_events(conn, tid) if e.kind == "block_loop_detected"]
+
+
+def test_block_recurrence_limit_configured_value(kanban_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A configured limit replaces the default of 2."""
+    monkeypatch.setattr(kb, "block_recurrence_limit", lambda: 3)
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="x", kind="capability")
+        kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+        kb.block_task(conn, tid, reason="x", kind="capability")
+        assert kb.get_task(conn, tid).status == "blocked"
+        kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+        kb.block_task(conn, tid, reason="x", kind="capability")
+        assert kb.get_task(conn, tid).status == "triage"
+        payload = [e for e in kb.list_events(conn, tid) if e.kind == "block_loop_detected"][-1].payload or {}
+        assert payload.get("limit") == 3
+
+
+def test_block_recurrence_limit_reads_config(kanban_home: Path) -> None:
+    """The helper reads ``kanban.block_recurrence_limit`` and falls back to the default."""
+    for text, expected in (("kanban:\n  block_recurrence_limit: 0\n", 0),
+                           ("kanban:\n  block_recurrence_limit: 7\n", 7),
+                           ("kanban: {}\n", kb.BLOCK_RECURRENCE_LIMIT),
+                           ("kanban:\n  block_recurrence_limit: null\n", kb.BLOCK_RECURRENCE_LIMIT)):
+        (kanban_home / "config.yaml").write_text(text)
+        assert kb.block_recurrence_limit() == expected
+
+
 # ---------------------------------------------------------------------------
 # Dependency routing
 # ---------------------------------------------------------------------------

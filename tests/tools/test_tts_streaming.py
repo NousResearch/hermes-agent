@@ -25,6 +25,24 @@ pytest.importorskip("numpy")
 
 
 class TestSentenceChunker:
+    @pytest.mark.parametrize("sentence", ["うん。", "はい！", "なぜ？"])
+    def test_short_japanese_sentence_is_emitted_without_waiting(self, sentence):
+        c = ts.SentenceChunker()
+        assert c.feed(sentence) == [sentence]
+        assert c.flush() == []
+
+    def test_japanese_deltas_preserve_every_sentence_in_order(self):
+        c = ts.SentenceChunker()
+        assert c.feed("うん。次の文") == ["うん。"]
+        assert c.feed("です。はい！続き") == ["次の文です。", "はい！"]
+        assert c.flush() == ["続き"]
+
+    def test_short_latin_fragments_still_merge_without_losing_text(self):
+        c = ts.SentenceChunker(min_len=20)
+        assert c.feed("Hi! No. ") == []
+        assert c.feed("This is the next sentence. ") == ["Hi! No. This is the next sentence. "]
+        assert c.flush() == []
+
     def test_cuts_sentence_the_moment_its_boundary_arrives(self):
         c = ts.SentenceChunker()
         assert c.feed("This is the first full") == []

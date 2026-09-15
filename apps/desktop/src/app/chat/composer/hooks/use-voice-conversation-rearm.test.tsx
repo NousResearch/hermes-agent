@@ -69,6 +69,7 @@ const mocks = vi.hoisted(() => {
 
       return {
         append: vi.fn(),
+        cancel: vi.fn(() => resolveSpeech?.('done')),
         done: new Promise<'done' | 'fallback'>(resolve => {
           resolveSpeech = resolve
         }),
@@ -204,7 +205,9 @@ describe('useVoiceConversation playback rearm', () => {
     })
 
     await waitFor(() => expect(hook.result.current.status).toBe('idle'))
-    expect(mocks.stopVoicePlayback).toHaveBeenCalledTimes(2)
+    const staleSession = await mocks.startSpeechStream.mock.results[0].value
+    expect(staleSession?.cancel).toHaveBeenCalled()
+    expect(mocks.playSpeechText).not.toHaveBeenCalled()
     expect(mocks.handle.start).toHaveBeenCalledTimes(1)
   })
 
@@ -239,6 +242,31 @@ describe('useVoiceConversation playback rearm', () => {
 
     await waitFor(() => expect(hook.result.current.status).toBe('idle'))
     expect(mocks.handle.start).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not speak completed text after Stop during fallback waiting', async () => {
+    let response = { id: 'pending-fallback', pending: true, text: 'まだ生成中。' }
+    const hook = renderHook(
+      ({ enabled }) =>
+        useVoiceConversation({
+          busy: false,
+          consumePendingResponse: vi.fn(),
+          enabled,
+          onSubmit: async () => undefined,
+          onTranscribeAudio: async () => 'Hello',
+          pendingResponse: () => response
+        }),
+      { initialProps: { enabled: false } }
+    )
+    await beginReply(hook)
+    await waitFor(() => expect(mocks.startSpeechStream).toHaveBeenCalled())
+    await act(async () => {
+      mocks.finishSpeech('fallback')
+    })
+    mocks.stopVoicePlayback()
+    response = { ...response, pending: false }
+    await waitFor(() => expect(hook.result.current.status).toBe('idle'))
+    expect(mocks.playSpeechText).not.toHaveBeenCalled()
   })
 
   it('re-arms the microphone after normal fallback playback completes', async () => {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from urllib.parse import urlencode
 
@@ -77,6 +78,65 @@ def test_streams_pcm_frames_then_end(stream_client, monkeypatch):
     assert streamer.requests == ["Hello there."]
 
 
+def test_zero_pcm_frames_requests_client_fallback(stream_client, monkeypatch):
+    streamer = _FakeStreamer([])
+    _patch_provider(monkeypatch, streamer)
+
+    with stream_client.websocket_connect(_url()) as conn:
+        assert conn.receive_json()["type"] == "start"
+        conn.send_text(json.dumps({"text": "No audio.", "done": True}))
+        assert conn.receive_json() == {"type": "fallback"}
+
+    assert streamer.requests == ["No audio."]
+
+
+def test_japanese_sentence_streams_before_client_finishes_text(stream_client, monkeypatch):
+    streamer = _FakeStreamer([b"\x01\x00"])
+    _patch_provider(monkeypatch, streamer)
+
+    with stream_client.websocket_connect(_url()) as conn:
+        assert conn.receive_json()["type"] == "start"
+        conn.send_json({"text": "うん。"})
+        assert conn.receive_bytes() == b"\x01\x00"
+        conn.send_json({"text": "次の文です。", "done": True})
+        assert conn.receive_bytes() == b"\x01\x00"
+        assert conn.receive_json() == {"type": "end"}
+
+    assert streamer.requests == ["うん。", "次の文です。"]
+
+
+def test_stop_closes_socket_while_provider_is_blocked(stream_client, monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    exited = threading.Event()
+
+    class SlowStreamer(_FakeStreamer):
+        def stream(self, text):
+            self.requests.append(text)
+            entered.set()
+            try:
+                assert release.wait(10), "test did not release provider"
+                yield b"\x01\x00"
+            finally:
+                exited.set()
+
+    streamer = SlowStreamer([])
+    _patch_provider(monkeypatch, streamer)
+
+    try:
+        with stream_client.websocket_connect(_url()) as conn:
+            assert conn.receive_json()["type"] == "start"
+            conn.send_json({"text": "一文目を読みます。二文目はキャンセルします。", "done": True})
+            assert entered.wait(5)
+            conn.send_json({"stop": True})
+            assert conn.receive()["type"] == "websocket.close"
+    finally:
+        release.set()
+        assert exited.wait(5)
+
+    assert streamer.requests == ["一文目を読みます。"]
+
+
 
 
 
@@ -120,5 +180,3 @@ def test_split_text_respects_cap_and_preserves_content():
     joined = " ".join(pieces)
     for word in text.replace(".", "").split():
         assert word in joined
-
-

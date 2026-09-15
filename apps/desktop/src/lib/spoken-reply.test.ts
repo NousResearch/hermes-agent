@@ -6,8 +6,11 @@ import {
   assistantReplyOrdinal,
   clearSpokenRepliesForTests,
   isLiveTailReplyId,
+  latestSpeechUser,
   markAssistantIdSpoken,
   resolveSpokenReply,
+  sameSpeechUser,
+  speechSourceDelta,
   spokenReplyOf
 } from './spoken-reply'
 
@@ -17,6 +20,55 @@ const hidden = (id: string) => ({ hidden: true, id, role: 'assistant' as const }
 
 afterEach(() => {
   clearSpokenRepliesForTests()
+})
+
+describe('speech source reconciliation', () => {
+  it.each([
+    ['一文。  \n二文。', '一文。\n二文。次です。', '次です。'],
+    ['First.\n\nSecond.', 'First. Second.\n\nThird.', '\n\nThird.'],
+    ['🌸 一文。  \n二文。', '🌸 一文。\n二文。', ''],
+    ['前の内容です。', '別の内容です。', null],
+    ['一文。二文。', '一文。', null]
+  ])('feeds only a new suffix across display formatting', (previous, next, delta) => {
+    expect(speechSourceDelta(previous!, next!)).toBe(delta)
+  })
+
+  it('distinguishes a hydrated prompt from a new identical prompt', () => {
+    const parts = [{ type: 'text', text: '同じ質問' }]
+    const live = latestSpeechUser([{ ...user('user-live'), parts }])
+    const stored = latestSpeechUser([{ ...user('100-3-user'), rowId: 42, parts }])
+    expect(sameSpeechUser(live, stored)).toBe(true)
+    expect(sameSpeechUser(stored, latestSpeechUser([{ ...user('100-8-user'), rowId: 42, parts }]))).toBe(true)
+    expect(sameSpeechUser(live, latestSpeechUser([{ ...user('user-new'), parts }]))).toBe(false)
+    expect(sameSpeechUser(stored, latestSpeechUser([{ ...user('101-4-user'), rowId: 43, parts }]))).toBe(false)
+  })
+
+  it('does not swallow an identical answer in a later turn after history reconciliation', () => {
+    const parts = [{ type: 'text', text: '同じ質問' }]
+    const answerParts = [{ type: 'text', text: '同じ回答' }]
+    markAssistantIdSpoken(
+      's',
+      [
+        { ...user('user-live'), parts },
+        { ...assistant('assistant-stream-1'), parts: answerParts }
+      ],
+      'assistant-stream-1'
+    )
+
+    const stored = [
+      { ...user('stored-user'), rowId: 42, parts },
+      { ...assistant('stored-answer'), rowId: 43, parts: answerParts }
+    ]
+
+    expect(resolveSpokenReply('s', stored)?.id).toBe('stored-answer')
+    expect(
+      resolveSpokenReply('s', [
+        ...stored,
+        { ...user('user-next'), parts },
+        { ...assistant('assistant-stream-next'), parts: answerParts }
+      ])?.id
+    ).toBe('stored-answer')
+  })
 })
 
 describe('isLiveTailReplyId', () => {

@@ -5,10 +5,18 @@
 // AssistantMessage's action bar hide the button entirely when no handler is
 // supplied, matching how onDismissError/onRestoreToMessage already behave.
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { PRIMARY_SESSION_VIEW, SessionViewProvider } from '@/app/chat/session-view'
+import { type ChatMessage, textPart } from '@/lib/chat-messages'
+import { clearSpokenRepliesForTests, pendingSpeechReply } from '@/lib/spoken-reply'
+import type * as VoicePlayback from '@/lib/voice-playback'
+import { playSpeechText } from '@/lib/voice-playback'
 import { $displayTimestamps } from '@/store/display-timestamps'
+import { $hapticsMuted } from '@/store/haptics'
+import { $voicePlayback, setVoicePlaybackState } from '@/store/voice-playback'
 
 import { stubThreadEnvironment } from '../test-utils'
 
@@ -29,6 +37,11 @@ vi.mock('@/store/onboarding', async importOriginal => ({
   startManualProviderOAuth: (...args: unknown[]) => startManualProviderOAuth(...args)
 }))
 
+vi.mock('@/lib/voice-playback', async importOriginal => ({
+  ...(await importOriginal<typeof VoicePlayback>()),
+  playSpeechText: vi.fn()
+}))
+
 // Timeline timestamps render only when `display.timestamps` is enabled.
 $displayTimestamps.set(true)
 
@@ -40,6 +53,9 @@ afterEach(() => {
   cleanup()
   requestFreshSession.mockClear()
   startManualProviderOAuth.mockClear()
+  clearSpokenRepliesForTests()
+  $hapticsMuted.set(false)
+  vi.clearAllMocks()
 })
 
 function userMessage(): ThreadMessage {
@@ -234,4 +250,49 @@ describe('message timeline timestamps', () => {
 
     expect(stamps.filter(stamp => stamp === formatTimelineRange(startedAt, completedAt))).toHaveLength(1)
   })
+})
+
+it('claims a manual read before playback publishes idle to auto-speak listeners', async () => {
+  $hapticsMuted.set(true)
+
+  const $messages = atom<ChatMessage[]>([
+    { id: 'user-1', role: 'user', parts: [textPart('question one')] },
+    { id: 'assistant-1', role: 'assistant', parts: [textPart('done')] }
+  ])
+
+  const sessionId = 'manual-read-race'
+  const idleCandidates: ReturnType<typeof pendingSpeechReply>[] = []
+
+  const stop = $voicePlayback.listen(playback => {
+    if (playback.status === 'idle') {
+      idleCandidates.push(pendingSpeechReply(sessionId, $messages.get()))
+    }
+  })
+
+  vi.mocked(playSpeechText).mockImplementationOnce(async () => {
+    setVoicePlaybackState({
+      ...$voicePlayback.get(),
+      status: 'preparing',
+      source: 'read-aloud',
+      messageId: 'assistant-1'
+    })
+    // This is the real ordering: idle listeners run before the awaited playback
+    // promise settles. They must already see the manual read as consumed.
+    setVoicePlaybackState({ ...$voicePlayback.get(), status: 'idle', source: null, messageId: null })
+
+    return true
+  })
+
+  try {
+    render(
+      <SessionViewProvider value={{ ...PRIMARY_SESSION_VIEW, $messages, $runtimeId: atom<string | null>(sessionId) }}>
+        <Harness />
+      </SessionViewProvider>
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Read aloud' }))
+    await waitFor(() => expect(playSpeechText).toHaveBeenCalledTimes(1))
+    expect(idleCandidates).toEqual([null])
+  } finally {
+    stop()
+  }
 })

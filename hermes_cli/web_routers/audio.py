@@ -11,6 +11,7 @@ import logging
 import queue
 import tempfile
 import threading
+import time
 import asyncio
 import json
 import os
@@ -427,6 +428,22 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         {"type": "start", "sample_rate": streamer.sample_rate, "channels": streamer.channels}
     )
 
+    stream_started_at = time.monotonic()
+    stats = {
+        "input_chars": 0,
+        "sentences": 0,
+        "pcm_chunks": 0,
+        "pcm_bytes": 0,
+        "client_done": False,
+        "first_text_ms": None,
+        "first_pcm_ms": None,
+    }
+    _log.info(
+        "speak-stream started: provider=%s profile=%s",
+        type(streamer).__name__,
+        profile or "default",
+    )
+
     stop = threading.Event()
     text_q: queue.Queue = queue.Queue()  # str deltas; None = end-of-text
     chunks: asyncio.Queue = asyncio.Queue()  # PCM out; None = synthesis done
@@ -456,7 +473,7 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                     buffered = chunker.buf.strip()
                     if not buffered or ("<think" in chunker.buf and "</think>" not in chunker.buf):
                         continue
-                    if buffered.endswith((".", "!", "?", "…", ":")) or idle_polls >= idle_polls_before_force_flush:
+                    if buffered.endswith((".", "!", "?", "…", ":", "。", "！", "？")) or idle_polls >= idle_polls_before_force_flush:
                         yield from chunker.flush()
                     continue
                 idle_polls = 0
@@ -467,18 +484,37 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
 
         try:
             for sentence in _sentences():
+                if stop.is_set():
+                    return
                 cleaned = _strip_markdown_for_tts(sentence)
                 if not cleaned:
                     continue
+                stats["sentences"] += 1
                 for piece in _split_text_for_speak_stream(cleaned, cap):
+                    if stop.is_set():
+                        return
                     for chunk in streamer.stream(piece):
                         if stop.is_set():
                             return
+                        if stats["first_pcm_ms"] is None:
+                            stats["first_pcm_ms"] = round(
+                                (time.monotonic() - stream_started_at) * 1000
+                            )
+                            _log.info(
+                                "speak-stream first PCM: provider=%s first_text_ms=%s first_pcm_ms=%s",
+                                type(streamer).__name__, stats["first_text_ms"], stats["first_pcm_ms"],
+                            )
+                        stats["pcm_chunks"] += 1
+                        stats["pcm_bytes"] += len(chunk)
                         loop.call_soon_threadsafe(chunks.put_nowait, chunk)
         except Exception as exc:
             _log.warning("speak-stream synthesis failed: %s", exc)
         finally:
-            loop.call_soon_threadsafe(chunks.put_nowait, None)
+            # Stop can close the socket/event loop before a synchronous
+            # provider request returns. Never publish into the abandoned turn.
+            if not stop.is_set():
+                with contextlib.suppress(RuntimeError):
+                    loop.call_soon_threadsafe(chunks.put_nowait, None)
 
     threading.Thread(target=_produce, daemon=True).start()
 
@@ -489,17 +525,28 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
             while True:
                 frame = json.loads(await ws.receive_text())
                 if frame.get("text"):
-                    text_q.put(str(frame["text"]))
+                    delta = str(frame["text"])
+                    if stats["first_text_ms"] is None:
+                        stats["first_text_ms"] = round(
+                            (time.monotonic() - stream_started_at) * 1000
+                        )
+                    stats["input_chars"] += len(delta)
+                    text_q.put(delta)
                 if frame.get("stop"):
                     break
                 if frame.get("done"):
+                    stats["client_done"] = True
                     text_q.put(None)
         except Exception:
             pass
         stop.set()
         text_q.put(None)  # unblock the producer
+        # The provider can be inside a blocking HTTP call. Release the socket
+        # immediately instead of waiting for that call before honoring Stop.
+        chunks.put_nowait(None)
 
     pump = asyncio.ensure_future(_pump_client())
+    outcome = "disconnected"
     try:
         while True:
             chunk = await chunks.get()
@@ -507,10 +554,32 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                 break
             await ws.send_bytes(chunk)
         if not stop.is_set():
-            await ws.send_json({"type": "end"})
+            if stats["pcm_bytes"]:
+                outcome = "end"
+                await ws.send_json({"type": "end"})
+            else:
+                # A provider can fail or return no audio for the session.
+                # Tell Desktop to use whole-text playback instead of treating
+                # zero audio as a successful stream.
+                outcome = "fallback"
+                await ws.send_json({"type": "fallback"})
     except (WebSocketDisconnect, RuntimeError):
-        pass
+        outcome = "disconnected"
     finally:
+        _log.info(
+            "speak-stream finished: provider=%s outcome=%s input_chars=%d "
+            "sentences=%d pcm_chunks=%d pcm_bytes=%d client_done=%s "
+            "first_text_ms=%s first_pcm_ms=%s",
+            type(streamer).__name__,
+            outcome,
+            stats["input_chars"],
+            stats["sentences"],
+            stats["pcm_chunks"],
+            stats["pcm_bytes"],
+            stats["client_done"],
+            stats["first_text_ms"],
+            stats["first_pcm_ms"],
+        )
         stop.set()
         text_q.put(None)
         pump.cancel()

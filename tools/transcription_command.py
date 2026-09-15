@@ -57,11 +57,17 @@ _get_command_stt_output_format = partial(_command_output_format, formats=COMMAND
 
 
 def _read_command_stt_output(output_path: Path, stdout: str, fmt: str) -> str:
-    """Transcript: non-empty output file > non-empty stdout (curl one-liners) > RuntimeError. JSON is returned raw."""
+    """Prefer file text, then stdout; an explicit empty file means no speech.
+
+    Missing output remains an error. JSON is returned raw.
+    """
     content = (output_path.read_bytes().decode("utf-8", errors="replace").strip()
                if output_path.exists() else "")
     if content or (stdout or "").strip():
         return content or stdout.strip()
+    # VAD may successfully reject the whole clip and write an empty transcript.
+    if output_path.is_file():
+        return ""
     raise RuntimeError(f"Command STT provider wrote no output file at {output_path} and produced no stdout")
 
 

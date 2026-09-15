@@ -69,6 +69,12 @@ export function useVoiceConversation({
   const responseIdRef = useRef<string | null>(null)
   const spokenSourceLengthRef = useRef(0)
   const speechSessionRef = useRef<null | SpeechStreamSession>(null)
+
+  const speechSetupRef = useRef<null | {
+    promise: Promise<null | SpeechStreamSession>
+    sequenceBeforeStart: number
+  }>(null)
+
   const stopBargeMonitorRef = useRef<(() => void) | null>(null)
   const bargeCapturePendingRef = useRef(false)
   const bargedRef = useRef(false)
@@ -80,6 +86,23 @@ export function useVoiceConversation({
   const wasEnabledRef = useRef(enabled)
   const onStopWordRef = useRef(onStopWord)
   const onInterruptRef = useRef(onInterrupt)
+
+  /**
+   * Resolve config, mint the WS ticket, and open the speech socket while the
+   * model is still thinking. Short replies can finish less than a second after
+   * their first sentence; opening only on that first sentence makes an honest
+   * token stream still look like whole-response TTS.
+   */
+  const prepareSpeechSession = useCallback(() => {
+    if (speechSetupRef.current) {
+      return
+    }
+
+    speechSetupRef.current = {
+      promise: startSpeechStream({ source: 'voice-conversation' }).catch(() => null),
+      sequenceBeforeStart: $voicePlayback.get().sequence
+    }
+  }, [])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -126,11 +149,14 @@ export function useVoiceConversation({
   }
 
   const dropSpeechSession = () => {
+    speechSessionRef.current?.cancel()
+    void speechSetupRef.current?.promise.then(session => session?.cancel())
     stopBargeMonitorRef.current?.()
     stopBargeMonitorRef.current = null
     bargeCapturePendingRef.current = false
     bargedRef.current = false
     speechSessionRef.current = null
+    speechSetupRef.current = null
     responseIdRef.current = null
     spokenSourceLengthRef.current = 0
   }
@@ -185,9 +211,12 @@ export function useVoiceConversation({
 
           awaitingSpokenResponseRef.current = true
           dropSpeechSession()
+          prepareSpeechSession()
           await onSubmit(transcript)
           setStatus('thinking')
         } catch (error) {
+          awaitingSpokenResponseRef.current = false
+          dropSpeechSession()
           notifyError(error, voiceCopy.transcriptionFailed)
 
           if (enabledRef.current && !mutedRef.current && !busyRef.current) {
@@ -200,7 +229,7 @@ export function useVoiceConversation({
         turnClosingRef.current = false
       }
     },
-    [handle, onSubmit, onTranscribeAudio, voiceCopy.transcriptionFailed]
+    [handle, onSubmit, onTranscribeAudio, prepareSpeechSession, voiceCopy.transcriptionFailed]
   )
 
   const startListening = useCallback(async () => {
@@ -354,6 +383,7 @@ export function useVoiceConversation({
         awaitingSpokenResponseRef.current = true
         dropSpeechSession()
         consumePendingResponse()
+        prepareSpeechSession()
         await onSubmit(transcript)
         setStatus('thinking')
       } catch (error) {
@@ -361,7 +391,7 @@ export function useVoiceConversation({
         resumeListening()
       }
     },
-    [consumePendingResponse, onSubmit, onTranscribeAudio, voiceCopy.transcriptionFailed]
+    [consumePendingResponse, onSubmit, onTranscribeAudio, prepareSpeechSession, voiceCopy.transcriptionFailed]
   )
 
   /**
@@ -416,13 +446,19 @@ export function useVoiceConversation({
 
       const response = pendingResponse()
 
-      if (response && response.id === responseId) {
+      // The response id can be hydrated to a durable id mid-turn. The
+      // responseIdRef token above owns this turn; the selector's current id
+      // is presentation identity and must not cut off later text.
+      if (response) {
         if (response.text.length > spokenSourceLengthRef.current) {
           session.append(response.text.slice(spokenSourceLengthRef.current))
           spokenSourceLengthRef.current = response.text.length
         }
 
-        if (!response.pending && !busyRef.current) {
+        // An interim narration bubble is sealed before a tool call, while
+        // more speech still belongs to this turn. Only the turn's busy=false
+        // transition closes this cumulative text stream.
+        if (!busyRef.current) {
           session.finish()
         }
       } else if (!busyRef.current) {
@@ -436,14 +472,22 @@ export function useVoiceConversation({
   /** Whole-text fallback: wait for the reply to complete, then speak it. */
   const awaitFallbackSpeech = useCallback(
     (responseId: string) => {
+      const sequence = $voicePlayback.get().sequence
       const poll = () => {
         if (responseIdRef.current !== responseId) {
           return
         }
 
+        if ($voicePlayback.get().sequence !== sequence) {
+          awaitingSpokenResponseRef.current = false
+          settleAfterSpeech(false)
+
+          return
+        }
+
         const response = pendingResponse()
 
-        if (!response || response.id !== responseId) {
+        if (!response) {
           settleAfterSpeech(false)
 
           return
@@ -487,7 +531,13 @@ export function useVoiceConversation({
    */
   const openLiveSpeech = useCallback(
     (responseId: string) => {
-      const sequenceBeforeStart = $voicePlayback.get().sequence
+      if (responseIdRef.current === responseId) {
+        return
+      }
+
+      const prepared = speechSetupRef.current
+      const sequenceBeforeStart = prepared?.sequenceBeforeStart ?? $voicePlayback.get().sequence
+      const sessionPromise = prepared?.promise ?? startSpeechStream({ source: 'voice-conversation' })
 
       responseIdRef.current = responseId
       spokenSourceLengthRef.current = 0
@@ -500,12 +550,16 @@ export function useVoiceConversation({
       ensureBargeMonitor()
 
       void (async () => {
-        const session = await startSpeechStream({ source: 'voice-conversation' })
+        const session = await sessionPromise
+
+        if (speechSetupRef.current === prepared) {
+          speechSetupRef.current = null
+        }
 
         // The session may resolve after the loop moved on (barge, disable).
         if (responseIdRef.current !== responseId) {
           if (session) {
-            stopVoicePlayback()
+            session.cancel()
           }
 
           return
@@ -540,7 +594,7 @@ export function useVoiceConversation({
         speechSessionRef.current = session
 
         if (stoppedDuringStart) {
-          stopVoicePlayback()
+          session.cancel()
           awaitingSpokenResponseRef.current = false
           settleAfterSpeech(false, true)
 
@@ -571,6 +625,33 @@ export function useVoiceConversation({
     },
     [awaitFallbackSpeech, ensureBargeMonitor, feedSpeechSession, settleAfterSpeech]
   )
+
+  // A message atom subscription normally re-renders the composer on every
+  // delta. Poll as a second, deliberately cheap edge while thinking so a
+  // background/minimized renderer or a future store refactor cannot delay the
+  // first sentence until the busy→false completion render.
+  useEffect(() => {
+    if (!enabled || muted || status !== 'thinking') {
+      return
+    }
+
+    const openWhenReady = () => {
+      if (!awaitingSpokenResponseRef.current || responseIdRef.current || statusRef.current !== 'thinking') {
+        return
+      }
+
+      const response = pendingResponse()
+
+      if (response) {
+        openLiveSpeech(response.id)
+      }
+    }
+
+    openWhenReady()
+    const timer = window.setInterval(openWhenReady, 75)
+
+    return () => window.clearInterval(timer)
+  }, [enabled, muted, openLiveSpeech, pendingResponse, status])
 
   const start = useCallback(async () => {
     if (!onTranscribeAudio) {

@@ -985,8 +985,8 @@ class CLIStatusBarMixin:
         """Visible status-bar fields from ``display.status_bar.fields`` (module-level
         ``CLI_CONFIG``; no per-render YAML parse). ``None`` = not customized, show everything.
 
-        Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
-        bg_tasks, bg_processes, bg_subagents, goal, git_branch (opt-in only), duration,
+        Fields: model, context_detail, context_pct, cache_hit, latency, tps, tokens,
+        compressions, bg_tasks, bg_processes, bg_subagents, goal, git_branch (opt-in only), duration,
         prompt_elapsed, idle_since, focus, yolo, stash, battery, title, total_tokens
         (opt-in only). Order is fixed; the config controls visibility only.
         """
@@ -1068,6 +1068,18 @@ class CLIStatusBarMixin:
                     label = snapshot.get(key) or ""
                     if label:
                         add(name, _DIM, f"{glyph} {label}")
+                # Cumulative ↑input ↓output counters (badge-only, wide tier). Unlike the
+                # Σ total_tokens read-out, this is gated solely by _ok("tokens") — no
+                # explicit opt-in needed. Auto-hide when both counters are zero to avoid
+                # a "↑0 ↓0" placeholder; once either is non-zero, show both.
+                in_tok = snapshot.get("session_input_tokens", 0) or 0
+                out_tok = snapshot.get("session_output_tokens", 0) or 0
+                if in_tok or out_tok:
+                    add(
+                        "tokens", _DIM,
+                        f"↑{format_token_count_compact(in_tok)} "
+                        f"↓{format_token_count_compact(out_tok)}",
+                    )
             add_count("compressions", "compressions", "🗜️", self._compression_count_style)
             add_count("bg_tasks", "active_background_tasks", "▶")
             add_count("bg_processes", "active_background_processes", "⚙")

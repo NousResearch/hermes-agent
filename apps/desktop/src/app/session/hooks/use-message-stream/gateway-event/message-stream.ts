@@ -1,4 +1,4 @@
-import type { BillingBlock } from '@hermes/shared'
+import { type BillingBlock, createStreamTpsCounter, type StreamTpsCounter } from '@hermes/shared'
 
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { reportFirstBuildTurnComplete } from '@/components/onboarding-chat/first-build'
@@ -24,6 +24,13 @@ import type { GatewayEventContext } from './types'
 function firstBillingLine(text: string): string {
   return (text || '').split('\n')[0]?.trim() ?? ''
 }
+
+/**
+ * Live streaming throughput (tokens/s) per session, recomputed on each
+ * assistant delta. Keyed by sessionId so only the streaming session's rate
+ * feeds the status bar; reset at the end of the turn (message.complete).
+ */
+const streamTpsCounters = new Map<string, StreamTpsCounter>()
 
 /**
  * A turn failed on a billing wall (out of credits / payment required). The
@@ -155,6 +162,20 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   if (event.type === 'message.delta') {
     if (sessionId) {
       appendAssistantDelta(sessionId, coerceGatewayText(payload?.text), occurredAt)
+
+      // Live streaming TPS: accumulate the delta's gateway timestamp and, once
+      // enough samples are in the rolling window, push the rate onto the
+      // primary status bar — only for the ACTIVE session, so a background
+      // tile's streaming turn never overwrites the focused tile's count
+      // (same scoping the per-session usage merge below relies on).
+      const counter = streamTpsCounters.get(sessionId) ?? streamTpsCounters.set(sessionId, createStreamTpsCounter()).get(sessionId)!
+      // occurredAt is gateway unix SECONDS (Date.now()/1000 elsewhere); the
+      // shared counter's rolling window/throttle are in ms — convert.
+      const streamTps = counter.accumulate(occurredAt * 1000)
+
+      if (streamTps !== undefined && isActiveEvent) {
+        setCurrentUsage(current => ({ ...current, stream_tps: streamTps }))
+      }
     }
 
     return true
@@ -331,6 +352,16 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     setSessionCompacting(sessionId, false)
 
     flushQueuedDeltas(sessionId)
+
+    // Turn over — stop showing a stale live TPS. Drop the per-session counter
+    // (fresh state for the next turn) and, for the active session, clear the
+    // status-bar value so the rate auto-hides rather than lingering frozen.
+    streamTpsCounters.get(sessionId)?.reset()
+    streamTpsCounters.delete(sessionId)
+
+    if (isActiveEvent) {
+      setCurrentUsage(current => ({ ...current, stream_tps: undefined }))
+    }
 
     // Keyed by session so only one window beeps when several are open.
     playCompletionSound(sessionId)

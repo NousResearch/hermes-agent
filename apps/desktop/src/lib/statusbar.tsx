@@ -75,6 +75,29 @@ export function tokensPerSecondLabel(usage: UsageStats): string {
   return typeof tps === 'number' && Number.isFinite(tps) && tps > 0 ? `${Math.round(tps)} t/s` : ''
 }
 
+/** `7 t/s` for the live streaming rate; '' when the reducer has no mid-turn
+ *  sample (before the first delta, and after `message.complete` clears it).
+ *  Rounding matches tokensPerSecondLabel so both throughput readouts agree. */
+export function streamTpsLabel(usage: UsageStats): string {
+  const tps = usage.stream_tps
+
+  return typeof tps === 'number' && Number.isFinite(tps) && tps > 0 ? `${Math.round(tps)} t/s` : ''
+}
+
+/** `↑ 120 ↓ 340` for the current turn's token counters, aligned with the TUI's
+ *  arrows; '' until a turn has streamed both sides (either missing or 0), so a
+ *  half-open counter never paints. */
+export function tokenCountersLabel(usage: UsageStats): string {
+  const input = usage.input
+  const output = usage.output
+
+  if (!(input && output)) {
+    return ''
+  }
+
+  return `↑ ${input} ↓ ${output}`
+}
+
 export function LiveDuration({ since }: { since: number | null | undefined }) {
   const [now, setNow] = useState(() => Date.now())
 

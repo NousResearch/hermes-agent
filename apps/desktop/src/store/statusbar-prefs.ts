@@ -38,8 +38,10 @@ export const STATUSBAR_HIDDEN_BY_DEFAULT: readonly string[] = [
   'cron',
   'running-timer',
   'session-timer',
+  'stream-tps',
   'system-resources',
   'terminal',
+  'token-counters',
   'tokens-per-second',
   'webhooks'
 ]

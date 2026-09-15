@@ -510,6 +510,59 @@ class TestStatusBarFieldConfig:
         assert first == second == frozenset({"model"})
 
 
+class TestTokenCounters:
+    """↑input ↓output cumulative token counters in the classic status bar."""
+
+    def _cli_with_tokens(self, input_tokens, output_tokens, fields=None, width=120):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            prompt_tokens=input_tokens,
+            completion_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+            api_calls=3,
+            context_tokens=input_tokens,
+            context_length=200_000,
+        )
+        if fields is None:
+            text = cli_obj._build_status_bar_text(width=width)
+        else:
+            with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": fields}}}):
+                text = cli_obj._build_status_bar_text(width=width)
+        return text
+
+    def test_tokens_segment_shown_on_wide_terminal(self):
+        text = self._cli_with_tokens(input_tokens=1_200, output_tokens=5_700)
+        assert "↑1.2K ↓5.7K" in text
+
+    def test_tokens_formatted_compact_with_uppercase_suffix(self):
+        text = self._cli_with_tokens(input_tokens=1_234_567, output_tokens=999)
+        assert "↑1.23M ↓999" in text
+
+    def test_tokens_segment_hidden_when_both_zero(self):
+        text = self._cli_with_tokens(input_tokens=0, output_tokens=0)
+        assert "↑0" not in text
+        assert "↓0" not in text
+
+    def test_tokens_shows_both_when_only_one_nonzero(self):
+        text = self._cli_with_tokens(input_tokens=1_200, output_tokens=0)
+        assert "↑1.2K ↓0" in text
+
+    def test_tokens_hidden_on_narrow_terminal(self):
+        text = self._cli_with_tokens(input_tokens=1_200, output_tokens=5_700, width=60)
+        assert "↑1.2K" not in text
+
+    def test_tokens_hidden_when_field_set_lacks_tokens(self):
+        text = self._cli_with_tokens(1_200, 5_700, fields=["model", "duration"])
+        assert "↑1.2K" not in text
+        assert "claude-sonnet-4-20250514" in text
+
+    def test_tokens_shown_when_field_set_includes_tokens(self):
+        text = self._cli_with_tokens(1_200, 5_700, fields=["model", "tokens"])
+        assert "↑1.2K ↓5.7K" in text
+
+
 class TestCacheHitRate:
     def test_cache_hit_rate_shown_in_wide_terminal(self):
         cli_obj = _attach_agent(

@@ -483,12 +483,68 @@ class TestFatalErrorPropagation:
 
 
 class TestTruncateHelper:
-    """``_truncate_body`` is shared between adapter.send() (inline truncation
-    today, may migrate) and ``_standalone_send``. It must cap to
-    MAX_MESSAGE_LENGTH and return bytes."""
+    """``_truncate_body`` is shared between adapter.send() and ``_standalone_send``.
+    It must cap to MAX_MESSAGE_LENGTH UTF-8 bytes, return bytes, and never split
+    a multi-byte character."""
 
     def test_short_message_passes_through(self):
         assert _ntfy._truncate_body("hi", context="test") == b"hi"
+
+    def test_ascii_boundary_truncates_to_limit(self):
+        truncated = _ntfy._truncate_body("x" * 5000, context="test")
+        assert len(truncated) == _ntfy.MAX_MESSAGE_LENGTH
+
+    def test_cyrillic_truncates_by_bytes_not_chars(self):
+        # 2049 two-byte chars = 4098 bytes: over the byte limit while under the
+        # old character guard — nothing was trimmed and nothing was logged.
+        body = _ntfy._truncate_body("я" * 2049, context="test")
+        assert len(body) <= _ntfy.MAX_MESSAGE_LENGTH
+        assert len(body) == 4096
+
+    def test_emoji_truncates_to_fourth_of_char_budget(self):
+        body = _ntfy._truncate_body("😀" * 4096, context="test")
+        assert len(body) <= _ntfy.MAX_MESSAGE_LENGTH
+        assert len(body) == 4096
+
+    def test_truncation_lands_on_character_boundary(self):
+        body = _ntfy._truncate_body("я" * 2049, context="test")
+        # 2048 chars × 2 bytes, no partial character in the published payload.
+        assert body.decode("utf-8") == "я" * 2048
+
+    def test_exactly_at_byte_limit_passes_through(self):
+        assert _ntfy._truncate_body("я" * 2048, context="test") == ("я" * 2048).encode(
+            "utf-8"
+        )
+
+
+class TestSendByteBudget:
+    """``send()`` publishes at most MAX_MESSAGE_LENGTH UTF-8 bytes."""
+
+    def _make_adapter(self, topic="hermes-in"):
+        return NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": topic}))
+
+    def test_send_truncates_multibyte_body(self):
+        adapter = self._make_adapter()
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "abc123"}
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        adapter._http_client = mock_client
+
+        result = _run(adapter.send("hermes-in", "я" * 3000))
+        assert result.success is True
+        posted_body = mock_client.post.call_args[1]["content"]
+        assert len(posted_body) <= _ntfy.MAX_MESSAGE_LENGTH
+        posted_body.decode("utf-8")  # must stay valid UTF-8
+
+    def test_message_len_fn_counts_utf8_bytes(self):
+        adapter = self._make_adapter()
+        assert adapter.message_len_fn("я") == 2
+        assert adapter.message_len_fn("😀") == 4
+        assert adapter.message_len_fn("hi") == 2
 
 
 # ---------------------------------------------------------------------------

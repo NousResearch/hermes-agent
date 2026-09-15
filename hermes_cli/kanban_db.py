@@ -1651,12 +1651,56 @@ def child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
     return _linked_ids(conn, "child_id", "parent_id", task_id)
 
 
-def task_graph_contexts(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[str, dict]:
+def task_graph_contexts(
+    conn: sqlite3.Connection, task_ids: Iterable[str]
+) -> dict[str, dict[str, Any]]:
     """Bulk-load compact direct graph state for graph-aware diagnostics."""
     ordered_ids = list(dict.fromkeys(str(task_id) for task_id in task_ids if task_id))
-    contexts = {task_id: {"parents": [], "children": []} for task_id in ordered_ids}
+    contexts: dict[str, dict[str, Any]] = {
+        task_id: {"parents": [], "children": []} for task_id in ordered_ids
+    }
     if not ordered_ids:
         return contexts
+
+    running_rows = conn.execute(
+        "SELECT assignee, COUNT(*) AS count FROM tasks "
+        "WHERE status = 'running' GROUP BY assignee"
+    ).fetchall()
+    running_by_assignee = {
+        (row["assignee"] or ""): int(row["count"])
+        for row in running_rows
+    }
+    try:
+        from hermes_cli.kanban_db_dispatch import count_running_tasks_other_boards
+
+        current_db_path = None
+        for row in conn.execute("PRAGMA database_list").fetchall():
+            if row[1] == "main" and row[2]:
+                current_db_path = Path(row[2])
+                break
+        running_total = sum(running_by_assignee.values()) + count_running_tasks_other_boards(
+            current_db_path=current_db_path
+        )
+    except Exception:
+        running_total = sum(running_by_assignee.values())
+
+    assignee_rows = conn.execute(
+        f"SELECT id, assignee FROM tasks WHERE id IN ({','.join('?' for _ in ordered_ids)})",
+        tuple(ordered_ids),
+    ).fetchall()
+    try:
+        from hermes_cli.profiles import profile_exists
+    except Exception:
+        profile_exists = None  # type: ignore[assignment]
+    for row in assignee_rows:
+        try:
+            profile_exists_for_task = bool(profile_exists and profile_exists(row["assignee"] or ""))
+        except Exception:
+            profile_exists_for_task = False
+        contexts[row["id"]]["assignee_profile_exists"] = profile_exists_for_task
+    for context in contexts.values():
+        context["running_total"] = running_total
+        context["running_by_assignee"] = running_by_assignee
 
     placeholders = ",".join("?" for _ in ordered_ids)
     for bucket, own, other in (("parents", "child_id", "parent_id"), ("children", "parent_id", "child_id")):
@@ -1671,7 +1715,7 @@ def task_graph_contexts(conn: sqlite3.Connection, task_ids: Iterable[str]) -> di
     return contexts
 
 
-def task_graph_context(conn: sqlite3.Connection, task_id: str) -> dict:
+def task_graph_context(conn: sqlite3.Connection, task_id: str) -> dict[str, Any]:
     """Return compact direct parent/child state for one task."""
     return task_graph_contexts(conn, [task_id])[task_id]
 

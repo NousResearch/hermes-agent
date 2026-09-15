@@ -1359,7 +1359,11 @@ def count_running_tasks(conn: sqlite3.Connection) -> int:
         return 0
 
 
-def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
+def count_running_tasks_other_boards(
+    board: Optional[str] = None,
+    *,
+    current_db_path: Optional[Path] = None,
+) -> int:
     """Total ``running`` tasks across every board EXCEPT ``board``.
 
     Caps bound the HOST, but each board's tick only sees its own DB; without
@@ -1368,7 +1372,9 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
     board to one file) yields 0. Fails open per board.
     """
     try:
-        current_path = str(_kb.kanban_db_path(board=board).expanduser().resolve())
+        current_path = str(
+            (current_db_path or _kb.kanban_db_path(board=board)).expanduser().resolve()
+        )
     except Exception:
         current_path = None
     try:

@@ -197,6 +197,42 @@ def _pending_fleet_restart_needed() -> bool:
     return not _live_fleet_covers_receipt(_current_checkout_sha())
 
 
+def _superseded_marker_has_current_gateway_successor() -> bool:
+    """True when a later checkout has a live gateway fleet on that later code.
+
+    ``fleet_restart_pending`` can survive a manual restart because the gateway
+    command does not own update receipts.  Suppress the cheap startup warning
+    only for the narrow, observable supersession case: the marker names a
+    different checkout and every currently discovered gateway is stamped with
+    the current checkout SHA.  Missing, malformed, empty, or stale evidence
+    remains fail closed; the marker and receipt stay intact for ``hermes
+    update`` catch-up.
+    """
+    try:
+        marker_sha = ""
+        for line in _fleet_restart_pending_marker_path().read_text(encoding="utf-8").splitlines():
+            key, separator, value = line.partition("=")
+            if separator and key == "expected_sha":
+                marker_sha = value.strip()
+                break
+        current_sha = _current_checkout_sha() or ""
+        if not marker_sha or not current_sha or marker_sha == current_sha:
+            return False
+
+        from hermes_cli.update_receipt import collect_fleet_versions
+
+        fleet = collect_fleet_versions()
+        return bool(fleet) and all(
+            isinstance(row, dict)
+            and row.get("state") == "current"
+            and row.get("code_sha") == current_sha
+            for row in fleet
+        )
+    except Exception as exc:
+        logger.debug("Could not reconcile superseded fleet marker: %s", exc)
+        return False
+
+
 def _warn_pending_fleet_restart(*, startup: bool = False) -> None:
     """Print the specific interrupted-update fleet-restart warning."""
     stream = sys.stderr if startup else sys.stdout
@@ -209,7 +245,7 @@ def _warn_pending_fleet_restart(*, startup: bool = False) -> None:
 def _warn_pending_fleet_restart_on_startup() -> None:
     """Cheap CLI-startup hint. Never restarts; never raises."""
     with suppress(Exception):
-        if _pending_fleet_restart_needed():
+        if _pending_fleet_restart_needed() and not _superseded_marker_has_current_gateway_successor():
             _warn_pending_fleet_restart(startup=True)
 
 

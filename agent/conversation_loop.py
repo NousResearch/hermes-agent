@@ -793,7 +793,15 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     def host_info_value(label: str) -> str:
         """New prompts delimit runtime hints; legacy prompts put them before context."""
         prefix = f"{label}:"
-        host_lines = (runtime.split("\n\n", 1)[0] if runtime_marker else prompt).splitlines()
+        if runtime_marker:
+            # The renderer-owned runtime block is authoritative, so its first
+            # paragraph can be parsed directly even when field ordering evolves.
+            # Embedder prose follows a blank line and cannot shadow these fields.
+            for line in runtime.split("\n\n", 1)[0].splitlines():
+                if line.startswith(prefix):
+                    return line[len(prefix):].strip()
+            return ""
+        host_lines = prompt.splitlines()
         for idx, line in enumerate(host_lines):
             if line.startswith("User home directory:"):
                 for candidate in host_lines[idx + 1: idx + 4]:

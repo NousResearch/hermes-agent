@@ -447,6 +447,12 @@ DEFAULT_CONFIG = {
         # browser_cdp / browser_evaluate capabilities.
         "extension_control": {"enabled": False, "developer_mode": False},
     },
+    # vision_analyze repeat cap. 0 = unlimited (historical default). A positive int
+    # refuses further vision_analyze calls on the same image in one session so each
+    # native-path call cannot re-embed the full image into context.
+    "vision": {
+        "max_calls_per_image": 0,
+    },
     # Filesystem checkpoints: snapshot the working directory once per turn (on the first
     # write_file/patch call); restore with /rollback. Opt-in via `hermes chat --checkpoints` or
     # enabled=True (most users never use /rollback). Single shared shadow store with real pruning.

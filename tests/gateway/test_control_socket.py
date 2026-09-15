@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import gateway.control_socket as control_socket
 from gateway.control_socket import (
     CONTROL_PROTOCOL_VERSION,
     GatewayControlServer,
@@ -159,6 +160,51 @@ def test_unknown_verb_and_malformed_request(home: Path):
     payload = json.loads(garbage_reply.decode())
     assert payload["ok"] is False
     assert payload["protocol"] == CONTROL_PROTOCOL_VERSION
+
+
+def test_rejects_requests_outside_the_control_protocol_window(home: Path):
+    """An incompatible peer gets a machine-readable update signal before verbs run."""
+    server = GatewayControlServer(home, verb_handlers={"identify": lambda: {"pid": 1}})
+
+    too_old = json.loads(
+        server.handle_request_line(
+            json.dumps({"id": "old", "verb": "identify", "protocol": 0}).encode()
+        )
+    )
+    assert too_old == {
+        "ok": False,
+        "error": "client_too_old",
+        "protocol": CONTROL_PROTOCOL_VERSION,
+        "min_client_protocol": 1,
+        "max_client_protocol": CONTROL_PROTOCOL_VERSION,
+        "received_protocol": 0,
+        "hint": "Run `hermes update` to install a compatible client.",
+        "id": "old",
+    }
+
+    too_new = json.loads(
+        server.handle_request_line(
+            json.dumps({"verb": "identify", "protocol": CONTROL_PROTOCOL_VERSION + 1}).encode()
+        )
+    )
+    assert too_new["error"] == "client_too_new"
+    assert too_new["received_protocol"] == CONTROL_PROTOCOL_VERSION + 1
+
+
+def test_unknown_verb_discovery_survives_protocol_validation(home: Path):
+    server = GatewayControlServer(home, verb_handlers={"identify": lambda: {"pid": 1}})
+    response = json.loads(
+        server.handle_request_line(
+            json.dumps({"verb": "restart", "protocol": CONTROL_PROTOCOL_VERSION}).encode()
+        )
+    )
+    assert response["error"] == "unknown verb: 'restart'"
+    assert response["supported_verbs"] == ["identify", "status"]
+
+
+def test_builtin_verb_set_is_versioned_with_the_protocol(home: Path):
+    server = GatewayControlServer(home)
+    assert set(server._handlers) == control_socket.CONTROL_PROTOCOL_VERBS_BY_VERSION[CONTROL_PROTOCOL_VERSION]
 
 
 def test_stop_removes_socket_and_pointer(home: Path):

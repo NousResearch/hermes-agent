@@ -25,6 +25,13 @@ from typing import Any, Callable, Optional
 logger = logging.getLogger(__name__)
 
 CONTROL_PROTOCOL_VERSION = 1
+# Clients in this inclusive window may issue control verbs. Keep the verb
+# inventory versioned too: adding or removing a built-in verb requires a new
+# protocol entry instead of silently changing a dialect under an old version.
+MIN_CLIENT_CONTROL_PROTOCOL = 1
+CONTROL_PROTOCOL_VERBS_BY_VERSION: dict[int, frozenset[str]] = {
+    1: frozenset({"identify", "status"}),
+}
 _SOCKET_FILENAME = "gateway.sock"
 _POINTER_FILENAME = "gateway.sock.path"
 _IS_WINDOWS = sys.platform == "win32"
@@ -133,8 +140,15 @@ class GatewayControlServer:
         self._pipe_server: Any = None  # Windows proactor pipe server
         self._bind_path: Optional[Path] = None
         self._pointer_file: Optional[Path] = None
-        self._handlers: dict[str, Callable[[], dict[str, Any]]] = {
-            "identify": build_identify_payload, "status": build_status_payload, **(verb_handlers or {})}
+        default_handlers: dict[str, Callable[[], dict[str, Any]]] = {
+            "identify": build_identify_payload,
+            "status": build_status_payload,
+        }
+        self._handlers = {
+            verb: default_handlers[verb]
+            for verb in CONTROL_PROTOCOL_VERBS_BY_VERSION[CONTROL_PROTOCOL_VERSION]
+        }
+        self._handlers.update(verb_handlers or {})
 
     async def start(self) -> bool:
         """Bind and start serving. Returns True on success, False otherwise."""
@@ -205,12 +219,20 @@ class GatewayControlServer:
             if not isinstance(request, dict):
                 raise ValueError("request must be a JSON object")
             request_id, verb = request.get("id"), request.get("verb")
-            handler = self._handlers.get(verb) if isinstance(verb, str) else None
-            if handler is None:
-                response: dict[str, Any] = {"ok": False, "error": f"unknown verb: {verb!r}",
-                                            "protocol": CONTROL_PROTOCOL_VERSION, "supported_verbs": sorted(self._handlers)}
+            client_protocol = request.get("protocol")
+            if not isinstance(client_protocol, int) or isinstance(client_protocol, bool):
+                response = self._incompatible_protocol_response("invalid_client_protocol", client_protocol)
+            elif client_protocol < MIN_CLIENT_CONTROL_PROTOCOL:
+                response = self._incompatible_protocol_response("client_too_old", client_protocol)
+            elif client_protocol > CONTROL_PROTOCOL_VERSION:
+                response = self._incompatible_protocol_response("client_too_new", client_protocol)
             else:
-                response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION, "result": handler()}
+                handler = self._handlers.get(verb) if isinstance(verb, str) else None
+                if handler is None:
+                    response = {"ok": False, "error": f"unknown verb: {verb!r}",
+                                "protocol": CONTROL_PROTOCOL_VERSION, "supported_verbs": sorted(self._handlers)}
+                else:
+                    response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION, "result": handler()}
         except Exception as exc:
             response = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "protocol": CONTROL_PROTOCOL_VERSION}
         if request_id is not None:
@@ -222,6 +244,19 @@ class GatewayControlServer:
         if len(encoded) > _MAX_RESPONSE_BYTES:
             encoded = b'{"ok": false, "error": "response too large"}'
         return encoded + b"\n"
+
+    @staticmethod
+    def _incompatible_protocol_response(error: str, received_protocol: Any) -> dict[str, Any]:
+        """Describe an unsupported client dialect without invoking a verb handler."""
+        return {
+            "ok": False,
+            "error": error,
+            "protocol": CONTROL_PROTOCOL_VERSION,
+            "min_client_protocol": MIN_CLIENT_CONTROL_PROTOCOL,
+            "max_client_protocol": CONTROL_PROTOCOL_VERSION,
+            "received_protocol": received_protocol,
+            "hint": "Run `hermes update` to install a compatible client.",
+        }
 
     async def _handle_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:

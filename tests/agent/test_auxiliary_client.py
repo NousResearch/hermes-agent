@@ -724,6 +724,26 @@ class TestBuildCodexClient:
         assert mock_openai.call_args.kwargs["api_key"] == "codex-auth-token"
         assert mock_openai.call_args.kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
 
+    def test_profile_codex_base_url_overrides_pool_endpoint(self, monkeypatch):
+        """Auxiliary Codex calls use the same profile endpoint override as the main client."""
+        entry = SimpleNamespace(
+            runtime_api_key="codex-pool-token",
+            runtime_base_url="https://chatgpt.com/backend-api/codex",
+        )
+        with (
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(True, entry)),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/v1")
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import _build_codex_client
+
+            client, model = _build_codex_client("gpt-5.4")
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert mock_openai.call_args.kwargs["base_url"] == "http://127.0.0.1:8787/v1"
+
     def test_rejects_missing_model(self):
         """Callers must pass an explicit model; no hardcoded default."""
         from agent.auxiliary_client import _build_codex_client

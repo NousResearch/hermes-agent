@@ -199,7 +199,7 @@ const approval: Handler<'approval'> = ctx => {
 const sudo: Handler<'sudo'> = ctx => {
   rememberServerRequest(ctx.request)
   setSudoRequest({
-    command: str(ctx.request.params.command),
+    command: ctx.request.params.command,
     requestId: ctx.request.id,
     sessionId: ctx.sessionId || null
   })

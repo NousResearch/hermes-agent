@@ -376,74 +376,52 @@ class TestInstall:
 
 class TestUpdate:
 
-    def test_update_merges_skills_without_removing_profile_skills(self, profile_env):
+    def test_update_and_force_install_merge_owned_dirs_per_root(self, profile_env):
+        """skills/ and cron/ are containers of roots: roots the payload ships are replaced
+        wholesale (retired files disappear), roots the user added survive both paths."""
         staged = _make_staging_dir(profile_env, "src")
         plan = install_distribution(str(staged), name="skills_safe")
 
         custom = plan.target_dir / "skills" / "custom"
         custom.mkdir()
-        (custom / "SKILL.md").write_text("custom skill\n")
-        stale = plan.target_dir / "skills" / "stale"
-        stale.mkdir()
-        (stale / "SKILL.md").write_text("stale skill\n")
-        (staged / "skills" / "demo" / "SKILL.md").write_text("updated demo\n")
+        (custom / "SKILL.md").write_text("custom skill\n", encoding="utf-8")
+        (plan.target_dir / "cron" / "mine.json").write_text('{"schedule": "* * * * *"}\n', encoding="utf-8")
+        (plan.target_dir / "skills" / "demo" / "stale.txt").write_text("old file\n", encoding="utf-8")
+        (staged / "skills" / "demo" / "SKILL.md").write_text("updated demo\n", encoding="utf-8")
         (staged / "skills" / "new").mkdir()
-        (staged / "skills" / "new" / "SKILL.md").write_text("new skill\n")
-        (plan.target_dir / "skills" / "demo" / "stale.txt").write_text("old file\n")
+        (staged / "skills" / "new" / "SKILL.md").write_text("new skill\n", encoding="utf-8")
 
         update_distribution("skills_safe")
 
-        assert (plan.target_dir / "skills" / "custom" / "SKILL.md").read_text() == "custom skill\n"
-        assert (plan.target_dir / "skills" / "stale" / "SKILL.md").read_text() == "stale skill\n"
-        assert (plan.target_dir / "skills" / "demo" / "SKILL.md").read_text() == "updated demo\n"
-        assert (plan.target_dir / "skills" / "new" / "SKILL.md").read_text() == "new skill\n"
+        assert (custom / "SKILL.md").read_text(encoding="utf-8") == "custom skill\n"
+        assert (plan.target_dir / "cron" / "mine.json").read_text(encoding="utf-8") == '{"schedule": "* * * * *"}\n'
+        assert (plan.target_dir / "skills" / "demo" / "SKILL.md").read_text(encoding="utf-8") == "updated demo\n"
+        assert (plan.target_dir / "skills" / "new" / "SKILL.md").read_text(encoding="utf-8") == "new skill\n"
         assert not (plan.target_dir / "skills" / "demo" / "stale.txt").exists()
 
-    def test_force_install_preserves_unshipped_skill_roots(self, profile_env):
-        staged = _make_staging_dir(profile_env, "force_safe")
-        plan = install_distribution(str(staged), name="force_safe")
+        install_distribution(str(staged), name="skills_safe", force=True)
 
-        custom = plan.target_dir / "skills" / "user-created"
-        custom.mkdir()
-        (custom / "SKILL.md").write_text("keep this skill\n")
-        (staged / "skills" / "demo" / "SKILL.md").write_text("updated demo\n")
-
-        install_distribution(str(staged), name="force_safe", force=True)
-
-        assert (plan.target_dir / "skills" / "user-created" / "SKILL.md").read_text() == "keep this skill\n"
-        assert (plan.target_dir / "skills" / "demo" / "SKILL.md").read_text() == "updated demo\n"
-
-    def test_update_keeps_user_added_cron_root(self, profile_env):
-        staged = _make_staging_dir(profile_env, "src")
-        plan = install_distribution(str(staged), name="cron_safe")
-
-        (plan.target_dir / "cron" / "mine.json").write_text('{"schedule": "* * * * *"}\n')
-        (staged / "cron" / "daily.json").write_text('{"schedule": "0 10 * * *"}\n')
-
-        update_distribution("cron_safe")
-
-        assert (plan.target_dir / "cron" / "mine.json").read_text() == '{"schedule": "* * * * *"}\n'
-        assert (plan.target_dir / "cron" / "daily.json").read_text() == '{"schedule": "0 10 * * *"}\n'
+        assert (custom / "SKILL.md").read_text(encoding="utf-8") == "custom skill\n"
+        assert (plan.target_dir / "cron" / "mine.json").exists()
 
     def test_update_refuses_symlinked_owned_container(self, profile_env):
         staged = _make_staging_dir(profile_env, "src")
         plan = install_distribution(str(staged), name="link_safe")
 
         shared = profile_env / "shared-skills"
-        shared.mkdir()
-        (shared / "mine" / "SKILL.md").parent.mkdir()
-        (shared / "mine" / "SKILL.md").write_text("shared skill\n")
+        (shared / "mine").mkdir(parents=True)
+        (shared / "mine" / "SKILL.md").write_text("shared skill\n", encoding="utf-8")
         before = sorted((p.relative_to(shared), p.read_bytes()) for p in shared.rglob("*") if p.is_file())
 
         skills = plan.target_dir / "skills"
         shutil.rmtree(skills)
         _symlink_file_or_skip(skills, shared)
-        (staged / "skills" / "demo" / "SKILL.md").write_text("updated demo\n")
+        (staged / "skills" / "demo" / "SKILL.md").write_text("updated demo\n", encoding="utf-8")
         # Every other shipped entry changes upstream too: the refusal must fire before the
         # first write, or the profile is left half-updated and every retry fails the same way.
-        (staged / "SOUL.md").write_text("updated soul\n")
-        (staged / "mcp.json").write_text('{"servers": {"new": {}}}\n')
-        (staged / "cron" / "daily.json").write_text('{"schedule": "0 10 * * *"}')
+        (staged / "SOUL.md").write_text("updated soul\n", encoding="utf-8")
+        (staged / "mcp.json").write_text('{"servers": {"new": {}}}\n', encoding="utf-8")
+        (staged / "cron" / "daily.json").write_text('{"schedule": "0 10 * * *"}', encoding="utf-8")
         untouched = {p: p.read_bytes() for p in plan.target_dir.rglob("*") if p.is_file()}
 
         with pytest.raises(DistributionError, match="symlink"):

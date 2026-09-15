@@ -118,6 +118,7 @@ hermes curator archive <skill>  # manually archive a single skill now
 hermes curator prune [--days N] # bulk-archive agent-created skills idle >= N days (default: `archive_after_days`, 30)
 hermes curator ledger           # list the per-mutation audit ledger (all actors)
 hermes curator ledger --skill <name> --limit 50  # filter/paginate ledger entries
+hermes curator ledger --json    # machine-readable entries with absolute ISO-8601 timestamps
 hermes curator rollback <entry-id>  # undo a single mutation from the ledger
 hermes curator purge [--days N] [--dry-run]  # delete archived skills older than the TTL (explicit only)
 ```
@@ -163,6 +164,7 @@ Whole-run snapshots answer "undo everything the last curator pass did" — but s
 ```bash
 hermes curator ledger                  # newest 20 entries
 hermes curator ledger --skill my-skill --limit 50
+hermes curator ledger --json           # JSON with absolute ISO-8601 timestamps
 hermes curator rollback <entry-id>     # restore that one mutation's before-state
 ```
 

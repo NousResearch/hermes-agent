@@ -1525,13 +1525,22 @@ def cmd_gui(args: argparse.Namespace):
 
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 
-    npm = None
-    if source_mode or not skip_build:
-        npm = _resolve_node_runtime_npm()
-        if not npm:
-            print("Desktop GUI requires Node.js/npm, but npm was not found on PATH.")
-            print("Install Node.js, then run:  hermes gui")
-            sys.exit(1)
+    # Resolve npm lazily: a launch whose packaged app is already up to date
+    # (the common case, including desktop-launcher starts outside a login
+    # shell, where nvm/fnm/mise/Linuxbrew PATH setup never applies) must not
+    # require Node.js at all — only builds and source-mode launches do.
+    npm: str | None = None
+
+    def _ensure_npm() -> str:
+        nonlocal npm
+        if npm is None:
+            resolved = _resolve_node_runtime_npm()
+            if not resolved:
+                print("Desktop GUI requires Node.js/npm, but npm was not found on PATH.")
+                print("Install Node.js, then run:  hermes gui")
+                sys.exit(1)
+            npm = resolved
+        return npm
 
     if skip_build:
         _check_desktop_skip_build(
@@ -1539,12 +1548,19 @@ def cmd_gui(args: argparse.Namespace):
         )
     elif force_build or _desktop_build_needed(desktop_dir, PROJECT_ROOT, source_mode=source_mode):
         # --force-build overrides the content-hash stamp and always rebuilds.
-        built = _build_desktop_app(desktop_dir, source_mode=source_mode, npm=npm, env=env)
+        built = _build_desktop_app(desktop_dir, source_mode=source_mode, npm=_ensure_npm(), env=env)
         if not source_mode:
             packaged_executable = built
     else:
         build_label = "source build" if source_mode else "packaged app"
         print(f"✓ Desktop {build_label} is up to date (content stamp matches)")
+
+    # A source-mode launch needs npm below; resolve it before the desktop-entry
+    # side effect so a missing-npm run exits without first (re)writing the
+    # launcher entry, matching the old eager check's exit-before-side-effects
+    # ordering.
+    if source_mode and not getattr(args, "build_only", False):
+        _ensure_npm()
 
     # Best-effort and idempotent; a failure must never stop the app from launching.
     _register_linux_desktop_entry()
@@ -1570,7 +1586,7 @@ def cmd_gui(args: argparse.Namespace):
 
     if source_mode:
         print("→ Launching Hermes Desktop from source build...")
-        launch_command = [npm, "exec", "--", "electron", "."]
+        launch_command = [_ensure_npm(), "exec", "--", "electron", "."]
     else:
         if packaged_executable is None:
             print(f"✗ Desktop package build completed but no launchable app was found at: {desktop_dir / 'release'}")

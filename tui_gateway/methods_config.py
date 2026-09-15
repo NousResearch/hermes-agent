@@ -246,20 +246,23 @@ def _readiness_check(rid, params, probe):
     """Shared shell of setup.status / setup.runtime_check. ``probe(profile, scoped)`` runs inside the
     optional ``profile`` param's HERMES_HOME + ``.env`` secret scope (ContextVars: concurrent checks
     stay isolated); ``scoped`` is the ``{"profile": ...}`` payload stamp (``{}`` for the launch
-    profile). An unknown profile answers ``ok=False`` (never a JSON-RPC error, never a quiet answer
+    profile). The launch profile also needs its runtime scope once another home is served.
+    An unknown profile answers ``ok=False`` (never a JSON-RPC error, never a quiet answer
     for the launch profile instead)."""
-    import contextlib
     profile = str(params.get("profile") or "").strip() if isinstance(params, dict) else ""
-    scope = contextlib.nullcontext()
+    home = None
     if profile:
         from hermes_cli import profiles as profiles_mod
         if not profiles_mod.profile_exists(profile):
             return _ok(rid, {"ok": False, "profile": params.get("profile"),
                              "error": f"Profile '{profile}' does not exist on this backend."})
         home = _profile_home(profile)
-        if home is not None:
-            scope = _session_profile_runtime_scope({"profile_home": str(home)})
-    with scope:
+    # ``profile_home: None`` IS the launch-profile request, not "no scope": the
+    # resolver (``_profile_runtime_scope_tokens``) documents None = launch
+    # profile and binds the launch home's own frozen-env secret scope once the
+    # process multiplexes — the same authority every profile-scoped RPC and
+    # session creation uses.
+    with _session_profile_runtime_scope({"profile_home": str(home) if home else None}):
         payload = probe(profile, {"profile": profile} if profile else {})
     return _ok(rid, payload)
 

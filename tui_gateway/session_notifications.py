@@ -272,9 +272,18 @@ def _kb_completed(task, payload: dict, title: str) -> str:
 
 
 def _kb_timed_out(task, payload: dict, title: str) -> str:
+    """Name the end the worker actually hit.
+
+    ``timed_out`` covers two causes: a per-task ``max_runtime_seconds`` cap
+    reports ``limit_seconds``, a worker out of iteration budget reports
+    ``error`` and no limit. Reporting only the cap claimed ``max_runtime=0s``
+    for the second kind. Twin of the gateway notifier's ``_fmt_timed_out``.
+    """
     with contextlib.suppress(TypeError, ValueError):
-        return f" timed out (max_runtime={int(payload.get('limit_seconds') or 0)}s); will retry"
-    return " timed out (max_runtime=0s); will retry"
+        limit = int(payload.get("limit_seconds") or 0)
+        if limit:
+            return f" timed out (max_runtime={limit}s); will retry"
+    return f" timed out; will retry{_kb_first_line(payload.get('error') or '', 200)}"
 
 
 # kind -> (glyph, suffix after "Kanban <id>"); silent kinds (archived/unblocked) are absent → None.

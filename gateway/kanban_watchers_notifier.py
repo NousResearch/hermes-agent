@@ -367,6 +367,22 @@ def _fmt_changes_requested(ev, n) -> tuple:
     return msg, None, reason_text
 
 
+def _fmt_timed_out(ev, n) -> tuple:
+    """Name the end the worker actually hit.
+
+    ``timed_out`` covers two causes and the payload distinguishes them: a
+    per-task ``max_runtime_seconds`` cap reports ``limit_seconds``, while a
+    worker that exhausts its iteration budget reports ``error`` and no limit
+    at all. Reading only ``limit_seconds`` printed a bare ``max_runtime=0s``
+    for the second kind — a cap that never expired, over the one field that
+    does state the cause.
+    """
+    limit = _payload(ev, "limit_seconds")
+    if limit:
+        return f"⏱ {n.head} timed out (max_runtime={int(limit)}s); will retry", None, None
+    return f"⏱ {n.head} timed out; will retry{_clip(ev, 'error', _NL, 200)}", None, None
+
+
 # archived / unblocked are claimed (so the cursor advances past them) but
 # intentionally silent (no formatter), and excluded from _WAKE_KINDS so they
 # never wake the creator.
@@ -377,9 +393,7 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
         f"✖ {n.head} gave up after repeated spawn failures{_clip(ev, 'error', _NL, 200)}", None, None,
     ),
     "crashed": lambda ev, n: (f"✖ {n.head} worker crashed (pid gone); dispatcher will retry", None, None),
-    "timed_out": lambda ev, n: (
-        f"⏱ {n.head} timed out (max_runtime={int(_payload(ev, 'limit_seconds') or 0)}s); will retry", None, None,
-    ),
+    "timed_out": _fmt_timed_out,
     "status": lambda ev, n: (f"🔄 {n.head} → {_payload(ev, 'status') or ''}", None, None),
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,

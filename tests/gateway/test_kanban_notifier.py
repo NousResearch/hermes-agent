@@ -748,3 +748,78 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+# ---------------------------------------------------------------------------
+# `timed_out` covers two causes, and the payload says which one. Reporting
+# only the runtime cap turned an exhausted iteration budget into a
+# `max_runtime=0s` cap nobody set, over the one field naming the real reason.
+# ---------------------------------------------------------------------------
+
+
+def _timed_out_texts(tmp_path, monkeypatch, payload: dict) -> list[tuple[str, str]]:
+    """Every text a ``timed_out`` event produces, one entry per surface.
+
+    The gateway notifier and the TUI's session notifications format the same
+    event through separate twins, so the cause can be named in one and
+    mislabelled in the other — both are asserted here.
+    """
+    from tui_gateway import session_notifications as sn
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "timed-out.db"))
+    kb.init_db()
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="hits a limit", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb._append_event(conn, tid, "timed_out", payload)
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1, "timed_out must produce a notification"
+    return [
+        ("gateway notifier", adapter.sent[0]["text"]),
+        ("tui notifications", sn._kb_timed_out(None, payload, "hits a limit")),
+    ]
+
+
+def test_timed_out_notification_names_the_exhausted_iteration_budget(
+    tmp_path, monkeypatch,
+):
+    """An exhausted iteration budget is not a runtime cap and must not read as one.
+
+    ``timed_out`` carries two causes. The dispatcher writes ``limit_seconds``
+    for a task killed by its ``max_runtime_seconds``, but writes ``error`` (and
+    no limit) when a worker runs out of its iteration budget. Both formatters
+    read only ``limit_seconds``, so the second cause rendered as
+    ``max_runtime=0s`` — a cap nobody configured, printed over the field that
+    names the real reason.
+    """
+    for surface, text in _timed_out_texts(
+        tmp_path, monkeypatch,
+        {"error": "Iteration budget exhausted (150/150) — task could not complete "
+                  "within the allowed iterations",
+         "failures": 1, "retry_status": "ready"},
+    ):
+        assert "Iteration budget exhausted" in text, f"{surface} must name the cause"
+        assert "max_runtime=0s" not in text, (
+            f"{surface} must not claim a runtime cap for an event that has no limit"
+        )
+
+
+def test_timed_out_notification_still_reports_a_runtime_cap(tmp_path, monkeypatch):
+    """Negative control: the cap case keeps naming the limit that expired.
+
+    Naming the second cause must not cost the first one — a task actually
+    killed by ``max_runtime_seconds`` still tells the operator which cap it hit.
+    """
+    for surface, text in _timed_out_texts(
+        tmp_path, monkeypatch,
+        {"pid": 4242, "elapsed_seconds": 1800, "limit_seconds": 1800,
+         "sigkill": False, "retry_status": "ready"},
+    ):
+        assert "max_runtime=1800s" in text, f"{surface} must name the cap that expired"

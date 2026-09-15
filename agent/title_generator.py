@@ -8,7 +8,6 @@ and neither replaces a name the user typed."""
 import json
 import logging
 import re
-import threading
 from contextlib import suppress
 from typing import Any, Callable, Optional
 
@@ -488,10 +487,13 @@ def maybe_auto_title(
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return
     apply_instant_title(session_db, session_id, user_message, title_callback)
-    threading.Thread(
-        target=auto_title_session,
+    # The thread must resolve auxiliary.title_generation (config, provider key, language) for the
+    # profile whose turn this is: a bare Thread starts with an empty context and lands on the launch
+    # profile under multiplex, titling X's session with the default profile's model and billing its key.
+    from agent.memory_provider import spawn_context_thread
+    spawn_context_thread(
+        auto_title_session, name="auto-title",
         args=(session_db, session_id, user_message),
-        kwargs=dict(failure_callback=failure_callback, main_runtime=main_runtime, title_callback=title_callback, runtime_validator=runtime_validator),
-        daemon=True,
-        name="auto-title",
+        kwargs=dict(failure_callback=failure_callback, main_runtime=main_runtime, title_callback=title_callback,
+                    runtime_validator=runtime_validator),
     ).start()

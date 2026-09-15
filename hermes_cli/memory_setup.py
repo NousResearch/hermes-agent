@@ -211,9 +211,49 @@ def _post_setup_hook(provider, config: dict) -> bool:
     return False
 
 
+def _generic_setup(name: str, provider, config: dict) -> None:
+    """Schema-driven setup shared by the picker and ``hermes memory setup <name>``: prompt every
+    field, keep secrets in ``.env``, and persist the rest through the provider's ``save_config``
+    when it has one — otherwise under ``memory.<name>`` in config.yaml, which is where the
+    providers without their own store (byterover, retaindb) read them from. A first-time setup
+    used to build that block in a dict nothing referenced, so those answers were dropped while
+    the summary still said "Provider config saved"."""
+    from hermes_cli.config import save_config
+
+    provider_config = config["memory"].get(name, {})
+    if not isinstance(provider_config, dict):
+        provider_config = {}
+    env_writes: dict = {}
+    schema = _schema_of(provider)
+    if schema and not _prompt_schema_fields(name, schema, provider_config, env_writes):
+        return
+
+    config["memory"]["provider"] = name
+    persist_via_provider = bool(provider_config) and hasattr(provider, "save_config")
+    if provider_config and not persist_via_provider:
+        config["memory"][name] = provider_config
+    save_config(config)
+
+    if persist_via_provider:
+        try:
+            provider.save_config(provider_config, str(get_hermes_home()))
+        except Exception as e:
+            print(f"  Failed to write provider config: {e}")
+    if env_writes:
+        _write_env_vars(env_writes)
+
+    print(f"\n  Memory provider: {name}")
+    print("  Activation saved to config.yaml")
+    if provider_config:
+        print("  Provider config saved")
+    if env_writes:
+        print("  API keys saved to .env")
+    print("\n  Start a new session to activate.\n")
+
+
 def cmd_setup_provider(provider_name: str) -> None:
     """Run memory setup for a specific provider, skipping the picker."""
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import load_config
 
     match = _find_provider(_get_available_providers(), provider_name)
     if not match:
@@ -227,11 +267,7 @@ def cmd_setup_provider(provider_name: str) -> None:
     config = load_config()
     if _post_setup_hook(provider, config):
         return
-    # Fallback: generic schema-based setup (same as cmd_setup)
-    config["memory"]["provider"] = name
-    save_config(config)
-    print(f"\n  Memory provider: {name}")
-    print("  Activation saved to config.yaml\n")
+    _generic_setup(name, provider, config)
 
 
 def _prompt_schema_fields(name: str, schema: list, provider_config: dict, env_writes: dict) -> bool:
@@ -322,32 +358,7 @@ def cmd_setup(args) -> None:
     if _post_setup_hook(provider, config):
         return
 
-    provider_config = config["memory"].get(name, {})
-    if not isinstance(provider_config, dict):
-        provider_config = {}
-    env_writes: dict = {}
-    schema = _schema_of(provider)
-    if schema and not _prompt_schema_fields(name, schema, provider_config, env_writes):
-        return
-
-    config["memory"]["provider"] = name
-    save_config(config)
-
-    if provider_config and hasattr(provider, "save_config"):
-        try:
-            provider.save_config(provider_config, str(get_hermes_home()))
-        except Exception as e:
-            print(f"  Failed to write provider config: {e}")
-    if env_writes:
-        _write_env_vars(env_writes)
-
-    print(f"\n  Memory provider: {name}")
-    print("  Activation saved to config.yaml")
-    if provider_config:
-        print("  Provider config saved")
-    if env_writes:
-        print("  API keys saved to .env")
-    print("\n  Start a new session to activate.\n")
+    _generic_setup(name, provider, config)
 
 
 def _write_env_vars(

@@ -78,7 +78,10 @@ _RE_SINGLE_ENTITY = (re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b'), re.com
 _RE_AKA = re.compile(r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)', re.IGNORECASE)
 _ENTITY_NAMES_SQL = "SELECT e.name FROM entities e JOIN fact_entities fe ON fe.entity_id = e.entity_id WHERE fe.fact_id = ?"
 # Entity lookup order: exact name, then aliases (comma-separated; wrapped in commas for whole-alias matching).
-_ENTITY_LOOKUPS = ("SELECT entity_id FROM entities WHERE name LIKE ?",
+# Exact name uses `=` with COLLATE NOCASE: LIKE treats `_` and `%` in the bound name as wildcards, so
+# a lookup for `test_entity` would also match `testXentity`, while the case-insensitive contract holds
+# via the collation rather than via LIKE.
+_ENTITY_LOOKUPS = ("SELECT entity_id FROM entities WHERE name = ? COLLATE NOCASE",
                    "SELECT entity_id FROM entities WHERE ',' || aliases || ',' LIKE '%,' || ? || ',%'")
 
 

@@ -16,7 +16,8 @@ from dataclasses import dataclass, field
 from tools import file_state
 from tools.delegate_tool_progress import _quiet, _safe_progress
 from tools.delegate_tool_registry import (
-    _capture_gateway_steer_authority, _close_subagent_steering, _register_subagent, _unregister_subagent,
+    _capture_gateway_steer_authority, _close_subagent_steering, _mark_subagent_quarantined,
+    _register_subagent, _unregister_subagent,
 )
 from tools.delegate_tool_results import (
     _extract_output_tail, _looks_like_error_output, _stringify_tool_content, _summarize_tool_arguments,
@@ -230,6 +231,8 @@ class _Heartbeat:
         # activity_ts) all froze; thresholds differ idle vs in-tool.
         self.last_seen = {"iter": 0, "tool": None, "ts": None, "stale": 0}
         self.handle = None
+        self.stale = threading.Event()
+        self.stale_after_seconds: Optional[float] = None
 
     def start(self) -> None:
         from agent.periodic_scheduler import schedule
@@ -267,11 +270,15 @@ class _Heartbeat:
             else:
                 last_seen["stale"] += 1
             if last_seen["stale"] >= (_HEARTBEAT_STALE_CYCLES_IN_TOOL if child_tool else _HEARTBEAT_STALE_CYCLES_IDLE):
+                stale_cycles = last_seen["stale"]
+                from tools.delegate_tool import _HEARTBEAT_INTERVAL
+                self.stale_after_seconds = stale_cycles * _HEARTBEAT_INTERVAL
+                self.stale.set()
                 logger.warning(
-                    "Subagent %d appears stale (no progress for %d heartbeat cycles, tool=%s) — stopping heartbeat",
-                    task_index, last_seen["stale"], child_tool or "<none>",
+                    "Subagent %d appears stale (no progress for %d heartbeat cycles, tool=%s) — abandoning pending run",
+                    task_index, stale_cycles, child_tool or "<none>",
                 )
-                return False  # stop touching parent, let gateway timeout fire
+                return False
             if child_tool:
                 desc = f"delegate_task: subagent running {child_tool} (iteration {child_iter}/{child_max})"
             elif child_summary.get("last_activity_desc", ""):
@@ -346,19 +353,17 @@ def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_i
         )
     return None
 
-def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
-    """Hand ``child.close()`` to a Future done-callback and drain its transports.
+def _drain_after_timeout(child: Any, child_future: Any) -> None:
+    """Drain transports while a timed-out worker remains quarantined.
 
     The interrupt is cooperative: the worker still runs its finally path, so closing now could close SQLite under its
-    final write — the done-callback is the first safe boundary. The abandoned worker is usually parked in an OpenSSL
-    read; NEVER hard-close that transport from this thread (cross-thread FD release under a live SSL read corrupts
-    native state) — shutdown() the pooled sockets so the read settles with EOF and the worker unwinds. One immediate
-    sweep + one delayed re-sweep for a connection opened in between; a worker that still won't settle keeps its
-    resources until process exit.
+    final write. The abandoned worker is usually parked in an OpenSSL read; NEVER hard-close that transport from this
+    thread (cross-thread FD release under a live SSL read corrupts native state) — shutdown() the pooled sockets so the
+    read settles with EOF and the worker unwinds. One immediate sweep + one delayed re-sweep cover a connection opened
+    in between; ownership cleanup remains deferred until the Future completes.
     """
-    child_future.add_done_callback(lambda _done: _close_child(child, "Failed to close timed-out child after worker exit"))
-    # Bounded drain (#94248 native half): the deferred close above only fires once the abandoned worker
-    # unwinds, but that worker is typically parked inside an in-flight OpenSSL read (Codex / httpx). Never
+    # Bounded drain (#94248 native half): the deferred cleanup only fires once the abandoned worker unwinds, but that
+    # worker is typically parked inside an in-flight OpenSSL read (Codex / httpx). Never
     # hard-close that transport from this thread — releasing FDs under a live SSL read is the #29507/#70773
     # native-corruption family. Instead shutdown() the child's pooled sockets, which is FD-safe from any
     # thread and settles the blocked read with EOF/EPIPE so the worker can unwind and trigger the deferred
@@ -629,6 +634,8 @@ class _ChildRun:
     parent_task_id: Optional[str] = None
     wall_start: float = 0.0
     parent_reads_snapshot: list = field(default_factory=list)
+    abandoned_future: Any = None
+    cleanup_done: threading.Event = field(default_factory=threading.Event)
 
     def elapsed(self) -> float:
         return round(time.monotonic() - self.child_start, 2)
@@ -696,11 +703,15 @@ class _ChildRun:
         """Close steer acceptance (see ``_merge_late_steer``); returns late steer text, if any."""
         return _close_subagent_steering(self.subagent_id, self.child) if self.subagent_id else None
 
-    def await_child(self) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
+    def await_child(
+        self, heartbeat: _Heartbeat, *, release_stale_wait: bool = True,
+    ) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
         """Run the child's conversation on a daemon worker: ``(result, None, False)`` or ``(None, error_entry,
         close_deferred)`` on timeout/exception.
 
-        Hard timeout is off by default (``result(timeout=None)``; stuck children are the heartbeat's job). Daemon
+        A configured hard timeout and the activity heartbeat both bound the wait. The heartbeat's stale event is
+        essential for finite sessions: unlike a gateway turn they have no outer inactivity watchdog, so merely
+        stopping parent activity updates leaves the session lease held forever. Daemon
         worker: an abandoned timed-out child on a non-daemon thread would block interpreter exit at atexit join. The
         worker installs a non-interactive approval callback (deny/approve per delegation.subagent_auto_approve) so
         dangerous-command prompts never fall back to ``input()`` and deadlock the parent TUI. On failure: steer
@@ -731,8 +742,29 @@ class _ChildRun:
                 )
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)
+        timeout_deadline = time.monotonic() + child_timeout if child_timeout is not None else None
+        stale_watchdog = False
         try:
-            return future.result(timeout=child_timeout), None, False
+            while True:
+                if future.done():
+                    return future.result(), None, False
+                if release_stale_wait and heartbeat.stale.is_set():
+                    stale_watchdog = True
+                    raise FuturesTimeoutError()
+                wait_seconds = 0.5
+                if timeout_deadline is not None:
+                    remaining = timeout_deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise FuturesTimeoutError()
+                    wait_seconds = min(wait_seconds, remaining)
+                try:
+                    return future.result(timeout=wait_seconds), None, False
+                except FuturesTimeoutError:
+                    # A child may itself raise TimeoutError. Once the Future is done, re-read it so the outer
+                    # exception path reports that child error instead of mistaking it for this polling slice.
+                    if future.done():
+                        return future.result(), None, False
+                    continue
         except Exception as wait_exc:
             exc: BaseException = wait_exc  # ``as`` targets are unbound after the except block
         finally:
@@ -741,7 +773,7 @@ class _ChildRun:
 
         _late_pending_steer = self.close_steering()
         _signal_child_stop(child)
-        is_timeout = isinstance(exc, (FuturesTimeoutError, TimeoutError))
+        is_timeout = stale_watchdog or isinstance(exc, (FuturesTimeoutError, TimeoutError))
         duration = self.elapsed()
         logger.warning("Subagent %d %s after %.1fs", task_index, "timed out" if is_timeout else f"raised {type(exc).__name__}", duration)
         child_api_calls = 0
@@ -751,11 +783,11 @@ class _ChildRun:
         before_first_call = is_timeout and child_api_calls == 0
         diagnostic_path: Optional[str] = None
         if before_first_call:
+            effective_timeout = heartbeat.stale_after_seconds if stale_watchdog else child_timeout
+            assert effective_timeout is not None
             diagnostic_path = _dump_subagent_timeout_diagnostic(
                 child=child, task_index=task_index,
-                # is_timeout implies a cap was configured (result(timeout=None)
-                # never raises FuturesTimeoutError); guard for the type checker.
-                timeout_seconds=float(child_timeout or 0.0), duration_seconds=float(duration),
+                timeout_seconds=float(effective_timeout), duration_seconds=float(duration),
                 worker_thread=worker_thread_holder.get("t"), goal=self.goal,
             )
             if diagnostic_path:
@@ -763,9 +795,24 @@ class _ChildRun:
         if not is_timeout:
             _err = str(exc)
         elif before_first_call:
+            if stale_watchdog:
+                stale_after = heartbeat.stale_after_seconds
+                _err = (
+                    "Subagent stopped making progress"
+                    + (f" for {stale_after:g}s" if stale_after is not None else "")
+                    + " before making any API call; the pending worker was abandoned."
+                )
+            else:
+                _err = (
+                    f"Subagent timed out after {child_timeout}s without making any API call — the child never reached "
+                    f"its first LLM request (prompt construction, credential resolution, or transport may be stuck)."
+                )
+        elif stale_watchdog:
+            stale_after = heartbeat.stale_after_seconds
             _err = (
-                f"Subagent timed out after {child_timeout}s without making any API call — the child never reached its "
-                f"first LLM request (prompt construction, credential resolution, or transport may be stuck)."
+                "Subagent stopped making progress"
+                + (f" for {stale_after:g}s" if stale_after is not None else "")
+                + f" after {child_api_calls} API call(s); the pending worker was abandoned."
             )
         else:
             _err = (
@@ -778,16 +825,20 @@ class _ChildRun:
         _error_entry = {
             "task_index": task_index, "status": status, "summary": None, "error": _err, "exit_reason": status,
             "api_calls": child_api_calls, "duration_seconds": duration,
-            "timeout_seconds": child_timeout if is_timeout else None,
+            "timeout_seconds": child_timeout if is_timeout and not stale_watchdog else None,
             "timed_out_after_seconds": duration if is_timeout else None,
-            "timeout_phase": "before_first_llm_call" if before_first_call else "after_llm_calls" if is_timeout else None,
+            "timeout_phase": (
+                "before_first_llm_call" if before_first_call else
+                "stale_after_llm_calls" if stale_watchdog else "after_llm_calls" if is_timeout else None
+            ),
             "_child_role": getattr(child, "_delegate_role", None),
             "diagnostic_path": diagnostic_path,
         }
         self.finish_failed(_error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc))
         close_deferred = is_timeout and not future.done()
         if close_deferred:
-            _defer_close_after_timeout(child, future)
+            self.abandoned_future = future
+            _drain_after_timeout(child, future)
         return None, _error_entry, close_deferred
 
     def append_sibling_write_reminder(self, entry: Dict[str, Any]) -> None:
@@ -863,38 +914,21 @@ class _ChildRun:
                 complete_kwargs["cost_usd"] = float(_cost_usd)
         _safe_progress(self.child_progress_cb, "subagent.complete", **complete_kwargs)
 
-    def cleanup(self, *, heartbeat: _Heartbeat, child_pool: Any, leased_cred_id: Any, close_deferred: bool) -> None:
-        """Finally-path teardown (idempotent, never raises). Order matters: stop heartbeat → drop registry entry →
-        release credential lease → restore the parent's process-global tool names → detach from the parent's
-        interrupt list → close the child (unless a timed-out worker still owns it) → pop the child's Relay scope if
-        no turn is active."""
+    def _finish_cleanup(self, child_pool: Any, leased_cred_id: Any) -> None:
+        """Release child ownership once, after its conversation worker has stopped."""
+        if self.cleanup_done.is_set():
+            return
+        self.cleanup_done.set()
         child = self.child
-        heartbeat.stop()
-
-        # Safe even if the child was never registered (ID missing on test doubles).
+        child._delegate_worker_quarantined = False
         if self.subagent_id:
             _unregister_subagent(self.subagent_id, agent=child)
-
         if child_pool is not None and leased_cred_id is not None:
             with _quiet("Failed to release credential lease: %s"):
                 child_pool.release_lease(leased_cred_id)
-
-        # Restore the parent's tool names so the process-global is correct for
-        # any subsequent execute_code calls or other consumers.
-        import model_tools
-        saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
-        if isinstance(saved_tool_names, list):
-            model_tools._last_resolved_tool_names = list(saved_tool_names)
-
         _detach_child(self.parent_agent, child)
+        _close_child(child, "Failed to close child agent after delegation")
 
-        # Close tool resources (terminal sandboxes, browser daemons, background
-        # processes, httpx clients) so subagent subprocesses don't outlive the delegation.
-        if not close_deferred:
-            _close_child(child, "Failed to close child agent after delegation")
-
-        # The AIAgent turn boundary normally closes the child scope itself. This fallback covers failures before that
-        # boundary starts, but must not pop a scope while a timed-out child worker is still unwinding.
         with _quiet("Failed to close child Relay session after delegation"):
             from agent import relay_runtime
             runtime = relay_runtime.get_runtime(create=False)
@@ -904,3 +938,25 @@ class _ChildRun:
             )
             if runtime is not None and child_session_id and not child_turn_is_active:
                 runtime.unregister_subagent({"child_session_id": child_session_id})
+
+    def cleanup(self, *, heartbeat: _Heartbeat, child_pool: Any, leased_cred_id: Any, close_deferred: bool) -> None:
+        """Stop bookkeeping now, or quarantine live-worker ownership until its Future completes."""
+        child = self.child
+        heartbeat.stop()
+
+        # Restore the parent's tool names so the process-global is correct for
+        # any subsequent execute_code calls or other consumers.
+        import model_tools
+        saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
+        if isinstance(saved_tool_names, list):
+            model_tools._last_resolved_tool_names = list(saved_tool_names)
+
+        if close_deferred and self.abandoned_future is not None:
+            child._delegate_worker_quarantined = True
+            if self.subagent_id:
+                _mark_subagent_quarantined(self.subagent_id, agent=child)
+            self.abandoned_future.add_done_callback(
+                lambda _done: self._finish_cleanup(child_pool, leased_cred_id)
+            )
+            return
+        self._finish_cleanup(child_pool, leased_cred_id)

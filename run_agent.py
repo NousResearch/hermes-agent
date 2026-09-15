@@ -942,8 +942,14 @@ class AIAgent(
         """Detach and close per-turn child agents; ``soft`` releases their clients first, falling back to close()."""
         try:
             with self._active_children_lock:
-                children = list(self._active_children)
-                self._active_children.clear()
+                children = [
+                    child for child in self._active_children
+                    if not getattr(child, "_delegate_worker_quarantined", False)
+                ]
+                self._active_children[:] = [
+                    child for child in self._active_children
+                    if getattr(child, "_delegate_worker_quarantined", False)
+                ]
         except Exception:
             return
         for child in children:

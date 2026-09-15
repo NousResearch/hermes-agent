@@ -69,6 +69,15 @@ def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:
         while len(_recent_subagents) > _RECENT_SUBAGENTS_CAP:
             _recent_subagents.pop(next(iter(_recent_subagents)), None)
 
+def _mark_subagent_quarantined(subagent_id: str, *, agent: Any) -> None:
+    """Keep a timed-out but live worker visible without accepting new steering."""
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+        if record is None or record.get("agent") is not agent:
+            return
+        record["status"] = "quarantined"
+        record["accepting_steer"] = False
+
 def _close_subagent_steering(subagent_id: str, agent: Any) -> Optional[str]:
     """Atomically close steer acceptance and drain its final durable artifact. ``steer_subagent`` holds the same
     registry lock through ``agent.steer``, so either acceptance wins and this drain sees its exact text, or closure

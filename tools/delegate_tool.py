@@ -295,7 +295,7 @@ def _build_child_agent(
 
 def _run_single_child(
     task_index: int, goal: str, child=None, parent_agent=None, *, owner_session_id: Optional[str] = None,
-    owner_transport: Any = None, owner_session_record: Any = None, **_kwargs,
+    owner_transport: Any = None, owner_session_record: Any = None, release_stale_wait: bool = True, **_kwargs,
 ) -> Dict[str, Any]:
     """Run a pre-built child agent (called from a worker thread) and return its result entry.
 
@@ -312,8 +312,8 @@ def _run_single_child(
     """
     child_progress_cb = getattr(child, "tool_progress_callback", None)
     child_pool, leased_cred_id = _lease_child_credential(child)
-    # Heartbeat keeps the parent's _last_activity_ts moving so the gateway inactivity timeout doesn't fire while the
-    # child works; it stops itself once the child looks stale (see _HEARTBEAT_STALE_CYCLES_*).
+    # Heartbeat keeps the parent's _last_activity_ts moving while the child works. Its stale signal also releases
+    # await_child(): finite/synchronous sessions have no gateway watchdog to rescue a wedged completed child.
     heartbeat = _start_heartbeat(child, parent_agent, task_index)
     # TUI/RPC registry entry (kill/pause/status by subagent_id); None for test
     # doubles without a stable id. Unregistered in the finally block.
@@ -329,7 +329,9 @@ def _run_single_child(
         heartbeat.start()
         _safe_progress(child_progress_cb, "subagent.start", preview=goal)
         run.seed_workspace()
-        result, failure_entry, _child_close_deferred = run.await_child()
+        result, failure_entry, _child_close_deferred = run.await_child(
+            heartbeat, release_stale_wait=release_stale_wait,
+        )
         if failure_entry is not None:
             return failure_entry
 

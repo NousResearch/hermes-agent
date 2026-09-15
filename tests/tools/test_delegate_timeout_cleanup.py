@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import threading
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from tools import delegate_tool
+from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
 
 
 class _SlowUnwindingChild:
@@ -16,6 +18,7 @@ class _SlowUnwindingChild:
         self._delegate_role = "leaf"
         self._delegate_depth = 1
         self._subagent_id = None
+        self._parent_subagent_id = None
         self.model = "test-model"
         self.session_prompt_tokens = 0
         self.session_completion_tokens = 0
@@ -35,7 +38,7 @@ class _SlowUnwindingChild:
         # Model the real child turn's finally path: it still performs session
         # activity/SQLite cleanup after the parent requests interruption.
         self.unwinding.set()
-        assert self.allow_finish.wait(timeout=2)
+        self.allow_finish.wait()
         self.finished.set()
         return {
             "final_response": "",
@@ -59,6 +62,10 @@ class _SlowUnwindingChild:
 
 def test_timeout_does_not_close_child_while_worker_is_unwinding(monkeypatch):
     child = _SlowUnwindingChild()
+    child._subagent_id = "quarantined-child"
+    child._credential_pool = MagicMock()
+    child._credential_pool.acquire_lease.return_value = "cred-1"
+    child._credential_pool.current.return_value = None
     parent = SimpleNamespace(
         session_id="parent-timeout-test",
         _current_task_id=None,
@@ -68,23 +75,45 @@ def test_timeout_does_not_close_child_while_worker_is_unwinding(monkeypatch):
     monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.5)
     monkeypatch.setattr(delegate_tool, "_get_worktree_isolation", lambda: False)
 
-    result = delegate_tool._run_single_child(
-        task_index=0,
-        goal="exercise timeout teardown",
-        child=child,
-        parent_agent=parent,
-    )
+    result_holder = {}
+    parent_done = threading.Event()
 
-    assert result["status"] == "timeout"
-    assert child.unwinding.wait(timeout=1)
+    def run_parent() -> None:
+        result_holder["result"] = delegate_tool._run_single_child(
+            task_index=0,
+            goal="exercise timeout teardown",
+            child=child,
+            parent_agent=parent,
+        )
+        parent_done.set()
+
+    parent_thread = threading.Thread(target=run_parent)
+    parent_thread.start()
     try:
+        assert parent_done.wait(timeout=5), "timed-out parent did not return"
+        assert result_holder["result"]["status"] == "timeout"
+        assert child.unwinding.wait(timeout=1)
         assert not child.closed.is_set(), (
             "timed-out child.close() ran before its conversation thread unwound"
         )
+        assert child in parent._active_children
+        child._credential_pool.release_lease.assert_not_called()
+        with _active_subagents_lock:
+            assert _active_subagents[child._subagent_id]["status"] == "quarantined"
+        from run_agent import AIAgent
+        AIAgent._close_active_children(parent, soft=False)
+        assert child in parent._active_children
+        assert not child.closed.is_set()
     finally:
         child.allow_finish.set()
+        parent_thread.join(timeout=5)
+    assert not parent_thread.is_alive()
     assert child.finished.wait(timeout=1)
     assert child.closed.wait(timeout=1)
     assert not child.close_while_running, (
         "timed-out child.close() raced its still-running conversation thread"
     )
+    assert child not in parent._active_children
+    child._credential_pool.release_lease.assert_called_once_with("cred-1")
+    with _active_subagents_lock:
+        assert child._subagent_id not in _active_subagents

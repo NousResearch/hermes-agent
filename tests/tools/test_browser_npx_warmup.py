@@ -20,6 +20,8 @@ from unittest.mock import MagicMock, patch
 
 from tools.browser_tool import AGENT_BROWSER_NPX_SPEC
 from tools.browser_tool_install import warm_agent_browser_npx_cache
+import tools.browser_tool_install as _browser_tool_install
+import tools.browser_tool_lifecycle as _browser_tool_lifecycle
 from tools.browser_tool_lifecycle import _legacy_kill_process_tree
 
 
@@ -121,8 +123,8 @@ def test_merges_extended_path_so_managed_only_npx_can_find_sibling_node():
     assert kwargs["env"]["PATH"] == "/opt/hermes/node/bin:/usr/bin"
 
 
-def test_runs_in_its_own_process_group_on_posix(monkeypatch):
-    monkeypatch.setattr("os.name", "posix")
+def test_runs_in_its_own_process_group_on_posix(monkeypatch, fake_os_name):
+    fake_os_name("posix", _browser_tool_install)
     with patch("tools.browser_tool_install._resolve_npx_bin", return_value="/usr/bin/npx"), \
          patch("subprocess.Popen", return_value=_mock_proc()) as mock_popen:
         warm_agent_browser_npx_cache()
@@ -219,35 +221,39 @@ class TestLegacyKillProcessTree:
     delegation fails); the delegating wrapper is covered in
     tests/agent/test_treekill_consolidation.py."""
 
-    def test_posix_kills_process_group_term_then_kill(self, monkeypatch):
+    def test_posix_kills_process_group_term_then_kill(self, monkeypatch, fake_os_name):
         import signal
 
         proc = MagicMock()
         proc.pid = 999
-        monkeypatch.setattr("os.name", "posix")
-        monkeypatch.setattr("os.getpgid", lambda pid: 999)
         killpg_calls = []
-        monkeypatch.setattr(
-            "os.killpg", lambda pgid, sig: killpg_calls.append((pgid, sig))
+        fake_os_name(
+            "posix",
+            _browser_tool_lifecycle,
+            getpgid=lambda pid: 999,
+            killpg=lambda pgid, sig: killpg_calls.append((pgid, sig)),
         )
 
         _legacy_kill_process_tree(proc)
 
-        assert killpg_calls == [(999, signal.SIGTERM), (999, signal.SIGKILL)]
+        # The implementation resolves SIGKILL defensively via getattr so it degrades to
+        # SIGTERM where the signal does not exist (Windows hosts running this POSIX
+        # branch under a faked os.name); mirror that resolution rather than hard-coding
+        # signal.SIGKILL, which is absent on win32.
+        expected_kill = getattr(signal, "SIGKILL", signal.SIGTERM)
+        assert killpg_calls == [(999, signal.SIGTERM), (999, expected_kill)]
 
-    def test_posix_missing_process_returns_silently(self, monkeypatch):
+    def test_posix_missing_process_returns_silently(self, monkeypatch, fake_os_name):
         proc = MagicMock()
         proc.pid = 999
-        monkeypatch.setattr("os.name", "posix")
-
         def _raise(pid):
             raise ProcessLookupError()
 
-        monkeypatch.setattr("os.getpgid", _raise)
+        fake_os_name("posix", _browser_tool_lifecycle, getpgid=_raise)
 
         _legacy_kill_process_tree(proc)  # must not raise
 
-    def test_posix_missing_killpg_attribute_falls_back_to_proc_kill(self, monkeypatch):
+    def test_posix_missing_killpg_attribute_falls_back_to_proc_kill(self, monkeypatch, fake_os_name):
         """Some POSIX-like environments may lack os.killpg entirely (the
         implementation resolves it defensively via
         ``getattr(os, "killpg", None)`` — flagged by
@@ -259,25 +265,25 @@ class TestLegacyKillProcessTree:
 
         proc = MagicMock()
         proc.pid = 999
-        monkeypatch.setattr("os.name", "posix")
+        fake_os_name("posix", _browser_tool_lifecycle)
         monkeypatch.delattr(os_module, "killpg", raising=False)
 
         _legacy_kill_process_tree(proc)
 
         proc.kill.assert_called_once()
 
-    def test_posix_missing_killpg_fallback_proc_kill_failure_does_not_raise(self, monkeypatch):
+    def test_posix_missing_killpg_fallback_proc_kill_failure_does_not_raise(self, monkeypatch, fake_os_name):
         import os as os_module
 
         proc = MagicMock()
         proc.pid = 999
         proc.kill.side_effect = OSError("already reaped")
-        monkeypatch.setattr("os.name", "posix")
+        fake_os_name("posix", _browser_tool_lifecycle)
         monkeypatch.delattr(os_module, "killpg", raising=False)
 
         _legacy_kill_process_tree(proc)  # must not raise
 
-    def test_posix_sigterm_permission_denied_does_not_attempt_sigkill(self, monkeypatch):
+    def test_posix_sigterm_permission_denied_does_not_attempt_sigkill(self, monkeypatch, fake_os_name):
         """If SIGTERM itself is rejected (e.g. a stale pgid reused by an
         unrelated, unkillable process), the loop must bail out rather than
         plow ahead into a second signal against the wrong target."""
@@ -285,15 +291,18 @@ class TestLegacyKillProcessTree:
 
         proc = MagicMock()
         proc.pid = 999
-        monkeypatch.setattr("os.name", "posix")
-        monkeypatch.setattr("os.getpgid", lambda pid: 999)
         killpg_calls = []
 
         def fake_killpg(pgid, sig):
             killpg_calls.append((pgid, sig))
             raise PermissionError()
 
-        monkeypatch.setattr("os.killpg", fake_killpg)
+        fake_os_name(
+            "posix",
+            _browser_tool_lifecycle,
+            getpgid=lambda pid: 999,
+            killpg=fake_killpg,
+        )
 
         _legacy_kill_process_tree(proc)  # must not raise
 

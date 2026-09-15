@@ -122,6 +122,14 @@ def _hermes_home_for_pid(pid: int) -> str | None:
     return None
 
 
+def _cwd_for_pid(pid: int) -> str | None:
+    """Best-effort launch directory for replaying a relative process argv."""
+    with contextlib.suppress(Exception):
+        import psutil
+        return psutil.Process(pid).cwd() or None
+    return None
+
+
 def _dashboard_subcommand_index(argv: list[str]) -> int | None:
     return next((i for i, tok in enumerate(argv) if tok in ("serve", "dashboard")), None)
 
@@ -347,6 +355,7 @@ def _kill_stale_dashboard_processes(
     pid_service: dict[int, str | None] = {}
     pid_cmdline: dict[int, list[str]] = {}
     pid_home: dict[int, str | None] = {}
+    pid_cwd: dict[int, str] = {}
     if restart_managed and sys.platform != "win32":
         for pid in pids:
             pid_cgroup[pid] = _dash._get_pid_cgroup_path(pid)
@@ -358,6 +367,9 @@ def _kill_stale_dashboard_processes(
                 # after the process is gone (#78821).
                 pid_cmdline[pid] = cmdline
                 pid_home[pid] = _hermes_home_for_pid(pid)
+                if cmdline and not os.path.isabs(cmdline[0]):
+                    if cwd := _cwd_for_pid(pid):
+                        pid_cwd[pid] = cwd
         if already_restarted_units:
             pids = [pid for pid in pids if (pid_service.get(pid) or "").removesuffix(".service")
                     not in already_restarted_units]
@@ -372,7 +384,8 @@ def _kill_stale_dashboard_processes(
     for pid, err_msg in failed:
         print(f"    ✗ failed to stop PID {pid}: {err_msg}")
     if killed and restart_managed:
-        unrecovered = _restart_killed_backends(killed, pid_service, pid_cgroup, pid_cmdline, pid_home)
+        unrecovered = _restart_killed_backends(
+            killed, pid_service, pid_cgroup, pid_cmdline, pid_home, pid_cwd)
     else:
         unrecovered = list(killed)
         if killed:
@@ -383,7 +396,9 @@ def _kill_stale_dashboard_processes(
 
 def _restart_killed_backends(
     killed: list[int], pid_service: dict[int, str | None], pid_cgroup: dict[int, str | None],
-    pid_cmdline: dict[int, list[str]], pid_home: dict[int, str | None]) -> list[int]:
+    pid_cmdline: dict[int, list[str]], pid_home: dict[int, str | None],
+    pid_cwd: dict[int, str] | None = None,
+) -> list[int]:
     """Update path: restart systemd units, respawn manual argv (detached, headless, logged to
     logs/dashboard-restart.log; one per profile, no ``--port 0``). Returns PIDs not brought back."""
     # Two categories: Without this, a remote backend (hermes serve) under Restart=on-failure never comes
@@ -413,7 +428,20 @@ def _restart_killed_backends(
     for svc, err in failed_restarts:
         print(f"    ⚠ {svc}: {err}")
     respawn_cmds = _filter_dashboard_respawn_candidates(respawn_candidates)
-    failed_cmds = _dash._respawn_dashboard_processes(respawn_cmds) if respawn_cmds else None
+    cwd_by_argv: dict[tuple[str, ...], str] = {}
+    seen_argv: set[tuple[str, ...]] = set()
+    for pid, argv, _home in respawn_candidates:
+        argv_key = tuple(argv)
+        if argv_key in seen_argv:
+            continue
+        seen_argv.add(argv_key)
+        if cwd := (pid_cwd or {}).get(pid):
+            cwd_by_argv[argv_key] = cwd
+    if respawn_cmds:
+        respawn_kwargs = {"cwd_by_argv": cwd_by_argv} if cwd_by_argv else {}
+        failed_cmds = _dash._respawn_dashboard_processes(respawn_cmds, **respawn_kwargs)
+    else:
+        failed_cmds = None
     if failed_cmds:
         unrecovered.extend(p for p in killed if pid_cmdline.get(p) in failed_cmds)
     if failed_restarts or unrecovered:

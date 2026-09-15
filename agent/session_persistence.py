@@ -362,6 +362,17 @@ class SessionPersistenceMixin:
         try:
             if not self._session_db_created:  # retry row creation if the earlier attempt failed transiently
                 self._ensure_db_session()
+                if (not self._session_db_created and self.platform == "subagent"
+                        and self._parent_session_id):
+                    # A missing parent must not discard a scratchpad transcript or turn it into a
+                    # sidebar conversation. Drop only the FK; keep the durable delegation marker.
+                    model_config = dict(self._session_row_model_config() or {})
+                    model_config["_delegate_from"] = self._parent_session_id
+                    self._session_db.ensure_session(
+                        self.session_id, source="tool", model=self.model,
+                        model_config=model_config, system_prompt=self._cached_system_prompt,
+                    )
+                    self._session_db_created = True
             batch_rows, batch_msgs = _db_flush_collect(self, messages, conversation_history)
             _db_flush_write(self, batch_rows, batch_msgs)
             # Markers are now the sole truth; reset the one-shot seed so no id() outlives this flush.

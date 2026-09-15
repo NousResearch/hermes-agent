@@ -701,6 +701,16 @@ def execute_code(
                 "it could complete (SIGTERM propagates to child processes). "
                 "Run the lifecycle command from a shell outside the gateway."
             )
+    # Same non-bypassable floor as terminal()'s _floor_block (t_df72a8c6): a delegate_task child
+    # running in-process can still shell out to a mutating `hermes kanban` verb via
+    # os.system/subprocess with HERMES_DELEGATED_CHILD_CONTEXT stripped from the subprocess env
+    # before it spawns. Checked against the ContextVar, which that env manipulation cannot touch.
+    from agent.delegation_context import is_delegated_child_context
+    if is_delegated_child_context():
+        from tools.kanban_cli_mutation_guard import contains_denied_kanban_mutation
+        if contains_denied_kanban_mutation(code):
+            from tools.approval_floors import _delegated_child_kanban_cli_block_result
+            return tool_error(_delegated_child_kanban_cli_block_result()["message"])
     from tools.terminal_tool import _get_env_config, _docker_has_host_access
     _env_config = _get_env_config()
     env_type = _env_config["env_type"]

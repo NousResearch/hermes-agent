@@ -154,6 +154,11 @@ def _build_child_system_prompt(
     OpenClaw's buildSubagentSystemPrompt); its depth note is literal truth grounded in the passed config so the LLM
     can't confabulate nesting."""
     parts = ["You are a focused subagent working on a specific delegated task.", "", f"YOUR TASK:\n{goal}"]
+    parts.append(
+        "\nIMPORTANT: Kanban board mutations (complete/block/comment/request-review/...) are the parent "
+        "agent's job, not yours — you have no Kanban tools and cannot reach them via the CLI or "
+        "environment tricks either. Report your findings in your final response and stop there."
+    )
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():

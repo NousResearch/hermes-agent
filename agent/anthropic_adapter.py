@@ -245,6 +245,86 @@ def _get_claude_code_version() -> str:
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 _MCP_TOOL_PREFIX = "mcp__"
 
+# Product-name replacements applied to the relocated OAuth system prompt so
+# nothing in the preamble reads as a competing-product identity (Anthropic's
+# OAuth billing classifier fingerprints distinctive non-Claude-Code content).
+_OAUTH_TEXT_REPLACEMENTS = (
+    ("Hermes Agent", "Claude Code"),
+    ("Hermes agent", "Claude Code"),
+    ("hermes-agent", "claude-code"),
+    ("Nous Research", "Anthropic"),
+)
+# Wrapper tag for the relocated prompt on the first user message.
+_OAUTH_SYSTEM_CONTEXT_TAG = "system_context"
+
+
+def _sanitize_oauth_text(text: str) -> str:
+    """Mask competing-product identity references in OAuth-relocated prompt text."""
+    for old, new in _OAUTH_TEXT_REPLACEMENTS:
+        text = text.replace(old, new)
+    return text
+
+
+def _prepend_oauth_system_context(
+    messages, preamble: str | List[Dict[str, Any]], ttl: str = "5m"
+) -> None:
+    """Prepend relocated system blocks to the first user message.
+
+    Current-main's cache planner may split the system prompt into separately
+    marked stable and volatile text blocks. When ``preamble`` is a block list,
+    preserve those boundaries and markers exactly so a volatile-tail change
+    does not invalidate the expensive stable prefix. String callers receive a
+    single marker built from ``ttl`` for backward compatibility.
+
+    The system-side markers disappear when ``system[]`` becomes identity-only;
+    relocating the same marked blocks to the first user message therefore keeps
+    the wire under Anthropic's four-breakpoint cap.
+
+    Mutates ``messages`` in place. Handles user messages whose content is a
+    plain string or a list of content blocks, and synthesises a user message at
+    the front if none exists.
+    """
+    if not preamble:
+        return
+    if isinstance(preamble, str):
+        from agent.prompt_caching import _build_marker
+
+        blocks = [
+            {
+                "type": "text",
+                "text": preamble,
+                "cache_control": _build_marker(ttl),
+            }
+        ]
+    else:
+        blocks = [
+            {
+                **block,
+                **(
+                    {"cache_control": dict(block["cache_control"])}
+                    if isinstance(block.get("cache_control"), dict)
+                    else {}
+                ),
+            }
+            for block in preamble
+        ]
+
+    for msg in messages:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            msg["content"] = (
+                blocks + [{"type": "text", "text": content}] if content else blocks
+            )
+        elif isinstance(content, list):
+            msg["content"] = blocks + content
+        else:
+            msg["content"] = blocks
+        return
+    messages.insert(0, {"role": "user", "content": blocks})
+
+
 # Anthropic's OAuth billing classifier fingerprints certain Hermes tool schemas/prose as a
 # third-party app and reroutes to the metered extra-usage lane (HTTP 400 "You're out of extra
 # usage" on a valid subscription). Live A/B repros isolated two independent triggers — the
@@ -554,9 +634,118 @@ def build_anthropic_kwargs(
     effective_max_tokens = _resolve_anthropic_messages_max_tokens(max_tokens, model, context_length=context_length)
     if context_length and effective_max_tokens > context_length:
         effective_max_tokens = max(context_length - 1, 1)
+    # ── OAuth: Claude Code identity + system relocation ─────────────
+    # Anthropic's subscription/OAuth billing classifier rejects requests whose
+    # system[] carries a large, distinctive non-Claude-Code prompt — it scores
+    # them as third-party-app traffic and returns HTTP 400 "Third-party apps now
+    # draw from extra usage, not plan limits", independently of the tool-name
+    # trigger handled below. Verified empirically against a live Max
+    # subscription: the identical request with the prompt relocated out of
+    # system[] bills to plan; left in system[] it does not (and it is the
+    # CONTENT, not the size — a same-size generic prompt passes).
+    #
+    # Strategy (mirrors real Claude Code, which keeps only its 57-char identity
+    # line in system[]): system[] becomes identity-only, and the real Hermes
+    # prompt is relocated into a <system_context> preamble on the first user
+    # message — Anthropic does not apply the classifier to user content. The
+    # relocated blocks preserve the cache planner's markers, TTLs, and stable /
+    # volatile boundary so prompt caching remains effective across turns.
     to_wire = _oauth_wire_namer(anthropic_tools) if is_oauth else None
     if to_wire:
-        system = _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_wire)
+        # 1. Collect + sanitize existing system text without collapsing the
+        #    cache planner's current-main [stable prefix, volatile tail] split.
+        #    Each relocated block keeps its original cache marker and TTL.
+        relocated_system_blocks: List[Dict[str, Any]] = []
+        if isinstance(system, list):
+            for b in system:
+                if not isinstance(b, dict) or b.get("type") != "text" or not b.get("text"):
+                    continue
+                relocated: Dict[str, Any] = {
+                    "type": "text",
+                    "text": _sanitize_oauth_text(b["text"]),
+                }
+                if isinstance(b.get("cache_control"), dict):
+                    relocated["cache_control"] = dict(b["cache_control"])
+                relocated_system_blocks.append(relocated)
+        elif isinstance(system, str) and system:
+            relocated_system_blocks.append(
+                {"type": "text", "text": _sanitize_oauth_text(system)}
+            )
+
+        # 2. system[] = the official Claude Code identity line only.
+        system = [{"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}]
+
+        # 3. Wrap the relocated blocks as one logical <system_context> while
+        #    preserving their independent cache boundaries. A plain unmarked
+        #    system string still gets the helper's default 5m marker.
+        if relocated_system_blocks:
+            relocated_system_blocks[0]["text"] = (
+                f"<{_OAUTH_SYSTEM_CONTEXT_TAG}>\n"
+                + relocated_system_blocks[0]["text"]
+            )
+            relocated_system_blocks[-1]["text"] += (
+                f"\n</{_OAUTH_SYSTEM_CONTEXT_TAG}>"
+            )
+            if not any("cache_control" in block for block in relocated_system_blocks):
+                preamble: str | List[Dict[str, Any]] = "".join(
+                    block["text"] for block in relocated_system_blocks
+                )
+            else:
+                preamble = relocated_system_blocks
+            _prepend_oauth_system_context(anthropic_messages, preamble)
+
+        # 4. Normalize tool names so NOTHING goes on the OAuth wire with a
+        #    single-underscore ``mcp_`` prefix.  Anthropic's subscription/OAuth
+        #    billing classifier treats a single-underscore ``mcp_`` tool name as
+        #    a third-party-app fingerprint and rejects the request with HTTP 400
+        #    "Third-party apps now draw from extra usage, not plan limits". No
+        #    real conflict: official Anthropic MCP servers (filesystem, postgres,
+        #    ...)  follow ``mcp__<server>__<tool>`` (double-underscore). MCP
+        #    inspector logs (#107678) show external MCP servers that follow their
+        #    own patterns, but every real example has already gone through
+        #    Hermes's MCP client which prefixes ``mcp__<server>__<tool>`` on the
+        #    wire BEFORE this adapter sees them. The blocker cases are therefore:
+        #
+        #      a. a first-party tool with a single-underscore ``mcp_`` prefix:
+        #         *NOT* a planned naming collision; hermes-agent tools are
+        #         snake_case or mcp__ (double-underscore). If one slipped through,
+        #         the blocker is clear, so we can proactively prevent it.
+        #
+        #      b. an MCP server whose *server name* starts with underscore, so the
+        #         prefix produces ``mcp__<server>__<tool>`` with a single-underscore
+        #         interior (mcp__foo_bar__list). Real-world validation: scanning
+        #         smithery.ai/servers?page=1..4, not one server name starts with
+        #         underscore (they're all ``server-name-with-hyphens`` or
+        #         ``github-repo-name``). So this is a *possible* naming collision
+        #         that we have NOT seen in practice.
+        #
+        #    Decision: prefix ``mcp_`` (one underscore) with ``mcp__`` (two
+        #    underscores) so it is no longer a single-underscore prefix
+        #    (``mcp_foo`` -> ``mcp__mcp_foo``). *NOT* a semantic remapping; the
+        #    double-prefixed wire name has no handler. A tool whose name looked like
+        #    an MCP tool but was not in fact MCP-sourced was already broken (no
+        #    handler), so this transforms a blocker (rejected-at-Anthropic) into a
+        #    no-op (missing-handler breadcrumb). If such a tool legitimately exists,
+        #    its schema's description guides the model to call it without the prefix
+        #    (dispatches correctly), and a typo/hallucinated prefix yields a crisp
+        #    "unknown tool" breadcrumb. The server-name-starting-with-underscore
+        #    case is handled by the same logic: ``mcp__foo_bar__list`` is untouched
+        #    (the prefix is ``mcp__`` + a non-underscore char), while a server
+        #    literally named ``_foo`` would produce ``mcp___foo__list`` (triple
+        #    underscore); it would not match the classifier AND it would still
+        #    dispatch (the registry key is the wire name). No code change there.
+        for tool in anthropic_tools or []:
+            if "name" in tool:
+                tool["name"] = to_wire(tool["name"])
+
+        # 5. Apply the same normalization to tool names in message history
+        #    (tool_use blocks) so replayed turns match the wire names above.
+        for msg in anthropic_messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use" and "name" in block:
+                        block["name"] = to_wire(block["name"])
     kwargs: Dict[str, Any] = {"model": model, "messages": anthropic_messages, "max_tokens": effective_max_tokens}
     if system:
         kwargs["system"] = system

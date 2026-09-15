@@ -133,6 +133,47 @@ describe('I18nProvider', () => {
     expect(configClient.saveConfig).not.toHaveBeenCalled()
   })
 
+  it('loads Korean config and preserves other settings through a language round trip', async () => {
+    let config: HermesConfigRecord = { display: { language: 'ko-KR', skin: 'mono' }, terminal: { cwd: '/project' } }
+
+    const configClient: I18nConfigClient = {
+      getConfig: async () => config,
+      saveConfig: async next => {
+        config = next
+
+        return { ok: true }
+      }
+    }
+
+    const view = render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe target="en" />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('ko'))
+    expect(screen.getByTestId('save').textContent).toBe('저장')
+    expect(window.document.documentElement.lang).toBe('ko')
+    expect(window.document.documentElement.dir).toBe('ltr')
+    fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+    await waitFor(() => expect(config.display).toEqual({ language: 'en', skin: 'mono' }))
+    view.rerender(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe target="ko" />
+      </I18nProvider>
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+    await waitFor(() => expect(config.display).toEqual({ language: 'ko', skin: 'mono' }))
+    expect(config.terminal).toEqual({ cwd: '/project' })
+    view.unmount()
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+    await waitFor(() => expect(screen.getByTestId('save').textContent).toBe('저장'))
+  })
+
   it('does not overwrite unsupported configured languages', async () => {
     const configClient: I18nConfigClient = {
       getConfig: vi.fn().mockResolvedValue({ display: { language: 'de' } }),
@@ -217,14 +258,14 @@ describe('I18nProvider', () => {
     )
 
     expect(screen.getByTestId('locale').textContent).toBe('ar')
-    expect(document.documentElement.dir).toBe('rtl')
-    expect(document.documentElement.lang).toBe('ar')
+    expect(window.document.documentElement.dir).toBe('rtl')
+    expect(window.document.documentElement.lang).toBe('ar')
 
     fireEvent.click(screen.getByRole('button', { name: 'switch' }))
 
     await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('en'))
-    expect(document.documentElement.dir).toBe('ltr')
-    expect(document.documentElement.lang).toBe('en')
+    expect(window.document.documentElement.dir).toBe('ltr')
+    expect(window.document.documentElement.lang).toBe('en')
   })
 
   it('rolls back the visible locale when saving fails', async () => {

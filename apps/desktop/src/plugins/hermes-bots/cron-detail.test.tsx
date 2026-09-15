@@ -8,9 +8,18 @@
  */
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
-import { cleanup, render, screen, within } from '@testing-library/react'
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { type PluginContext, useI18n } from '@hermes/plugin-sdk'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+// Exercise the same provider and bundle registry installed by the plugin host.
+// eslint-disable-next-line no-restricted-imports
+import { createPluginI18n, I18nProvider } from '@/i18n'
+// eslint-disable-next-line no-restricted-imports
+import { setRuntimeI18nLocale } from '@/i18n/runtime'
+
+import { BOTS_LOCALES } from './i18n'
+import { setPluginCtx } from './shared'
 import type { RoutineJob } from './types'
 
 // Radix calls these on open; jsdom doesn't implement them.
@@ -20,7 +29,7 @@ beforeAll(() => {
   Element.prototype.releasePointerCapture = vi.fn()
 })
 
-const request = vi.fn(async () => ({}))
+const { request } = vi.hoisted(() => ({ request: vi.fn(async () => ({})) }))
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
@@ -47,10 +56,31 @@ const activeJob: RoutineJob = {
 const valueOf = (rows: Array<{ label: string; value: string }>, label: string) =>
   rows.find(row => row.label === label)?.value
 
+let disposeLocales: () => void
+
+beforeEach(() => {
+  const i18n = createPluginI18n('hermes-bots', dispose => dispose)
+  disposeLocales = i18n.register(BOTS_LOCALES)
+  setPluginCtx({ i18n } as PluginContext)
+})
+
 afterEach(() => {
   cleanup()
+  disposeLocales()
+  setPluginCtx(null)
+  setRuntimeI18nLocale('en')
   vi.clearAllMocks()
 })
+
+function SwitchLanguage() {
+  const { setLocale } = useI18n()
+
+  return (
+    <button onClick={() => void setLocale('ko')} type="button">
+      Switch language
+    </button>
+  )
+}
 
 describe('the facts the row never showed', () => {
   it('carries only the fields the gateway actually sent', () => {
@@ -164,6 +194,30 @@ describe('the row is reachable', () => {
 })
 
 describe('the inspector', () => {
+  it('translates its facts while preserving the backend payload and delivery failure meaning', () => {
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <SwitchLanguage />
+        <RoutineDetailDialog
+          job={{ ...activeJob, last_status: 'delivery_failed', model: 'vendor/model:1' }}
+          onClose={() => undefined}
+          open
+        />
+      </I18nProvider>
+    )
+
+    fireEvent.click(screen.getByText('Switch language'))
+    const dialog = within(screen.getByRole('dialog'))
+    expect(dialog.getByText('모델')).toBeTruthy()
+    expect(dialog.getByText('전송 대상')).toBeTruthy()
+    expect(dialog.getByText(/전달.*실패/)).toBeTruthy()
+    expect(dialog.queryByText('Ran, but delivery failed')).toBeNull()
+    expect(dialog.getByText('vendor/model:1')).toBeTruthy()
+    expect(dialog.getByText('bot-chat')).toBeTruthy()
+    expect(dialog.getByText('Summarize yesterday and post it.')).toBeTruthy()
+    expect(request).not.toHaveBeenCalled()
+  })
+
   it('renders the job\u2019s instruction and its failure', () => {
     render(
       <RoutineDetailDialog job={{ ...activeJob, last_fire_error: 'model timeout' }} onClose={() => undefined} open />

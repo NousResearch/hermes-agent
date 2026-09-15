@@ -43,7 +43,6 @@ import {
   $botAttention,
   $botMeta,
   $lastRoster,
-  BOT_ATTENTION_HINTS,
   botActivitySession,
   botHandle,
   botRosterKey,
@@ -178,8 +177,20 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   )
 
   const handle = botHandle(bot.name, bot)
-  const gatewayLabel = bot.connectionLabel || (bot.connectionId === 'local' ? 'This device' : '')
+  const gatewayLabel = bot.connectionLabel || (bot.connectionId === 'local' ? b.roster.thisDevice : '')
   const showDetailsRow = Boolean(showHandle || displayPreview || fromBot)
+
+  const attentionHints: Record<string, string> = {
+    provider_auth_or_access: b.roster.attentionAuth,
+    provider_quota_limit: b.roster.attentionQuota,
+    missing_config: b.roster.attentionConfig,
+    agent_blocked: b.roster.attentionBlocked
+  }
+
+  const attentionHint =
+    attention && Object.hasOwn(attentionHints, attention.reason)
+      ? attentionHints[attention.reason]
+      : b.roster.needsAttention
 
   const rowTooltip = [displayName(bot, meta), `@${handle}`, gatewayLabel, sourceStatus.label]
     .filter(Boolean)
@@ -276,7 +287,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
             </Tip>
           </div>
           {attention ? (
-            <Tip label={BOT_ATTENTION_HINTS[attention.reason] || 'Needs attention'}>
+            <Tip label={attentionHint}>
               <Codicon
                 aria-label={b.roster.needsAttention}
                 className="shrink-0 text-[0.6875rem] text-amber-600 dark:text-amber-300"
@@ -321,13 +332,15 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
                 })
                 host.notify({
                   kind: 'info',
-                  message: `${displayName(bot, current)} ${pinned ? 'unpinned' : 'pinned to top'}`
+                  message: pinned
+                    ? b.bot.unpinned(displayName(bot, current))
+                    : b.bot.pinnedToTop(displayName(bot, current))
                 })
               })
-              .catch(error => host.notifyError?.(error, 'Could not load bot metadata'))
+              .catch(error => host.notifyError?.(error, b.bot.metadataFailed))
           }}
         >
-          {pinned ? 'Unpin' : 'Pin to top'}
+          {pinned ? t.sidebar.row.unpin : b.bot.pinToTop}
         </ContextMenuItem>
         <ContextMenuItem
           onSelect={() => {
@@ -345,21 +358,21 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
                 host.notify({
                   kind: 'info',
                   message: hidden
-                    ? `${displayName(bot, current)} is back in the roster`
-                    : `${displayName(bot, current)} hidden — use the eye button in the Bots header to see hidden bots`
+                    ? b.bot.shownInRoster(displayName(bot, current))
+                    : b.bot.hiddenFromRoster(displayName(bot, current))
                 })
               })
-              .catch(error => host.notifyError?.(error, 'Could not load bot metadata'))
+              .catch(error => host.notifyError?.(error, b.bot.metadataFailed))
           }}
         >
-          {hidden ? 'Unhide' : 'Hide'}
+          {hidden ? b.bot.unhide : t.preview.hide}
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
           onSelect={() =>
             void ensureBotMetadata(bot)
               .then(() => onEdit(bot))
-              .catch(error => host.notifyError?.(error, 'Could not load bot'))
+              .catch(error => host.notifyError?.(error, b.bot.loadFailed))
           }
         >
           {b.bot.editMenu}
@@ -368,16 +381,16 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
           onSelect={() =>
             void ensureBotMetadata(bot)
               .then(() => onGroup(bot))
-              .catch(error => host.notifyError?.(error, 'Could not load bot groups'))
+              .catch(error => host.notifyError?.(error, b.bot.groupsFailed))
           }
         >
-          {groups.length ? `Groups: ${groups.join(', ')}…` : 'Manage groups…'}
+          {groups.length ? b.bot.groupsMenu(groups.join(', ')) : b.bot.manageGroups}
         </ContextMenuItem>
         <ContextMenuItem
           onSelect={() => {
             host.notify({
               kind: 'info',
-              message: `Duplicating ${displayName(bot, meta)}…`
+              message: b.bot.duplicating(displayName(bot, meta))
             })
             duplicateBot(bot, $lastRoster.get())
               .then(name => {
@@ -386,7 +399,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
                 })
                 host.notify({
                   kind: 'success',
-                  message: `Created ${name} — full copy of ${bot.name}`
+                  message: b.bot.duplicated(name, bot.name)
                 })
               })
               .catch(err => host.notifyError(err, b.bot.duplicateFailed))
@@ -480,14 +493,14 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }
 
   const preview = last
     ? `${last.from?.kind === 'user' ? 'You' : `@${lastHandle}`}: ${stripPreviewMarkdown(last.text) || '…'}`
-    : `${members.length} bots`
+    : b.group.memberCount(members.length)
 
   const availableMembers = members.filter(member => botSourceStatus(member).available).length
-  const availabilityLabel = `${availableMembers} of ${members.length} available`
+  const availabilityLabel = b.group.availableMembers(availableMembers, members.length)
 
   const row = (
     <RowButton
-      aria-label={`${group}, ${members.length} bots, ${availabilityLabel}`}
+      aria-label={`${group}, ${b.group.memberCount(members.length)}, ${availabilityLabel}`}
       className={cn(
         'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
         'hover:bg-(--chrome-action-hover)',
@@ -552,7 +565,7 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }
     <ContextMenu>
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onSelect={() => onOpen(group)}>Open Group Chat</ContextMenuItem>
+        <ContextMenuItem onSelect={() => onOpen(group)}>{b.group.openChat}</ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
           className="text-destructive focus:text-destructive"

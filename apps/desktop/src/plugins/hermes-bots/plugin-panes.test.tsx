@@ -18,8 +18,21 @@
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
 import type { PluginContext } from '@hermes/plugin-sdk'
+import { useI18n } from '@hermes/plugin-sdk'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
+import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+// eslint-disable-next-line no-restricted-imports
+import { usePaletteContributions } from '@/app/command-palette/contrib'
+// eslint-disable-next-line no-restricted-imports
+import { registry } from '@/contrib/registry'
+// The harness supplies the host's provider and registry, as plugin loading does.
+// eslint-disable-next-line no-restricted-imports
+import { createPluginI18n, I18nProvider } from '@/i18n'
+// eslint-disable-next-line no-restricted-imports
+import { setRuntimeI18nLocale } from '@/i18n/runtime'
 
 import type * as DataModule from './data'
 import type * as RoutingModule from './routing'
@@ -27,6 +40,7 @@ import type * as RoutingModule from './routing'
 const mocks = vi.hoisted(() => ({
   botChatOwnsWorkspace: vi.fn(() => false),
   paneVisibility: vi.fn(),
+  notify: vi.fn(),
   sessionOwnsWorkspace: vi.fn(() => false),
   setWorkspaceScope: vi.fn()
 }))
@@ -40,6 +54,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
       ...original.host,
       onEvent: undefined,
       paneVisibility: mocks.paneVisibility,
+      notify: mocks.notify,
       setWorkspaceScope: mocks.setWorkspaceScope
     }
   }
@@ -94,6 +109,7 @@ interface Registration {
   area: string
   data?: Record<string, unknown>
   id: string
+  title?: string
 }
 
 /** A recording `PluginContext`: registrations, their disposers, teardown. */
@@ -103,7 +119,7 @@ function recordingContext() {
   const unregisters = new Map<string, () => void>()
 
   const ctx = {
-    i18n: { register: () => () => undefined, t: (key: string) => key },
+    i18n: createPluginI18n('hermes-bots', dispose => dispose),
     onDispose: (fn: () => void) => disposers.push(fn),
     register: (registration: Registration) => {
       registrations.push(registration)
@@ -157,10 +173,113 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  cleanup()
+  setRuntimeI18nLocale('en')
   vi.useRealTimers()
 })
 
+function SwitchLanguage() {
+  const { locale, setLocale } = useI18n()
+
+  return (
+    <button onClick={() => void setLocale(locale === 'en' ? 'ko' : 'en')} type="button">
+      Switch language
+    </button>
+  )
+}
+
+function PaletteLabels() {
+  return (
+    <>
+      {usePaletteContributions().map(item => (
+        <button key={item.key} onClick={item.run} type="button">
+          {item.label}
+        </button>
+      ))}
+    </>
+  )
+}
+
+describe('the New Bot palette entry', () => {
+  it('follows the mounted provider locale while preserving literal and missing-key fallbacks', () => {
+    paneStores()
+    const harness = recordingContext()
+    plugin.register(harness.ctx)
+    const registration = harness.find('new-agent')!
+
+    const unregister = registry.registerMany([
+      { ...registration, source: 'plugin:hermes-bots' },
+      { id: 'literal-copy', area: 'palette', data: { label: 'Literal fallback', run: () => undefined } },
+      {
+        id: 'missing-copy',
+        area: 'palette',
+        source: 'plugin:hermes-bots',
+        data: { label: 'Missing key fallback', labelKey: 'not.registered', run: () => undefined }
+      },
+      {
+        id: 'unregistered-copy',
+        area: 'palette',
+        source: 'plugin:unregistered-test-plugin',
+        data: { label: 'Unregistered fallback', labelKey: 'bot.newTitle', run: () => undefined }
+      }
+    ])
+
+    try {
+      render(
+        <I18nProvider configClient={null} initialLocale="en">
+          <SwitchLanguage />
+          <PaletteLabels />
+        </I18nProvider>
+      )
+      expect(screen.getByText('New bot')).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: 'Switch language' }))
+      expect(screen.getByText('새 봇')).toBeTruthy()
+      expect(screen.getByText('Literal fallback')).toBeTruthy()
+      expect(screen.getByText('Missing key fallback')).toBeTruthy()
+      expect(screen.getByText('Unregistered fallback')).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: '새 봇' }))
+      expect(mocks.notify).toHaveBeenCalledWith({ kind: 'info', message: harness.ctx.i18n.t('bot.createFirstHint') })
+      expect(harness.find('new-agent')).toBe(registration)
+      fireEvent.click(screen.getByRole('button', { name: 'Switch language' }))
+      expect(screen.getByText('New bot')).toBeTruthy()
+    } finally {
+      unregister()
+      harness.dispose()
+    }
+  })
+})
+
 describe('the Bots pane dock', () => {
+  it('updates the mounted pane title when the language changes without re-registering', () => {
+    paneStores()
+
+    const harness = recordingContext()
+
+    plugin.register(harness.ctx)
+
+    const registration = harness.find('pane')!
+    const tabTitle = registration.data?.tabTitle as (() => ReactNode) | undefined
+
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <SwitchLanguage />
+        <h2>{tabTitle ? tabTitle() : registration.title}</h2>
+      </I18nProvider>
+    )
+
+    expect(screen.getByRole('heading').textContent).toBe('Bots')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch language' }))
+
+    expect(screen.getByRole('heading').textContent).toBe('봇')
+    expect(harness.find('pane')).toBe(registration)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch language' }))
+
+    expect(screen.getByRole('heading').textContent).toBe('Bots')
+    harness.dispose()
+  })
+
   it('center-stacks into the sessions zone as a standing invariant', () => {
     paneStores()
 
@@ -181,6 +300,37 @@ describe('the Bots pane dock', () => {
 })
 
 describe('the Scheduled jobs pane', () => {
+  it('updates its mounted title through the provider without replacing the pane', async () => {
+    paneStores()
+    mocks.botChatOwnsWorkspace.mockReturnValue(true)
+    const harness = recordingContext()
+    plugin.register(harness.ctx)
+    await settle()
+
+    try {
+      const registration = harness.find('routines')!
+      const tabTitle = registration.data?.tabTitle as (() => ReactNode) | undefined
+
+      render(
+        <I18nProvider configClient={null} initialLocale="en">
+          <SwitchLanguage />
+          <h2>{tabTitle ? tabTitle() : registration.title}</h2>
+        </I18nProvider>
+      )
+
+      expect(screen.getByRole('heading').textContent).toBe('Scheduled jobs')
+      fireEvent.click(screen.getByRole('button', { name: 'Switch language' }))
+      expect(screen.getByRole('heading').textContent).toBe('예약 작업')
+      expect(harness.find('routines')).toBe(registration)
+      expect(harness.unregisters.get('routines')).not.toHaveBeenCalled()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Switch language' }))
+      expect(screen.getByRole('heading').textContent).toBe('Scheduled jobs')
+    } finally {
+      harness.dispose()
+    }
+  })
+
   it('stays unregistered until a bot chat owns the workspace', async () => {
     const store = paneStores()
     const harness = recordingContext()

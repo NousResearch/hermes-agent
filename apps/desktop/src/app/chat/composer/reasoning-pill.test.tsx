@@ -1,9 +1,10 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import type { ChatBarState } from '@/app/chat/composer/types'
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
+import { I18nProvider, useI18n } from '@/i18n'
 import { $defaultReasoningEffort } from '@/store/session'
 
 import { ReasoningPill } from './reasoning-pill'
@@ -39,6 +40,34 @@ afterEach(() => {
 })
 
 describe('ReasoningPill', () => {
+  it('updates the visible effort and accessible name with the UI language without changing the model value', () => {
+    const view = tileView('medium')
+
+    function LanguageSwitch() {
+      const { locale, setLocale } = useI18n()
+
+      return (
+        <button onClick={() => void setLocale(locale === 'ko' ? 'en' : 'ko')} type="button">
+          switch language
+        </button>
+      )
+    }
+
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <LanguageSwitch />
+        <SessionViewProvider value={view}>
+          <ReasoningPill disabled={false} model={modelState()} />
+        </SessionViewProvider>
+      </I18nProvider>
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'switch language' }))
+    expect(screen.getByRole('button', { name: '추론 강도: 중간' }).textContent).toBe('중간')
+    fireEvent.click(screen.getByRole('button', { name: 'switch language' }))
+    expect(screen.getByTestId('reasoning-pill').textContent).not.toBe('중간')
+    expect(view.$reasoningEffort.get()).toBe('medium')
+  })
+
   it("shows THIS surface's live effort, falling back to the profile default when the session has none", () => {
     $defaultReasoningEffort.set('high')
 

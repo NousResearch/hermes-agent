@@ -1,3 +1,5 @@
+import { PrimaryProfilePin } from './primary-profile-pin'
+
 export type BackendConnectionAttempt<TConnection> = {
   generation: number
   promise: Promise<TConnection> | null
@@ -13,10 +15,17 @@ export function createBackendConnectionState<TProcess, TConnection>() {
   let process: TProcess | null = null
   let promise: Promise<TConnection> | null = null
   let pendingPromise: Promise<TConnection> | null = null
+  const profilePin = new PrimaryProfilePin()
 
   return {
-    startAttempt(): BackendConnectionAttempt<TConnection> {
+    startAttempt(nextProfile = 'default'): BackendConnectionAttempt<TConnection> {
+      profilePin.pin(nextProfile)
+
       return { generation, promise: null }
+    },
+
+    getProfile(): string | null {
+      return profilePin.booted
     },
 
     setPromise(attempt: BackendConnectionAttempt<TConnection>, nextPromise: Promise<TConnection>): boolean {
@@ -75,6 +84,7 @@ export function createBackendConnectionState<TProcess, TConnection>() {
       process = null
       promise = null
       pendingPromise = null
+      profilePin.clear()
 
       return true
     },
@@ -86,6 +96,7 @@ export function createBackendConnectionState<TProcess, TConnection>() {
 
       promise = null
       pendingPromise = null
+      profilePin.clear()
 
       return true
     },
@@ -109,6 +120,7 @@ export function createBackendConnectionState<TProcess, TConnection>() {
       process = null
       promise = null
       pendingPromise = null
+      profilePin.clear()
 
       return currentProcess
     }

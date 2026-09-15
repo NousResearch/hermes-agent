@@ -15,7 +15,10 @@ describe('LanguageSwitcher', () => {
     vi.restoreAllMocks()
   })
 
-  it('persists language changes through display.language config', async () => {
+  it.each([
+    ['ja', '日本語'],
+    ['ko', '한국어']
+  ])('persists %s through the language picker', async (locale, name) => {
     const saveConfig = vi.fn().mockResolvedValue({ ok: true })
     const latestConfig: HermesConfigRecord = { display: { language: 'en', skin: 'slate' } }
 
@@ -35,9 +38,9 @@ describe('LanguageSwitcher', () => {
     })
 
     fireEvent.click(screen.getByRole('button', { name: 'Switch language' }))
-    fireEvent.click(screen.getByRole('option', { name: /日本語/i }))
+    fireEvent.click(screen.getByRole('option', { name: new RegExp(name) }))
 
     await waitFor(() => expect(saveConfig).toHaveBeenCalledTimes(1))
-    expect(saveConfig).toHaveBeenCalledWith({ display: { language: 'ja', skin: 'slate' } })
+    expect(saveConfig).toHaveBeenCalledWith({ display: { language: locale, skin: 'slate' } })
   })
 })

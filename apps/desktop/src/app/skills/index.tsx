@@ -28,7 +28,7 @@ import {
   setSkillEnabled,
   setToolsetEnabled
 } from '@/hermes'
-import { useI18n } from '@/i18n'
+import { type Translations, useI18n } from '@/i18n'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
 import { Loader2 } from '@/lib/icons'
 import { queryClient } from '@/lib/query-client'
@@ -120,8 +120,12 @@ const usageOf = (skill: SkillInfo): number => (typeof skill.usage === 'number' ?
 const categoryFor = (skill: SkillInfo): string => asText(skill.category) || 'general'
 
 // Row subtitle: category, with non-default origins badged.
-function skillSubtitle(skill: SkillInfo): React.ReactNode {
-  const category = prettyName(categoryFor(skill))
+function skillSubtitle(
+  skill: SkillInfo,
+  provenanceLabels: Translations['skills']['provenance'],
+  categoryNames?: Record<string, string>
+): React.ReactNode {
+  const category = categoryNames?.[categoryFor(skill)] ?? prettyName(categoryFor(skill))
   const provenance = skill.provenance
 
   return (
@@ -129,12 +133,12 @@ function skillSubtitle(skill: SkillInfo): React.ReactNode {
       <span className="truncate">{category}</span>
       {provenance === 'agent' && (
         <Badge className="shrink-0 normal-case" variant="default">
-          learned
+          {provenanceLabels.agent}
         </Badge>
       )}
       {provenance === 'hub' && (
         <Badge className="shrink-0 normal-case" variant="muted">
-          hub
+          {provenanceLabels.hub}
         </Badge>
       )}
     </>
@@ -177,7 +181,9 @@ function filteredToolsets(
   toolsets: ToolsetInfo[],
   query: string,
   toolCalls: Record<string, number>,
-  desc: boolean
+  desc: boolean,
+  labels: Readonly<Record<string, string>>,
+  descriptions: Readonly<Record<string, string>>
 ): ToolsetInfo[] {
   const q = normalize(query)
   const sign = desc ? 1 : -1
@@ -194,7 +200,9 @@ function filteredToolsets(
 
       return (
         includesQuery(toolset.name, q) ||
-        includesQuery(toolsetDisplayLabel(toolset), q) ||
+        includesQuery(toolsetDisplayLabel(toolset, labels), q) ||
+        includesQuery(toolset.label, q) ||
+        includesQuery(descriptions[toolset.name], q) ||
         includesQuery(toolset.description, q) ||
         toolNames(toolset).some(name => includesQuery(name, q))
       )
@@ -202,7 +210,7 @@ function filteredToolsets(
     .sort(
       (a, b) =>
         sign * (toolsetCalls(b, toolCalls) - toolsetCalls(a, toolCalls)) ||
-        toolsetDisplayLabel(a).localeCompare(toolsetDisplayLabel(b))
+        toolsetDisplayLabel(a, labels).localeCompare(toolsetDisplayLabel(b, labels))
     )
 }
 
@@ -466,8 +474,18 @@ export function SkillsView({
   const runningInstalls = useMemo(() => new Set(runningInstallKey.split('|').filter(Boolean)), [runningInstallKey])
 
   const visibleToolsets = useMemo(
-    () => (toolsets ? filteredToolsets(toolsets, query, toolCalls ?? {}, toolsetsSortDesc) : []),
-    [query, toolCalls, toolsets, toolsetsSortDesc]
+    () =>
+      toolsets
+        ? filteredToolsets(
+            toolsets,
+            query,
+            toolCalls ?? {},
+            toolsetsSortDesc,
+            t.skills.toolsetLabels,
+            t.skills.toolsetDescriptions ?? {}
+          )
+        : [],
+    [query, toolCalls, toolsets, toolsetsSortDesc, t.skills.toolsetLabels, t.skills.toolsetDescriptions]
   )
 
   // Bulk actions ("All" master switch, "Disable unused") and the master-switch
@@ -572,7 +590,7 @@ export function SkillsView({
           current?.map(row => (row.name === toolset.name ? { ...row, enabled: !enabled, available: !enabled } : row)) ??
           current
       )
-      notifyError(err, t.skills.failedToUpdate(toolsetDisplayLabel(toolset)))
+      notifyError(err, t.skills.failedToUpdate(toolsetDisplayLabel(toolset, t.skills.toolsetLabels)))
     }
   }
 
@@ -959,7 +977,7 @@ export function SkillsView({
                           setSelectedOfficial(null)
                         }}
                         onToggle={enabled => void handleToggleSkill(skill, enabled)}
-                        subtitle={skillSubtitle(skill)}
+                        subtitle={skillSubtitle(skill, t.skills.provenance, t.skills.skillCategoryNames)}
                         title={skill.name}
                         toggleLabel={skill.name}
                       />
@@ -993,7 +1011,7 @@ export function SkillsView({
                           enabled={false}
                           key={skill.identifier}
                           onSelect={() => setSelectedOfficial(skill.identifier)}
-                          subtitle={prettyName(skill.category)}
+                          subtitle={t.skills.skillCategoryNames?.[skill.category] ?? prettyName(skill.category)}
                           title={skill.name}
                         />
                       )
@@ -1033,7 +1051,7 @@ export function SkillsView({
                   }
                 >
                   {visibleToolsets.map(toolset => {
-                    const label = toolsetDisplayLabel(toolset)
+                    const label = toolsetDisplayLabel(toolset, t.skills.toolsetLabels)
                     const calls = toolCalls ? toolsetCalls(toolset, toolCalls) : null
 
                     return (
@@ -1048,12 +1066,12 @@ export function SkillsView({
                           ) : calls > 0 ? (
                             `×${compactNumber(calls)}`
                           ) : (
-                            `${toolNames(toolset).length} tools`
+                            t.agents.toolsCount(toolNames(toolset).length)
                           )
                         }
                         onSelect={() => setSelectedToolset(toolset.name)}
                         onToggle={checked => void handleToggleToolset(toolset, checked)}
-                        subtitle={asText(toolset.description)}
+                        subtitle={t.skills.toolsetDescriptions?.[toolset.name] ?? asText(toolset.description)}
                         title={label}
                         toggleLabel={t.skills.toggleToolset(label, !toolset.enabled)}
                       />
@@ -1216,10 +1234,10 @@ function SkillDetail({
   return (
     <>
       <DetailHeader
-        description={asText(skill.description) || t.skills.noDescription}
+        description={t.skills.skillDescriptions?.[skill.name] ?? (asText(skill.description) || t.skills.noDescription)}
         pills={
           <>
-            <PanelPill>{prettyName(categoryFor(skill))}</PanelPill>
+            <PanelPill>{t.skills.skillCategoryNames?.[categoryFor(skill)] ?? prettyName(categoryFor(skill))}</PanelPill>
             {skill.provenance && skill.provenance !== 'bundled' && (
               <PanelPill tone={skill.provenance === 'agent' ? 'good' : 'muted'}>
                 {t.skills.provenance[skill.provenance]}
@@ -1294,10 +1312,10 @@ function OfficialSkillDetail({
   return (
     <>
       <DetailHeader
-        description={asText(skill.description) || t.skills.noDescription}
+        description={t.skills.skillDescriptions?.[skill.name] ?? (asText(skill.description) || t.skills.noDescription)}
         pills={
           <>
-            <PanelPill>{prettyName(skill.category)}</PanelPill>
+            <PanelPill>{t.skills.skillCategoryNames?.[skill.category] ?? prettyName(skill.category)}</PanelPill>
             <PanelPill tone="muted">{t.skills.officialPill}</PanelPill>
           </>
         }
@@ -1347,13 +1365,15 @@ function ToolsetDetail({
   const { t } = useI18n()
   const navigate = useNavigate()
   const tools = toolNames(toolset)
-  const label = toolsetDisplayLabel(toolset)
+  const label = toolsetDisplayLabel(toolset, t.skills.toolsetLabels)
 
   return (
     <>
       {/* "Configured" as a resting state is noise — only the warn state earns a pill. */}
       <DetailHeader
-        description={asText(toolset.description) || t.skills.noDescription}
+        description={
+          t.skills.toolsetDescriptions?.[toolset.name] ?? (asText(toolset.description) || t.skills.noDescription)
+        }
         pills={!toolset.configured && <PanelPill tone="warn">{t.skills.needsKeys}</PanelPill>}
         title={label}
       />

@@ -1,7 +1,10 @@
 import { applyDocumentLocale, isRecord } from '@hermes/shared/i18n'
+import { useStore } from '@nanostores/react'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
-import { getHermesConfigRecord, type HermesConfigRecord, saveHermesConfig } from '@/hermes'
+import { $apiRequestScope, type ApiRequestScope } from '@/api/client'
+import { getHermesConfigRecord, saveHermesConfigRecord } from '@/api/config'
+import type { HermesConfigRecord } from '@/types/hermes'
 
 import { TRANSLATIONS } from './catalog'
 import {
@@ -21,22 +24,28 @@ export interface I18nConfigClient {
   saveConfig: (config: HermesConfigRecord) => Promise<{ ok: boolean }>
 }
 
-const defaultConfigClient: I18nConfigClient = {
-  getConfig: () => {
-    if (typeof window === 'undefined' || !window.hermesDesktop?.api) {
-      return Promise.resolve({})
-    }
+function scopedConfigClient(scope: ApiRequestScope): I18nConfigClient {
+  return {
+    getConfig: () => {
+      if (typeof window === 'undefined' || !window.hermesDesktop?.api) {
+        return Promise.resolve({})
+      }
 
-    // Merged defaults make an unset language indistinguishable from saved English.
-    // Older backends ignore the option and keep returning English as before.
-    return getHermesConfigRecord(undefined, { includeDefaults: false })
-  },
-  saveConfig: config => {
-    if (typeof window === 'undefined' || !window.hermesDesktop?.api) {
-      return Promise.resolve({ ok: true })
-    }
+      // Preserve the active scope while distinguishing an unset locale from
+      // English supplied by backend defaults, so OS inference stays unsaved.
+      return getHermesConfigRecord(scope, { includeDefaults: false })
+    },
+    saveConfig: config => {
+      if (typeof window === 'undefined' || !window.hermesDesktop?.api) {
+        return Promise.resolve({ ok: true })
+      }
 
-    return saveHermesConfig(config, undefined, { preserveLanguage: true })
+      // PUT merges onto the latest disk config. Send only this control's field:
+      // resending the GET snapshot would undo concurrent settings/CLI edits.
+      return saveHermesConfigRecord({ display: { language: getConfigDisplayLanguage(config) } }, scope, {
+        preserveLanguage: true
+      })
+    }
   }
 }
 
@@ -86,7 +95,10 @@ export interface I18nProviderProps {
   initialLocale?: unknown
 }
 
-export function I18nProvider({ children, configClient = defaultConfigClient, initialLocale }: I18nProviderProps) {
+export function I18nProvider({ children, configClient, initialLocale }: I18nProviderProps) {
+  const scope = useStore($apiRequestScope)
+  const defaultConfigClient = useMemo(() => scopedConfigClient(scope), [scope])
+  const client = configClient === undefined ? defaultConfigClient : configClient
   const [locale, setLocaleState] = useState<Locale>(() => normalizeLocale(initialLocale))
   const [isLoadingConfig, setIsLoadingConfig] = useState(false)
   const [isSavingLocale, setIsSavingLocale] = useState(false)
@@ -96,6 +108,7 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
   // Set once the user picks a language through setLocale: a startup read that
   // resolves (or fails) after that must never overwrite an explicit choice.
   const userLocaleRef = useRef(false)
+  const clientGeneration = useRef(0)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -104,8 +117,14 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
     applyDocumentLocale(locale)
   }, [locale])
 
+  // eslint-disable-next-line no-restricted-syntax -- lifecycle generation and user intent, not mirrored atom values
   useEffect(() => {
-    if (!configClient) {
+    clientGeneration.current += 1
+    userLocaleRef.current = false
+    setIsSavingLocale(false)
+    setSaveError(null)
+
+    if (!client) {
       return
     }
 
@@ -126,7 +145,7 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
       setIsLoadingConfig(true)
       setConfigLoadError(null)
 
-      return configClient
+      return client
         .getConfig()
         .then(async config => {
           if (cancelled || userLocaleRef.current) {
@@ -176,30 +195,32 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
 
     return () => {
       cancelled = true
+      clientGeneration.current += 1
 
       if (retryTimer) {
         clearTimeout(retryTimer)
       }
     }
-  }, [configClient, initialLocale])
+  }, [client, initialLocale])
 
   const setLocale = useCallback(
     async (next: Locale) => {
       const previousLocale = localeRef.current
+      const generation = clientGeneration.current
 
       userLocaleRef.current = true
       setSaveError(null)
       setLocaleState(next)
 
-      if (!configClient) {
+      if (!client) {
         return
       }
 
       setIsSavingLocale(true)
 
       try {
-        const latestConfig = await configClient.getConfig()
-        const result = await configClient.saveConfig(withConfigDisplayLanguage(latestConfig, next))
+        const latestConfig = await client.getConfig()
+        const result = await client.saveConfig(withConfigDisplayLanguage(latestConfig, next))
 
         if (!result.ok) {
           throw new Error('Failed to save language')
@@ -207,15 +228,19 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
       } catch (error) {
         const nextError = toError(error)
 
-        setLocaleState(previousLocale)
-        setSaveError(nextError)
+        if (clientGeneration.current === generation) {
+          setLocaleState(previousLocale)
+          setSaveError(nextError)
+        }
 
         throw nextError
       } finally {
-        setIsSavingLocale(false)
+        if (clientGeneration.current === generation) {
+          setIsSavingLocale(false)
+        }
       }
     },
-    [configClient]
+    [client]
   )
 
   const value = useMemo<I18nContextValue>(

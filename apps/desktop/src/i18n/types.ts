@@ -8,7 +8,7 @@
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru'
+export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ko' | 'ar' | 'ru'
 
 /** One error-card entry: a short title and one plain sentence. Either may
  *  take the failing provider's display name (falls back to "the AI service"). */
@@ -608,6 +608,9 @@ export interface Translations {
     searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>
     modeOptions: Record<'light' | 'dark' | 'system', ModeOptionCopy>
     appearance: {
+      themeDescriptions: Record<string, string>
+      themeMarketplace: string
+      noInstalledThemes: (query: string) => string
       title: string
       intro: string
       colorMode: string
@@ -744,6 +747,7 @@ export interface Translations {
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
+    envDescriptions?: Record<string, string>
     uninstallSection: {
       dangerZone: string
       confirmUninstall: string
@@ -1461,6 +1465,7 @@ export interface Translations {
   }
 
   skills: {
+    toolsetLabels: Record<string, string>
     tabSkills: string
     tabToolsets: string
     configuringProfile: string
@@ -1491,6 +1496,9 @@ export interface Translations {
     toolsetDisabled: string
     appliesToNewSessions: (name: string) => string
     failedToUpdate: (name: string) => string
+    toolsetDescriptions?: Record<string, string>
+    skillDescriptions?: Record<string, string>
+    skillCategoryNames?: Record<string, string>
     sortMostUsed: string
     sortAlpha: string
     sortMostUsedDesc: string

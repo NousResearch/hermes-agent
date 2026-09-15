@@ -18,6 +18,16 @@ import {
 } from './helpers'
 
 describe('settings helpers', () => {
+  it('uses translated toolset labels by stable ID and preserves unknown backend labels', () => {
+    const labels = { terminal: '터미널 및 프로세스' }
+    const builtin = { name: 'terminal', label: '💻 Terminal & Processes' }
+
+    expect(toolsetDisplayLabel(builtin, labels)).toBe(labels.terminal)
+    expect(toolsetDisplayLabel({ name: 'custom-toolset', label: '🔌 My tools' }, labels)).toBe('My tools')
+    expect(toolsetDisplayLabel({ name: 'constructor', label: 'Custom constructor' }, labels)).toBe('Custom constructor')
+    expect(builtin.name).toBe('terminal')
+  })
+
   it('surfaces repository discovery config in Workspace with user-facing copy', () => {
     const workspace = SECTIONS.find(section => section.id === 'workspace')
 

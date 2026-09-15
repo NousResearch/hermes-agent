@@ -18,11 +18,13 @@
  * dispatch at all for a row whose connection is gone.
  */
 
+import type * as HermesSdk from '@hermes/plugin-sdk'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { translateBots } from './i18n-test-helper'
 import { ModelPicker } from './model-picker'
 import type { RosterRow } from './types'
 
@@ -34,10 +36,12 @@ const { hostMock } = vi.hoisted(() => ({
   }
 }))
 
-vi.mock('@hermes/plugin-sdk', async () => {
+vi.mock('@hermes/plugin-sdk', async importOriginal => {
+  const sdk = await importOriginal<typeof HermesSdk>()
   const { useQuery } = await import('@tanstack/react-query')
 
   return {
+    ...sdk,
     Button: (props: React.ComponentProps<'button'>) => <button {...props} />,
     GlyphSpinner: () => <span data-testid="spinner" />,
     host: hostMock,
@@ -47,7 +51,8 @@ vi.mock('@hermes/plugin-sdk', async () => {
     SelectItem: ({ children }: { children: ReactNode }) => <div>{children}</div>,
     SelectTrigger: ({ children }: { children: ReactNode }) => <div>{children}</div>,
     SelectValue: () => null,
-    useQuery
+    useQuery,
+    usePluginI18n: () => translateBots
   }
 })
 

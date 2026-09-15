@@ -36,13 +36,14 @@ import {
   useQuery,
   useValue
 } from '@hermes/plugin-sdk'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { $focusedBotOwner, $selectedBot, focusedRosterOwner } from './bot-state'
 import { $botMeta, $lastRoster, botHandle, botRosterKey, botSelectionKey, isActiveRosterBot } from './data'
 import { labeled } from './dialog-parts'
 import { botsText, useBots } from './i18n'
+import type { BotsText } from './i18n'
 import { displayName } from './labels'
 import { botConnectionRoute, botRosterMeta, requestForBot } from './routing'
 import { ID } from './shared'
@@ -90,8 +91,8 @@ function routineBot(job: RoutineJob | null | undefined): null | string {
   return match ? match[1].toLowerCase() : null
 }
 
-function routineTitle(job: RoutineJob | null | undefined): string {
-  return (job?.name || '').replace(BOT_TAG_RE, '') || 'Untitled job'
+function routineTitle(job: RoutineJob | null | undefined, untitled: string): string {
+  return (job?.name || '').replace(BOT_TAG_RE, '') || untitled
 }
 
 export function isLegacyDelegatedRoutine(job: RoutineJob | null | undefined): boolean {
@@ -239,12 +240,16 @@ export function selectRoutineJobs(
  * Return a short explanation string in that case, or null when the store is
  * genuinely empty (or the active bot's jobs are already shown).
  */
-export function routineFilterHint(all: RoutineJob[], jobs: RoutineJob[]): null | string {
+export function routineFilterHint(
+  all: RoutineJob[],
+  jobs: RoutineJob[],
+  hint = botsText().cron.filterHint
+): null | string {
   if (jobs.length !== 0 || !Array.isArray(all) || all.length === 0) {
     return null
   }
 
-  return botsText().cron.filterHint
+  return hint
 }
 
 export function normalizedProfileName(profile: unknown): string {
@@ -255,13 +260,13 @@ function shellQuote(value: unknown): string {
   return `'${String(value).replaceAll("'", "'\"'\"'")}'`
 }
 
-export function routineInputError(title: string, instruction: string): null | string {
+export function routineInputError(title: string, instruction: string, c = botsText().cron): null | string {
   if (String(title).includes('\0')) {
-    return 'Job name cannot contain NUL (U+0000).'
+    return c.nameNulError
   }
 
   if (String(instruction).includes('\0')) {
-    return 'Job instruction cannot contain NUL (U+0000).'
+    return c.instructionNulError
   }
 
   return null
@@ -285,8 +290,7 @@ export function routinePrompt(
   )
 }
 
-function scheduleLabel(schedule: string | undefined): string {
-  const c = botsText().cron
+function scheduleLabel(schedule: string | undefined, c: BotsText['cron'], labels: Record<string, string>): string {
   const once = /^once in (.+)$/.exec(schedule || '')
 
   if (once) {
@@ -308,13 +312,13 @@ function scheduleLabel(schedule: string | undefined): string {
       const d = minutes / 1440
 
       // Daily/Hourly are core's own schedule vocabulary — reuse, don't retranslate.
-      return d === 1 ? translateNow('cron.scheduleLabels.daily') : c.everyNDays(d)
+      return d === 1 ? labels.daily : c.everyNDays(d)
     }
 
     if (minutes % 60 === 0) {
       const h = minutes / 60
 
-      return h === 1 ? translateNow('cron.scheduleLabels.hourly') : c.everyNHours(h)
+      return h === 1 ? labels.hourly : c.everyNHours(h)
     }
 
     return c.everyNMinutes(minutes)
@@ -336,7 +340,7 @@ function routineTimestamp(value: string | undefined): null | string {
  *  unknown one is passed through verbatim rather than hidden. `delivery_failed`
  *  means the agent run succeeded but the brief never reached its target; it
  *  must read as a failure, not as a run result the user can trust. */
-export function routineLastResult(status: string | null | undefined): null | string {
+export function routineLastResult(status: string | null | undefined, c = botsText().cron): null | string {
   const raw = String(status || '').trim()
 
   if (!raw) {
@@ -345,16 +349,16 @@ export function routineLastResult(status: string | null | undefined): null | str
 
   switch (raw) {
     case 'ok':
-      return 'Succeeded'
+      return c.resultSucceeded
 
     case 'error':
-      return 'Failed'
+      return c.resultFailed
 
     case 'delivery_failed':
-      return 'Ran, but delivery failed'
+      return c.resultDeliveryFailed
 
     case 'blocked_config':
-      return 'Blocked by configuration (not run)'
+      return c.resultBlockedConfig
 
     default:
       return raw
@@ -365,9 +369,20 @@ export function routineLastResult(status: string | null | undefined): null | str
  *  rows. Pure so the detail contract is testable without a renderer, and so
  *  the dialog cannot invent a field the gateway never sent: an absent value
  *  drops its row instead of rendering "undefined". */
-export function routineDetailRows(job: RoutineJob | null | undefined): Array<{ label: string; value: string }> {
+export function routineDetailRows(
+  job: RoutineJob | null | undefined,
+  c = botsText().cron,
+  core: Pick<ReturnType<typeof useI18n>['t']['cron'], 'deliverLabel' | 'modelLabel' | 'scheduleLabels'> = {
+    deliverLabel: translateNow('cron.deliverLabel'),
+    modelLabel: translateNow('cron.modelLabel'),
+    scheduleLabels: {
+      daily: translateNow('cron.scheduleLabels.daily'),
+      hourly: translateNow('cron.scheduleLabels.hourly')
+    }
+  }
+): Array<{ label: string; value: string }> {
   const paused = job?.enabled === false || job?.state === 'paused'
-  const label = scheduleLabel(job?.schedule)
+  const label = scheduleLabel(job?.schedule, c, core.scheduleLabels)
   const raw = String(job?.schedule || '').trim()
 
   // Cells are `number | string | null | undefined` until the filter below
@@ -375,18 +390,18 @@ export function routineDetailRows(job: RoutineJob | null | undefined): Array<{ l
   // that narrowing into the map, so the rows are typed as filtered.
   return (
     [
-      ['Status', paused ? 'Paused' : 'Active'],
-      ['Schedule', label],
+      [c.detailStatus, paused ? c.detailPaused : c.detailActive],
+      [c.detailSchedule, label],
       // `scheduleLabel` humanizes "every 1440m" and cron expressions; keep the
       // raw string when it says something the label dropped.
-      ['Schedule (raw)', raw && raw !== label ? raw : null],
-      ['Repeat', job?.repeat],
-      ['Next run', paused ? null : routineTimestamp(job?.next_run_at)],
-      ['Last run', routineTimestamp(job?.last_run_at)],
-      ['Last result', routineLastResult(job?.last_status)],
-      ['Delivers to', job?.deliver],
-      ['Model', job?.model],
-      ['Working directory', job?.workdir]
+      [c.detailRawSchedule, raw && raw !== label ? raw : null],
+      [c.detailRepeat, job?.repeat],
+      [c.detailNextRun, paused ? null : routineTimestamp(job?.next_run_at)],
+      [c.detailLastRun, routineTimestamp(job?.last_run_at)],
+      [c.detailLastResult, routineLastResult(job?.last_status, c)],
+      [core.deliverLabel, job?.deliver],
+      [core.modelLabel, job?.model],
+      [c.detailWorkdir, job?.workdir]
     ] as Array<[string, string]>
   )
     .filter(([, value]) => typeof value === 'string' && value.trim())
@@ -418,7 +433,7 @@ interface RoutineDetailDialogProps {
 export function RoutineDetailDialog({ job, onClose, open }: RoutineDetailDialogProps) {
   const b = useBots()
   const { t } = useI18n()
-  const rows = job ? routineDetailRows(job) : []
+  const rows = job ? routineDetailRows(job, b.cron, t.cron) : []
   const issue = job ? routineDetailIssue(job) : null
   const instruction = String(job?.prompt_preview || '').trim()
 
@@ -433,8 +448,8 @@ export function RoutineDetailDialog({ job, onClose, open }: RoutineDetailDialogP
     >
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle className="truncate">{routineTitle(job)}</DialogTitle>
-          <DialogDescription>What this job runs, and when it runs next.</DialogDescription>
+          <DialogTitle className="truncate">{routineTitle(job, b.cron.untitledJob)}</DialogTitle>
+          <DialogDescription>{b.cron.detailDesc}</DialogDescription>
         </DialogHeader>
         <div className="grid gap-3.5">
           {issue ? (
@@ -478,6 +493,7 @@ interface RoutineRowProps {
 }
 
 export function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
+  const b = useBots()
   const { t } = useI18n()
   const c = t.cron
   const profile = typeof owner === 'string' ? owner : owner?.name
@@ -547,7 +563,7 @@ export function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
             className={cn('size-1.5 shrink-0 rounded-full', active ? 'bg-(--ui-success)' : 'bg-(--ui-text-quaternary)')}
           />
           <span className={cn('min-w-0 flex-1 truncate text-xs font-medium', !active && 'text-(--ui-text-tertiary)')}>
-            {routineTitle(job)}
+            {routineTitle(job, b.cron.untitledJob)}
           </span>
         </RowButton>
         <Switch
@@ -571,7 +587,7 @@ export function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
       <div className="flex items-center justify-between gap-2 pl-3.5">
         <span className="inline-flex items-center gap-1 rounded-full border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.65rem] text-(--ui-text-tertiary)">
           <Codicon className="text-[0.7rem]" name="calendar" />
-          {scheduleLabel(job.schedule)}
+          {scheduleLabel(job.schedule, b.cron, c.scheduleLabels)}
         </span>
         <span className="truncate text-[0.65rem] text-(--ui-text-quaternary)">
           {active && job.next_run_at
@@ -581,7 +597,7 @@ export function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
       </div>
       {legacyUnsafe ? (
         <div className="rounded-md border border-(--ui-stroke-secondary) px-2 py-1.5 text-[0.65rem] leading-4 text-(--ui-accent)">
-          Paused for security: delete and recreate this legacy job before running it again.
+          {b.cron.legacyPaused}
         </div>
       ) : null}
     </div>
@@ -608,11 +624,9 @@ interface ScheduleState {
   weekday: string
 }
 
-/** Built per call, not frozen at module load: the labels are translated, and
- *  a module const would pin whichever locale happened to be active at import. */
-function frequencies(): Array<{ id: ScheduleFreq; label: string }> {
-  const c = botsText().cron
-
+/** Rendering callers supply their reactive dictionary; the imperative runtime
+ *  locale can still be on the preceding language until the provider's effect. */
+function frequencies(c: BotsText['cron']): Array<{ id: ScheduleFreq; label: string }> {
   return [
     { id: 'once', label: c.freqOnce },
     { id: 'hourly', label: c.freqHourly },
@@ -627,8 +641,8 @@ function frequencies(): Array<{ id: ScheduleFreq; label: string }> {
 
 /** Weekday names come from core's cron section — it already ships them in
  *  every locale, keyed by the same cron day numbers. */
-function weekdays(): Array<{ id: string; label: string }> {
-  return ['1', '2', '3', '4', '5', '6', '0'].map(id => ({ id, label: translateNow(`cron.days.${id}`) }))
+function weekdays(days: Record<string, string>): Array<{ id: string; label: string }> {
+  return (['1', '2', '3', '4', '5', '6', '0'] as const).map(id => ({ id, label: days[id] }))
 }
 
 const TIMES = (() => {
@@ -636,11 +650,8 @@ const TIMES = (() => {
 
   for (let h = 0; h < 24; h++) {
     for (const m of [0, 30]) {
-      const ampm = h < 12 ? 'AM' : 'PM'
-      const h12 = h % 12 === 0 ? 12 : h % 12
       out.push({
         id: `${h}:${m}`,
-        label: `${h12}:${String(m).padStart(2, '0')} ${ampm}`,
         h,
         m
       })
@@ -686,10 +697,13 @@ function composeSchedule(state: ScheduleState): string {
   }
 }
 
-function scheduleSummary(state: ScheduleState): string {
-  const c = botsText().cron
-  const t = TIMES.find(x => x.id === state.time)
-  const tl = t ? t.label : '9:00 AM'
+function scheduleSummary(
+  state: ScheduleState,
+  c: BotsText['cron'],
+  days: Array<{ id: string; label: string }>,
+  times: Array<{ id: string; label: string }>
+): string {
+  const tl = (times.find(x => x.id === state.time) || times.find(x => x.id === '9:0'))!.label
   const unitWord = (u: string) => (u === 'm' ? c.unitMinutes : u === 'd' ? c.unitDays : c.unitHours)
 
   const cap =
@@ -710,8 +724,6 @@ function scheduleSummary(state: ScheduleState): string {
     case 'weekdays':
       return c.runsWeekdays(tl) + cap
     case 'weekly': {
-      const days = weekdays()
-
       return c.runsWeekly((days.find(w => w.id === state.weekday) || days[0]).label, tl) + cap
     }
 
@@ -754,6 +766,26 @@ interface SchedulePickerProps {
 
 function SchedulePicker({ state, setState }: SchedulePickerProps) {
   const b = useBots()
+  const { locale, t } = useI18n()
+  const days = weekdays(t.cron.days)
+
+  const times = useMemo(() => {
+    const formatter = new Intl.DateTimeFormat(locale, {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+      // Some ICU releases use Latin AM/PM for Korean's default day period.
+      dayPeriod: locale === 'ko' ? 'short' : undefined,
+      timeZone: 'UTC'
+    })
+
+    // These are wall-clock choices, not instants in the user's timezone. A
+    // fixed UTC date formats the existing h/m without DST or zone conversion.
+    return TIMES.map(time => ({
+      ...time,
+      label: formatter.format(Date.UTC(2000, 0, 1, time.h, time.m))
+    }))
+  }, [locale])
 
   const upd = (patch: Partial<ScheduleState>) =>
     setState(prev => ({
@@ -772,7 +804,7 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
             upd({
               freq: v
             }),
-          frequencies()
+          frequencies(b.cron)
         )}
         {needsTime
           ? pickerSelect(
@@ -781,7 +813,7 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
                 upd({
                   time: v
                 }),
-              TIMES
+              times
             )
           : null}
       </div>
@@ -806,15 +838,15 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
             [
               {
                 id: 'm',
-                label: 'minutes from now'
+                label: b.cron.unitFromNow(b.cron.unitMinutes)
               },
               {
                 id: 'h',
-                label: 'hours from now'
+                label: b.cron.unitFromNow(b.cron.unitHours)
               },
               {
                 id: 'd',
-                label: 'days from now'
+                label: b.cron.unitFromNow(b.cron.unitDays)
               }
             ]
           )}
@@ -827,7 +859,7 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
               upd({
                 weekday: v
               }),
-            weekdays()
+            days
           )
         : null}
       {state.freq === 'monthly'
@@ -866,15 +898,15 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
             [
               {
                 id: 'm',
-                label: 'minutes'
+                label: b.cron.unitMinutes
               },
               {
                 id: 'h',
-                label: 'hours'
+                label: b.cron.unitHours
               },
               {
                 id: 'd',
-                label: 'days'
+                label: b.cron.unitDays
               }
             ]
           )}
@@ -894,7 +926,7 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
       ) : null}
       {state.freq !== 'once' && state.freq !== 'advanced' ? (
         <div className="flex items-center gap-2">
-          <span className="text-xs text-(--ui-text-tertiary)">Stop after</span>
+          <span className="text-xs text-(--ui-text-tertiary)">{b.cron.stopAfterPrefix}</span>
           <Input
             className="h-7 w-16 text-xs"
             onChange={event =>
@@ -905,10 +937,10 @@ function SchedulePicker({ state, setState }: SchedulePickerProps) {
             placeholder="∞"
             value={state.repeatN}
           />
-          <span className="text-xs text-(--ui-text-tertiary)">runs (blank = forever)</span>
+          <span className="text-xs text-(--ui-text-tertiary)">{b.cron.stopAfterSuffix}</span>
         </div>
       ) : null}
-      <div className="text-[0.65rem] text-(--ui-text-quaternary)">{`${scheduleSummary(state)} \u00b7 ${composeSchedule(state) || '\u2014'}`}</div>
+      <div className="text-[0.65rem] text-(--ui-text-quaternary)">{`${scheduleSummary(state, b.cron, days, times)} \u00b7 ${composeSchedule(state) || '\u2014'}`}</div>
     </div>
   )
 }
@@ -974,7 +1006,7 @@ export function CreateRoutineDialog({ bot, open, onClose }: CreateRoutineDialogP
   const submit = async () => {
     const title = name.trim()
     const task = instruction.trim()
-    const inputError = routineInputError(title, task)
+    const inputError = routineInputError(title, task, b.cron)
 
     if (inputError) {
       setError(inputError)
@@ -1236,7 +1268,7 @@ export function RoutinesPane() {
 
   const staleNotice = error && !view.live && view.all.length ? b.cron.staleNotice : null
 
-  const filterHint = routineFilterHint(view.all, jobs)
+  const filterHint = routineFilterHint(view.all, jobs, b.cron.filterHint)
 
   return (
     <div className="flex h-full flex-col">

@@ -12,6 +12,7 @@ import {
   $reviewLoading,
   $reviewMaxChurn,
   $reviewOpen,
+  $reviewReadOnly,
   $reviewRevertTarget,
   $reviewScopeCwd,
   $reviewScopeTarget,
@@ -27,6 +28,7 @@ import {
   createOrOpenPr,
   generateCommitMessage,
   openReview,
+  openReviewForPath,
   pushChanges,
   refreshReview,
   refreshShipInfo,
@@ -39,7 +41,7 @@ import {
   toggleReviewTreeMode,
   unstageReviewFile
 } from './review'
-import { $currentCwd } from './session'
+import { $connection, $currentCwd } from './session'
 
 // requestOneShot is the only cross-module dependency that must be faked (it
 // reaches the gateway); everything else routes through window.hermesDesktop.git,
@@ -88,6 +90,7 @@ beforeEach(() => {
   requestOneShot.mockResolvedValue('generated message')
   // Reset stores touched across tests.
   $reviewOpen.set(false)
+  $reviewReadOnly.set(false)
   $reviewFiles.set([])
   $reviewLoading.set(false)
   $reviewIsRepo.set(true)
@@ -105,6 +108,131 @@ beforeEach(() => {
 
 afterEach(() => {
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  $connection.set(null)
+})
+
+describe('openReviewForPath repo re-homing (#86334 / #81722)', () => {
+  it('re-homes to the changed file\u2019s own repo when the session cwd is not a repo (umbrella dir)', async () => {
+    // Session cwd is an umbrella directory; git review there is empty, but the
+    // clicked file lives inside a child repository.
+    $currentCwd.set('/umbrella')
+
+    const list = vi.fn(async (cwd: string) =>
+      cwd === '/umbrella/child' ? { files: [file('note.md')] } : { files: [] }
+    )
+
+    const review = stubReview({ diff: vi.fn(async () => 'git diff'), list })
+
+    ;(window as unknown as { hermesDesktop: { gitRoot?: unknown } }).hermesDesktop.gitRoot = vi.fn(
+      async () => '/umbrella/child'
+    )
+
+    const fallback = { added: 1, diff: 'tool diff', path: '/umbrella/child/note.md', removed: 0 }
+
+    await openReviewForPath(fallback.path, null, 'main', [fallback])
+
+    // The pane must land on real, mutable git review of the child repo — not
+    // the read-only tool snapshot fallback.
+    expect($reviewScopeCwd.get()).toBe('/umbrella/child')
+    expect($reviewFiles.get().map(item => item.path)).toEqual(['note.md'])
+    expect($reviewReadOnly.get()).toBe(false)
+    expect($reviewSelectedPath.get()).toBe('note.md')
+    expect($reviewDiff.get()).toBe('git diff')
+    expect(review.list).toHaveBeenCalledWith('/umbrella/child', 'uncommitted', null)
+  })
+
+  it('re-homes over a remote gateway: git-root and review both resolve via the backend REST API', async () => {
+    // Desktop on one machine, gateway on another: desktopGit()/desktopGitRoot
+    // must route through /api/fs/git-root and /api/git/review/* on the REMOTE
+    // backend. The session cwd points at a stale workspace path whose review
+    // list is empty, while the changed file lives in a real repo on the
+    // gateway (#81722).
+    $connection.set({ mode: 'remote' } as never)
+    $currentCwd.set('/gw/workspace')
+
+    const api = vi.fn(async (request: { path: string }) => {
+      const { path } = request
+
+      if (path.startsWith('/api/fs/git-root')) {
+        return { root: '/gw/repo' }
+      }
+
+      if (path.startsWith('/api/git/review/list')) {
+        const cwd = new URL(path, 'http://x').searchParams.get('path')
+
+        return cwd === '/gw/repo' ? { base: null, files: [file('docs/note.md')] } : { base: null, files: [] }
+      }
+
+      if (path.startsWith('/api/git/review/diff')) {
+        return { diff: 'remote git diff' }
+      }
+
+      if (path.startsWith('/api/git/review/ship-info')) {
+        return { ghReady: false, pr: null }
+      }
+
+      throw new Error(`unexpected api call: ${path}`)
+    })
+
+    ;(window as unknown as { hermesDesktop?: unknown }).hermesDesktop = { api }
+
+    const fallback = { added: 1, diff: 'tool diff', path: '/gw/repo/docs/note.md', removed: 0 }
+
+    await openReviewForPath(fallback.path, null, 'main', [fallback])
+
+    expect($reviewScopeCwd.get()).toBe('/gw/repo')
+    expect($reviewFiles.get().map(item => item.path)).toEqual(['docs/note.md'])
+    expect($reviewReadOnly.get()).toBe(false)
+    expect($reviewSelectedPath.get()).toBe('docs/note.md')
+    expect($reviewDiff.get()).toBe('remote git diff')
+    // The probe went to the backend, not the local Electron bridge.
+    expect(api.mock.calls.some(([request]) => request.path.startsWith('/api/fs/git-root'))).toBe(true)
+  })
+
+  it('keeps the read-only tool snapshot when no repo root exists anywhere', async () => {
+    $currentCwd.set('/no-repo')
+    stubReview({ list: vi.fn(async () => ({ files: [] })) })
+    ;(window as unknown as { hermesDesktop: { gitRoot?: unknown } }).hermesDesktop.gitRoot = vi.fn(async () => null)
+
+    const fallback = { added: 1, diff: 'tool diff', path: '/no-repo/note.md', removed: 0 }
+
+    await openReviewForPath(fallback.path, null, 'main', [fallback])
+
+    expect($reviewScopeCwd.get()).toBeNull()
+    expect($reviewReadOnly.get()).toBe(true)
+    expect($reviewSelectedPath.get()).toBe(fallback.path)
+    expect($reviewDiff.get()).toBe('tool diff')
+  })
+
+  it('never second-guesses an explicit tile scope pin', async () => {
+    const review = stubReview({ list: vi.fn(async () => ({ files: [] })) })
+
+    const gitRoot = vi.fn(async () => '/elsewhere')
+
+    ;(window as unknown as { hermesDesktop: { gitRoot?: unknown } }).hermesDesktop.gitRoot = gitRoot
+
+    const fallback = { added: 1, diff: 'tool diff', path: '/tile/worktree/note.md', removed: 0 }
+
+    await openReviewForPath(fallback.path, '/tile/worktree', 'tile:one', [fallback])
+
+    expect(gitRoot).not.toHaveBeenCalled()
+    expect($reviewScopeCwd.get()).toBe('/tile/worktree')
+    expect(review.list).toHaveBeenCalledWith('/tile/worktree', 'uncommitted', null)
+  })
+
+  it('does not probe git-root for relative tool paths', async () => {
+    stubReview({ list: vi.fn(async () => ({ files: [] })) })
+
+    const gitRoot = vi.fn(async () => '/somewhere')
+
+    ;(window as unknown as { hermesDesktop: { gitRoot?: unknown } }).hermesDesktop.gitRoot = gitRoot
+
+    await openReviewForPath('relative/note.md', null, 'main', [
+      { added: 1, diff: 'tool diff', path: 'relative/note.md', removed: 0 }
+    ])
+
+    expect(gitRoot).not.toHaveBeenCalled()
+  })
 })
 
 describe('refreshReview', () => {
@@ -193,6 +321,256 @@ describe('$reviewMaxChurn', () => {
 })
 
 describe('selectReviewFile / clearReviewSelection', () => {
+  it('uses a tool diff as a read-only fallback when git has no matching file', async () => {
+    const review = stubReview({ list: vi.fn(async () => ({ files: [] })) })
+
+    const fallback = {
+      added: 1,
+      diff: '--- /dev/null\n+++ b/note.md\n@@ -0,0 +1 @@\n+hello',
+      path: '/workspace/note.md',
+      removed: 0
+    }
+
+    await openReviewForPath(fallback.path, null, 'main', [fallback])
+
+    expect(review.list).toHaveBeenCalledWith('/repo', 'uncommitted', null)
+    expect($reviewFiles.get()).toEqual([
+      { added: 1, path: '/workspace/note.md', removed: 0, staged: false, status: 'M' }
+    ])
+    expect($reviewSelectedPath.get()).toBe('/workspace/note.md')
+    expect($reviewDiff.get()).toBe(fallback.diff)
+    expect($reviewReadOnly.get()).toBe(true)
+
+    await stageReviewFile(fallback.path)
+    expect(review.stage).not.toHaveBeenCalled()
+  })
+
+  it('keeps a non-empty git review authoritative over a tool snapshot', async () => {
+    const gitFile = file('src/note.md')
+
+    const review = stubReview({
+      diff: vi.fn(async () => 'git diff'),
+      list: vi.fn(async () => ({ files: [gitFile] }))
+    })
+
+    const fallback = { added: 9, diff: 'tool diff', path: '/workspace/note.md', removed: 4 }
+
+    await openReviewForPath(gitFile.path, null, 'main', [fallback])
+
+    expect($reviewFiles.get()).toEqual([gitFile])
+    expect($reviewReadOnly.get()).toBe(false)
+    expect($reviewDiff.get()).toBe('git diff')
+    expect(review.diff).toHaveBeenCalled()
+  })
+
+  it('keeps git authoritative when every git row is excluded from display', async () => {
+    const review = stubReview({
+      list: vi.fn(async () => ({ files: [file('node_modules/generated.js')] }))
+    })
+
+    const fallback = { added: 1, diff: 'tool diff', path: '/workspace/note.md', removed: 0 }
+
+    await openReviewForPath(fallback.path, null, 'main', [fallback])
+
+    expect($reviewFiles.get()).toEqual([])
+    expect($reviewReadOnly.get()).toBe(false)
+    expect($reviewSelectedPath.get()).toBeNull()
+    expect($reviewDiff.get()).toBeNull()
+    expect(review.diff).not.toHaveBeenCalled()
+  })
+
+  it('replaces a selected absolute fallback diff when relative git becomes authoritative', async () => {
+    const gitPath = 'src/note.md'
+    const fallbackPath = '/repo/src/note.md'
+    const review = stubReview({ list: vi.fn(async () => ({ files: [] })) })
+    const fallback = { added: 1, diff: 'tool diff', path: fallbackPath, removed: 0 }
+    await openReviewForPath(fallbackPath, null, 'main', [fallback])
+    expect($reviewDiff.get()).toBe('tool diff')
+
+    let resolveDiff!: (value: string) => void
+    review.list.mockResolvedValue({ files: [file(gitPath)] })
+    review.diff.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          resolveDiff = resolve
+        })
+    )
+
+    const unsafeSnapshots: string[][] = []
+
+    const observeAuthority = () => {
+      const paths = $reviewFiles.get().map(candidate => candidate.path)
+
+      if (!$reviewReadOnly.get() && paths.includes(fallbackPath)) {
+        unsafeSnapshots.push(paths)
+      }
+    }
+
+    const unlistenReadOnly = $reviewReadOnly.listen(observeAuthority)
+    const unlistenFiles = $reviewFiles.listen(observeAuthority)
+
+    await refreshReview()
+
+    unlistenReadOnly()
+    unlistenFiles()
+
+    expect($reviewDiff.get()).toBeNull()
+    expect(unsafeSnapshots).toEqual([])
+    resolveDiff('git diff')
+    await vi.waitFor(() => expect($reviewDiff.get()).toBe('git diff'))
+    expect($reviewReadOnly.get()).toBe(false)
+    expect($reviewSelectedPath.get()).toBe(gitPath)
+    expect(review.diff).toHaveBeenCalledWith('/repo', gitPath, 'uncommitted', null, false)
+  })
+
+  it('replaces a selected fallback diff when a newer card reports the same path', async () => {
+    const review = stubReview({ list: vi.fn(async () => ({ files: [] })) })
+    const path = '/workspace/note.md'
+    await openReviewForPath(path, null, 'main', [{ added: 1, diff: 'old tool diff', path, removed: 0 }])
+
+    review.list.mockImplementationOnce(() => new Promise(() => undefined))
+    revealReview(null, 'main', [{ added: 2, diff: 'new tool diff', path, removed: 1 }])
+
+    expect($reviewDiff.get()).toBe('new tool diff')
+    expect($reviewReadOnly.get()).toBe(true)
+  })
+
+  it('drops fallback rows and selection before a normal reopen can expose git actions', async () => {
+    stubReview({ list: vi.fn(async () => ({ files: [] })) })
+    const fallback = { added: 1, diff: 'tool diff', path: '/workspace/note.md', removed: 0 }
+    await openReviewForPath(fallback.path, null, 'main', [fallback])
+    const unsafeSnapshots: string[][] = []
+
+    const observeAuthority = () => {
+      const paths = $reviewFiles.get().map(candidate => candidate.path)
+
+      if (!$reviewReadOnly.get() && paths.length > 0) {
+        unsafeSnapshots.push(paths)
+      }
+    }
+
+    const unlistenReadOnly = $reviewReadOnly.listen(observeAuthority)
+    const unlistenFiles = $reviewFiles.listen(observeAuthority)
+
+    closeReview()
+
+    unlistenReadOnly()
+    unlistenFiles()
+
+    expect(unsafeSnapshots).toEqual([])
+    expect($reviewFiles.get()).toEqual([])
+    expect($reviewSelectedPath.get()).toBeNull()
+    expect($reviewDiff.get()).toBeNull()
+    expect($reviewReadOnly.get()).toBe(false)
+  })
+
+  it('preserves an already-loaded git diff across periodic list refreshes', async () => {
+    const path = 'src/note.md'
+
+    const review = stubReview({
+      diff: vi.fn(async () => 'git diff'),
+      list: vi.fn(async () => ({ files: [file(path)] }))
+    })
+
+    await openReviewForPath(path)
+    review.diff.mockClear()
+
+    await refreshReview()
+
+    expect($reviewDiff.get()).toBe('git diff')
+    expect(review.diff).not.toHaveBeenCalled()
+  })
+
+  it('uses the tool snapshot when git list fails', async () => {
+    stubReview({
+      list: vi.fn(async () => {
+        throw new Error('not a repository')
+      })
+    })
+    const fallback = { added: 1, diff: 'tool diff', path: '/workspace/note.md', removed: 0 }
+
+    await openReviewForPath(fallback.path, null, 'main', [fallback])
+
+    expect($reviewFiles.get().map(item => item.path)).toEqual([fallback.path])
+    expect($reviewDiff.get()).toBe('tool diff')
+    expect($reviewIsRepo.get()).toBe(false)
+    expect($reviewReadOnly.get()).toBe(true)
+  })
+
+  it('keeps the new tool snapshot when an open pane moves to another scope', async () => {
+    const review = stubReview({ list: vi.fn(async () => ({ files: [] })) })
+    openReview('/old-worktree')
+    await refreshReview()
+    review.list.mockClear()
+    const fallback = { added: 1, diff: 'new scope diff', path: '/new-worktree/note.md', removed: 0 }
+
+    await openReviewForPath(fallback.path, '/new-worktree', 'tile:new', [fallback])
+
+    expect(review.list).toHaveBeenCalledWith('/new-worktree', 'uncommitted', null)
+    expect($reviewFiles.get().map(item => item.path)).toEqual([fallback.path])
+    expect($reviewDiff.get()).toBe(fallback.diff)
+    expect($reviewReadOnly.get()).toBe(true)
+  })
+
+  it('preserves the selected tool diff across periodic refreshes', async () => {
+    stubReview({ list: vi.fn(async () => ({ files: [] })) })
+    const fallback = { added: 1, diff: 'tool diff', path: '/workspace/note.md', removed: 0 }
+    await openReviewForPath(fallback.path, null, 'main', [fallback])
+
+    await refreshReview()
+
+    expect($reviewSelectedPath.get()).toBe(fallback.path)
+    expect($reviewDiff.get()).toBe(fallback.diff)
+    expect($reviewReadOnly.get()).toBe(true)
+  })
+
+  it('stays fail-closed while a new tool snapshot waits for git refresh', async () => {
+    const review = stubReview({ list: vi.fn(async () => ({ files: [] })) })
+    const first = { added: 1, diff: 'first diff', path: '/workspace/first.md', removed: 0 }
+    await openReviewForPath(first.path, null, 'main', [first])
+    expect($reviewReadOnly.get()).toBe(true)
+
+    let resolveList!: (value: { files: HermesReviewFile[] }) => void
+    review.list.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          resolveList = resolve
+        })
+    )
+    const second = { added: 1, diff: 'second diff', path: '/workspace/second.md', removed: 0 }
+
+    revealReview(null, 'main', [second])
+
+    expect($reviewReadOnly.get()).toBe(true)
+    resolveList({ files: [] })
+    await vi.waitFor(() => expect($reviewFiles.get().map(item => item.path)).toEqual([second.path]))
+  })
+
+  it('blocks every git mutation and ship action in tool-diff fallback mode', async () => {
+    const review = stubReview({ list: vi.fn(async () => ({ files: [] })) })
+    const fallback = { added: 1, diff: 'tool diff', path: '/workspace/note.md', removed: 0 }
+    await openReviewForPath(fallback.path, null, 'main', [fallback])
+
+    await stageReviewFile(fallback.path)
+    await unstageReviewFile(fallback.path)
+    await revertReviewFile(fallback.path)
+    requestRevert(fallback.path)
+    await confirmRevert()
+    await commitChanges('must not commit', { push: true })
+    expect(await generateCommitMessage()).toBe('')
+    await pushChanges()
+    await createOrOpenPr()
+
+    expect(review.stage).not.toHaveBeenCalled()
+    expect(review.unstage).not.toHaveBeenCalled()
+    expect(review.revert).not.toHaveBeenCalled()
+    expect(review.commit).not.toHaveBeenCalled()
+    expect(review.commitContext).not.toHaveBeenCalled()
+    expect(review.push).not.toHaveBeenCalled()
+    expect(review.createPr).not.toHaveBeenCalled()
+    expect(requestOneShot).not.toHaveBeenCalled()
+  })
+
   it('sets the selected path and fetches its diff', async () => {
     const review = stubReview({ diff: vi.fn(async () => 'the diff') })
 
@@ -274,6 +652,19 @@ describe('view state', () => {
 
     expect($reviewScopeCwd.get()).toBe('/tile-worktree')
     expect($reviewScopeTarget.get()).toBe('tile:project-b')
+  })
+
+  it('ordinary open clears a tool snapshot from an earlier card', async () => {
+    stubReview({ list: vi.fn(async () => ({ files: [] })) })
+    const fallback = { added: 1, diff: 'old tool diff', path: '/workspace/note.md', removed: 0 }
+    await openReviewForPath(fallback.path, null, 'main', [fallback])
+    expect($reviewReadOnly.get()).toBe(true)
+
+    openReview()
+    await refreshReview()
+
+    expect($reviewFiles.get()).toEqual([])
+    expect($reviewReadOnly.get()).toBe(false)
   })
 
   it('revealReview re-homes the origin when the repo stays the same', () => {
@@ -399,6 +790,50 @@ describe('revert confirm dialog', () => {
 
     await confirmRevert()
 
+    expect(review.revert).not.toHaveBeenCalled()
+  })
+})
+
+// The PR review asked for read-only to be enforced at the store action layer,
+// not just hidden in the UI: even if a keyboard shortcut, command palette entry,
+// or stray caller reaches a mutation action while the pane shows a read-only
+// tool-diff snapshot, no IPC mutation may fire.
+describe('read-only store-layer guard', () => {
+  it('every mutation action is a no-op while $reviewReadOnly is set', async () => {
+    const review = stubReview()
+    $reviewReadOnly.set(true)
+
+    await stageReviewFile('a.ts')
+    await unstageReviewFile('a.ts')
+    await revertReviewFile('a.ts')
+    requestRevert('a.ts')
+    await commitChanges('msg', { push: true })
+    await pushChanges()
+    await createOrOpenPr()
+    const generated = await generateCommitMessage()
+
+    expect(review.stage).not.toHaveBeenCalled()
+    expect(review.unstage).not.toHaveBeenCalled()
+    expect(review.revert).not.toHaveBeenCalled()
+    expect($reviewRevertTarget.get()).toBeUndefined()
+    expect(review.commit).not.toHaveBeenCalled()
+    expect(review.push).not.toHaveBeenCalled()
+    expect(review.createPr).not.toHaveBeenCalled()
+    expect(review.commitContext).not.toHaveBeenCalled()
+    expect(requestOneShot).not.toHaveBeenCalled()
+    expect(generated).toBe('')
+    expect($reviewShipBusy.get()).toBe(false)
+    expect($reviewCommitMsgBusy.get()).toBe(false)
+  })
+
+  it('confirmRevert refuses a pending revert if read-only flipped on after the request', async () => {
+    const review = stubReview()
+    requestRevert('a.ts')
+    $reviewReadOnly.set(true)
+
+    await confirmRevert()
+
+    expect($reviewRevertTarget.get()).toBeUndefined()
     expect(review.revert).not.toHaveBeenCalled()
   })
 })

@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.computer_use import cua_backend_driver as _driver
@@ -197,6 +197,7 @@ class _CuaDriverSession:
         # #47072.
         self._capabilities: Dict[str, set] = {}
         self._tool_schemas: Dict[str, Dict[str, Any]] = {}
+        self._tool_schema_validators: Dict[str, Any] = {}
         self._capability_version, self._ready_event = "", threading.Event()
         self._shutdown_event: Optional[asyncio.Event] = None  # created on bridge loop
         self._lifecycle_future = None  # concurrent.futures.Future
@@ -265,7 +266,7 @@ class _CuaDriverSession:
     async def _populate_capabilities(self, session: Any) -> None:
         """Cache per-tool capability sets, input schemas and capability_version from tools/list. Soft
         prerequisite: on failure the map stays empty (capability False)."""
-        self._capabilities, self._tool_schemas, self._capability_version = {}, {}, ""
+        self._capabilities, self._tool_schemas, self._tool_schema_validators, self._capability_version = {}, {}, {}, ""
         try:
             tools_list = await session.list_tools()
             for tool in getattr(tools_list, "tools", []) or []:
@@ -373,6 +374,34 @@ class _CuaDriverSession:
         properties = schema.get("properties") if isinstance(schema, dict) else None
         return isinstance(properties, dict) and property_name in properties
 
+    def _input_schema_accepts(self, tool: str, args: Dict[str, Any], required_properties: tuple[str, ...]) -> bool:
+        """The current live schema explicitly declares every required property and accepts the complete payload."""
+        schema = getattr(self, "_tool_schemas", {}).get(tool)
+        if not isinstance(schema, dict):
+            return False
+        properties = schema.get("properties")
+        if not isinstance(properties, dict) or any(name not in properties for name in required_properties):
+            return False
+        try:
+            from jsonschema.validators import validator_for
+            validators = getattr(self, "_tool_schema_validators", None)
+            if validators is None:
+                self._tool_schema_validators = validators = {}
+            validator = validators.get(tool)
+            if validator is None:
+                # validator_for otherwise falls back to the latest draft when an explicit dialect URI is unknown.
+                # Unknown keywords could then be treated as annotations, so an unrecognised declaration must refuse.
+                validator_cls = (validator_for(schema, default=cast(Any, None)) if "$schema" in schema
+                                 else validator_for(schema))
+                if validator_cls is None:
+                    return False
+                validator_cls.check_schema(schema)
+                validators[tool] = validator = validator_cls(schema)
+            return validator.is_valid(args)
+        except Exception:
+            logger.debug("cua-driver %s input schema could not validate guarded payload", tool, exc_info=True)
+            return False
+
     @property
     def capabilities_discovered(self) -> bool:
         """tools/list populated the map; when False ``_has_tool`` is untrustworthy."""
@@ -426,7 +455,7 @@ class _CuaDriverSession:
                 except Exception as e:
                     logger.debug("cua-driver session cleanup before reconnect failed: %s", e)
                 self._started = False
-                self._capabilities, self._tool_schemas, self._capability_version = {}, {}, ""
+                self._capabilities, self._tool_schemas, self._tool_schema_validators, self._capability_version = {}, {}, {}, ""
                 self._start_lifecycle_locked()
                 self._started = True
             if clear_timeout_suspect:
@@ -465,7 +494,8 @@ class _CuaDriverSession:
                 with contextlib.suppress(OSError):
                     os.remove(shot_file)
 
-    def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+    def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0,
+                  schema_guard: Optional[tuple[tuple[str, ...], str, str]] = None) -> Dict[str, Any]:
         if name not in self._LIFECYCLE_CALLS:
             # A prior MCP timeout marks the session suspect (possibly wedged): recreate it so one timeout never
             # poisons the run. Healthy sessions are never restarted here.
@@ -479,6 +509,12 @@ class _CuaDriverSession:
                     name, timeout, "cua-driver session not active on %s; (re)starting before call", restart=False)
         if not self._started:
             raise RuntimeError("cua-driver session not started")
+        if schema_guard is not None:
+            required_properties, code, message = schema_guard
+            if not self._input_schema_accepts(name, args, required_properties):
+                return _tool_envelope(message, [], {
+                    "ok": False, "code": code, "message": message, "operation": name,
+                }, True, [])
         try:
             result = self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
         except concurrent.futures.TimeoutError as e:

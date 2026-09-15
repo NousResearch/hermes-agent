@@ -1366,11 +1366,13 @@ export function useMainApp(gw: GatewayClient) {
       stickyPrompt,
       turnStartedAt: ui.sid ? turnStartedAt : null,
       // CLI parity: the classic prompt_toolkit status bar shows a red dot
-      // on REC (cli.py:_get_voice_status_fragments line 2344).
+      // on REC (cli.py:_get_voice_status_fragments line 2344). Both marks come
+      // from the glyph tier, and the status rule's tint rule matches the same
+      // table — never a literal.
       voiceLabel: voiceRecording
-        ? '● REC'
+        ? `${ui.theme.glyphs.bullet} REC`
         : voiceProcessing
-          ? '◉ STT'
+          ? `${ui.theme.glyphs.focus} STT`
           : `voice ${voiceEnabled ? 'on' : 'off'}${voiceTts ? ' [tts]' : ''}`
     }),
     [

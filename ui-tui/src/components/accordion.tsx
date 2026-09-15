@@ -44,7 +44,7 @@ export function Accordion({
   return (
     <Box flexDirection="column">
       <Box onClick={toggle}>
-        <Text color={t.color.accent}>{isOpen ? '▾ ' : '▸ '}</Text>
+        <Text color={t.color.accent}>{isOpen ? `${t.glyphs.chevronOpen} ` : `${t.glyphs.chevronClosed} `}</Text>
         <Text bold color={t.color.accent}>
           {title}
         </Text>

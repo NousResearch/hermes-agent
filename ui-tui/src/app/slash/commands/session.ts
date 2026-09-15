@@ -14,8 +14,9 @@ import type {
   VoiceToggleResponse
 } from '../../../gatewayTypes.js'
 import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
+import { DEFAULT_GLYPH_PRESET, GLYPH_PRESETS, GLYPH_TABLES, type GlyphPreset } from '../../../theme.js'
 import type { PanelSection } from '../../../types.js'
-import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
+import { applyConfiguredGlyphPreset, applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
@@ -519,6 +520,53 @@ export const sessionCommands: SlashCommand[] = [
           // to re-apply config.full.
           patchUiState({ indicatorStyle: value as IndicatorStyle })
           ctx.transcript.sys(`indicator → ${r.value}`)
+        })
+      )
+    }
+  },
+
+  {
+    help: 'pick the chrome glyph tier: nerd (Nerd Font icons), unicode (classic), ascii',
+    name: 'glyphs',
+    usage: `/glyphs [${GLYPH_PRESETS.join('|')}]`,
+    run: (arg, ctx) => {
+      const value = arg.trim().toLowerCase()
+
+      // Live sample rows: every tier's chrome on one line, so the pick is made
+      // from what THIS terminal actually renders (the same contract as the
+      // reference glyph wizard — "pick the row that renders cleanly").
+      const rows = GLYPH_PRESETS.map(preset => {
+        const g = GLYPH_TABLES[preset as GlyphPreset]
+
+        return `  ${preset.padEnd(8)}${g.status.running} ${g.ok} ${g.fail} ${g.warn} ${g.railMid} ${g.railLast} ${g.railPipe} ${g.spinner[0]} ${g.tool}`
+      }).join('\n')
+
+      if (!value) {
+        return ctx.gateway
+          .rpc<ConfigGetValueResponse>('config.get', { key: 'glyphs' })
+          .then(
+            ctx.guarded<ConfigGetValueResponse>(r =>
+              ctx.transcript.sys(
+                `glyphs: ${r.value || DEFAULT_GLYPH_PRESET}\nPick the row that renders cleanly in your terminal:\n${rows}`
+              )
+            )
+          )
+      }
+
+      if (!(GLYPH_PRESETS as readonly string[]).includes(value)) {
+        return ctx.transcript.sys(`usage: /glyphs [${GLYPH_PRESETS.join('|')}]`)
+      }
+
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'glyphs', value }).then(
+        ctx.guarded<ConfigSetResponse>(r => {
+          if (!r.value) {
+            return
+          }
+
+          // Hot-swap the running TUI immediately (mirrors /indicator) instead
+          // of waiting for the 5s mtime poll to re-apply config.full.
+          applyConfiguredGlyphPreset(value)
+          ctx.transcript.sys(`glyphs → ${r.value}`)
         })
       )
     }

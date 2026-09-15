@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 
 from utils import is_truthy_value
-from hermes_constants import INDICATOR_STYLES
+from hermes_constants import GLYPH_PRESETS, INDICATOR_STYLES
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +198,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("indicator", "Pick the TUI busy-indicator style", "Configuration",
                cli_only=True, args_hint=f"[{'|'.join(INDICATOR_STYLES)}]",
                subcommands=INDICATOR_STYLES, desktop="terminal"),
+    CommandDef("glyphs", "Pick the TUI chrome glyph tier (nerd/unicode/ascii)", "Configuration",
+               cli_only=True, args_hint=f"[{'|'.join(GLYPH_PRESETS)}]",
+               subcommands=GLYPH_PRESETS, desktop="terminal"),
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status"),
                desktop="composer-voice"),

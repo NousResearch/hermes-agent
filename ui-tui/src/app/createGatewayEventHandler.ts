@@ -24,7 +24,17 @@ import { topLevelSubagents } from '../lib/subagentTree.js'
 import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '../lib/terminalModes.js'
 import { formatAbandonedClarify, formatAbandonedClarifyBatch, formatToolCall } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
-import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
+import {
+  defaultThemeForCurrentBackground,
+  fromSkin,
+  getGlyphPreset,
+  normalizeGlyphPreset,
+  setGlyphPreset,
+  skinIsLight,
+  type Theme,
+  themeToneHex,
+  themeWithGlyphPreset
+} from '../theme.js'
 import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
@@ -167,6 +177,12 @@ const themesEqual = (a: Theme, b: Theme) => {
   return (
     a.brand.name === b.brand.name &&
     a.brand.prompt === b.brand.prompt &&
+    a.brand.icon === b.brand.icon &&
+    a.brand.tool === b.brand.tool &&
+    // Glyph tables are module-level singletons, so identity is the comparison:
+    // a preset change must register as "changed" or the anti-tearing redraw
+    // never fires and the old chrome stays painted (#111986).
+    a.glyphs === b.glyphs &&
     a.bannerLogo === b.bannerLogo &&
     a.bannerHero === b.bannerHero
   )
@@ -253,6 +269,27 @@ export function applyConfiguredTuiTheme(raw: unknown): void {
   }
 
   reapplyTheme()
+}
+
+/**
+ * Apply `display.tui_glyph_preset` (nerd | unicode | ascii). The tier is on
+ * the THEME (`theme.glyphs`), so a change commits a re-derived theme — the
+ * same path skins use, which repaints every chrome consumer and caches the
+ * tier for the next launch's first frame. No-op when the tier is unchanged, so
+ * the 5 s config poll stays paint-free.
+ */
+export function applyConfiguredGlyphPreset(raw: unknown): void {
+  const preset = normalizeGlyphPreset(raw)
+
+  if (preset === getGlyphPreset()) {
+    return
+  }
+
+  setGlyphPreset(preset)
+  // Re-derive rather than patch: a later skin/background resolution rebuilds
+  // the theme from `activeGlyphPreset`, and committing the same shape here
+  // keeps those two paths identical.
+  commitTheme(themeWithGlyphPreset(getUiState().theme, preset))
 }
 
 let themeBackgroundSyncStarted = false
@@ -1504,7 +1541,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           const msgs: Msg[] = failed
             ? [
                 ...finalMessages.filter(
-                  (m, i) => !(i === finalMessages.length - 1 && m.role === 'assistant' && isBareErrorText(m.text, payload.error))
+                  (m, i) =>
+                    !(
+                      i === finalMessages.length - 1 &&
+                      m.role === 'assistant' &&
+                      isBareErrorText(m.text, payload.error)
+                    )
                 ),
                 { role: 'assistant', text: describeTurnFailure(payload) }
               ]

@@ -101,6 +101,10 @@ export interface ConfigDisplayConfig {
   tui_agents_nudge?: boolean
   tui_auto_resume_recent?: boolean
   tui_compact?: boolean
+  /** Chrome glyph tier: nerd | unicode | ascii. Same validation story as
+   *  `tui_status_indicator` — the wire type stays `string` and
+   *  `normalizeGlyphPreset` owns the fallback. */
+  tui_glyph_preset?: string
   /** Legacy alias for display.mouse_tracking. */
   tui_mouse?: boolean | null | number | string
   // Forward-compat: backend may send styles this client doesn't know yet —

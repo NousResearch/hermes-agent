@@ -836,6 +836,12 @@ DEFAULT_CONFIG = {
         "language": "en",
         # TUI busy indicator: kaomoji | emoji | unicode (braille) | ascii. `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
+        # TUI chrome glyph tier: nerd (Nerd Font icons) | unicode (classic Hermes glyphs) |
+        # ascii (`[ok]`, `|-`, `|`) for terminals that can't render either without tofu.
+        # `/glyphs <tier>` inside the TUI — run it bare to print every tier's sample row and
+        # pick the one your terminal renders cleanly. Chrome only: status icons, tree rails,
+        # spinners and marks. Default = the classic glyphs, so upgrading changes nothing.
+        "tui_glyph_preset": "unicode",
         # Seconds between idle prompt_toolkit redraws in the classic CLI; keeps wall-clock
         # status-bar read-outs ticking and the bottom chrome from going stale. 0 disables it if it
         # fights terminal auto-scroll in non-fullscreen mode.

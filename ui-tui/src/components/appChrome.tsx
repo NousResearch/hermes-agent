@@ -16,7 +16,7 @@ import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
-import type { Theme } from '../theme.js'
+import { GLYPH_TABLES, spinnerFrames, type Theme, type ThemeGlyphs } from '../theme.js'
 import type { Msg } from '../types.js'
 
 import { scrollbarColors } from './overlayPrimitives.js'
@@ -48,7 +48,7 @@ interface IndicatorRender {
   showVerb: boolean
 }
 
-const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender => {
+const renderIndicator = (style: IndicatorStyle, tick: number, glyphs: ThemeGlyphs): IndicatorRender => {
   if (style === 'kaomoji') {
     return { frame: FACES[tick % FACES.length] ?? '', intervalMs: FACE_TICK_MS, showVerb: true }
   }
@@ -69,12 +69,14 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
     }
   }
 
-  // 'unicode' — braille spinner (fixed 1-col).  Authored interval is
-  // ~80ms; honour it but bound below at a safe minimum so React
-  // re-renders stay reasonable.  This style is for users who want
-  // the cleanest possible status, so no verb rotation either.
+  // 'unicode' — the tier's spinner cycle: braille by default, `|/-\` on the
+  // ascii floor (see spinnerFrames).  Fixed 1-col either way.  Authored
+  // braille interval is ~80ms; honour it but bound below at a safe minimum so
+  // React re-renders stay reasonable.  This style is for users who want the
+  // cleanest possible status, so no verb rotation either.
   const spinner = unicodeSpinners.braille
-  const frame = spinner.frames[tick % spinner.frames.length] ?? '⠋'
+  const frames = spinnerFrames(glyphs, spinner.frames)
+  const frame = frames[tick % frames.length] ?? '⠋'
 
   return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), showVerb: false }
 }
@@ -112,7 +114,9 @@ export const MAX_DURATION_WIDTH = Math.max(
 // ascii add a fixed-width verb; any style adds a bounded elapsed-time tail.
 // Mirrors FaceTicker's `frame + verbSegment + durationSegment` layout.
 export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean): number => {
-  const { showVerb } = renderIndicator(style, 0)
+  // Every tier's spinner frame is one column, so the table only decides
+  // verb visibility here (the `unicode` style is verb-less).
+  const { showVerb } = renderIndicator(style, 0, GLYPH_TABLES.unicode)
   const verb = showVerb ? 1 + VERB_PAD_LEN : 0
   // ` · ` plus the bounded clock (e.g. `59m 59s`).
   const duration = hasDuration ? stringWidth(' · ') + MAX_DURATION_WIDTH : 0
@@ -122,11 +126,13 @@ export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean):
 
 function FaceTicker({
   color,
+  glyphs,
   startedAt,
   style,
   verbOverride
 }: {
   color: string
+  glyphs: ThemeGlyphs
   startedAt?: null | number
   style: IndicatorStyle
   verbOverride?: string
@@ -141,7 +147,7 @@ function FaceTicker({
   // for verb-less styles like `unicode`) without leaving the previous
   // timer dangling. A frozen override (idle compaction) always shows the
   // verb so "compacting…" is visible even in unicode style (#97239).
-  const { intervalMs, showVerb } = renderIndicator(style, 0)
+  const { intervalMs, showVerb } = renderIndicator(style, 0, glyphs)
   const freezeVerb = Boolean(verbOverride)
   const displayVerb = freezeVerb || showVerb
 
@@ -176,7 +182,7 @@ function FaceTicker({
     }
   }, [displayVerb, freezeVerb, intervalMs, isOccluded])
 
-  const { frame } = renderIndicator(style, tick)
+  const { frame } = renderIndicator(style, tick, glyphs)
   const verb = verbOverride ?? VERBS[verbTick % VERBS.length] ?? ''
   const verbSegment = displayVerb ? ` ${padVerb(verb)}` : ''
   // Leading space keeps a gap between the frame and the duration when the
@@ -240,10 +246,11 @@ function batteryColor(info: BatteryInfo, t: Theme): string {
   return t.color.muted
 }
 
-// Compact battery label: a bolt while charging, else a battery glyph.
+// Compact battery label: a bolt while charging, else a battery glyph — both
+// from the active tier (the emoji pair is the unicode tier's).
 // Renders `--` for an unknown percent so a null can never surface as "null%".
-function batteryLabel(info: BatteryInfo): string {
-  return `${info.plugged ? '⚡' : '🔋'} ${info.percent ?? '--'}%`
+function batteryLabel(info: BatteryInfo, g: ThemeGlyphs): string {
+  return `${info.plugged ? g.bolt : g.battery} ${info.percent ?? '--'}%`
 }
 
 // Colour a credits notice by its level. The notice TEXT already carries its
@@ -266,11 +273,11 @@ function noticeColor(level: Notice['level'], t: Theme): string {
   return t.color.accent
 }
 
-function ctxBar(pct: number | undefined, w = 10) {
+function ctxBar(pct: number | undefined, g: ThemeGlyphs, w = 10) {
   const p = Math.max(0, Math.min(100, pct ?? 0))
   const filled = Math.round((p / 100) * w)
 
-  return '█'.repeat(filled) + '░'.repeat(w - filled)
+  return g.barFilled.repeat(filled) + g.barEmpty.repeat(w - filled)
 }
 
 // `minLeftContent` is the display width of the high-priority left segments
@@ -366,7 +373,7 @@ function SpawnHud({ t }: { t: Theme }) {
   const pieces: string[] = []
 
   if (delegation.paused) {
-    pieces.push('⏸ paused')
+    pieces.push(`${t.glyphs.pause} paused`)
   }
 
   if (totals.descendantCount > 0) {
@@ -380,7 +387,7 @@ function SpawnHud({ t }: { t: Theme }) {
       const extra = Math.max(0, active - widestLevel)
       const widthLabel = maxConc ? `${widestLevel}/${maxConc}` : `${widestLevel}`
       const suffix = extra > 0 ? `+${extra}` : ''
-      pieces.push(`⚡${widthLabel}${suffix}`)
+      pieces.push(`${t.glyphs.tool}${widthLabel}${suffix}`)
     }
   }
 
@@ -388,7 +395,7 @@ function SpawnHud({ t }: { t: Theme }) {
 
   return (
     <Text color={color}>
-      {atCap ? ' │ ⚠ ' : ' │ '}
+      {atCap ? ` ${t.glyphs.sep} ${t.glyphs.warn} ` : ` ${t.glyphs.sep} `}
       {pieces.join(' ')}
     </Text>
   )
@@ -415,7 +422,7 @@ function SessionDuration({ startedAt }: { startedAt: number }) {
   return fmtDuration(now - startedAt)
 }
 
-function IdleSince({ endedAt }: { endedAt: number }) {
+function IdleSince({ endedAt, ok }: { endedAt: number; ok: string }) {
   // Time since the last final agent response. Re-ticks every second like
   // SessionDuration so the read-out stays live while the session idles.
   const [now, setNow] = useState(() => Date.now())
@@ -435,7 +442,7 @@ function IdleSince({ endedAt }: { endedAt: number }) {
     return () => clearInterval(id)
   }, [endedAt, isOccluded])
 
-  return `✓ ${fmtDuration(now - endedAt)}`
+  return `${ok} ${fmtDuration(now - endedAt)}`
 }
 
 const effortLabel = (effort?: string) => {
@@ -514,6 +521,9 @@ export function StatusRule({
   const contextMark = usage.context_estimated ? '~' : ''
   const barColor = ctxBarColor(pct, t)
   const segs = statusBarSegments(cols)
+  // Chrome glyph tier, hoisted: this function reads a dozen slots and the
+  // short local keeps the context/cache/tps lines inside the print width.
+  const G = t.glyphs
 
   // display.status_bar.fields visibility gate (same key + names as the
   // classic CLI bar). null = user hasn't customized → everything shows.
@@ -532,14 +542,14 @@ export function StatusRule({
           : ''
       : ''
 
-  const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct) : ''
+  const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct, t.glyphs) : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast)
 
   // Battery read-out — the first (pinned) status-bar element when enabled.
   const showBattery = !!battery && battery.available && battery.percent != null && ok('battery')
-  const batteryText = showBattery ? batteryLabel(battery!) : ''
+  const batteryText = showBattery ? batteryLabel(battery!, t.glyphs) : ''
   const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
-  const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
+  const batteryWidth = showBattery ? stringWidth(`${batteryText} ${G.sep} `) : 0
 
   // A credits notice replaces the status/verb slot, but only when idle —
   // while busy the FaceTicker always wins (R1 render priority). The notice
@@ -565,12 +575,12 @@ export function StatusRule({
       : stringWidth(status)
 
   const essentialWidth =
-    stringWidth('─ ') +
+    stringWidth(`${G.rule} `) +
     batteryWidth +
     slotWidth +
-    stringWidth(' │ ') +
+    stringWidth(` ${G.sep} `) +
     stringWidth(modelText) +
-    (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
+    (ctxLabel ? stringWidth(` ${G.sep} `) + stringWidth(ctxLabel) : 0)
 
   const rightLabel = sessionTitle && ok('title') ? ` ${sessionTitle} ` : cwdLabel
   const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, rightLabel, essentialWidth)
@@ -580,7 +590,7 @@ export function StatusRule({
   // descending priority order — bar, duration, compressions, voice, session
   // count, bg, cost. Lower-priority segments drop first and nothing truncates
   // mid-segment, so status/model/context are never crushed.
-  const SEP = stringWidth(' │ ')
+  const SEP = stringWidth(` ${G.sep} `)
   let tailBudget = Math.max(0, leftWidth - essentialWidth)
 
   const fits = (w: number) => {
@@ -602,7 +612,7 @@ export function StatusRule({
   // raises remaining nets a negative Δ (honest).
   const devCreditsText =
     typeof usage.dev_credits_spent_micros === 'number'
-      ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
+      ? `${G.delta} ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
       : ''
 
   const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${contextMark}${pct}%` : ''}`))
@@ -612,7 +622,7 @@ export function StatusRule({
   // (the FaceTicker's elapsed tail covers the live turn) and before the first
   // turn completes. Shares the duration breakpoint and width reservation.
   const showIdle =
-    segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
+    segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth(`${G.ok} `) + MAX_DURATION_WIDTH)
 
   const showCompressions =
     segs.compressions && ok('compressions') && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
@@ -620,11 +630,11 @@ export function StatusRule({
   // Cache-hit % + rolling latency / tokens-per-sec — mirrored from the classic
   // CLI bar (PR #98250). The server omits the keys when no data exists (zero
   // cache reads, Codex app-server with no latency), so these self-hide.
-  const cacheHitText = typeof usage.cache_hit_pct === 'number' ? `◎ ${usage.cache_hit_pct}%` : ''
+  const cacheHitText = typeof usage.cache_hit_pct === 'number' ? `${G.cache} ${usage.cache_hit_pct}%` : ''
   const showCacheHit = segs.cacheHit && ok('cache_hit') && !!cacheHitText && fits(SEP + stringWidth(cacheHitText))
-  const latencyText = typeof usage.avg_latency_s === 'number' ? `◷ ${usage.avg_latency_s.toFixed(1)}s` : ''
+  const latencyText = typeof usage.avg_latency_s === 'number' ? `${G.clock} ${usage.avg_latency_s.toFixed(1)}s` : ''
   const showLatency = segs.latency && ok('latency') && !!latencyText && fits(SEP + stringWidth(latencyText))
-  const tpsText = typeof usage.avg_tps === 'number' ? `↑ ${Math.round(usage.avg_tps)} t/s` : ''
+  const tpsText = typeof usage.avg_tps === 'number' ? `${G.up} ${Math.round(usage.avg_tps)} t/s` : ''
   const showTps = segs.tps && ok('tps') && !!tpsText && fits(SEP + stringWidth(tpsText))
 
   const showVoice = segs.voice && ok('voice') && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
@@ -633,7 +643,7 @@ export function StatusRule({
   const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
 
   const showSubagents =
-    segs.subagents && ok('bg_subagents') && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
+    segs.subagents && ok('bg_subagents') && subagentCount > 0 && fits(SEP + stringWidth(`${G.chain} ${subagentCount}`))
 
   // Parked-background reassurance: a top-level delegate_task runs in the
   // background, so the turn ends (idle) while the subagent keeps working and its
@@ -642,7 +652,9 @@ export function StatusRule({
   // Width-budgeted like every tail segment, so it drops first on a tight
   // terminal where ⛓ already carries the signal.
   const resumeHintText =
-    subagentCount === 1 ? '↩ resumes when subagent finishes' : `↩ resumes when ${subagentCount} subagents finish`
+    subagentCount === 1
+      ? `${G.back} resumes when subagent finishes`
+      : `${G.back} resumes when ${subagentCount} subagents finish`
 
   const showResumeHint = !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
   // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,
@@ -661,10 +673,16 @@ export function StatusRule({
 
   const sessionCountNode = onSessionCountClick ? (
     <Box flexShrink={0} onClick={handleSessionCountClick}>
-      <Text color={t.color.accent}> │ {sessionCountText}</Text>
+      <Text color={t.color.accent}>
+        {' '}
+        {G.sep} {sessionCountText}
+      </Text>
     </Box>
   ) : (
-    <Text color={t.color.muted}> │ {sessionCountText}</Text>
+    <Text color={t.color.muted}>
+      {' '}
+      {G.sep} {sessionCountText}
+    </Text>
   )
 
   return (
@@ -675,16 +693,17 @@ export function StatusRule({
             renders as a separate shrinkable box below so a long notice
             ellipsizes instead of crushing model │ ctx (R3-M7). */}
         <Box flexDirection="row" flexShrink={0}>
-          <Text color={t.color.border}>{'─ '}</Text>
+          <Text color={t.color.border}>{`${G.rule} `}</Text>
           {showBattery ? (
             <Text color={batteryColorVal}>
               {batteryText}
-              <Text color={t.color.muted}>{' │ '}</Text>
+              <Text color={t.color.muted}>{` ${G.sep} `}</Text>
             </Text>
           ) : null}
           {busy ? (
             <FaceTicker
               color={statusColor}
+              glyphs={t.glyphs}
               startedAt={turnStartedAt}
               style={indicatorStyle}
               verbOverride={compacting ? 'compacting' : undefined}
@@ -713,44 +732,44 @@ export function StatusRule({
             </Text>
           ) : null}
           <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
+            {` ${G.sep} `}
             {modelText}
           </Text>
           {ctxLabel ? (
             <Text color={t.color.muted} wrap="truncate-end">
-              {' │ '}
+              {` ${G.sep} `}
               {ctxLabel}
             </Text>
           ) : null}
         </Box>
         {showFocus ? (
           <Box flexDirection="row" flexShrink={0}>
-            <Text color={t.color.muted}>{' │ '}</Text>
-            <Text color={t.color.warn}>◉ focus</Text>
+            <Text color={t.color.muted}>{` ${G.sep} `}</Text>
+            <Text color={t.color.warn}>{G.focus} focus</Text>
           </Box>
         ) : null}
         {showBar ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
+            {` ${G.sep} `}
             <Text color={barColor}>[{bar}]</Text>{' '}
             <Text color={barColor}>{pct != null ? `${contextMark}${pct}%` : ''}</Text>
           </Text>
         ) : null}
         {showDuration ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
+            {` ${G.sep} `}
             <SessionDuration startedAt={sessionStartedAt!} />
           </Text>
         ) : null}
         {showIdle ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            <IdleSince endedAt={lastTurnEndedAt!} />
+            {` ${G.sep} `}
+            <IdleSince endedAt={lastTurnEndedAt!} ok={G.ok} />
           </Text>
         ) : null}
         {showCompressions ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
+            {` ${G.sep} `}
             <Text color={compressions >= 10 ? t.color.error : compressions >= 5 ? t.color.warn : t.color.muted}>
               cmp {compressions}
             </Text>
@@ -758,7 +777,7 @@ export function StatusRule({
         ) : null}
         {showCacheHit ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
+            {` ${G.sep} `}
             <Text
               color={
                 usage.cache_hit_pct! >= 70
@@ -774,48 +793,53 @@ export function StatusRule({
         ) : null}
         {showLatency ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
+            {` ${G.sep} `}
             {latencyText}
           </Text>
         ) : null}
         {showTps ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
+            {` ${G.sep} `}
             {tpsText}
           </Text>
         ) : null}
         {showVoice ? (
           <Text
             color={
-              voiceLabel!.startsWith('●') ? t.color.error : voiceLabel!.startsWith('◉') ? t.color.warn : t.color.muted
+              voiceLabel!.startsWith(G.bullet)
+                ? t.color.error
+                : voiceLabel!.startsWith(G.focus)
+                  ? t.color.warn
+                  : t.color.muted
             }
             wrap="truncate-end"
           >
-            {' │ '}
+            {` ${G.sep} `}
             {voiceLabel}
           </Text>
         ) : null}
         {showSessionCount ? sessionCountNode : null}
         {showBg ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
+            {` ${G.sep} `}
             {bgCount} bg
           </Text>
         ) : null}
         {showSubagents ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}⛓ {subagentCount}
+            {` ${G.sep} `}
+            {G.chain} {subagentCount}
           </Text>
         ) : null}
         {showResumeHint ? (
           <Text color={t.color.muted} dim wrap="truncate-end">
-            {' │ '}
+            {` ${G.sep} `}
             {resumeHintText}
           </Text>
         ) : null}
         {showDevCredits ? (
           <Text color={t.color.accent} wrap="truncate-end">
-            {' │ '}
+            {` ${G.sep} `}
             {devCreditsText}
           </Text>
         ) : null}
@@ -827,7 +851,7 @@ export function StatusRule({
 
       {rightWidth > 0 ? (
         <>
-          <Text color={t.color.border}>{separatorWidth >= 3 ? ' ─ ' : ' '}</Text>
+          <Text color={t.color.border}>{separatorWidth >= 3 ? ` ${G.rule} ` : ' '}</Text>
           <Box flexShrink={0} width={rightWidth}>
             <Text bold={!!sessionTitle} color={sessionTitle ? t.color.accent : t.color.label} wrap="truncate-end">
               {rightLabel}
@@ -917,15 +941,19 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
       {!scrollable ? null : (
         <>
           {thumbTop > 0 ? (
-            <Text color={trackColor}>{`${'│\n'.repeat(Math.max(0, thumbTop - 1))}${thumbTop > 0 ? '│' : ''}`}</Text>
+            <Text
+              color={trackColor}
+            >{`${`${t.glyphs.railPipe}\n`.repeat(Math.max(0, thumbTop - 1))}${thumbTop > 0 ? t.glyphs.railPipe : ''}`}</Text>
           ) : null}
           {thumb > 0 ? (
-            <Text color={thumbColor}>{`${'┃\n'.repeat(Math.max(0, thumb - 1))}${thumb > 0 ? '┃' : ''}`}</Text>
+            <Text
+              color={thumbColor}
+            >{`${`${t.glyphs.scrollbar}\n`.repeat(Math.max(0, thumb - 1))}${thumb > 0 ? t.glyphs.scrollbar : ''}`}</Text>
           ) : null}
           {vp - thumbTop - thumb > 0 ? (
             <Text
               color={trackColor}
-            >{`${'│\n'.repeat(Math.max(0, vp - thumbTop - thumb - 1))}${vp - thumbTop - thumb > 0 ? '│' : ''}`}</Text>
+            >{`${`${t.glyphs.railPipe}\n`.repeat(Math.max(0, vp - thumbTop - thumb - 1))}${vp - thumbTop - thumb > 0 ? t.glyphs.railPipe : ''}`}</Text>
           ) : null}
         </>
       )}

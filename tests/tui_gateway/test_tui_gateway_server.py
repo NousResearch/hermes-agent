@@ -18111,6 +18111,77 @@ def test_config_set_indicator_none_keeps_blank_repr(monkeypatch):
     assert "unknown indicator: ''" in resp["error"]["message"]
 
 
+# ── config.get / config.set glyph preset (display.tui_glyph_preset) ───
+
+
+def test_config_get_glyphs_returns_known_value_verbatim(monkeypatch):
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"display": {"tui_glyph_preset": "nerd"}}
+    )
+    resp = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "glyphs"}}
+    )
+    assert resp["result"] == {"value": "nerd"}
+
+
+def test_config_get_glyphs_normalizes_casing_and_whitespace(monkeypatch):
+    """Hand-edited config.yaml stays consistent with what the TUI resolves."""
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"display": {"tui_glyph_preset": " ASCII "}}
+    )
+    resp = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "glyphs"}}
+    )
+    assert resp["result"] == {"value": "ascii"}
+
+
+def test_config_get_glyphs_falls_back_for_unknown_or_unset(monkeypatch):
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"display": {"tui_glyph_preset": "wingdings"}}
+    )
+    resp = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "glyphs"}}
+    )
+    assert resp["result"] == {"value": "unicode"}
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"display": {}})
+    resp = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "glyphs"}}
+    )
+    assert resp["result"] == {"value": "unicode"}
+
+
+def test_config_set_glyphs_accepts_known_value(monkeypatch):
+    written: dict = {}
+    monkeypatch.setattr(
+        server,
+        "_write_config_key",
+        lambda k, v: written.update({k: v}),
+    )
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "glyphs", "value": "NERD"},
+        }
+    )
+    assert resp["result"] == {"key": "glyphs", "value": "nerd"}
+    assert written == {"display.tui_glyph_preset": "nerd"}
+
+
+def test_config_set_glyphs_rejects_unknown_value(monkeypatch):
+    monkeypatch.setattr(server, "_write_config_key", lambda *a, **k: None)
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "glyphs", "value": "wingdings"},
+        }
+    )
+    assert "error" in resp
+    assert "unknown glyph preset" in resp["error"]["message"]
+
+
 # ── reload.env ───────────────────────────────────────────────────────
 
 

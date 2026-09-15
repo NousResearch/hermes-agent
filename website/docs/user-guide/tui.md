@@ -185,6 +185,25 @@ display:
 
 Or in-session: `/indicator emoji` (etc.). Styles ship with matched glyph widths so the rest of the status bar doesn't jitter on rotation.
 
+## Chrome glyph tiers
+
+Every glyph the TUI draws as chrome — status icons (`●`/`✓`/`✗`), tree rails (`├─`/`└─`), spinners, separators — resolves through one of three tiers, so a terminal whose font lacks the classic Hermes glyphs shows a readable UI instead of tofu boxes:
+
+```yaml
+display:
+  tui_glyph_preset: unicode   # nerd | unicode | ascii
+```
+
+| Tier | What it draws | Use when |
+| --- | --- | --- |
+| `nerd` | Nerd Font icons (`\uF00C` etc.) for the icon slots; rails/separators/spinners stay standard Unicode | you have a patched Nerd Font installed |
+| `unicode` | the classic Hermes glyphs — **the default**, byte-identical to what older versions drew | almost everyone |
+| `ascii` | pure 7-bit (`[ok]`, `|`, `|-`, `` `- ``, `>`, `|/-\`) | embedded consoles, minimal SSH clients, fonts you can't change |
+
+Run `/glyphs` with no argument to print one sample row per tier and pick the row that renders cleanly in *your* terminal; `/glyphs ascii` (etc.) sets it. The switch applies to the running session immediately — status icons, tree rails, spinners and marks re-render from the new tier, and the choice is persisted for the next launch.
+
+Chrome only: prose (banner art, markdown emoji, notice text authored by the backend) is untouched, and your own `prompt_symbol` / skin `tool_prefix` still win over the tier's defaults.
+
 ## Auto-resume
 
 By default, `hermes --tui` starts a fresh session each launch. To re-attach to the most recent TUI session automatically (useful when your terminal or SSH connection drops unexpectedly), opt in:

@@ -252,6 +252,18 @@ class _KanbanDispatcher:
             for slug in self._board_slugs():
                 if attempted >= auto_decompose_per_tick:
                     break
+                # F5: per-board auto_decompose_enabled from board.json (PR #11's
+                # desktop toggle), read fresh every tick so a flip takes effect
+                # on the very next one. Narrowing-only: default True, so a
+                # board.json with no `auto_decompose_enabled` key (every board
+                # written before this field existed) keeps auto-decomposing
+                # exactly as before.
+                try:
+                    board_meta = self.kb.read_board_metadata(board=slug)
+                except Exception:
+                    board_meta = {}
+                if not board_meta.get("auto_decompose_enabled", True):
+                    continue
                 # Pin the board via env for the call: the decomposer connects
                 # with no board kwarg (same pattern as the dashboard specify endpoint).
                 prev_env = os.environ.get("HERMES_KANBAN_BOARD")

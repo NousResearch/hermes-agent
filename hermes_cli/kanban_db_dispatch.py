@@ -133,6 +133,12 @@ class DispatchResult:
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
     stale: list[str] = field(default_factory=list)
     """Task ids reclaimed for no heartbeat within ``dispatch_stale_timeout_seconds``."""
+    board_dispatch_disabled: bool = False
+    """True when this board's ``board.json`` has ``dispatch_enabled: false`` (F5):
+    the tick still ran reclaim/promotion bookkeeping but spawned nothing new this
+    tick -- an intake gate only, never a retroactive kill of an already-running
+    task. Narrowing-only: a missing key defaults to enabled (``True``) so boards
+    written before this field existed keep dispatching exactly as before."""
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
     """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
     (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
@@ -2041,6 +2047,16 @@ def _dispatch_once_locked(
     block_reason = _check_batch_approval_gate(board)
     if block_reason is not None:
         result.batch_approval_blocked = block_reason
+        return result
+    # F5: per-board dispatch_enabled from board.json (PR #11's desktop toggle),
+    # read fresh every tick so a flip takes effect on the very next one. Intake
+    # gate ONLY -- reclaim/promotion bookkeeping above already ran, and an
+    # already-running task is never touched here; this just stops NEW spawns.
+    # Narrowing-only: default True, so a board.json with no `dispatch_enabled`
+    # key (every board written before this field existed) keeps dispatching
+    # exactly as before.
+    if not _kb.read_board_metadata(board=board).get("dispatch_enabled", True):
+        result.board_dispatch_disabled = True
         return result
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,

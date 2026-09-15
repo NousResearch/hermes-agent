@@ -929,3 +929,156 @@ class TestPostUpdateStaleModuleReload:
 
         assert "hermes_cli._subprocess_compat" in reloaded
         assert "hermes_cli.dashboard_procs" in reloaded
+
+
+class TestRespawnCwdAnchor:
+    """A relative captured argv is replayed against the directory the backend ran in (#109287)."""
+
+    def _live(self):
+        return main_dashboard
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX respawn path")
+    def test_relative_argv_anchored_to_recorded_cwd(self, tmp_path, monkeypatch):
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        rel_argv = ["./venv/bin/hermes", "dashboard", "--no-open"]
+        seen: list[dict] = []
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                seen.append({"argv": list(cmd), **kwargs})
+
+        cwd_by_command = {id(rel_argv): str(tmp_path)}
+        with patch.object(live.subprocess, "Popen", _FakePopen):
+            failed = live._respawn_dashboard_processes([rel_argv], cwd_by_command)
+
+        assert failed == []
+        assert len(seen) == 1
+        assert seen[0]["argv"] == ["./venv/bin/hermes", "dashboard", "--no-open"]
+        assert seen[0]["cwd"] == str(tmp_path)
+        assert "stdin" in seen[0]  # detached respawn kwargs intact
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX respawn path")
+    def test_relative_argv_without_anchor_refused_not_spawned(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """No recorded cwd + relative argv → skip the doomed spawn, report unrecovered."""
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+        with patch.object(live.subprocess, "Popen") as popen:
+            failed = live._respawn_dashboard_processes(
+                [["./venv/bin/hermes", "dashboard"]]
+            )
+
+        popen.assert_not_called()
+        assert failed == [["./venv/bin/hermes", "dashboard", "--no-open"]]
+        out = capsys.readouterr().out
+        assert "no recorded launch cwd" in out
+        assert "✗ failed to restart" in out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX respawn path")
+    def test_absolute_argv_unaffected_by_missing_anchor(self, tmp_path, monkeypatch):
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        spawned: list[dict] = []
+
+        class _FakePopen:
+            argv: list[str]
+
+            def __init__(self, cmd, **kwargs):
+                self.argv = list(cmd)
+                spawned.append({"argv": self.argv, **kwargs})
+
+        with patch.object(live.subprocess, "Popen", _FakePopen):
+            failed = live._respawn_dashboard_processes(
+                [["/opt/bin/hermes", "serve", "--port", "8300"]]
+            )
+
+        assert failed == []
+        assert spawned and "cwd" not in spawned[0]
+
+    def test_cwd_for_pid_reads_proc_symlink(self, tmp_path):
+        live = self._live()
+        real_exists = os.path.exists
+        real_readlink = os.readlink
+
+        def fake_exists(path):
+            if path == "/proc/4242/cwd":
+                return True
+            return real_exists(path)
+
+        def fake_readlink(path, *a, **kw):
+            if path == "/proc/4242/cwd":
+                return "/opt/hermes"
+            return real_readlink(path, *a, **kw)
+
+        with (
+            patch.object(live.os.path, "exists", fake_exists),
+            patch.object(live.os, "readlink", fake_readlink),
+        ):
+            assert live._cwd_for_pid(4242) == "/opt/hermes"
+
+    def test_cwd_for_pid_none_when_unreadable(self):
+        live = self._live()
+        with (
+            patch.object(live.os.path, "exists", return_value=False),
+            patch.object(live.subprocess, "run", side_effect=OSError("boom")),
+        ):
+            assert live._cwd_for_pid(99999) is None
+
+
+class TestRestartKilledBackendsCwdPassthrough:
+    """The cwd snapshot flows from the pre-kill scan into the respawn call (#109287)."""
+
+    def _live(self):
+        return dashboard_procs
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX respawn path")
+    def test_relative_argv_killed_backend_respawns_with_cwd(
+        self, monkeypatch, tmp_path
+    ):
+        live = self._live()
+        install_root = tmp_path / "install"
+        install_root.mkdir()
+        argv = ["./venv/bin/hermes", "dashboard", "--no-open"]
+        respawn_calls: list[tuple[list, dict]] = []
+
+        def fake_respawn(cmds, cwd_by_command=None):
+            respawn_calls.append((cmds, cwd_by_command or {}))
+            return []
+
+        def _fake_liveness_probe_only(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with (
+            patch.object(
+                main_dashboard, "_restart_managed_dashboard_service", return_value=False
+            ),
+            patch.object(
+                main_dashboard, "_find_stale_dashboard_pids", lambda **kwargs: [9001]
+            ),
+            patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None),
+            patch.object(
+                main_dashboard, "_get_systemd_service_for_pid", return_value=None
+            ),
+            patch.object(
+                main_dashboard, "_dashboard_cmdline_for_pid", return_value=argv
+            ),
+            patch.object(
+                main_dashboard, "_cwd_for_pid", return_value=str(install_root)
+            ),
+            patch.object(live, "_hermes_home_for_pid", return_value=None),
+            patch.object(
+                main_dashboard, "_respawn_dashboard_processes", side_effect=fake_respawn
+            ),
+            patch("os.kill", side_effect=_fake_liveness_probe_only),
+        ):
+            result = live._kill_stale_dashboard_processes(restart_managed=True)
+
+        assert result["unrecovered"] == []
+        assert respawn_calls, "respawn was never called"
+        cmds, cwd_map = respawn_calls[0]
+        assert cmds == [argv]
+        assert cwd_map.get(id(argv)) == str(install_root)

@@ -182,27 +182,6 @@ async def test_non_streaming_media_failure_notifies_user(tmp_path, monkeypatch):
     assert adapter.notices == ["⚠️ Couldn't deliver the video attachment."]
 
 
-class _DiscordMediaFailureAdapter(BasePlatformAdapter):
-    """Minimal adapter to exercise non-streaming MEDIA failure notification."""
-
-    def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.DISCORD)
-        self.notices: list[str] = []
-
-    async def connect(self, *, is_reconnect: bool = False):
-        return True
-
-    async def disconnect(self):
-        pass
-
-    async def send(self, chat_id, content=None, **kwargs):
-        self.notices.append(content or "")
-        return SendResult(success=True, message_id="notice")
-
-    async def get_chat_info(self, chat_id):
-        return {"id": chat_id, "type": "dm"}
-
-
 @pytest.mark.asyncio
 async def test_queued_followup_delivery_strips_media_tag_from_text_and_sends_image(
     tmp_path, monkeypatch,

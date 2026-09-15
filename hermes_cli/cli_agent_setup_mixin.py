@@ -487,8 +487,13 @@ class CLIAgentSetupMixin:
             self._restore_session_state(session_meta, quiet=_quiet_mode)
         else:
             _say(
-                f"Session {self.session_id} found but has no messages. Starting fresh.",
-                f"[bold {_accent_hex()}]Session {_escape(self.session_id)} found but has no messages. Starting fresh.[/]",
+                f"Session {self.session_id} exists but has no messages to resume — its transcript is "
+                f"empty (nothing was committed to it, or the messages were cleared). Starting fresh "
+                f"with this id; delete the empty one with: hermes sessions delete {self.session_id}",
+                f"[bold {_accent_hex()}]Session {_escape(self.session_id)} exists but has no messages "
+                f"to resume — its transcript is empty (nothing was committed to it, or the messages "
+                f"were cleared). Starting fresh with this id; delete the empty one with: "
+                f"hermes sessions delete {_escape(self.session_id)}[/]",
             )
         self._reopen_session()
         return True
@@ -659,8 +664,10 @@ class CLIAgentSetupMixin:
         accent_color = _accent_hex()
         if not restored:
             self._console_print(
-                f"[{accent_color}]Session {self.session_id} found but has no "
-                f"messages. Starting fresh.[/]")
+                f"[{accent_color}]Session {self.session_id} exists but its transcript is empty "
+                f"(no messages were ever committed, or they were cleared) — there is nothing to "
+                f"resume. Pick another session with `hermes sessions list`, or delete this one "
+                f"with `hermes sessions delete {self.session_id}`.[/]")
             return False
         restored = [m for m in restored if m.get("role") != "session_meta"]
         self.conversation_history = restored

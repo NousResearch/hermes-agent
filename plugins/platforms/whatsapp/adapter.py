@@ -35,6 +35,28 @@ _OWNER_REPLY_PREFIX = "[owner reply] "
 _RUN_TEXT = dict(capture_output=True, text=True, encoding='utf-8', errors='replace', stdin=subprocess.DEVNULL)
 
 
+def _aiohttp_import_problem() -> Optional[str]:
+    """Cause + remediation when ``aiohttp`` cannot serve a request at all, else ``None``.
+
+    A half-removed install (a pip reinstall overlapping a running gateway on Windows) leaves an
+    importable namespace shell: ``import aiohttp`` still succeeds while ``ClientSession`` is gone.
+    The poll loop's blanket ``except Exception`` swallowed that AttributeError, so every connect
+    attempt blamed the Node bridge ("Bridge HTTP server did not start in 15s") while the bridge was
+    healthy and answering /health in milliseconds (#71308).
+    """
+    try:
+        import aiohttp
+    except ImportError:
+        return ("aiohttp is not installed, so the adapter cannot talk to the bridge at all. "
+                "Install it: pip install aiohttp")
+    if not hasattr(aiohttp, "ClientSession"):
+        where = getattr(aiohttp, "__file__", None) or "(namespace package: no __init__.py on disk)"
+        return (f"aiohttp is installed but unusable: {where} has no ClientSession — a half-removed or "
+                "partially overwritten install. The bridge was never reached. Reinstall it: "
+                "pip install --force-reinstall aiohttp")
+    return None
+
+
 def _listener_pids_on_port(port: int) -> list:
     """PIDs *listening* on ``port`` (POSIX), never clients — a bare ``lsof -i :PORT`` once killed the user's browser."""
     pids: list = []
@@ -449,6 +471,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     def _preflight(self) -> bool:
         """Node + bridge script + creds.json present, else a non-retryable fatal error (an unpaired bridge only prints QR codes; retries would pay 30s each)."""
+        # Checked first: a broken aiohttp makes every probe fail, and the poll loop would report it
+        # as a bridge-start timeout — the wrong subsystem entirely (#71308).
+        aiohttp_problem = _aiohttp_import_problem()
+        if aiohttp_problem:
+            logger.warning("[%s] %s", self.name, aiohttp_problem)
+            self._set_fatal_error("whatsapp_aiohttp_unusable", aiohttp_problem, retryable=False)
+            return False
         bridge_path = Path(self._bridge_script)
         creds_path = self._session_path / "creds.json"
         checks = (

@@ -923,6 +923,23 @@ After the [litellm supply chain compromise](https://github.com/BerriAI/litellm/i
 
 ---
 
+## Error Messages: Name the Cause, Not the Symptom
+
+Every user-facing error must name the **actual cause** and the **next step the reader can take** —
+never the proximate symptom that happens to be observable at the failure site. A message that
+reports the wrong cause costs more than a vague one: it sends users (and agents) to debug the wrong
+subsystem, and the "fix" they land on is often a second bug. So prefer *"no OpenRouter API key is
+configured — set `OPENROUTER_API_KEY` or run `hermes providers`"* over *"payment / credit error"*;
+*"aiohttp is installed but unusable (no `ClientSession`) — reinstall with
+`pip install --force-reinstall aiohttp`"* over *"Bridge HTTP server did not start in 15s"*. If the
+cause genuinely cannot be determined at that point, say what was tried and where the detail lives
+(log path, `--verbose`), and include the remediation step; a bare "failed" is not acceptable. When a
+guard or fallback suppresses an exception, the suppressed reason is exactly what the final message
+must carry. Add a regression test asserting the new wording on the touched path — strings plus their
+test, nothing more.
+
+---
+
 ## Pull Request Process
 
 ### Branch naming

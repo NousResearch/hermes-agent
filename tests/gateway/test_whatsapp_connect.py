@@ -538,3 +538,73 @@ class TestNoCredsPreflight:
         # but the fatal-error code is NOT the "not paired" one.
         assert result is False
         assert adapter._fatal_error_code != "whatsapp_not_paired"
+
+
+# ---------------------------------------------------------------------------
+# Pre-flight: an unusable aiohttp names itself, not the Node bridge (#71308)
+# ---------------------------------------------------------------------------
+
+
+class TestAiohttpPreflight:
+    """A half-removed ``aiohttp`` stays importable (namespace shell without
+    ``ClientSession``), so every health probe raises AttributeError inside a
+    blanket ``except`` and the adapter reported "Bridge HTTP server did not
+    start in 15s" — pointing the operator at the healthy Node bridge instead
+    of the broken Python dependency.
+    """
+
+    @staticmethod
+    def _adapter():
+        adapter = _make_adapter()
+        adapter._write_runtime_status_safe = MagicMock()
+        return adapter
+
+    def test_preflight_names_broken_aiohttp_and_the_fix(self, monkeypatch):
+        import types
+        import sys
+
+        from plugins.platforms.whatsapp.adapter import _aiohttp_import_problem
+
+        shell = types.ModuleType("aiohttp")  # importable, but no ClientSession
+        shell.__file__ = None  # namespace package: no __init__.py on disk
+        monkeypatch.setitem(sys.modules, "aiohttp", shell)
+
+        problem = _aiohttp_import_problem()
+        assert problem and "aiohttp" in problem
+        assert "pip install --force-reinstall aiohttp" in problem
+
+        adapter = self._adapter()
+        assert adapter._preflight() is False
+        assert adapter._fatal_error_code == "whatsapp_aiohttp_unusable"
+        assert adapter._fatal_error_retryable is False
+        assert "Bridge HTTP server did not start" not in adapter._fatal_error_message
+        assert "namespace package" in adapter._fatal_error_message
+
+    def test_preflight_names_missing_aiohttp(self, monkeypatch):
+        import builtins
+        import sys
+
+        from plugins.platforms.whatsapp.adapter import _aiohttp_import_problem
+
+        monkeypatch.delitem(sys.modules, "aiohttp", raising=False)
+        real_import = builtins.__import__
+
+        def _no_aiohttp(name, *args, **kwargs):
+            if name == "aiohttp" or name.startswith("aiohttp."):
+                raise ImportError("No module named 'aiohttp'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _no_aiohttp)
+
+        problem = _aiohttp_import_problem()
+        assert problem and "not installed" in problem
+        assert "pip install aiohttp" in problem
+
+        adapter = self._adapter()
+        assert adapter._preflight() is False
+        assert adapter._fatal_error_code == "whatsapp_aiohttp_unusable"
+
+    def test_usable_aiohttp_reports_nothing(self):
+        from plugins.platforms.whatsapp.adapter import _aiohttp_import_problem
+
+        assert _aiohttp_import_problem() is None

@@ -117,4 +117,8 @@ class TestResumeQuietStderr:
         captured = capsys.readouterr()
         assert "has no messages" not in captured.out
         assert "has no messages" in captured.err
+        # The line names the real state (empty transcript) and the way out (#27168):
+        # it used to say "Starting fresh." while the resume actually aborted.
+        assert "transcript is empty" in captured.err
+        assert "hermes sessions delete 20260524_111111_xyz" in captured.err
         assert "Starting fresh" in captured.err

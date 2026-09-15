@@ -640,6 +640,17 @@ def _add_rotating_handler(
     )
     if log_filter is not None:
         handler.addFilter(log_filter)
+    # Routing already on (a second home adopted earlier): a component log added now —
+    # ``mode="gateway"`` after the fact — must route too, or it takes every home's records.
+    routers = [h for h in _queued_file_handlers if isinstance(h, _ProfileRoutingFileHandler)]
+    if routers:
+        homes: set[Path] = set()
+        for router in routers:
+            homes.add(router._default_home)
+            homes.update(router._profile_homes)
+        routed = _ProfileRoutingFileHandler(handler, sorted(homes))
+        _quietly(handler.close)
+        handler = routed
     # Queue, not ``addHandler``: the rotation-lock wait never runs on the caller's thread.
     _register_queued_handler(handler)
 

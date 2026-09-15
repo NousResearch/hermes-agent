@@ -196,6 +196,30 @@ class TestSetupLogging:
         assert (profile_home / "logs" / "agent.log").read_text().count("once please") == 1
         assert "once please" not in (hermes_home / "logs" / "agent.log").read_text()
 
+    def test_a_component_log_added_after_routing_is_routed_too(self, hermes_home, tmp_path):
+        """setup_logging(mode="gateway") for an already-known home AFTER a second home turned
+        routing on: gateway.log must be a routed writer, not a bare handler taking every home."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        profile_home = tmp_path / "profile-b"
+        profile_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        hermes_logging.setup_logging(hermes_home=profile_home)
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
+
+        logger = logging.getLogger("gateway.run.routed-component-test")
+        token = set_hermes_home_override(profile_home)
+        try:
+            logger.info("gw-b")
+        finally:
+            reset_hermes_home_override(token)
+        logger.info("gw-a")
+        hermes_logging.flush_log_queue()
+
+        a_log = (hermes_home / "logs" / "gateway.log").read_text()
+        assert "gw-a" in a_log and "gw-b" not in a_log
+        assert "gw-b" in (profile_home / "logs" / "gateway.log").read_text()
+
 
 
 

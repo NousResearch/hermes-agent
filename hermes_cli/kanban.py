@@ -920,6 +920,8 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 return f"{tid} → todo (dependency wait){suffix}"
             if where == "triage":
                 return f"{tid} → triage (unblock loop detected — needs a human decision){suffix}"
+            if where == "scheduled":
+                return f"{tid} → scheduled (transient wait — no human needed){suffix}"
             return f"Blocked {tid}{suffix}"
 
         op = _commented(conn, reason, author, "BLOCKED", lambda tid: kb.block_task(

@@ -172,10 +172,13 @@ KANBAN_BLOCK_SCHEMA = _schema(
         "goes to todo and auto-resumes when that task finishes, no human "
         "needed), 'needs_input' (you need a human decision/answer), "
         "'capability' (a hard wall: no access, missing credentials, an action "
-        "no agent can do), or 'transient' (a flaky failure that may clear). "
+        "no agent can do), or 'transient' (a flaky failure, or a wait on "
+        "something already running, that may clear on its own — parks in "
+        "scheduled, no human needed). "
         "``reason`` is shown to the human on the board. If a task keeps "
         "getting unblocked and re-blocked for the same reason, it is "
-        "auto-escalated to triage. Use for genuine blockers only — don't "
+        "auto-escalated to triage (a repeated 'transient' escalates to "
+        "blocked instead). Use for genuine blockers only — don't "
         "block on things you can resolve yourself."
     ),
     {
@@ -190,7 +193,8 @@ KANBAN_BLOCK_SCHEMA = _schema(
             "enum": ["dependency", "needs_input", "capability", "transient"],
             "description": (
                 "Why you're blocked. 'dependency' waits in todo and "
-                "resumes automatically; the others surface to a human. "
+                "'transient' waits in scheduled — both resume without a "
+                "human; 'needs_input'/'capability' surface to a human. "
                 "Omit only if none apply."
             ),
         },

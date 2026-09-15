@@ -237,7 +237,10 @@ async def _resolve_container_fallback(
     # Bound the read INSIDE the sandbox: head -c caps at ingest-limit+1 (+1 distinguishes "at the
     # cap" from "over") so /dev/zero can't stream unbounded base64 into host memory. The input
     # redirect avoids argv (leading-dash paths); tr -d instead of GNU-only base64 -w0 (BusyBox).
-    cmd = f"head -c {_MAX_INGEST_BYTES + 1} < {shlex.quote(str(p))} | base64 | tr -d '\\n'"
+    # Use as_posix() so a Windows host's Path("/workspace/...") stays "/workspace/..." inside the
+    # Linux container — str(Path(...)) on Windows would be "\\workspace\\..." and fail (#111553).
+    container_path = p.as_posix()
+    cmd = f"head -c {_MAX_INGEST_BYTES + 1} < {shlex.quote(container_path)} | base64 | tr -d '\\n'"
     last_res: dict = {"returncode": 1, "output": ""}
     for attempt in range(2):
         last_res = await asyncio.to_thread(env.execute, cmd)
@@ -249,11 +252,11 @@ async def _resolve_container_fallback(
         diag = (last_res.get("output") or "").strip().splitlines()
         first = next((ln.strip() for ln in diag if ln.strip()), "")
         suffix = f" ({first[:200]})" if first else ""
-        raise SourceNotFound(f"could not read '{p}' inside the sandbox{suffix}", src=src, origin="container")
+        raise SourceNotFound(f"could not read '{container_path}' inside the sandbox{suffix}", src=src, origin="container")
     try:
         data = base64.b64decode(last_res.get("output", ""), validate=True)
     except Exception as exc:
-        raise NotAnImage(f"sandbox returned non-image data for '{p}': {exc}", src=src)
+        raise NotAnImage(f"sandbox returned non-image data for '{container_path}': {exc}", src=src)
     if len(data) > _MAX_INGEST_BYTES:
         raise SourceTooLarge("media exceeds size limit", src=src, origin="container")
     return _finalize(data, "", "container", src, permitted)

@@ -924,18 +924,16 @@ class TestRewindExclusion:
         ))
         assert result_compact["count"] >= 1
 
-        # Rewound content should NOT be discoverable. (The OR-relaxed
-        # zero-result retry may surface OTHER active rows sharing a common
-        # term like "content" — that's fine; the invariant is that the
-        # rewound row itself never comes back.)
+        # Rewound content should NOT be discoverable. The OR-relaxed zero-result
+        # retry may legitimately surface OTHER active rows sharing the common term
+        # "content"; the invariant is that the rewound row itself never comes back.
         result_rewind = json.loads(session_search(
             query="rewound content gamma", db=db,
             current_session_id="s_mixed",
         ))
-        for m in result_rewind.get("matches", []):
-            snippet = (m.get("snippet") or "").lower()
-            assert "rewound" not in snippet
-            assert "gamma" not in snippet
+        for entry in result_rewind["results"]:
+            assert entry["match_message_id"] != mid2
+            assert "gamma" not in (entry.get("snippet") or "").lower()
 
 
 class TestLegacyContinuationPlusDelegation:

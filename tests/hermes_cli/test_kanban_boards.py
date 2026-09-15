@@ -344,5 +344,27 @@ class TestCLI:
         assert titlesB == ["Task B"]
         assert titlesD == []
 
+    def test_boards_hold_and_resume_via_cli(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        assert _cli(["boards", "create", "held"], env_extra=env).returncode == 0
+
+        held = _cli(["boards", "hold", "held", "--reason", "SOQ safety"], env_extra=env)
+        assert held.returncode == 0, held.stderr
+        listed = _cli(["boards", "list"], env_extra=env)
+        assert listed.returncode == 0, listed.stderr
+        assert "[hold]" in listed.stdout
+
+        show = _cli(["boards", "switch", "held"], env_extra=env)
+        assert show.returncode == 0, show.stderr
+        show = _cli(["boards", "show"], env_extra=env)
+        assert show.returncode == 0, show.stderr
+        assert "Automation:   HOLD" in show.stdout
+        assert "SOQ safety" in show.stdout
+
+        resumed = _cli(["boards", "resume", "held"], env_extra=env)
+        assert resumed.returncode == 0, resumed.stderr
+        listed = _cli(["boards", "list"], env_extra=env)
+        assert "[hold]" not in listed.stdout
+
 
 

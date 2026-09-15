@@ -63,7 +63,10 @@ def _cmd_boards_list(args: argparse.Namespace) -> int:
     print(f"{'':2s}  {'SLUG':24s}  {'NAME':28s}  COUNTS")
     for b in boards:
         marker = "●" if b["is_current"] else " "
-        name = (b.get("name") or "") + (" [archived]" if b.get("archived") else "")
+        name = (b.get("name") or "")
+        if kb.board_automation_held(b["slug"]):
+            name += " [hold]"
+        name += (" [archived]" if b.get("archived") else "")
         print(f"{marker:2s}  {b['slug']:24s}  {name:28s}  {_fmt_counts(b['counts'] or {}, '(empty)')}")
     print(f"\nCurrent board: {current}")
     if len(boards) > 1:
@@ -129,8 +132,38 @@ def _cmd_boards_show(args: argparse.Namespace) -> int:
     print(f"Current board: {current}\n  Display name: {meta.get('name', '')}")
     if meta.get("description"):
         print(f"  Description:  {meta['description']}")
+    hold = kb.board_automation_hold(current)
+    if hold is not None:
+        print(f"  Automation:   HOLD — {hold.get('reason') or 'board automation hold'}")
     print(f"  DB path:      {meta['db_path']}\n"
           f"  Tasks:        {sum(counts.values())} total" + (f" ({_fmt_counts(counts)})" if counts else ""))
+    return 0
+
+
+def _cmd_boards_hold(args: argparse.Namespace) -> int:
+    normed, rc = _board_slug_arg(args, "hold", must_exist=True)
+    if rc:
+        return rc
+    try:
+        meta = kb.set_board_automation_hold(
+            normed,
+            reason=args.reason,
+            set_by=getattr(args, "set_by", None) or "operator",
+            allow_reclaim=bool(getattr(args, "allow_reclaim", False)),
+        )
+    except ValueError as exc:
+        return _err(f"kanban boards hold: {exc}", 2)
+    hold = meta.get("automation_hold") or {}
+    print(f"Board {normed!r} automation hold enabled: {hold.get('reason')}")
+    return 0
+
+
+def _cmd_boards_resume(args: argparse.Namespace) -> int:
+    normed, rc = _board_slug_arg(args, "resume", must_exist=True)
+    if rc:
+        return rc
+    kb.clear_board_automation_hold(normed)
+    print(f"Board {normed!r} automation hold cleared.")
     return 0
 
 
@@ -207,6 +240,8 @@ _BOARD_HANDLERS = {
     "rm": _cmd_boards_rm, "remove": _cmd_boards_rm, "delete": _cmd_boards_rm,
     "switch": _cmd_boards_switch, "use": _cmd_boards_switch,
     "show": _cmd_boards_show, "current": _cmd_boards_show,
+    "hold": _cmd_boards_hold,
+    "resume": _cmd_boards_resume,
     "rename": _cmd_boards_rename,
     "set-default-workdir": _cmd_boards_set_default_workdir,
     "export": _cmd_boards_export,

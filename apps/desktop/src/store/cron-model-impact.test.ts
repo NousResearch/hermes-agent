@@ -13,6 +13,7 @@ vi.mock('@/hermes', () => ({
 }))
 
 import {
+  applyModelAssignment,
   CRON_MODEL_IMPACT_NOTIFICATION_ID,
   invalidateCronModelImpactScope,
   setMainModelAssignment
@@ -269,6 +270,71 @@ describe('setMainModelAssignment', () => {
     dismissNotification(CRON_MODEL_IMPACT_NOTIFICATION_ID)
 
     expect($notifications.get()).toEqual([])
+    expect(setModelAssignment).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('applyModelAssignment (auxiliary scope)', () => {
+  // #102729: the aux rows in Settings → Model wrote through the raw API, so a
+  // guarded pick (contributor / expensive tier) was dropped on the floor and
+  // the next refresh repainted the old model — a silent revert. The confirm
+  // contract is per-scope, not per-main.
+  const guarded = {
+    ok: false,
+    scope: 'auxiliary',
+    provider: 'opencode-go',
+    model: 'muse-spark-1.3-contributor',
+    confirm_required: true,
+    confirm_message: 'Confirm this expensive model.'
+  } satisfies ModelAssignmentResponse
+
+  it('surfaces the guard confirm instead of dropping a guarded auxiliary pick', async () => {
+    setModelAssignment.mockResolvedValueOnce(guarded)
+    setModelAssignment.mockResolvedValueOnce({
+      ok: true,
+      scope: 'auxiliary',
+      provider: 'opencode-go',
+      model: 'muse-spark-1.3-contributor'
+    } satisfies ModelAssignmentResponse)
+
+    const pending = applyModelAssignment({
+      model: 'muse-spark-1.3-contributor',
+      provider: 'opencode-go',
+      scope: 'auxiliary',
+      task: 'vision'
+    })
+
+    const confirm = await waitForConfirmToast()
+
+    expect(confirm.kind).toBe('warning')
+    expect(confirm.message).toBe('Confirm this expensive model.')
+    expect(confirm.action?.label).toBe('Confirm')
+    // The first write carries NO ack — consent is what the confirm collects.
+    expect(setModelAssignment.mock.calls[0][0]).not.toHaveProperty('confirm_expensive_model')
+
+    confirm.action?.onClick()
+
+    await expect(pending).resolves.toMatchObject({ ok: true })
+    expect(setModelAssignment).toHaveBeenLastCalledWith(
+      expect.objectContaining({ confirm_expensive_model: true, scope: 'auxiliary', task: 'vision' })
+    )
+  })
+
+  it('declining keeps the previous model and reports it instead of reverting', async () => {
+    setModelAssignment.mockResolvedValueOnce(guarded)
+
+    const pending = applyModelAssignment({
+      model: 'muse-spark-1.3-contributor',
+      provider: 'opencode-go',
+      scope: 'auxiliary',
+      task: 'vision'
+    })
+
+    const confirm = await waitForConfirmToast()
+
+    dismissNotification(confirm.id)
+
+    await expect(pending).rejects.toThrow('Model change cancelled')
     expect(setModelAssignment).toHaveBeenCalledTimes(1)
   })
 })

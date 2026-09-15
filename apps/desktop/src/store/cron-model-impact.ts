@@ -145,27 +145,28 @@ function publishImpact(impact: CronModelImpact, profile: string, connection: str
   })
 }
 
-export async function setMainModelAssignment(
-  request: Omit<ModelAssignmentRequest, 'scope'>,
+/**
+ * Selection-guard handshake for `/api/model/set`, shared by EVERY scope (the
+ * Settings main apply via setMainModelAssignment, the auxiliary rows). The
+ * backend answers `ok: false, confirm_required: true` + `confirm_message` for
+ * a guarded model (expensive / data-training tiers like `*-contributor`) and
+ * writes NOTHING until the client resends with `confirm_expensive_model: true`.
+ * A caller that ignores that drops the pick on the floor — the next refresh
+ * repaints the old model, which reads as a silent revert. Prompt, retry on
+ * Confirm, and throw on decline / any other non-ok so the caller can show it.
+ */
+export async function applyModelAssignment(
+  request: ModelAssignmentRequest,
   scopeProfile?: null | string,
   options?: { skipConfirmPrompt?: boolean }
 ): Promise<ModelAssignmentResponse> {
-  const { connection, generation } = beginCronModelImpactAssignment()
-  const profile = profileIdentity()
-
   // Only pass the extra arg when a scope override exists, so unscoped callers
   // keep the exact legacy call shape.
-  const assign = (body: Omit<ModelAssignmentRequest, 'scope'>) =>
-    scopeProfile == null
-      ? setModelAssignment({ ...body, scope: 'main' })
-      : setModelAssignment({ ...body, scope: 'main' }, scopeProfile)
+  const assign = (body: ModelAssignmentRequest) =>
+    scopeProfile == null ? setModelAssignment(body) : setModelAssignment(body, scopeProfile)
 
   let result = await assign(request)
 
-  // Backend demands an explicit ack before persisting a model that trips a
-  // selection guard (expensive / data-training tiers like *-contributor).
-  // Settings used to throw confirm_message as a red error, so Apply could
-  // never persist. Prompt, then retry with confirm_expensive_model.
   if (result.confirm_required) {
     if (request.confirm_expensive_model || options?.skipConfirmPrompt) {
       // Already acked, or headless onboarding (nothing mounted to click).
@@ -187,6 +188,23 @@ export async function setMainModelAssignment(
   } else if (result.ok !== true) {
     throw new Error(result.confirm_message?.trim() || translateNow('cron.modelImpact.saveFailed'))
   }
+
+  return result
+}
+
+export async function setMainModelAssignment(
+  request: Omit<ModelAssignmentRequest, 'scope'>,
+  scopeProfile?: null | string,
+  options?: { skipConfirmPrompt?: boolean }
+): Promise<ModelAssignmentResponse> {
+  const { connection, generation } = beginCronModelImpactAssignment()
+  const profile = profileIdentity()
+
+  // Backend demands an explicit ack before persisting a model that trips a
+  // selection guard (expensive / data-training tiers like *-contributor).
+  // Settings used to throw confirm_message as a red error, so Apply could
+  // never persist. Prompt, then retry with confirm_expensive_model.
+  const result = await applyModelAssignment({ ...request, scope: 'main' }, scopeProfile, options)
 
   // A scoped assignment targets ANOTHER profile's backend: its cron impact
   // belongs to that profile, and the review action would open the ACTIVE

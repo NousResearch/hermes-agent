@@ -743,7 +743,8 @@ class TestPdfCoverageNote(unittest.TestCase):
         self.assertIn("pages 4-9", note)        # contiguous empty gap
         self.assertIn("(6 pages)", note)        # gap size stated
         self.assertIn("vision_analyze", note)   # recovery path is named
-        self.assertIn("ocr-and-documents", note)
+        self.assertIn("pdf skill", note)
+        self.assertNotIn("ocr-and-documents", note)
         self.assertIn("do NOT OCR or render everything", note)
 
     def test_gap_labels_carry_preceding_section_text(self):

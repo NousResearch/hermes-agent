@@ -5,8 +5,11 @@ protocol negotiation and initial tool discovery. Split from tools/mcp_tool.py.""
 import logging
 import asyncio
 import os
+import urllib.parse
+import urllib.request
 from contextlib import asynccontextmanager
 from typing import Dict, Optional, Set
+from utils import normalize_proxy_url
 from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
 from tools.mcp_tool_common import _core
@@ -33,6 +36,42 @@ def _is_2xx(resp) -> bool:
 def _present(**kwargs) -> dict:
     """*kwargs* minus the ``None`` values (optional httpx client arguments)."""
     return {k: v for k, v in kwargs.items() if v is not None}
+
+
+def _mcp_proxy_mounts(httpx_mod, url: str, ssl_verify, client_cert, server_name: str = "") -> Optional[dict]:
+    """Proxy transports for the caller-owned MCP HTTP client, or ``None`` for a direct connect.
+
+    httpx auto-detects proxies only when ``transport is None``
+    (``allow_env_proxies = trust_env and transport is None``). The wire-body cap is exactly that
+    custom transport, so HTTP_PROXY / HTTPS_PROXY and the OS (Windows-registry / macOS) proxy were
+    silently ignored for every HTTP/SSE MCP server: on a network that reaches the MCP host only
+    through a proxy, the connect failed with ``All connection attempts failed`` and the server was
+    parked. Rebuild httpx's own behaviour as explicit ``mounts`` — same source order (environment
+    first, then the OS proxy), ``NO_PROXY`` / platform bypass list respected, ``socks://``
+    normalized, and TLS settings identical to the transport they accompany.
+    """
+    host = urllib.parse.urlsplit(url).hostname or ""
+    if not host:
+        return None
+    try:
+        if urllib.request.proxy_bypass(host):  # NO_PROXY / ProxyOverride: this host goes direct
+            return None
+        proxies = urllib.request.getproxies() or {}
+    except Exception:  # a proxy-lookup failure must not block the (direct) connection
+        logger.debug("MCP server '%s': proxy lookup failed", server_name, exc_info=True)
+        return None
+    mounts: dict = {}
+    for scheme in ("http", "https"):
+        proxy_url = normalize_proxy_url(proxies.get(scheme) or proxies.get("all"))
+        if not proxy_url:
+            continue
+        try:
+            # verify/cert apply to the CONNECT+TLS leg, so the proxy transport needs its own copy.
+            mounts[f"{scheme}://"] = httpx_mod.AsyncHTTPTransport(
+                proxy=proxy_url, verify=ssl_verify, **_present(cert=client_cert))
+        except Exception as exc:
+            logger.warning("MCP server '%s': cannot use %s proxy %s: %s", server_name, scheme, proxy_url, exc)
+    return mounts or None
 
 
 def _pgroup_alive(pgid: Optional[int]) -> bool:
@@ -351,15 +390,19 @@ class MCPServerTransportMixin:
         sse_kwargs: dict = {"url": url, "headers": headers or None, "timeout": float(connect_timeout),
                             "sse_read_timeout": 300.0, **_present(auth=oauth_auth)}
         # Always own the client: the httpx_client_factory forwards the SDK's (headers, auth, timeout),
-        # installs the wire-body cap and layers TLS on the inner transport (client-level verify/cert are
-        # inert once a custom transport= is passed). Client MUST come from the SDK's httpx (httpx2 on mcp >= 2.0).
+        # installs the wire-body cap, layers TLS on the inner transport (client-level verify/cert are
+        # inert once a custom transport= is passed) and re-adds the proxy mounts that custom transport
+        # would otherwise suppress. Client MUST come from the SDK's httpx (httpx2 on mcp >= 2.0).
         _httpx_mod = _core.sdk_httpx()
-        sse_kwargs["httpx_client_factory"] = lambda headers=None, timeout=None, auth=None: _httpx_mod.AsyncClient(
-            follow_redirects=True,
-            timeout=timeout if timeout is not None else _httpx_mod.Timeout(30.0, read=300.0),
-            transport=_make_mcp_body_cap_transport(
-                _httpx_mod, _httpx_mod.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))),
-            **_present(headers=headers, auth=auth))
+        def _sse_client_factory(headers=None, timeout=None, auth=None):
+            inner_transport = _httpx_mod.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))
+            return _httpx_mod.AsyncClient(
+                follow_redirects=True,
+                timeout=timeout if timeout is not None else _httpx_mod.Timeout(30.0, read=300.0),
+                transport=_make_mcp_body_cap_transport(_httpx_mod, inner_transport),
+                **_present(mounts=_mcp_proxy_mounts(_httpx_mod, url, ssl_verify, client_cert, self.name),
+                           headers=headers, auth=auth))
+        sse_kwargs["httpx_client_factory"] = _sse_client_factory
         return _core.sse_client(**sse_kwargs)
 
     def _streamable_http_transport(self, url: str, headers: dict, connect_timeout: float,
@@ -379,13 +422,15 @@ class MCPServerTransportMixin:
         httpx = _core.sdk_httpx()
         _strip_auth_on_cross_origin_redirect = _make_redirect_header_stripper(
             httpx.URL(url), strict=strict_cfg_headers, configured_header_names=configured_header_names)
-        # verify/cert live on the inner transport: a custom transport= makes client-level TLS kwargs inert.
+        # verify/cert live on the inner transport: a custom transport= makes client-level TLS kwargs
+        # inert — and suppresses httpx's own proxy auto-detection, hence the explicit mounts=.
+        inner_transport = httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))
         client_kwargs: dict = {"follow_redirects": True, "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                                **({"headers": headers} if headers else {}),
                                "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
-                               "transport": _make_mcp_body_cap_transport(
-                                   httpx, httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))),
-                               **_present(auth=oauth_auth)}
+                               "transport": _make_mcp_body_cap_transport(httpx, inner_transport),
+                               **_present(mounts=_mcp_proxy_mounts(httpx, url, ssl_verify, client_cert, self.name),
+                                          auth=oauth_auth)}
 
         @asynccontextmanager
         async def _owned_client_streams():  # the SDK skips cleanup when http_client is provided

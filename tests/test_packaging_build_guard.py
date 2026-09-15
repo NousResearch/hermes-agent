@@ -81,6 +81,14 @@ def test_artifact_build_allows_explicit_nix_package_build_marker(kind, artifact_
     }
     assert expected, "expected bundled plugin manifests under plugins/"
 
+    whatsapp_bridge = PROJECT_ROOT / "scripts" / "whatsapp-bridge"
+    bridge_assets = {
+        path.relative_to(PROJECT_ROOT).as_posix()
+        for path in whatsapp_bridge.iterdir()
+        if path.is_file() and not path.name.endswith(".test.mjs")
+    }
+    assert bridge_assets, "expected runtime assets under scripts/whatsapp-bridge/"
+
     if kind == "wheel":
         with zipfile.ZipFile(artifacts[0]) as wheel:
             shipped = set(wheel.namelist())
@@ -92,5 +100,6 @@ def test_artifact_build_allows_explicit_nix_package_build_marker(kind, artifact_
                 if "/" in name
             }
 
+    expected |= bridge_assets
     missing = sorted(expected - shipped)
-    assert not missing, f"{kind} omits bundled plugin manifests: {missing}"
+    assert not missing, f"{kind} omits required runtime assets: {missing}"

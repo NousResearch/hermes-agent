@@ -1,0 +1,3 @@
+include scripts/whatsapp-bridge/*.js
+include scripts/whatsapp-bridge/package.json
+include scripts/whatsapp-bridge/package-lock.json

@@ -1297,15 +1297,19 @@ class AIAgent(
 
     def _dispatch_delegate_task(self, function_args: dict) -> str:
         """Single call site for delegate_task dispatch; new DELEGATE_TASK_SCHEMA fields are added only here."""
-        from tools.delegate_tool import _strip_model_hidden_task_fields, delegate_task as _delegate_task
-        # Top-level MODEL delegations always run in the background (handle returned, results re-enter as
-        # messages). An ORCHESTRATOR SUBAGENT (depth > 0) stays synchronous — it needs results in-turn and
-        # owns no gateway session. The schema-level `background` param is intentionally ignored.
+        from tools.delegate_tool import (
+            _model_background_value,
+            _strip_model_hidden_task_fields,
+            delegate_task as _delegate_task,
+        )
+        # MODEL dispatch policy is centralized with the registry fallback. The
+        # hidden `background` argument stays ignored; direct Python callers do
+        # not pass through this helper and retain explicit background control.
         return _delegate_task(
             goal=function_args.get("goal"), context=function_args.get("context"),
             tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
             max_iterations=function_args.get("max_iterations"), role=function_args.get("role"),
-            background=not (getattr(self, "_delegate_depth", 0) > 0), images=function_args.get("images"),
+            background=_model_background_value(function_args, self), images=function_args.get("images"),
             action=function_args.get("action"),
             subagent_id=function_args.get("subagent_id"), message=function_args.get("message"), parent_agent=self,
         )

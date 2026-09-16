@@ -72,9 +72,8 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
         if len(message) > MESSAGE_MAX_CHARS + 200:  # + attribution headroom
             return _err(rid, 4091, "message too long")
         root = _root()
-        known = {"default"}
-        if (root / "profiles").is_dir():
-            known.update(c.name for c in (root / "profiles").iterdir() if c.is_dir())
+        from tools.bot_mode_probe import _roster
+        known = {name for name, _ in _roster(root)}
         resolved = "default" if profile.lower() == "hermes" else profile
         if resolved not in known:
             return _err(rid, 4092, f"no profile '{profile}' on this gateway")

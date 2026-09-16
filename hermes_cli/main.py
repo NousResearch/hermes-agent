@@ -513,13 +513,13 @@ def _resolve_sudo_user_profile_env(name: str) -> str | None:
     """
     if name == "default":
         return None
-    from hermes_constants import sudo_invoker_default_home
+    from hermes_constants import named_profile_is_live, sudo_invoker_default_home
 
     sudo_home = sudo_invoker_default_home()
     if sudo_home is None:
         return None
     candidate = sudo_home / "profiles" / name
-    return str(candidate) if candidate.is_dir() else None
+    return str(candidate) if named_profile_is_live(candidate) else None
 
 
 def _under_gateway_supervisor(argv: list) -> bool:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from contextlib import suppress
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
 
@@ -44,11 +45,27 @@ def _malformed(config: Any) -> dict[str, Any] | None:
     return None
 
 
+class _ResponseSnapshot:
+    """Small response boundary that never outlives the HTTP client session."""
+
+    def __init__(self, status: int, payload: Any = None):
+        self.status = status
+        self._payload = payload
+
+    async def json(self) -> Any:
+        return self._payload
+
+
 async def _default_post(url: str, data: dict[str, str], timeout: float) -> Any:
     import aiohttp
     async with aiohttp.ClientSession() as session:
         async with session.post(url, data=data, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
-            return response
+            # Snapshot only the fields consumed by the preflight before the
+            # session closes. Never return an aiohttp response or raw body.
+            payload = None
+            with suppress(Exception):
+                payload = await response.json(content_type=None)
+            return _ResponseSnapshot(response.status, payload)
 
 
 async def preflight_teams_config(config: dict[str, Any], *, http_post: HttpPost | None = None, timeout: float = 15.0) -> dict[str, Any]:

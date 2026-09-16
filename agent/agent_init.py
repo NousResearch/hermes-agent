@@ -1809,12 +1809,9 @@ def init_agent(
 
     try:
         _loop_guardrail_settings = dict(_agent_cfg.get("tool_loop_guardrails", {}))
-        if (agent.platform not in {None, "cli", "tui", "desktop", "acp", "subagent", "api_server"}
-                and "hard_stop_enabled" not in _loop_guardrail_settings):
-            _loop_guardrail_settings["hard_stop_enabled"] = True
         agent._tool_guardrails = ToolCallGuardrailController(
             ToolCallGuardrailConfig.from_mapping(
-                _loop_guardrail_settings
+                _loop_guardrail_settings, platform=agent.platform
             )
         )
     except Exception as _tlg_err:

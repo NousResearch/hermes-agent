@@ -21,6 +21,9 @@ from workstation.durable_tasks import DurableTaskStore, WorkItem
 from workstation.routing import ConstraintViolation, require_allowed_route
 from workstation.reference_plane import ReadCache, blob_references, content_reference
 from workstation.tool_verbosity import VerbosityLevel, normalize_verbosity
+from tools.effects import ToolEffect, READ_EFFECTS, tool_effect, tool_contract, unwrap_call
+from workstation.execution_graph import prepare_graph
+from agent.turn_constraints import user_constraints
 
 
 class WorkClass(str, Enum):
@@ -35,16 +38,20 @@ class WorkClass(str, Enum):
 _dispatch_context: ContextVar[Any] = ContextVar("workstation_work_dispatch", default=None)
 _constraints: ContextVar[Any] = ContextVar("workstation_work_constraints", default=None)
 _execution_active: ContextVar[bool] = ContextVar("workstation_durable_active", default=False)
-READ_TOOLS = frozenset({"read_file", "search_files", "browser_snapshot"})
 
 
 def batch_intent(prompt: Any) -> bool:
     """Conservative structural signal; only requires compilation, never infers writes."""
     if not isinstance(prompt, str):
         return False
-    lower = prompt.lower()
-    operation = re.search(r"\b(cri(?:ar|e)|ger(?:ar|e)|process(?:ar|e)|atualiz(?:ar|e)|execut(?:ar|e)|create|generate|process|update|execute|apply)\b", lower)
-    count = re.search(r"\b([2-9]|[1-9][0-9]+)\s+(?:registros|arquivos|cartões|cartoes|imagens|itens|entradas|entidades|prompts|records|files|cards|images|items|rows|entities)\b", lower)
+    lower = prompt.lower().strip()
+    # Grammatical/collection signals, not an enumeration of action verbs.
+    first = re.findall(r"\w+", lower)
+    directive = bool(first and (re.search(r"(?:ar|er|ir|e|a)$", first[0]) or
+                               first[0] in {"create", "generate", "process", "update", "execute", "apply", "send"}))
+    cognitive = bool(first and first[0] in {"compare", "explique", "analise", "discuta", "explore", "explain", "discuss"})
+    count = re.search(r"\b(?:[2-9]|[1-9][0-9]+)\s+[\w-]+s\b", lower)
+    fan_out = re.search(r"\b(?:cada\s+(?:registro|item|arquivo|usuário|usuario)|todos?\s+(?:esses?|estes?|os)|mesma\s+.+\s+ness(?:es|as)|each\s+|all\s+these)", lower)
     structured = False
     for candidate in [prompt] + re.findall(r"```(?:json)?\s*(.*?)```", prompt, re.S):
         try:
@@ -56,36 +63,7 @@ def batch_intent(prompt: Any) -> bool:
             structured = all(set(i) == set(entries[0]) for i in entries)
             if isinstance(payload, dict) and payload.get("steps"):
                 return True
-    return bool(operation and (count or structured))
-
-
-def user_constraints(prompt: Any) -> dict:
-    """Read explicit structured route constraints from the user, never tool text."""
-    if not isinstance(prompt, str):
-        return {}
-    candidates = [prompt] + re.findall(r"```(?:json)?\s*(.*?)```", prompt, re.S)
-    for candidate in candidates:
-        try:
-            parsed = json.loads(candidate)
-        except ValueError:
-            continue
-        if isinstance(parsed, dict):
-            constraints = parsed.get("constraints", parsed)
-            if isinstance(constraints, dict):
-                return {k: constraints[k] for k in ("allowed_routes", "forbidden_routes") if k in constraints}
-    lower = prompt.lower()
-    constraints = {}
-    forbidden = []
-    for route, phrase in (("openai_api", r"openai[_ ]api|api[^\n]{0,20}openai"),
-                          ("browserclaw", r"browserclaw")):
-        if (re.search(r"(?:não use|nao use|do not use|never use)[^\n]{0,60}(?:" + phrase + ")", lower)
-                or re.search(re.escape(route) + r"\s*(?:[:=]\s*)?(?:forbidden|proibido)", lower)):
-            forbidden.append(route)
-    if forbidden:
-        constraints["forbidden_routes"] = forbidden
-    if re.search(r"(?:somente|apenas|only)\s+(?:o |a |the )?(?:navegador|browser|chatgpt web)", lower):
-        constraints["allowed_routes"] = ["native_browser"]
-    return constraints
+    return bool(not cognitive and ((directive and (count or fan_out)) or structured))
 
 
 def merge_constraints(user: dict, compiled: dict) -> dict:
@@ -105,23 +83,20 @@ def merge_constraints(user: dict, compiled: dict) -> dict:
 def requires_compilation(agent: Any, calls: list) -> bool:
     if not getattr(agent, "_work_batch_candidate", False) or "work_execute" not in agent.valid_tool_names:
         return False
-    allowed = READ_TOOLS | {"tool_search", "tool_describe", "clarify", "work_execute"}
     for call in calls:
-        name = call.function.name
-        if name == "tool_call":
-            try:
-                name = json.loads(call.function.arguments).get("name", "")
-            except (ValueError, AttributeError):
-                return True
-        if name not in allowed:
+        name, _ = unwrap_call(call)
+        # Human clarification remains available; cognitive delegation must not
+        # outsource a repetitive mutation loop. Unknown effects fail closed.
+        if name != "work_execute" and tool_effect(name) not in READ_EFFECTS | {ToolEffect.INTERACTIVE}:
             return True
     return False
 
 
 @contextmanager
 def execution_context(dispatch: Callable, session_id: str, progress: Callable | None = None,
-                      constraints: dict | None = None, provider_usage: dict | None = None):
-    token = _dispatch_context.set((dispatch, session_id, {}, [], progress, provider_usage))
+                      constraints: dict | None = None, provider_usage: dict | None = None,
+                      completed_mutations: dict | None = None):
+    token = _dispatch_context.set((dispatch, session_id, {}, [], progress, provider_usage, completed_mutations or {}))
     constraint_token = _constraints.set(constraints or {})
     try:
         yield
@@ -170,16 +145,18 @@ def classify(request: dict) -> WorkClass:
     return WorkClass.DETERMINISTIC_BATCH if len(request["items"]) > 1 else WorkClass.DETERMINISTIC_SINGLE
 
 
-def _bind(value: Any, item: dict) -> Any:
-    if isinstance(value, str) and value.startswith("$item."):
-        result: Any = item
-        for field in value[6:].split("."):
+def _bind(value: Any, item: dict, bindings: dict | None = None) -> Any:
+    bindings = {"item": item, **(bindings or {})}
+    if isinstance(value, str) and value.startswith("$") and value[1:].split(".")[0] in bindings:
+        parts = value[1:].split(".")
+        result: Any = bindings[parts[0]]
+        for field in parts[1:]:
             result = result[field]
         return result
     if isinstance(value, dict):
-        return {k: _bind(v, item) for k, v in value.items()}
+        return {k: _bind(v, item, bindings) for k, v in value.items()}
     if isinstance(value, list):
-        return [_bind(v, item) for v in value]
+        return [_bind(v, item, bindings) for v in value]
     return value
 
 
@@ -199,6 +176,15 @@ def _validate(output: Any, expected: dict) -> bool:
         if current != value:
             return False
     return True
+
+
+def _decode_output(raw):
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except ValueError:
+            pass
+    return raw
 
 
 class TaskCompiler:
@@ -230,25 +216,31 @@ class TaskCompiler:
         constraints = merge_constraints(active_constraints(), request.get("constraints", {}))
         request = {**request, "constraints": constraints}
         steps = request["steps"]
+        graph = prepare_graph(request) if any(k in request for k in ("setup_steps", "finalize_steps")) or any(
+            "depends_on" in s or "id" in s for s in steps) else None
+        all_steps = sum(graph.values(), []) if graph else steps
         if kind == WorkClass.PROMPT_QUEUE and not any(s.get("wait") for s in steps):
             raise ValueError("Prompt queue requires a bounded completion wait before advancing")
         if not steps or len(steps) > 64 or len(request["items"]) > 10000:
             raise ValueError("Work exceeds bounded plan limits")
-        for step in steps:
+        for step in all_steps:
             tool = step["tool"]
             if tool == "work_execute":
                 raise ValueError("Nested durable execution is prohibited")
-            if tool in {"delegate_task", "clarify", "tool_call"}:
+            effect, contract = tool_contract(tool)
+            if effect in {ToolEffect.COGNITIVE, ToolEffect.INTERACTIVE} or tool == "tool_call":
                 raise ValueError("Cognitive/indirect steps must be resolved before compiling work")
             route = "native_browser" if tool.startswith("browser_") else f"tool.{tool}"
-            if (constraints.get("forbidden_routes") and tool not in READ_TOOLS
+            if (constraints.get("forbidden_routes") and effect not in READ_EFFECTS and not contract.get("routes")
                     and not tool.startswith("browser_")
                     and any(not r.startswith(("tool.", "native_browser")) for r in constraints["forbidden_routes"])):
                 raise ConstraintViolation(f"Cannot prove provider route for constrained tool: {tool}")
             require_allowed_route(route, constraints)
-            if tool not in READ_TOOLS and not step.get("expect"):
+            for declared_route in contract.get("routes") or []:
+                require_allowed_route(declared_route, constraints)
+            if effect not in READ_EFFECTS and not step.get("expect"):
                 raise ValueError(f"Mutation {tool} requires an explicit result verifier")
-            if step.get("wait") and (tool not in READ_TOOLS or not step.get("expect")):
+            if step.get("wait") and (effect not in READ_EFFECTS or not step.get("expect")):
                 raise ValueError("Completion waits require a read-only probe and explicit verifier")
         fingerprint = hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
         plan = self.store.get_plan(durable_id)
@@ -258,6 +250,14 @@ class TaskCompiler:
         metadata = {"classification": kind.value, "constraints": constraints,
                     "objective_ref": objective.ref, "fingerprint": fingerprint,
                     "browser_task_id": task_id, "verbosity": normalize_verbosity(request.get("verbosity")).value}
+        if graph:
+            metadata["graph"] = graph
+        if graph and any("_work_phase" in i for i in request["items"]):
+            raise ValueError("Reserved graph phase key in item")
+        work_payloads = request["items"] if not graph else (
+            ([{"_work_phase": "setup"}] if graph["setup"] else []) +
+            [{**i, "_work_phase": "fan_out"} for i in request["items"]] +
+            ([{"_work_phase": "finalize"}] if graph["finalize"] else []))
         metrics = {"tool_calls": 0, "LLM_interventions": 0, "artifact_bytes": 0,
                    "inline_context_bytes": 0, "work_items_completed": 0, "replans": 0,
                    "cache_hits": 0, "cache_misses": 0, "no_progress_calls": 0}
@@ -282,28 +282,56 @@ class TaskCompiler:
 
         def worker(payload: dict, item: WorkItem) -> dict:
             results = []
-            for index, step in enumerate(steps):
+            phase = payload.get("_work_phase", "fan_out") if graph else "fan_out"
+            phase_steps = graph[phase] if graph else steps
+            bindings = {"setup": {}, "steps": {}, "finalize": {}}
+            if graph:
+                for shared in self.store.get_work_items(item.plan_id):
+                    if shared.input_payload.get("_work_phase") == "setup":
+                        for idx, node in enumerate(graph["setup"]):
+                            ref = shared.checkpoints.get(f"step_{idx}_meta", {}).get("result_ref")
+                            if ref:
+                                bindings["setup"][node["id"]] = _decode_output(self.artifacts.read(ref))
+                if phase == "finalize":
+                    bindings["items_ref"] = self.artifacts.store(durable_id, "fan_out_results.json", [
+                        {"item_id": i.id, "result_ref": i.normalized_output_ref} for i in self.store.get_work_items(item.plan_id)
+                        if i.input_payload.get("_work_phase") == "fan_out"]).ref
+            for index, step in enumerate(phase_steps):
                 # Persist each step before advancing; restart never replays a committed step.
                 current = self.store.get_item(item.id)
                 committed = current.checkpoints.get(f"step_{index}_meta", {})
                 if committed.get("result_ref"):
                     metrics["duplicate_calls_blocked"] += 1
                     results.append({"artifact_ref": committed["result_ref"], "verified": True})
+                    if graph:
+                        bindings["steps"][step["id"]] = _decode_output(self.artifacts.read(committed["result_ref"]))
+                        bindings[phase if phase != "fan_out" else "steps"][step["id"]] = bindings["steps"][step["id"]]
                     continue
-                if current.checkpoints.get(f"step_{index}_dispatch") and step["tool"] not in READ_TOOLS:
+                if current.checkpoints.get(f"step_{index}_dispatch") and tool_effect(step["tool"]) not in READ_EFFECTS:
                     return {"valid": False, "code": "uncertain_mutation_requires_review", "results": results}
-                args = _bind(step.get("args", {}), payload)
+                args = _bind(step.get("args", {}), payload, bindings)
+                effect, contract = tool_contract(step["tool"])
+                if effect == ToolEffect.IDEMPOTENT_WRITE and not args.get(contract["idempotency_key"]):
+                    return {"valid": False, "code": "idempotency_key_required", "results": results}
                 self.store.update_item_checkpoint(item.id, f"step_{index}_dispatch")
                 metrics["tool_calls"] += 1
                 metrics["tool_input_bytes"] += len(json.dumps(args).encode())
                 started = time.monotonic()
                 try:
-                    raw = dispatch(step["tool"], args, task_id, f"{item.id}_{index}")
+                    from workstation.batch_detection import call_key
+                    context = _dispatch_context.get()
+                    adopted_ref = context[6].get(call_key(step["tool"], args)) if context else None
+                    if adopted_ref:
+                        raw = self.artifacts.read(adopted_ref)
+                        metrics["duplicate_calls_blocked"] += 1
+                        metrics["tool_calls"] -= 1
+                    else:
+                        raw = dispatch(step["tool"], args, task_id, f"{item.id}_{index}")
                     wait = step.get("wait", {})
                     deadline = started + min(300, max(0, float(wait.get("timeout_seconds", 30))))
                     max_polls = min(100, max(1, int(wait.get("max_polls", 20))))
                     polls = 1
-                    while wait and not _validate(raw, _bind(step["expect"], payload)):
+                    while wait and not _validate(raw, _bind(step["expect"], payload, bindings)):
                         if time.monotonic() >= deadline or polls >= max_polls:
                             break
                         # Intermediate waiting observations belong to the Data Plane.
@@ -315,7 +343,7 @@ class TaskCompiler:
                 except InterruptedError:
                     raise
                 except Exception:
-                    if step["tool"] in READ_TOOLS:
+                    if tool_effect(step["tool"]) in READ_EFFECTS:
                         raise
                     return {"valid": False, "code": "mutation_failed_requires_review", "results": results}
                 finally:
@@ -336,11 +364,15 @@ class TaskCompiler:
                 metrics["tool_output_bytes"] += output_bytes
                 text = raw if isinstance(raw, str) else json.dumps(raw)
                 failed, _ = classify_tool_failure(step["tool"], text)
-                verified = not failed and (not step.get("expect") or _validate(raw, _bind(step["expect"], payload)))
+                verified = not failed and (not step.get("expect") or _validate(raw, _bind(step["expect"], payload, bindings)))
                 results.append({"artifact_ref": ref["artifact_ref"], "verified": verified})
                 if not verified:
                     metrics["no_progress_calls"] += 1
                     return {"valid": False, "results": results, "code": "unexpected_state"}
+                if graph:
+                    decoded = _decode_output(raw)
+                    bindings["steps"][step["id"]] = decoded
+                    bindings[phase if phase != "fan_out" else "steps"][step["id"]] = decoded
                 self.store.update_item_checkpoint(item.id, f"step_{index}", metadata={"result_ref": ref["artifact_ref"]})
                 metrics["state_transitions"] += 1
                 persist_metrics()
@@ -353,18 +385,24 @@ class TaskCompiler:
         try:
             runner = DurableBatchRunner(durable_id, task_store=self.store, artifact_store=self.artifacts,
                                         max_retries=2, backoff_seconds=0)
-            summary = runner.execute_batch(request.get("title", key), request["items"],
+            summary = runner.execute_batch(request.get("title", key), work_payloads,
                 worker_fn=worker, validator_fn=lambda raw, _: {
                     "valid": raw.get("valid") is True, "reason": raw.get("code", ""),
                     "expected_delta": "verified_step", "actual_delta": raw.get("valid") is True},
                 session_id=session_id, metadata=metadata,
-                stop_on_exception=kind in {WorkClass.BROWSER_TRANSACTION, WorkClass.PROMPT_QUEUE})
+                stop_on_exception=kind in {WorkClass.BROWSER_TRANSACTION, WorkClass.PROMPT_QUEUE},
+                can_start_item=(lambda item: all(i.status.value == "completed" for i in self.store.get_work_items(item.plan_id)
+                    if (item.input_payload.get("_work_phase") == "finalize" and i.input_payload.get("_work_phase") != "finalize")
+                    or (item.input_payload.get("_work_phase") == "fan_out" and i.input_payload.get("_work_phase") == "setup"))) if graph else None)
         finally:
             _execution_active.reset(execution_token)
             _constraints.reset(token)
         envelope = summary.to_dict()
         envelope["results_ref"] = summary.summary_artifact_ref
         envelope["ledger"] = self.store.operational_ledger(durable_id)
+        if graph:
+            envelope["completed"] = envelope["ledger"]["items"]["completed"]
+            envelope["total"] = len(request["items"])
         metrics["work_items_completed"] = envelope["completed"]
         metrics["replans"] = int(envelope["needs_reasoning"] > 0)
         metrics["tool_calls_per_state_transition"] = metrics["tool_calls"] / max(1, metrics["state_transitions"])
@@ -407,8 +445,15 @@ def execute_compiled_work(args: dict, **kwargs) -> str:
     context = _dispatch_context.get()
     if context is None:
         return json.dumps({"error": "Durable work requires the scoped agent dispatcher"})
-    dispatch, session_id, _, references, progress, usage = context
     compiler = TaskCompiler()
+    try:
+        return _execute_compiled_work(compiler, context, args, kwargs)
+    finally:
+        compiler.store.close()
+
+
+def _execute_compiled_work(compiler, context, args, kwargs):
+    dispatch, session_id, _, references, progress, usage, _ = context
     if args.get("plan_id"):
         envelope = compiler.resume(args["plan_id"], session_id=session_id, dispatch=dispatch,
                                    progress=progress, provider_usage=usage,

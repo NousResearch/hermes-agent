@@ -10,6 +10,19 @@ on:
       - "tools/browser_tool.py"
       - "cli-config.yaml.example"
       - ".github/workflows/workstation-*.yml"
+      - "tools/registry.py"
+      - "tools/effects.py"
+      - "agent/turn_constraints.py"
+      - "agent/agent_init.py"
+      - "agent/chat_completion_helpers.py"
+      - "agent/auxiliary_client.py"
+      - "tools/mcp_tool.py"
+      - "agent/tool_guardrails.py"
+      - "agent/conversation_loop.py"
+      - "agent/tool_executor.py"
+      - "run_agent.py"
+      - "uv.lock"
+      - "pyproject.toml"
   push:
     branches: [main]
     paths:
@@ -19,6 +32,20 @@ on:
       - "tools/browser_workstation.py"
       - "tools/browser_tool.py"
       - "cli-config.yaml.example"
+      - ".github/workflows/workstation-*.yml"
+      - "tools/registry.py"
+      - "tools/effects.py"
+      - "agent/turn_constraints.py"
+      - "agent/agent_init.py"
+      - "agent/chat_completion_helpers.py"
+      - "agent/auxiliary_client.py"
+      - "tools/mcp_tool.py"
+      - "agent/tool_guardrails.py"
+      - "agent/conversation_loop.py"
+      - "agent/tool_executor.py"
+      - "run_agent.py"
+      - "uv.lock"
+      - "pyproject.toml"
 
 jobs:
   contracts:
@@ -30,14 +57,33 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Install Workstation test dependencies
-        run: python -m pip install pytest==9.1.1 pyyaml==6.0.3
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - name: Install locked project environment
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.13 --extra dev
       - name: Validate lockfile
-        run: python workstation/scripts/validate_lock.py
+        run: .venv/bin/python workstation/scripts/validate_lock.py
       - name: Validate license policy
-        run: python workstation/scripts/verify_licenses.py
+        run: .venv/bin/python workstation/scripts/verify_licenses.py
       - name: Workstation contract tests
-        run: python -m pytest -q workstation/tests
+        run: .venv/bin/python -m pytest -q workstation/tests
+      - name: Durable execution core seam regressions
+        run: >-
+          .venv/bin/python -m pytest -q
+          tests/tools/test_registry.py
+          tests/tools/test_mcp_schema_cache.py
+          tests/tools/test_mcp_trust_gating.py
+          tests/agent/test_auxiliary_client.py
+          tests/agent/test_tool_guardrails.py
+          tests/agent/test_compaction_operational_refs.py
 
   core-patch-dry-run:
     runs-on: ubuntu-latest

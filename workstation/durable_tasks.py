@@ -725,7 +725,7 @@ class DurableTaskStore:
         exceptions = [i for i in items if i.status in {
             WorkItemStatus.FAILED, WorkItemStatus.BLOCKED, WorkItemStatus.WAITING_FOR_USER
         } or i.validation_result.get("suspect")]
-        return {
+        ledger = {
             "task_id": plan.task_id, "plan_id": plan.id, "phase": plan.status,
             "objective_ref": plan.metadata.get("objective_ref"),
             "constraints": plan.metadata.get("constraints", {}),
@@ -739,3 +739,32 @@ class DurableTaskStore:
             "next_action": "review_exceptions" if exceptions else (
                 "finish" if completed == len(items) else "continue_plan"),
         }
+        graph = plan.metadata.get("graph")
+        if graph:
+            from tools.effects import READ_EFFECTS, tool_effect
+            refs = sorted({i.normalized_output_ref for i in items if i.normalized_output_ref} | {
+                meta["result_ref"] for i in items for key, meta in i.checkpoints.items()
+                if key.endswith("_meta") and isinstance(meta, dict) and meta.get("result_ref")})
+            ledger["artifacts"], ledger["artifact_count"] = refs[:8], len(refs)
+            for phase in ("setup", "fan_out", "finalize"):
+                group = [i for i in items if i.input_payload.get("_work_phase") == phase]
+                done = sum(i.status == WorkItemStatus.COMPLETED for i in group)
+                failed = sum(i.status == WorkItemStatus.FAILED for i in group)
+                review = sum(i in exceptions for i in group)
+                uncertain = sum(i.validation_result.get("reason") == "uncertain_mutation_requires_review" or
+                    any(k.endswith("_dispatch") and not i.checkpoints.get(k.removesuffix("_dispatch") + "_meta", {}).get("result_ref")
+                        and tool_effect(graph[phase][int(k.split("_")[1])]["tool"]) not in READ_EFFECTS for k in i.checkpoints)
+                    for i in group if i.status != WorkItemStatus.COMPLETED)
+                if phase == "fan_out":
+                    ledger["items"] = {"completed": done, "total": len(group), "pending": len(group)-done-review,
+                                       "needs_reasoning": review, "failed": failed, "uncertain": uncertain}
+                else:
+                    steps_done = sum(bool(i.checkpoints.get(f"step_{n}_meta", {}).get("result_ref"))
+                                     for i in group for n in range(len(graph[phase])))
+                    ledger[phase] = {"completed": steps_done, "total": len(graph[phase]),
+                                     "pending": len(graph[phase])-steps_done, "needs_reasoning": review,
+                                     "failed": failed, "uncertain": uncertain}
+            ledger["uncertain"] = sum(ledger[p]["uncertain"] for p in ("setup", "items", "finalize"))
+            ledger["phase"] = next((p for p, key in (("setup", "setup"), ("fan_out", "items"), ("finalize", "finalize"))
+                                    if ledger[key]["completed"] < ledger[key]["total"]), "completed")
+        return ledger

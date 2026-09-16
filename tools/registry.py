@@ -208,11 +208,13 @@ class ToolEntry:
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
         "max_result_size_chars", "dynamic_schema_overrides",
+        "effect", "idempotency_key", "routes",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 effect=None, idempotency_key=None, routes=None):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -231,6 +233,9 @@ class ToolEntry:
         # on every get_definitions() call; results are merged shallow on top
         # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
+        self.effect = effect
+        self.idempotency_key = idempotency_key
+        self.routes = routes
 
 
 class _PluginOverridePolicy:
@@ -775,6 +780,9 @@ class ToolRegistry:
         dynamic_schema_overrides: Callable = None,
         override: bool = False,
         scope: Optional[str] = None,
+        effect=None,
+        idempotency_key: Optional[str] = None,
+        routes: Optional[list] = None,
     ):
         """Register a tool.  Called at module-import time by each tool file.
 
@@ -870,6 +878,7 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                effect=effect, idempotency_key=idempotency_key, routes=routes,
             )
             # Availability is now derived per-tool (_toolset_has_exposable_tools),
             # so this map no longer gates a toolset. It is still consumed by
@@ -1082,6 +1091,8 @@ class ToolRegistry:
                     continue
             # Ensure schema always has a "name" field — use entry.name as fallback
             schema_with_name = {**entry.schema, "name": entry.name}
+            for internal_key in ("annotations", "effect", "x-hermes-effect", "routes", "idempotency_key"):
+                schema_with_name.pop(internal_key, None)
             # Apply runtime-dynamic overrides (e.g. delegate_task description
             # depends on current delegation.max_concurrent_children /
             # max_spawn_depth). Caller side (model_tools.get_tool_definitions)

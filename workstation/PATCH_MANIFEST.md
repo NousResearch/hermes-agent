@@ -1,5 +1,18 @@
 # Hermes Workstation foundation patch manifest
 
+## HW-021 — Final durable hardening surface
+
+Extends HW-020 with canonical registry effect metadata, shared setup/finalize
+WorkItems, minimal deterministic DAG validation, phase ledger, structural runtime
+fan-out detection and pre-provider TurnConstraintContext. Existing stores,
+BrowserTask, batch runner, reference plane and uncertain replay protection remain
+the owners. Core seams and focused upstream SHA are tracked in UPSTREAM_DELTA.md.
+Contract tests: `test_durable_hardening.py`; replay:
+`python -m workstation.benchmarks.trello_regression`.
+Workstation CI syncs the real locked dev project environment and tests the core
+registry/MCP/provider seams as well as Workstation contracts. Paid provider/live
+Trello validation remains outside the fake-adapter regression.
+
 ## HW-020 — Durable execution patch surface
 
 Task Compiler and Durable Execution Routing reuse WorkPlan/WorkItem, canonical

@@ -2392,3 +2392,59 @@ Anti-patterns proibidos nesta fronteira:
 - guardar outputs integrais no histórico de chat para “facilitar resume”;
 - habilitar tool de GUI por env de processo, ou sondar rota proibida;
 - alegar token saving pago a partir de um benchmark sintético.
+
+### 35.8. Hardening final: taxonomy, graph e constraints antes do planner
+
+`READ_TOOLS` foi removido. A fonte central de classificação é
+`tools.effects.ToolEffect`: PURE_READ, DISCOVERY, IDEMPOTENT_WRITE, MUTATION,
+INTERACTIVE e COGNITIVE. O registry aceita metadata de efeito, contrato de chave
+idempotente e rotas; unknown é MUTATION. MCP captura readOnlyHint em discovery
+e cache, sem dispensar sua autorização/trust gate. Discovery de board/lista/cards
+pode ocorrer antes de `work_execute`, inclusive junto a writes rejeitados na
+mesma resposta. Clarificação humana é permitida; delegação cognitiva não substitui
+compilação. IDEMPOTENT_WRITE exige contrato e chave presente; não autoriza replay
+de mutação incerta.
+
+Setup e finalize são WorkItems compartilhados do mesmo WorkPlan. IDs, depends_on
+e dependências de bindings são validados antes da execução; faltas, ciclos e
+dependências de uma fase futura falham antes do dispatch. A ordenação de nós
+prontos é determinística. `$setup.node.campo` carrega resultado confirmado do
+setup; `$steps.node.campo` resolve passos locais; `$items_ref` entrega ao finalize
+um manifest, sem despejar outputs no transcript. O finalize só avança quando
+setup e todos os itens necessários estão completos. Checkpoints de passo e
+proteção de mutação incerta valem também para fases compartilhadas.
+
+O ledger reconstrói setup/items/finalize, progresso de passos, fase, failed,
+pending, uncertain, blockers e artifact refs a partir da DB e metadata do plano.
+A conexão do DurableTaskStore criado pela tool é fechada após a chamada externa;
+isso também permite apagar fixtures temporários no Windows sem handle SQLite
+pendurado. O formato anterior `items + steps` conserva sua execução linear.
+
+Detecção inicial usa sinais gramaticais/coleção/contagem e records homogêneos;
+detecção runtime compara nome e shape dos argumentos, preservando discriminadores
+de operação. A terceira mutação distinta equivalente é bloqueada antes de
+executar. Resultados já executados ficam em artifacts e são adotados pelo plano
+apenas quando seu verifier confirma o output anterior. O controle é por turno;
+não é deduplicação global de execução nem outro banco de tarefas.
+
+TurnConstraintContext é criado antes da primeira chamada do planner. Seleção
+principal, fallback, boundaries streaming/non-streaming, resolução/cache auxiliary
+e ModelRouter usam constraints; fallback proibido é eliminado antes de sondagem
+de credencial/client. ContextVar é restaurada ao encerrar o turno, para não
+contaminar outras sessões. Rotas auxiliary auto/composite sob constraints exigem
+provider explícito permitido: destinos internos desconhecidos falham fechado.
+Tool/compiler/browser routing e metadata do WorkPlan recebem a mesma restrição.
+
+Guardrails foram comparados com upstream `4716ec0ba4` e adaptados pontualmente:
+failure-tolerant names, progress-reset candidates e opção de hard stop para
+plataformas não interativas. Sucesso textual de terminal/browser não prova
+progresso; write landed, verifier confiável ou checkpoint confirmado inicia novo
+experimento. O campo textual `actual_delta=true` não possui autoridade.
+
+`test_durable_hardening.py` cobre os contratos A–M. O replay ACIRV/Trello-like
+usa fake provider e adapter remoto, mantendo dispatch AIAgent e estado durável
+reais: 12 criações, 2 provider calls, 3 setup calls, zero replay de mutações e
+21 cache hits. Os bytes inline medidos são aproximadamente 2,7 KB contra
+2,56 MB no baseline de transporte modelado. Isso não mede tokens pagos. O CI
+instala a configuração dev do projeto via uv.lock, incluindo as dependências
+normais e pytest-asyncio; a evidência de GitHub deve ser registrada no journal.

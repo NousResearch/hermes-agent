@@ -638,10 +638,11 @@ class ModelRouter:
         constraints: dict[str, Any] | None = None,
     ) -> RouteDecision:
         from workstation.routing import ConstraintViolation, require_allowed_route
+        from agent.turn_constraints import provider_route
         permitted = []
         for candidate in self.candidates:
             try:
-                route = "openai_api" if candidate.provider == "openai" else candidate.provider
+                route = provider_route(candidate.provider)
                 require_allowed_route(route, constraints or {})
             except ConstraintViolation:
                 continue

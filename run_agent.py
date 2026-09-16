@@ -6626,6 +6626,8 @@ class AIAgent:
     def _interruptible_api_call(self, api_kwargs: dict):
         """Forwarder — see ``agent.chat_completion_helpers.interruptible_api_call``."""
         from agent.chat_completion_helpers import interruptible_api_call
+        from agent.turn_constraints import guard_provider_call
+        guard_provider_call(self)
         return interruptible_api_call(self, api_kwargs)
 
     # ── Unified streaming API call ─────────────────────────────────────────
@@ -7118,6 +7120,8 @@ class AIAgent:
     ):
         """Forwarder — see ``agent.chat_completion_helpers.interruptible_streaming_api_call``."""
         from agent.chat_completion_helpers import interruptible_streaming_api_call
+        from agent.turn_constraints import guard_provider_call
+        guard_provider_call(self)
         return interruptible_streaming_api_call(self, api_kwargs, on_first_delta=on_first_delta)
 
     def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
@@ -8399,6 +8403,9 @@ class AIAgent:
         """
         tool_calls = assistant_message.tool_calls
         from workstation.task_compiler import requires_compilation
+        from workstation.batch_detection import detects_fan_out
+        if detects_fan_out(self, tool_calls):
+            self._work_batch_candidate = True
         if requires_compilation(self, tool_calls):
             from agent.tool_dispatch_helpers import make_tool_result_message
             self._work_compile_replans = getattr(self, "_work_compile_replans", 0) + 1
@@ -8408,9 +8415,17 @@ class AIAgent:
                     message="Repetitive work could not be compiled safely; clarify or repair the plan.",
                     count=self._work_compile_replans))
             for call in tool_calls:
+                # Discovery and human clarification remain possible even when
+                # a single provider response also proposes uncompiled writes.
+                if not requires_compilation(self, [call]):
+                    from types import SimpleNamespace
+                    self._execute_tool_calls(SimpleNamespace(tool_calls=[call]), messages, effective_task_id, api_call_count)
+                    continue
                 messages.append(make_tool_result_message(call.function.name, json.dumps({
                     "status": "replan", "code": "durable_compile_required",
-                    "summary": "This quantified repetitive request requires work_execute. Compile items and verified steps once; individual mutations have not executed."
+                    "summary": "Repetitive work requires work_execute. Compile remaining items and verified steps once; these calls did not execute. Prior completed mutations are preserved and must not be replayed.",
+                    "completed_mutation_count": len(getattr(self, "_work_completed_mutations", {})),
+                    "completed_result_refs": list(getattr(self, "_work_completed_mutations", {}).values())[:8],
                 }), call.id, effect_disposition="none"))
             return
 
@@ -8445,7 +8460,8 @@ class AIAgent:
         _work_context = execution_context(_durable_dispatch, self._conversation_root_id() or self.session_id or "",
                                          self._tool_guardrails.mark_verified_progress,
                                          getattr(self, "_work_user_constraints", {}),
-                                         getattr(self, "_current_provider_usage", None))
+                                         getattr(self, "_current_provider_usage", None),
+                                         getattr(self, "_work_completed_mutations", {}))
         _work_context.__enter__()
         try:
             if len(tool_calls) <= 1:
@@ -8527,6 +8543,15 @@ class AIAgent:
                      skip_tool_execution_middleware: bool = False) -> str:
         """Forwarder — see ``agent.agent_runtime_helpers.invoke_tool``."""
         from agent.agent_runtime_helpers import invoke_tool
+        context = getattr(self, "_turn_constraints", None)
+        if context is not None and function_name != "work_execute":
+            from tools.effects import tool_contract
+            from workstation.routing import require_allowed_route
+            target = function_args.get("name", "") if function_name == "tool_call" else function_name
+            _, contract = tool_contract(target)
+            require_allowed_route("native_browser" if target.startswith("browser_") else f"tool.{target}", context.routes)
+            for route in contract.get("routes") or []:
+                require_allowed_route(route, context.routes)
         return invoke_tool(
             self,
             function_name,
@@ -8977,7 +9002,8 @@ class AIAgent:
             # replaces the value with the live runtime after fallback restoration.
             # Keep the scope local instead of storing ContextVar tokens on the agent,
             # which may be observed from another thread.
-            with bind_subagent_parent(self), scoped_runtime_main({}):
+            from agent.turn_constraints import scoped_turn_constraints
+            with bind_subagent_parent(self), scoped_runtime_main({}), scoped_turn_constraints():
                 try:
                     if durable_turn_lease_thread is not None:
                         with durable_turn_lease_activity_lock:

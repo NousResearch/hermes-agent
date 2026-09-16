@@ -102,6 +102,7 @@ class DurableBatchRunner:
         session_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         stop_on_exception: bool = False,
+        can_start_item: Optional[Callable[[WorkItem], bool]] = None,
     ) -> BatchSummary:
         """Run batch processing with per-item atomic persistence and validation."""
         start_time = time.monotonic()
@@ -124,6 +125,8 @@ class DurableBatchRunner:
         anomalies: List[Dict[str, Any]] = []
 
         for item in work_items:
+            if can_start_item is not None and not can_start_item(item):
+                break
             # Skip items already completed during a previous run
             if item.status == WorkItemStatus.COMPLETED:
                 success_count += 1
@@ -267,5 +270,7 @@ class DurableBatchRunner:
             schema="batch_run_summary",
         )
         summary.summary_artifact_ref = summary_ref.ref
-        self.store.update_plan_state(plan.id, "needs_reasoning" if anomalies else "completed")
+        completed = success_count + retry_success_count
+        self.store.update_plan_state(plan.id, "needs_reasoning" if anomalies else (
+            "completed" if completed == len(work_items) else "running"))
         return summary

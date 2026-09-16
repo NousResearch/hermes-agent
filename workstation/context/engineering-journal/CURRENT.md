@@ -1,5 +1,46 @@
 # CURRENT — Workstation Engineering Journal
 
+## H-051 — Final durable execution hardening (2026-09-16)
+
+Audit: HEAD and fetched origin/main `17df394cfe3e913e6fce6f3130e3efc47e4592a2`;
+focused upstream guardrail baseline `4716ec0ba4e212105f8f162c226f052b25f8a76b`.
+Only the pre-existing `.workstation-audit/` directory is untracked.
+
+Confirmed gaps: Workstation CI installed two individual dependencies;
+compiler read policy used three names; shared setup/finalize and turn-provider
+constraints were missing. Experiment: extend the registry effect contract,
+reuse phase WorkItems/checkpoints in a bounded deterministic DAG, record
+pre-compilation mutation refs, and prune provider fallbacks before probes.
+Acceptance requires discovery, 100-item setup/restart, uncertain mutation,
+finalize barriers, cycles, natural/runtime fan-out, provider rejection and
+trusted progress tests; then full Workstation tests and a real GitHub run.
+No green GitHub result is claimed before that run finishes.
+
+Observed: initial focused existing contracts 31 passed; new A–M contracts 28
+passed; expanded Workstation/core acceptance 377 passed, 2 skipped. Additional
+registry/MCP/auxiliary tests initially had 238 passes plus four missing-asyncio
+plugin cases and one Windows POSIX-0600 assertion. A separate project venv was
+installed with `uv sync --locked --python 3.13 --extra dev` (87 installed
+packages); core rerun: 242 passed, one POSIX-mode assertion failed on Windows.
+The MCP cache permission implementation was not changed by this patch.
+
+Replay `python -m workstation.benchmarks.trello_regression`: 12 completed cards,
+2 fake-provider calls, 3 setup calls, 52 physical tools, 15 discovery calls,
+12 mutations, 0 replayed mutations, 0 compactions, 21 cache hits; 2,687 inline
+bytes, 1,359,646 artifact bytes, 2,556,086 bytes avoided. The modeled baseline
+has 14 provider boundaries, 36 repeated setup calls and 2,558,773 raw-inline
+bytes. Provider token usage remains unknown/null. CLI first exposed an unclosed
+tool-owned DurableTaskStore connection during temporary cleanup; closing it in
+the outer tool finally resolved the Windows handle failure, and CLI rerun passed.
+
+Locked-environment acceptance rerun: 377 passed, 2 skipped. Latest focused
+compiler/integration/hardening run: 54 passed; after the final dispatch-record
+and mixed-discovery refinements, hardening tests alone: 34 passed. Compileall,
+diff check, components lock, license policy and core integration anchors passed.
+GitHub baseline run `35143874982` at `17df394cfe` confirms collection errors:
+missing `requests` and `dotenv`. The new workflow runs the complete locked dev
+environment and retains core seam regressions; publication/run result follows.
+
 ## H-050 — Durable execution routing / reference boundary (2026-09-16)
 
 Audit base: `3344e67fb67a3f9d2e89fa08707325807449d9b8`, equal to fetched

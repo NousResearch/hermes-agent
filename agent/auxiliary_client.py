@@ -261,6 +261,9 @@ def _openai_http_client_kwargs(
     return {"http_client": client}
 
 def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
+    from agent.turn_constraints import guard_auxiliary_route, provider_route
+    if provider_route("", base_url) == "openai_api":
+        guard_auxiliary_route("openai_api", base_url)
     if _aux_probe_active():
         # Availability probe: credentials/base_url resolved — that is the
         # answer. Skip the openai import + httpx/SSL construction entirely.
@@ -6286,6 +6289,8 @@ def resolve_provider_client(
     Returns:
         (client, resolved_model) or (None, None) if auth is unavailable.
     """
+    from agent.turn_constraints import guard_auxiliary_route
+    guard_auxiliary_route(provider, explicit_base_url or "")
     _validate_proxy_env_urls()
     # Preserve the original provider name before alias normalization so a
     # user-declared ``custom_providers`` entry whose name coincidentally
@@ -7945,6 +7950,8 @@ def _get_cached_client(
     preventing the fd-exhaustion that previously occurred in long-running
     gateways where recycled worker threads created unbounded entries (#10200).
     """
+    from agent.turn_constraints import guard_auxiliary_route
+    guard_auxiliary_route(provider, base_url or "")
     # Resolve the current event loop for async clients so we can validate
     # cached entries.  Loop identity is NOT in the cache key — instead we
     # check at hit time whether the cached loop is still current and open.

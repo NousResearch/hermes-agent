@@ -2490,6 +2490,14 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     if not fb_provider or not fb_model:
         return agent._try_activate_fallback(reason)  # skip invalid, try next
 
+    from workstation.routing import ConstraintViolation
+    turn_constraints = getattr(agent, "_turn_constraints", None)
+    if turn_constraints is not None:
+        try:
+            turn_constraints.require_provider(fb_provider, fb.get("base_url", ""))
+        except ConstraintViolation:
+            return agent._try_activate_fallback(reason)
+
     local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
     if local_skip_reason:
         unavailable.add(fb_key)

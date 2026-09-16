@@ -1,5 +1,37 @@
 # Hermes Workstation upstream delta
 
+## HW-021 — Final durable graph/effect/turn hardening (2026-09-16)
+
+Audit base: `17df394cfe3e913e6fce6f3130e3efc47e4592a2`, equal to fetched origin/main.
+Focused upstream guardrails: `4716ec0ba4e212105f8f162c226f052b25f8a76b`.
+No blind merge or downstream file replacement.
+
+Core seams: `tools/effects.py` plus `tools/registry.py` add operator/plugin effect,
+idempotency-key and provider-route metadata without enlarging LLM schemas.
+`tools/mcp_tool.py` retains read hints on live/lazy-cache registrations while
+preserving trust authorization. `agent/tool_executor.py` records successful
+pre-compilation mutation artifacts; `run_agent.py` detects structural fan-out,
+allows discovery beside rejected writes, carries adopted results, checks tool
+routes and guards streaming/non-streaming provider calls. `agent/conversation_loop.py`
+establishes TurnConstraintContext before provider selection; scoped ambient context
+in `run_agent.py` and `agent/auxiliary_client.py` covers auxiliary resolver/cache
+routes. `agent/chat_completion_helpers.py` prunes forbidden fallback entries before
+client/credential resolution. ModelRouter shares the provider-route normalizer.
+
+Guardrail adaptation centralizes upstream FAILURE_TOLERANT_TOOL_NAMES and
+PROGRESS_RESET_TOOL_NAMES, and adds platform-aware non_interactive_hard_stop_enabled.
+`agent/agent_init.py` uses that config instead of a separate environment/platform
+override. Existing identical/cycle detection, downstream pollers and loop caps
+remain. Unlike upstream blanket command-success reset, downstream requires trusted
+delta/checkpoint or canonical landed file-write evidence.
+
+Workstation additions extend existing compiler/runner/store: phase WorkItems,
+bounded topological DAG, reference bindings, phase gates/checkpoints, graph ledger
+and tool-owned connection closure. Linear plans remain compatible. Tests:
+`test_durable_hardening.py` and controlled `benchmarks/trello_regression.py`.
+CI uses the existing pinned setup-uv action/retry convention and uv.lock;
+no individual missing dependencies are added manually.
+
 ## HW-020 — Durable execution boundary (2026-09-16)
 
 Audited fork base: `3344e67fb67a3f9d2e89fa08707325807449d9b8`.

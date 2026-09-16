@@ -28,7 +28,10 @@ registry.register(
             "kind": {"type": "string", "enum": ["batch", "browser_transaction", "prompt_queue"]},
             "items": {"type": "array", "items": {"type": "object"}},
             "items_ref": {"type": "string", "description": "ArtifactStore dataset reference instead of inline records."},
+            "setup_steps": {"type": "array", "items": {"type": "object"}, "description": "Shared steps executed once; bind results with $setup.step_id.field."},
+            "finalize_steps": {"type": "array", "items": {"type": "object"}, "description": "Durable fan-in after all items complete; $items_ref contains item result refs."},
             "steps": {"type": "array", "items": {"type": "object", "properties": {
+                "id": {"type": "string"}, "depends_on": {"type": "array", "items": {"type": "string"}},
                 "tool": {"type": "string"}, "args": {"type": "object"}, "expect": {"type": "object"},
                 "wait": {"type": "object", "properties": {
                     "timeout_seconds": {"type": "number"}, "interval_seconds": {"type": "number"},

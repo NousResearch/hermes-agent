@@ -85,6 +85,15 @@ _STALL_GUARD_REPEATABLE_SUFFIXES = (
 # canonical args, same result). 3 tolerates one legitimate double-check while
 # catching the observed re-issue loops (3x/4x identical calls in eval traces).
 STALL_GUARD_IDENTICAL_CALL_THRESHOLD = 3
+FAILURE_TOLERANT_TOOL_NAMES = frozenset({
+    "terminal", "execute_code", "process_manage", "process", "browser_navigate", "web_extract",
+})
+PROGRESS_RESET_TOOL_NAMES = frozenset({
+    "write_file", "patch", "terminal", "execute_code", "browser_click", "browser_type", "browser_press",
+    "browser_navigate", "process_manage", "process", "delegate_task", "send_message", "cronjob",
+    "cronjob_manage", "todo", "todo_list", "memory", "skill_manage",
+})
+_ATTENDED_PLATFORMS = frozenset({"cli", "tui", "desktop", "acp", "subagent", "api_server"})
 
 # Result-reference stubbing (agent.stall_guards): from the 2nd consecutive
 # identical call whose FRESH result is byte-identical to the previous one,
@@ -118,6 +127,7 @@ class ToolCallGuardrailConfig:
 
     warnings_enabled: bool = True
     hard_stop_enabled: bool = False
+    non_interactive_hard_stop_enabled: bool = True
     exact_failure_warn_after: int = 2
     exact_failure_block_after: int = 5
     same_tool_failure_warn_after: int = 3
@@ -129,10 +139,10 @@ class ToolCallGuardrailConfig:
     loop_caps: "LoopCapConfig" = field(default_factory=lambda: LoopCapConfig())
 
     @classmethod
-    def from_mapping(cls, data: Mapping[str, Any] | None) -> "ToolCallGuardrailConfig":
+    def from_mapping(cls, data: Mapping[str, Any] | None, *, platform: str | None = None) -> "ToolCallGuardrailConfig":
         """Build config from the `tool_loop_guardrails` config.yaml section."""
         if not isinstance(data, Mapping):
-            return cls()
+            data = {}
 
         warn_after = data.get("warn_after")
         if not isinstance(warn_after, Mapping):
@@ -144,7 +154,10 @@ class ToolCallGuardrailConfig:
         defaults = cls()
         return cls(
             warnings_enabled=_as_bool(data.get("warnings_enabled"), defaults.warnings_enabled),
-            hard_stop_enabled=_as_bool(data.get("hard_stop_enabled"), defaults.hard_stop_enabled),
+            hard_stop_enabled=_as_bool(data.get("hard_stop_enabled"), defaults.hard_stop_enabled) or (
+                _as_bool(data.get("non_interactive_hard_stop_enabled"), True) and
+                isinstance(platform, str) and bool(platform.strip()) and platform.strip().lower() not in _ATTENDED_PLATFORMS),
+            non_interactive_hard_stop_enabled=_as_bool(data.get("non_interactive_hard_stop_enabled"), True),
             exact_failure_warn_after=_positive_int(
                 warn_after.get("exact_failure", data.get("exact_failure_warn_after")),
                 defaults.exact_failure_warn_after,
@@ -463,7 +476,7 @@ class ToolCallGuardrailController:
             self._same_tool_failure_counts[tool_name] = same_count
 
             if (self.config.hard_stop_enabled and same_count >= self.config.same_tool_failure_halt_after
-                    and tool_name not in {"terminal", "execute_code", "process", "browser_navigate", "web_extract"}):
+                    and tool_name not in FAILURE_TOLERANT_TOOL_NAMES):
                 decision = ToolGuardrailDecision(
                     action="halt",
                     code="same_tool_failure_halt",
@@ -508,11 +521,9 @@ class ToolCallGuardrailController:
         self._same_tool_failure_counts.pop(tool_name, None)
 
         # Port the upstream progress reset without treating a successful read as a mutation.
-        # Callers with a verifier can supply explicit actual_delta in result metadata.
-        if ((actual_delta is None and file_mutation_result_landed(tool_name, result))
-                or actual_delta is True
-                or (tool_name in {"browser_click", "browser_type", "browser_press", "browser_navigate"}
-                    and actual_delta is not False)):
+        # actual_delta is a trusted caller argument, never parsed from tool text.
+        if ((actual_delta is None and tool_name in PROGRESS_RESET_TOOL_NAMES
+             and file_mutation_result_landed(tool_name, result)) or actual_delta is True):
             self.mark_verified_progress()
 
         if not self._is_idempotent(tool_name):

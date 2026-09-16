@@ -6842,6 +6842,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
                 "registry_name": schema["name"],
                 "origin": f"tool {mcp_tool.name!r}",
                 "schema": schema,
+                "effect": "PURE_READ" if _annotation_read_only_hint(mcp_tool) else "MUTATION",
                 "handler": _make_tool_handler(
                     name, mcp_tool.name, server.tool_timeout
                 ),
@@ -6865,6 +6866,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
                 "registry_name": schema["name"],
                 "origin": f"generated utility {handler_key!r}",
                 "schema": schema,
+                "effect": "PURE_READ",
                 "handler": handler_factories[handler_key](
                     name, server.tool_timeout
                 ),
@@ -6972,6 +6974,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             name=registry_name,
             toolset=toolset_name,
             schema=candidate["schema"],
+            effect=candidate["effect"],
             handler=candidate["handler"],
             check_fn=candidate["check_fn"],
             is_async=False,
@@ -7038,12 +7041,13 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 class _CachedMCPTool:
     """Minimal stand-in for MCP Tool objects loaded from the schema cache."""
 
-    __slots__ = ("name", "description", "inputSchema")
+    __slots__ = ("name", "description", "inputSchema", "annotations")
 
-    def __init__(self, name: str, description: str, inputSchema: dict):
+    def __init__(self, name: str, description: str, inputSchema: dict, annotations=None):
         self.name = name
         self.description = description
         self.inputSchema = inputSchema or {}
+        self.annotations = annotations
 
 
 def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]:
@@ -7107,6 +7111,7 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
             raw_name,
             raw.get("description") or "",
             raw_schema if isinstance(raw_schema, dict) else {},
+            annotations=raw.get("annotations"),
         )
         # Defense-in-depth: the cache file is user-writable JSON, so run the
         # same injection scan the eager discovery path applies.
@@ -7126,6 +7131,7 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
             toolset=toolset_name,
             schema=schema,
             handler=_make_tool_handler(name, raw_name, tool_timeout),
+            effect="PURE_READ" if _annotation_read_only_hint(mcp_tool) else "MUTATION",
             check_fn=check_fn,
             is_async=False,
             description=schema["description"],
@@ -7159,6 +7165,7 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
             toolset=toolset_name,
             schema=schema,
             handler=handler_factories[handler_key](name, tool_timeout),
+            effect="PURE_READ",
             check_fn=check_fn,
             is_async=False,
             description=schema.get("description") or "",

@@ -72,6 +72,65 @@ telemetry or wholesale compressor/SessionDB upstream refactor was introduced.
 
 ## Product boundary
 
+### Final durable hardening: effects, shared graph and turn routing
+
+`tools.effects.ToolEffect` is the canonical read/discovery/write/interactive/
+cognitive taxonomy. Registry registrations accept `effect`, `idempotency_key`
+and `routes`; plugins can also supply these in their schema metadata. Metadata
+does not enter provider function schemas. MCP live/cache registration captures
+readOnlyHint without bypassing the existing trust gates; missing/malformed effect
+metadata is MUTATION. IDEMPOTENT_WRITE requires an explicit key contract and a
+nonempty key argument, but still cannot bypass compilation or replay uncertainty.
+Discovery and clarification can execute even in a response that also proposes
+blocked individual mutations. Cognitive delegation must be resolved before work.
+
+The backward-compatible `items + steps` format remains unchanged. Optional
+`setup_steps` and `finalize_steps` create shared phase WorkItems in the same
+WorkPlan, not new tables or a scheduler. `execution_graph.prepare_graph()` checks
+unique IDs, missing/impossible references, implicit binding dependencies and
+cycles before dispatch; ready nodes are sorted deterministically. Setup outputs
+bind via `$setup.node.field`, previous phase-local outputs via `$steps.node.field`,
+and finalization receives `$items_ref`, a manifest of item result refs. Finalize
+waits for all setup/items to be completed. Shared mutations use the same
+dispatch-intent/verified-result checkpoints and uncertainty protection as items.
+The tool-owned DurableTaskStore closes its connection after every outer call.
+
+The ledger derives setup/fan_out/finalize phase, step and item progress, pending,
+failed, uncertain, review blockers and checkpoint artifact refs from persisted
+rows and plan metadata. SUMMARY contains no raw shared outputs; FULL remains
+explicit opt-in. It does not include chain-of-thought.
+
+Initial batch detection uses directive grammar, counts, collection quantifiers
+and homogeneous structured records. A per-turn detector also compares tool name
+and argument shape, retaining action/operation/method discriminators. The third
+distinct equivalent mutation is stopped before dispatch. Prior successful outputs
+are held by artifact refs and adopted only after the compiled verifier matches;
+the planner is told to compile the remaining work. This is per-turn detection,
+not a global execution cache or a change to durable restart semantics.
+
+TurnConstraintContext exists before planner calls, checks the selected provider,
+filters configured fallbacks before credential/client resolution, and rechecks
+after turn setup may restore the primary. Main streaming/non-streaming boundaries
+and ambient auxiliary resolver/cache boundaries fail closed. Auxiliary automatic
+or composite routes under constraints require an explicit permitted provider;
+their internal destinations cannot be assumed safe. ModelRouter uses the same
+provider-route normalization. Plan metadata/tool/browser constraints remain scoped.
+
+The guardrail adaptation matches upstream failure-tolerant names and unattended
+policy (`non_interactive_hard_stop_enabled`), preserving period-2–4 detection and
+poller exemptions. Progress reset requires canonical landed file-write evidence,
+a trusted caller verifier signal, or a durable verified checkpoint; an arbitrary
+`actual_delta` field in tool text is insufficient.
+
+Regression replay: `python -m workstation.benchmarks.trello_regression` uses the
+real AIAgent dispatch with fake provider/remote adapter. Twelve creations measure
+two provider calls, three shared setup calls, twelve verified mutations, zero
+replays, 21 cache hits and zero compactions. Sampled inline bytes 2,687 versus
+2,558,773 modeled raw-inline bytes; token_count is unknown. Physical work remains
+O(N), setup O(1), planner boundaries O(1) absent exceptions. This is no claim of
+live Trello or paid-token validation. Workstation CI installs the project with
+`uv sync --locked --python 3.13 --extra dev` and runs contracts plus core seam tests.
+
 ```text
 Hermes Desktop / Dashboard
         |

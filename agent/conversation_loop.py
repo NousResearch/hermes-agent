@@ -1889,10 +1889,22 @@ def run_conversation(
         logger.debug("per-turn env credential refresh failed", exc_info=True)
 
     # ── Per-turn setup (the prologue) ──
-    from workstation.task_compiler import batch_intent, user_constraints
+    from workstation.task_compiler import batch_intent
     agent._work_batch_candidate = batch_intent(user_message)
     agent._work_compile_replans = 0
-    agent._work_user_constraints = user_constraints(user_message)
+    agent._work_completed_mutations = {}
+    agent._work_mutation_shapes = {}
+    from agent.turn_constraints import TurnConstraintContext
+    from workstation.routing import ConstraintViolation
+    try:
+        agent._turn_constraints = TurnConstraintContext.from_user(user_message)
+        agent._work_user_constraints = agent._turn_constraints.routes
+        from agent.turn_constraints import publish_turn_constraints
+        publish_turn_constraints(agent._turn_constraints)
+        agent._turn_constraints.select_before_call(agent)
+    except ConstraintViolation as exc:
+        return {"final_response": str(exc), "messages": conversation_history or [],
+                "failed": True, "error": "constraint_violation", "api_calls": 0}
     # All once-per-turn setup — stdio guarding, retry-counter resets, user
     # message sanitization, todo/nudge hydration, system-prompt restore-or-
     # build, preflight compression, the ``pre_llm_call`` plugin hook,
@@ -1933,6 +1945,13 @@ def run_conversation(
     _should_review_memory = _ctx.should_review_memory
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
+    # Turn setup can restore the primary after a prior-turn failover. Recheck
+    # its resulting route before the first planner call of this turn.
+    try:
+        agent._turn_constraints.select_before_call(agent)
+    except ConstraintViolation as exc:
+        return {"final_response": str(exc), "messages": messages,
+                "failed": True, "error": "constraint_violation", "api_calls": 0}
 
     # Commentary deduplication spans all provider continuations and tool calls
     # within one user turn, but must not suppress the same phrase next turn.

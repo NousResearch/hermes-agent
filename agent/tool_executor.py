@@ -1830,6 +1830,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         agent._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s){_status_suffix}")
 
         display_function_result = function_result
+        from workstation.batch_detection import record_mutation
+        record_mutation(agent, name, args, function_result, dispatched=r is not None and not blocked and not is_error)
         from workstation.task_compiler import capture_raw_result
         capture_raw_result(tool_call_id, function_result)
         function_result = maybe_persist_tool_result(
@@ -2755,6 +2757,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             logging.debug("Tool result (%d chars): %s", len(_log_result), _log_result)
 
         display_function_result = function_result
+        from workstation.batch_detection import record_mutation
+        record_mutation(agent, function_name, function_args, function_result, dispatched=_execution_dispatched and not _execution_blocked)
         from workstation.task_compiler import capture_raw_result
         capture_raw_result(tool_call_id, function_result)
         function_result = maybe_persist_tool_result(

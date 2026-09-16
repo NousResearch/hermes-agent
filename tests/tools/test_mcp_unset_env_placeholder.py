@@ -11,7 +11,7 @@ import logging
 
 import pytest
 
-from tools.mcp_tool import _strip_unresolved_placeholders, _unresolved_env_refs
+from tools.mcp_tool_config import _strip_unresolved_placeholders, _unresolved_env_refs
 
 
 @pytest.fixture(autouse=True)
@@ -104,7 +104,7 @@ def test_unset_arg_refuses_the_server():
 
 def test_a_set_variable_is_never_reported(monkeypatch):
     monkeypatch.setenv("MCP_TEST_URL", "https://example.com")
-    from tools.mcp_tool import _interpolate_env_vars
+    from tools.mcp_tool_config import _interpolate_env_vars
 
     cfg = _interpolate_env_vars({"url": "${MCP_TEST_URL}/mcp"})
     out, dropped = _strip_unresolved_placeholders("srv", cfg)
@@ -116,7 +116,7 @@ def test_the_value_never_reaches_the_log(caplog, monkeypatch):
     # The whole point of logging names: a warning that printed the secret would be a worse defect than
     # the one this guards against.
     monkeypatch.setenv("MCP_TEST_TOKEN", "s3cret-value")
-    from tools.mcp_tool import _interpolate_env_vars
+    from tools.mcp_tool_config import _interpolate_env_vars
 
     cfg = _interpolate_env_vars(
         {"command": "x", "env": {"TOKEN": "${MCP_TEST_TOKEN}", "OTHER": "${MCP_TEST_OPTIONAL}"}}

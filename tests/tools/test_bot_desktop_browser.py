@@ -176,7 +176,10 @@ def test_root_dock_browser_starts_with_the_same_sandbox_args_as_the_agents_brows
 
 def test_status_reports_the_headed_browser_or_its_absence(monkeypatch):
     """The official image ships only chromium_headless_shell: executable() is None and the dock silently
-    has no Browser icon. Status must say so instead of leaving the pane to guess."""
+    has no Browser icon. Status must say so instead of leaving the pane to guess. The subject is the
+    browser field, not host policy: status() gates it on is_supported_host(), which is pinned True so the
+    test means the same thing on every CI lane."""
+    monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
     monkeypatch.setattr(runtime, "_launcher_pid", lambda: None)
     monkeypatch.setattr(runtime, "published_env", lambda: {})
     monkeypatch.setattr(runtime, "geometry", lambda: "1440x900")

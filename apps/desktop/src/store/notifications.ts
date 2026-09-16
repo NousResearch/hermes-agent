@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 
 import { translateNow } from '@/i18n'
+import { stripIpcErrorPrefix } from '@/lib/ipc-error'
 import { isLocalBackendSlotWaitTimeout, requestPoolLimitsSettings } from '@/store/pool-limits'
 import { requestBackendRestart, requestRoute } from '@/store/recovery-requests'
 
@@ -202,8 +203,7 @@ export function readableError(
   fallback: string
 ): { message: string; detail?: string; action?: NotificationAction } {
   const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
-  const unwrapped = raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw
-  const cleaned = cleanErrorText(unwrapped)
+  const cleaned = cleanErrorText(stripIpcErrorPrefix(raw))
   const detail = cleaned.match(/"detail"\s*:\s*"([^"]+)"/)?.[1] ?? cleaned
   const summary = summarizeErrorMessage(detail, fallback)
 

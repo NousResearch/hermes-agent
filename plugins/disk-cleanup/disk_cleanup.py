@@ -85,7 +85,7 @@ _EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
     "logs", "memories", "sessions", "cron", "cronjobs",
     "cache", "skills", "plugins", "disk-cleanup", "optional-skills",
     "hermes-agent", "backups", "profiles", ".worktrees",
-    "patches", "projects", "skins", "themes", "contributors"})
+    "patches", "projects", "skins", "themes", "contributors", "workspace"})
 
 _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
     ".git", "node_modules", "venv", ".venv", "site-packages", "__pycache__"})
@@ -98,9 +98,11 @@ _NEVER_TRACK_TOP_LEVEL = frozenset({
     "auth.json", "hermes-agent",
     # User-authored project trees — never sweep empty directories inside these (#75403).
     # User-authored and project trees — never auto-delete files inside these just because they happen to be
-    # named test_* or tmp_* (#75403, also #32164, #37721).
+    # named test_* or tmp_* (#75403, also #32164, #37721). ``workspace`` is the agent/user project tree
+    # bootstrapped in every profile (``profiles.py::_PROFILE_DIRS``) and holds durable artifacts
+    # (``workspace/meetings/`` auth + registry state, project checkouts), so its contents are user data.
     "patches", "projects", "skins", "themes", "contributors",
-    "profiles", "backups", "optional-skills"})
+    "profiles", "backups", "optional-skills", "workspace"})
 
 @functools.lru_cache(maxsize=8)  # keyed by home: a multiplexed process serves several profiles
 def _protected_cron_paths(home: Path) -> frozenset:

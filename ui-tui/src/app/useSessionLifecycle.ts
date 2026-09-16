@@ -18,7 +18,6 @@ import type {
 } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 import type { Msg, PanelSection, SessionInfo } from '../types.js'
-
 import type { AgentMode, ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
@@ -350,9 +349,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         const previousSid = getUiState().sid
 
-        return gw.request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
+        return gw.request<SessionResumeResult & { info: SessionInfo }>('session.resume', { cols: colsRef.current, session_id: id })
           .then(raw => {
-            const r = asRpcResult<SessionResumeResult>(raw)
+            const r = asRpcResult<SessionResumeResult & { info: SessionInfo }>(raw)
 
             if (!r) {
               sys('error: invalid response: session.resume')

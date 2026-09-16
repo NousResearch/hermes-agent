@@ -807,12 +807,11 @@ export function useMainApp(gw: GatewayClient) {
 
       // KENSEI CUSTOM re-anchor (2026-09-16 merge): upstream replaced the clarify.respond
       // RPC with JSON-RPC response frames; a full-answers frame resolves the batch request.
-      respondToServerRequest(clarify.requestId, cancelled ? {} : { answers })
-        .then(r => {
-          if (!r) {
-            return
-          }
-
+      // respondToServerRequest is synchronous (boolean: resolved or already-expired) —
+      // mirror the old .then(r => { if (r) … }) shape inline.
+      const answered = respondToServerRequest(clarify.requestId, cancelled ? {} : { answers })
+      if (answered) {
+        {
           if (cancelled) {
             appendMessage({
               role: 'system',
@@ -840,13 +839,12 @@ export function useMainApp(gw: GatewayClient) {
           }
 
           patchOverlayState({ clarify: null })
-        })
-        .catch(error => {
-          sys(`Clarify response failed: ${String(error)}`)
-          throw error
-        })
+        }
+      }
+
+      return Promise.resolve()
     },
-    [appendMessage, overlay.clarify, rpc, sys]
+    [appendMessage, overlay.clarify, sys]
   )
 
   const answerClarifyBatchSubmit = useCallback(

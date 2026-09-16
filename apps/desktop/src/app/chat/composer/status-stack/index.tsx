@@ -48,7 +48,6 @@ import {
   currentSessionTodoSnapshot,
   setSessionTodoSnapshot
 } from '@/store/todos'
-import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 import { openSessionInNewWindow } from '@/store/windows'
 
 import { PreviewStatusRow } from './preview-row'
@@ -508,14 +507,15 @@ export function ComposerStatusStack({ onSubmit, queue, requestGateway, sessionId
   const completingTodo = todoConfirm?.status === 'completed'
 
   return (
-    <div
-      // In flow in the dock column, directly above the composer. The dock is
-      // bottom-anchored, so this grows upward over the thread without needing
-      // to be positioned — and it shares the dock's left edge for free.
-      className="flex max-h-[40vh] min-h-0 flex-col overflow-hidden"
-      data-slot="composer-status-stack"
-      onPointerDownCapture={() => blurComposerInput()}
-    >
+    <>
+      <div
+        // In flow in the dock column, directly above the composer. The dock is
+        // bottom-anchored, so this grows upward over the thread without needing
+        // to be positioned — and it shares the dock's left edge for free.
+        className="flex max-h-[40vh] min-h-0 flex-col overflow-hidden"
+        data-slot="composer-status-stack"
+        onPointerDownCapture={() => blurComposerInput()}
+      >
       {/* The card paints the shared --composer-fill (rest / scrolled / focused
           all match the composer surface by construction); on scroll we only
           ghost the CONTENT — element opacity on the card would kill the blur.
@@ -548,6 +548,7 @@ export function ComposerStatusStack({ onSubmit, queue, requestGateway, sessionId
           </div>
         </div>
       )}
+      </div>
       <ConfirmDialog
         busyLabel={completingTodo ? t.statusStack.markingDone : t.statusStack.reopening}
         confirmLabel={completingTodo ? t.statusStack.markDone : t.statusStack.reopen}

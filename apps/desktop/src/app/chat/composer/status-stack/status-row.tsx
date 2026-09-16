@@ -165,6 +165,7 @@ export const StatusItemRow = memo(function StatusItemRow({
   return (
     <Fragment>
       <StatusRow
+        dismiss={action ? { label: action.label, onDismiss: action.onClick } : undefined}
         leading={
           item.depth ? (
             <span className="flex items-center" style={{ paddingLeft: `${Math.min(item.depth, 4) * 0.8}rem` }}>
@@ -177,23 +178,7 @@ export const StatusItemRow = memo(function StatusItemRow({
         onActivate={onActivate}
         trailing={
           todoAction ??
-          (action ? (
-            <Tip label={action.label}>
-              <Button
-                aria-label={action.label}
-                className="-my-1 size-4 rounded-md text-muted-foreground/60 hover:text-foreground/90"
-                onClick={event => {
-                  event.stopPropagation()
-                  action.onClick()
-                }}
-                size="icon-xs"
-                type="button"
-                variant="ghost"
-              >
-                <Codicon name="close" size="0.75rem" />
-              </Button>
-            </Tip>
-          ) : canOpen ? (
+          (canOpen ? (
             <Codicon aria-hidden className="text-muted-foreground/55" name="link-external" size="0.85rem" />
           ) : undefined)
         }

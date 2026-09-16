@@ -36,6 +36,7 @@ def _make_stub_agent() -> SimpleNamespace:
         tool_progress_callback=MagicMock(name="tool_progress_callback"),
         _fire_stream_delta=MagicMock(name="_fire_stream_delta"),
         _fire_reasoning_delta=MagicMock(name="_fire_reasoning_delta"),
+        reasoning_event_callback=MagicMock(name="reasoning_event_callback"),
         _emit_interim_assistant_message=MagicMock(
             name="_emit_interim_assistant_message"
         ),
@@ -175,6 +176,31 @@ class TestStreamDeltaDispatch:
                 "params": {"delta": "thinking..."}})
         agent._fire_reasoning_delta.assert_called_once_with("thinking...")
         agent._fire_stream_delta.assert_not_called()
+
+    def test_reasoning_item_lifecycle_preserves_its_codex_item_id(self):
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+        bridge(_item_started({"type": "reasoning", "id": "reasoning-1"}))
+        bridge({"method": "item/reasoning/summaryDelta", "params": {"itemId": "reasoning-1", "delta": "Inspecting"}})
+        bridge(_item_completed({"type": "reasoning", "id": "reasoning-1"}))
+        assert agent.reasoning_event_callback.call_args_list == [
+            (("start", "reasoning-1", ""), {}),
+            (("delta", "reasoning-1", "Inspecting"), {}),
+            (("end", "reasoning-1", ""), {}),
+        ]
+        agent._fire_reasoning_delta.assert_not_called()
+
+    def test_reasoning_delta_uses_the_active_item_when_the_delta_omits_its_id(self):
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+        bridge(_item_started({"type": "reasoning", "id": "reasoning-1"}))
+        bridge({"method": "item/reasoning/delta", "params": {"delta": "checking"}})
+        bridge(_item_completed({"type": "reasoning", "id": "reasoning-1"}))
+        assert agent.reasoning_event_callback.call_args_list == [
+            (("start", "reasoning-1", ""), {}),
+            (("delta", "reasoning-1", "checking"), {}),
+            (("end", "reasoning-1", ""), {}),
+        ]
 
 
 class TestToolProgressDispatch:

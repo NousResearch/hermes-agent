@@ -2872,6 +2872,52 @@ def test_tool_ctx_sends_an_arg_preview_not_a_phrased_label():
     assert server._tool_ctx("web_search", {"query": "weather in NYC"}) == "weather in NYC"
 
 
+def test_history_to_messages_projects_safe_codex_display_items_for_empty_tool_turn():
+    history = [{
+        "role": "assistant", "content": "", "reasoning": "Inspect\n\nVisible",
+        "codex_reasoning_items": [{"type": "reasoning", "id": "rs", "encrypted_content": "ENCRYPTED_SENTINEL", "summary": [{"type": "summary_text", "text": "Inspect"}]}],
+        "codex_message_items": [
+            {"type": "message", "id": "analysis", "role": "assistant", "phase": "analysis", "content": [{"type": "output_text", "text": "ANALYSIS_SENTINEL"}]},
+            {"type": "message", "id": "commentary", "role": "assistant", "phase": "commentary", "content": [{"type": "output_text", "text": "Visible"}]},
+        ],
+        "tool_calls": [{"id": "tc", "function": {"name": "terminal", "arguments": "{}"}}],
+    }]
+    projected = server._history_to_messages(history)
+    encoded = json.dumps(projected)
+    assert projected[0]["text"] == ""
+    assert projected[0]["codex_display_items"][-1]["id"] == "commentary"
+    assert "codex_reasoning_items" not in encoded and "codex_message_items" not in encoded
+    assert "ANALYSIS_SENTINEL" not in encoded and "ENCRYPTED_SENTINEL" not in encoded
+
+
+def test_history_to_messages_keeps_reasoning_fallback_when_codex_sidecar_is_malformed():
+    history = [
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning": "Fallback whole reasoning",
+            "codex_reasoning_items": [{"type": "reasoning", "id": "rs", "encrypted_content": "ENCRYPTED_SENTINEL", "summary": "malformed"}],
+            "codex_message_items": [{"type": "message", "role": "assistant", "phase": "analysis", "content": [{"type": "output_text", "text": "ANALYSIS_SENTINEL"}]}],
+            "tool_calls": [{"id": "tc_fallback", "function": {"name": "terminal", "arguments": '{"command":"printf fallback"}'}}],
+        },
+        {"role": "tool", "tool_call_id": "tc_fallback", "name": "terminal", "content": "fallback"},
+    ]
+
+    projected = server._history_to_messages(history)
+
+    assert [message["role"] for message in projected] == ["assistant", "tool"]
+    assert projected[0]["reasoning"] == "Fallback whole reasoning"
+    assert projected[1]["name"] == "terminal"
+    assert projected[1]["args"] == {"command": "printf fallback"}
+    assert projected[1]["context"] == "printf fallback"
+    serialized = json.dumps(projected)
+    assert "codex_message_items" not in serialized
+    assert "codex_reasoning_items" not in serialized
+    assert "codex_display_items" not in serialized
+    assert "ANALYSIS_SENTINEL" not in serialized
+    assert "ENCRYPTED_SENTINEL" not in serialized
+
+
 def test_history_to_messages_keeps_reasoning_only_assistant_turn():
     # A thinking-only assistant turn (reasoning present, no visible text) is
     # persisted and recallable, but was dropped from the resumed session view

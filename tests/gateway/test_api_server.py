@@ -55,6 +55,34 @@ class TestCheckRequirements:
         assert check_api_server_requirements() is False
 
 
+def test_message_response_projects_only_safe_codex_display_items():
+    response = APIServerAdapter._message_response({
+        "role": "assistant", "content": "", "reasoning": "Inspect\n\nVisible",
+        "codex_reasoning_items": json.dumps([{"type": "reasoning", "id": "rs", "encrypted_content": "ENCRYPTED_SENTINEL", "summary": [{"type": "summary_text", "text": "Inspect"}]}]),
+        "codex_message_items": json.dumps([
+            {"type": "message", "id": "analysis", "role": "assistant", "phase": "analysis", "content": [{"type": "output_text", "text": "ANALYSIS_SENTINEL"}]},
+            {"type": "message", "id": "commentary", "role": "assistant", "phase": "commentary", "content": [{"type": "output_text", "text": "Visible"}]},
+        ]),
+    })
+    encoded = json.dumps(response)
+    assert response["codex_display_items"][-1]["id"] == "commentary"
+    assert "codex_reasoning_items" not in response and "codex_message_items" not in response
+    assert "ANALYSIS_SENTINEL" not in encoded and "ENCRYPTED_SENTINEL" not in encoded
+
+
+def test_message_response_drops_malformed_codex_display_sidecars_without_leaking():
+    response = APIServerAdapter._message_response({
+        "role": "assistant", "content": "", "reasoning": "Fallback whole reasoning",
+        "codex_reasoning_items": json.dumps([{"type": "reasoning", "id": "rs", "encrypted_content": "ENCRYPTED_SENTINEL", "summary": "malformed"}]),
+        "codex_message_items": json.dumps([{"type": "message", "id": "analysis", "role": "assistant", "phase": "analysis", "content": [{"type": "output_text", "text": "ANALYSIS_SENTINEL"}]}]),
+    })
+    encoded = json.dumps(response)
+    assert response["reasoning"] == "Fallback whole reasoning"
+    assert "codex_display_items" not in response
+    for forbidden in ("codex_reasoning_items", "codex_message_items", "ANALYSIS_SENTINEL", "ENCRYPTED_SENTINEL"):
+        assert forbidden not in encoded
+
+
 # ---------------------------------------------------------------------------
 # _redact_api_error_text — guards every outward error site (envelopes, SSE
 # error events, cron-endpoint 500 bodies) that routes raw exception text to

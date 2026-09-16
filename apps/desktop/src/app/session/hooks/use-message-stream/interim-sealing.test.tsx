@@ -3,7 +3,7 @@ import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
-import { chatMessageText, textPart } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, textPart, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionTodos } from '@/store/todos'
 
@@ -343,5 +343,78 @@ describe('useMessageStream interim text sealing', () => {
     // New turn starts
     await start()
     expect(getState().interimBoundaryPending).toBe(false)
+  })
+
+  it('matches safe persisted Codex commentary to the live interim projection', async () => {
+    const commentary = 'I’m checking the persisted turn now.'
+
+    const visible = (messages: ChatMessage[]) =>
+      messages
+        .filter(message => message.role === 'assistant' && !message.hidden)
+        .flatMap(message => message.parts)
+        .flatMap(part =>
+          part.type === 'reasoning'
+            ? [{ sourceId: part.sourceId, text: part.text, type: 'reasoning' }]
+            : part.type === 'text' && part.text
+              ? [{ text: part.text, type: 'text' }]
+              : []
+        )
+
+    mountStream()
+    await start()
+    await act(() =>
+      stream.handleEvent({
+        payload: { reasoning_id: 'rs_resume:summary:0', text: 'Inspecting the transcript' },
+        session_id: SID,
+        type: 'reasoning.delta'
+      })
+    )
+    await delta(commentary)
+    await interim(commentary)
+    await act(() =>
+      stream.handleEvent({
+        payload: { args: { command: 'printf parity' }, name: 'terminal', tool_id: 'tc_parity' },
+        session_id: SID,
+        type: 'tool.start'
+      })
+    )
+    await complete('')
+
+    const hydrated = toChatMessages([
+      {
+        role: 'assistant',
+        content: '',
+        reasoning: `Inspecting the transcript\n\n${commentary}`,
+        timestamp: 1,
+        codex_display_items: [
+          {
+            type: 'reasoning',
+            id: 'rs_resume',
+            summary: [{ type: 'summary_text', text: 'Inspecting the transcript' }]
+          },
+          {
+            type: 'message',
+            id: 'commentary-resume',
+            role: 'assistant',
+            phase: 'commentary',
+            content: [{ type: 'output_text', text: commentary }]
+          }
+        ],
+        tool_calls: [{ id: 'tc_parity', function: { name: 'terminal', arguments: '{"command":"printf parity"}' } }]
+      }
+    ])
+
+    const expected = [
+      { sourceId: 'rs_resume:summary:0', text: 'Inspecting the transcript', type: 'reasoning' },
+      { text: commentary, type: 'text' }
+    ]
+
+    expect(visible(getState().messages)).toEqual(expected)
+    expect(visible(hydrated)).toEqual(expected)
+    expect(hydrated.flatMap(message => message.parts).map(part => part.type)).toEqual([
+      'reasoning',
+      'text',
+      'tool-call'
+    ])
   })
 })

@@ -1,4 +1,4 @@
-"""RPC history must retain visible Responses-API assistant sidecars (#68321)."""
+"""RPC history must safely retain visible Responses-API assistant sidecars (#68321)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from hermes_state import SessionDB
 import tui_gateway.server as server
 
 
-def test_session_history_preserves_codex_message_items(tmp_path):
+def test_session_history_projects_safe_codex_message_items(tmp_path):
     message_items = [
         {
             "type": "message",
@@ -53,4 +53,12 @@ def test_session_history_preserves_codex_message_items(tmp_path):
     assert len(messages) == 1
     assert messages[0]["role"] == "assistant"
     assert messages[0]["text"] == ""
-    assert messages[0]["codex_message_items"] == message_items
+    assert messages[0]["codex_display_items"] == [
+        {
+            "type": "message",
+            "role": "assistant",
+            "phase": "final_answer",
+            "content": [{"type": "output_text", "text": "Persisted answer"}],
+        }
+    ]
+    assert "codex_message_items" not in messages[0]

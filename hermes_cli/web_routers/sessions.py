@@ -552,6 +552,13 @@ async def get_session_messages(
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     sid, _limit, messages = result
     projected_messages = _project_for_display(messages)
+    from agent.codex_display_projection import project_codex_display_items
+    for projected in projected_messages:
+        codex_display_items = project_codex_display_items(projected)
+        projected.pop("codex_reasoning_items", None)
+        projected.pop("codex_message_items", None)
+        if codex_display_items:
+            projected["codex_display_items"] = codex_display_items
     return {
         "session_id": sid,
         # The same stamp list rows carry, so the Desktop keys a page under the

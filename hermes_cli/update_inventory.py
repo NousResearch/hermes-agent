@@ -419,6 +419,9 @@ def record_plan_in_receipt(plan: UpdatePlan) -> None:
 
         if ur._current is not None:
             ur._current.data["plan"] = plan.to_dict()
+            # The plan is the restart worklist; it belongs to the durable record, not only to
+            # the in-memory copy that state loss takes away (#112465).
+            ur.persist_active_receipt()
     except Exception as exc:
         logger.debug("Could not record plan in receipt: %s", exc)
 

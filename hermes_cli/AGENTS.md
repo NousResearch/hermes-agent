@@ -130,6 +130,12 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
   Finalization is owned by the `cmd_update` command boundary — early `sys.exit` paths (preflight
   refusals, fetch failures) still persist a receipt with the real exit code. A begun-but-unwritten
   receipt is a bug: refused/failed runs are the ones receipts exist for.
+  The record is durable from `begin`: an `outcome: running` seed is written (atomic
+  temp-file + `os.replace`, refreshed after each recorded step) because the module singleton is
+  the only other copy of the run, so an update that loses module state before finalization used
+  to leave nothing at all (#112465). `finalize`/the boundary recover that pid's own `running`
+  record and rewrite the same file with the terminal outcome; a finalized record — success above
+  all — is never resurrected, and a failed write is printed, not swallowed.
 
 Process-scan coordination between updater, serve/dashboard, and gateway is being replaced by a
 gateway-owned control socket (#92091); scans are the fallback layer for old/crashed processes — read

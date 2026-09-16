@@ -55,8 +55,15 @@ class UpdateReceipt:
     """Collects the observable facts of one ``hermes update`` run."""
 
     def __init__(self) -> None:
+        # Durable identity of the run; also the per-run filename stem, so a receipt recovered
+        # after state loss stays correlatable with the update that wrote it (#112465).
+        self.update_id: str = f"{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
+        # Assigned by the first persist, then reused: the step refreshes, finalize, and recovery
+        # all rewrite THIS file instead of accumulating a new record per write.
+        self.path: Optional[Path] = None
         self.data: dict[str, Any] = {
-            "schema": 1, "started_at": _utc_now_iso(), "finished_at": None,
+            "schema": 1, "update_id": self.update_id,
+            "started_at": _utc_now_iso(), "finished_at": None,
             "argv": list(sys.argv), "pid": os.getpid(),
             "outcome": "running",  # running | success | partial | failed
             "pre_update": _code_identity(), "post_update": {},
@@ -122,21 +129,154 @@ def _receipt_dir() -> Path:
     return get_hermes_home() / "logs" / "update_receipts"
 
 
+def _write_atomic(path: Path, body: str) -> None:
+    """Write ``body`` to ``path`` so no reader can ever see a half-written file.
+
+    The receipt is the only durable copy of a run and recovery reads it back, so a torn write
+    must be impossible: same-directory temp file → flush/fsync → ``os.replace`` (atomic rename).
+    The temp name is deliberately not ``update_*.json``, so neither pruning nor recovery can
+    pick it up. Raises on failure — callers own the visibility of that.
+    """
+    tmp = path.with_name(f".{path.name}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(body)
+            handle.flush()
+            with suppress(OSError):
+                os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        with suppress(OSError):
+            tmp.unlink()
+        raise
+
+
+def _claim_receipt_path(directory: Path, update_id: str) -> Path:
+    """Best-effort per-run receipt path that does not clobber an existing record.
+
+    Two runs in one process and one second (a refusal receipt followed by a real run, the
+    contract paths, tests) would otherwise share one filename, and the second run's record
+    would overwrite the first's — including a finalized ``success``.
+    """
+    path = directory / f"update_{update_id}.json"
+    for attempt in range(1, 50):
+        if not path.exists():
+            return path
+        path = directory / f"update_{update_id}-{attempt + 1}.json"
+    return directory / f"update_{update_id}-{os.urandom(3).hex()}.json"
+
+
+def _persist_receipt(
+    receipt: UpdateReceipt, *, publish_pointer: bool = True, prune: bool = False
+) -> Path:
+    """Atomically (re)write ``receipt``, optionally repointing ``latest.json`` at it.
+
+    ``publish_pointer`` is False for in-flight writes: the stable pointer keeps naming the last
+    FINALIZED run, so a run that is only starting cannot hide the obligation of a previous
+    interrupted one (#98022 — "already up to date" must still honour a stale plan). Finalize
+    publishes, because there the record IS the outcome of the run that just happened.
+
+    Raises on a failed write; the public entry points translate that into operator-visible
+    output (a ``None`` return alone cannot separate "no receipt open" from "write failed").
+    """
+    directory = _receipt_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    if receipt.path is None:
+        receipt.path = _claim_receipt_path(directory, receipt.update_id)
+    body = json.dumps(receipt.data, indent=2, default=str)
+    _write_atomic(receipt.path, body)
+    if publish_pointer:
+        with suppress(OSError):  # stable pointer for the dashboard/desktop
+            _write_atomic(directory / "latest.json", body)
+    if prune:
+        _prune_old_receipts(directory)
+    return receipt.path
+
+
+def persist_active_receipt() -> None:
+    """Refresh the durable copy of the active receipt; no-op when none, never raises.
+
+    For direct ``_current.data`` edits that bypass ``_record`` — currently the pre-update plan,
+    which the restart obligations are reconciled against, so losing it to state loss would lose
+    the worklist too.
+    """
+    if _current is None:
+        return
+    try:
+        _persist_receipt(_current, publish_pointer=False)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Could not refresh update receipt: %s", exc)
+
+
+def _recover_running_receipt() -> Optional[UpdateReceipt]:
+    """Adopt this process's durable in-progress receipt after module state was lost.
+
+    The ``_current`` singleton is the only other copy of a run, so when it is gone (module
+    eviction, re-import) a failed run used to leave no artifact at all (#112465). Recovery is
+    deliberately narrow: same pid, ``outcome == "running"``, no ``finished_at``. A finalized
+    record — a success above all — can never be resurrected, so recovery cannot rewrite a
+    completed run's outcome. Unreadable/corrupt/non-dict files are skipped, never fatal.
+    """
+    newest_first: list[Path] = []
+    with suppress(OSError):
+        newest_first = sorted(
+            (path for path in _receipt_dir().glob("update_*.json") if path.is_file()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+    for path in newest_first:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue  # corrupt or partial record: not ours to recover
+        if not isinstance(data, dict):
+            continue
+        if data.get("pid") != os.getpid():
+            continue
+        if data.get("outcome") != "running" or data.get("finished_at") is not None:
+            continue
+        receipt = UpdateReceipt.__new__(UpdateReceipt)
+        receipt.data = data
+        receipt.update_id = str(data.get("update_id") or path.stem.removeprefix("update_"))
+        receipt.path = path
+        return receipt
+    return None
+
+
 def begin_update_receipt() -> None:
-    """Start recording a new update receipt. Never raises."""
+    """Start recording a new update receipt and durably seed it. Never raises.
+
+    The seed is what lets a failed run survive state loss: the singleton can be evicted,
+    re-imported, or simply not exist in the process that finishes the run, and without a
+    durable record the update disappears from the operator's view (#112465). ``outcome``
+    stays ``running`` until finalize, which is non-terminal for every reader — and the
+    ``latest.json`` pointer deliberately keeps naming the last finalized run until then.
+    """
     global _current
     try:
         _current = UpdateReceipt()
     except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("Could not start update receipt: %s", exc)
+        print(f"⚠ Update receipt could not be started: {exc}")
         _current = None
+        return
+    try:
+        _persist_receipt(_current, publish_pointer=False)
+    except Exception as exc:
+        # Keep the in-memory receipt: finalize rewrites the same path and may still land.
+        print(f"⚠ Update receipt could not be persisted: {exc}")
 
 
 def _record(method: str, what: str, *args: Any, **kwargs: Any) -> None:
-    """Invoke ``method`` on the active receipt; no-op when none, never raises."""
+    """Invoke ``method`` on the active receipt and refresh its durable copy; never raises.
+
+    Refreshing after each recorded step keeps the on-disk record current for the state-loss
+    case with no second storage format. A failed refresh stays silent here (recording must
+    never break an update) and is re-reported by finalize, which writes the same file.
+    """
     try:
         if _current is not None:
             getattr(_current, method)(*args, **kwargs)
+            _persist_receipt(_current, publish_pointer=False)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Could not record %s: %s", what, exc)
 
@@ -161,9 +301,12 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
 
     Exactly-once by construction: the module singleton is popped first, so a second call (e.g. the
     command-boundary safety net after an inner path already finalized) is a no-op returning None.
+    When the singleton is gone, the run's own durable ``running`` record is recovered and rewritten
+    in place with the terminal outcome, so a failed run still leaves its receipt (#112465). ``None``
+    now means "no receipt was open" — a write that FAILED is printed, not silently conflated.
     """
     global _current
-    receipt = _current
+    receipt = _current or _recover_running_receipt()
     _current = None
     if receipt is None:
         return None
@@ -173,17 +316,9 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
             receipt.data["stop_reason"] = stop_reason
         if fleet is not None:
             receipt.data["fleet"] = fleet
-        directory = _receipt_dir()
-        directory.mkdir(parents=True, exist_ok=True)
-        path = directory / f"update_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}.json"
-        body = json.dumps(receipt.data, indent=2, default=str)
-        path.write_text(body, encoding="utf-8")
-        with suppress(OSError):  # stable pointer for the dashboard/desktop
-            (directory / "latest.json").write_text(body, encoding="utf-8")
-        _prune_old_receipts(directory)
-        return path
+        return _persist_receipt(receipt, prune=True)  # terminal: publish the pointer
     except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("Could not write update receipt: %s", exc)
+        print(f"⚠ Update receipt write failed: {exc}")
         return None
 
 
@@ -197,9 +332,16 @@ def finalize_pending_update_receipt(exit_code: Optional[int] = None, stop_reason
 
     No-op when no receipt is open (the inner paths already finalized — exactly-once via the popped
     singleton) or when recording was never started. See #91283.
+
+    This is the last chance to persist a run the updater began: when the module singleton was lost,
+    the durable ``running`` record is recovered here so the boundary still leaves a terminal
+    ``failed``/``refused`` receipt instead of a dangling in-progress one (#112465).
     """
-    if _current is None:
+    global _current
+    receipt = _current or _recover_running_receipt()
+    if receipt is None:
         return None
+    _current = receipt
     outcome = "success" if exit_code in (0, None) else "refused" if exit_code == 2 else "failed"
     if exit_code is not None:
         with suppress(Exception):

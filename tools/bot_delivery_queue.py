@@ -1008,6 +1008,11 @@ def sweep_delivery_queue(
     target mid-turn (a desktop session can hold the slot for a whole lease wait)
     must not have its inbound delivery expire underneath it: the slot holder is
     exactly the turn that will drain it next.
+
+    A record that was NEVER offered to a live turn (``attempts == 0``) is never
+    reaped here either: the drain on the same tick is its first -- and only --
+    chance to run. TTL expiry bounds only records that have actually been
+    attempted and come back for another round.
     """
     now_ns = time.time_ns() if now_ns is None else int(now_ns)
     ttl = queue_ttl_seconds()
@@ -1032,6 +1037,12 @@ def sweep_delivery_queue(
                 if record.get("status") != STATUS_QUEUED:
                     continue
                 if queued_seconds(record, now_ns=now_ns) <= ttl:
+                    continue
+                # Never reap a record that was never offered to a live turn: the
+                # drain on the same tick is its first (and only) chance to run.
+                # TTL expiry bounds only records that have actually been attempted.
+                if int(record.get("attempts", 0)) == 0:
+                    _log("age_kept_never_attempted", record)
                     continue
                 if held(home, record.get("target_profile") or ""):
                     _log("age_kept_slot_held", record)

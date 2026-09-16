@@ -55,18 +55,20 @@ def test_fake_sdk_builder_methods_and_models_are_used(monkeypatch):
     class Builder:
         async def post(self, model): calls.append(("post", model)); return SimpleNamespace(id="draft-1")
         async def put(self, content): calls.append(("put", content)); return SimpleNamespace(id="file-1")
-        async def get(self): calls.append(("get",)); return {"value":[]}
+        async def get(self): calls.append(("get",)); return SimpleNamespace(id="drive-1")
         def by_message_id(self, ident): calls.append(("by_message_id",ident)); return self
         def send(self): return self
         async def patch(self, model): calls.append(("patch",model)); return model
         def item_with_path(self, path): calls.append(("item_with_path",path)); return self
+        def with_url(self, url): calls.append(("with_url",url)); return self
         @property
         def content(self): return self
         @property
         def root(self): return self
     class Client:
-        def __init__(self): self.users=self; self.calendar=self; self.events=self; self.messages=Builder(); self.drive=Builder(); self.root=self.drive; self.teams=self; self.channels=self; self.todo=self; self.lists=self; self.tasks=self
+        def __init__(self): self.users=self; self.calendar=self; self.events=self; self.messages=Builder(); self.drive=Builder(); self.drives=self; self.root=self.drive; self.teams=self; self.channels=self; self.todo=self; self.lists=self; self.tasks=self
         def by_user_id(self, x): return self
+        def by_drive_id(self, x): return self
         def by_site_id(self, x): return self
         def by_team_id(self, x): return self
         def by_channel_id(self, x): return self
@@ -84,9 +86,97 @@ def test_fake_sdk_builder_methods_and_models_are_used(monkeypatch):
     class Context:
         def get_config(self, key, default=None): return {"capabilities":{"onedrive":{"upload_files":True}}}.get(key, default)
     result=json.loads(asyncio.run(tools._run("onedrive", {"action":"upload_files","path":"a.txt","content":"x"}, Context())))
-    assert result["success"] is True
+    assert result.get("success") is True, result
     assert any(c[0] == "put" for c in calls)
-    assert any(c[0] == "item_with_path" for c in calls)
+    assert any(c[0] == "with_url" for c in calls)
+
+def test_send_uses_generated_send_mail_body_and_action_builder(monkeypatch):
+    from plugins.microsoft365 import tools
+    calls = []
+    class Builder:
+        async def post(self, body):
+            calls.append(body)
+            return SimpleNamespace(id="sent-1")
+    class Client:
+        def __init__(self):
+            self.users = self
+            self.messages = self
+            self.send_mail = Builder()
+        def by_user_id(self, _): return self
+    monkeypatch.setattr(tools, "create_graph_client", lambda _: Client())
+    monkeypatch.setattr(tools, "_approved", lambda *a: True)
+    class Context:
+        def get_config(self, key, default=None):
+            return {"capabilities":{"outlook":{"send":True}}}.get(key, default)
+    result = json.loads(asyncio.run(tools._run("outlook", {"action":"send", "to":"a@example.com", "subject":"S", "body":"B"}, Context())))
+    assert result.get("success") is True, result
+    assert calls and type(calls[0]).__name__ == "SendMailPostRequestBody"
+    assert calls[0].message.to_recipients[0].email_address.address == "a@example.com"
+
+
+def test_drive_read_downloads_and_upload_puts_via_drive_item_content(monkeypatch):
+    from plugins.microsoft365 import tools
+    calls = []
+    class Content:
+        async def get(self): calls.append(("get",)); return b"data"
+        async def put(self, content): calls.append(("put", content)); return SimpleNamespace(id="file")
+    class Item:
+        content = Content()
+    class Root:
+        async def get(self): calls.append(("get",)); return {"id":"file"}
+        def with_url(self, url): calls.append(("with_url", url)); return self
+        content = Content()
+    class Drive:
+        id = "drive-1"
+    class Client:
+        def __init__(self): self.users = self; self.drive = self; self.drives = self; self.root = Root()
+        def by_user_id(self, _): return self
+        async def get(self): return Drive()
+        def by_drive_id(self, _): return self
+    monkeypatch.setattr(tools, "create_graph_client", lambda _: Client())
+    monkeypatch.setattr(tools, "_approved", lambda *a: True)
+    class Context:
+        def get_config(self, key, default=None):
+            return {"capabilities":{"onedrive":{"read":True, "download_files":True, "upload_files":True}}}.get(key, default)
+    for action, expected in (("read", "get"), ("download_files", "get"), ("upload_files", "put")):
+        args = {"action":action, "path":"folder/a.txt", "content":b"x"}
+        result = json.loads(asyncio.run(tools._run("onedrive", args, Context())))
+        assert result.get("success") is True, result
+        assert any(call[0] == expected for call in calls)
+
+
+def test_teams_search_uses_query_post_body_and_generated_enum(monkeypatch):
+    from plugins.microsoft365 import tools
+    calls = []
+    class Query:
+        async def post(self, body): calls.append(body); return {"value": []}
+    class Client:
+        def __init__(self): self.search = self; self.query = Query()
+    monkeypatch.setattr(tools, "create_graph_client", lambda _: Client())
+    class Context:
+        def get_config(self, key, default=None):
+            return {"capabilities":{"teams":{"search_messages":True}}}.get(key, default)
+    result = json.loads(asyncio.run(tools._run("teams", {"action":"search_messages", "query":"hello"}, Context())))
+    assert result.get("success") is True, result
+    assert type(calls[0]).__name__ == "QueryPostRequestBody"
+    request = calls[0].requests[0]
+    assert request.query.query_string == "hello"
+    assert str(request.entity_types[0].value) == "chatMessage"
+
+
+def test_write_approval_accepts_graph_approval_result(monkeypatch):
+    from plugins.microsoft365 import tools
+    monkeypatch.setattr("tools.approval.request_tool_approval", lambda *a, **k: {"approved": True})
+    assert tools._approved("outlook", "send", {}) is True
+
+
+def test_generated_todo_and_teams_models_construct_with_sdk_1_62():
+    from plugins.microsoft365.tools import _body, _model
+    task = _model("TodoTask", title="Task", body=_body("Details"))
+    message = _model("ChatMessage", body=_body("Hello"))
+    assert task.title == "Task"
+    assert message.body.content == "Hello"
+
 
 def test_preflight_redacts_and_derives_permissions():
     from plugins.microsoft365.backend import Microsoft365Settings, preflight

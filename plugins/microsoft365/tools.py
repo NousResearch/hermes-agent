@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib, inspect
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import quote
 from tools.registry import tool_error, tool_result
 from .backend import CAPABILITIES, OPERATIONS, WRITE_OPERATIONS, Microsoft365Settings, create_graph_client, preflight, safe_result
 
@@ -11,7 +12,11 @@ async def _maybe(value): return await value if inspect.isawaitable(value) else v
 def _model(name: str, **values):
     """Construct a generated msgraph model (never a raw HTTP payload)."""
     module = "_".join(__import__('re').sub(r"(?<!^)(?=[A-Z])", "_", name).lower().split("_"))
-    cls = getattr(importlib.import_module(f"msgraph.generated.models.{module}"), name)
+    module_path = {
+        "SendMailPostRequestBody": "msgraph.generated.users.item.send_mail.send_mail_post_request_body",
+        "QueryPostRequestBody": "msgraph.generated.search.query.query_post_request_body",
+    }.get(name, f"msgraph.generated.models.{module}")
+    cls = getattr(importlib.import_module(module_path), name)
     return cls(**values)
 
 def _body(content: str):
@@ -26,7 +31,7 @@ def _approved(capability, action, args):
     try:
         from tools.approval import request_tool_approval
         result = request_tool_approval(f"microsoft365_{capability}", f"Microsoft 365 {action}: external side effect", rule_key=f"microsoft365.{capability}.{action}")
-        return result in {"once", "session", "always", "smart_approve"}
+        return bool(result.get("approved")) if isinstance(result, dict) else result in {"once", "session", "always", "smart_approve"}
     except Exception:
         return False
 
@@ -39,9 +44,18 @@ def _required(args, key, label=None):
     if not value: raise ValueError(f"{label or key} is required")
     return value
 
-def _drive(client, capability, user, args):
-    if capability == "sharepoint": return client.sites.by_site_id(_required(args,"site_id")).drive.root
-    return client.users.by_user_id(user).drive.root
+async def _drive(client, capability, user, args):
+    if capability == "sharepoint":
+        drive = await _maybe(client.sites.by_site_id(_required(args, "site_id")).drive.get())
+    else:
+        drive = await _maybe(client.users.by_user_id(user).drive.get())
+    drive_id = _required({"id": getattr(drive, "id", None)}, "id")
+    return client.drives.by_drive_id(drive_id).root, drive_id
+
+
+def _drive_path(root, drive_id: str, path: str):
+    encoded = quote(path.strip("/"), safe="/")
+    return root.with_url(f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{encoded}:")
 
 async def _run(capability: str, args: dict, ctx) -> str:
     settings = _settings(ctx); action = str(args.get("action") or "").strip().lower()
@@ -57,12 +71,13 @@ async def _run(capability: str, args: dict, ctx) -> str:
             elif action == "read": result = await _maybe(messages.by_message_id(_required(args,"id")).get())
             else:
                 if action == "send" and args.get("id"):
-                    result = await _maybe(messages.by_message_id(_required(args,"id")).send.post(None))
+                    result = await _maybe(messages.by_message_id(_required(args, "id")).send.post(None))
+                elif action == "send":
+                    body = _model("SendMailPostRequestBody", message=_model("Message", subject=args.get("subject"), body=_body(str(args.get("body") or "")), to_recipients=[_model("Recipient", email_address=_model("EmailAddress", address=_required(args, "to"))) ]), save_to_sent_items=True)
+                    result = await _maybe(client.users.by_user_id(user).send_mail.post(body))
                 else:
                     message = _model("Message", subject=args.get("subject"), body=_body(str(args.get("body") or "")), to_recipients=[_model("Recipient", email_address=_model("EmailAddress", address=_required(args,"to")))])
-                    item = await _maybe(messages.post(message))
-                    if action == "send": result = await _maybe(messages.by_message_id(_required({"id": getattr(item,"id",None)},"id")).send.post(None))
-                    else: result = item
+                    result = await _maybe(messages.post(message))
         elif capability == "calendar":
             events = client.users.by_user_id(user).calendar.events
             if action == "search": result = await _maybe(events.get())
@@ -71,14 +86,20 @@ async def _run(capability: str, args: dict, ctx) -> str:
                 if action == "create_events": result = await _maybe(events.post(event))
                 else: result = await _maybe(events.by_event_id(_required(args,"id")).patch(event))
         elif capability in ("sharepoint", "onedrive"):
-            root = _drive(client, capability, user, args)
-            if action == "search": result = await _maybe(root.search_with_q(_required(args,"query")).get())
+            root, drive_id = await _drive(client, capability, user, args)
+            if action == "search": result = await _maybe(client.drives.by_drive_id(drive_id).search_with_q(_required(args, "query")).get())
             else:
-                item = root.item_with_path(_required(args,"path")); result = await _maybe(item.get() if action == "read" else item.content.put(args.get("content", b"")))
+                item = _drive_path(root, drive_id, _required(args, "path"))
+                if action == "read": result = await _maybe(item.get())
+                elif action == "download_files": result = await _maybe(item.content.get())
+                else: result = await _maybe(item.content.put(args.get("content", b"")))
         elif capability == "teams":
             if action == "list_teams": result = await _maybe(client.users.by_user_id(user).joined_teams.get())
             elif action == "list_channels": result = await _maybe(client.teams.by_team_id(_required(args,"team_id")).channels.get())
-            elif action == "search_messages": result = await _maybe(client.search.query.post(_model("SearchRequest", requests=[_model("SearchQuery", query=_required(args,"query"), entity_types=["chatMessage"])])))
+            elif action == "search_messages":
+                entity_type = getattr(importlib.import_module("msgraph.generated.models.entity_type"), "EntityType").ChatMessage
+                query = _model("SearchRequest", query=_model("SearchQuery", query_string=_required(args, "query")), entity_types=[entity_type])
+                result = await _maybe(client.search.query.post(_model("QueryPostRequestBody", requests=[query])))
             else: result = await _maybe(client.teams.by_team_id(_required(args,"team_id")).channels.by_channel_id(_required(args,"channel_id")).messages.post(_model("ChatMessage", body=_body(str(args.get("body") or "")))) )
         else:
             todo = client.users.by_user_id(user).todo

@@ -278,11 +278,17 @@ TOOL_CATEGORIES = {
     },
     "image_gen": {
         "name": "Image Generation", "icon": "🎨",
-        # Provider rows (FAL, OpenAI, OpenAI Codex, xAI) come from plugins.image_gen.<vendor> via
-        # _plugin_image_gen_providers(). Only the managed "Nous Subscription" row lives here — fal backend, distinct UX.
+        # Provider rows (FAL, OpenAI, OpenAI Codex, xAI, Krea, …) come from plugins.image_gen.<vendor> via
+        # _plugin_image_gen_providers(). Only the managed "Nous Subscription" rows live here, one per gateway
+        # backend; ``imagegen_backend`` selects the model catalog. Both store ``image_gen.provider: nous`` and are
+        # told apart by the stored model. Krea is paid-only (the free tool pool does not fund it), hence its own
+        # ``coverage_category``.
         "providers": [
             _row("Nous Subscription", "subscription", "Managed FAL image generation billed to your subscription", **_NOUS,
                  managed_nous_feature="image_gen", override_env_vars=["FAL_KEY"], imagegen_backend="fal"),
+            _row("Nous Subscription (Krea)", "subscription",
+                 "Managed Krea 2 image generation billed to your subscription", **_NOUS,
+                 managed_nous_feature="image_gen", coverage_category="krea", imagegen_backend="krea"),
         ],
     },
     "video_gen": {

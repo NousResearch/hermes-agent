@@ -721,14 +721,14 @@ class TestImagegenBackendRegistry:
         assert "fal-ai/flux-2/klein/9b" in catalog
         assert "fal-ai/flux-2-pro" in catalog
 
-    def test_image_gen_providers_tagged_with_fal_backend(self):
-        """Both Nous Subscription and FAL.ai providers must carry the
-        imagegen_backend tag so _configure_provider fires the picker."""
-        from hermes_cli.tools_config import TOOL_CATEGORIES
+    def test_image_gen_providers_tagged_with_registered_backend(self):
+        """Every hardcoded image_gen row must name a backend in IMAGEGEN_BACKENDS
+        so _configure_provider can fire that backend's model picker."""
+        from hermes_cli.tools_config import IMAGEGEN_BACKENDS, TOOL_CATEGORIES
         providers = TOOL_CATEGORIES["image_gen"]["providers"]
         for p in providers:
-            assert p.get("imagegen_backend") == "fal", (
-                f"{p['name']} missing imagegen_backend tag"
+            assert p.get("imagegen_backend") in IMAGEGEN_BACKENDS, (
+                f"{p['name']} missing a registered imagegen_backend tag"
             )
 
 
@@ -975,6 +975,115 @@ def test_visible_providers_reuses_pool_video_feature_snapshot(monkeypatch):
     )
 
 
+# ── Managed Krea row ──────────────────────────────────────────────────────────
+#
+# Two managed image rows both store `image_gen.provider: nous`; the stored model
+# decides which gateway serves a request. Krea is paid-only, so the row carries
+# its own coverage category instead of image_gen's `fal`.
+
+
+def _image_gen_row(backend: str) -> dict:
+    return next(
+        p for p in TOOL_CATEGORIES["image_gen"]["providers"] if p.get("imagegen_backend") == backend
+    )
+
+
+def _paid_account() -> NousPortalAccountInfo:
+    return NousPortalAccountInfo(logged_in=True, source="jwt", fresh=False, paid_service_access=True)
+
+
+def _pool_only_account() -> NousPortalAccountInfo:
+    """Free tool pool only: it funds FAL image gen but not Krea."""
+    return NousPortalAccountInfo(
+        logged_in=True, source="jwt", fresh=False, paid_service_access=False,
+        tool_access=NousToolAccessInfo(enabled=True, coverage={"fal": True, "krea": False}),
+    )
+
+
+def _subscription_features(account: NousPortalAccountInfo) -> NousSubscriptionFeatures:
+    return NousSubscriptionFeatures(
+        subscribed=True, nous_auth_present=True, provider_is_nous=False, features={}, account_info=account,
+    )
+
+
+def test_krea_row_listed_for_paid_account_and_hidden_for_pool_only_account():
+    krea_name = _image_gen_row("krea")["name"]
+    fal_name = _image_gen_row("fal")["name"]
+
+    paid_names = [
+        p["name"] for p in _visible_providers(
+            TOOL_CATEGORIES["image_gen"], {}, features=_subscription_features(_paid_account()))
+    ]
+    pool_names = [
+        p["name"] for p in _visible_providers(
+            TOOL_CATEGORIES["image_gen"], {}, features=_subscription_features(_pool_only_account()))
+    ]
+
+    assert krea_name in paid_names and fal_name in paid_names
+    assert krea_name not in pool_names
+    assert fal_name in pool_names
+
+
+def test_selecting_krea_row_writes_nous_provider_and_a_krea_model(monkeypatch):
+    import hermes_cli.tools_config as tools_config
+    import hermes_cli.tools_config_providers as providers
+    from plugins.image_gen.krea import KREA_MODEL_IDS
+
+    monkeypatch.setattr(providers, "_nous_provider_gate", lambda *args, **kwargs: True)
+    monkeypatch.setattr(tools_config, "_prompt_choice", lambda *args, **kwargs: 0)
+    config = {"image_gen": {"provider": "nous", "model": "fal-ai/flux-2/klein/9b"}}
+
+    _configure_provider(_image_gen_row("krea"), config)
+
+    assert config["image_gen"]["provider"] == "nous"
+    assert config["image_gen"]["model"] in KREA_MODEL_IDS
+
+
+def test_stored_model_tells_the_two_managed_image_rows_apart(monkeypatch):
+    import hermes_cli.tools_config as tools_config
+
+    monkeypatch.setattr(
+        tools_config, "get_nous_subscription_features",
+        lambda config, **kwargs: SimpleNamespace(features={"image_gen": SimpleNamespace(managed_by_nous=True)}),
+    )
+    krea_row, fal_row = _image_gen_row("krea"), _image_gen_row("fal")
+
+    config = {"image_gen": {"provider": "nous", "model": "krea-2-medium"}}
+    assert tools_config._is_provider_active(krea_row, config) is True
+    assert tools_config._is_provider_active(fal_row, config) is False
+
+    config = {"image_gen": {"provider": "nous", "model": "fal-ai/flux-2/klein/9b"}}
+    assert tools_config._is_provider_active(krea_row, config) is False
+    assert tools_config._is_provider_active(fal_row, config) is True
+
+
+def test_gate_refuses_krea_row_when_pool_coverage_excludes_krea(monkeypatch):
+    import hermes_cli.nous_subscription as nous_subscription
+    import hermes_cli.tools_config_providers as providers
+
+    monkeypatch.setattr(nous_subscription, "_account_info_or_none", lambda **kwargs: _pool_only_account())
+    monkeypatch.setattr(
+        nous_subscription, "_run_nous_portal_login_only",
+        lambda **kwargs: pytest.fail("a logged-in account must not be sent through login"),
+    )
+
+    assert providers._nous_provider_gate(_image_gen_row("krea"), {}, "image_gen", force_fresh=True) is False
+    assert providers._nous_provider_gate(_image_gen_row("fal"), {}, "image_gen", force_fresh=True) is True
+
+
+def test_gui_selection_of_krea_row_writes_a_krea_model_when_none_is_set(monkeypatch):
+    import hermes_cli.tools_config as tools_config
+    from hermes_cli.tools_config import apply_provider_selection
+    from plugins.image_gen.krea import KREA_MODEL_IDS
+
+    paid = _subscription_features(_paid_account())
+    monkeypatch.setattr(tools_config, "get_nous_subscription_features", lambda *args, **kwargs: paid)
+    config = {}
+
+    apply_provider_selection("image_gen", _image_gen_row("krea")["name"], config)
+
+    assert config["image_gen"]["provider"] == "nous"
+    assert config["image_gen"]["model"] in KREA_MODEL_IDS
 
 
 # ── Windows console-flash guard for post-setup subprocess spawns ──────────────

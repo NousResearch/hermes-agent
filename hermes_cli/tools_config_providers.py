@@ -128,6 +128,11 @@ _PLUGIN_ROW_BUILDERS = {
     "Text-to-Speech": _plugin_tts_providers}
 
 
+def _managed_coverage_category(provider: dict, managed_feature: str) -> Optional[str]:
+    """Free-pool coverage category a managed row is gated on: the row's own, else its feature's."""
+    return provider.get("coverage_category") or MANAGED_FEATURE_COVERAGE_CATEGORY.get(managed_feature)
+
+
 def _visible_providers(
     cat: dict, config: dict, *, force_fresh: bool = False, features: Optional[NousSubscriptionFeatures] = None,
 ) -> list[dict]:
@@ -139,8 +144,8 @@ def _visible_providers(
     if features is None:
         features = get_nous_subscription_features(config, force_fresh=force_fresh)
     acct = features.account_info
-    # Pool-only users (free tool pool, no paid access) get image gen but NOT video gen — the pool doesn't
-    # fund `fal-video`, so hide the managed video row rather than advertise a denial.
+    # Pool-only users (free tool pool, no paid access) only see the managed rows the pool funds — FAL image gen
+    # yes, `fal-video` and `krea` no — so an unfunded row is hidden rather than advertising a denial.
     pool_only = bool(acct and acct.logged_in and acct.paid_service_access is not True and acct.tool_gateway_entitled)
     visible = []
     for provider in cat.get("providers", []):
@@ -149,7 +154,7 @@ def _visible_providers(
         # `requires_nous_auth` row without a managed feature hides until logged in.
         if provider.get("requires_nous_auth") and not managed and not features.nous_auth_present:
             continue
-        if pool_only and managed == "video_gen" and not (acct and acct.tool_gateway_entitled_for("fal-video")):
+        if pool_only and managed and not acct.tool_gateway_entitled_for(_managed_coverage_category(provider, managed)):
             continue
         visible.append(provider)
 
@@ -180,7 +185,7 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
         if managed_feature:
             # Same per-category entitlement gate the CLI applies at selection time.
             acct = features.account_info
-            category = MANAGED_FEATURE_COVERAGE_CATEGORY.get(managed_feature)
+            category = _managed_coverage_category(provider, managed_feature)
             entitled = bool(acct and acct.logged_in and (
                 acct.tool_gateway_entitled_for(category) if category else acct.tool_gateway_entitled))
             if not entitled:
@@ -363,6 +368,14 @@ def _managed_provider_active(provider: dict, config: dict, managed_feature: str,
                 and gen_cfg.get("use_gateway") is not None
                 and not is_truthy_value(gen_cfg.get("use_gateway"), default=False)):
                 return False
+            backend = provider.get("imagegen_backend")
+            if backend:
+                # Both managed image rows store provider "nous"; the model id says which gateway serves it.
+                from plugins.image_gen.krea import KREA_MODEL_IDS
+
+                stored_model_is_krea = gen_cfg.get("model") in KREA_MODEL_IDS
+                if stored_model_is_krea != (backend == "krea"):
+                    return False
         return feature.managed_by_nous
     # Browser Use mode is a driver on top of the provider (attaches to its CDP endpoint), so the browser
     # provider row stays active alongside the Browser Use row.
@@ -487,7 +500,8 @@ def _fal_model_catalog():
 # Per-backend model catalog (config_key = top-level config.yaml section, catalog_fn -> ({model_id: metadata},
 # default_model)); a TOOL_CATEGORIES row tagged `imagegen_backend: "<name>"` selects the catalog at picker time.
 IMAGEGEN_BACKENDS = {
-    "fal": {"display": "FAL.ai", "config_key": "image_gen", "catalog_fn": _fal_model_catalog}}
+    "fal": {"display": "FAL.ai", "config_key": "image_gen", "catalog_fn": _fal_model_catalog},
+    "krea": {"display": "Krea", "config_key": "image_gen", "catalog_fn": lambda: _plugin_image_gen_catalog("krea")}}
 
 
 def _plugin_model_catalog(registry_module: str, plugin_name: str):
@@ -716,7 +730,7 @@ def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> N
     """Non-interactively persist a provider selection for a toolset (config keys only — API keys, post-setup
     hooks, auth gating and model pickers are separate GUI endpoints). ``provider_name`` is resolved among
     :func:`_visible_providers` rows; raises ``KeyError`` for an unknown toolset or provider."""
-    from hermes_cli.tools_config import TOOL_CATEGORIES
+    from hermes_cli.tools_config import TOOL_CATEGORIES, _cfg_section
 
     cat = TOOL_CATEGORIES.get(ts_key)
     if cat is None:
@@ -741,6 +755,15 @@ def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> N
         if vendor:
             _select_into(config, section_key, "provider", vendor, managed_feature)
 
+    # The GUI picks a model in a separate step, and the runtime only reaches the Krea gateway for a Krea
+    # model id — with a FAL model still stored, this pick would silently keep generating on FAL.
+    if provider.get("imagegen_backend") == "krea":
+        from plugins.image_gen.krea import DEFAULT_MODEL, KREA_MODEL_IDS
+
+        image_cfg = _cfg_section(config, "image_gen")
+        if image_cfg.get("model") not in KREA_MODEL_IDS:
+            image_cfg["model"] = DEFAULT_MODEL
+
 
 def _nous_provider_gate(provider: dict, config: dict, managed_feature, *, force_fresh: bool) -> bool:
     """Return False (after printing why) when a Nous-gated row cannot be selected.
@@ -755,7 +778,7 @@ def _nous_provider_gate(provider: dict, config: dict, managed_feature, *, force_
 
         if not ensure_nous_portal_access(
             capability=f"{provider.get('name', 'the Nous Tool Gateway')}",
-            coverage_category=MANAGED_FEATURE_COVERAGE_CATEGORY.get(managed_feature)):
+            coverage_category=_managed_coverage_category(provider, managed_feature)):
             _print_warning("  Not enabled — Nous Portal access is required for this backend.")
             return False
         return True
@@ -781,8 +804,8 @@ def _finish_provider_selection(provider: dict, config: dict, managed_feature) ->
     backend = provider.get("imagegen_backend")
     if backend:
         _configure_imagegen_model(backend, config)
-        # In-tree FAL is the only non-plugin backend: "nous" for a managed row, "fal" for BYOK, drop legacy
-        # use_gateway — never clobber a managed pick back onto direct keys.
+        # "nous" for a managed row (FAL or Krea gateway — the model picked above tells them apart), "fal" for
+        # BYOK, drop legacy use_gateway — never clobber a managed pick back onto direct keys.
         _select_into(config, "image_gen", "provider", "fal", managed_feature)
     # STT rows prompt for a model after the pick (skipped for managed rows — the gateway pins it).
     if provider.get("stt_provider") and not managed_feature:

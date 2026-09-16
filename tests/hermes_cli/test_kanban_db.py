@@ -1181,6 +1181,20 @@ def test_link_tasks_emits_dependency_wait_when_demoting_ready_child(kanban_home)
         assert payload["parent"] == parent
 
 
+def test_link_tasks_rejects_running_child_without_recording_edge(kanban_home):
+    """Regression for #113374: a dependency added after claim cannot gate that run."""
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="unfinished parent")
+        child = kb.create_task(conn, title="claimed child")
+        assert kb.claim_task(conn, child, claimer="worker") is not None
+
+        with pytest.raises(ValueError, match="child is already running"):
+            kb.link_tasks(conn, parent, child)
+
+        assert kb.parent_ids(conn, child) == []
+        assert "linked" not in [event.kind for event in kb.list_events(conn, child)]
+
+
 def test_link_tasks_no_dependency_wait_when_parent_done(kanban_home):
     """A done parent demotes nothing and reports no gate."""
     with kbc.connect() as conn:

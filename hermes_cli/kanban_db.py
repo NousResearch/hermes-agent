@@ -1595,7 +1595,11 @@ def set_reasoning_effort(conn: sqlite3.Connection, task_id: str, effort: Optiona
 def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
     """Link ``parent_id -> child_id``. Returns True when the link gated a
     ``ready`` child back to ``todo`` (the new parent is not yet terminal), so
-    callers can surface the demotion instead of a silent status flip."""
+    callers can surface the demotion instead of a silent status flip.
+
+    A running child cannot be gated retroactively, so reject the edge rather
+    than record a dependency that did not constrain the active run.
+    """
     if parent_id == child_id:
         raise ValueError("a task cannot depend on itself")
     gated = False
@@ -1603,6 +1607,8 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
         missing = _missing_task_ids(conn, [parent_id, child_id])
         if missing:
             raise ValueError(f"unknown task(s): {', '.join(missing)}")
+        if _task_status(conn, child_id) == "running":
+            raise ValueError(f"cannot link {parent_id} -> {child_id}: child is already running")
         if _would_cycle(conn, parent_id, child_id):
             raise ValueError(f"linking {parent_id} -> {child_id} would create a cycle")
         _link(conn, parent_id, child_id)

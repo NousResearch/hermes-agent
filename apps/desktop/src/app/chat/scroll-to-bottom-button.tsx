@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useReducedMotion } from 'motion/react'
 import { useMemo, useRef } from 'react'
 
+import { useTranscriptWindow } from '@/components/assistant-ui/thread/transcript-window'
 import { Codicon } from '@/components/ui/codicon'
 import { AnimatedInt } from '@/components/ui/diff-count'
 import { useI18n } from '@/i18n'
@@ -42,8 +43,9 @@ export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }
   const { t } = useI18n()
   const surfaceId = useComposerSurfaceId()
   const scrollSessionId = sessionId ?? surfaceId
+  const { isHistorical } = useTranscriptWindow()
 
-  const visible = useStoreSelector($threadJumpButtonVisibleBySession, map =>
+  const scrollVisible = useStoreSelector($threadJumpButtonVisibleBySession, map =>
     Boolean(scrollSessionId && map[scrollSessionId])
   )
 
@@ -51,6 +53,7 @@ export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }
     scrollSessionId ? (map[scrollSessionId] ?? 0) : 0
   )
 
+  const visible = isHistorical || scrollVisible
   const reducedMotion = useReducedMotion()
   const request = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
   // Scrolled away while an approval is pending → the inline Run/Reject bar is

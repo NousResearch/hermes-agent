@@ -63,6 +63,7 @@ import { requestComposerInsert } from './composer/focus'
 import { droppedFileInlineRefs } from './composer/inline-refs'
 import { ComposerSurfaceProvider, useComposerScope, useComposerSurfaceId } from './composer/scope'
 import type { ChatBarState } from './composer/types'
+import { useHistoryWindow } from './history-window'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { type DragKind, useFileDropZone } from './hooks/use-file-drop-zone'
 import { shouldShowIntro } from './intro-visibility'
@@ -210,15 +211,15 @@ const NO_MESSAGES: ChatMessage[] = []
  * dots stay live through the separate status atoms) and catch up in one
  * commit on reveal — the subscribe fires immediately with the current value.
  */
-function useMessagesWhileVisible($messages: ReadableAtom<ChatMessage[]>): ChatMessage[] {
+function useMessagesWhileVisible($messages: ReadableAtom<ChatMessage[]>, enabled = true): ChatMessage[] {
   const visible = usePaneVisible()
   const [messages, setMessages] = useState(() => $messages.get())
 
   // nanostores types the listener value ReadonlyIfObject; the store publishes
   // a fresh array per flush, so the cast is safe and avoids a per-token clone.
   useEffect(
-    () => (visible ? $messages.subscribe(value => setMessages(value as ChatMessage[])) : undefined),
-    [$messages, visible]
+    () => (visible && enabled ? $messages.subscribe(value => setMessages(value as ChatMessage[])) : undefined),
+    [$messages, visible, enabled]
   )
 
   return messages
@@ -245,7 +246,32 @@ export function ChatRuntimeBoundary({
 }: ChatRuntimeBoundaryProps) {
   const view = useSessionView()
   const runtimeId = useStore(view.$runtimeId)
-  const storeMessages = useMessagesWhileVisible(view.$messages)
+  const storedId = useStore(view.$storedId)
+  const connection = useStore($connection)
+  const activeProfile = useStore($activeGatewayProfile)
+  const connectionId = connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')
+
+  const ownerRoute = storedId
+    ? getSessionOwnerHint(storedId, connectionId ? { connectionId, profile: activeProfile } : undefined)
+    : undefined
+
+  const ownerConnection = ownerRoute?.connectionId
+  const ownerProfile = ownerRoute?.targetProfile || ownerRoute?.profile
+
+  const tailProfile = useMemo(() => ownerProfile
+    ? { connectionId: ownerConnection, profile: ownerProfile }
+    : undefined, [ownerConnection, ownerProfile])
+
+  const history = useHistoryWindow({
+    scopeKey: JSON.stringify([runtimeId, storedId, tailProfile, connectionId, activeProfile, suppressMessages]),
+    storedId,
+    scope: tailProfile ?? { connectionId: connectionId || undefined, profile: activeProfile },
+    isCurrent: () => !suppressMessages && view.$storedId.get() === storedId && view.$runtimeId.get() === runtimeId
+  })
+
+  // History is a static display page. The live store continues streaming but
+  // no delta subscribes/reconverts this historical runtime until return.
+  const storeMessages = useMessagesWhileVisible(view.$messages, !history.page)
   const messages = suppressMessages ? NO_MESSAGES : storeMessages
 
   const [windowPages, setWindowPages] = useState(1)
@@ -285,29 +311,19 @@ export function ChatRuntimeBoundary({
     return next.window
   }, [messages, windowPages])
 
-  const runtimeMessageRepository = useRuntimeMessageRepository(windowedMessages)
-
-  const storedId = useStore(view.$storedId)
-  const connection = useStore($connection)
-  const activeProfile = useStore($activeGatewayProfile)
+  const currentMessages = history.page?.messages ?? windowedMessages
+  const runtimeMessageRepository = useRuntimeMessageRepository(currentMessages)
   // Subscribed (not read imperatively) so the "Show earlier" affordance
   // appears/retires as tail hydrations and backfill pages record their state.
   const transcriptTailStates = useStore($transcriptTailBySessionId)
-  const connectionId = connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')
-
-  const ownerRoute = storedId
-    ? getSessionOwnerHint(storedId, connectionId ? { connectionId, profile: activeProfile } : undefined)
-    : undefined
-
-  const tailProfile = ownerRoute
-    ? { connectionId: ownerRoute.connectionId, profile: ownerRoute.targetProfile || ownerRoute.profile }
-    : undefined
-
   const tailState = storedId && transcriptTailStates ? transcriptTailState(storedId, tailProfile) : undefined
   const restBackfillAvailable = Boolean(tailState?.possiblyTruncated)
 
   const expandWindow = useCallback(
     async (beforePrepend?: () => void) => {
+      // A historical page is not the live tail: never backfill into its store.
+      if (history.page) {return false}
+
       // Network latency is not scroll intent. Capture at arrival, immediately
       // before the store prepend, and only grow a window that has a page to show.
       if (
@@ -352,24 +368,32 @@ export function ChatRuntimeBoundary({
 
       return true
     },
-    [runtimeId, storedId, tailProfile, view]
+    [runtimeId, storedId, tailProfile, view, history.page]
   )
 
-  const olderAvailable = windowed || restBackfillAvailable
+  // Page navigation stays on the timeline while inspecting history; the
+  // existing prepend action is specifically a live-tail operation.
+  const olderAvailable = !history.page && (windowed || restBackfillAvailable)
+  const isHistorical = Boolean(history.page)
+  const newerAvailable = history.page?.newerAvailable ?? false
+  const { revealRow, returnToLatest } = history
 
-  const transcriptWindow = useMemo(() => ({ olderAvailable, expandWindow }), [expandWindow, olderAvailable])
+  const transcriptWindow = useMemo(() => ({
+    olderAvailable, expandWindow, revealRow, returnToLatest, currentMessages, isHistorical, newerAvailable
+  }), [expandWindow, olderAvailable, revealRow, returnToLatest, currentMessages, isHistorical, newerAvailable])
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
     messageRepository: runtimeMessageRepository,
-    isRunning: busy,
-    setMessages: onThreadMessagesChange,
+    isRunning: !isHistorical && busy,
+    isDisabled: isHistorical,
+    setMessages: isHistorical ? undefined : onThreadMessagesChange,
     onNew: async () => {
       // Submission is handled explicitly by ChatBar.
       // Keeping this no-op avoids duplicate prompt.submit calls.
     },
-    onEdit,
-    onCancel: async () => onCancel(),
-    onReload
+    onEdit: isHistorical ? undefined : onEdit,
+    onCancel: isHistorical ? undefined : async () => onCancel(),
+    onReload: isHistorical ? undefined : onReload
   })
 
   return (

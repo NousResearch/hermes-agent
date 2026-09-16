@@ -1125,6 +1125,10 @@ skills:
 # Agent Behavior
 # =============================================================================
 agent:
+  # False ends a broken stream as an incomplete turn, preserving received text.
+  # Transport retries and genuine output-token-limit recovery are independent.
+  partial_stream_continuation: true
+
   # Maximum tool-calling iterations per conversation (default: 500)
   # Higher = more room for complex tasks, but costs more tokens
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration

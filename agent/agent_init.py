@@ -1361,6 +1361,9 @@ def _apply_agent_section(agent, _agent_cfg):
 
     # "auto" (codex_responses only), true (all api_modes), false, or model substrings.
     agent._intent_ack_continuation = _agent_section.get("intent_ack_continuation", "auto")
+    agent._partial_stream_continuation = _cfg_flag(
+        _agent_section, "partial_stream_continuation", True
+    )
 
     # Responses `text.verbosity`: "" / unknown value = not sent (never flips the provider default).
     _verbosity = str(_agent_section.get("text_verbosity") or "").strip().lower()

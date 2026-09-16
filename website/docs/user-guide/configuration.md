@@ -1215,7 +1215,19 @@ agent:
   budget_warning_ratio: null   # Optional one-time checkpoint warning, e.g. 0.75
   api_max_retries: 3           # Retries per provider before fallback engages (default: 3)
   auto_recovery_cycles: 5      # Wait-and-retry cycles after retries + fallback are spent on an outage (0 = off)
+  partial_stream_continuation: true  # Ask the model to continue after a broken stream
 ```
+
+For batch evaluation or callers that must reject incomplete model output, set
+`agent.partial_stream_continuation: false`. When a stream ends prematurely and Hermes
+recovers a partial-stream response, the turn returns `completed: false` and `partial: true`
+without issuing a continuation request. Received text is preserved in the result and
+transcript; incomplete tool calls are not executed. The default is `true`.
+
+This controls conversation-level continuation of partial-stream responses, as used by
+Chat Completions and Bedrock Converse. It does not disable transport/API retries,
+fallback handling for raised API errors, or continuation after a genuine
+`finish_reason: length`. Configure those retry budgets separately when counting requests.
 
 `agent.max_turns` is **unlimited by default** — the turn cap caused more problems than it solved (silent mid-task truncation), so out of the box Hermes runs a conversation turn to completion. To impose a cap, set a positive integer. To be explicit about "no limit", any of these case-insensitive spellings work: `"none"`, `"null"`, `"unlimited"`, `"infinite"`, `"infinity"`, `"inf"`, `0`, `-1` (they resolve to a `sys.maxsize` sentinel so the loop never exits on a turn count).
 

@@ -14,6 +14,7 @@ interface GitignoreRule {
 
 const gitRootCache = new Map<string, Promise<string | null>>()
 const gitignoreCache = new Map<string, Promise<GitignoreRule | null>>()
+const nestedRepoCache = new Map<string, Promise<boolean>>()
 
 function decodeDataUrl(dataUrl: string) {
   const match = dataUrl.match(/^data:[^,]*,(.*)$/)
@@ -104,6 +105,30 @@ async function gitignoreFor(dir: string) {
   return cached
 }
 
+async function isNestedRepoRoot(entry: HermesReadDirEntry): Promise<boolean> {
+  if (!entry.isDirectory) {
+    return false
+  }
+
+  const key = `${desktopFsCacheKey()}:${cleanPath(entry.path)}`
+  let cached = nestedRepoCache.get(key)
+
+  if (!cached) {
+    cached = (async () => {
+      try {
+        const listing = await readDesktopDir(entry.path)
+
+        return listing.entries.some(e => e.name === '.git')
+      } catch {
+        return false
+      }
+    })()
+    nestedRepoCache.set(key, cached)
+  }
+
+  return cached
+}
+
 function ignoredBy(rules: GitignoreRule[], entry: HermesReadDirEntry) {
   return rules.some(rule => {
     const rel = relativeTo(rule.base, entry.path)
@@ -127,7 +152,21 @@ async function filterIgnored(entries: HermesReadDirEntry[], rootPath: string, di
     Boolean(r)
   )
 
-  return rules.length > 0 ? entries.filter(entry => !ignoredBy(rules, entry)) : entries
+  if (rules.length === 0) {
+    return entries
+  }
+
+  const visible = await Promise.all(
+    entries.map(async entry => {
+      if (!ignoredBy(rules, entry)) {
+        return entry
+      }
+
+      return (await isNestedRepoRoot(entry)) ? entry : null
+    })
+  )
+
+  return visible.filter((entry): entry is HermesReadDirEntry => entry !== null)
 }
 
 export async function readProjectDir(dirPath: string, rootPath = dirPath): Promise<HermesReadDirResult> {
@@ -145,11 +184,21 @@ export function clearProjectDirCache(rootPath?: string) {
   if (!rootPath) {
     gitRootCache.clear()
     gitignoreCache.clear()
+    nestedRepoCache.clear()
 
     return
   }
 
-  const key = `${desktopFsCacheKey()}:${cleanPath(rootPath)}`
+  const normalizedRoot = cleanPath(rootPath)
+  const key = `${desktopFsCacheKey()}:${normalizedRoot}`
   gitRootCache.delete(key)
   gitignoreCache.delete(key)
+
+  const nestedPrefix = normalizedRoot === '/' ? key : `${key}/`
+
+  for (const nestedKey of nestedRepoCache.keys()) {
+    if (nestedKey === key || nestedKey.startsWith(nestedPrefix)) {
+      nestedRepoCache.delete(nestedKey)
+    }
+  }
 }

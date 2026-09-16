@@ -17,9 +17,16 @@ so the header cannot drift per code path.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any, Optional
 
 OPENCODE_SESSION_HEADER = "x-opencode-session"
+
+# Last-resort key for auxiliary calls that run with no ambient runtime at all — post-turn work such
+# as the /loop and kanban goal judges, which have no session of their own to re-bind. The relay
+# rejects a request WITHOUT the header (400 "MissingSessionID"), so sending a stable per-process key
+# beats sending none: those calls route consistently for the life of the process.
+_FALLBACK_SESSION_KEY = f"hermes-aux-{uuid.uuid4().hex}"
 
 
 def is_opencode_target(provider: Optional[str], base_url: Optional[str]) -> bool:
@@ -72,6 +79,8 @@ def opencode_session_headers(
         )
     except Exception:
         key = str(session_id or "")
+    if not key:
+        key = _FALLBACK_SESSION_KEY
     return {OPENCODE_SESSION_HEADER: key} if key else {}
 
 

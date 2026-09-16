@@ -1117,6 +1117,18 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
         return None
     from hermes_cli.profiles import normalize_profile_name
 
+    # ``none`` / ``-`` / ``null`` / blank are the "unassigned" spellings that
+    # ``hermes kanban assign`` already accepts (``_none_profile``) — but they are
+    # not profile names. Both spellings must resolve to the ONE canonical
+    # unassigned value (NULL) at the seam every writer shares, because a stored
+    # literal is truthy: the dispatcher's ``default_assignee`` adoption skips it
+    # (``if not row_assignee``), ``profile_exists('none')`` then skips it again,
+    # and the card sits ``ready`` forever with no worker, no error and no event.
+    # ``@``-stripping happens here too so a mention-style ``@none`` is covered.
+    token = assignee.strip().lstrip("@").strip().lower()
+    if token in {"", "none", "-", "null"}:
+        return None
+
     return normalize_profile_name(assignee)
 
 

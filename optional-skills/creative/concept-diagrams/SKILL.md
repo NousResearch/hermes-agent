@@ -199,10 +199,12 @@ Replace `{HEIGHT}` with the actual computed height (last element bottom + 40px).
 </g>
 ```
 
-**Connector (no label):**
+**Connector (labelled):**
 ```xml
 <line x1="200" y1="76" x2="200" y2="120" class="arr" marker-end="url(#arrow)"/>
+<text class="ts" x="224" y="98" dominant-baseline="central">Sends data to</text>
 ```
+The label names the relationship and is placed near the connector.
 
 **Container (dashed or solid):**
 ```xml
@@ -239,15 +241,16 @@ Before finalizing any SVG, verify ALL of the following:
 1. Every `<text>` has class `t`, `ts`, or `th`.
 2. Every `<text>` inside a box has `dominant-baseline="central"`.
 3. Every connector `<path>` or `<line>` used as arrow has `fill="none"`.
-4. No arrow line crosses through an unrelated box.
-5. `box_width >= (longest_label_chars × 8) + 48` for 14px text.
-6. `box_width >= (longest_label_chars × 6.5) + 48` for 12px text.
-7. ViewBox height = bottom-most element + 40px.
-8. All content stays within x=40 to x=640.
-9. Color classes (`c-*`) are on `<g>` or shape elements, never on `<path>` connectors.
-10. Arrow `<defs>` block is present.
-11. No gradients, shadows, blur, or glow effects.
-12. Stroke width is 0.5px on all node borders.
+4. Every connector arrow has a concise relationship label that reads correctly from source to target.
+5. No arrow line crosses through an unrelated box.
+6. `box_width >= (longest_label_chars × 8) + 48` for 14px text.
+7. `box_width >= (longest_label_chars × 6.5) + 48` for 12px text.
+8. ViewBox height = bottom-most element + 40px.
+9. All content stays within x=40 to x=640.
+10. Color classes (`c-*`) are on `<g>` or shape elements, never on `<path>` connectors.
+11. Arrow `<defs>` block is present.
+12. No gradients, shadows, blur, or glow effects.
+13. Stroke width is 0.5px on all node borders.
 
 ---
 

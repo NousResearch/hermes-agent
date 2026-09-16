@@ -51,6 +51,25 @@ def _get_platform_default_hermes_home() -> Path:
     return Path.home() / ".hermes"
 
 
+def sudo_invoker_default_home() -> Path | None:
+    """The invoking user's native ``~/.hermes`` when this process is root under ``sudo``, else None.
+
+    sudo strips HERMES_HOME and sets HOME=/root, so the process's own default is root's; the profile
+    store and the system service being operated on belong to SUDO_USER.
+    """
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return None
+    sudo_user = os.environ.get("SUDO_USER", "").strip()
+    if not sudo_user or sudo_user == "root":
+        return None
+    import pwd
+
+    try:
+        return Path(pwd.getpwnam(sudo_user).pw_dir) / ".hermes"
+    except KeyError:  # SUDO_USER not in passwd (chroot/container)
+        return None
+
+
 def _warn_profile_fallback_once() -> None:
     """Warn once when HERMES_HOME is unset but a non-default profile is sticky-active (wrong fallback)."""
     global _profile_fallback_warned
@@ -137,6 +156,12 @@ def get_process_hermes_home() -> Path:
     val = os.environ.get("HERMES_HOME", "").strip()
     return Path(val) if val else _get_platform_default_hermes_home()
 
+
+# Hermes-managed runtime downloads at the root of a home (GGUF models, llama.cpp runtimes,
+# managed Node): re-downloadable on demand and routinely tens to hundreds of GB. Shared by
+# ``hermes backup`` (excludes them) and ``profile create --clone-all`` (skips them from the
+# default profile) so the two lists cannot drift apart.
+LOCAL_RUNTIME_ROOT_DIRS: frozenset[str] = frozenset({"models", "runtimes", "node"})
 
 # get_default_hermes_root() memo keyed on (native home, HERMES_HOME) so it stays
 # fresh when a test or plugin mutates HERMES_HOME; saves ~80us/call at 31+ sites.

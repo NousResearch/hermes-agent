@@ -20,6 +20,8 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 
 _SECONDARY_YAML = """\
 require_mention: false
+gateway:
+  allow_all_users: true
 telegram:
   mention_patterns: ['^bot2']
   reactions: false
@@ -49,7 +51,7 @@ _BRIDGED_ENV = (
     "MATRIX_REQUIRE_MENTION", "MATRIX_ALLOWED_USERS", "MATRIX_SESSION_SCOPE",
     "WHATSAPP_DM_POLICY", "WHATSAPP_ALLOWED_USERS", "FEISHU_ALLOW_BOTS",
     "SLACK_ALLOW_BOTS", "SLACK_IGNORED_CHANNELS", "DINGTALK_ALLOWED_USERS",
-    "DISCORD_AUTO_THREAD", "DISCORD_REACTIONS", "SIGNAL_REQUIRE_MENTION",
+    "DISCORD_AUTO_THREAD", "DISCORD_REACTIONS", "SIGNAL_REQUIRE_MENTION", "GATEWAY_ALLOW_ALL_USERS",
 )
 
 _EXPECTED_EXTRA = (

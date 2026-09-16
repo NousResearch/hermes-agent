@@ -296,17 +296,22 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
 
     from hermes_constants import get_hermes_home
     raw = script.strip()
+    scripts_dir = get_hermes_home() / "scripts"
     if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):
         return (
-            f"Script path must be relative to ~/.hermes/scripts/. "
+            f"Script path must be relative to {scripts_dir}/. "
             f"Got absolute or home-relative path: {raw!r}. "
-            f"Place scripts in ~/.hermes/scripts/ and use just the filename.")
+            f"Place scripts in {scripts_dir}/ and use just the filename.")
 
     from tools.path_security import validate_within_dir
-    scripts_dir = get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
-    if validate_within_dir(scripts_dir / raw, scripts_dir):
+    resolved_script = scripts_dir / raw
+    if validate_within_dir(resolved_script, scripts_dir):
         return f"Script path escapes the scripts directory via traversal: {raw!r}"
+    if not resolved_script.is_file():
+        return (
+            f"Script file not found: {resolved_script}. "
+            f"Create it in {scripts_dir}/ first.")
     return None
 
 

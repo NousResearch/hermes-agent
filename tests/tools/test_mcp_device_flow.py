@@ -6,7 +6,7 @@ import pytest
 from evals.mcp_device_flow import DEVICE_GRANT, run_cli
 
 
-@pytest.mark.parametrize("mode", ["success", "preregistered"])
+@pytest.mark.parametrize("mode", ["success", "preregistered", "multi_issuer"])
 def test_device_login_registers_authorizes_and_persists(mode):
     result = run_cli(Path(__file__).resolve().parents[2], mode)
     assert result["token_persisted"], result
@@ -20,7 +20,7 @@ def test_device_login_registers_authorizes_and_persists(mode):
     assert all(row["data"]["resource"].endswith("/mcp") for row in polls)
     if mode == "success":
         assert polls[2]["at"] - polls[1]["at"] >= 5
-    else:
+    elif mode == "preregistered":
         assert not any(row["path"] == "/register" for row in result["wire"])
 
 

@@ -24,6 +24,7 @@ import {
   stripGeneratedImageEchoes
 } from '@/lib/generated-images'
 import { isTodoToolName, nextTodosFromToolEvent, parseTodoRevision } from '@/lib/todos'
+import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notifyError } from '@/store/notifications'
 import { broadcastSessionsChanged } from '@/store/session-sync'
@@ -33,6 +34,7 @@ import { $todosBySession, setSessionTodos } from '@/store/todos'
 import type { ClientSessionState } from '../../../types'
 
 import { useGatewayEventHandler } from './gateway-event'
+import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
 import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
 
 interface MessageStreamOptions {
@@ -801,12 +803,16 @@ export function useMessageStream({
   )
 
   const failAssistantMessage = useCallback(
-    (sessionId: string, errorMessage: string, occurredAt = Date.now() / 1000) => {
+    (sessionId: string, errorMessage: string, occurredAt = Date.now() / 1000, surface?: ErrorSurface | null) => {
       updateSessionState(sessionId, state => {
         const streamId = state.streamId ?? `assistant-error-${Date.now()}`
         const groupId = state.pendingBranchGroup ?? undefined
         const prev = state.messages
         const error = errorMessage.trim() || 'Hermes reported an error'
+        // The `error` event carries no descriptor; the dispatcher may recover
+        // one from the text (SESSION_NOT_OWNED, disk_full) so the card gates
+        // its buttons like a classified turn.
+        const errorSurface = surface ? { errorSurface: surface } : {}
 
         const durationS = state.turnStartedAt
           ? Math.max(1, Math.round((Date.now() - state.turnStartedAt) / 1000))
@@ -819,6 +825,7 @@ export function useMessageStream({
                     ...message,
                     completedAt: occurredAt,
                     error,
+                    ...errorSurface,
                     parts: completeOpenTimelineParts(message.parts, occurredAt),
                     pending: false,
                     ...(durationS !== undefined ? { durationS } : {})
@@ -834,6 +841,7 @@ export function useMessageStream({
                 timestamp: occurredAt,
                 completedAt: occurredAt,
                 error,
+                ...errorSurface,
                 pending: false,
                 branchGroupId: groupId,
                 ...(durationS !== undefined ? { durationS } : {})
@@ -880,11 +888,25 @@ export function useMessageStream({
     upsertToolCall
   })
 
+  // Server→client requests (clarify, approval, sudo, …) from every socket the
+  // registry owns. The request answers itself over the socket it arrived on,
+  // so no owner routing is involved here — only which card to show.
+  const handleServerRequest = useCallback(
+    (request: ScopedServerRequest): boolean =>
+      dispatchServerRequest(
+        request,
+        { activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall },
+        activeSessionIdRef.current
+      ),
+    [activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall]
+  )
+
   return {
     appendAssistantDelta,
     appendReasoningDelta,
     completeAssistantMessage,
     handleGatewayEvent,
+    handleServerRequest,
     finalizeInterimAssistantMessage,
     upsertToolCall
   }

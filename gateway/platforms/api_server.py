@@ -121,7 +121,8 @@ from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.base import (
-    MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, is_network_accessible, validate_media_delivery_path)
+    MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
+    validate_media_delivery_path)
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
@@ -200,7 +201,9 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
-CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
+# Send a comment before remote API clients' common 20-second idle deadline.
+# This constant is shared by OpenAI chat/Responses and native session SSE.
+CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 10.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT = 100
@@ -870,7 +873,12 @@ def _resolve_media_to_data_urls(text: str) -> str:
     def _repl(m: "re.Match[str]") -> str:
         return _to_data_url(m.group("path")) or m.group(0)
     try:
-        return MEDIA_TAG_CLEANUP_RE.sub(_repl, text)
+        # A leaked terminal <|eos|> glued to the last tag is not a path terminator (#111046):
+        # scan without it, and drop it (control token, never content) only when a tag resolved.
+        sentinel_start = _terminal_sentinel_start(text)
+        scan = text[:sentinel_start] if sentinel_start >= 0 else text
+        resolved = MEDIA_TAG_CLEANUP_RE.sub(_repl, scan)
+        return text if resolved == scan else resolved
     except Exception:
         return text
 
@@ -1113,6 +1121,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     # Stateless request/response (``send()`` is a stub): async-delivery tools must not promise
     # delivery here, and a resumed turn completes the work rather than asking.
     supports_async_delivery: bool = False
+    # ``/p/<profile>/v1/...`` on the shared listener (``_make_profile_prefix_middleware``).
+    serves_profile_prefix: bool = True
     # Same statelessness applies to the startup auto-resume prompt: no client is waiting to answer "session
     # restored — what next?", so a resumed turn should complete the interrupted work rather than acknowledge
     # (#57056).
@@ -1484,6 +1494,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         from gateway.run import _profile_runtime_scope
         from hermes_cli.profiles import get_profile_dir
         return _profile_runtime_scope(get_profile_dir(profile))
+
+    async def _handle_profile_ingress(self, request: "web.Request") -> "web.StreamResponse":
+        """``/p/<profile>/<tail>`` → the served profile's shared-listener adapter (already scoped by the
+        prefix middleware); a profile with no adapter for the path is a 404, never the default's."""
+        from gateway.platforms.shared_ingress import dispatch_profile_ingress
+        return await dispatch_profile_ingress(
+            self.gateway_runner, _api_request_profile.get(), request.match_info.get("tail", ""), request,
+            scoped=True)
 
     def _make_profile_prefix_middleware(self):
         """Reject unknown /p/<profile>/ prefixes and scope the request home."""
@@ -2970,11 +2988,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if await asyncio.to_thread(db.get_session, fork_id):
             return _error_response(f"Session already exists: {fork_id}", 409, code="session_exists")
 
-        # CLI /branch semantics: end the original as branched, create a child with the transcript.
-        await asyncio.to_thread(db.end_session, source_id, "branched")
+        # CLI /branch semantics: create the child, then end the original as branched (child first, so
+        # a failed create never leaves the source ended with no fork, #11030).
+        # ``_branched_from`` is the durable branch marker (same as CLI /branch): with the child created
+        # first, the timestamp fallback in _BRANCH_CHILD_SQL (child.started_at >= parent.ended_at) no
+        # longer holds, and an unmarked child would vanish from default session listings.
         await asyncio.to_thread(
             db.create_session, fork_id, "api_server", model=source.get("model"),
-            system_prompt=source.get("system_prompt"), parent_session_id=source_id)
+            system_prompt=source.get("system_prompt"), parent_session_id=source_id,
+            model_config={"_branched_from": source_id})
+        await asyncio.to_thread(db.end_session, source_id, "branched")
         messages = await asyncio.to_thread(db.get_messages, source_id)
         await asyncio.to_thread(db.replace_messages, fork_id, messages)
         title = body.get("title")
@@ -3170,24 +3193,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
                 turn_messages = self._turn_transcript_messages(history, user_message, result) if is_dict else []
                 effective_runtime = self._effective_turn_runtime(runtime_request, result, usage)
+                # Terminal status and flags come from the result (interrupted -> cancelled,
+                # unfinished -> failed); a late steer rides along as ``pending_steer`` for replay.
+                status, fields = _api_runs.terminal_run_status(result if is_dict else {})
                 await queue.put(_event_payload("assistant.completed", {
                     "session_id": effective_session_id, "message_id": message_id,
-                    "content": final_response, "completed": True,
-                    "partial": bool(result.get("partial")) if is_dict else False,
-                    "interrupted": False, "runtime": effective_runtime}))
-                # A steer accepted after the final reply lands in result["pending_steer"]; surface
-                # it so clients can replay it rather than lose it.
-                pending_steer = result.get("pending_steer") if is_dict else None
-                completed_payload = {
-                    "session_id": effective_session_id, "message_id": message_id, "completed": True,
-                    "messages": turn_messages, "usage": usage, "runtime": effective_runtime}
-                if pending_steer:
-                    completed_payload["pending_steer"] = pending_steer
-                await queue.put(_event_payload("run.completed", completed_payload))
+                    "content": final_response, **fields, "runtime": effective_runtime}))
+                await queue.put(_event_payload(f"run.{status}", {
+                    "session_id": effective_session_id, "message_id": message_id, **fields,
+                    "messages": turn_messages, "usage": usage, "runtime": effective_runtime}))
                 self._set_run_status(
-                    run_id, "completed", session_id=effective_session_id, usage=usage,
-                    last_event="run.completed",
-                    **({"pending_steer": pending_steer} if pending_steer else {}))
+                    run_id, status, session_id=effective_session_id,
+                    # The reply text, so a caller whose stream died can still read it from
+                    # GET /v1/runs/{run_id}; POST /v1/runs already records output in `_finish`.
+                    output=final_response, usage=usage,
+                    last_event=f"run.{status}", **fields)
             except asyncio.CancelledError:
                 self._set_run_status(run_id, "cancelled", last_event="run.cancelled")
                 raise
@@ -3496,6 +3516,20 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             job_id = (body or {}).get("job_id")
             if not job_id:
                 return web.json_response({"error": "missing job_id"}, status=400)
+            # `hermes pause` ESTOP: refuse the fire and ask NAS to retry later.
+            # Placed after JWT verify (don't leak pause state to unauth callers)
+            # and after the drain check (drain is transient shutdown, ESTOP is
+            # operator override). 503 + Retry-After reschedules the job via NAS
+            # retry or the misfire backstop rather than silently dropping it —
+            # matches _CRON_FIRE_RETRY_AFTER_SECONDS in web_routers/cron.py.
+            with suppress(ImportError):
+                from agent.estop import check_paused as _estop_check_paused
+                if _estop_check_paused("cron-webhook", logger):
+                    return web.json_response(
+                        {"error": "hermes is paused (ESTOP)", "job_id": job_id},
+                        status=503,
+                        headers={"Retry-After": str(60)},
+                    )
             from cron.scheduler_provider import provider_supports_split_fire, resolve_cron_scheduler
             provider = resolve_cron_scheduler()
             loop = asyncio.get_running_loop()
@@ -3894,6 +3928,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             for method, path, handler in self._http_route_table():
                 self._app.router.add_route(method, path, handler)
                 self._app.router.add_route(method, f"/p/{{profile}}{path}", handler)
+            # Registered LAST so every native mirror above wins: anything else under /p/<profile>/ is a
+            # secondary profile's inbound-port platform (Twilio, LINE, Teams, ...) served on this listener.
+            self._app.router.add_route("*", "/p/{profile}/{tail:.*}", self._handle_profile_ingress)
             # After native routes: Relay bootstrap shims feature-detect on this key and must
             # no-op rather than shadow the native session-control handlers.
             self._app["api_server_adapter"] = self
@@ -3958,7 +3995,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     "config.yaml: platforms.api_server.port",
                     self.name, self._host, self._port, exc)
                 return False
-            self._mark_connected()
+            from gateway.platforms.shared_ingress import listener_base_url
+            self._mark_connected(listener_base=listener_base_url(self._host, self._port))
             logger.info(
                 "[%s] API server listening on http://%s:%d (model: %s)",
                 self.name, self._host, self._port, self._model_name)

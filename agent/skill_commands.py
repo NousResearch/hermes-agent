@@ -20,7 +20,10 @@ _skill_commands_home: Optional[str] = None
 # Guards the (map, platform-tag, home-tag) triple so publication and the
 # freshness lookup always see a consistent snapshot. Scanning stays outside.
 _publish_lock = threading.Lock()
-_SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
+# ``\w`` keeps Unicode letters (CJK, Cyrillic) so a ``name: 小说拆条`` skill registers ``/小说拆条``
+# instead of slugging to "" and being dropped (#12351); Telegram's ``[a-z0-9_]`` menu limit is
+# applied by hermes_cli/commands_platforms.py, not here.
+_SKILL_INVALID_CHARS = re.compile(r"[^\w-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
 # Skill-scaffolding markers. A /skill (or /bundle) turn is expanded into a
@@ -320,7 +323,7 @@ def _scaffold_header(
     return "\n".join(lines)
 
 
-_SCAN_SKIP_PARTS = {'.git', '.github', '.hub', '.archive'}
+_SCAN_SKIP_PARTS = {'.git', '.github', '.hub', '.archive', '.locks'}
 
 
 def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dict[str, Dict[str, Any]], resolve_command) -> None:
@@ -543,11 +546,14 @@ def _disabled_skill_names(platform: str | None = None) -> set:
 def _load_skill_blocks(
     identifiers: list[str], load, activation_note, task_id: str | None, *,
     missing_label=lambda ident: ident, disabled_names: set | None = None, disabled_as_missing: bool = False,
+    already_loaded: set | None = None,
 ) -> tuple[list[str], list[str], list[str], list[str]]:
     """Load each distinct identifier via *load* and render its block; returns
     ``(loaded_names, missing, disabled, blocks)``. With *disabled_names*, members
     whose canonical (LOADED — identifiers may be paths) name or identifier is
-    disabled go to ``disabled`` (or ``missing`` when *disabled_as_missing*)."""
+    disabled go to ``disabled`` (or ``missing`` when *disabled_as_missing*).
+    Canonical names in *already_loaded* (e.g. skills.auto_load) count as resolved
+    but render no block, so one skill never lands in the prompt twice."""
     loaded_names: list[str] = []
     missing: list[str] = []
     disabled: list[str] = []
@@ -568,16 +574,23 @@ def _load_skill_blocks(
             else:
                 disabled.append(skill_name or identifier)
             continue
+        if already_loaded and skill_name in already_loaded:
+            loaded_names.append(skill_name)
+            continue
         blocks.append(_render_skill_block(loaded, activation_note(skill_name), task_id))
         loaded_names.append(skill_name)
     return loaded_names, missing, disabled, blocks
 
 
-def build_preloaded_skills_prompt(skill_identifiers: list[str], task_id: str | None = None) -> tuple[str, list[str], list[str]]:
+def build_preloaded_skills_prompt(
+    skill_identifiers: list[str], task_id: str | None = None, excluded_loaded_names: set[str] | None = None,
+) -> tuple[str, list[str], list[str]]:
     """Load skills for session-wide CLI/TUI preloading; returns (prompt_text,
     loaded_skill_names, missing_identifiers). Disabled skills count as missing:
     this path bypasses the scan-time filter, and ``hermes -s <skill>`` must not
-    force-load an operator-disabled skill.
+    force-load an operator-disabled skill. *excluded_loaded_names* are canonical
+    names the session already carries (skills.auto_load): they resolve as loaded
+    but are not rendered again.
 
     Disabled skills are treated the same as missing ones: this loads via a raw identifier straight into
     ``_load_skill_payload``, bypassing ``get_skill_commands()``'s scan-time disabled filter — mirrors the
@@ -590,5 +603,54 @@ def build_preloaded_skills_prompt(skill_identifiers: list[str], task_id: str | N
                       "preloaded. Treat its instructions as active guidance for the duration of this "
                       "session unless the user overrides them.]"),
         task_id, disabled_names=_disabled_skill_names(), disabled_as_missing=True,
+        already_loaded=excluded_loaded_names,
     )
     return "\n\n".join(prompt_parts), loaded_names, missing
+
+
+def resolve_auto_load_skills(user_config: dict | None = None) -> list[str]:
+    """``skills.auto_load`` from *user_config* (else the active profile config), deduplicated;
+    empty when unset, malformed, or the config is unreadable."""
+    if user_config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+            user_config = load_config_readonly()
+        except Exception:
+            return []
+    skills_block = user_config.get("skills") if isinstance(user_config, dict) else None
+    auto_load = skills_block.get("auto_load") if isinstance(skills_block, dict) else None
+    if not isinstance(auto_load, list):
+        return []
+    names = [entry.strip() for entry in auto_load if isinstance(entry, str) and entry.strip()]
+    return list(dict.fromkeys(names))
+
+
+def build_auto_load_prompt(
+    task_id: str | None = None, user_config: dict | None = None, home_override: Path | None = None,
+) -> tuple[str, list[str], list[str]]:
+    """Render ``skills.auto_load`` as fully loaded skill blocks for a new session; returns
+    ``(prompt_text, loaded_names, missing)``. Missing and operator-disabled names are reported,
+    never raised: a typo in config must not block session start on any surface.
+
+    *home_override* makes home resolution EXPLICIT (same seam as ``build_skills_system_prompt``): the config,
+    the disabled list and the ``<home>/skills`` lookup all resolve under that home, so a gateway build thread
+    that lost the HERMES_HOME ContextVar cannot pin the launch profile's skills into another profile's prompt.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    home_token = set_hermes_home_override(str(home_override)) if home_override is not None else None
+    try:
+        auto_skills = resolve_auto_load_skills(user_config)
+        if not auto_skills:
+            return "", [], []
+        loaded_names, missing, _disabled, prompt_parts = _load_skill_blocks(
+            auto_skills,
+            lambda identifier: _load_skill_payload(identifier, task_id=task_id),
+            lambda name: (f'[IMPORTANT: The "{name}" skill is auto-loaded via config (skills.auto_load). '
+                          "Treat its instructions as active guidance for the duration of this session unless "
+                          "the user overrides them.]"),
+            task_id, disabled_names=_disabled_skill_names(), disabled_as_missing=True,
+        )
+        return "\n\n".join(prompt_parts), loaded_names, missing
+    finally:
+        if home_token is not None:
+            reset_hermes_home_override(home_token)

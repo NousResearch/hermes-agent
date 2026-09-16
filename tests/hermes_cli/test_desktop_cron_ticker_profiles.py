@@ -67,7 +67,12 @@ def test_multi_profile_homes_passed_to_builtin(monkeypatch, _providers, tmp_path
 
     assert builtin.start_kwargs is not None
     assert builtin.start_kwargs["interval"] == 7
-    assert builtin.start_kwargs["profile_homes"] == homes
+    profile_homes = builtin.start_kwargs["profile_homes"]
+    assert callable(profile_homes)
+    assert profile_homes() == homes
+
+    homes.pop()
+    assert profile_homes() == homes
 
 
 @pytest.mark.parametrize("gateway_running", [True, False])
@@ -155,7 +160,9 @@ def test_desktop_ticker_serves_every_profile_and_yields_to_owning_gateway(monkey
 
     ws._start_desktop_cron_ticker(threading.Event(), interval=0)
 
-    assert [name for name, _ in builtin.start_kwargs["profile_homes"]] == [
+    profile_homes = builtin.start_kwargs["profile_homes"]
+    assert callable(profile_homes)
+    assert [name for name, _ in profile_homes()] == [
         "default", "guest", "solo", "worker"]
     gate = builtin.start_kwargs["profile_gate"]
     assert gate("default", root) is True

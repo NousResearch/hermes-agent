@@ -195,9 +195,9 @@ describe('main.ts wiring for #90812', () => {
   it('routes every registry-scoped REST dispatch (hermes:api) through the single-owner claim', () => {
     const handlerStart = mainSource.indexOf('async function dispatchRegistryApiRequest(')
     expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 900)
+    const body = mainSource.slice(handlerStart, handlerStart + 1_000)
 
     expect(body).toContain('backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile)')
-    expect(body).toContain('ensureRegistryBackend(registryConnectionId, routeProfile)')
+    expect(body).toContain("ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })")
   })
 })

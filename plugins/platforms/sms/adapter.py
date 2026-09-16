@@ -16,7 +16,6 @@ import base64
 import hashlib
 import hmac
 import logging
-import os
 import re
 import urllib.parse
 from typing import Any, Dict, Optional
@@ -25,7 +24,9 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import redact_phone, strip_markdown
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import (
+    env_is_connected as _env_is_connected, get_scoped_secret as _get_scoped_secret, send_error
+)
 
 try:
     import aiohttp
@@ -83,6 +84,8 @@ def check_sms_requirements() -> bool:
 
 class SmsAdapter(BasePlatformAdapter):
     """Twilio SMS <-> Hermes: one session per inbound number; replies always from TWILIO_PHONE_NUMBER."""
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
 
     MAX_MESSAGE_LENGTH = MAX_SMS_LENGTH
 
@@ -129,15 +132,15 @@ class SmsAdapter(BasePlatformAdapter):
         app = web.Application(client_max_size=_TWILIO_WEBHOOK_MAX_BODY_BYTES)
         app.router.add_post("/webhooks/twilio", self._handle_webhook)
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
-        self._runner = web.AppRunner(app)
-        await self._runner.setup()
-        site = web.TCPSite(self._runner, self._webhook_host, self._webhook_port)
-        await site.start()
+        # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/webhooks/twilio.
+        from gateway.platforms.shared_ingress import bind_listener
+        self._runner = await bind_listener(self, app, self._webhook_host, self._webhook_port, "/webhooks/twilio")
         self._http_session = _new_session(trust_env=gateway_trust_env())
         self._running = True
-        logger.info(
-            "[sms] Twilio webhook server listening on %s:%d, from: %s",
-            self._webhook_host, self._webhook_port, redact_phone(self._from_number))
+        if self._runner is not None:
+            logger.info(
+                "[sms] Twilio webhook server listening on %s:%d, from: %s",
+                self._webhook_host, self._webhook_port, redact_phone(self._from_number))
         self._wire_plugin_handlers(None)
         return True
 
@@ -257,7 +260,8 @@ class SmsAdapter(BasePlatformAdapter):
             return _twiml_response()
         logger.info("[sms] inbound from %s -> %s: %s", redact_phone(from_number), redact_phone(to_number), text[:80])
         source = self.build_source(
-            chat_id=from_number, chat_name=from_number, chat_type="dm", user_id=from_number, user_name=from_number)
+            chat_id=from_number, chat_name=from_number, chat_type="dm", user_id=from_number, user_name=from_number,
+            message_id=message_sid)
         event = MessageEvent(
             text=text, message_type=MessageType.TEXT, source=source, raw_message=form, message_id=message_sid)
         # Non-blocking: Twilio expects a fast response
@@ -297,11 +301,11 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     """Out-of-process SMS delivery via the Twilio REST API (standalone_sender_fn contract)."""
     auth_token = getattr(pconfig, "api_key", None) or _get_scoped_secret("TWILIO_AUTH_TOKEN", "")
     if not AIOHTTP_AVAILABLE:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+        return send_error("aiohttp not installed. Run: pip install aiohttp")
     account_sid = _get_scoped_secret("TWILIO_ACCOUNT_SID", "")
     from_number = _get_scoped_secret("TWILIO_PHONE_NUMBER", "")  # scoped like account_sid: never the default's number
     if not account_sid or not auth_token or not from_number:
-        return {"error": "SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)"}
+        return send_error("SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)")
     message = _strip_markdown_for_sms(message)
     try:
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
@@ -313,25 +317,14 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                 body = await resp.json()
                 if resp.status >= 400:
                     error_msg = body.get("message", str(body))
-                    return _redacted_error(f"Twilio API error ({resp.status}): {error_msg}")
+                    return send_error(f"Twilio API error ({resp.status}): {error_msg}")
                 return {"success": True, "platform": "sms", "chat_id": chat_id, "message_id": body.get("sid", "")}
     except Exception as e:
-        return _redacted_error(f"SMS send failed: {e}")
+        return send_error(f"SMS send failed: {e}")
 
 
-def _redacted_error(text: str) -> dict:
-    """Error dict with phone numbers redacted by send_message_tool when available."""
-    try:
-        from tools.send_message_tool import _error as _e
-        return _e(text)
-    except Exception:
-        return {"error": text}
+_is_connected = _env_is_connected("TWILIO_ACCOUNT_SID")
 
-
-def _is_connected(config) -> bool:
-    """SMS is connected when Twilio credentials are present (bool(TWILIO_ACCOUNT_SID))."""
-    import hermes_cli.gateway as gateway_mod
-    return bool((gateway_mod.get_env_value("TWILIO_ACCOUNT_SID") or "").strip())
 
 
 def register(ctx) -> None:

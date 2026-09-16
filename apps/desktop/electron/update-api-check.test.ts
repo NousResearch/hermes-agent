@@ -18,6 +18,8 @@ import {
   cacheIsFresh,
   githubRepoSlug,
   parseCompare,
+  parseGitHubToken,
+  resolveGitHubToken,
   UPDATE_CHECK_FAILURE_TTL_MS,
   UPDATE_CHECK_TTL_MS
 } from './update-api-check'
@@ -77,5 +79,52 @@ test('compare payload maps to the behind count and a newest-first commit list; m
   assert.equal(
     branchTipApiUrl('nousresearch/hermes-agent', 'bb/gui'),
     'https://api.github.com/repos/nousresearch/hermes-agent/commits/bb%2Fgui'
+  )
+})
+
+test('a .env token is found verbatim, and an absent or unrelated file yields no header', () => {
+  assert.equal(parseGitHubToken('ANTHROPIC_API_KEY=x\nGITHUB_TOKEN=ghp_abc123\n'), 'ghp_abc123')
+  assert.equal(parseGitHubToken('GH_TOKEN="gho_quoted"\n'), 'gho_quoted')
+  assert.equal(parseGitHubToken('  GITHUB_TOKEN = ghp_spaced  \n'), 'ghp_spaced')
+  // No token: the caller must send no Authorization header, not an empty Bearer.
+  assert.equal(parseGitHubToken('OPENAI_API_KEY=x\n# GITHUB_TOKEN=commented\n'), '')
+  assert.equal(parseGitHubToken(''), '')
+  // A key that merely mentions the name is not a token.
+  assert.equal(parseGitHubToken('GITHUB_TOKEN_FILE=/tmp/x\n'), '')
+})
+
+test('the credential chain stops at the first source that answers, and never asks a later one', async () => {
+  let ghCalls = 0
+
+  const gh = async () => {
+    ghCalls += 1
+
+    return 'gho_from_gh\n'
+  }
+
+  // Env wins: neither the file nor the CLI is consulted.
+  assert.equal(await resolveGitHubToken('ghp_env', () => 'GITHUB_TOKEN=ghp_file\n', gh), 'ghp_env')
+  assert.equal(ghCalls, 0)
+
+  // Then the file, before the CLI.
+  assert.equal(await resolveGitHubToken('', () => 'GITHUB_TOKEN=ghp_file\n', gh), 'ghp_file')
+  assert.equal(ghCalls, 0)
+
+  // Then the CLI, trimmed.
+  assert.equal(await resolveGitHubToken('', () => '', gh), 'gho_from_gh')
+  assert.equal(ghCalls, 1)
+
+  // Nobody has a credential: anonymous, i.e. no header — and a CLI that fails
+  // (missing gh, not logged in, timeout) must not throw into the update check.
+  assert.equal(await resolveGitHubToken('', () => '', async () => ''), '')
+  assert.equal(
+    await resolveGitHubToken(
+      '',
+      () => '',
+      async () => {
+        throw new Error('spawn gh ENOENT')
+      }
+    ),
+    ''
   )
 })

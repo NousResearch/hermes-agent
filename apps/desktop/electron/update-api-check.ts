@@ -63,6 +63,57 @@ export function cacheIsFresh(
   return now - cached.fetchedAt < ttl
 }
 
+/**
+ * The GitHub token out of a dotenv-style file, or '' when it has none.
+ *
+ * Anonymous api.github.com allows 60 requests/hour *per IP*, shared with every
+ * other unauthenticated caller behind the same NAT, so the poller alone can
+ * exhaust it and then every update check 403s with "rate limit reached".
+ * Reuse the credential the machine already has instead of adding a new one.
+ */
+export function parseGitHubToken(envText: string): string {
+  for (const line of envText.split('\n')) {
+    const match = /^\s*(?:GITHUB_TOKEN|GH_TOKEN)\s*=\s*(.+?)\s*$/.exec(line)
+
+    if (match) {
+      return match[1].replace(/^["']|["']$/g, '')
+    }
+  }
+
+  return ''
+}
+
+/**
+ * Credential chain for the desktop's GitHub API calls, matching
+ * tools/skills_hub_github.py::GitHubAuth: process env → ~/.hermes/.env →
+ * `gh auth token` → anonymous. Anonymous api.github.com is 60 requests/hour
+ * *per IP*, shared with every other unauthenticated caller behind the same
+ * NAT; the authenticated pool is 5000/hour per user. Each source is a thunk so
+ * it is only consulted when the previous one came up empty.
+ */
+export async function resolveGitHubToken(
+  envToken: string,
+  readEnvFile: () => string,
+  ghCliToken: () => Promise<string>
+): Promise<string> {
+  if (envToken) {
+    return envToken
+  }
+
+  const fromFile = parseGitHubToken(readEnvFile())
+
+  if (fromFile) {
+    return fromFile
+  }
+
+  try {
+    return (await ghCliToken()).trim()
+  } catch {
+    // No gh CLI, not logged in, or it hung — anonymous is the last resort.
+    return ''
+  }
+}
+
 export interface CompareCommit {
   sha: string
   summary: string

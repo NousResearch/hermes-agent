@@ -152,6 +152,15 @@ def build_blog_prompt(stream: str, plan: dict, context_blob: str,
         "- No AI-isms. No 'Let's dive in' / 'In today's world' / 'Great question'.",
         "- No invented statistics. Cite only numbers and terms that appear in the context.",
         "- Prefer concrete specifics over abstraction every time.",
+        "- The article is reader-facing copy only. Never address the requester, "
+        "commissioner, or editor in the body: no meta notes, no internal "
+        "commentary, no requests for materials ('send me X and I can...'). If "
+        "the supplied material is thin, write what the material supports; do "
+        "not ask for more of it inside the draft.",
+        "- When the context or verified sources name a specific vendor, product, "
+        "or paper, cite it by name (e.g. 'Stripe's delivery docs'). Never invent "
+        "a source name, and never generalise as 'almost every vendor' or "
+        "'most teams' unless the context says so explicitly.",
         f"- Structure: use {section_target} as a planning target, not a rigid "
         "template. Use H2 headings only for real changes of subject; let the "
         "article form follow the material.",

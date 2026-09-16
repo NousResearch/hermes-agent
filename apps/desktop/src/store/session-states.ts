@@ -797,7 +797,7 @@ export interface SessionTileWorkspaceScope {
 // "stale runtime after respawn" bugs by construction).
 const TILES_KEY = 'hermes.desktop.sessionTiles.v2'
 const LEGACY_TILES_KEY = 'hermes.desktop.sessionTiles.v1'
-const TILE_PANE_PREFIX = 'session-tile:'
+export const TILE_PANE_PREFIX = 'session-tile:'
 const BOTS_TILE_BUCKET = '__bots_workspace__'
 
 /** Persisted placement — `dir` + strip slot (`before`) + dock `anchor` so a

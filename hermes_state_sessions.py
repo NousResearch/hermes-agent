@@ -910,6 +910,42 @@ class SessionSessionsMixin:
                 self._set_lineage_column("hidden", session_id, 0)
         return result
 
+    # A stamp is ONE short free-text label per session (Merged, WIP, Review, Handoff, …). It rides
+    # the compression lineage exactly like pinned/archived: list readers project a root to its live
+    # tip, so a tip-only write would let the root resurrect a stale label on refresh.
+    MAX_STAMP_LENGTH = 24
+    _STAMP_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+    @classmethod
+    def normalize_session_stamp(cls, stamp: Optional[str]) -> Optional[str]:
+        """Normalize a stamp to the stored form — ``None`` means no stamp. ``None`` or a blank
+        string clears (None); anything else is stripped and internal whitespace runs collapse to
+        one space. Control characters (newline/tab/…) and text past :data:`MAX_STAMP_LENGTH` are
+        REJECTED with ValueError rather than silently sanitized — the caller must see the refusal,
+        and the router maps it to HTTP 400."""
+        if stamp is None:
+            return None
+        text = stamp.strip()
+        if not text:
+            return None
+        if cls._STAMP_CONTROL_RE.search(text):
+            raise ValueError("Stamp cannot contain control characters (newline, tab, …)")
+        text = re.sub(r"\s+", " ", text)
+        if len(text) > cls.MAX_STAMP_LENGTH:
+            raise ValueError(f"Stamp too long ({len(text)} chars, max {cls.MAX_STAMP_LENGTH})")
+        return text
+
+    def set_session_stamp(self, session_id: str, stamp: Optional[str]) -> bool:
+        """Set (or clear, when ``stamp`` is None/blank) the one short label for a session and its
+        whole compression lineage. Raises ValueError on control characters or an over-length label."""
+        return self._set_lineage_column(
+            "stamp", session_id, self.normalize_session_stamp(stamp))
+
+    def get_session_stamp(self, session_id: str) -> Optional[str]:
+        """Get a session's stamp label, or None when unstamped (the stored, normalized form)."""
+        row = self._read_one("SELECT stamp FROM sessions WHERE id = ?", (session_id,))
+        return row["stamp"] if row else None
+
     def set_session_hidden(self, session_id: str, hidden: bool) -> bool:
         """Hide/unhide a session and its compression lineage from the default listing; still resumable."""
         return self._set_lineage_column("hidden", session_id, int(hidden))

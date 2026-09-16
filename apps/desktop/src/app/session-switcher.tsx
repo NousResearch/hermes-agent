@@ -7,6 +7,7 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { cn } from '@/lib/utils'
 import { $switcherIndex, $switcherOpen, $switcherSessions, closeSwitcher } from '@/store/session-switcher'
 
+import { SessionStamp } from './chat/session-stamp'
 import { SessionStatusDot } from './chat/session-status-dot'
 import { HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from './floating-hud'
 import { openSession } from './open-session'
@@ -71,6 +72,9 @@ export function SessionSwitcher() {
             >
               <SessionStatusDot className="shrink-0" session={session} storedSessionId={session.id} />
               <span className="min-w-0 flex-1 truncate">{sessionTitle(session)}</span>
+              {/* The same stamp the sidebar row and the tab carry — this list is
+                  another place a title answers "which one was that?". */}
+              <SessionStamp className="mr-1" stamp={session.stamp} />
               {i < 9 && (
                 <span
                   className={cn(

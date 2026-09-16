@@ -45,6 +45,12 @@ import {
   setSessions
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
+import {
+  applySessionStamp,
+  normalizeSessionStamp,
+  SESSION_STAMP_MAX_LENGTH,
+  SESSION_STAMP_PRESETS
+} from '@/store/session-stamp'
 import { $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
@@ -103,6 +109,11 @@ interface SessionActions {
   /** Backend-derived read state — drives the Mark as unread/read label. */
   unread?: boolean
   profile?: string
+  /** The row's current durable stamp (`sessions.stamp`), when the caller
+   *  already has it — the sidebar row does, because it draws the chip. A
+   *  caller that omits it still gets the right check mark and Clear row: the
+   *  submenu falls back to reading the loaded rows. */
+  stamp?: null | string
   onPin?: () => void
   /** Toggle the persisted read-state watermark for this row. */
   onToggleUnread?: () => void
@@ -182,12 +193,92 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
   )
 }
 
+// The stamp picker inside the session menu's "Stamp" submenu: the five presets,
+// the clear row (only when there IS a stamp) and the custom-text door. Its own
+// component so only an OPEN submenu subscribes to the stores (same reasoning as
+// SessionColorSwatches). The row's own `stamp` prop wins where the caller has it
+// — it is what the chip beside the title is drawn from, so the check mark can
+// never disagree with what the list is showing; the lookup is the fallback for
+// the surfaces that pass nothing.
+function SessionStampItems({
+  kit,
+  onCustom,
+  profile,
+  sessionId,
+  stamp
+}: {
+  kit: MenuKit
+  onCustom: (current: null | string) => void
+  profile?: string
+  sessionId: string
+  stamp?: null | string
+}) {
+  const { t } = useI18n()
+  const r = t.sidebar.row
+  const session = useStore($sessions).find(s => sessionMatchesStoredId(s, sessionId))
+  const current = normalizeSessionStamp(stamp ?? session?.stamp)
+
+  return (
+    <>
+      {SESSION_STAMP_PRESETS.map(preset => (
+        <kit.Item key={preset} onSelect={() => void writeStamp(sessionId, profile, preset, r)}>
+          {preset}
+          {/* Mirrors how the app marks a current choice in a menu row (a
+              trailing check on the selected row only — base-branch-picker,
+              kanban's board switcher). */}
+          {preset === current && (
+            <Codicon className="ml-auto shrink-0 text-(--ui-accent)" name="check" size="0.8rem" />
+          )}
+        </kit.Item>
+      ))}
+      {current && (
+        <kit.Item onSelect={() => void writeStamp(sessionId, profile, null, r)}>
+          <Codicon name="circle-slash" size="0.875rem" />
+          <span>{r.stampClear}</span>
+        </kit.Item>
+      )}
+      <kit.Separator />
+      <kit.Item onSelect={() => onCustom(current)}>
+        <Codicon name="edit" size="0.875rem" />
+        <span>{r.stampCustom}</span>
+      </kit.Item>
+    </>
+  )
+}
+
+/**
+ * The ONE write path for the Stamp submenu and its custom dialog: normalize,
+ * haptic, the optimistic write, then a brief beat naming what actually landed.
+ *
+ * A refusal is already reported by `applySessionStamp` (which also puts the row
+ * back) — reporting it here as well would double-notify the user.
+ */
+async function writeStamp(
+  sessionId: string,
+  profile: string | undefined,
+  next: null | string,
+  r: { stampCleared: string; stampSaved: (label: string) => string }
+): Promise<boolean> {
+  const label = normalizeSessionStamp(next)
+
+  triggerHaptic('selection')
+
+  const ok = await applySessionStamp(sessionId, profile, label)
+
+  if (ok) {
+    notify({ durationMs: 2_000, kind: 'success', message: label ? r.stampSaved(label) : r.stampCleared })
+  }
+
+  return ok
+}
+
 function useSessionActions({
   sessionId,
   title,
   pinned = false,
   unread = false,
   profile,
+  stamp,
   onPin,
   onToggleUnread,
   onBranch,
@@ -210,6 +301,12 @@ function useSessionActions({
   // the project menu's appearance-popover guard.
   const suppressCloseFocusRef = useRef(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
+  // The custom-stamp dialog. Seeded with the stamp the open submenu saw, so the
+  // input starts from what the user is looking at (and so the dialog — which
+  // lives OUTSIDE the submenu, which unmounts as the menu closes — needs no
+  // store subscription of its own).
+  const [stampOpen, setStampOpen] = useState(false)
+  const [stampSeed, setStampSeed] = useState<null | string>(null)
   const tiles = useStore($sessionTiles)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const isRemote = useStore($connection)?.mode === 'remote'
@@ -467,6 +564,28 @@ function useSessionActions({
       {identityItems.map(item => renderActionItem(kit, item))}
       <kit.Sub>
         <kit.SubTrigger disabled={!sessionId}>
+          <Codicon name="tag" size="0.875rem" />
+          <span>{r.stamp}</span>
+        </kit.SubTrigger>
+        <kit.SubContent>
+          <SessionStampItems
+            kit={kit}
+            onCustom={current => {
+              triggerHaptic('selection')
+              // Keep focus off the row trigger so it lands in the dialog input
+              // (the rename item's guard, for the same reason).
+              suppressCloseFocusRef.current = true
+              setStampSeed(current)
+              setStampOpen(true)
+            }}
+            profile={profile}
+            sessionId={sessionId}
+            stamp={stamp}
+          />
+        </kit.SubContent>
+      </kit.Sub>
+      <kit.Sub>
+        <kit.SubTrigger disabled={!sessionId}>
           <Codicon name="symbol-color" size="0.875rem" />
           <span>{t.sidebar.projects.menuAppearance}</span>
         </kit.SubTrigger>
@@ -550,7 +669,17 @@ function useSessionActions({
     />
   )
 
-  return { deleteDialog, onCloseAutoFocus, renameDialog, renderItems }
+  const stampDialog = (
+    <StampSessionDialog
+      currentStamp={stampSeed}
+      onOpenChange={setStampOpen}
+      open={stampOpen}
+      profile={profile}
+      sessionId={sessionId}
+    />
+  )
+
+  return { deleteDialog, onCloseAutoFocus, renameDialog, renderItems, stampDialog }
 }
 
 interface DeleteSessionDialogProps {
@@ -591,7 +720,7 @@ interface SessionActionsMenuProps
 
 export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ...actions }: SessionActionsMenuProps) {
   const { t } = useI18n()
-  const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
+  const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems, stampDialog } = useSessionActions(actions)
 
   return (
     <>
@@ -606,6 +735,7 @@ export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ..
         {children}
       </ActionsMenu>
       {renameDialog}
+      {stampDialog}
       {deleteDialog}
     </>
   )
@@ -617,7 +747,7 @@ interface SessionContextMenuProps extends SessionActions {
 
 export function SessionContextMenu({ children, ...actions }: SessionContextMenuProps) {
   const { t } = useI18n()
-  const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
+  const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems, stampDialog } = useSessionActions(actions)
 
   return (
     <>
@@ -630,6 +760,7 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
         {children}
       </ActionsContextMenu>
       {renameDialog}
+      {stampDialog}
       {deleteDialog}
     </>
   )
@@ -707,6 +838,91 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
           ref={inputRef}
           value={value}
         />
+        <DialogFooter>
+          <Button disabled={submitting} onClick={() => onOpenChange(false)} type="button" variant="ghost">
+            {t.common.cancel}
+          </Button>
+          <Button disabled={submitting} onClick={() => void submit()} type="button">
+            {t.common.save}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+interface StampSessionDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  sessionId: string
+  /** The stamp the session carries right now, so the input starts from it. */
+  currentStamp: null | string
+  profile?: string
+}
+
+// The custom-text door for a session stamp — the presets' escape hatch, for the
+// label that isn't one of the five. Mirrors RenameSessionDialog: one Input,
+// Enter submits, Escape backs out. An EMPTY submit clears the stamp, the same
+// meaning an empty rename has (take the label off). The value is clamped to
+// SESSION_STAMP_MAX_LENGTH as it is typed AND normalized on submit, so the UI can
+// never send a stamp the backend would reject.
+function StampSessionDialog({ open, onOpenChange, sessionId, currentStamp, profile }: StampSessionDialogProps) {
+  const { t } = useI18n()
+  const r = t.sidebar.row
+  const [value, setValue] = useState(currentStamp ?? '')
+  const [submitting, setSubmitting] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (open) {
+      setValue(currentStamp ?? '')
+      window.setTimeout(() => inputRef.current?.select(), 0)
+    }
+  }, [currentStamp, open])
+
+  const submit = async () => {
+    if (!sessionId || submitting) {
+      return
+    }
+
+    setSubmitting(true)
+
+    // writeStamp normalizes and reports its own success; a refusal is already
+    // surfaced (and rolled back) by applySessionStamp, so the dialog stays open
+    // on the text the user typed instead of closing over a failed write.
+    const ok = await writeStamp(sessionId, profile, value, r)
+
+    setSubmitting(false)
+
+    if (ok) {
+      onOpenChange(false)
+    }
+  }
+
+  return (
+    <Dialog onOpenChange={onOpenChange} open={open}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{r.stampCustomTitle}</DialogTitle>
+        </DialogHeader>
+        <Input
+          autoFocus
+          disabled={submitting}
+          maxLength={SESSION_STAMP_MAX_LENGTH}
+          onChange={event => setValue(event.target.value.slice(0, SESSION_STAMP_MAX_LENGTH))}
+          onKeyDown={event => {
+            if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+              event.preventDefault()
+              void submit()
+            } else if (event.key === 'Escape') {
+              onOpenChange(false)
+            }
+          }}
+          placeholder={r.stampCustomPlaceholder}
+          ref={inputRef}
+          value={value}
+        />
+        <p className="text-xs text-(--ui-text-tertiary)">{r.stampCustomHint}</p>
         <DialogFooter>
           <Button disabled={submitting} onClick={() => onOpenChange(false)} type="button" variant="ghost">
             {t.common.cancel}

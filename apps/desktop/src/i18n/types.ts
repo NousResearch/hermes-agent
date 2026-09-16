@@ -2449,6 +2449,14 @@ export interface Translations {
       renameTitle: string
       renameDesc: string
       untitledPlaceholder: string
+      stamp: string
+      stampClear: string
+      stampCustom: string
+      stampCustomTitle: string
+      stampCustomPlaceholder: string
+      stampCustomHint: string
+      stampSaved: (label: string) => string
+      stampCleared: string
       deleteTitle: string
       deleteDesc: (title: string) => string
       deleting: string

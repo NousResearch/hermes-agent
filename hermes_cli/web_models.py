@@ -246,6 +246,7 @@ class SessionImport(BaseModel):
 
 class SessionRename(BaseModel):
     title: Optional[str] = None
+    stamp: Optional[str] = None  # one short per-session label (WIP, Merged, …); "" clears it
     archived: Optional[bool] = None
     hidden: Optional[bool] = None  # also used by cross-profile reconciliation
     pinned: Optional[bool] = None  # durable "keep" (Desktop pins); exempt from auto_archive

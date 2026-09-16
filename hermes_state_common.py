@@ -381,6 +381,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
     pinned INTEGER NOT NULL DEFAULT 0,
+    stamp TEXT,
     hidden INTEGER NOT NULL DEFAULT 0,
     last_read_at REAL,
     tool_names TEXT,

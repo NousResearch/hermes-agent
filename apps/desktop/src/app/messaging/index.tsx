@@ -16,12 +16,12 @@ import { Tip } from '@/components/ui/tooltip'
 import {
   approvePairing,
   getMessagingPlatforms,
-  preflightTeamsConfig,
   getPairing,
   type MessagingEnvVarInfo,
   type MessagingPlatformInfo,
   type MessagingPlatformUpdate,
   type PairingUser,
+  preflightTeamsConfig,
   revokePairing,
   type TelegramOnboardingApplyResponse,
   updateMessagingPlatform
@@ -751,6 +751,7 @@ function PlatformDetail({
   async function handleTeamsPreflight() {
     const config = Object.fromEntries(Object.entries(edits).filter(([, value]) => value.trim()))
     setPreflight('loading')
+
     try {
       const result = await preflightTeamsConfig(config, scopeProfile)
       setPreflight(result.ok ? 'success' : 'error')

@@ -327,10 +327,10 @@ def desktop_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
 
 
 def ensure_started_for_tool() -> None:
-    """Tool-boundary hook (``computer_use`` dispatch): with ``bot_desktop.auto_start`` (opt-in, default off) a Linux
-    host that has NO display and the packages installed gets its screen started on first use, so a headless
-    gateway works the first time instead of answering "no DISPLAY is set". Failure is not an error here;
-    the tool's own "no display" diagnosis is the right message then."""
+    """Tool-boundary hook (``computer_use`` dispatch and the headed Chromium spawn sites of the browser tool): with
+    ``bot_desktop.auto_start`` (opt-in, default off) a Linux host that has NO display and the packages installed gets
+    its screen started on first use, so a headless gateway works the first time instead of answering "no DISPLAY is
+    set". Failure is not an error here; the tool's own "no display" diagnosis is the right message then."""
     if published_env():
         touch_activity()
         return

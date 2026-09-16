@@ -57,9 +57,9 @@ def _build_browser_env() -> dict:
             env[key] = value
     # The Browser Use harness dials the resolved local CDP URL over ``websockets``; without a
     # loopback NO_PROXY a macOS system proxy captures that dial (#110565).
-    # Headed Chromium opens on this profile's Bot Desktop when one is running (human can take it over).
-    from tools.bot_desktop.runtime import desktop_env as _bot_desktop_env
-    # Headed Chromium opens on this profile's Bot Desktop when one is running (human can take it over).
+    # Headed Chromium opens on this profile's Bot Desktop when one is running (human can take it over). Pure: this
+    # builder also serves the npx cache warmer, the Chromium auto-installer and the Lightpanda engine, none of which
+    # may bring a screen up — the auto-start hook lives at the headed Chromium spawn sites (browser_tool_session).
     from tools.bot_desktop.runtime import desktop_env as _bot_desktop_env
     return add_loopback_no_proxy(_bot_desktop_env(env))
 

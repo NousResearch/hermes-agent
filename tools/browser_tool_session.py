@@ -174,6 +174,15 @@ def _agent_browser_command_env(socket_dir: str) -> Dict[str, str]:
     return env
 
 
+def _ensure_screen_for_headed_chromium() -> None:
+    """Tool-call boundary for ``bot_desktop.auto_start`` (mirrors computer_use dispatch): a headed Chromium is
+    about to be spawned for a real browser action, so a fresh headless profile gets its screen first. Headless
+    browsing, Lightpanda and the env-only callers of ``_build_browser_env`` never bring one up."""
+    if _cloud._is_headed_mode():
+        from tools.bot_desktop.runtime import ensure_started_for_tool
+        ensure_started_for_tool()
+
+
 def _popen_agent_browser(argv: List[str], env: Dict[str, str], socket_dir: str, tag: str,
                          stdin_payload: Optional[bytes] = None) -> "subprocess.Popen":
     """Spawn agent-browser with stdout/stderr redirected to ``socket_dir/_std{out,err}_<tag>``;
@@ -565,6 +574,8 @@ def _spawn_and_collect(
     task_socket_dir = _prepare_session_socket_dir(session_info["session_name"])
     _bt.logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
                  command, task_id, task_socket_dir, len(task_socket_dir))
+    if engine != "lightpanda":
+        _ensure_screen_for_headed_chromium()  # first command forks the daemon; a headed window needs the screen up
     browser_env = _agent_browser_command_env(task_socket_dir)
 
     # Lightpanda rejects Chromium-only launch flags: strip current and legacy vars;

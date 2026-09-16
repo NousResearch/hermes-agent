@@ -241,19 +241,31 @@ def test_headless_shell_override_is_not_a_headed_browser(tmp_path, monkeypatch):
     assert browser.executable() == sys_exe  # a real headed browser elsewhere still wins over the override
 
 
-@pytest.mark.parametrize("headed", [True, False])
-def test_headed_browser_env_asks_the_screen_to_start_like_computer_use_does(monkeypatch, headed):
-    """Regression for #110050: `browser.headed: true` + `bot_desktop.auto_start: true` on a fresh headless
-    profile gave the headed child no DISPLAY, because only computer_use called ensure_started_for_tool() and
-    the browser env builder merely READ the published env. First browser use is a first use too — but only
-    when a window is asked for; a headless browser must never bring a screen up."""
+@pytest.mark.parametrize("engine, headed, starts", [("chrome", True, 1), ("chrome", False, 0), ("lightpanda", True, 0)])
+def test_headed_chromium_spawn_asks_the_screen_to_start_but_the_env_builder_never_does(tmp_path, monkeypatch, engine, headed, starts):
+    """Regression for #110050 at the right boundary: a real browser command that forks a headed Chromium daemon
+    starts the profile's screen (bot_desktop.auto_start) like computer_use dispatch does; `_build_browser_env()`
+    itself stays pure — it also serves the npx cache warmer, the Chromium auto-installer and the Lightpanda
+    engine, none of which may block on Xvnc+Xfce coming up."""
     from tools import browser_tool as bt
     from tools import browser_tool_cloud as cloud
+    from tools import browser_tool_session as session
 
     calls: list = []
     monkeypatch.setattr(runtime, "ensure_started_for_tool", lambda: calls.append(1))
     monkeypatch.setattr(runtime, "published_env", lambda: {})
     monkeypatch.setattr(cloud, "_is_headed_mode", lambda: headed)
-    env = bt._build_browser_env()
-    assert isinstance(env, dict)
-    assert len(calls) == (1 if headed else 0)
+    bt._build_browser_env()
+    assert calls == []
+
+    class _Done:
+        returncode = 0
+        def wait(self, timeout=None): return 0
+    def _fake_popen(argv, env, socket_dir, tag):
+        for slot in ("stdout", "stderr"):
+            Path(socket_dir, f"_{slot}_{tag}").write_text("{}" if slot == "stdout" else "")
+        return _Done()
+    monkeypatch.setattr(session, "_popen_agent_browser", _fake_popen)
+    monkeypatch.setattr(session, "_prepare_session_socket_dir", lambda name: str(tmp_path))
+    session._spawn_and_collect("t", {"session_name": "h_x"}, ["agent-browser"], "open", engine, 5)
+    assert len(calls) == starts

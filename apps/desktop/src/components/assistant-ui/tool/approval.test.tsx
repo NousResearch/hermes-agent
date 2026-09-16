@@ -262,7 +262,11 @@ describe('PendingApprovalStack', () => {
 
     releaseApprovalKey()
     expect(rpc.mock.calls.filter(([method]) => method === 'approval.respond')).toHaveLength(3)
-    expect(sessionApprovalRequests('sess-2').get().map(request => request.requestId)).toEqual(['other'])
+    expect(
+      sessionApprovalRequests('sess-2')
+        .get()
+        .map(request => request.requestId)
+    ).toEqual(['other'])
     expect((draft as HTMLInputElement).value).toBe('keep this')
   })
 
@@ -270,21 +274,36 @@ describe('PendingApprovalStack', () => {
     const rpc = mockGateway()
     const responses = ['a', 'b', 'c'].map(id => ({ id, respond: liveApproval(`srq-${id}`) }))
     $activeSessionId.set('sess-1')
+
     for (const { id } of responses) {
-      setApprovalRequest({ command: id, description: id, requestId: id, serverRequestId: `srq-${id}`, sessionId: 'sess-1' })
+      setApprovalRequest({
+        command: id,
+        description: id,
+        requestId: id,
+        serverRequestId: `srq-${id}`,
+        sessionId: 'sess-1'
+      })
     }
+
     render(<PendingApprovalStack />)
 
     for (const [index, { id, respond }] of responses.entries()) {
-      act(() => { handleApprovalKey(new KeyboardEvent('keydown', { key: 'Enter', repeat: index > 0, cancelable: true })) })
+      act(() => {
+        handleApprovalKey(new KeyboardEvent('keydown', { key: 'Enter', repeat: index > 0, cancelable: true }))
+      })
       await waitFor(() => expect(respond).toHaveBeenCalledExactlyOnceWith({ choice: 'once' }))
       expect(hasOpenServerRequest(`srq-${id}`)).toBe(false)
+
       for (const next of responses.slice(index + 1)) {
         expect(next.respond).not.toHaveBeenCalled()
         expect(hasOpenServerRequest(`srq-${next.id}`)).toBe(true)
       }
-      await waitFor(() => expect(screen.queryAllByRole('button', { name: /Run/ })).toHaveLength(index === responses.length - 1 ? 0 : 1))
+
+      await waitFor(() =>
+        expect(screen.queryAllByRole('button', { name: /Run/ })).toHaveLength(index === responses.length - 1 ? 0 : 1)
+      )
     }
+
     expect(rpc).not.toHaveBeenCalledWith('approval.respond', expect.anything())
     expect($approvalRequest.get()).toBeNull()
   })

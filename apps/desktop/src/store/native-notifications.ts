@@ -5,7 +5,13 @@ import { persistString, storedString } from '@/lib/storage'
 
 import { $gateway } from './gateway'
 import { withinNativeNotifyBaseline } from './notify-baseline'
-import { answerApproval, clearApprovalRequest, replayPendingApproval, sessionApprovalRequest, sessionApprovalRequests } from './prompts'
+import {
+  answerApproval,
+  clearApprovalRequest,
+  replayPendingApproval,
+  sessionApprovalRequest,
+  sessionApprovalRequests
+} from './prompts'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
 import { $activeSessionId } from './session'
 import { storedSessionIdForRuntimeId } from './session-states'
@@ -368,12 +374,16 @@ export async function respondToApprovalAction(sessionId: null | string, actionId
   }
 
   try {
-    const parked = sessionApprovalRequests(sessionId).get().find(request => request.requestId === requestId)
+    const parked = sessionApprovalRequests(sessionId)
+      .get()
+      .find(request => request.requestId === requestId)
 
     await answerApproval(gateway, parked ?? { sessionId, requestId }, choice)
+
     if (requestId || sessionApprovalRequest(sessionId).get()?.requestId === undefined) {
       clearApprovalRequest(sessionId, requestId)
     }
+
     void replayPendingApproval(gateway, sessionId).catch(() => undefined)
   } catch (error) {
     if (sessionId && isSessionGoneForBackgroundPolling(error)) {

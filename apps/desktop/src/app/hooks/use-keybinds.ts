@@ -451,6 +451,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
     const onBlur = () => {
       releaseApprovalKey()
+
       if (switcherActive()) {
         closeSwitcher()
       }

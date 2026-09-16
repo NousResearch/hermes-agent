@@ -221,7 +221,10 @@ export interface VaultCodeRequest extends KeyedPrompt {
 const vaultCode = keyedPromptStore<VaultCodeRequest>()
 
 export const $approvalRequests = approval.$all
-export const $approvalRequest = computed([approval.$all, $activeSessionId], (all, activeId) => all[keyFor(activeId)] ?? null)
+export const $approvalRequest = computed(
+  [approval.$all, $activeSessionId],
+  (all, activeId) => all[keyFor(activeId)] ?? null
+)
 export const setApprovalRequest = approval.set
 export const clearApprovalRequest = approval.clear
 
@@ -230,7 +233,12 @@ export async function receiveApprovalRequest(gateway: ApprovalGateway | null, re
   // request that already carries the same queue entry (it knows how to answer).
   const current = $approvalQueues.get()[keyFor(request.sessionId)]?.find(item => item.requestId === request.requestId)
 
-  if (current?.requestId && current.requestId === request.requestId && current.serverRequestId && !request.serverRequestId) {
+  if (
+    current?.requestId &&
+    current.requestId === request.requestId &&
+    current.serverRequestId &&
+    !request.serverRequestId
+  ) {
     return
   }
 

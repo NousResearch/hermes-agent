@@ -133,9 +133,42 @@ describe('approval prompt store', () => {
       ['approval.received', { request_id: 'r1', session_id: 's1' }],
       ['approval.received', { request_id: 'r2', session_id: 's1' }]
     ])
-    expect(sessionApprovalRequests('s1').get().map(request => request.requestId)).toEqual(['r1', 'r2'])
+    expect(
+      sessionApprovalRequests('s1')
+        .get()
+        .map(request => request.requestId)
+    ).toEqual(['r1', 'r2'])
     clearApprovalRequest('s1', 'r1')
     expect($approvalRequest.get()?.requestId).toBe('r2')
+  })
+
+  it('preserves live server request routing for every queued replay entry', async () => {
+    for (const id of ['r1', 'r2']) {
+      await receiveApprovalRequest(null, {
+        command: id,
+        description: id,
+        requestId: id,
+        serverRequestId: `srv-${id}`,
+        sessionId: 's1'
+      })
+    }
+
+    await replayPendingApproval(
+      {
+        request: async () => ({
+          approvals: [
+            { command: 'r1', request_id: 'r1' },
+            { command: 'r2', request_id: 'r2' }
+          ]
+        })
+      },
+      's1'
+    )
+    expect(
+      sessionApprovalRequests('s1')
+        .get()
+        .map(request => request.serverRequestId)
+    ).toEqual(['srv-r1', 'srv-r2'])
   })
 
   it('deduplicates queued ids and rejects a replay that races an exact response', async () => {
@@ -144,11 +177,28 @@ describe('approval prompt store', () => {
     setApprovalRequest(first)
     setApprovalRequest(second)
     setApprovalRequest(first)
-    expect(sessionApprovalRequests('s1').get().map(request => request.requestId)).toEqual(['r1', 'r2'])
+    expect(
+      sessionApprovalRequests('s1')
+        .get()
+        .map(request => request.requestId)
+    ).toEqual(['r1', 'r2'])
     let finish!: (result: unknown) => void
-    const replay = replayPendingApproval({ request: () => new Promise(resolve => { finish = resolve }) }, 's1')
+    const replay = replayPendingApproval(
+      {
+        request: () =>
+          new Promise(resolve => {
+            finish = resolve
+          })
+      },
+      's1'
+    )
     clearApprovalRequest('s1', 'r1')
-    finish({ approvals: [{ command: 'first', request_id: 'r1' }, { command: 'second', request_id: 'r2' }] })
+    finish({
+      approvals: [
+        { command: 'first', request_id: 'r1' },
+        { command: 'second', request_id: 'r2' }
+      ]
+    })
     await replay
     expect(sessionApprovalRequests('s1').get()).toEqual([second])
     clearAllPrompts('s1')
@@ -177,6 +227,12 @@ describe('approval prompt store', () => {
     setApprovalRequest({ ...old, requestId: 'new' })
     resolve({ approvals: [] })
     await pending
+    expect(
+      sessionApprovalRequests('s1')
+        .get()
+        .map(request => request.requestId)
+    ).toEqual(['old', 'new'])
+    clearApprovalRequest('s1', 'old')
     expect($approvalRequest.get()?.requestId).toBe('new')
   })
 

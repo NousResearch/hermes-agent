@@ -156,6 +156,7 @@ function StackCard({
     if (index !== 0 || !content.current) {
       return
     }
+
     const element = content.current
     const measure = () => onMeasure(element.offsetHeight + 2)
     measure()
@@ -180,6 +181,7 @@ function StackCard({
       if (locked.current || !active) {
         return
       }
+
       locked.current = true
       setBusy(true)
       setDragging(false)
@@ -262,6 +264,7 @@ function StackCard({
           if (!start || start.id !== event.pointerId) {
             return
           }
+
           const delta = event.clientX - start.x
 
           if (!start.moved) {
@@ -299,6 +302,7 @@ function StackCard({
           if (!start || start.id !== event.pointerId) {
             return
           }
+
           const delta = event.clientX - start.x
           const side = delta < 0 ? 'left' : 'right'
           const threshold = Math.min(96, (node.current?.offsetWidth ?? 360) * 0.22)

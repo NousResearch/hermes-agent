@@ -27,8 +27,8 @@ import { $gateway } from '@/store/gateway'
 import { reconnectAction } from '@/store/gateway-reconnect'
 import { notifyError } from '@/store/notifications'
 import {
-  type ApprovalRequest,
   answerApproval,
+  type ApprovalRequest,
   clearApprovalRequest,
   replayPendingApproval,
   sessionApprovalRequests,

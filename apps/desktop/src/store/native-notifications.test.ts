@@ -351,7 +351,12 @@ describe('respondToApprovalAction', () => {
     setApprovalRequest({ command: 'first', description: 'first', requestId: 'r1', sessionId: 'bg' })
     setApprovalRequest({ command: 'second', description: 'second', requestId: 'r2', sessionId: 'bg' })
     await respondToApprovalAction('bg', 'approve:r1')
-    expect(request).toHaveBeenCalledWith('approval.respond', { all: false, choice: 'once', request_id: 'r1', session_id: 'bg' })
+    expect(request).toHaveBeenCalledWith('approval.respond', {
+      all: false,
+      choice: 'once',
+      request_id: 'r1',
+      session_id: 'bg'
+    })
     expect($approvalRequest.get()?.requestId).toBe('r2')
     await respondToApprovalAction('bg', 'approve:r1')
     expect($approvalRequest.get()?.requestId).toBe('r2')

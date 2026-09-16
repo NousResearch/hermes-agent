@@ -9,7 +9,6 @@ import { normalizeConnectionRequest, setConnectionRequest, updateConnectionReque
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import {
-
   $secretRequests,
   $sudoRequests,
   $vaultCodeRequests,
@@ -122,7 +121,9 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
-  const approval = sessionApprovalRequests(sessionId ?? null).get().find(request => request.serverRequestId === id)
+  const approval = sessionApprovalRequests(sessionId ?? null)
+    .get()
+    .find(request => request.serverRequestId === id)
 
   if (approval) {
     clearApprovalRequest(sessionId, approval.requestId)
@@ -148,7 +149,6 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
           label: translateNow('assistant.approval.openSafetySettings'),
           onClick: () => requestRoute(SAFETY_SETTINGS_ROUTE)
         }
-
       })
     }
   } else if ($sudoRequests.get()[key]?.requestId === id) {

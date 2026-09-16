@@ -945,9 +945,16 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
  * the whole of it until the user opens it. `ToolEmbedContext` is false so each
  * row still owns its own chrome (timer / copy) when shown.
  */
-const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> = ({ children, endIndex, startIndex }) => {
+const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> = ({
+  children,
+  endIndex,
+  startIndex
+}) => {
   const messageRunning = useAuiState(selectMessageRunning)
-  const { completedAt, count, entryIds, key, live, startedAt, summary, approvalActivity } = useToolRun(startIndex, endIndex)
+  const { completedAt, count, entryIds, key, live, startedAt, summary, approvalActivity } = useToolRun(
+    startIndex,
+    endIndex
+  )
   const sessionId = useStore(useSessionView().$runtimeId)
   const approval = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
   const currentTurn = useAuiState(state => isCurrentTurnMessage(state.thread.messages, state.message.id))

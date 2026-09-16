@@ -28,10 +28,29 @@ import urllib.request
 import urllib.error
 from typing import Any, Dict, List, Optional
 
-RPC_URL = os.environ.get(
+def _validate_rpc_url(url: str) -> str:
+    """Reject non-http(s) schemes and private/internal IP addresses (SSRF guard)."""
+    import ipaddress
+    import urllib.parse as _urlparse
+    parsed = _urlparse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"RPC URL must use http or https scheme, got: {parsed.scheme!r}")
+    host = parsed.hostname or ""
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast:
+            raise ValueError(f"RPC URL points to a private/internal address: {host!r}")
+    except ValueError as exc:
+        if "private" in str(exc) or "internal" in str(exc):
+            raise
+    return url
+
+_SOL_ADDR_RE = __import__("re").compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
+
+RPC_URL = _validate_rpc_url(os.environ.get(
     "SOLANA_RPC_URL",
     "https://api.mainnet-beta.solana.com",
-)
+))
 
 LAMPORTS_PER_SOL = 1_000_000_000
 
@@ -183,7 +202,11 @@ def fetch_prices(mints: List[str], max_lookups: int = 20) -> Dict[str, float]:
     for i, mint in enumerate(mints[:max_lookups]):
         url = (
             f"https://api.coingecko.com/api/v3/simple/token_price/solana"
-            f"?contract_addresses={mint}&vs_currencies=usd"
+            params = urllib.parse.urlencode({
+            "contract_addresses": mint,
+            "vs_currencies": "usd",
+        })
+        url = f"https://api.coingecko.com/api/v3/simple/token_price/solana?{params}"
         )
         data = _http_get_json(url, timeout=10)
         if data and isinstance(data, dict):
@@ -215,7 +238,7 @@ def resolve_token_name(mint: str) -> Optional[Dict[str, str]]:
     if mint in KNOWN_TOKENS:
         sym, name = KNOWN_TOKENS[mint]
         return {"symbol": sym, "name": name}
-    url = f"https://api.coingecko.com/api/v3/coins/solana/contract/{mint}"
+    url = "https://api.coingecko.com/api/v3/coins/solana/contract/" + urllib.parse.quote(mint, safe="")
     data = _http_get_json(url, timeout=10)
     if data and "symbol" in data:
         return {"symbol": data["symbol"].upper(), "name": data.get("name", "")}

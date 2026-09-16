@@ -1040,6 +1040,8 @@ export const en: Translations = {
       currentPill: 'Current',
       primaryPill: 'Primary',
       managedPill: 'App-managed',
+      enableLocal: 'Enable',
+      disableLocal: 'Disable',
       addConnection: 'Add connection',
       editConnection: 'Edit',
       removeConnection: 'Remove',

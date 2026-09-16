@@ -1637,7 +1637,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
           connection controls. Hidden in the embedded (boot-recovery) form. */}
       {embedded ? null : (
         <>
-          <ConnectionsRegistrySection />
+          <ConnectionsRegistrySection remoteConfigured={state.mode === 'remote' && Boolean(state.remoteUrl.trim())} />
           {/* Per-connection driver for the transactional managed SSH update
               engine (#95942). Renders only when SSH sources are registered and
               the Electron main exposes connections.updateManaged. */}

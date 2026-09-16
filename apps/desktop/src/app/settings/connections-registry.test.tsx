@@ -95,6 +95,23 @@ describe('ConnectionsRegistrySection', () => {
     expect(list).toHaveBeenCalledTimes(1)
   })
 
+  it('collapses This device to Enable while a remote gateway is configured', async () => {
+    render(<ConnectionsRegistrySection remoteConfigured />)
+
+    await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
+    expect(screen.getByRole('button', { name: 'Enable' })).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: 'Test' })).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: 'Disable' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enable' }))
+    expect(screen.getByRole('button', { name: 'Disable' })).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: 'Test' })).toHaveLength(2)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disable' }))
+    expect(screen.getByRole('button', { name: 'Enable' })).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: 'Test' })).toHaveLength(1)
+  })
+
   it('opens the add-connection editor and saves with a required label', async () => {
     render(<ConnectionsRegistrySection />)
 

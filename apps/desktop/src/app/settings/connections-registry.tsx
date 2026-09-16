@@ -235,7 +235,7 @@ function scrollableAncestor(element: HTMLElement): HTMLElement | null {
  * instances / SSH hosts). Storage-level management — the active/primary
  * switchover UX is the connection-mode controls above this section.
  */
-export function ConnectionsRegistrySection() {
+export function ConnectionsRegistrySection({ remoteConfigured = false }: { remoteConfigured?: boolean } = {}) {
   const { t } = useI18n()
   const s = t.settings.connections
   const activeConnectionId = useStore($activeConnectionId)
@@ -249,6 +249,7 @@ export function ConnectionsRegistrySection() {
   const [plainTextConfirm, setPlainTextConfirm] = useState(false)
   const [launchModeBusy, setLaunchModeBusy] = useState(false)
   const [updatingAll, setUpdatingAll] = useState(false)
+  const [localEnabled, setLocalEnabled] = useState(() => !remoteConfigured)
   const [searchQuery, setSearchQuery] = useState('')
   const searchInputRef = useRef<HTMLInputElement>(null)
   const pendingSearchTopRef = useRef<null | number>(null)
@@ -267,6 +268,10 @@ export function ConnectionsRegistrySection() {
   const bridge = window.hermesDesktop?.connections
 
   const hasLocal = Boolean(registry?.connections.some(c => c.kind === 'local'))
+
+  useEffect(() => {
+    setLocalEnabled(!remoteConfigured)
+  }, [remoteConfigured])
 
   const publishRegistry = useCallback((next: DesktopConnectionsRegistry) => {
     setRegistry(next)
@@ -685,6 +690,7 @@ export function ConnectionsRegistrySection() {
           const isCurrent = activeConnectionId === conn.id
           const isPrimary = registry.primary === conn.id
           const busy = busyId === conn.id
+          const localDisabled = conn.kind === 'local' && remoteConfigured && !localEnabled
           // Display-only: this connection is a second address for a backend
           // already registered under another entry (same install_id).
           const sameBackendPeer = sameBackendPeerLabel(conn, sortedConnections)
@@ -695,6 +701,36 @@ export function ConnectionsRegistrySection() {
               : conn.url
                 ? `${kindMeta[conn.kind].label} · ${conn.url}`
                 : kindMeta[conn.kind].desc
+
+          if (localDisabled) {
+            return (
+              <ListRow
+                action={
+                  <Button
+                    onClick={() => {
+                      triggerHaptic('selection')
+                      setLocalEnabled(true)
+                    }}
+                    size="sm"
+                    variant="outline"
+                  >
+                    {s.enableLocal}
+                  </Button>
+                }
+                description={baseDescription}
+                key={conn.id}
+                title={
+                  <span className="flex items-center gap-2">
+                    <Icon className="size-4 shrink-0 text-muted-foreground" />
+                    <span className="truncate">{conn.label}</span>
+                    {isCurrent && <Pill tone="primary">{s.currentPill}</Pill>}
+                    {isPrimary && <Pill>{s.primaryPill}</Pill>}
+                    <Pill>{s.managedPill}</Pill>
+                  </span>
+                }
+              />
+            )
+          }
 
           return (
             <ListRow
@@ -736,6 +772,19 @@ export function ConnectionsRegistrySection() {
                         {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
                       </Button>
                     </>
+                  )}
+                  {conn.kind === 'local' && remoteConfigured && (
+                    <Button
+                      disabled={busy}
+                      onClick={() => {
+                        triggerHaptic('selection')
+                        setLocalEnabled(false)
+                      }}
+                      size="sm"
+                      variant="outline"
+                    >
+                      {s.disableLocal}
+                    </Button>
                   )}
                 </div>
               }

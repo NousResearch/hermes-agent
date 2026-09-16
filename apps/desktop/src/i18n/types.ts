@@ -910,6 +910,8 @@ export interface Translations {
       currentPill: string
       primaryPill: string
       managedPill: string
+      enableLocal: string
+      disableLocal: string
       addConnection: string
       editConnection: string
       removeConnection: string

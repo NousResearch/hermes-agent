@@ -133,10 +133,14 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
     the Task that opened it. ``scope`` restricts teardown to one multiplexed profile's servers
     (its ``/reload-mcp`` must not kill other profiles') and leaves the shared loop running if
     anything else is still connected. ``names`` restricts it further to those server names
-    (dropped-from-config pruning); other servers' bookkeeping is untouched."""
+    (dropped-from-config pruning); other servers' bookkeeping is untouched. Only the bare call
+    (no ``scope``, no ``names``) is the process-wide wildcard: the launch profile's registry
+    scope IS ``None``, so ``scope=None, names={...}`` prunes that unscoped owner's servers and
+    must leave a served profile's same-named ``(B, name)`` connection alone."""
     from tools.mcp_tool_scope import _key_name
+    wildcard = scope is None and names is None
     with _core._lock:
-        selected = [key for key in _core._servers if scope is None or _core._server_scope_keys.get(key) == scope]
+        selected = [key for key in _core._servers if wildcard or _core._server_scope_keys.get(key) == scope]
         if names is not None:
             selected = [key for key in selected if _key_name(key) in names]
         servers_snapshot = [_core._servers[key] for key in selected]
@@ -152,7 +156,7 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
         # Adopters of the connections being torn down lose their overlays with the tasks' own
         # ``_deregister_tools``; remember them so the next discovery pass re-registers them
         # (``_reregister_orphaned_adopters``).
-        if scope is not None:
+        if not wildcard:
             for key in selected:
                 for adopter in _core._server_tool_scopes.get(key, ()):
                     if adopter != scope:

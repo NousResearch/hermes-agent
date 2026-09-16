@@ -300,3 +300,56 @@ def test_served_profile_check_fn_verdict_does_not_shadow_launch_profile(two_prof
     finally:
         registry.deregister("mcp__x__t")
         registry_mod.invalidate_check_fn_cache()
+
+
+def test_launch_profile_pruning_a_server_keeps_served_profiles_same_named_connection(two_profiles, monkeypatch):
+    """The launch profile's registry scope is ``None``; when it drops server ``x`` from its config,
+    ``reconcile_mcp_servers_with_config`` prunes with ``shutdown_mcp_servers(scope=None,
+    names={"x"})``. ``scope=None`` must mean *the unscoped owner* there, not *every owner* —
+    otherwise the dashboard's own profile silently tears down profile B's ``(B, "x")``."""
+    import asyncio
+    import threading
+
+    import tools.mcp_tool as core
+    from tools import mcp_tool_discovery as disc, mcp_tool_lifecycle as lifecycle
+    from tools import mcp_tool_registration as reg
+
+    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: False)
+    cfg = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer shared"}}
+
+    scope_b = two_profiles("b")
+    srv_b = _server("x", cfg)
+    disc._adopt_server("x", srv_b)
+    srv_b._registered_tool_names = reg._register_server_tools("x", srv_b, cfg)
+    assert core._server_scope_keys[(scope_b, "x")] == scope_b
+
+    with patch("hermes_constants.get_hermes_home_override", return_value=None):
+        assert core._mcp_registry_scope() is None
+        srv_launch = _server("x", cfg)
+        disc._adopt_server("x", srv_launch)
+        assert core._server_scope_keys["x"] is None
+
+    closed = []
+
+    async def _shutdown(self):
+        closed.append(self.name)
+
+    for srv in (srv_b, srv_launch):
+        srv.shutdown = _shutdown.__get__(srv)
+
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(core, "_mcp_loop", loop)
+    try:
+        with patch.object(lifecycle._loop, "_stop_mcp_loop", lambda **_kw: False):
+            lifecycle.shutdown_mcp_servers(scope=None, names={"x"})
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5)
+        loop.close()
+
+    assert "x" not in core._servers and "x" not in core._server_scope_keys
+    assert core._servers[(scope_b, "x")] is srv_b
+    assert core._server_scope_keys[(scope_b, "x")] == scope_b
+    assert closed == ["x"]

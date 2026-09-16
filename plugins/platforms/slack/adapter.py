@@ -2383,6 +2383,13 @@ class SlackAdapter(BasePlatformAdapter):
     # Agents & AI Apps feature; a feature error sets ``_native_stream_unsupported`` → edit-based.
     # Cursor glyphs (streaming.cursor) are stripped before deltas because the API is append-only.
     _STREAM_CURSOR_GLYPHS = ("\u2589", "▍", "▌", "…")
+    # The consumer closes an open code span / fence AFTER appending its cursor, so a
+    # mid-stream frame can end in "▉`" or "▉\n```". Streaming that verbatim makes the
+    # next frame a non-append (the closer moved), which reads as a prefix mismatch: the
+    # stream is sealed with a stray cursor and the reply is re-posted. Drop the cursor
+    # AND the synthetic closer; the real closer lands with the frame that has it.
+    _STREAM_CURSOR_BEFORE_CLOSER_RE = re.compile(
+        r"\s*[" + "".join(_STREAM_CURSOR_GLYPHS) + r"]\s*`+\s*$")
     _NATIVE_STREAM_UNSUPPORTED_MARKERS = (
         "not_allowed", "missing_scope", "feature_not_enabled", "invalid_method", "unknown_method",
         "method_deprecated", "not_authed", "streaming_not_allowed")
@@ -2414,7 +2421,7 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         if self._native_stream_unsupported:
             return SendResult(success=False, error="native streaming unsupported")
-        text = self._strip_stream_cursor(content)
+        text = self._strip_stream_cursor(self._STREAM_CURSOR_BEFORE_CLOSER_RE.sub("", content))
         client = self._get_client(chat_id)
         stream = self._active_streams.get(chat_id)
         try:
@@ -2493,7 +2500,7 @@ class SlackAdapter(BasePlatformAdapter):
                 # Agent VBP patch 05: delta against the left-stripped prefix
                 # (see _try_finalize_stream) so a leading-newline first frame
                 # does not re-append the whole answer on seal.
-                sent = stream.get("sent", "").lstrip()
+                sent = stream.get("sent", "").strip()
                 final_text = final_text.lstrip()
                 if final_text.startswith(sent) and len(final_text) > len(sent):
                     kwargs["markdown_text"] = final_text[len(sent) :]
@@ -2520,9 +2527,10 @@ class SlackAdapter(BasePlatformAdapter):
         # everything, so require substance before claiming the send.
         # Agent VBP patch 05: the first streamed frame can carry leading
         # newlines ("\n\n**11") while the turn-final text arrives stripped;
-        # compare on left-stripped text or the final is mis-read as
-        # unrelated, posted as a duplicate, and the stream is never sealed.
-        sent_norm = sent.lstrip()
+        # compare on stripped text or the final is mis-read as unrelated,
+        # posted as a duplicate, and the stream is never sealed. The streamed
+        # prefix can also end in whitespace ("abc\n") that the final lacks.
+        sent_norm = sent.strip()
         text = text.lstrip()
         if not sent_norm or not text.startswith(sent_norm):
             return None

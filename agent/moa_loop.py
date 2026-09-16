@@ -365,10 +365,17 @@ def _resolve_moa_slot_managed_route(slot: dict[str, Any], *, execution_id: str, 
     carrying an explicit ``routing_role`` resolves through the SAME neutral selector/store Kanban
     and delegation use. Returns ``None`` for the existing unmanaged path (no ``routing_role``),
     byte-for-byte unchanged. Raises ``RoutingBlocked`` on a real resolution failure -- the caller
-    must NOT fall back to the slot's plain provider/model (§5 no silent escape)."""
-    from agent.moa_model_routing import resolve_moa_slot_route
+    must NOT fall back to the slot's plain provider/model (§5 no silent escape).
 
-    return resolve_moa_slot_route(slot, execution_id=execution_id, slot_id=slot_id)
+    Uses the PINNED per-``(execution_id, slot_id)`` cache, not a fresh ``resolve_moa_slot_route``
+    call: the joint cohort resolution (``resolve_moa_cohort_pinned``, run once up-front for the
+    whole cohort) seeds this exact cache, so every reference/aggregator call within the SAME live
+    run reuses the identical resolution already validated for cohort diversity -- never a second,
+    independent per-slot resolution that could silently disagree with the pinned cohort.
+    """
+    from agent.moa_model_routing import resolve_moa_slot_route_pinned
+
+    return resolve_moa_slot_route_pinned(slot, execution_id=execution_id, slot_id=slot_id)
 
 
 def _slot_runtime_managed(slot: dict[str, Any], *, execution_id: str, slot_id: str) -> tuple[dict[str, Any], Any]:
@@ -870,10 +877,20 @@ def aggregate_moa_context(
     ``reference_max_tokens`` to both calls here would silently reintroduce that regression.
     """
     reference_models = [slot for slot in reference_models if slot.get("enabled", True)]
+    from agent.moa_model_routing import cohort_has_managed_slot, execution_id_for_agent, resolve_moa_cohort_pinned
+
+    execution_id = execution_id_for_agent(agent, "moa-oneshot")
+    if cohort_has_managed_slot(reference_models, aggregator):
+        # Design §6 "MoA": resolve the COMPLETE cohort (every reference + aggregator) ONCE,
+        # jointly, before ANY slot content is sent -- never per-slot on first touch. The
+        # execution_id is the genuine per-attempt identity of THIS live run (the caller's bound
+        # turn, or a fresh id if none is bound), so a NEW oneshot invocation always gets a fresh
+        # cohort decision while nothing here is shared across unrelated calls.
+        resolve_moa_cohort_pinned(reference_models, aggregator, execution_id=execution_id)
     reference_outputs = _run_references_parallel(
         reference_models, _reference_messages(api_messages), temperature=temperature,
         max_tokens=reference_max_tokens, reference_timeout=reference_timeout, agent=agent,
-        execution_id="moa-oneshot",
+        execution_id=execution_id,
     )
     privacy_full = False
     try:
@@ -908,7 +925,7 @@ def aggregate_moa_context(
 
     agg_required = is_moa_slot_required(aggregator)
     try:
-        agg_runtime, agg_managed_resolution = _slot_runtime_managed(aggregator, execution_id="moa-oneshot", slot_id="aggregator")
+        agg_runtime, agg_managed_resolution = _slot_runtime_managed(aggregator, execution_id=execution_id, slot_id="aggregator")
     except Exception as exc:
         logger.warning("MoA aggregator model %s routing failed: %s", agg_label, exc)
         if agg_required:
@@ -1191,8 +1208,11 @@ class MoAChatCompletions:
         aggregator = prepared["aggregator"]
         if aggregator.get("provider") == "moa":
             raise RuntimeError("MoA aggregator cannot be another MoA preset")
+        from agent.moa_model_routing import execution_id_for_agent
+
+        execution_id = execution_id_for_agent(self._agent, f"moa-preset-{getattr(self, 'preset_name', 'unknown')}")
         agg_runtime, agg_managed_resolution = _slot_runtime_managed(
-            aggregator, execution_id=f"moa-preset-{getattr(self, 'preset_name', 'unknown')}", slot_id="aggregator",
+            aggregator, execution_id=execution_id, slot_id="aggregator",
         )
         if agg_managed_resolution is not None:
             # Actual call-boundary guard (design §12): re-validated against the receipt
@@ -1322,13 +1342,24 @@ class MoAChatCompletions:
         is never capped. None timeout = inherit auxiliary.moa_reference.timeout.
         """
         raw_reference_timeout = preset.get("reference_timeout")
+        from agent.moa_model_routing import cohort_has_managed_slot, execution_id_for_agent, resolve_moa_cohort_pinned
+
+        execution_id = execution_id_for_agent(self._agent, f"moa-preset-{self.preset_name}")
+        if cohort_has_managed_slot(reference_models, aggregator):
+            # Design §6 "MoA": resolve the COMPLETE cohort (every reference + aggregator) ONCE,
+            # jointly, before ANY slot content is sent for this run -- the aggregator call that
+            # follows fan-out (``_call_prepared_aggregator``) reuses this SAME pinned cohort via
+            # the identical execution_id, so the aggregator can never diverge from what the
+            # fan-out was actually validated against.
+            resolve_moa_cohort_pinned(reference_models, aggregator, execution_id=execution_id)
+        self._execution_id = execution_id
         reference_outputs = _run_references_parallel(
             reference_models, ref_messages, temperature=_preset_temperature(preset, "reference_temperature"),
 
             progress_callback=lambda done, total, label: self._emit("moa.progress", refs_done=done, refs_total=total, label=label),
             reference_timeout=float(raw_reference_timeout) if raw_reference_timeout else None,
             agent=self._agent, late_accounting_sink=self._record_late_reference_accounting,
-            execution_id=f"moa-preset-{self.preset_name}",
+            execution_id=execution_id,
         )
         # An interrupted fan-out is a partial snapshot: never cache it (a HIT would
         # replay placeholder notes every iteration).

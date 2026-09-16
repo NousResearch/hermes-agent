@@ -345,7 +345,15 @@ def note_turn_start(agent, turn_id: str):
 def note_turn_persisted(agent):
     """Clear the in-flight marker at turn-end persist (see note_turn_start). Unconditional by
     design: on a real overlap the first persist clears the second slot, so the tripwire
-    under-reports rather than double-reports."""
+    under-reports rather than double-reports.
+
+    Also clears any pinned MoA cohort decision bound to THIS turn's execution_id (design §6
+    "MoA": "Scope origin/profile in caches, clear safely at lifecycle end"). The turn's
+    execution_id IS ``agent._current_turn_id`` (see ``agent.moa_model_routing.
+    execution_id_for_agent``) so this drops exactly the cohort this turn pinned -- never a
+    different turn's, and never a standalone/no-agent call's freshly-minted id (those are
+    never registered here to begin with).
+    """
     agent._inflight_turn_id = None
     # Persist-disabled forks never registered a slot; popping here would steal the live parent
     # turn's slot (symmetric with note_turn_start).
@@ -355,6 +363,11 @@ def note_turn_persisted(agent):
             with _INFLIGHT_TURNS_LOCK:
                 _INFLIGHT_TURNS_BY_SESSION.pop(session_id, None)
     agent._inflight_turn_session_id = None
+    turn_id = getattr(agent, "_current_turn_id", None)
+    if isinstance(turn_id, str) and turn_id.strip():
+        with contextlib.suppress(Exception):  # pragma: no cover - cleanup must never break a turn
+            from agent.moa_model_routing import _forget_cohort
+            _forget_cohort(turn_id)
 
 
 def _is_codex_interim(m: Dict) -> bool:

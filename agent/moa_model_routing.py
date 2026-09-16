@@ -38,7 +38,45 @@ from agent.model_selection_types import RoutingBlocked
 __all__ = [
     "resolve_moa_slot_route", "moa_runtime_overrides", "enforce_moa_slot_route",
     "MoARoutingBlocked", "MoARequiredSlotDenied", "is_moa_slot_required", "resolve_moa_cohort",
+    "resolve_moa_cohort_pinned", "resolve_moa_slot_route_pinned", "execution_id_for_agent",
+    "cohort_has_managed_slot",
 ]
+
+
+def execution_id_for_agent(agent: Any, fallback_prefix: str) -> str:
+    """The genuine per-attempt identity a live MoA run pins its cohort to.
+
+    A real turn (agent.conversation_loop._bind_turn_identity) stamps
+    agent._current_turn_id with a value that is unique per user turn/attempt and STABLE
+    across every iteration of that same turn (repeated fan-out cadence calls, the aggregator
+    call after fan-out, a rebased prepared request) -- exactly the boundary design section 6
+    "MoA" means by "resolve the complete cohort once per MoA run and bind an immutable
+    effective preset to that client". Using it (instead of a constant string like the former
+    "moa-oneshot"/"moa-preset-<name>") is what makes the pinning cache in
+    resolve_moa_cohort_pinned/resolve_moa_slot_route_pinned actually run-scoped: a NEW
+    turn/attempt gets a NEW execution_id and therefore a fresh cohort resolution, while
+    concurrent/successive calls WITHIN one turn share the identical pinned cohort.
+
+    When no live turn context is available (agent is None, or a standalone call with no
+    bound turn -- e.g. a bare unit test), a fresh random id is minted so nothing is ever pinned
+    across genuinely unrelated calls; it is never safe to fall back to a shared constant.
+    """
+    turn_id = getattr(agent, "_current_turn_id", None) if agent is not None else None
+    if isinstance(turn_id, str) and turn_id.strip():
+        return turn_id
+    import uuid as _uuid
+
+    return f"{fallback_prefix}-{_uuid.uuid4().hex}"
+
+
+def cohort_has_managed_slot(reference_slots: list, aggregator: dict) -> bool:
+    """Whether ANY slot in the cohort (reference or aggregator) carries a routing_role --
+    the cheap pre-check that lets an entirely unmanaged preset skip cohort resolution
+    altogether (byte-for-byte unmanaged behavior, design section 5)."""
+    for slot in (*reference_slots, aggregator):
+        if isinstance(slot, dict) and isinstance(slot.get("routing_role"), str) and slot.get("routing_role").strip():
+            return True
+    return False
 
 DEFAULT_MOA_POLICY_ID = "kanban-default"
 
@@ -214,6 +252,13 @@ def resolve_moa_cohort_pinned(
     without re-resolving or re-validating diversity, even if the live policy changed in
     between -- config/policy edits take effect on the NEXT run's execution_id, never retroactively
     reroute an in-flight one.
+
+    Also seeds the per-slot cache (``resolve_moa_slot_route_pinned``'s backing store) with every
+    resolution from this cohort, keyed by the SAME ``execution_id`` -- so a later per-slot lookup
+    for one of these exact slot_ids (``reference-0``, ``reference-1``, ..., ``aggregator``) within
+    the same run reuses the joint resolution verbatim instead of re-resolving independently
+    (a joint cohort decision cannot be safely re-derived as N separate per-slot calls; this is
+    what makes the fan-out/aggregator call sites in ``agent.moa_loop`` share ONE cohort decision).
     """
     with _cohort_cache_lock:
         cached = _cohort_cache.get(execution_id)
@@ -222,6 +267,9 @@ def resolve_moa_cohort_pinned(
     resolved = resolve_moa_cohort(reference_slots, aggregator, execution_id=execution_id)
     with _cohort_cache_lock:
         _cohort_cache.setdefault(execution_id, resolved)
+        per_slot = _cohort_cache.setdefault("__slots__", {})
+        for slot_id, resolution in resolved.items():
+            per_slot.setdefault((execution_id, slot_id), resolution)
         return _cohort_cache[execution_id]
 
 

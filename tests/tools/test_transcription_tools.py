@@ -103,6 +103,37 @@ class TestGetProviderGroq:
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "groq"}) == "groq"
 
+
+class TestProcessErrorDetail:
+    """Subprocess diagnostics preserve the original STT helper failure."""
+
+    @staticmethod
+    def _detail(*, stderr=None, stdout=None):
+        from tools.transcription_common import _process_error_detail
+
+        error = subprocess.CalledProcessError(
+            1,
+            ["ffmpeg"],
+            output=stdout,
+            stderr=stderr,
+        )
+        return _process_error_detail(error)
+
+    def test_prefers_stderr_over_stdout(self):
+        assert self._detail(stderr=" stderr detail \n", stdout="stdout detail") == "stderr detail"
+
+    def test_falls_back_to_stdout_when_stderr_is_missing(self):
+        assert self._detail(stdout=" stdout detail \n") == "stdout detail"
+
+    def test_falls_back_to_exception_when_output_is_missing(self):
+        detail = self._detail()
+
+        assert "returned non-zero exit status 1" in detail
+
+    def test_decodes_byte_output(self):
+        assert self._detail(stderr=b" bad \xff output \n") == "bad \ufffd output"
+
+
 class TestGetProviderFallbackPriority:
     """Auto-detect fallback priority and explicit provider behaviour."""
 

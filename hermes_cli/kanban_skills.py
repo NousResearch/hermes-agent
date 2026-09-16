@@ -55,7 +55,9 @@ _SKIP_DIRS = frozenset({
     "site-packages", ".worktrees", "_archived", ".archive",
 })
 _MAX_DEPTH = 5
-_FRONTMATTER_HEAD_BYTES = 4096
+# Frontmatter blocks longer than 4 KiB are exceptional; 16 KiB keeps the read
+# bounded while never truncating a valid closing ``---`` delimiter in practice.
+_FRONTMATTER_HEAD_BYTES = 16384
 _NAME_RE = re.compile(r"^name:\s*(.+?)\s*$", re.MULTILINE)
 
 # Root-identity+mtimes -> catalog. Keyed on each root's mtime so installing or
@@ -163,9 +165,17 @@ def _frontmatter_name(skill_md: Path) -> Optional[str]:
 
 
 def _scan_root_names(root: Path) -> set[str]:
-    """Every identifier a pin may use to reach a skill under ``root``."""
+    """Every identifier a pin may use to reach a skill under ``root``.
+
+    ``os.walk`` is told to follow symlinks so a skill directory that is a
+    symlink (common when an external agent repo shares its skills into the
+    active home) is still catalogued under the name the pin uses to reach it.
+    The root-level dedup in :func:`candidate_skill_roots` already collapses
+    roots that resolve to the same real path, so a symlink that points back
+    into an already-scanned tree is not rescanned here.
+    """
     names: set[str] = set()
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
         dirnames[:] = [
             d for d in dirnames
             if d not in _SKIP_DIRS and not d.startswith(".")

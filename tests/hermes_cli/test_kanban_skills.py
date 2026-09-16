@@ -137,3 +137,35 @@ def test_cli_create_warns_on_a_dead_pin(tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "seo" in captured.err
     assert "resolve to no installed skill" in captured.err
+
+
+def test_symlinked_skill_is_visible_in_catalog(tmp_path):
+    """``os.walk`` must follow symlinks so a shared skill tree symlinked into the
+    active home's skills dir still resolves a pin that names it.
+
+    Regression: 24 skills in the fleet are symlinked into ``~/.hermes/skills/``
+    from a shared agent repo; without ``followlinks=True`` the catalog missed
+    them and flagged valid pins as dead (``skill_pin_unresolved`` false positive).
+    """
+    from hermes_constants import get_skills_dir
+
+    # Real skill lives outside the active skills dir; the symlink points at it.
+    real_tree = tmp_path / "real-skills"
+    real_tree.mkdir()
+    (real_tree / "shared-skill").mkdir()
+    (real_tree / "shared-skill" / "SKILL.md").write_text(
+        "---\nname: Shared Skill\ndescription: A shared skill.\n---\n\nBody.\n",
+        encoding="utf-8",
+    )
+    skills_root = get_skills_dir()
+    skills_root.mkdir(parents=True, exist_ok=True)
+    link = skills_root / "shared-skill"
+    try:
+        link.symlink_to(real_tree / "shared-skill")
+        ks.clear_skill_catalog_cache()
+        assert ks.unresolved_skill_pins(["shared-skill"]) == []
+        assert ks.unresolved_skill_pins(["Shared Skill"]) == []
+    finally:
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        ks.clear_skill_catalog_cache()

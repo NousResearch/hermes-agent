@@ -842,6 +842,11 @@ class OneBotAdapter(BasePlatformAdapter):
             message = data.get("message")
             sender = data.get("sender") or {}
             nickname = sender.get("card") or sender.get("nickname") or ""
+            # review 4.3：reply 触发语义的预取结果（群聊分支填充，下方引用块复用；
+            # 私聊/未启用提及门时保持 None，行为与此前一致）
+            reply_orig: Optional[dict] = None
+            reply_fetch_attempted = False
+            reply_sender_id: Optional[str] = None
 
             if message_type == "private":
                 if not self._dm_allowed(user_id):
@@ -852,8 +857,33 @@ class OneBotAdapter(BasePlatformAdapter):
                 group_id = str(data.get("group_id", "") or "")
                 if not self._group_allowed(group_id):
                     return
-                if self._require_mention and not self._is_mentioned(raw, message):
+                # review 4.3：reply 触发收紧——启用提及门时先预取被回复消息的
+                # sender（判定是否 bot 自己），取回结果复用给下方引用取原文，
+                # 同一 reply 段只发一次 get_msg。取回失败/超时/原消息撤回删除
+                # 视为不可判定，由 _is_mentioned 回落为提及（dsh 口径），防止
+                # 撤回消息被回复后永不触发。bot 自身 id 沿用既有
+                # self_id（事件学习）/ bot_qq（配置），不新增配置键。
+                if self._require_mention:
+                    rid = self._reply_target_id(raw, message)
+                    if rid:
+                        reply_fetch_attempted = True
+                        try:
+                            reply_orig = await self._call_action(
+                                "get_msg", {"message_id": int(rid)}, timeout=10.0
+                            )
+                        except Exception as e:
+                            logger.info(
+                                "[onebot] get_msg failed for reply id=%s: %s", rid, e
+                            )
+                        if reply_orig is not None:
+                            rs = (reply_orig.get("sender") or {}).get("user_id")
+                            if rs is not None and str(rs).strip():
+                                reply_sender_id = str(rs)
+                if self._require_mention and not self._is_mentioned(
+                    raw, message, reply_sender_id=reply_sender_id
+                ):
                     return
+
                 chat_id = _build_chat_id("group", group_id)
                 chat_type = "group"
             else:
@@ -929,25 +959,31 @@ class OneBotAdapter(BasePlatformAdapter):
                 text = f"[受限用户:仅问答]\n{text}"
 
             # 用户引用了一条消息时, 从原消息取图片和文本（引用就是给 agent 看的）
+            # review 4.3：群聊提及门已预取过该 reply 段的 get_msg 结果时直接
+            # 复用（reply_orig），同一 reply 段不重复发 get_msg；预取失败也
+            # 不再重试，保持每个 reply 段至多一次调用。
             if reply_id:
                 try:
-                    orig = await self._call_action(
-                        "get_msg", {"message_id": int(reply_id)}, timeout=10.0
-                    )
-                    orig_msg = orig.get("message")
-                    if isinstance(orig_msg, list):
-                        om_text, om_urls, om_types, _ = await self._parse_message_array(orig_msg)
-                    elif orig_msg:
-                        om_text, om_urls, om_types = await self._parse_content(str(orig_msg))
-                    else:
-                        om_text, om_urls, om_types = "", [], []
-                    if om_text:
-                        text = f"[引用]{om_text}\n{text}".strip()
-                    if om_urls:
-                        media_urls.extend(om_urls)
-                        media_types.extend(om_types)
+                    orig = reply_orig
+                    if orig is None and not reply_fetch_attempted:
+                        orig = await self._call_action(
+                            "get_msg", {"message_id": int(reply_id)}, timeout=10.0
+                        )
+                    if orig is not None:
+                        orig_msg = orig.get("message")
+                        if isinstance(orig_msg, list):
+                            om_text, om_urls, om_types, _ = await self._parse_message_array(orig_msg)
+                        elif orig_msg:
+                            om_text, om_urls, om_types = await self._parse_content(str(orig_msg))
+                        else:
+                            om_text, om_urls, om_types = "", [], []
+                        if om_text:
+                            text = f"[引用]{om_text}\n{text}".strip()
+                        if om_urls:
+                            media_urls.extend(om_urls)
+                            media_types.extend(om_types)
                 except Exception as e:
-                    logger.info("[onebot] get_msg failed for reply id=%s: %s", reply_id, e)
+                    logger.info("[onebot] reply quote unavailable id=%s: %s", reply_id, e)
 
             has_voice = any(t.startswith("audio/") for t in media_types)
             # #6 回移：记录最近入站图片路径（/ocr 用，per chat）
@@ -1014,16 +1050,51 @@ class OneBotAdapter(BasePlatformAdapter):
             return group_id in self._group_allow_from
         return True
 
-    def _is_mentioned(self, raw: str, message: Optional[list] = None) -> bool:
-        """True when the bot was @'d or the message replies to something.
+    @staticmethod
+    def _reply_target_id(raw: str, message: Optional[list] = None) -> Optional[str]:
+        """提取被引用消息的 message_id（段数组优先，回退 CQ 字符串）；无引用返回 None。
+
+        纯本地解析、不发网络请求，供提及门预取 sender 用；实际取回原文的
+        get_msg 调用在 _process_message 中（结果复用，同一 reply 段至多一次）。
+        多 reply 段时与 _parse_message_array 同语义：最后一个非空 id 生效。
+        """
+        if isinstance(message, list):
+            rid: Optional[str] = None
+            for seg in message:
+                if isinstance(seg, dict) and seg.get("type") == "reply":
+                    cand = str((seg.get("data") or {}).get("id", "") or "").strip()
+                    if cand:
+                        rid = cand
+            return rid
+        rm = _load_onebot_utils()._CQ_REPLY_RE.search(raw or "")
+        return rm.group(1) if rm else None
+
+    def _is_mentioned(
+        self,
+        raw: str,
+        message: Optional[list] = None,
+        reply_sender_id: Optional[str] = None,
+    ) -> bool:
+        """True when the bot was @'d or the message replies to the bot itself.
 
         Prefer the structured message array (OneBot 11 default); fall back
         to CQ string parsing for text-format clients.
+
+        Reply semantics (review 4.3, dsh 口径): a reply segment counts as a
+        mention only when the replied-to message demonstrably came from the
+        bot itself. ``reply_sender_id`` is prefetched by ``_process_message``
+        via get_msg — this sync function never performs network calls. When
+        the sender cannot be determined (fetch failed/timed out, the original
+        message was recalled and deleted, or the bot's own id is unknown)
+        we fall back to the old behavior and treat the reply as a mention,
+        so replies to recalled messages still trigger.
+
         With an unknown bot id and no configured bot_qq we fail closed in
         group chats (no accidental reply to every message).
         """
         self_id = self._self_id or self._bot_qq or ""
         if message is not None and isinstance(message, list):
+            reply_seen = False
             for seg in message:
                 if not isinstance(seg, dict):
                     continue
@@ -1032,14 +1103,21 @@ class OneBotAdapter(BasePlatformAdapter):
                 ) == self_id:
                     return True
                 if seg.get("type") == "reply":
-                    # Replying to a message is an explicit nudge — treat as a call.
+                    reply_seen = True
+            if reply_seen:
+                # 可判定：被回复消息来自 bot 自己才算提及；不可判定（sender
+                # 未知或自身 id 未知）回落为提及，防止撤回消息被回复后永不触发。
+                if not self_id or reply_sender_id is None:
                     return True
+                return reply_sender_id == self_id
             return False
         if self_id and f"[CQ:at,qq={self_id}]" in raw:
             return True
         if "[CQ:reply" in raw:
-            # Replying to a message is an explicit nudge — treat as a call.
-            return True
+            # 与段数组路径同语义：可判定才收紧，不可判定回落。
+            if not self_id or reply_sender_id is None:
+                return True
+            return reply_sender_id == self_id
         return False
 
     async def _handle_local_command(self, chat_id: str, chat_type: str, user_id: str, text: str) -> Optional[str]:

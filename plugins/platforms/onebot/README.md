@@ -71,7 +71,7 @@ gateway:
 | `url` | `ws://127.0.0.1:3001` | forward target |
 | `access_token` | empty | OneBot token, must match the bridge |
 | `bot_qq` | empty | bot's QQ (empty = learned from meta events) |
-| `require_mention` | `true` | groups: only respond when @'d or replying |
+| `require_mention` | `true` | groups: only respond when @'d or replying to the bot (undeterminable replies fall back to responding) |
 | `dm_policy` | `open` | `open` (admins only) / `allowlist` / `disabled` |
 | `allow_from` | `[]` | allowed user ids when `dm_policy=allowlist` |
 | `group_policy` | `open` | `open` / `allowlist` / `disabled` |
@@ -209,7 +209,7 @@ Admins get a few local slash commands handled inside the adapter (anything else 
 
 ## Group mentions
 
-With `require_mention: true` (default), the bot only responds in groups when it is explicitly @'d or when the message replies to an existing message. Set it to `false` to respond to every group message (noisy; not recommended for large groups). When no `bot_qq` is configured the bot learns its own id from OneBot meta events, so mention detection works out of the box.
+With `require_mention: true` (default), the bot only responds in groups when it is explicitly @'d or when the message replies to a message the bot itself sent. Replying to someone else stays silent, so busy groups are no longer woken by unrelated reply chains. The replied-to message is resolved with `get_msg` — the same fetch used for quote text, so there is no extra API call — and when the sender cannot be determined (fetch failed or timed out, the original message was recalled and deleted, or the bot's own id is still unknown) the bot falls back to treating the reply as a mention, so replies to recalled messages still trigger. Set it to `false` to respond to every group message (noisy; not recommended for large groups). When no `bot_qq` is configured the bot learns its own id from OneBot meta events, so mention detection works out of the box.
 
 ## Long replies (three tiers, fully configurable)
 
@@ -358,7 +358,7 @@ Opt-in via `extra.hot_reload: true` (default **off**, dev only). When enabled, `
 
 | Symptom | Cause & fix |
 |---|---|
-| Group chat not responding | `require_mention: true` needs an @ or reply; mention detection is fail-closed; confirm `bot_qq` was learned from meta events or set it explicitly |
+| Group chat not responding | `require_mention: true` needs an @ or a reply to the bot; reply triggering falls back to mention when the replied-to sender is undeterminable; confirm `bot_qq` was learned from meta events or set it explicitly |
 | Image download 403 | NapCat escapes `&` in URLs to `&amp;` (parsing unescapes automatically); check the media-download log lines if it still fails |
 | Voice shows `[语音]` placeholder | `ffmpeg` unavailable, or `get_record` failed; install ffmpeg and retry |
 | File message arrives empty | CQ-string bridges may omit the `file` segment name. The adapter marks it `[文件:<name>]` (name falls back to the `file=` attribute); NapCat private files carry only a hash + container path, so the name comes from the `file=` attribute |

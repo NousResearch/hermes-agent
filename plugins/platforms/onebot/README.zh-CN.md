@@ -69,7 +69,7 @@ gateway:
 | `url` | `ws://127.0.0.1:3001` | 正向目标 |
 | `access_token` | 空 | OneBot token，必须与桥一致 |
 | `bot_qq` | 空 | 机器人 QQ（空 = 从 meta 事件学习） |
-| `require_mention` | `true` | 群聊：仅被 @ 或回复时响应 |
+| `require_mention` | `true` | 群聊：仅被 @ 或回复机器人自己时响应（无法判定被回复者时回落为响应） |
 | `dm_policy` | `open` | `open`（仅管理员）/ `allowlist` / `disabled` |
 | `allow_from` | `[]` | `dm_policy=allowlist` 时的允许用户 id |
 | `group_policy` | `open` | `open` / `allowlist` / `disabled` |
@@ -191,7 +191,7 @@ forward 模式单独成 server——共用同一道鉴权闸门：
 
 ## 群 @ 触发
 
-`require_mention: true`（默认）时机器人在群里只响应显式 @ 或回复已有消息。设为 `false` 则响应每条群消息（很吵，大群不推荐）。未配置 `bot_qq` 时机器人从 OneBot meta 事件学自己的 id，@ 检测不需要额外设置。
+`require_mention: true`（默认）时机器人在群里只响应显式 @ 或回复**机器人自己发的消息**；回复其他人保持沉默，繁忙群不会被无关回复链误唤醒。被回复消息通过 `get_msg` 判定（与引用取原文共用同一次调用，无额外 API 开销）；无法判定被回复者时——取回失败/超时、原消息已撤回删除、或机器人自身 id 未知——回落为算提及（旧行为），防止撤回消息被回复后永不触发。设为 `false` 则响应每条群消息（很吵，大群不推荐）。未配置 `bot_qq` 时机器人从 OneBot meta 事件学自己的 id，@ 检测不需要额外设置。
 
 ## 长回复（三档，全可配置）
 
@@ -336,7 +336,7 @@ HTTP 等价物：适配器本地 API 的 `GET /api/napcat`（action 代理）和
 
 | 症状 | 原因与修复 |
 |---|---|
-| 群聊不响应 | `require_mention: true` 需要 @ 或回复；@ 检测 fail-closed；确认 `bot_qq` 已从 meta 事件学到或显式设置 |
+| 群聊不响应 | `require_mention: true` 需要 @ 或回复机器人自己；被回复者无法判定时回落为响应；确认 `bot_qq` 已从 meta 事件学到或显式设置 |
 | 图片下载 403 | NapCat 把 URL 里的 `&` 转义成 `&amp;`（解析会自动反转义）；还失败就看媒体下载日志 |
 | 语音显示 `[语音]` 占位 | `ffmpeg` 不可用，或 `get_record` 失败；装 ffmpeg 重试 |
 | 文件消息到达为空 | CQ 字符串桥可能省略 `file` 段名。适配器标记为 `[文件:<name>]`（名字回退到 `file=` 属性）；NapCat 私聊文件只有 hash + 容器路径，名字来自 `file=` 属性 |

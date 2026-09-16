@@ -567,6 +567,167 @@ def test_quote_reply_fetches_original_text_and_image(monkeypatch) -> None:
     assert "[图片]" in ev.text
 
 
+# ---------------------------------------------------------------------------
+# Reply mention gating (review 4.3): a reply only triggers when the replied-to
+# message demonstrably came from the bot; undeterminable falls back to mention
+# ---------------------------------------------------------------------------
+
+
+def _reply_get_msg_fake(calls: list, *, sender_user_id=None, fail: bool = False):
+    """Build a _call_action stand-in answering get_msg for reply-gating tests.
+
+    Records every (action, params) pair in ``calls`` so tests can assert the
+    "one get_msg per reply segment" invariant; raises when ``fail`` is set.
+    Mocks must be async def — a plain def would raise TypeError inside the
+    coroutine and look like "not triggered".
+    """
+
+    async def fake_call_action(action, params, timeout=30.0):
+        calls.append((action, dict(params)))
+        assert action == "get_msg"
+        if fail:
+            raise RuntimeError("get_msg unavailable")
+        return {
+            "message": [{"type": "text", "data": {"text": "被回复的原消息"}}],
+            "sender": {} if sender_user_id is None else {"user_id": sender_user_id},
+        }
+
+    return fake_call_action
+
+
+def _group_reply_event(message, raw: str = "[CQ:reply,id=555] 收到") -> dict:
+    return {
+        "post_type": "message",
+        "message_type": "group",
+        "group_id": 888888,
+        "user_id": 10002,
+        "self_id": 123456789,
+        "message_id": 42,
+        "raw_message": raw,
+        "message": message,
+        "sender": {"user_id": 10002, "nickname": "群友", "card": "卡"},
+    }
+
+
+def _capture_handle_message(adapter: OneBotAdapter) -> list:
+    captured: list = []
+
+    async def fake_handle_message(ev):
+        captured.append(ev)
+
+    adapter.handle_message = fake_handle_message  # type: ignore[method-assign]
+    return captured
+
+
+def test_reply_to_bot_triggers_and_get_msg_called_once(monkeypatch) -> None:
+    """回复 bot 自己的消息 → 触发；门判定与引用取原文共用同一次 get_msg。"""
+    adapter = _make_adapter(admin_users=[10002])
+    captured = _capture_handle_message(adapter)
+    calls: list = []
+    monkeypatch.setattr(
+        adapter, "_call_action", _reply_get_msg_fake(calls, sender_user_id=123456789)
+    )
+
+    asyncio.run(
+        adapter._process_message(
+            _group_reply_event(
+                [
+                    {"type": "reply", "data": {"id": 555}},
+                    {"type": "text", "data": {"text": "收到"}},
+                ]
+            )
+        )
+    )
+    assert len(captured) == 1, "reply to the bot itself should trigger"
+    ev = captured[0]
+    assert "[引用]被回复的原消息" in ev.text
+    assert "收到" in ev.text
+    assert [(a, p.get("message_id")) for a, p in calls] == [
+        ("get_msg", 555)
+    ], "门判定与引用取原文必须复用同一次 get_msg，不得二次调用"
+
+
+def test_reply_to_other_user_does_not_trigger(monkeypatch) -> None:
+    """回复群里其他人 → 不触发（繁忙群不再被无关回复链误唤醒）。"""
+    adapter = _make_adapter(admin_users=[10002])
+    captured = _capture_handle_message(adapter)
+    calls: list = []
+    monkeypatch.setattr(
+        adapter, "_call_action", _reply_get_msg_fake(calls, sender_user_id=99999)
+    )
+
+    asyncio.run(
+        adapter._process_message(
+            _group_reply_event(
+                [
+                    {"type": "reply", "data": {"id": 555}},
+                    {"type": "text", "data": {"text": "收到"}},
+                ]
+            )
+        )
+    )
+    assert captured == [], "reply to someone else must not wake the bot"
+    assert [(a, p.get("message_id")) for a, p in calls] == [("get_msg", 555)]
+
+
+def test_reply_get_msg_failure_falls_back_to_mention(monkeypatch) -> None:
+    """get_msg 失败/超时/撤回 → 不可判定回落为提及（dsh 口径）；不二次调用。"""
+    adapter = _make_adapter(admin_users=[10002])
+    captured = _capture_handle_message(adapter)
+    calls: list = []
+    monkeypatch.setattr(adapter, "_call_action", _reply_get_msg_fake(calls, fail=True))
+
+    asyncio.run(
+        adapter._process_message(
+            _group_reply_event(
+                [
+                    {"type": "reply", "data": {"id": 555}},
+                    {"type": "text", "data": {"text": "收到"}},
+                ]
+            )
+        )
+    )
+    assert len(captured) == 1, "undeterminable reply should fall back to mention"
+    assert "[引用]" not in captured[0].text, "取回失败时不拼引用文本"
+    assert len(calls) == 1, "门已调用过 get_msg，引用块不得重复调用"
+
+
+def test_reply_cq_string_path_matches_array_semantics(monkeypatch) -> None:
+    """CQ 字符串路径与段数组路径同语义；显式 @ 不受 reply 收紧影响。"""
+
+    def make(**kw):
+        adapter = _make_adapter(admin_users=[10002])
+        captured = _capture_handle_message(adapter)
+        calls: list = []
+        monkeypatch.setattr(adapter, "_call_action", _reply_get_msg_fake(calls, **kw))
+        return adapter, captured, calls
+
+    # 回复 bot（CQ 字符串路径）→ 触发，引用文本照拼
+    adapter, captured, calls = make(sender_user_id=123456789)
+    asyncio.run(adapter._process_message(_group_reply_event(None, raw="[CQ:reply,id=777] 在吗")))
+    assert len(captured) == 1, "CQ path: reply to the bot should trigger"
+    assert "[引用]被回复的原消息" in captured[0].text
+
+    # 回复他人（CQ 字符串路径）→ 不触发
+    adapter, captured, calls = make(sender_user_id=99999)
+    asyncio.run(adapter._process_message(_group_reply_event(None, raw="[CQ:reply,id=777] 在吗")))
+    assert captured == [], "CQ path: reply to someone else must not trigger"
+
+    # get_msg 失败 → 回落触发
+    adapter, captured, calls = make(fail=True)
+    asyncio.run(adapter._process_message(_group_reply_event(None, raw="[CQ:reply,id=777] 在吗")))
+    assert len(captured) == 1, "CQ path: undeterminable reply falls back to mention"
+
+    # 回复他人但同时显式 @ bot → 仍触发（@ 路径不受收紧影响）
+    adapter, captured, calls = make(sender_user_id=99999)
+    asyncio.run(
+        adapter._process_message(
+            _group_reply_event(None, raw="[CQ:reply,id=888][CQ:at,qq=123456789] 在吗")
+        )
+    )
+    assert len(captured) == 1, "explicit @ must keep working alongside tightened replies"
+
+
 def test_loop_merge_buffers_interim_then_forwards_and_retracts(monkeypatch) -> None:
     """interim 缓冲 + final 结算：小结卡渲染失败 → 回退合并转发 + 撤回（群聊）。"""
     import plugins.platforms.onebot.adapter as adapter_mod

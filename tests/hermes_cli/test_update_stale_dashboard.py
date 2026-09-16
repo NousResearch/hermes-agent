@@ -16,12 +16,14 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from unittest.mock import patch, MagicMock
 
 import pytest
 
+from hermes_cli import dashboard_procs
 from hermes_cli.main_dashboard import _find_stale_dashboard_pids
 from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes
 from hermes_cli import dashboard_procs
@@ -335,12 +337,16 @@ class TestWindowsWmicEncoding:
 
         Cross-platform: nothing Windows-native executes once the probe is
         mocked, so ``sys.platform`` is patched rather than gating the test
-        to the Windows-only CI job.
+        to the Windows-only CI job. ``shutil.which`` is patched too, because
+        the scan now prefers wmic only where it exists — without that, a
+        Linux runner takes the PowerShell branch and this case never runs.
         """
         with patch("sys.platform", "win32"), \
+             patch("hermes_cli.dashboard_procs.shutil.which",
+                   side_effect=lambda name: "wmic" if name == "wmic" else None), \
              patch("hermes_cli._subprocess_compat.bounded_probe_run") as mock_probe:
             mock_probe.return_value = subprocess.CompletedProcess(
-                args=["wmic"],
+                args=["wmic"],  # windows-footgun: ok — a CompletedProcess fixture, not a spawn
                 returncode=0,
                 stdout=(
                     "CommandLine=python -m hermes_cli.main dashboard\n"
@@ -363,6 +369,79 @@ class TestWindowsWmicEncoding:
             "guarantees the post-timeout cleanup is bounded too (#87134)."
         )
         assert pids == [12345]
+
+    def _which(self, *present):
+        return lambda name: name if name in present else None
+
+    def _list_output(self, pid=12345):
+        return subprocess.CompletedProcess(
+            args=[], returncode=0, stderr="",
+            stdout=(
+                "CommandLine=python -m hermes_cli.main dashboard\n"
+                f"ProcessId={pid}\n"
+            ),
+        )
+
+    def test_powershell_fallback_when_wmic_is_absent(self):
+        """wmic was removed as part of the WMIC deprecation on modern
+        Windows 11 / late Win 10 builds. Spawning it unconditionally left the
+        scan empty there, so `hermes update` reaped nothing and the stale
+        backend survived into a version mismatch — the outcome this scan
+        exists to prevent."""
+        with patch("sys.platform", "win32"), \
+             patch("hermes_cli.dashboard_procs.shutil.which",
+                   side_effect=self._which("powershell")), \
+             patch("hermes_cli._subprocess_compat.bounded_probe_run") as mock_probe:
+            mock_probe.return_value = self._list_output()
+            pids = _find_stale_dashboard_pids()
+
+        assert pids == [12345], "the PowerShell fallback did not produce a scan"
+        argv = mock_probe.call_args_list[0].args[0]
+        assert argv[0] == "powershell"
+        assert "Get-CimInstance Win32_Process" in argv[-1]
+        assert "CommandLine=" in argv[-1] and "ProcessId=" in argv[-1], (
+            "the fallback must emit LIST-style output — the parser below it "
+            "is shared with the wmic branch and does not know it changed."
+        )
+        kwargs = mock_probe.call_args_list[0].kwargs
+        assert kwargs.get("errors") == "ignore"
+        assert kwargs.get("timeout")
+
+    def test_pwsh_is_accepted_when_windows_powershell_is_gone(self):
+        """PowerShell 7 installs as `pwsh`; Windows PowerShell can be absent."""
+        with patch("sys.platform", "win32"), \
+             patch("hermes_cli.dashboard_procs.shutil.which",
+                   side_effect=self._which("pwsh")), \
+             patch("hermes_cli._subprocess_compat.bounded_probe_run") as mock_probe:
+            mock_probe.return_value = self._list_output()
+            assert _find_stale_dashboard_pids() == [12345]
+        assert mock_probe.call_args_list[0].args[0][0] == "pwsh"
+
+    def test_a_failing_wmic_still_falls_through_to_powershell(self):
+        """Presence is not success: wmic can be on PATH and still fail, and a
+        non-zero result used to end the scan instead of trying the other
+        query."""
+        results = [
+            subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="err"),
+            self._list_output(),
+        ]
+        with patch("sys.platform", "win32"), \
+             patch("hermes_cli.dashboard_procs.shutil.which",
+                   side_effect=self._which("wmic", "powershell")), \
+             patch("hermes_cli._subprocess_compat.bounded_probe_run",
+                   side_effect=results) as mock_probe:
+            assert _find_stale_dashboard_pids() == [12345]
+        assert [c.args[0][0] for c in mock_probe.call_args_list] == [
+            "wmic", "powershell"]  # windows-footgun: ok — asserting argv, not building one
+
+    def test_neither_binary_present_returns_empty_without_spawning(self):
+        """No query available is an empty scan, not a crash."""
+        with patch("sys.platform", "win32"), \
+             patch("hermes_cli.dashboard_procs.shutil.which",
+                   side_effect=self._which()), \
+             patch("hermes_cli._subprocess_compat.bounded_probe_run") as mock_probe:
+            assert _find_stale_dashboard_pids() == []
+        assert not mock_probe.called
 
     def test_probe_failure_fails_open_to_empty_list(self):
         """A spawn failure or timeout (bounded_probe_run → None) must yield
@@ -929,3 +1008,49 @@ class TestPostUpdateStaleModuleReload:
 
         assert "hermes_cli._subprocess_compat" in reloaded
         assert "hermes_cli.dashboard_procs" in reloaded
+
+
+class TestWindowsProcessTableParsing:
+    """Two behaviours the wmic/PowerShell fallback pair depends on."""
+
+    def test_wmic_present_but_silent_falls_back_to_powershell(self, monkeypatch):
+        """A present wmic that exits 0 with nothing to say is the deprecation shape.
+
+        On later Windows builds the stub can succeed and print nothing; treating only a None
+        result or a non-zero exit as failure left the scan permanently empty, so a forgotten
+        dashboard was never reaped.
+        """
+        calls = []
+
+        def fake_probe(argv, **kwargs):
+            calls.append(argv[0])
+            if "wmic" in argv[0]:
+                return subprocess.CompletedProcess(args=argv, returncode=0, stdout="")
+            return subprocess.CompletedProcess(
+                args=argv, returncode=0,
+                stdout="CommandLine=python -m hermes_cli.main dashboard\nProcessId=4242\n")
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(shutil, "which", lambda name: f"C:\\{name}.exe")
+        monkeypatch.setattr(
+            "hermes_cli._subprocess_compat.bounded_probe_run", fake_probe, raising=False)
+        rows = dashboard_procs._iter_process_table()
+        assert [pid for pid, _ in rows] == [4242], "empty wmic output did not fall back"
+        assert len(calls) == 2 and "powershell" in calls[1].lower()
+
+    def test_a_record_without_a_commandline_does_not_inherit_the_previous_one(self, monkeypatch):
+        """Same contract as the gateway's parser: no CommandLine means an empty cmdline.
+
+        Inheriting it reads an unrelated pid as a forgotten dashboard, and `hermes update` reaps
+        what this returns. Driven through the real `_iter_process_table`, not a copy of its loop.
+        """
+        listing = ("CommandLine=python -m hermes_cli.main dashboard\nProcessId=1111\n\n"
+                   "ProcessId=2222\n\nCommandLine=notepad.exe\nProcessId=3333\n")
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(shutil, "which", lambda name: f"C:\\{name}.exe")
+        monkeypatch.setattr(
+            "hermes_cli._subprocess_compat.bounded_probe_run",
+            lambda argv, **kw: subprocess.CompletedProcess(args=argv, returncode=0, stdout=listing),
+            raising=False)
+        assert dashboard_procs._iter_process_table() == [
+            (1111, "python -m hermes_cli.main dashboard"), (2222, ""), (3333, "notepad.exe")]

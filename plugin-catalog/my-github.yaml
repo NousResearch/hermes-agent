@@ -1,0 +1,16 @@
+name: my-github
+repo: https://github.com/tomekdot/hermes-my-github-plugin
+sha: 8f4620bf88d1fc8646783e25889f5723cfa5fa7e
+description: 'List and open your GitHub repositories (public + private) from the Hermes
+  dashboard via the gh CLI, with search, visibility filter, sort and summary stats.'
+maintainer: tomekdot
+tier: community
+category: desktop
+requires_hermes: ">=0.21"
+docs_url: https://github.com/tomekdot/hermes-my-github-plugin
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,715 @@
+import { cleanup, render } from '@testing-library/react'
+import type { MutableRefObject } from 'react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { $resumeExhaustedSessionId, setResumeExhaustedSessionId } from '@/store/session'
+import type { SessionProfileRoute } from '@/store/session-request-router'
+import { markSelectionRestore } from '@/store/session-states'
+
+import { useRouteResume } from './use-route-resume'
+
+// The hook only arms the boot-restore one-shot; the listener consuming it lives
+// in the real store (covered by session-states.test.ts). Mock the module so the
+// store's side effects (persistence listeners) stay out of this harness.
+vi.mock('@/store/session-states', () => ({ markSelectionRestore: vi.fn() }))
+
+interface HarnessProps {
+  activeSessionId: null | string
+  activeSessionIdRef: MutableRefObject<null | string>
+  creatingSessionRef: MutableRefObject<boolean>
+  currentView: string
+  freshDraftReady: boolean
+  gatewayState: string
+  locationPathname: string
+  resumeSession: (sessionId: string, focus: boolean, ownerRoute?: SessionProfileRoute) => Promise<unknown>
+  resumeFailedSessionId?: null | string
+  resumeExhaustedSessionId?: null | string
+  sessionResumeRequest?: null | { ownerRoute?: SessionProfileRoute; sequence: number; sessionId: string }
+  routedSessionId: null | string
+  runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
+  selectedStoredSessionId: null | string
+  selectedStoredSessionIdRef: MutableRefObject<null | string>
+  startFreshSessionDraft: (focus: boolean) => unknown
+}
+
+function RouteResumeHarness({
+  resumeFailedSessionId = null,
+  resumeExhaustedSessionId = null,
+  sessionResumeRequest = null,
+  ...props
+}: HarnessProps) {
+  useRouteResume({ ...props, resumeExhaustedSessionId, resumeFailedSessionId, sessionResumeRequest })
+
+  return null
+}
+
+describe('useRouteResume', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('does not re-resume the old session during a /:sid -> /new transition', () => {
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-1' }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['session-1', 'runtime-1']]) }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-1' }
+
+    const { rerender } = render(
+      <RouteResumeHarness
+        activeSessionId="runtime-1"
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="open"
+        locationPathname="/session-1"
+        resumeSession={resumeSession}
+        routedSessionId="session-1"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId="session-1"
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).not.toHaveBeenCalled()
+
+    // Simulate startFreshSessionDraft state updates landing before route update.
+    activeSessionIdRef.current = null
+    selectedStoredSessionIdRef.current = null
+    rerender(
+      <RouteResumeHarness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady
+        gatewayState="open"
+        locationPathname="/session-1"
+        resumeSession={resumeSession}
+        routedSessionId="session-1"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).not.toHaveBeenCalled()
+  })
+
+  it('honors an explicit resume request on /:sid even while a fresh draft is staged', () => {
+    // A gateway/profile switch stages a fresh draft (wipeSessionListsForGatewaySwitch)
+    // but deliberately leaves the URL on /:sid. In that state pathnameChanged,
+    // gatewayBecameOpen and stuckOnRoutedSession are all false, so an explicit
+    // request (plugin/SDK reselect, 4001 recovery) is the ONLY lever left — it
+    // must still fire. Filtering doomed ids happens at requestSessionResume and
+    // resumeSession, not by guessing from freshDraftReady.
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: null }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map<string, string>() }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: null }
+
+    const props = {
+      activeSessionId: null,
+      activeSessionIdRef,
+      creatingSessionRef,
+      currentView: 'chat',
+      freshDraftReady: true,
+      gatewayState: 'open',
+      locationPathname: '/session-1',
+      resumeSession,
+      routedSessionId: 'session-1',
+      runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionId: null,
+      selectedStoredSessionIdRef,
+      startFreshSessionDraft
+    }
+
+    const { rerender } = render(<RouteResumeHarness {...props} />)
+
+    resumeSession.mockClear()
+
+    rerender(<RouteResumeHarness {...props} sessionResumeRequest={{ sequence: 1, sessionId: 'session-1' }} />)
+
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+  })
+
+  it('self-heals a stranded routed session (null selected/active, same pathname, not a fresh draft)', () => {
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-1' }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['session-1', 'runtime-1']]) }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-1' }
+
+    const { rerender } = render(
+      <RouteResumeHarness
+        activeSessionId="runtime-1"
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="open"
+        locationPathname="/session-1"
+        resumeSession={resumeSession}
+        routedSessionId="session-1"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId="session-1"
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).not.toHaveBeenCalled()
+
+    // A create/stream race nulls selected/active but the route stays on the
+    // session and freshDraftReady is false (NOT a new-chat transition).
+    activeSessionIdRef.current = null
+    selectedStoredSessionIdRef.current = null
+    rerender(
+      <RouteResumeHarness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="open"
+        locationPathname="/session-1"
+        resumeSession={resumeSession}
+        routedSessionId="session-1"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).toHaveBeenCalledTimes(1)
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+  })
+
+  it('resumes when pathname changes to a routed session', () => {
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: null }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map() }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: null }
+
+    const { rerender } = render(
+      <RouteResumeHarness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady
+        gatewayState="open"
+        locationPathname="/"
+        resumeSession={resumeSession}
+        routedSessionId={null}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).not.toHaveBeenCalled()
+
+    rerender(
+      <RouteResumeHarness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady
+        gatewayState="open"
+        locationPathname="/session-2"
+        resumeSession={resumeSession}
+        routedSessionId="session-2"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).toHaveBeenCalledTimes(1)
+    expect(resumeSession).toHaveBeenCalledWith('session-2', true)
+  })
+
+  it('arms the boot-restore one-shot for the FIRST resume only (⌘R tab persistence)', () => {
+    // Factory mocks survive restoreAllMocks — drop calls earlier tests made.
+    vi.mocked(markSelectionRestore).mockClear()
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: null }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map() }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: null }
+
+    const props = {
+      activeSessionId: null,
+      activeSessionIdRef,
+      creatingSessionRef,
+      currentView: 'chat',
+      freshDraftReady: false,
+      gatewayState: 'open',
+      resumeSession,
+      runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionId: null,
+      selectedStoredSessionIdRef,
+      startFreshSessionDraft
+    }
+
+    // Cold start: the window mounts already routed at /session-1 (the reload).
+    const { rerender } = render(
+      <RouteResumeHarness {...props} locationPathname="/session-1" routedSessionId="session-1" />
+    )
+
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+    expect(markSelectionRestore).toHaveBeenCalledTimes(1)
+
+    // A later route change is a real navigation: resume fires, one-shot doesn't.
+    rerender(<RouteResumeHarness {...props} locationPathname="/session-2" routedSessionId="session-2" />)
+
+    expect(resumeSession).toHaveBeenCalledWith('session-2', true)
+    expect(markSelectionRestore).toHaveBeenCalledTimes(1)
+  })
+
+  it('resumes the selected route again when the gateway reconnects', () => {
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-1' }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['session-1', 'runtime-1']]) }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-1' }
+
+    const { rerender } = render(
+      <RouteResumeHarness
+        activeSessionId="runtime-1"
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="open"
+        locationPathname="/session-1"
+        resumeSession={resumeSession}
+        routedSessionId="session-1"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId="session-1"
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).not.toHaveBeenCalled()
+
+    rerender(
+      <RouteResumeHarness
+        activeSessionId="runtime-1"
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="closed"
+        locationPathname="/session-1"
+        resumeSession={resumeSession}
+        routedSessionId="session-1"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId="session-1"
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    rerender(
+      <RouteResumeHarness
+        activeSessionId="runtime-1"
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="open"
+        locationPathname="/session-1"
+        resumeSession={resumeSession}
+        routedSessionId="session-1"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId="session-1"
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).toHaveBeenCalledTimes(1)
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+  })
+
+  it('re-resumes an already-active same route when a plugin explicitly requests hydration', () => {
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-1' }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['session-1', 'runtime-1']]) }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-1' }
+
+    const props = {
+      activeSessionId: 'runtime-1',
+      activeSessionIdRef,
+      creatingSessionRef,
+      currentView: 'chat',
+      freshDraftReady: false,
+      gatewayState: 'open',
+      locationPathname: '/session-1',
+      resumeSession,
+      routedSessionId: 'session-1',
+      runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionId: 'session-1',
+      selectedStoredSessionIdRef,
+      startFreshSessionDraft
+    }
+
+    const { rerender } = render(<RouteResumeHarness {...props} />)
+    expect(resumeSession).not.toHaveBeenCalled()
+
+    rerender(<RouteResumeHarness {...props} sessionResumeRequest={{ sequence: 1, sessionId: 'session-1' }} />)
+
+    expect(resumeSession).toHaveBeenCalledTimes(1)
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+  })
+
+  it('does not reuse a stale plugin owner route after pathname navigation', () => {
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-1' }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['session-1', 'runtime-1']]) }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-1' }
+
+    const ownerRoute: SessionProfileRoute = {
+      connectionId: 'source-a',
+      mode: 'remote',
+      profile: 'worker',
+      targetProfile: 'backend-worker'
+    }
+
+    const request = { ownerRoute, sequence: 1, sessionId: 'session-1' }
+
+    const props = {
+      activeSessionId: 'runtime-1',
+      activeSessionIdRef,
+      creatingSessionRef,
+      currentView: 'chat',
+      freshDraftReady: false,
+      gatewayState: 'open',
+      resumeSession,
+      runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionId: 'session-1',
+      selectedStoredSessionIdRef,
+      sessionResumeRequest: request,
+      startFreshSessionDraft
+    }
+
+    const { rerender } = render(
+      <RouteResumeHarness {...props} locationPathname="/session-1" routedSessionId="session-1" />
+    )
+
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true, ownerRoute)
+    resumeSession.mockClear()
+
+    rerender(<RouteResumeHarness {...props} locationPathname="/session-2" routedSessionId="session-2" />)
+
+    expect(resumeSession).toHaveBeenCalledTimes(1)
+    expect(resumeSession).toHaveBeenCalledWith('session-2', true)
+  })
+
+  it('does not re-resume the old session when the new profile gateway opens before /new commits (#68594)', () => {
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-a' }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['session-a', 'runtime-a']]) }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-a' }
+
+    const { rerender } = render(
+      <RouteResumeHarness
+        activeSessionId="runtime-a"
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="open"
+        locationPathname="/session-a"
+        resumeSession={resumeSession}
+        routedSessionId="session-a"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId="session-a"
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).not.toHaveBeenCalled()
+
+    // Profile switch: clear refs, set freshDraftReady, close profile A gateway.
+    activeSessionIdRef.current = null
+    selectedStoredSessionIdRef.current = null
+    rerender(
+      <RouteResumeHarness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady
+        gatewayState="closed"
+        locationPathname="/session-a"
+        resumeSession={resumeSession}
+        routedSessionId="session-a"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    // Profile B gateway opens before React Router commits /new.
+    rerender(
+      <RouteResumeHarness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady
+        gatewayState="open"
+        locationPathname="/session-a"
+        resumeSession={resumeSession}
+        routedSessionId="session-a"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    // Must NOT resume session-a: the fresh draft transition is active.
+    expect(resumeSession).not.toHaveBeenCalled()
+  })
+})
+
+describe('useRouteResume bounded auto-retry after a failed resume', () => {
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+    setResumeExhaustedSessionId(null)
+  })
+
+  // Common stranded-window props: gateway open, route on the session, no runtime
+  // yet, and the ref already synced to the route (resumeSession sets it at entry
+  // before failing) — the exact state that defeats the main effect's self-heal.
+  function strandedProps(resumeSession: (sid: string, focus: boolean) => Promise<unknown>) {
+    return {
+      activeSessionId: null,
+      activeSessionIdRef: { current: null } as MutableRefObject<null | string>,
+      creatingSessionRef: { current: false },
+      currentView: 'chat',
+      freshDraftReady: false,
+      gatewayState: 'open',
+      locationPathname: '/session-1',
+      resumeSession,
+      routedSessionId: 'session-1',
+      runtimeIdByStoredSessionIdRef: { current: new Map<string, string>() },
+      selectedStoredSessionId: 'session-1',
+      // Synced to the route by the failed resume's synchronous entry-write.
+      selectedStoredSessionIdRef: { current: 'session-1' } as MutableRefObject<null | string>,
+      startFreshSessionDraft: vi.fn()
+    }
+  }
+
+  it('retries the resume on backoff when the routed session is flagged as failed', () => {
+    vi.useFakeTimers()
+    const resumeSession = vi.fn(async () => undefined)
+
+    render(<RouteResumeHarness {...strandedProps(resumeSession)} resumeFailedSessionId="session-1" />)
+
+    // The main effect fires one resume on mount (pathname-changed). Clear it so
+    // we assert purely the bounded-retry effect's scheduled retry below.
+    resumeSession.mockClear()
+
+    // No immediate fire — the retry is scheduled behind the backoff timer.
+    expect(resumeSession).not.toHaveBeenCalled()
+
+    // First backoff window (1s) elapses → one retry.
+    vi.advanceTimersByTime(1_000)
+    expect(resumeSession).toHaveBeenCalledTimes(1)
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+  })
+
+  it('does NOT retry a failed session that is not the routed one', () => {
+    vi.useFakeTimers()
+    const resumeSession = vi.fn(async () => undefined)
+
+    // The failure flag points at a different session than the route.
+    render(<RouteResumeHarness {...strandedProps(resumeSession)} resumeFailedSessionId="other-session" />)
+    resumeSession.mockClear() // drop the mount resume
+
+    vi.advanceTimersByTime(10_000)
+    expect(resumeSession).not.toHaveBeenCalled()
+  })
+
+  it('skips the scheduled retry if the session already recovered when the timer fires', () => {
+    vi.useFakeTimers()
+    const resumeSession = vi.fn(async () => undefined)
+    const props = strandedProps(resumeSession)
+
+    render(<RouteResumeHarness {...props} resumeFailedSessionId="session-1" />)
+    resumeSession.mockClear() // drop the mount resume
+
+    // A resume landed while we waited: runtime is now bound.
+    props.activeSessionIdRef.current = 'runtime-1'
+
+    vi.advanceTimersByTime(8_000)
+    expect(resumeSession).not.toHaveBeenCalled()
+  })
+
+  it('stops retrying after MAX_RESUME_RETRIES consecutive failures', () => {
+    vi.useFakeTimers()
+    const resumeSession = vi.fn(async () => undefined)
+    const props = strandedProps(resumeSession)
+
+    // Model the real re-arm loop: resumeSession clears $resumeFailedSessionId at
+    // entry (null) and a repeat failure re-sets it ('session-1'). That null->id
+    // toggle is what re-runs the effect and advances the bounded counter. The
+    // routed session never changes, so the counter is NOT reset between cycles.
+    const { rerender } = render(<RouteResumeHarness {...props} resumeFailedSessionId="session-1" />)
+    resumeSession.mockClear() // drop the mount resume; count only the retries
+
+    for (let i = 0; i < 8; i += 1) {
+      vi.advanceTimersByTime(8_000) // fire the scheduled retry (if any)
+      rerender(<RouteResumeHarness {...props} resumeFailedSessionId={null} />) // cleared at entry
+      rerender(<RouteResumeHarness {...props} resumeFailedSessionId="session-1" />) // re-armed on failure
+    }
+
+    // Capped at MAX_RESUME_RETRIES (4): a persistently dead backend can't
+    // hot-loop the resume forever.
+    expect(resumeSession.mock.calls.length).toBe(4)
+
+    // Once auto-retry gives up, the exhausted latch is armed for the routed
+    // session so the chat view can swap the perpetual loader for an explicit
+    // error + manual Retry instead of spinning forever.
+    expect($resumeExhaustedSessionId.get()).toBe('session-1')
+  })
+
+  it('does not arm the exhausted latch while retries remain', () => {
+    vi.useFakeTimers()
+    const resumeSession = vi.fn(async () => undefined)
+    const props = strandedProps(resumeSession)
+
+    const { rerender } = render(<RouteResumeHarness {...props} resumeFailedSessionId="session-1" />)
+    resumeSession.mockClear()
+
+    // Two failure cycles — still under the 4-retry cap, so the latch must stay
+    // clear and the loader keeps spinning (auto-recovery hasn't given up yet).
+    for (let i = 0; i < 2; i += 1) {
+      vi.advanceTimersByTime(8_000)
+      rerender(<RouteResumeHarness {...props} resumeFailedSessionId={null} />)
+      rerender(<RouteResumeHarness {...props} resumeFailedSessionId="session-1" />)
+    }
+
+    expect($resumeExhaustedSessionId.get()).toBeNull()
+  })
+
+  it('clears a stale exhausted latch when the route moves off the stranded session', () => {
+    vi.useFakeTimers()
+    const resumeSession = vi.fn(async () => undefined)
+    const props = strandedProps(resumeSession)
+
+    // Pre-arm the latch as if this session had exhausted its retries.
+    setResumeExhaustedSessionId('session-1')
+
+    // Route is now on a different, healthy session that is not flagged as
+    // failed — the retry effect's "route moved off" branch clears the latch.
+    render(
+      <RouteResumeHarness
+        {...props}
+        activeSessionId="runtime-2"
+        activeSessionIdRef={{ current: 'runtime-2' }}
+        locationPathname="/session-2"
+        resumeFailedSessionId={null}
+        routedSessionId="session-2"
+        selectedStoredSessionId="session-2"
+        selectedStoredSessionIdRef={{ current: 'session-2' }}
+      />
+    )
+
+    expect($resumeExhaustedSessionId.get()).toBeNull()
+  })
+
+  it('resets the retry counter for a fresh backoff cycle when the exhausted latch clears (manual retry, same session)', () => {
+    vi.useFakeTimers()
+    const resumeSession = vi.fn(async () => undefined)
+    const props = strandedProps(resumeSession)
+
+    // Phase A — exhaust the bounded auto-retry (counter → MAX) like a dead
+    // backend. The resumeExhaustedSessionId prop stays null here: the hook sets
+    // the store, which doesn't feed back into the prop in this harness.
+    const { rerender } = render(<RouteResumeHarness {...props} resumeFailedSessionId="session-1" />)
+    resumeSession.mockClear()
+
+    for (let i = 0; i < 8; i += 1) {
+      vi.advanceTimersByTime(8_000)
+      rerender(<RouteResumeHarness {...props} resumeFailedSessionId={null} />)
+      rerender(<RouteResumeHarness {...props} resumeFailedSessionId="session-1" />)
+    }
+
+    expect(resumeSession.mock.calls.length).toBe(4) // capped
+    expect($resumeExhaustedSessionId.get()).toBe('session-1')
+
+    // Phase B — user clicks Retry on the SAME stranded session. resumeSession
+    // clears both latches at entry; the exhausted latch's armed->cleared edge
+    // must reset the attempt counter so a fresh bounded cycle runs, not a single
+    // one-shot attempt that immediately re-arms the error. Model the prop
+    // transitions: reflect the armed latch, then clear it (retry), then re-arm
+    // the failure latch on the fresh failure.
+    resumeSession.mockClear()
+    rerender(<RouteResumeHarness {...props} resumeExhaustedSessionId="session-1" resumeFailedSessionId="session-1" />)
+    rerender(<RouteResumeHarness {...props} resumeExhaustedSessionId={null} resumeFailedSessionId={null} />)
+    rerender(<RouteResumeHarness {...props} resumeExhaustedSessionId={null} resumeFailedSessionId="session-1" />)
+
+    // A real retry fires again instead of staying pinned at MAX (which would
+    // dispatch nothing). Without the reset the counter stays >= MAX and this
+    // advance dispatches zero resumes.
+    vi.advanceTimersByTime(8_000)
+    expect(resumeSession.mock.calls.length).toBeGreaterThan(0)
+  })
+
+  it('does not burn retry attempts on unrelated re-renders during the backoff window', () => {
+    vi.useFakeTimers()
+    const props = strandedProps(vi.fn())
+
+    // Mount schedules the first backoff timer. Then re-render repeatedly with a
+    // fresh resumeSession identity (referential instability — a real dep change
+    // for the retry effect) WITHOUT ever letting the timer fire. The old code
+    // incremented the attempt counter at schedule time, so >= MAX re-renders
+    // armed the exhausted error with zero resumes actually dispatched. The fix
+    // only advances the counter when a timer truly fires, so the latch stays
+    // clear no matter how many spurious re-renders happen mid-backoff.
+    const { rerender } = render(
+      <RouteResumeHarness {...props} resumeFailedSessionId="session-1" resumeSession={vi.fn(async () => undefined)} />
+    )
+
+    for (let j = 0; j < 8; j += 1) {
+      rerender(
+        <RouteResumeHarness {...props} resumeFailedSessionId="session-1" resumeSession={vi.fn(async () => undefined)} />
+      )
+    }
+
+    expect($resumeExhaustedSessionId.get()).toBeNull()
+  })
+})

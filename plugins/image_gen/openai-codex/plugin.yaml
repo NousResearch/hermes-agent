@@ -1,0 +1,5 @@
+name: openai-codex
+version: 1.0.0
+description: "OpenAI image generation backed by ChatGPT/Codex OAuth (gpt-image-2 via the native Codex images/generations and images/edits endpoints). Saves generated images to $HERMES_HOME/cache/images/."
+author: NousResearch
+kind: backend

@@ -1,0 +1,103 @@
+"""OpenCode provider profiles (Zen + Go).
+
+Both route api_mode per model in core; these profiles carry the
+chat_completions reasoning translations (GLM-5.2, Kimi K2, DeepSeek, Ox Alpha).
+"""
+
+from typing import Any
+
+from agent import reasoning_effort as re_
+from hermes_cli import __version__ as _HERMES_VERSION
+from providers import register_provider
+from providers.base import ProviderProfile
+
+# Attribution headers (same values as OpenRouter / Vercel / Fireworks); via
+# default_headers so they survive model switches and credential rotation.
+_ATTRIBUTION_HEADERS = {
+    "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+    "X-Title": "Hermes Agent",
+    "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+}
+
+
+def _flat_model_name(model: str | None) -> str:
+    """Bare OpenCode model ID, tolerating aggregator prefixes."""
+    return (model or "").strip().rsplit("/", 1)[-1].lower()
+
+
+# Version-less DeepSeek ids that still carry the thinking/effort knobs on this wire: the retired
+# ``deepseek-reasoner`` alias and the canonical ``deepseek-flash`` (2026-09 Flash refresh), for
+# which the Go relay honours the same top-level ``reasoning_effort``/``thinking`` contract.
+_THINKING_CAPABLE_IDS: frozenset[str] = frozenset({"deepseek-reasoner", "deepseek-flash"})
+
+
+def _is_deepseek_thinking_model(model: str | None) -> bool:
+    m = _flat_model_name(model)
+    return (m.startswith("deepseek-v") and not m.startswith("deepseek-v3")) or m in _THINKING_CAPABLE_IDS
+
+
+def _is_glm_5_2_model(model: str | None) -> bool:
+    """GLM-5.2 across alias spellings (glm-5.2 / glm-5-2 / glm-5p2)."""
+    m = _flat_model_name(model)
+    return any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
+
+
+class OpenCodeGoProfile(ProviderProfile):
+    """OpenCode Go - model-specific reasoning controls."""
+
+    # The relay's default max_tokens (262144) exceeds what Xiaomi accepts for
+    # mimo-v2.5-pro and 400s; keys are normalized via _flat_model_name().
+    _MODEL_MAX_TOKENS: dict[str, int] = {"mimo-v2.5-pro": 131072}
+
+    def get_max_tokens(self, model: str | None) -> int | None:
+        cap = self._MODEL_MAX_TOKENS.get(_flat_model_name(model))
+        return self.default_max_tokens if cap is None else cap
+
+    def build_api_kwargs_extras(
+        self, *, reasoning_config: dict | None = None, model: str | None = None, **context
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        if _is_glm_5_2_model(model):
+            # Native reasoning_effort knob (high/max); server default when unset/disabled.
+            effort = re_.requested_effort(reasoning_config)
+            if effort is None or effort == "none":
+                return {}, {}
+            clamped = re_.clamp_effort(effort, re_.GLM52_EFFORTS, re_.GLM52_OVERRIDES)
+            return {}, {"reasoning_effort": clamped if clamped in re_.GLM52_EFFORTS else "high"}
+        if _flat_model_name(model).startswith("kimi-k2"):
+            if not isinstance(reasoning_config, dict):
+                return {}, {}
+            return re_.thinking_toggle_extras(reasoning_config, re_.KIMI_K2_EFFORTS)
+        if _is_deepseek_thinking_model(model):
+            return re_.thinking_toggle_extras(reasoning_config, re_.DEEPSEEK_V4_EFFORTS, re_.DEEPSEEK_V4_OVERRIDES)
+        return {}, {}
+
+
+class OpenCodeZenProfile(ProviderProfile):
+    """OpenCode Zen - model-specific reasoning controls."""
+
+    def build_api_kwargs_extras(
+        self, *, reasoning_config: dict | None = None, model: str | None = None, **context
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        return re_.ox_alpha_reasoning_extras(reasoning_config, model)
+
+
+opencode_zen = OpenCodeZenProfile(
+    name="opencode-zen", aliases=("opencode", "opencode_zen", "zen"), env_vars=("OPENCODE_ZEN_API_KEY",),
+    base_url="https://opencode.ai/zen/v1", default_headers=dict(_ATTRIBUTION_HEADERS),
+    default_aux_model="gemini-3-flash",
+)
+
+opencode_go = OpenCodeGoProfile(
+    name="opencode-go", aliases=("opencode_go", "go", "opencode-go-sub"), env_vars=("OPENCODE_GO_API_KEY",),
+    base_url="https://opencode.ai/zen/go/v1", default_headers=dict(_ATTRIBUTION_HEADERS),
+    default_aux_model="glm-5",
+    # The Go relay's upstream validates tool content as a strict string: list-type tool
+    # content (native vision embeds) 422s with ``messages.N.tool.content.str Input should
+    # be a valid string`` (Console Go, #104731) or 400s ``text is not set`` (MiMo, #47026),
+    # and the rejected row stays in history so every later call dies too. Images in user
+    # messages are fine, so vision itself keeps working via the text-summary downgrade.
+    supports_vision_tool_messages=False,
+)
+
+register_provider(opencode_zen)
+register_provider(opencode_go)

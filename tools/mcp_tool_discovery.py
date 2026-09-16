@@ -512,6 +512,22 @@ def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
             "pending": sorted(connecting - wanted)}
 
 
+def mcp_servers_missing_from_live() -> List[str]:
+    """Names this scope's config enables that are neither live nor mid-connect — the set
+    :func:`reconcile_mcp_servers_with_config` would connect, computed without connecting anything
+    (the mtime-cached config read plus one locked set compare). Lets a caller reconcile on DRIFT and
+    not only on a config EDIT: a server whose first connect failed never reached ``_servers``, and
+    nothing retries it on its own — a parked server self-probes, one that never connected cannot."""
+    servers = _config._load_mcp_config()
+    wanted = {name for name, cfg in servers.items() if _enabled(cfg)}
+    scope = _core._mcp_registry_scope()
+    with _core._lock:
+        known = {_key_name(key) for key, owner in _core._server_scope_keys.items()
+                 if owner == scope and (key in _core._servers or key in _core._server_connecting)}
+        known |= {_key_name(key) for key in _core._lazy_server_configs}
+    return sorted(wanted - known)
+
+
 def _forget_lazy_server(key) -> None:
     """Drop a schema-cache (lazy) registration whose config entry is gone: its cached tools would
     otherwise stay callable and spawn the server on first use."""

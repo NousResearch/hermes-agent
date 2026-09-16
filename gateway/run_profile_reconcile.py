@@ -237,19 +237,33 @@ def _mcp_config_reconciler(runner=None):
 
     def _reconcile_current(label: str) -> None:
         from tools.mcp_oauth import suppress_interactive_oauth
-        from tools.mcp_tool_discovery import reconcile_mcp_servers_with_config
+        from tools.mcp_tool_discovery import mcp_servers_missing_from_live, reconcile_mcp_servers_with_config
         sig = _sig(get_config_path())
         prev = seen.get(label)
         seen[label] = sig
-        if label not in retry and (prev is None or prev == sig):
+        if prev is None:
             return  # first tick just records the baseline; startup discovery already ran
+        changed = prev != sig
+        # Also reconcile on DRIFT, not only on an edit: a server whose first connect failed never
+        # reached ``_servers``, its config never changes, and nothing else comes back for it — the
+        # parked self-probe belongs to a task that connected at least once. Without this a transient
+        # failure at boot (a cold ``npx`` start, a remote server mid-deploy, an OAuth prompt nobody
+        # can answer on a headless host) costs those tools for the life of the gateway, silently:
+        # the model simply does not have them. The check is a set compare, and the connect it may
+        # trigger is already rate-limited per server by the connect cooldown (30s→600s backoff), so
+        # a chronically failing server is retried on that schedule, not on every tick.
+        drifted = not changed and bool(mcp_servers_missing_from_live())
+        if label not in retry and not changed and not drifted:
+            return
         with suppress_interactive_oauth():
             result = reconcile_mcp_servers_with_config()
         retry.discard(label)
         if result["pending"]:
             retry.add(label)
         if result["removed"] or result["added"]:
-            logger.info("MCP config changed (%s): removed=%s added=%s", label, result["removed"], result["added"])
+            logger.info("MCP %s (%s): removed=%s added=%s",
+                        "config changed" if changed else "server(s) missing", label,
+                        result["removed"], result["added"])
 
     def _tick() -> None:
         from gateway.run import _multiplex_profile_homes, _profile_runtime_scope

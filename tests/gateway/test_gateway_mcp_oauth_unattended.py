@@ -39,6 +39,9 @@ def test_mcp_config_reconciler_runs_only_when_config_changes(monkeypatch, tmp_pa
 
     pending: list = []
     monkeypatch.setattr(_mcp_discovery, "reconcile_mcp_servers_with_config", fake_reconcile)
+    # Nothing is missing here: this test covers the config-EDIT trigger. The drift trigger
+    # (a configured server that never connected) is exercised below.
+    monkeypatch.setattr(_mcp_discovery, "mcp_servers_missing_from_live", lambda: [])
     tick = _mcp_config_reconciler(runner=None)
 
     tick()  # baseline only: startup discovery already reflects this file
@@ -56,3 +59,39 @@ def test_mcp_config_reconciler_runs_only_when_config_changes(monkeypatch, tmp_pa
     tick()
     tick()
     assert calls == [False, False, False], "one retry after a pending teardown, then quiet again"
+
+
+def test_mcp_config_reconciler_retries_a_server_that_never_connected(monkeypatch, tmp_path: Path):
+    """A server whose FIRST connect failed is retried without the config changing.
+
+    It never reached ``_servers``, so the parked self-probe — which belongs to a task that
+    connected at least once — cannot bring it back, and its config file never changes. Before
+    this, a transient failure at boot (cold ``npx`` start, remote server mid-deploy, an OAuth
+    prompt nobody can answer on a headless host) cost those tools for the life of the gateway.
+    """
+    from gateway.run_profile_reconcile import _mcp_config_reconciler
+    from tools import mcp_tool_discovery as _mcp_discovery
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("mcp_servers:\n  linear:\n    url: https://x/mcp\n")
+    calls: list = []
+    missing: list = ["linear"]  # enabled in config, never connected
+
+    monkeypatch.setattr(_mcp_discovery, "mcp_servers_missing_from_live", lambda: list(missing))
+
+    def fake_reconcile():
+        calls.append(list(missing))
+        return {"removed": [], "added": list(missing), "pending": []}
+
+    monkeypatch.setattr(_mcp_discovery, "reconcile_mcp_servers_with_config", fake_reconcile)
+    tick = _mcp_config_reconciler(runner=None)
+
+    tick()  # baseline only, exactly as before: startup discovery is still authoritative
+    assert calls == []
+    tick()
+    assert calls == [["linear"]], "an enabled server that is not live must be retried"
+    missing.clear()  # it connected
+    tick()
+    tick()
+    assert calls == [["linear"]], "and once it is live the chore goes quiet again"

@@ -8,6 +8,8 @@ import os
 import socket
 from pathlib import Path
 
+import pytest
+
 from tools.bot_desktop import browser, runtime
 
 
@@ -237,3 +239,21 @@ def test_headless_shell_override_is_not_a_headed_browser(tmp_path, monkeypatch):
     _, sys_exe = _install_browsers(tmp_path / "with-sys", monkeypatch, playwright=False, system=True)
     monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", str(shell))
     assert browser.executable() == sys_exe  # a real headed browser elsewhere still wins over the override
+
+
+@pytest.mark.parametrize("headed", [True, False])
+def test_headed_browser_env_asks_the_screen_to_start_like_computer_use_does(monkeypatch, headed):
+    """Regression for #110050: `browser.headed: true` + `bot_desktop.auto_start: true` on a fresh headless
+    profile gave the headed child no DISPLAY, because only computer_use called ensure_started_for_tool() and
+    the browser env builder merely READ the published env. First browser use is a first use too — but only
+    when a window is asked for; a headless browser must never bring a screen up."""
+    from tools import browser_tool as bt
+    from tools import browser_tool_cloud as cloud
+
+    calls: list = []
+    monkeypatch.setattr(runtime, "ensure_started_for_tool", lambda: calls.append(1))
+    monkeypatch.setattr(runtime, "published_env", lambda: {})
+    monkeypatch.setattr(cloud, "_is_headed_mode", lambda: headed)
+    env = bt._build_browser_env()
+    assert isinstance(env, dict)
+    assert len(calls) == (1 if headed else 0)

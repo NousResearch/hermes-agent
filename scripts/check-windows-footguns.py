@@ -41,6 +41,53 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 SUPPRESS_MARKER = re.compile(r"#\s*windows-footgun\s*:\s*ok\b", re.IGNORECASE)
 
+# Modules whose members the rules below name explicitly (`os.setsid`,
+# `signal.SIGKILL`, ...). Every such rule is anchored with a leading `\b`, and
+# `_` is a word character, so `\bsignal\.` does NOT match `_signal.SIGKILL` --
+# `import signal as _signal` made a file invisible to all of those rules, and
+# thirteen modules in this repo import signal exactly that way. Aliases are
+# normalised to the canonical name before matching, so one rule covers both
+# spellings instead of every rule needing an alternation.
+ALIASABLE_MODULES = frozenset({"os", "signal", "subprocess", "socket", "asyncio", "shutil"})
+
+_IMPORT_ALIAS = re.compile(
+    r"^\s*import\s+(?P<module>[a-z_]+)\s+as\s+(?P<alias>[A-Za-z_][A-Za-z0-9_]*)\s*(?:#.*)?$"
+)
+
+
+def module_aliases(text: str) -> dict[str, str]:
+    """Map ``alias -> canonical`` for ``import <aliasable module> as <alias>``.
+
+    Picks up function-local imports too (``import signal as _signal`` inside a
+    def), which is how most of them are written here. An alias that shadows a
+    different canonical name (``import signal as os``) is skipped rather than
+    guessed at.
+    """
+    aliases: dict[str, str] = {}
+    for line in text.splitlines():
+        match = _IMPORT_ALIAS.match(line)
+        if match is None:
+            continue
+        module, alias = match.group("module"), match.group("alias")
+        if module in ALIASABLE_MODULES and alias != module and alias not in ALIASABLE_MODULES:
+            aliases[alias] = module
+    return aliases
+
+
+def alias_normalizer(aliases: dict[str, str]):
+    """Return ``f(code) -> code`` rewriting ``alias.`` to ``canonical.``.
+
+    ``None`` when there is nothing to rewrite, so the common case costs no
+    substitution. Rewriting the text rather than the rule patterns also makes
+    their existing ``(?<!hasattr\\()`` lookbehinds and the GUARD_HINTS tokens
+    work for aliased spellings for free.
+    """
+    if not aliases:
+        return None
+    pattern = re.compile(r"\b(" + "|".join(map(re.escape, sorted(aliases))) + r")\.")
+    return lambda code: pattern.sub(lambda m: aliases[m.group(1)] + ".", code)
+
+
 # Line-level guard hints. If a line contains any of these tokens, we assume
 # the programmer wrote the line in full awareness of the Windows pitfall —
 # e.g. `if hasattr(os, 'setsid'): ... os.setsid()`, or the classic
@@ -599,6 +646,11 @@ def scan_file(path: Path, footguns: list[Footgun]) -> list[tuple[int, str, Footg
         return []
     matches: list[tuple[int, str, Footgun]] = []
 
+    # `import signal as _signal` etc. -- normalised before matching so the
+    # `\b`-anchored rules and GUARD_HINTS see the canonical spelling. The
+    # ORIGINAL line is what gets reported, so output still shows real source.
+    normalize = alias_normalizer(module_aliases(text))
+
     # Track whether we're inside a triple-quoted string (docstring/raw block).
     # Simple state machine — handles both ''' and """, toggled by the FIRST
     # triple-quote we see; we don't try to handle nested or f-string cases.
@@ -646,9 +698,12 @@ def scan_file(path: Path, footguns: list[Footgun]) -> list[tuple[int, str, Footg
         # Skip if the line has an obvious guard — e.g. hasattr/getattr/
         # shutil.which or a platform check. False negatives are acceptable;
         # the inline suppression marker is the authoritative override.
-        if any(hint in line for hint in GUARD_HINTS):
+        guard_text = normalize(line) if normalize else line
+        if any(hint in guard_text for hint in GUARD_HINTS):
             continue
         code = _strip_code(code_for_scan)
+        if normalize:
+            code = normalize(code)
         if not code.strip():
             continue
         for fg in footguns:

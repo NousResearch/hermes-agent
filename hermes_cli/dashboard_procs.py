@@ -298,7 +298,7 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
     def _send(pid: int, sig) -> None:
         try:
             os.kill(pid, sig)
-            if sig == _signal.SIGKILL:
+            if sig == _signal.SIGKILL:  # windows-footgun: ok — POSIX arm; line 399 dispatches win32 to _kill_pids_windows
                 killed.append(pid)
         except ProcessLookupError:
             killed.append(pid)  # already gone — count as killed
@@ -315,7 +315,7 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
         killed.extend(p for p in pending if p not in alive)
         pending = alive
     for pid in pending:
-        _send(pid, _signal.SIGKILL)
+        _send(pid, _signal.SIGKILL)  # windows-footgun: ok — POSIX arm; line 399 dispatches win32 to _kill_pids_windows
 
 
 def _kill_stale_dashboard_processes(

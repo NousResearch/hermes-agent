@@ -1437,6 +1437,7 @@ DEFAULT_CONFIG = {
         "free_response_channels": "",  # comma-separated channel IDs answered without mention
         "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)
         "auto_thread": True,  # auto-create threads on @mention in channels (like Slack)
+        "auto_thread_free_response": False,  # let mention-free free-response channels auto-thread too
         "thread_require_mention": False,  # require @mention in threads too (multi-bot threads)
         # Multi-bot rooms: another bot must type @thisbot (a reply/quote alone won't) to trigger a
         # reply — stops two bots replying to each other forever. Humans unaffected.

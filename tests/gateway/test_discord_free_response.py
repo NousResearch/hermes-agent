@@ -110,6 +110,7 @@ def adapter(monkeypatch):
         "DISCORD_THREAD_REQUIRE_MENTION",
         "DISCORD_FREE_RESPONSE_CHANNELS",
         "DISCORD_AUTO_THREAD",
+        "DISCORD_AUTO_THREAD_FREE_RESPONSE",
         "DISCORD_NO_THREAD_CHANNELS",
         "DISCORD_ALLOWED_CHANNELS",
         "DISCORD_IGNORED_CHANNELS",
@@ -305,6 +306,74 @@ async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypa
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "casual chat in free-response channel"
     assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_channel_auto_threads_when_opted_in(adapter, monkeypatch):
+    """``auto_thread_free_response`` lets a mention-free channel thread too.
+
+    Free-response channels are excluded from auto-threading by default, so a
+    channel could be mention-free OR threaded, never both. The opt-in
+    (config.yaml ``discord.auto_thread_free_response`` /
+    ``DISCORD_AUTO_THREAD_FREE_RESPONSE``) restores threading in free-response
+    channels; ``no_thread_channels`` remains the hard opt-out.
+    """
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_FREE_RESPONSE", "true")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
+
+    thread = SimpleNamespace(id=4242, name="thread me please", parent=None, guild=None)
+    adapter._auto_create_thread = AsyncMock(return_value=thread)
+
+    message = make_message(channel=FakeTextChannel(channel_id=789), content="thread me please")
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+    assert event.source.chat_id == "4242"
+    assert event.text == "thread me please"
+
+    # The opt-in relaxes only the free-response branch: a channel that is ALSO in
+    # no_thread_channels still replies inline (that gate is evaluated unconditionally).
+    adapter._auto_create_thread.reset_mock()
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "789")
+
+    await adapter._handle_message(make_message(channel=FakeTextChannel(channel_id=789), content="stay inline"))
+
+    adapter._auto_create_thread.assert_not_awaited()
+    assert adapter.handle_message.await_args.args[0].source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_auto_thread_from_yaml_config_only(adapter, monkeypatch):
+    """``config.yaml`` alone (no DISCORD_* env) must reach routing.
+
+    The supported YAML path seeds ``PlatformConfig.extra`` via
+    ``_apply_yaml_config``; an env-only read would silently ignore the opt-in.
+    """
+    from plugins.platforms.discord.adapter import _apply_yaml_config
+
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD_FREE_RESPONSE", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+
+    seeded = _apply_yaml_config({}, {"auto_thread_free_response": True})
+    assert seeded and seeded.get("auto_thread_free_response") is True
+    adapter.config.extra.update(seeded)
+
+    thread = SimpleNamespace(id=4244, name="yaml opt-in", parent=None, guild=None)
+    adapter._auto_create_thread = AsyncMock(return_value=thread)
+
+    message = make_message(channel=FakeTextChannel(channel_id=789), content="thread me from yaml")
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    assert adapter.handle_message.await_args.args[0].source.chat_type == "thread"
 
 
 @pytest.mark.asyncio

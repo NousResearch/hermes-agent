@@ -408,6 +408,11 @@ platforms:
       # of threads. Messages inside existing threads still reply in-thread.
       reply_in_thread: true
 
+      # Channel IDs that should get an immediate visible `Working…` reply.
+      # Hermes edits that placeholder into the final answer. DMs keep Slack's
+      # native Assistant status instead. Empty by default.
+      working_message_channels: []
+
       # Also post thread replies to the main channel
       # (Slack's "Also send to channel" feature).
       # Only the first chunk of the first reply is broadcast.
@@ -468,6 +473,7 @@ platforms:
 |-----|---------|-------------|
 | `platforms.slack.reply_to_mode` | `"first"` | Threading mode for multi-part messages: `"off"`, `"first"`, or `"all"` |
 | `platforms.slack.extra.reply_in_thread` | `true` | When `false`, channel messages get direct replies instead of threads. Messages inside existing threads still reply in-thread. |
+| `platforms.slack.extra.working_message_channels` | `[]` | Channel IDs that receive an immediate visible `Working…` placeholder, edited into the final answer. Works with threaded and flat replies; does not affect DMs. |
 | `platforms.slack.extra.reply_broadcast` | `false` | When `true`, thread replies are also posted to the main channel. Only the first chunk is broadcast. |
 | `platforms.slack.extra.unfurl_links` | Slack default | Set to `false` to suppress automatic previews for linked web pages while preserving clickable links. When either unfurl key is set, media captions are posted as a separate message *before* the file (Slack's upload API cannot carry unfurl controls), and native draft streaming falls back to edit-based delivery. |
 | `platforms.slack.extra.unfurl_media` | Slack default | Set to `false` to suppress automatic media previews while preserving clickable links. Same caption-ordering and streaming notes as `unfurl_links`. |

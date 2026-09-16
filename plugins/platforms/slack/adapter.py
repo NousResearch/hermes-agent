@@ -1,6 +1,7 @@
 """Slack platform adapter: slack-bolt Socket Mode (messages, slash commands, threads)."""
 
 import asyncio
+import contextlib
 import contextvars
 import functools
 import inspect
@@ -1081,6 +1082,12 @@ class SlackAdapter(BasePlatformAdapter):
         # never reached the session. Keys follow the thread session-key scoping. See #63530.
         self._thread_rehydration_checked: set = set()
         self._reacting_message_ids: set = set()
+        # One temporary channel progress message per accepted session/root.
+        # DMs keep Slack's native Assistant status surface instead.
+        self._channel_working_messages: Dict[Tuple[str, str, str], str] = {}
+        self._channel_working_message_ts: set = set()
+        self._channel_working_inflight: Dict[Tuple[str, str, str], asyncio.Event] = {}
+        self._channel_working_tasks: set[asyncio.Task] = set()
         # Active Assistant statuses by (team_id, channel_id, thread_ts) so cleanup
         # can't clear an overlapping Slack Connect workspace; evicted oldest-thread-first.
         self._active_status_threads: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
@@ -3084,8 +3091,100 @@ class SlackAdapter(BasePlatformAdapter):
         marker = self._workspace_message_marker(team_id, ts) if ts else None
         return (ts, team_id, marker) if ts and marker in self._reacting_message_ids else None
 
+    @staticmethod
+    def _is_channel_event(event: MessageEvent) -> bool:
+        """True for Slack channels and MPIMs, but not one-to-one DMs."""
+        if getattr(event, "message_type", None) == MessageType.COMMAND:
+            return False
+        raw = getattr(event, "raw_message", None)
+        channel_type = raw.get("channel_type") if isinstance(raw, dict) else None
+        if channel_type:
+            return channel_type != "im"
+        return getattr(event.source, "chat_type", None) != "dm"
+
+    def _channel_working_key(self, event: MessageEvent) -> Tuple[str, str, str]:
+        source = event.source
+        return (
+            str(getattr(source, "scope_id", "") or ""),
+            str(getattr(source, "chat_id", "") or ""),
+            str(getattr(source, "thread_id", "") or ""),
+        )
+
+    async def _start_channel_working(self, event: MessageEvent) -> None:
+        raw_channels = self.config.extra.get("working_message_channels", [])
+        enabled_channels = (
+            {str(value) for value in raw_channels}
+            if isinstance(raw_channels, list)
+            else {part.strip() for part in str(raw_channels).split(",") if part.strip()}
+        )
+        if (
+            not self._app
+            or not getattr(self.config, "typing_indicator", True)
+            or not self._is_channel_event(event)
+            or str(getattr(event.source, "chat_id", "") or "") not in enabled_channels
+        ):
+            return
+        key = self._channel_working_key(event)
+        if key in self._channel_working_messages:
+            return
+        if key in self._channel_working_inflight:
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    asyncio.shield(self._channel_working_inflight[key].wait()), timeout=5.0)
+            return
+        kwargs: Dict[str, Any] = {"channel": key[1], "text": "Working…"}
+        if key[2]:
+            kwargs["thread_ts"] = key[2]
+        completed = asyncio.Event()
+        self._channel_working_inflight[key] = completed
+
+        async def _post_and_record() -> None:
+            try:
+                result = await self._get_client(
+                    key[1], team_id=key[0] or None).chat_postMessage(**kwargs)
+                ts = result.get("ts") if hasattr(result, "get") else None
+                if ts:
+                    self._channel_working_messages[key] = str(ts)
+                    self._channel_working_message_ts.add(
+                        self._workspace_message_marker(key[0], str(ts)))
+            except Exception as exc:
+                logger.debug("[Slack] temporary Working message failed: %s", exc)
+            finally:
+                self._channel_working_inflight.pop(key, None)
+                completed.set()
+
+        task = asyncio.create_task(_post_and_record())
+        self._channel_working_tasks.add(task)
+        task.add_done_callback(self._channel_working_tasks.discard)
+        await asyncio.shield(task)
+
+    async def _stop_channel_working(self, event: MessageEvent) -> None:
+        if not self._is_channel_event(event):
+            return
+        key = self._channel_working_key(event)
+        inflight = self._channel_working_inflight.get(key)
+        if inflight is not None:
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(inflight.wait()), timeout=5.0)
+        ts = self._channel_working_messages.get(key)
+        if not ts or not self._app:
+            return
+        for attempt in range(3):
+            try:
+                await self._get_client(key[1], team_id=key[0] or None).chat_delete(
+                    channel=key[1], ts=ts)
+                self._channel_working_messages.pop(key, None)
+                self._channel_working_message_ts.discard(
+                    self._workspace_message_marker(key[0], ts))
+                return
+            except Exception as exc:
+                logger.debug("[Slack] temporary Working message cleanup failed: %s", exc)
+                if attempt < 2:
+                    await asyncio.sleep(0.25 * (attempt + 1))
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""
+        await self._start_channel_working(event)
         target = self._reacting_target(event)
         if target is None:
             return
@@ -3096,6 +3195,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction."""
+        await self._stop_channel_working(event)
         target = self._reacting_target(event)
         if target is None:
             return
@@ -4476,9 +4576,14 @@ class SlackAdapter(BasePlatformAdapter):
             is_command_text=is_command_text, channel_id=channel_id, team_id=team_id, ts=ts,
             user_id=user_id, thread_ts=thread_ts, is_dm=is_dm, media_urls=media_urls,
             media_types=media_types, channel_context=channel_context)
-        # React only when directly addressed; MPIMs are shared, so they need a
-        # mention like any channel.
-        if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
+        # This point is after every routing/auth/mention gate: every accepted
+        # message gets the same reaction lifecycle, including free-response
+        # channel messages that did not explicitly mention the bot.
+        if (
+            self._reactions_enabled()
+            and (channel_type != "mpim" or is_mentioned)
+            and not event.get("_hermes_reaction")
+        ):
             self._track_reacting_message(team_id, ts)
         # App-context is per-turn UI state: in the user message, not SessionSource (would rebuild
         # the agent per view switch and leak stale context). Inert label, never a channel body.
@@ -5677,6 +5782,8 @@ class SlackAdapter(BasePlatformAdapter):
         parent_text = ""
         for msg in messages:
             msg_ts = msg.get("ts", "")
+            if self._workspace_message_marker(team_id, msg_ts) in self._channel_working_message_ts:
+                continue
             # The triggering message is delivered as the user turn itself.
             if msg_ts == current_ts:
                 continue

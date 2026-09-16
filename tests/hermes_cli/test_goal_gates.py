@@ -1,6 +1,8 @@
 """Tests for /goal quality gates (GoalGate, run_gate, GoalManager gate flow)."""
 
 import json
+import subprocess
+import sys
 import time
 from unittest.mock import patch
 
@@ -77,6 +79,35 @@ def test_run_gate_timeout():
     assert "timed out" in out
 
 
+def test_run_gate_keeps_diagnostics_when_a_byte_will_not_decode(tmp_path):
+    """A gate's output tail must survive bytes the decoder rejects.
+
+    A gate runs whatever the operator configured, so its output is arbitrary
+    bytes — a test runner's checkmarks or CJK on a non-UTF-8 Windows console,
+    or stray binary. Decoding strictly means one bad byte kills subprocess's
+    reader thread, stdout comes back None, and the tail lands empty: the agent
+    is told the gate failed with nothing to act on, so it burns every retry and
+    the goal auto-pauses.
+    """
+    script = tmp_path / "gate.py"
+    script.write_text(
+        "import os, sys\n"
+        "os.write(1, b'FAILED: 3 tests broken \\x90\\x8d rerun me\\n')\n"
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+
+    passed, code, out = run_gate(
+        GoalGate(command=f'"{sys.executable}" "{script}"'),
+    )
+
+    assert passed is False
+    assert code == 1
+    assert "FAILED: 3 tests broken" in out, (
+        f"gate diagnostics were lost to a decode failure (tail={out!r})"
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────
 # GoalManager gate management
 # ──────────────────────────────────────────────────────────────────────
@@ -131,8 +162,7 @@ def test_status_line_mentions_gates():
 def test_failing_gate_short_circuits_judge():
     mgr = _mgr_with_goal("gate-fail-sid")
     mgr.add_gate("exit 5")
-    with patch("hermes_cli.goals.judge_goal") as mock_judge, \
-         patch("hermes_cli.goals.workspace_fingerprint", return_value=""):
+    with patch("hermes_cli.goals.judge_goal") as mock_judge:
         decision = mgr.evaluate_after_turn("I think it's done!")
     mock_judge.assert_not_called()
     assert decision["verdict"] == "gate_failed"
@@ -160,8 +190,7 @@ def test_gate_retry_exhaustion_pauses_goal():
     mgr = _mgr_with_goal("gate-exhaust-sid")
     mgr.add_gate("exit 1")
     mgr.state.gates[0].max_retries = 2
-    with patch("hermes_cli.goals.judge_goal") as mock_judge, \
-         patch("hermes_cli.goals.workspace_fingerprint", return_value=""):
+    with patch("hermes_cli.goals.judge_goal") as mock_judge:
         d1 = mgr.evaluate_after_turn("attempt one")
         d2 = mgr.evaluate_after_turn("attempt two")
         d3 = mgr.evaluate_after_turn("attempt three")
@@ -174,38 +203,34 @@ def test_gate_retry_exhaustion_pauses_goal():
     assert "gate" in (mgr.state.paused_reason or "")
 
 
-def test_unchanged_workspace_skips_rerun():
-    mgr = _mgr_with_goal("gate-unchanged-sid")
-    mgr.add_gate("exit 1")
-    with patch("hermes_cli.goals.workspace_fingerprint", return_value="fp-1"), \
-         patch("hermes_cli.goals.judge_goal"):
-        mgr.evaluate_after_turn("turn 1")
-        # Second turn, same fingerprint — run_gate must NOT run again.
-        with patch("hermes_cli.goals.run_gate") as mock_run:
-            d2 = mgr.evaluate_after_turn("turn 2")
-        mock_run.assert_not_called()
-    assert d2["verdict"] == "gate_failed"
-    assert "unchanged" in d2["message"]
+def test_failed_gate_reruns_when_untracked_file_content_changes(tmp_path, monkeypatch):
+    """#110649: `git status --porcelain` reports the same `?? untracked/` for `before` and
+    `after`, so a status-based cache replayed the stale failure; the gate must execute again."""
+    for argv in (["init", "-q"], ["config", "user.email", "t@example.com"], ["config", "user.name", "T"],
+                 ["commit", "-q", "--allow-empty", "-m", "baseline"]):
+        subprocess.run(["git", *argv], cwd=tmp_path, check=True, capture_output=True)
+    result = tmp_path / "untracked" / "result.txt"
+    result.parent.mkdir()
+    result.write_text("before", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
 
-
-def test_changed_workspace_reruns_gate():
-    mgr = _mgr_with_goal("gate-changed-sid")
-    mgr.add_gate("exit 1")
-    with patch("hermes_cli.goals.judge_goal"):
-        with patch("hermes_cli.goals.workspace_fingerprint", return_value="fp-1"):
-            mgr.evaluate_after_turn("turn 1")
-        with patch("hermes_cli.goals.workspace_fingerprint", return_value="fp-2"), \
-             patch("hermes_cli.goals.run_gate", return_value=(False, 1, "still red")) as mock_run:
-            mgr.evaluate_after_turn("turn 2")
-        mock_run.assert_called_once()
+    mgr = _mgr_with_goal("gate-content-sid")
+    mgr.add_gate(f"grep -q after {result}")
+    with patch("hermes_cli.goals.judge_goal", return_value=("done", "ok", False, None, False)) as judge:
+        d1 = mgr.evaluate_after_turn("turn 1")
+        result.write_text("after", encoding="utf-8")
+        d2 = mgr.evaluate_after_turn("turn 2")
+    assert d1["verdict"] == "gate_failed"
+    assert d2["verdict"] == "done"
+    judge.assert_called_once()
+    assert mgr.state.gates[0].attempts == 0
 
 
 def test_gate_continuation_respects_turn_budget():
     mgr = GoalManager(session_id="gate-budget-sid", default_max_turns=1)
     mgr.set("budget goal")
     mgr.add_gate("exit 1")
-    with patch("hermes_cli.goals.judge_goal"), \
-         patch("hermes_cli.goals.workspace_fingerprint", return_value=""):
+    with patch("hermes_cli.goals.judge_goal"):
         decision = mgr.evaluate_after_turn("only turn")
     assert decision["status"] == "paused"
     assert decision["should_continue"] is False

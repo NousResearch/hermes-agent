@@ -6,6 +6,14 @@ description: "Step-by-step guide to running Hermes Agent entirely on your own ma
 
 # Run Hermes Locally with Ollama — Zero API Cost
 
+:::tip Desktop users: there's a one-click path
+On the Hermes desktop app, **Settings → Providers → Local Models** installs
+and manages a local llama.cpp server for you — model downloads, memory
+fitting, and context sizing included. See [Local Models](/user-guide/local-models).
+This guide is for manual setup: Ollama specifically, CLI-first workflows,
+or servers you want to run yourself.
+:::
+
 ## The Problem
 
 Cloud LLM APIs charge per token. A heavy coding session can cost $5–20. For personal projects, learning, or privacy-sensitive work, that adds up — and you're sending every conversation to a third party.
@@ -289,9 +297,9 @@ What helps:
 
 ### Model doesn't follow tool calls
 
-Smaller models (3B, 7B) sometimes ignore tool-call instructions and produce plain text instead of structured function calls. Solutions:
+Models without tool-call support produce plain text instead of structured function calls. Solutions:
 
-- **Use a bigger model** — `gemma4:31b` or `gemma2:27b` handle tool calls much better than 3B/7B models.
+- **Use a model with tool-call support** — of the models listed above, only `gemma4:31b` has reliable tool calling.
 - **Hermes has auto-repair** — it detects malformed tool calls and attempts to fix them automatically.
 - **Set up a fallback** — if the local model fails 3 times, Hermes falls back to a cloud provider.
 

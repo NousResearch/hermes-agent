@@ -89,20 +89,33 @@ jobs:
       - name: Produce patch
         id: produce-patch
         run: |
-          if git diff --quiet; then
+          # Exclude every file that the dep-version-gate ruleset guards
+          # (package manifests, eslint configs, workflow files). A patch
+          # that contains one of these files makes the bot PR wait for a
+          # team review, and auto-merge then stops. The check step in
+          # typecheck.yml still reports their lint errors.
+          # The (glob) magic makes "**/" also match files at the repo
+          # root, which plain pathspec wildcards do not.
+          EXCLUDES=(
+            ':(exclude,glob)**/package.json'
+            ':(exclude,glob)**/package-lock.json'
+            ':(exclude,glob)**/eslint.config.*'
+            ':(exclude,glob).github/**'
+          )
+          if git diff --quiet -- . "${EXCLUDES[@]}"; then
             echo "No fixes needed."
             echo "has-fixes=false" >> "$GITHUB_OUTPUT"
             # Empty patch signals "nothing to do" to apply-patch.
             : > js-fix.patch
           else
-            git diff > js-fix.patch
+            git diff -- . "${EXCLUDES[@]}" > js-fix.patch
             echo "has-fixes=true" >> "$GITHUB_OUTPUT"
             echo "Patch size: $(wc -c < js-fix.patch) bytes"
 
             # Reject patches that touch anything outside JS/TS/JSON sources.
             # `npm run fix` should only ever modify those; anything else means
             # eslint/prettier or a plugin went rogue and we refuse to ship it.
-            BAD=$(git diff --name-only | grep -vE '\.(js|cjs|mjs|ts|tsx|json)$' || true)
+            BAD=$(git diff --name-only -- . "${EXCLUDES[@]}" | grep -vE '\.(js|cjs|mjs|ts|tsx|json)$' || true)
             if [ -n "$BAD" ]; then
               echo "::error::Refusing to upload patch — touches disallowed files:"
               echo "$BAD"

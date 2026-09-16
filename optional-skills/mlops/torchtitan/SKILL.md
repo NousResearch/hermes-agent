@@ -1,5 +1,5 @@
 ---
-name: distributed-llm-pretraining-torchtitan
+name: torchtitan
 description: Pretrain LLMs at scale with PyTorch 4D parallelism.
 version: 1.0.1
 author: Orchestra Research

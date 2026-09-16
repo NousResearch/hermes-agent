@@ -1,10 +1,63 @@
 from __future__ import annotations
 
+import sqlite3
 from unittest.mock import MagicMock
 
 import agent.file_safety as fs
 
+import pytest
+
+import plugins.memory.retaindb as retaindb
 from plugins.memory.retaindb import RetainDBMemoryProvider
+
+
+def test_write_queue_closes_owner_connection(tmp_path):
+    queue = retaindb._WriteQueue(object(), tmp_path / "retaindb.db")
+    owner_conn = queue._local.conn
+    worker = retaindb.threading.Thread(target=queue._get_conn)
+    worker.start()
+    worker.join()
+    queue.shutdown()
+    assert not queue._connections
+    with pytest.raises(sqlite3.ProgrammingError):
+        owner_conn.execute("SELECT 1")
+
+
+def test_write_queue_ignores_enqueue_after_shutdown(tmp_path):
+    queue = retaindb._WriteQueue(object(), tmp_path / "retaindb.db")
+    queue.shutdown()
+
+    queue.enqueue("user", "session", [])
+
+    assert not queue._connections
+
+
+def test_prefetch_does_not_spawn_when_previous_batch_is_alive(monkeypatch):
+    provider = RetainDBMemoryProvider()
+    provider._client = object()
+
+    class _RunningThread:
+        def join(self, timeout):
+            pass
+
+        def is_alive(self):
+            return True
+
+    previous = _RunningThread()
+    provider._prefetch_threads = [previous]
+    created = []
+
+    class _Thread:
+        def __init__(self, *args, **kwargs):
+            created.append((args, kwargs))
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(retaindb.threading, "Thread", _Thread)
+    provider.queue_prefetch("query")
+    assert provider._prefetch_threads == [previous]
+    assert not created
 
 
 def test_upload_file_rejects_hermes_credential_store(tmp_path, monkeypatch):

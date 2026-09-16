@@ -99,7 +99,7 @@ export function renderActionItem(
 
 interface ActionsMenuProps extends Pick<
   React.ComponentProps<typeof DropdownMenuContent>,
-  'align' | 'side' | 'sideOffset'
+  'align' | 'side' | 'sideOffset' | 'onCloseAutoFocus'
 > {
   /** The trigger (a kebab button). Wrapped in `DropdownMenuTrigger asChild`. */
   children: React.ReactNode
@@ -109,6 +109,12 @@ interface ActionsMenuProps extends Pick<
   contentClassName?: string
   open?: boolean
   onOpenChange?: (open: boolean) => void
+}
+
+// Let the existing presence boundary decide when item construction is needed.
+// Calling `items` in the wrapper builds every closed row menu on each refresh.
+function ActionItems({ items, kit }: { items: ActionsMenuProps['items']; kit: MenuKit }) {
+  return <>{items(kit)}</>
 }
 
 /**
@@ -122,6 +128,7 @@ export function ActionsMenu({
   children,
   contentClassName,
   items,
+  onCloseAutoFocus,
   onOpenChange,
   open,
   side,
@@ -134,10 +141,11 @@ export function ActionsMenu({
         align={align}
         aria-label={ariaLabel}
         className={contentClassName}
+        onCloseAutoFocus={onCloseAutoFocus}
         side={side}
         sideOffset={sideOffset}
       >
-        {items(DROPDOWN_KIT)}
+        <ActionItems items={items} kit={DROPDOWN_KIT} />
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -152,6 +160,7 @@ interface ActionsContextMenuProps {
   contentClassName?: string
   /** Skip the wrapper (render children bare) — e.g. nothing is actionable yet. */
   disabled?: boolean
+  onCloseAutoFocus?: (event: Event) => void
 }
 
 /**
@@ -163,7 +172,8 @@ export function ActionsContextMenu({
   children,
   contentClassName,
   disabled,
-  items
+  items,
+  onCloseAutoFocus
 }: ActionsContextMenuProps) {
   if (disabled) {
     return <>{children}</>
@@ -172,8 +182,8 @@ export function ActionsContextMenu({
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
-      <ContextMenuContent aria-label={ariaLabel} className={contentClassName}>
-        {items(CONTEXT_KIT)}
+      <ContextMenuContent aria-label={ariaLabel} className={contentClassName} onCloseAutoFocus={onCloseAutoFocus}>
+        <ActionItems items={items} kit={CONTEXT_KIT} />
       </ContextMenuContent>
     </ContextMenu>
   )

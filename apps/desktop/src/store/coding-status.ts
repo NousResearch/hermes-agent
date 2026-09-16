@@ -11,7 +11,13 @@ import {
   ALL_PROJECTS,
   projectRootCwd
 } from './projects'
-import { $busy, $currentCwd, $selectedStoredSessionId } from './session'
+import {
+  $busy,
+  $currentCwd,
+  $selectedStoredSessionId,
+  $workspaceCwdOwner,
+  workspaceCwdBelongsToSelectedSession
+} from './session'
 import { $focusedRuntimeId, $sessionStates } from './session-states'
 import { $workspaceChangeTick } from './workspace-events'
 
@@ -40,10 +46,13 @@ export const $repoWorktreesByCwd = atom<Record<string, HermesGitWorktree[]>>({})
 // The PRIMARY (main pane) view — the active session's slice of the per-cwd
 // truth. Existing consumers (keybind gate, base-branch picker, file tree) keep
 // reading these; only surfaces that can live in ANOTHER worktree (tile rails)
-// need the per-cwd accessors below.
+// need the per-cwd accessors below. During a conversation switch `$currentCwd`
+// can still name the previous conversation's path, so ownership hides only this
+// primary slice; the per-cwd cache stays available to any tile that genuinely
+// owns that worktree (#71254).
 export const $repoStatus: ReadableAtom<HermesRepoStatus | null> = computed(
-  [$repoStatusByCwd, $currentCwd],
-  (byCwd, cwd) => byCwd[normalizeCwd(cwd) ?? ''] ?? null
+  [$repoStatusByCwd, $currentCwd, $selectedStoredSessionId, $workspaceCwdOwner],
+  (byCwd, cwd) => (workspaceCwdBelongsToSelectedSession() ? (byCwd[normalizeCwd(cwd) ?? ''] ?? null) : null)
 )
 
 export const $repoStatusLoading = atom(false)
@@ -51,8 +60,9 @@ export const $repoStatusLoading = atom(false)
 // The repo's real worktrees (for the coding rail's "jump to a worktree" menu).
 // Refreshed on the same edges as the status probe; empty off a repo.
 export const $repoWorktrees: ReadableAtom<HermesGitWorktree[]> = computed(
-  [$repoWorktreesByCwd, $currentCwd],
-  (byCwd, cwd) => byCwd[normalizeCwd(cwd) ?? ''] ?? EMPTY_WORKTREES
+  [$repoWorktreesByCwd, $currentCwd, $selectedStoredSessionId, $workspaceCwdOwner],
+  (byCwd, cwd) =>
+    workspaceCwdBelongsToSelectedSession() ? (byCwd[normalizeCwd(cwd) ?? ''] ?? EMPTY_WORKTREES) : EMPTY_WORKTREES
 )
 
 // Reference-stable per-cwd slices, so any number of rails can each subscribe
@@ -84,8 +94,9 @@ export function repoStatusForCwd(cwd?: null | string): ReadableAtom<HermesRepoSt
  * Is this path a git repo? This function reads the probe cache, and probes on
  * demand when the cache has no entry for the path. Use it to validate any repo
  * that was picked out of candidate FOLDERS: a path in a project row is not
- * evidence that git can branch from it. False on a remote backend, because
- * there is no local git truth to probe.
+ * evidence that git can branch from it. On a remote gateway the probe is
+ * backend-routed (`desktopGit()` returns the REST mirror), so a VPS path is
+ * judged by the VPS's git — not by this machine's filesystem (#81724).
  */
 export async function isGitRepoPath(cwd: string): Promise<boolean> {
   const key = normalizeCwd(cwd)

@@ -1,12 +1,15 @@
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen, within } from '@testing-library/react'
+import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { __resetElapsedTimerRegistryForTests } from '@/components/chat/activity-timer'
 import { I18nProvider } from '@/i18n'
 import { $providerWaitSessions, setSessionProviderWait } from '@/store/provider-wait'
-import { $activeSessionId, $turnStartedAt } from '@/store/session'
+import { $activeSessionId, $busy, $turnStartedAt } from '@/store/session'
+import { $subagentsBySession, type SubagentProgress } from '@/store/subagents'
 
-import { ResponseLoadingIndicator } from './status'
+import { BackgroundResumeNotice, ResponseLoadingIndicator } from './status'
 
 function renderIndicator() {
   return render(
@@ -84,5 +87,71 @@ describe('status line', () => {
     const { container } = renderIndicator()
 
     expect(container.querySelector('[role="status"]')?.hasAttribute('data-conversation-scaffold')).toBe(true)
+  })
+})
+
+const runningSubagent = (id: string, activity: string): SubagentProgress => ({
+  filesRead: [],
+  filesWritten: [],
+  goal: 'Background work',
+  id,
+  parentId: null,
+  startedAt: 0,
+  status: 'running',
+  stream: [{ at: 0, kind: 'progress', text: activity }],
+  taskCount: 1,
+  taskIndex: 0,
+  updatedAt: 0
+})
+
+const mountedView = (runtimeId: string, busy = false): SessionView => ({
+  ...({} as SessionView),
+  $busy: atom(busy),
+  $runtimeId: atom<null | string>(runtimeId),
+  kind: 'tile'
+})
+
+describe('BackgroundResumeNotice session scope', () => {
+  beforeEach(() => {
+    $activeSessionId.set('session-b')
+    $busy.set(true)
+    $subagentsBySession.set({
+      'session-a': [runningSubagent('owner-child', 'Owner activity')]
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    $activeSessionId.set(null)
+    $busy.set(false)
+    $subagentsBySession.set({})
+  })
+
+  it('paints background wait only in the simultaneously mounted owner surface', () => {
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <section data-testid="owner-surface">
+          <SessionViewProvider value={mountedView('session-a')}>
+            <BackgroundResumeNotice />
+          </SessionViewProvider>
+        </section>
+        <section data-testid="other-surface">
+          <SessionViewProvider value={mountedView('session-b')}>
+            <BackgroundResumeNotice />
+          </SessionViewProvider>
+        </section>
+      </I18nProvider>
+    )
+
+    const owner = within(screen.getByTestId('owner-surface'))
+    const other = within(screen.getByTestId('other-surface'))
+
+    expect(owner.getByRole('status').textContent).not.toContain('Owner activity')
+    expect(other.queryByRole('status')).toBeNull()
+
+    act(() => $subagentsBySession.set({ 'session-a': [] }))
+
+    expect(owner.queryByRole('status')).toBeNull()
+    expect(other.queryByRole('status')).toBeNull()
   })
 })

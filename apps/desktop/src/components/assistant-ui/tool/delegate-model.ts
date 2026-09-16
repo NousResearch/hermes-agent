@@ -18,6 +18,8 @@ export interface DelegateRow {
   model?: string
   /** The child's own session id, when it reported one — opens its window. */
   sessionId?: string
+  /** Persisted child identity from the delegate result, when available. */
+  subagentId?: string
   status: DelegateRowStatus
 }
 
@@ -70,6 +72,14 @@ function dispatchedGoals(result: unknown): string[] {
   return Array.isArray(record.goals) ? record.goals.filter((goal): goal is string => typeof goal === 'string') : []
 }
 
+function persistedSubagentIds(result: unknown): Array<string | undefined> {
+  const record = parseMaybeObject(result)
+
+  return Array.isArray(record.subagent_ids)
+    ? record.subagent_ids.map(value => (typeof value === 'string' && value ? value : undefined))
+    : []
+}
+
 /**
  * The rows a call describes on its own — before any live subagent state is
  * layered on. This is what a rehydrated transcript has to work with: the goals
@@ -82,6 +92,7 @@ export function delegateRowsFromCall(args: unknown, result: unknown, toolCallId 
   const goals = delegateGoals(args)
   const finished = resultRows(result)
   const dispatched = dispatchedGoals(result)
+  const subagentIds = persistedSubagentIds(result)
   const titles = goals.length > 0 ? goals : dispatched.length > 0 ? dispatched : finished.map(() => 'Delegated task')
   const idle: DelegateRowStatus = result === undefined ? 'running' : 'dispatched'
 
@@ -95,12 +106,18 @@ export function delegateRowsFromCall(args: unknown, result: unknown, toolCallId 
       goal,
       id: `${toolCallId}:${index}`,
       model: entry ? field(entry, 'model') || undefined : undefined,
+      subagentId: subagentIds[index],
       status: entry ? settledRowStatus(field(entry, 'status')) : idle
     }
   })
 }
 
-function fromSubagent(live: SubagentProgress, fallbackId: string, fallbackGoal: string): DelegateRow {
+function fromSubagent(
+  live: SubagentProgress,
+  fallbackId: string,
+  fallbackGoal: string,
+  subagentId?: string
+): DelegateRow {
   return {
     activity: live.stream.map(entry => entry.text).filter(Boolean),
     durationSeconds: live.durationSeconds,
@@ -108,6 +125,7 @@ function fromSubagent(live: SubagentProgress, fallbackId: string, fallbackGoal: 
     id: live.id || fallbackId,
     model: live.model,
     sessionId: live.sessionId,
+    subagentId: subagentId ?? live.id,
     status: live.status
   }
 }
@@ -144,14 +162,49 @@ export function mergeDelegateRows(
   }
 
   const prefix = toolCallId ? `delegate-tool:${toolCallId}:` : ''
-  const byId = rows.map((_row, index) => (prefix ? claim(c => c.id === `${prefix}${index}`) : undefined))
-  const byGoal = rows.map((row, index) => byId[index] ?? claim(c => normalize(c.goal) === normalize(row.goal)))
-  const sameShape = rows.length === live.length
+
+  const byOwnership = rows.map((row, index) => {
+    if (row.subagentId) {
+      return claim(candidate => candidate.id === row.subagentId)
+    }
+
+    return prefix
+      ? claim(
+          candidate =>
+            candidate.id === `${prefix}${index}` ||
+            (candidate.delegateCallId === toolCallId && candidate.delegateRowIndex === index)
+        )
+      : undefined
+  })
+
+  const legacyRunning = rows.every(row => row.status === 'running' && !row.subagentId)
+
+  const legacyGoalCounts = legacyRunning
+    ? rows.reduce<Map<string, number>>((counts, row) => {
+        const goal = normalize(row.goal)
+
+        counts.set(goal, (counts.get(goal) ?? 0) + 1)
+
+        return counts
+      }, new Map())
+    : new Map<string, number>()
+
+  const byGoal = rows.map((row, index) => {
+    const goal = normalize(row.goal)
+
+    if (byOwnership[index] || !legacyRunning || legacyGoalCounts.get(goal) !== 1) {
+      return byOwnership[index]
+    }
+
+    const matches = unclaimed.filter(candidate => normalize(candidate.goal) === goal)
+
+    return matches.length === 1 ? claim(candidate => candidate === matches[0]) : undefined
+  })
 
   return rows.map((row, index) => {
-    const matched = byGoal[index] ?? (sameShape ? claim(c => c.taskIndex === index) : undefined)
+    const matched = byGoal[index]
 
-    return matched ? fromSubagent(matched, row.id, row.goal) : row
+    return matched ? fromSubagent(matched, row.id, row.goal, row.subagentId) : row
   })
 }
 

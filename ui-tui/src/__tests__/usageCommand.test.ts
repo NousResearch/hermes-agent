@@ -137,6 +137,38 @@ describe('/usage slash command', () => {
     expect(body).toContain('Weekly: 99% remaining')
   })
 
+  it('renders provider account limits in the balance panel alongside usage model when calls=0', async () => {
+    const { panel, run } = buildCtx({
+      'session.usage': baseUsage({
+        calls: 0,
+        account_lines: ['📈 Account limits', 'Session: 96% remaining'],
+        usage: {
+          available: true,
+          status: 'healthy',
+          plan_name: 'Plus',
+          renews_display: 'Jul 1, 2026',
+          total_spendable_display: '$26.00',
+          has_topup: false,
+          plan_bar: {
+            kind: 'plan',
+            remaining_display: '$14.00',
+            total_display: '$20.00',
+            spent_display: '$6.00',
+            pct_used: 30,
+            fill_fraction: 0.7
+          }
+        }
+      })
+    })
+
+    await run('')
+
+    const body = balancePanel(panel)
+    expect(body).toContain('Plan: Plus')
+    expect(body).toContain('Account limits')
+    expect(body).toContain('Session: 96% remaining')
+  })
+
   it('renders provider account limits in the usage panel', async () => {
     const { panel, run } = buildCtx({
       'session.usage': baseUsage({
@@ -153,6 +185,7 @@ describe('/usage slash command', () => {
     const body = (panel.mock.calls.find(c => c[0] === 'Usage')?.[1] as { text?: string }[] | undefined ?? [])
       .map(s => s.text ?? '')
       .join('\\n')
+
     expect(body).toContain('Account limits')
     expect(body).toContain('Session: 96% remaining')
     expect(body).toContain('Weekly: 99% remaining')

@@ -38,7 +38,7 @@ describe('resolveEditor', () => {
   it('ignores whitespace-only env vars', () => {
     const expected = exe(dir, 'editor')
 
-    expect(resolveEditor({ EDITOR: '   ', PATH: dir, VISUAL: '' })).toEqual([expected])
+    expect(resolveEditor({ EDITOR: '   ', PATH: dir, VISUAL: '' }, 'linux')).toEqual([expected])
   })
 
   it('prefers `editor` over nano over vi on $PATH', () => {
@@ -46,18 +46,18 @@ describe('resolveEditor', () => {
     exe(dir, 'vi')
     const expected = exe(dir, 'editor')
 
-    expect(resolveEditor({ PATH: dir })).toEqual([expected])
+    expect(resolveEditor({ PATH: dir }, 'linux')).toEqual([expected])
   })
 
   it('falls back to nano before vi when both exist', () => {
     exe(dir, 'vi')
     const expected = exe(dir, 'nano')
 
-    expect(resolveEditor({ PATH: dir })).toEqual([expected])
+    expect(resolveEditor({ PATH: dir }, 'linux')).toEqual([expected])
   })
 
   it('returns ["vi"] when $PATH is empty', () => {
-    expect(resolveEditor({ PATH: '' })).toEqual(['vi'])
+    expect(resolveEditor({ PATH: '' }, 'linux')).toEqual(['vi'])
   })
 
   it('walks multi-entry $PATH', () => {
@@ -65,10 +65,14 @@ describe('resolveEditor', () => {
     const b = mkdtempSync(join(tmpdir(), 'editor-b-'))
     const expected = exe(b, 'editor')
 
-    expect(resolveEditor({ PATH: [a, b].join(delimiter) })).toEqual([expected])
+    expect(resolveEditor({ PATH: [a, b].join(delimiter) }, 'linux')).toEqual([expected])
   })
 
   it('uses notepad.exe on Windows when no env override', () => {
     expect(resolveEditor({ PATH: dir }, 'win32')).toEqual(['notepad.exe'])
+
+    if (process.platform === 'win32') {
+      expect(resolveEditor({ PATH: dir })).toEqual(['notepad.exe'])
+    }
   })
 })

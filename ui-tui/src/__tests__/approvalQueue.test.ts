@@ -1,8 +1,8 @@
-import { describe, expect, it, afterEach } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import { dismissApproval, getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
-import { approvalOptions, isApprovalExpired } from '../components/prompts.js'
 import { approvalResponseResolved } from '../app/useMainApp.js'
+import { approvalOptions, isApprovalExpired } from '../components/prompts.js'
 import type { ApprovalReq } from '../types.js'
 
 const approval = (requestId: string): ApprovalReq => ({

@@ -709,6 +709,10 @@ export const sessionCommands: SlashCommand[] = [
             })
           }
 
+          if (!r?.calls && r?.account_lines?.length) {
+            sections.push({ text: r.account_lines.join('\n') })
+          }
+
           ctx.transcript.panel('Balance', sections)
           showedBalance = true
         } else {
@@ -716,6 +720,11 @@ export const sessionCommands: SlashCommand[] = [
 
           if (creditsLines.length) {
             ctx.transcript.panel('Nous balance', [{ text: creditsLines.join('\n') }])
+            showedBalance = true
+          }
+
+          if (!r?.calls && r?.account_lines?.length) {
+            ctx.transcript.panel('Balance', [{ text: r.account_lines.join('\n') }])
             showedBalance = true
           }
         }

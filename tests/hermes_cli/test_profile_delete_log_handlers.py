@@ -5,8 +5,8 @@ served profile's ``logs/*.log`` through ``_ProfileRoutingFileHandler``, which la
 rotating handler per home. On Windows that handler is ``ConcurrentRotatingFileHandler`` and keeps
 ``logs/.__<name>.lock`` open, so ``delete_profile`` run inside that process fails ``rmtree`` with
 ``[WinError 32]``: the REST call returns 500, the Desktop drops the bot, the directory stays.
-The routing seam itself is platform-neutral, so the release is asserted on every OS and the
-directory removal on Windows.
+The routing seam itself is platform-neutral, so the release and the directory removal are
+asserted on every OS (the lock-file symptom only reproduces on Windows).
 """
 
 import logging
@@ -77,16 +77,4 @@ def test_delete_profile_releases_every_routed_handler_for_that_home(routed_profi
         assert resolved not in router._profile_handlers
         assert resolved not in router._profile_homes
     assert all(handler.stream is None for handler in held.values()), "streams still open into the deleted profile"
-    assert not profile.exists()
-
-
-@pytest.mark.windows_only
-def test_delete_profile_removes_directory_despite_concurrent_log_locks(routed_profile):
-    """The WinError 32 path: ``.__agent.lock`` / ``.__errors.lock`` are held by the routed
-    ConcurrentRotatingFileHandler until released; rmtree must succeed afterwards."""
-    _home, profile = routed_profile
-    _log_into(profile, adopt=True)
-
-    profiles.delete_profile("routed-log-delete", yes=True)
-
     assert not profile.exists()

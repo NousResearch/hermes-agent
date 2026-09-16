@@ -278,12 +278,40 @@ def _kill_pids_windows(pids: list[int], killed: list[int], failed: list[tuple[in
             failed.append((pid, str(e)))
 
 
+# SIGTERM → SIGKILL grace for the dashboard/serve backend. Must outlast the lifespan teardown in
+# hermes_cli/web_server.py::_lifespan: stop_hosted_room_service(timeout=5.0) + the startup-thread
+# join(1.0) + PTY_REGISTRY.close_all() (≤1.5s per attached Chat PTY, serial). A SIGKILL inside
+# that window skips close_all(), so the ui-tui / tui_gateway.entry children outlive the backend
+# and keep the deleted state.db-wal inode open — the next hermes start refuses with a FATAL
+# DeletedWalGenerationError (#111912). The orphan reaper's 1.5s (`_reap_orphaned_desktop_local_serves`)
+# is deliberately shorter: it runs on the Desktop boot path under a 10s ready-probe.
+_POSIX_TERM_GRACE_SECONDS = 10.0
+
+
 def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int, str]]) -> None:
-    """SIGTERM, wait up to ~3s for graceful exit, SIGKILL survivors."""
+    """Stop each backend and its descendants before reporting the backend stopped."""
     import signal as _signal
     import time as _time
 
+    import psutil
+
     from gateway.status import _pid_exists
+
+    roots: dict[int, psutil.Process] = {}
+    descendants: dict[int, psutil.Process] = {}
+
+    def _remember_descendants(proc: psutil.Process) -> None:
+        try:
+            for child in proc.children(recursive=True):
+                if child.pid not in roots:
+                    descendants[child.pid] = child
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+    def _tree_alive() -> bool:
+        for proc in list(roots.values()) + list(descendants.values()):
+            _remember_descendants(proc)
+        return any(proc.is_running() for proc in descendants.values())
 
     def _send(pid: int, sig) -> None:
         try:
@@ -296,16 +324,33 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
             failed.append((pid, str(e)))
 
     for pid in pids:
+        try:
+            roots[pid] = psutil.Process(pid)
+            _remember_descendants(roots[pid])
+        except psutil.NoSuchProcess:
+            killed.append(pid)
+            continue
         _send(pid, _signal.SIGTERM)
-    deadline = _time.monotonic() + 3.0
+    deadline = _time.monotonic() + _POSIX_TERM_GRACE_SECONDS
     pending = [p for p in pids if p not in killed and p not in {f[0] for f in failed}]
-    while pending and _time.monotonic() < deadline:
+    while (pending or _tree_alive()) and _time.monotonic() < deadline:
         _time.sleep(0.1)
         alive = [p for p in pending if _pid_exists(p)]  # os.kill(pid, 0) breaks on Windows
         killed.extend(p for p in pending if p not in alive)
         pending = alive
+    _tree_alive()  # final snapshot while any surviving parent/descendant still exposes its children
     for pid in pending:
         _send(pid, _signal.SIGKILL)
+    survivors = [proc for proc in descendants.values() if proc.is_running()]
+    for proc in survivors:
+        try:
+            proc.kill()
+        except psutil.NoSuchProcess:
+            pass
+        except (psutil.AccessDenied, OSError) as e:
+            failed.append((proc.pid, str(e)))
+    _gone, still_alive = psutil.wait_procs(survivors, timeout=3.0)
+    failed.extend((proc.pid, "descendant survived SIGKILL") for proc in still_alive)
 
 
 def _kill_stale_dashboard_processes(

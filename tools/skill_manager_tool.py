@@ -787,6 +787,15 @@ def skill_manage(
         return gate_result
     for arg, missing, message in _REQUIRED_ARGS.get(action, ()):
         if missing(args[arg]):
+            # The model often puts the SKILL.md body under file_content (the write_file
+            # field) on create/edit. Say so explicitly instead of repeating a generic
+            # error that invites verbatim retries.
+            if arg == "content" and args.get("file_content"):
+                return tool_error(
+                    message + f" The SKILL.md body was received under 'file_content'; "
+                              f"'create'/'edit' take it in 'content'. Resend the same "
+                              f"text in 'content'.",
+                    success=False)
             return tool_error(message, success=False)
     # Validate before the lock is keyed on the name, so a rejected name never touches .locks/
     # (create takes a bare name; the other actions also accept ``category/name``).

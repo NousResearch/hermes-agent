@@ -30,16 +30,29 @@
  * SessionOwnerResolutionError rather than riding the ambient socket (the one
  * exception: the legacy single-backend Desktop, where ambient IS the owner).
  * Only a request with NO session at all falls to the ambient socket.
+ *
+ * `session.resume` is the one method where failing closed is not the end of the
+ * story: #94724 gave the tile-delegate path a read-only stored-transcript
+ * recovery, but this dispatcher kept the bare gate, so an orphaned / owner-less
+ * tile whose resume surfaced HERE dead-ended on "Couldn't open this session"
+ * with a Retry that re-ran the same resume forever (#102618). The resume
+ * dispatch is therefore wrapped in the same `resumeWithStoredTranscriptFallback`
+ * recovery: an unresolvable owner marks the stored id read-only and answers
+ * from the id-only REST transcript read (which routes no live session at all),
+ * so the tile paints history instead of latching an unrecoverable error.
  */
 import type { MutableRefObject } from 'react'
 
+import { fetchStoredTranscriptAcrossBackends } from '@/api/sessions'
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import type { ClientSessionState } from '@/app/types'
+import { readOnlyRuntimeIdFor, resumeWithStoredTranscriptFallback } from '@/store/read-only-transcript'
 import { isSessionGoneForBackgroundPolling } from '@/store/runtime-gone'
 import { getSessionOwnerHint, knownSessionOwner, ownerLookupSessionRows, requestSessionResume } from '@/store/session'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
 import { $focusedStoredSessionId, sessionTileOwnerRoute, storedSessionIdForRuntimeId } from '@/store/session-states'
+import type { SessionResumeResponse } from '@/types/hermes'
 
 import { findStoredIdForRuntimeId, resolveRoutingSessionId, resolveSessionRpcOwner } from './wiring-routing'
 
@@ -55,6 +68,24 @@ export interface SessionRpcDispatcherDeps {
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionIdRef: MutableRefObject<null | string>
   sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
+}
+
+/** A `session.resume` payload synthesized from a stored transcript read, for
+ *  the no-owner recovery. `session_id` is the synthetic read-only runtime id
+ *  (never a gateway runtime), and the stored id stays latched in
+ *  `$readOnlyStoredTranscripts` so write surfaces refuse to submit into a
+ *  session that has no routable runtime. */
+export function readOnlyResumeResponse(
+  storedSessionId: string,
+  messages: SessionResumeResponse['messages']
+): SessionResumeResponse {
+  return {
+    message_count: messages.length,
+    messages,
+    resumed: storedSessionId,
+    running: false,
+    session_id: readOnlyRuntimeIdFor(storedSessionId)
+  }
 }
 
 export function createSessionRpcDispatcher(deps: SessionRpcDispatcherDeps): AmbientGatewayRequest {
@@ -93,33 +124,70 @@ export function createSessionRpcDispatcher(deps: SessionRpcDispatcherDeps): Ambi
       }
     }
 
+    const dispatch = async <TResult>(): Promise<TResult> => {
+      try {
+        return await requestForSessionProfile<TResult>(owner, ambientRequest, method, params ?? {}, timeoutMs, signal)
+      } catch (error) {
+        // A missed session.reclaimed leaves later RPCs answering 4001 against a
+        // still-resumable stored row. Prompt actions already retry their own
+        // calls; this seam covers the other session-scoped callers and wakes
+        // route-resume for the visible main session only. Do not retry the
+        // failing RPC — it may be destructive, and a fresh binding is async.
+        // A session the user just deleted is filtered by requestSessionResume,
+        // which drops resume requests for a removal-pending id.
+        if (
+          method !== 'session.resume' &&
+          method !== 'session.activate' &&
+          paramSessionId &&
+          routingSessionId &&
+          routingSessionId === selectedStoredSessionIdRef.current &&
+          isSessionGoneForBackgroundPolling(error)
+        ) {
+          requestSessionResume(routingSessionId, typeof owner === 'object' && owner ? owner : undefined)
+        }
+
+        throw error
+      }
+    }
+
     // A request that names a session but whose owner nobody can name must not
     // ride the ambient socket: that turns missing metadata into a misleading
     // backend "session not found" on a backend that never held the runtime.
-    assertSessionOwnerResolved(owner, { method, sessionId: paramSessionId ? routingSessionId : null })
+    //
+    // `session.resume` is the exception, and only in the recovery direction
+    // (#102618): failing closed here is right, but dead-ending is not — the
+    // stored transcript is reachable over an id-only REST read that routes no
+    // live session, so recover into a read-only open exactly as the
+    // tile-delegate path already does (#94724). Every other method, and every
+    // other failure mode of resume, keeps the bare fail-closed gate.
+    const gatedSessionId = paramSessionId ? routingSessionId : null
 
-    try {
-      return await requestForSessionProfile<T>(owner, ambientRequest, method, params ?? {}, timeoutMs, signal)
-    } catch (error) {
-      // A missed session.reclaimed leaves later RPCs answering 4001 against a
-      // still-resumable stored row. Prompt actions already retry their own
-      // calls; this seam covers the other session-scoped callers and wakes
-      // route-resume for the visible main session only. Do not retry the
-      // failing RPC — it may be destructive, and a fresh binding is async.
-      // A session the user just deleted is filtered by requestSessionResume,
-      // which drops resume requests for a removal-pending id.
-      if (
-        method !== 'session.resume' &&
-        method !== 'session.activate' &&
-        paramSessionId &&
-        routingSessionId &&
-        routingSessionId === selectedStoredSessionIdRef.current &&
-        isSessionGoneForBackgroundPolling(error)
-      ) {
-        requestSessionResume(routingSessionId, typeof owner === 'object' && owner ? owner : undefined)
-      }
+    if (method === 'session.resume' && gatedSessionId) {
+      const outcome = await resumeWithStoredTranscriptFallback(
+        gatedSessionId,
+        async () => {
+          assertSessionOwnerResolved(owner, { method, sessionId: gatedSessionId })
 
-      throw error
+          return dispatch<T>()
+        },
+        async () => {
+          const stored = await fetchStoredTranscriptAcrossBackends(gatedSessionId)
+
+          if (!stored) {
+            throw new Error('stored transcript unavailable on every reachable backend')
+          }
+
+          return stored
+        }
+      )
+
+      return outcome.mode === 'live'
+        ? outcome.resumed
+        : (readOnlyResumeResponse(gatedSessionId, outcome.transcript.messages ?? []) as T)
     }
+
+    assertSessionOwnerResolved(owner, { method, sessionId: gatedSessionId })
+
+    return dispatch<T>()
   }
 }

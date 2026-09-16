@@ -487,8 +487,8 @@ async def select_toolset_provider(
     login, so an unentitled selection would write config and never activate.
     """
     from hermes_cli.tools_config import apply_provider_selection, web_provider_capabilities
-    from hermes_cli.nous_subscription import (
-        MANAGED_FEATURE_COVERAGE_CATEGORY, get_nous_subscription_features)
+    from hermes_cli.tools_config_providers import _managed_coverage_category
+    from hermes_cli.nous_subscription import get_nous_subscription_features
 
     _require_known_toolset(name)
 
@@ -539,7 +539,7 @@ async def select_toolset_provider(
             if managed_feature:
                 features = get_nous_subscription_features(config, force_fresh=True)
                 acct = features.account_info
-                category = MANAGED_FEATURE_COVERAGE_CATEGORY.get(managed_feature)
+                category = _managed_coverage_category(row, managed_feature)
                 entitled = bool(
                     acct
                     and acct.logged_in

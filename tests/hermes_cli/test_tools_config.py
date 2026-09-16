@@ -1093,6 +1093,32 @@ def test_gui_model_catalog_follows_each_managed_image_row_backend():
     assert _resolve_toolset_model_plugin("image_gen", _image_gen_row("fal")) == "fal"
 
 
+def test_gui_select_gate_reads_the_krea_row_category(monkeypatch):
+    """The post-select entitlement check must gate the Krea row on ``krea``, not on image_gen's
+    ``fal``. Visibility is stubbed open so the row is selectable; the entitlement read sees a
+    pool-only account that funds FAL but not Krea."""
+    import asyncio
+
+    import hermes_cli.nous_subscription as nous_subscription
+    import hermes_cli.tools_config as tools_config
+    from hermes_cli.web_models import ToolsetProviderSelect
+    from hermes_cli.web_routers.tools import select_toolset_provider
+
+    monkeypatch.setattr(
+        tools_config, "get_nous_subscription_features",
+        lambda *args, **kwargs: _subscription_features(_paid_account()))
+    monkeypatch.setattr(
+        nous_subscription, "get_nous_subscription_features",
+        lambda *args, **kwargs: _subscription_features(_pool_only_account()))
+
+    def select(backend):
+        body = ToolsetProviderSelect(provider=_image_gen_row(backend)["name"])
+        return asyncio.run(select_toolset_provider("image_gen", body))
+
+    assert select("krea").get("needs_nous_auth") is True
+    assert "needs_nous_auth" not in select("fal")
+
+
 # ── Windows console-flash guard for post-setup subprocess spawns ──────────────
 #
 # The desktop GUI runs post-setup hooks through a detached, console-less

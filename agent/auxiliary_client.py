@@ -4406,6 +4406,10 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     if headers:
         async_kwargs["default_headers"] = headers
     _apply_required_codex_headers(async_kwargs, access_token=sync_client.api_key, base_url=sync_base_url)
+    # Async conversion rebuilds headers; apply the same destination-scoped merge as sync.
+    with contextlib.suppress(Exception):
+        from hermes_cli.config import apply_custom_provider_extra_headers_to_client_kwargs
+        apply_custom_provider_extra_headers_to_client_kwargs(async_kwargs, sync_base_url)
     async_kwargs = {**_openai_http_client_kwargs(sync_base_url, async_mode=True), **async_kwargs}
     # Hermes owns the auxiliary retry/timeout budget; disable SDK-internal retries.
     # See #54465.

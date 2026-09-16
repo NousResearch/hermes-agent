@@ -52,6 +52,31 @@ it('recovers a pending rename only for its owning connection and preserves null 
   expect(window.localStorage.getItem(oldKey)).toBe('/session-local')
 })
 
+it('keeps concurrent profile renames isolated by connection and identity', async () => {
+  const migration = await import('./profile-rename-state')
+
+  migration.stageProfileRenameState('work', 'personal')
+  migration.stageProfileRenameState('ops', 'production', {
+    connectionId: 'gateway-a',
+    oldNavigationSuffix: null,
+    newNavigationSuffix: null
+  })
+  migration.completeProfileRenameState('work', 'personal')
+
+  expect(migration.recoverPendingProfileRenameState('production', 'gateway-a')).toBe(true)
+
+  migration.stageProfileRenameState('shared', 'renamed')
+  migration.stageProfileRenameState('shared', 'renamed', {
+    connectionId: 'gateway-b',
+    oldNavigationSuffix: null,
+    newNavigationSuffix: null
+  })
+  migration.cancelProfileRenameState('shared', 'renamed', { connectionId: 'local' })
+
+  expect(migration.recoverPendingProfileRenameState('renamed', 'gateway-b')).toBe(true)
+  expect(migration.recoverPendingProfileRenameState('renamed', 'local')).toBe(false)
+})
+
 it('re-homes every persisted session route after a profile rename', async () => {
   const oldName = 'work'
   const newName = 'hutnik-projectmanager'

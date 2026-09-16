@@ -147,7 +147,7 @@ export function RenameProfileDialog({
       window.setTimeout(onClose, 800)
     } catch (err) {
       if (!isDefault) {
-        cancelProfileRenameState(currentName, trimmed)
+        cancelProfileRenameState(currentName, trimmed, renameStateScope)
       }
 
       setStatus('idle')

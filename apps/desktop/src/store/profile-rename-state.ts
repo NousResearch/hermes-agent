@@ -1,4 +1,5 @@
 const PENDING_RENAME_KEY = 'hermes.desktop.pendingProfileRename.v1'
+const PENDING_RENAME_PREFIX = 'hermes.desktop.pendingProfileRename.v2:'
 const TRANSCRIPT_PREFIX = 'hermes.transcript-tail.v2:'
 const TRANSCRIPT_INDEX_KEY = 'hermes.transcript-tail.v2-index'
 const LAST_SESSION_KEY = 'hermes.desktop.lastSessionId'
@@ -22,11 +23,9 @@ function normalizedName(name: string): string {
   return name.trim().toLowerCase() || 'default'
 }
 
-function readPending(): PendingProfileRename | null {
+function parsePending(raw: string | null): PendingProfileRename | null {
   try {
-    const parsed = JSON.parse(
-      window.localStorage.getItem(PENDING_RENAME_KEY) ?? 'null'
-    ) as Partial<PendingProfileRename>
+    const parsed = JSON.parse(raw ?? 'null') as Partial<PendingProfileRename>
 
     if (typeof parsed?.oldName !== 'string' || typeof parsed?.newName !== 'string') {
       return null
@@ -52,6 +51,37 @@ function readPending(): PendingProfileRename | null {
   } catch {
     return null
   }
+}
+
+function pendingStorageKey(pending: Pick<PendingProfileRename, 'connectionId' | 'newName' | 'oldName'>): string {
+  return PENDING_RENAME_PREFIX + encodeURIComponent(
+    JSON.stringify([pending.connectionId, pending.oldName, pending.newName])
+  )
+}
+
+function readPending(): Array<{ key: string; pending: PendingProfileRename }> {
+  const store = window.localStorage
+  const found: Array<{ key: string; pending: PendingProfileRename }> = []
+
+  for (let index = 0; index < store.length; index += 1) {
+    const key = store.key(index)
+
+    if (key?.startsWith(PENDING_RENAME_PREFIX)) {
+      const pending = parsePending(store.getItem(key))
+
+      if (pending) {
+        found.push({ key, pending })
+      }
+    }
+  }
+
+  const legacy = parsePending(store.getItem(PENDING_RENAME_KEY))
+
+  if (legacy) {
+    found.push({ key: PENDING_RENAME_KEY, pending: legacy })
+  }
+
+  return found
 }
 
 function moveStorageValue(store: Storage, source: string, destination: string): void {
@@ -140,17 +170,34 @@ export function stageProfileRenameState(
   const pending = { ...scope, oldName: normalizedName(oldName), newName: normalizedName(newName) }
 
   try {
-    window.localStorage.setItem(PENDING_RENAME_KEY, JSON.stringify(pending))
+    window.localStorage.setItem(pendingStorageKey(pending), JSON.stringify(pending))
   } catch {
     // A storage-restricted renderer still completes the authoritative backend rename.
   }
 }
 
-export function cancelProfileRenameState(oldName: string, newName: string): void {
-  const pending = readPending()
+export function cancelProfileRenameState(
+  oldName: string,
+  newName: string,
+  scope: Pick<ProfileRenameStateScope, 'connectionId'> = { connectionId: 'local' }
+): void {
+  const identity = {
+    connectionId: scope.connectionId.trim() || 'local',
+    oldName: normalizedName(oldName),
+    newName: normalizedName(newName)
+  }
 
-  if (pending?.oldName === normalizedName(oldName) && pending.newName === normalizedName(newName)) {
-    window.localStorage.removeItem(PENDING_RENAME_KEY)
+  window.localStorage.removeItem(pendingStorageKey(identity))
+
+  for (const entry of readPending()) {
+    if (
+      entry.key === PENDING_RENAME_KEY &&
+      entry.pending.connectionId === identity.connectionId &&
+      entry.pending.oldName === identity.oldName &&
+      entry.pending.newName === identity.newName
+    ) {
+      window.localStorage.removeItem(entry.key)
+    }
   }
 }
 
@@ -167,7 +214,19 @@ export function completeProfileRenameState(
   }
 
   try {
-    window.localStorage.removeItem(PENDING_RENAME_KEY)
+    window.localStorage.removeItem(
+      pendingStorageKey({ connectionId: scope.connectionId.trim() || 'local', oldName: oldProfile, newName: newProfile })
+    )
+    for (const entry of readPending()) {
+      if (
+        entry.key === PENDING_RENAME_KEY &&
+        entry.pending.connectionId === (scope.connectionId.trim() || 'local') &&
+        entry.pending.oldName === oldProfile &&
+        entry.pending.newName === newProfile
+      ) {
+        window.localStorage.removeItem(entry.key)
+      }
+    }
   } catch {
     // Best effort: repeating the idempotent migration on a later boot is safe.
   }
@@ -176,13 +235,13 @@ export function completeProfileRenameState(
 /** Complete a rename whose successful primary-backend response reloaded the
  * renderer before RenameProfileDialog resumed. */
 export function recoverPendingProfileRenameState(activeProfile: string, activeConnectionId: string): boolean {
-  const pending = readPending()
+  const pending = readPending().find(
+    entry =>
+      entry.pending.newName === normalizedName(activeProfile) &&
+      entry.pending.connectionId === (activeConnectionId.trim() || 'local')
+  )?.pending
 
-  if (
-    !pending ||
-    pending.newName !== normalizedName(activeProfile) ||
-    pending.connectionId !== activeConnectionId.trim()
-  ) {
+  if (!pending) {
     return false
   }
 

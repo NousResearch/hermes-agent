@@ -18,8 +18,8 @@ pass identically in CI and locally.
 """
 
 import hermes_state_errors
-import pytest
 import os
+import pytest
 import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -230,7 +230,6 @@ def test_persistence_commands_are_pinned_to_the_failing_profile(monkeypatch, tmp
     from hermes_constants import profile_cli_selector
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "research"))
-    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     selector = profile_cli_selector()
     assert selector.strip(), "fixture must resolve to a named profile"
     out = AIAgent._format_turn_completion_explanation("session_persistence_failed", cause)

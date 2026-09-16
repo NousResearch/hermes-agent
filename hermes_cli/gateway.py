@@ -609,6 +609,17 @@ def _scan_gateway_pids(
 
     try:
         if is_windows():
+            # psutil first (~7ms vs ~1.4s for the wmic/PowerShell spawn). Only a scan that saw every
+            # cmdline can be trusted to report "no gateway"; otherwise re-scan the slow way, which
+            # reads the processes psutil was denied.
+            scan = _psutil_windows_processes()
+            if scan is not None:
+                rows, complete = scan
+                for pid, command in rows:
+                    _consider(pid, command)
+                if pids or complete:
+                    return _finalize_windows_pids(pids)
+                pids.clear()
             listing = _windows_process_listing()
             if listing is None:
                 return []
@@ -637,12 +648,13 @@ def _scan_gateway_pids(
     except (OSError, subprocess.TimeoutExpired):
         return []
 
-    # Windows: a venv ``pythonw.exe`` is a launcher stub that spawns the base Python with the same
-    # command line, so each gateway yields two matched PIDs. Drop a matched PID that parents another.
-    if is_windows() and len(pids) > 1:
-        pids = _filter_venv_launcher_stubs(pids)
+    return _finalize_windows_pids(pids) if is_windows() else pids
 
-    return pids
+
+def _finalize_windows_pids(pids: list[int]) -> list[int]:
+    """Windows: a venv ``pythonw.exe`` is a launcher stub that spawns the base Python with the same
+    command line, so each gateway yields two matched PIDs. Drop a matched PID that parents another."""
+    return _filter_venv_launcher_stubs(pids) if len(pids) > 1 else pids
 
 
 def _parse_ps_line(line: str) -> tuple[int, str] | None:
@@ -671,6 +683,49 @@ def _iter_windows_list_processes(listing: str):
             with contextlib.suppress(ValueError):
                 yield int(line[len("ProcessId=") :]), current_cmd
             current_cmd = ""
+
+
+def _psutil_windows_processes() -> tuple[list[tuple[int, str]], bool] | None:
+    """Every visible Windows process as ``(pid, command_line)`` rows via psutil, or None when unusable.
+
+    Preferred over :func:`_windows_process_listing`: that one spawns wmic (or PowerShell's
+    ``Get-CimInstance`` on Windows 11, where wmic is gone) and parses its text — ~1.4s per scan on a
+    typical box, against ~7ms here, on the same ~270 processes. ``find_gateway_pids()`` runs from 20+
+    call sites (status, cron gating, gateway start/stop, update, uninstall, the Windows restart loops),
+    so the spawn dominated each one.
+
+    Returns ``(rows, complete)``. ``complete`` is False when any process' cmdline was unreadable
+    (AccessDenied: another user, or an elevated process seen from an unelevated CLI) — WMI still reports
+    those, so an incomplete scan that finds no gateway MUST NOT be trusted as "nothing is running", or
+    status would call an elevated gateway stopped and stop/update would leave it alive.
+
+    Returns None — never a partial list — when psutil is missing or the whole enumeration fails, so the
+    caller falls back to the subprocess listing.
+    """
+    try:
+        import psutil  # type: ignore
+    except ImportError:
+        return None
+    rows: list[tuple[int, str]] = []
+    complete = True
+    try:
+        for proc in psutil.process_iter(["pid", "cmdline"]):
+            try:
+                info = proc.info
+                pid, cmdline = info.get("pid"), info.get("cmdline")
+                if pid is None:
+                    continue
+                if not cmdline:  # empty list = denied or a kernel/System process with no argv
+                    complete = False
+                    continue
+                rows.append((int(pid), " ".join(cmdline)))
+            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError, ValueError):
+                complete = False
+                continue
+    except Exception as e:  # enumeration itself failed — fall back rather than under-report
+        logger.debug("psutil process enumeration failed (%s); falling back to wmic/PowerShell", e)
+        return None
+    return (rows, complete) if rows else None
 
 
 def _windows_process_listing() -> str | None:

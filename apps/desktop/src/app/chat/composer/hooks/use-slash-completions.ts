@@ -4,7 +4,6 @@ import { useCallback, useEffect } from 'react'
 
 import type { HermesGateway } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
-import { directBotCompletions } from '@/lib/direct-bot-routing'
 import {
   type CommandsCatalogLike,
   desktopSkinSlashCompletions,
@@ -16,6 +15,7 @@ import {
   rankSkillCommands,
   slashCompletionGroup
 } from '@/lib/desktop-slash-commands'
+import { directBotCompletions } from '@/lib/direct-bot-routing'
 import { $slashCompletionsEpoch, cachedSlashCompletion, hasCachedSlashCompletion } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
 import { $sessions } from '@/store/session'

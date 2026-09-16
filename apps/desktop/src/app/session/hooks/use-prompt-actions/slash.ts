@@ -6,7 +6,6 @@ import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import { sessionTitle } from '@/lib/chat-runtime'
-import { deliverDirectBot, parseDirectBotInvocation } from '@/lib/direct-bot-routing'
 import {
   type CommandsCatalogLike,
   type DesktopActionId,
@@ -16,6 +15,7 @@ import {
   isDesktopSlashCommand,
   resolveDesktopCommand
 } from '@/lib/desktop-slash-commands'
+import { deliverDirectBot, parseDirectBotInvocation } from '@/lib/direct-bot-routing'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
@@ -953,6 +953,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             const sourceProfile = normalizeProfileKey(sourceOwner?.profile || $activeGatewayProfile.get())
             const sourceConnection = String(sourceOwner?.connectionId || $connection.get()?.connectionId || 'local')
             const normalizedTarget = invocation.target.replace(/^@/, '').toLowerCase()
+
             const target = roster.agents.find(
               agent =>
                 agent.handle.toLowerCase() === normalizedTarget || agent.profile.toLowerCase() === normalizedTarget

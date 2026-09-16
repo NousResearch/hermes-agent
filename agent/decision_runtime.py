@@ -38,6 +38,12 @@ _TELEMETRY_LOCK = threading.Lock()
 T = TypeVar("T")
 
 
+class _ProviderInvocationError(Exception):
+    def __init__(self, error: Exception) -> None:
+        super().__init__(str(error))
+        self.error = error
+
+
 class DecisionRecorder(Protocol):
     def record(self, event: Mapping[str, Any]) -> None: ...
 
@@ -102,6 +108,25 @@ class DecisionRuntime:
         started = time.perf_counter()
         try:
             raw = self._invoke(selected, request, timeout, self.scope, secret_scope)
+        except queue.Empty:
+            response = DecisionResponse(
+                task=request.task, provider=selected.name, model="", version="", mode=request.mode,
+                status=DecisionStatus.TIMEOUT, latency_ms=(time.perf_counter() - started) * 1000,
+                fallback_reason=f"provider timed out after {timeout:g}s",
+            )
+            return self._finish(response)
+        except _ProviderInvocationError as exc:
+            error = exc.error
+            logger.warning("Decision provider %s failed for task %s: %s", selected.name, task, error)
+            response = DecisionResponse(
+                task=request.task, provider=selected.name, model="", version="", mode=request.mode,
+                status=DecisionStatus.PROVIDER_ERROR,
+                latency_ms=(time.perf_counter() - started) * 1000,
+                fallback_reason=f"provider raised {type(error).__name__}",
+            )
+            return self._finish(response)
+
+        try:
             validated = validate_provider_decision(request, raw)
             status = DecisionStatus.ABSTAINED if validated.abstained or (
                 validated.answers and all(answer.abstained for answer in validated.answers.values())
@@ -120,24 +145,11 @@ class DecisionRuntime:
                     validated.abstention_reason if status is DecisionStatus.ABSTAINED else None
                 ),
             )
-        except queue.Empty:
-            response = DecisionResponse(
-                task=request.task, provider=selected.name, model="", version="", mode=request.mode,
-                status=DecisionStatus.TIMEOUT, latency_ms=(time.perf_counter() - started) * 1000,
-                fallback_reason=f"provider timed out after {timeout:g}s",
-            )
         except ValueError as exc:
             response = DecisionResponse(
                 task=request.task, provider=selected.name, model="", version="", mode=request.mode,
                 status=DecisionStatus.MALFORMED, latency_ms=(time.perf_counter() - started) * 1000,
                 fallback_reason=str(exc),
-            )
-        except Exception as exc:  # noqa: BLE001 - provider boundary is normalized by contract
-            logger.warning("Decision provider %s failed for task %s: %s", selected.name, task, exc)
-            response = DecisionResponse(
-                task=request.task, provider=selected.name, model="", version="", mode=request.mode,
-                status=DecisionStatus.PROVIDER_ERROR, latency_ms=(time.perf_counter() - started) * 1000,
-                fallback_reason=f"provider raised {type(exc).__name__}",
             )
         return self._finish(response)
 
@@ -210,7 +222,7 @@ class DecisionRuntime:
         ).start()
         ok, value = outcome.get(timeout=timeout)
         if not ok:
-            raise value
+            raise _ProviderInvocationError(value)
         return value
 
     def _finish(self, response: DecisionResponse) -> DecisionResponse:

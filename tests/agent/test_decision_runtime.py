@@ -55,6 +55,8 @@ class _FixtureProvider(DecisionProvider):
             time.sleep(0.05)
         if self.behavior == "error":
             raise RuntimeError("backend failed")
+        if self.behavior == "value-error":
+            raise ValueError("backend input rejected")
         if self.behavior == "abstain":
             return ProviderDecision({}, abstained=True, abstention_reason="insufficient evidence")
 
@@ -218,7 +220,8 @@ def test_failures_abstention_staging_and_replay_are_explicit(tmp_path):
     slow = _FixtureProvider("slow", behavior="timeout")
     abstaining = _FixtureProvider("abstaining", behavior="abstain")
     failing = _FixtureProvider("failing", behavior="error")
-    for provider in (good, bad, malformed, slow, abstaining, failing):
+    value_error = _FixtureProvider("value-error", behavior="value-error")
+    for provider in (good, bad, malformed, slow, abstaining, failing, value_error):
         ctx.register_decision_provider(provider)
 
     ambiguous = ctx.decision.evaluate(
@@ -254,6 +257,9 @@ def test_failures_abstention_staging_and_replay_are_explicit(tmp_path):
     ).status is DecisionStatus.TIMEOUT
     assert ctx.decision.evaluate(
         task="failure", state={}, questions=question, provider="failing",
+    ).status is DecisionStatus.PROVIDER_ERROR
+    assert ctx.decision.evaluate(
+        task="failure", state={}, questions=question, provider="value-error",
     ).status is DecisionStatus.PROVIDER_ERROR
     malformed_usage = _FixtureProvider("malformed-usage")
     malformed_usage.evaluate = lambda request: ProviderDecision(

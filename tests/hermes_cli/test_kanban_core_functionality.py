@@ -1433,7 +1433,8 @@ def test_dead_worker_reap_surfaces_the_workers_own_last_output(kanban_home, driv
     (or printed a provider error) and then exited must have that text on the board and
     on the reap event — with the CLI exit summary trimmed — instead of only the canned label."""
     import hermes_cli.kanban_db as kb
-    conn = kb.connect()
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="handoff", assignee="worker")
         log_path = kb.worker_log_path(tid)
@@ -1459,10 +1460,11 @@ def test_dead_worker_reap_reads_the_log_of_the_dispatching_board(kanban_home):
     ambient "current" board — otherwise every non-default board silently gets the canned
     message (the #88603 review finding)."""
     import hermes_cli.kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
     from hermes_cli import kanban_db_dispatch as kbd
     assert kb.get_current_board() == "default"
     board = "other-board"
-    conn = kb.connect(board=board)
+    conn = kbc.connect(board=board)
     try:
         tid = kb.create_task(conn, title="handoff", assignee="worker")
         log_path = kb.worker_log_path(tid, board=board)

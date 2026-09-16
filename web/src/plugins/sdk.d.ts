@@ -84,7 +84,10 @@ export interface PluginRegistry {
   /** Register the plugin's main tab component by manifest name. */
   register(name: string, component: ComponentType<Record<string, never>>): void;
   /** Register a component into a named host slot. */
-  registerSlot(slot: string, name: string, component: ComponentType): void;
+  registerSlot(plugin: string, slot: string, component: ComponentType, metadata?: {
+    icon?: ComponentType<{ className?: string }>;
+    optionCount?: number;
+  }): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,7 +140,10 @@ export interface HermesPluginSDK {
    * ``Promise<T>``, a few return a URL string synchronously); plugins call the
    * specific methods they need. See ``web/src/lib/api.ts`` for the concrete shape.
    */
-  api: Record<string, (...args: never[]) => unknown>;
+  api: Record<string, (...args: never[]) => unknown> & {
+    /** Host-selected management profile; empty means the Dashboard profile. */
+    getManagementProfile: () => string;
+  };
 
   /** JSON fetch with host auth handling. */
   fetchJSON: FetchJSON;

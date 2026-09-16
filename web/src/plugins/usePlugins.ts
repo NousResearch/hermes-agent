@@ -15,7 +15,42 @@ import {
   onPluginRegistered,
   notifyPluginRegistry,
   setPluginLoadError,
+  unregisterPlugin,
+  activatePluginScript,
+  deactivatePluginScript,
+  isPluginScriptActive,
 } from "./registry";
+
+import { getSlotEntries, onSlotRegistered, unregisterPluginSlots } from "./slots";
+
+function isManifestRegistered(manifest: PluginManifest): boolean {
+  return Boolean(getPluginComponent(manifest.name)) || Boolean(
+    manifest.slots?.length && manifest.slots.every(slot =>
+      getSlotEntries(slot).some(entry => entry.plugin === manifest.name)),
+  );
+}
+
+export const DASHBOARD_PLUGINS_CHANGED_EVENT = "hermes:dashboard-plugins-changed";
+export function notifyDashboardPluginsChanged(): void {
+  window.dispatchEvent(new Event(DASHBOARD_PLUGINS_CHANGED_EVENT));
+}
+
+// Include registration shape as well as byte identity; version-only updates
+// at the same path must retire their previous component/slot registrations.
+function manifestAssetKey(manifest: PluginManifest): string {
+  return JSON.stringify([manifest.name, manifest.source, manifest.version,
+    manifest.entry, manifest.css, manifest.integrity, manifest.tab, manifest.slots]);
+}
+let nextGeneration = 0;
+function assetUrl(path: string, version: string, generation: number): string {
+  return `${path}${path.includes("?") ? "&" : "?"}hermes_version=${encodeURIComponent(version)}&hermes_generation=${generation}`;
+}
+
+interface InjectedAssets {
+  key: string;
+  script: HTMLScriptElement;
+  link?: HTMLLinkElement;
+}
 
 export const MANIFEST_CACHE_KEY = "hermes:plugin-manifests";
 
@@ -77,93 +112,102 @@ export function usePlugins() {
   const [loading, setLoading] = useState<boolean>(
     () => !canSeedLoadedFromCache(getCachedManifests()),
   );
-  const loadedScripts = useRef<Set<string>>(new Set());
+  const injectedAssets = useRef(new Map<string, InjectedAssets>());
 
-  // Always re-fetch in the background to keep the cache fresh.
-  // This handles: new plugins added, plugins removed, manifest changes.
-  // setManifests(list) will update routes if the server list differs from cache.
+  // Latest request wins, including requests completing after unmount.
   useEffect(() => {
-    api
-      .getPlugins()
-      .then((list) => {
+    let sequence = 0;
+    const refresh = () => {
+      const request = ++sequence;
+      void api.getPlugins().then(list => {
+        if (request !== sequence) return;
         cacheManifests(list);
         setManifests(list);
-        if (list.length === 0) setLoading(false);
-      })
-      .catch(() => setLoading(false));
+        // Raise the gate only for assets this session has not injected yet (a
+        // new or replaced plugin). Manifests whose script is already in flight
+        // keep the seeded state, so App.tsx's chat host is not unmounted by the
+        // routine post-mount refetch; resolvePlugins and the timeout lower it.
+        const pending = list.some(manifest =>
+          injectedAssets.current.get(manifest.name)?.key !== manifestAssetKey(manifest));
+        if (pending) setLoading(true);
+        else if (list.length === 0 || list.every(isManifestRegistered)) setLoading(false);
+      }).catch(() => { if (request === sequence) setLoading(false); });
+    };
+    refresh();
+    window.addEventListener(DASHBOARD_PLUGINS_CHANGED_EVENT, refresh);
+    return () => {
+      ++sequence;
+      window.removeEventListener(DASHBOARD_PLUGINS_CHANGED_EVENT, refresh);
+    };
   }, []);
 
-  // Load plugin assets when manifests arrive.
   useEffect(() => {
-    if (manifests.length === 0) return;
+    const assets = injectedAssets.current;
+    return () => {
+      for (const [name, injected] of assets) {
+        if (!deactivatePluginScript(name, injected.script)) continue;
+        injected.script.remove();
+        injected.link?.remove();
+        unregisterPluginSlots(name);
+        unregisterPlugin(name);
+      }
+      assets.clear();
+    };
+  }, []);
 
-    const injectedScripts: HTMLScriptElement[] = [];
-
+  // Reconcile owned assets, retaining unchanged scripts across refreshes.
+  useEffect(() => {
+    const assets = injectedAssets.current;
+    const current = new Map(manifests.map(manifest => [manifest.name, manifestAssetKey(manifest)]));
+    for (const [name, injected] of assets) {
+      if (current.get(name) === injected.key) continue;
+      deactivatePluginScript(name, injected.script);
+      injected.script.remove();
+      injected.link?.remove();
+      assets.delete(name);
+      unregisterPluginSlots(name);
+      unregisterPlugin(name);
+    }
     for (const manifest of manifests) {
-      // Inject CSS if specified.
+      if (assets.has(manifest.name)) continue;
+      const generation = ++nextGeneration;
+      let link: HTMLLinkElement | undefined;
       if (manifest.css) {
-        const cssUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.css}`;
-        if (!document.querySelector(`link[href="${cssUrl}"]`)) {
-          const link = document.createElement("link");
-          link.rel = "stylesheet";
-          link.href = cssUrl;
-          document.head.appendChild(link);
-        }
+        link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = assetUrl(`${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.css}`, manifest.version, generation);
+        document.head.appendChild(link);
       }
-
-      // Load JS bundle. In dev, cache-bust so Vite HMR can clear the
-      // in-memory registry while the browser would otherwise never
-      // re-execute a previously cached <script> URL.
       const baseUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.entry}`;
-      const scriptSrc = import.meta.env.DEV
-        ? `${baseUrl}?hermes_dv=${Date.now()}`
-        : baseUrl;
-      if (!import.meta.env.DEV) {
-        if (loadedScripts.current.has(baseUrl)) continue;
-        loadedScripts.current.add(baseUrl);
-      }
-
+      const scriptSrc = assetUrl(baseUrl, manifest.version, generation);
       const script = document.createElement("script");
       script.setAttribute("data-hermes-plugin", manifest.name);
       script.src = scriptSrc;
       script.async = true;
-      // SRI integrity verification — defense against compromised plugin
-      // delivery. Plugin manifests can declare an integrity hash
-      // (e.g. "sha384-...") which the browser verifies before executing.
-      // Without this, a man-in-the-middle or compromised plugin server
-      // can substitute the JS bundle silently. Opt-in: when no integrity
-      // is declared in the manifest, behavior is unchanged.
       if (manifest.integrity && typeof manifest.integrity === "string") {
         script.integrity = manifest.integrity;
         script.crossOrigin = "anonymous";
       }
       script.onerror = () => {
+        if (!isPluginScriptActive(manifest.name, script)) return;
         setPluginLoadError(manifest.name, "LOAD_FAILED");
-        console.warn(
-          `[plugins] Failed to load ${manifest.name} from ${scriptSrc} (open Network tab)`,
-        );
+        console.warn(`[plugins] Failed to load ${manifest.name} from ${scriptSrc} (open Network tab)`);
       };
       script.onload = () => {
+        if (!isPluginScriptActive(manifest.name, script)) return;
         notifyPluginRegistry();
         queueMicrotask(() => {
-          if (getPluginComponent(manifest.name)) return;
+          if (!isPluginScriptActive(manifest.name, script)) return;
+          if (isManifestRegistered(manifest)) return;
           setPluginLoadError(manifest.name, "NO_REGISTER");
         });
       };
+      activatePluginScript(manifest.name, script);
+      assets.set(manifest.name, { key: manifestAssetKey(manifest), script, link });
       document.body.appendChild(script);
-      injectedScripts.push(script);
     }
-
-    // Give plugins a moment to load and register, then stop loading state.
     const timeout = setTimeout(() => setLoading(false), 2000);
-    return () => {
-      clearTimeout(timeout);
-      if (import.meta.env.DEV) {
-        for (const el of injectedScripts) {
-          el.remove();
-        }
-      }
-    };
+    return () => clearTimeout(timeout);
   }, [manifests]);
 
   // Listen for plugin registrations and resolve them against manifests.
@@ -178,14 +222,15 @@ export function usePlugins() {
       }
       setPlugins(resolved);
       // If all plugins registered, stop loading early.
-      if (resolved.length === manifests.length && manifests.length > 0) {
+      if (manifests.length > 0 && manifests.every(isManifestRegistered)) {
         setLoading(false);
       }
     }
 
     resolvePlugins();
     const unsub = onPluginRegistered(resolvePlugins);
-    return unsub;
+    const unsubSlots = onSlotRegistered(resolvePlugins);
+    return () => { unsub(); unsubSlots(); };
   }, [manifests]);
 
   return { plugins, manifests, loading };

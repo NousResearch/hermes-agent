@@ -140,6 +140,42 @@ def test_pending_sanitation_runs_before_short_transcript_cheap_gate():
     assert ctx.messages is sanitized
 
 
+def test_engine_maintenance_gets_real_token_estimate_not_zero():
+    """Round-7 finding: the short-history maintenance path must not forward approx_tokens=0.
+
+    When the cheap preflight gate rejects but the engine hook opts in, the pass used to
+    call ``_compress_context(approx_tokens=0)``; engines sizing compaction from the
+    documented ``current_tokens`` then treat a nonempty prompt as empty. The real
+    preflight estimate must be computed once the hook opts in.
+    """
+    hook = MagicMock(return_value=True)
+    compressor = _stub_compressor(preflight=hook)
+    compressor.protect_first_n = 3
+    compressor.protect_last_n = 6
+    agent = _make_agent(compressor)
+
+    captured: dict = {}
+
+    def _capture(messages, system_message=None, **kwargs):
+        captured["approx_tokens"] = kwargs.get("approx_tokens")
+        return (messages, "SYSTEM")
+
+    agent._compress_context = MagicMock(side_effect=_capture)
+
+    _build(agent, conversation_history=_history(2))
+
+    hook.assert_called_once()
+    agent._compress_context.assert_called_once()
+    approx = captured.get("approx_tokens")
+    assert isinstance(approx, int) and not isinstance(approx, bool), (
+        "engine maintenance must receive a real integer token estimate"
+    )
+    assert approx > 0, (
+        f"engine maintenance received approx_tokens={approx!r}: a nonempty prompt "
+        "must never be sized as empty"
+    )
+
+
 @pytest.mark.parametrize("blocked_by", ["cooldown", "deferred", "codex_native"])
 def test_short_transcript_sanitation_respects_preflight_skip_gates(blocked_by):
     hook = MagicMock(return_value=True)

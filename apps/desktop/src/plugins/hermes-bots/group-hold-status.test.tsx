@@ -149,7 +149,9 @@ describe('durable group holds', () => {
 
   it('summarizes the most recent unresolved failure after a member fails again', async () => {
     const [{ GroupChatWorkspace }, chat, activity] = await Promise.all([
-      import('./group-chat-view'), import('./group-chat'), import('./group-activity')
+      import('./group-chat-view'),
+      import('./group-chat'),
+      import('./group-activity')
     ])
 
     chat.$groupChats.set({ Core: { log: [], members: MEMBERS, watermarks: {} } })

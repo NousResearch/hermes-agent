@@ -107,11 +107,36 @@ export function windowBrowserTabId(): null | string {
   }
 }
 
+// A "skills-hub" window is the popped-out Skills Hub: the same hub iframe the
+// Capabilities pane embeds, at full size in its own OS window. The flag rides
+// `?win=skills-hub` (before the hash, same contract as browser/secondary).
+let skillsHubWindowCache: boolean | null = null
+
+export function isSkillsHubWindow(): boolean {
+  if (skillsHubWindowCache !== null) {
+    return skillsHubWindowCache
+  }
+
+  let result = false
+
+  try {
+    result = new URLSearchParams(window.location.search).get('win') === 'skills-hub'
+  } catch {
+    result = false
+  }
+
+  skillsHubWindowCache = result
+
+  return result
+}
+
 // True for any window that is NOT the primary app instance — a secondary
-// session window, the HUD, or a popped-out Browser. Single-claim channels
-// (the quick-entry capture bridge, the pet overlay control bridge) and the
-// install/onboarding overlays belong to the primary alone.
-export const isAuxiliaryWindow = (): boolean => isSecondaryWindow() || isHudWindow() || isBrowserWindow()
+// session window, the HUD, a popped-out Browser, or the popped-out Skills Hub.
+// Single-claim channels (the quick-entry capture bridge, the pet overlay
+// control bridge) and the install/onboarding overlays belong to the primary
+// alone.
+export const isAuxiliaryWindow = (): boolean =>
+  isSecondaryWindow() || isHudWindow() || isBrowserWindow() || isSkillsHubWindow()
 
 // A full peer window renders the ordinary app shell against the backend that
 // Electron already has running. It is not an auxiliary/specialized renderer,
@@ -155,6 +180,11 @@ export function canOpenNewWindow(): boolean {
 // True when the shell can pop the in-app Browser into its own OS window.
 export function canOpenBrowserWindow(): boolean {
   return typeof window !== 'undefined' && typeof window.hermesDesktop?.openBrowserWindow === 'function'
+}
+
+// True when the shell can pop the Skills Hub into its own OS window.
+export function canOpenSkillsHubWindow(): boolean {
+  return typeof window !== 'undefined' && typeof window.hermesDesktop?.openSkillsHubWindow === 'function'
 }
 
 // True when the shell can hand a session to the user's own terminal emulator.
@@ -232,6 +262,26 @@ export async function openBrowserInNewWindow(tabId: string): Promise<boolean> {
   }
 
   return runWindowOpen(() => window.hermesDesktop.openBrowserWindow(tabId), 'Could not pop out browser')
+}
+
+/** Pop the Skills Hub into its own full-size OS window. No-ops gracefully
+ *  outside Electron. */
+export async function openSkillsHubWindow(): Promise<boolean> {
+  const open = window.hermesDesktop?.openSkillsHubWindow
+
+  if (!open) {
+    return false
+  }
+
+  return runWindowOpen(() => open(), 'Could not open the Skills Hub window')
+}
+
+/** Tell main to broadcast that hub state changed, so every window (including
+ *  the popped-out hub) refetches its hub/skills lists. */
+export function broadcastHubChanged(): void {
+  if (typeof window !== 'undefined' && typeof window.hermesDesktop?.notifyHubChanged === 'function') {
+    window.hermesDesktop.notifyHubChanged()
+  }
 }
 
 // Resume a session in the user's own terminal emulator, running the TUI there.

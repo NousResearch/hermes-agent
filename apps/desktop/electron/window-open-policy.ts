@@ -56,3 +56,41 @@ export function createWindowOpenHandler(
     return { action: 'deny' }
   }
 }
+
+export interface HubWindowOpenDecision {
+  action: 'deny'
+  /** When set, the caller should open this URL in the OS browser. */
+  openExternal?: string
+}
+
+/**
+ * Scoped window-open policy for the Skills Hub popout window ONLY.
+ *
+ * The hub window embeds exactly one frame — the hardcoded, trusted
+ * `hermes-agent.nousresearch.com/docs/skills?embed=picker` page; it never
+ * renders artifact previews or user HTML. Its Docusaurus navbar and skill
+ * cards link out with `target="_blank"` (GitHub, Discord, Home, source
+ * repos), and with the base deny-everything handler those links are dead
+ * weight in a window whose whole purpose is browsing the catalog. So the hub
+ * window gets a narrow exception: popups may open http/https/mailto through
+ * the audited `openExternalUrl` allowlist; everything else is still denied.
+ *
+ * GHSA-9f4c-93c8-jc8g stays intact: the global handler (every other window)
+ * still denies unconditionally, and this exception is tied to the one window
+ * that only ever loads the trusted hub URL.
+ */
+export function decideHubWindowOpen(url: string): HubWindowOpenDecision {
+  let parsed: URL
+
+  try {
+    parsed = new URL(url)
+  } catch {
+    return { action: 'deny' }
+  }
+
+  if (parsed.protocol === 'http:' || parsed.protocol === 'https:' || parsed.protocol === 'mailto:') {
+    return { action: 'deny', openExternal: parsed.toString() }
+  }
+
+  return { action: 'deny' }
+}

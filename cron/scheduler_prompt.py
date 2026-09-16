@@ -201,6 +201,8 @@ _CRON_HINT = (
     "rephrase it, whatever language the rest of your answer uses. "
     "Never combine [SILENT] with content — either report your "
     "findings normally, or say [SILENT] and nothing more. "
+    "OUTCOME: If you delegate work and a child returns status=failed, "
+    "this cron run is recorded as failed even when you still write a report. "
     "RECURSION: This is a run of an EXISTING scheduled job — execute "
     "the task now. NEVER create or update a cron job because of "
     "recurring or future-schedule language in the task prompt below; "

@@ -2283,6 +2283,18 @@ def run_job(
         # Keep final_response clean for delivery logic (empty = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
         output = _run_doc_header(job, job_name, job_id, prompt) + f"## Response\n\n{logged_response}\n"
+        from cron.scheduler_run_outcome import nested_child_failure
+        nested_error = nested_child_failure(result)
+        if nested_error:
+            # Parent turn finished, but a joined delegate_task child did not. Record the
+            # fire as failed so last_status / streaks / failure delivery see the child
+            # outcome instead of a false ok (#112426). Full output is still saved.
+            logger.warning("Job '%s' nested child failure: %s", job_name, nested_error)
+            _audit.write(
+                dict(result, response_silent=_is_cron_silence_response(final_response or "")),
+                nested_error,
+            )
+            return False, output, final_response, nested_error
         logger.info("Job '%s' completed successfully", job_name)
         _audit.write(dict(result, response_silent=_is_cron_silence_response(final_response or "")), None)
         return True, output, final_response, None

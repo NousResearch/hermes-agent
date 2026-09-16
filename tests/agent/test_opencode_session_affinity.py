@@ -60,3 +60,64 @@ def test_auxiliary_calls_share_the_main_turn_session_key():
         assert "x-opencode-session" not in (other.get("extra_headers") or {})
     finally:
         aux._RUNTIME_MAIN_CONTEXT.reset(token)
+
+
+def test_oneshot_and_unparented_opencode_calls_send_ephemeral_session_header():
+    from agent.opencode_affinity import opencode_session_headers
+
+    # Unparented opencode call (no active session or contextvar) generates an ephemeral session key
+    headers = opencode_session_headers("opencode-go", None, session_id=None)
+    assert "x-opencode-session" in headers
+    assert headers["x-opencode-session"].startswith("oneshot-")
+
+    # Direct auxiliary call without runtime-main session generates an ephemeral session header
+    kwargs = aux._build_call_kwargs("opencode-go", "glm-5", _MSGS, base_url="https://opencode.ai/zen/go/v1")
+    assert "extra_headers" in kwargs
+    assert kwargs["extra_headers"]["x-opencode-session"].startswith("oneshot-")
+
+    # Non-OpenCode provider without session still returns empty headers without generating UUIDs
+    other = opencode_session_headers("openrouter", "https://openrouter.ai/api/v1", session_id=None)
+    assert other == {}
+
+
+def test_oneshot_commit_message_with_opencode_runtime(monkeypatch):
+    from unittest.mock import MagicMock
+    from agent.oneshot import run_oneshot
+
+    mock_resp = MagicMock()
+    mock_resp.choices = [MagicMock()]
+    mock_resp.choices[0].message.content = "feat(git): add commit helper"
+    mock_resp.choices[0].message.reasoning = None
+    mock_resp.choices[0].message.reasoning_content = None
+    mock_resp.choices[0].message.reasoning_details = None
+
+    captured_kwargs = {}
+
+    def fake_call_llm(**kwargs):
+        captured_kwargs.update(kwargs)
+        # Verify that when auxiliary_client._build_call_kwargs builds kwargs for this provider,
+        # it carries the x-opencode-session header
+        call_kwargs = aux._build_call_kwargs(
+            kwargs["main_runtime"]["provider"],
+            kwargs["main_runtime"]["model"],
+            kwargs["messages"],
+            base_url=kwargs["main_runtime"].get("base_url"),
+        )
+        assert "x-opencode-session" in call_kwargs["extra_headers"]
+        assert call_kwargs["extra_headers"]["x-opencode-session"].startswith("oneshot-")
+        return mock_resp
+
+    monkeypatch.setattr("agent.oneshot.call_llm", fake_call_llm)
+
+    msg = run_oneshot(
+        template="commit_message",
+        variables={"diff": "diff --git a/a b/a\n+hello"},
+        main_runtime={
+            "provider": "opencode-go",
+            "model": "glm-5",
+            "base_url": "https://opencode.ai/zen/go/v1",
+        },
+    )
+    assert msg == "feat(git): add commit helper"
+    assert captured_kwargs["main_runtime"]["provider"] == "opencode-go"
+

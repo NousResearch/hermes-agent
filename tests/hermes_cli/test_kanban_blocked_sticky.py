@@ -167,7 +167,8 @@ def test_created_with_initial_status_blocked_is_not_promoted_by_recompute_ready(
 
         # Complete parent task
         kb.claim_task(conn, parent_id)
-        kb.complete_task(conn, parent_id, result="done")
+        kb.complete_task(conn, parent_id, result="done",
+                         expected_run_id=kb._current_run_id(conn, parent_id))
         assert kb.get_task(conn, parent_id).status == "done"
 
         # recompute_ready must NOT promote the blocked child task

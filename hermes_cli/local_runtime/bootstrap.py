@@ -12,6 +12,7 @@ import logging
 import os
 import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -21,6 +22,9 @@ from hermes_cli.local_runtime.gguf import SPLIT_PART_RE, model_id_from_stem
 logger = logging.getLogger(__name__)
 
 _SUPERVISOR = None  # process-wide singleton; one router per Hermes process
+# _SUPERVISOR is assigned only after start() completes its health wait. Serialize the full boot
+# so the backend-start thread and an on-demand resolution kick cannot both spawn a router there.
+_BOOT_LOCK = threading.Lock()
 
 
 def _detect_gpu_vendor() -> str | None:
@@ -177,10 +181,15 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
     """Idempotent boot of the managed runtime. Returns the supervisor (or None when
     disabled/unavailable). Never raises into a session start — failures log and return None; chat
     falls back to configured providers."""
-    global _SUPERVISOR
     section = (config or {}).get("local_runtime") or {}
     if not force and not section.get("enabled"):
         return None
+    with _BOOT_LOCK:
+        return _ensure_local_runtime_locked(section, force)
+
+
+def _ensure_local_runtime_locked(section: dict, force: bool) -> "object | None":
+    global _SUPERVISOR
     if _SUPERVISOR is not None:
         return _SUPERVISOR
 
@@ -271,7 +280,6 @@ def get_supervisor():
 def _start_idle_sweeper(sup) -> None:
     """Idle-residency loop: every couple of minutes, unload models idle past the supervisor's
     threshold. Daemon thread tied to the supervisor's lifetime — exits when the server stops."""
-    import threading
 
     def _loop():
         while sup.proc is not None and sup.proc.poll() is None:

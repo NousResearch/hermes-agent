@@ -1,13 +1,7 @@
-"""Where a NEW profile's gateway will be supervised: the container's supervisor, or this
-machine's service manager.
-
-``hermes profile create`` cannot answer this by asking itself. ``is_container()`` and
-``detect_service_manager()`` describe the CREATING process, and the interesting case is
-precisely the one where they disagree with reality: a host whose ``~/.hermes`` is bind-mounted
-into a container creates the profile directory exactly where the container reads it, while
-being unable to see ``/run/service`` at all. So resolve it from what the SERVING gateway
-declares about itself — ``runtime_kind`` in the active home's ``gateway_state.json`` — rather
-than from what this process happens to be.
+"""Where a NEW profile's gateway will be supervised. The creating process cannot answer by
+asking itself: a host whose ``~/.hermes`` is bind-mounted into a container is native while the
+gateway serving that home is not. So the answer comes from what the SERVING gateway declares
+(``runtime_kind`` in the active home's ``gateway_state.json``), never from ``is_container()``.
 """
 
 from __future__ import annotations
@@ -40,16 +34,9 @@ def _declared_runtime_kind(home: Path) -> Optional[str]:
 
 
 def resolve_profile_runtime(explicit: Optional[str] = None) -> Tuple[RuntimeKind, str]:
-    """Resolve to ``("container"|"native", human reason)``.
-
-    Precedence: the ``--runtime`` flag, then ``profiles.runtime``, then the serving gateway's
-    own declaration. ``auto`` resolves to ``native`` whenever nothing containerized has stamped
-    the active home — which is byte-for-byte today's behaviour for every plain host install and
-    every gateway older than the ``runtime_kind`` field.
-
-    Raises ValueError naming the three choices for an unrecognised value: a typo must not
-    silently pick a runtime.
-    """
+    """``("container"|"native", human reason)``: the ``--runtime`` flag, then ``profiles.runtime``,
+    then the serving gateway's declaration; ``auto`` is ``native`` unless a container stamped the
+    home. An unrecognised value raises naming the three choices: a typo must not pick a runtime."""
     from hermes_cli.config import load_config
     from hermes_constants import get_hermes_home
 

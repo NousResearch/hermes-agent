@@ -254,7 +254,14 @@ class PlatformRegistry:
 
     def _resolve_all(self) -> None:
         """Run every pending deferred loader (only ``all_entries``/``plugin_entries`` call this;
-        CLI chat never iterates the full set)."""
+        CLI chat never iterates the full set).
+
+        Loaders are independent module imports dominated by I/O, and one slow adapter used to hold up
+        all the others: sequentially the 22 bundled platforms cost ~2.0s (telegram alone ~800ms,
+        feishu ~433ms), against ~1.0s across a small thread pool. ``_resolve`` is already concurrency-safe
+        (per-name in-flight events), and the sequential pass below still runs afterwards, so anything the
+        pool could not start is simply loaded in order.
+        """
         active_scope = self.current_scope_key()
         with self._lock:
             _entries, scoped_deferred = self._scope_maps(active_scope)
@@ -267,7 +274,17 @@ class PlatformRegistry:
                     global_names.add(name)
         # Load outside the registry lock; each name has an in-flight event so concurrent
         # readers wait for the same materialization.
-        for name in (*sorted(scoped_names), *sorted(global_names)):
+        names = (*sorted(scoped_names), *sorted(global_names))
+        if len(names) > 2:
+            try:
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=min(8, len(names)),
+                                        thread_name_prefix="platform-load") as pool:
+                    list(pool.map(lambda name: self._resolve(name, active_scope), names))
+                return
+            except Exception as e:  # thread exhaustion / restricted environment: fall back in order
+                logger.warning("Parallel platform load failed (%s); loading sequentially", e)
+        for name in names:
             self._resolve(name, active_scope)
 
     def register(self, entry: PlatformEntry, *, scope: Optional[str] = None) -> None:

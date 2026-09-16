@@ -17,6 +17,7 @@ import { createPluginI18n, type PluginI18n } from '@/i18n'
 import { readKey, writeKey } from '@/lib/storage'
 import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } from '@/store/native-notifications'
 
+import { pluginSource, type PluginSource } from './plugin-source'
 import { registry } from './registry'
 import type { Contribution } from './types'
 
@@ -74,7 +75,7 @@ export interface PluginFileDialogOptions {
 
 export interface PluginContext {
   /** The resolved plugin source tag, e.g. `'plugin:cost-meter'`. */
-  readonly source: string
+  readonly source: PluginSource
   /** Register one contribution (id namespaced, source stamped). */
   register: (c: PluginContribution) => () => void
   /** Register several at once; the returned disposer removes all of them. */
@@ -197,7 +198,7 @@ function createPluginOs(pluginId: string): PluginOs {
 /** Build the scoped context handed to a plugin's `register`. `onDispose`
  *  receives every registration's disposer (the loader's unload/reload hook). */
 export function createPluginContext(pluginId: string, onDispose?: (dispose: () => void) => void): PluginContext {
-  const source = `plugin:${pluginId}`
+  const source = pluginSource(pluginId)
   const scope = (c: PluginContribution): Contribution => ({ ...c, id: `${pluginId}:${c.id}`, source })
 
   const track = (dispose: () => void) => {

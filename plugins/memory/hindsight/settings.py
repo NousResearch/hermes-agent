@@ -20,6 +20,12 @@ _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # ``metadata.source`` on retained memories is OPT-IN (AGENTS.md forbids
 # on-by-default attribution tags): ``retain_source`` / HINDSIGHT_RETAIN_SOURCE.
 _DEFAULT_RETAIN_SOURCE = ""
+# Turns authored by a PEER BOT (agent-to-agent DMs) are tagged with this extra tag so
+# recall can exclude them via Hindsight's `tag_groups` NOT filter. A tag (not a separate
+# bank or a skip): the agent-to-agent history stays retained, tagged, and searchable,
+# while `tags_match='any'` white-listing alone can NOT keep it out — untagged there means
+# "carries no tag at all", so old `session:*`-tagged memories would be dropped too.
+_DEFAULT_A2A_TAG = "source:bot"
 # Hindsight brand mark (eye ringed by graph nodes) for the recall/retain indicators.
 _HINDSIGHT_GLYPH = "👁️"
 # Hindsight 0.5.0 added ``update_mode='append'``; older APIs would silently

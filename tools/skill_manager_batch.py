@@ -32,10 +32,17 @@ def _validate_batch_ops(operations, default_name, tool_error):
         if not nm:
             return fail(i, " needs a 'name' (the skill it targets).")
         names.append(nm)
+        if op.get("evidence_merge") is not None and act != "patch":
+            return fail(i, ": evidence_merge is supported only with action 'patch'.")
         if act == "create" and nm in names[:-1]:
             return fail(i, f": create for '{nm}' must precede that skill's other ops.")
         if (preflight := _background_review_preflight(act, nm)) is not None:
             return None, json.dumps(preflight, ensure_ascii=False)
+    # Evidence candidates are intentionally isolated: replaying them alongside another
+    # operation on the same skill would require simulating ordered in-memory state.
+    evidence_indexes = [i for i, op in enumerate(operations) if op.get("evidence_merge") is not None]
+    if evidence_indexes and (len(evidence_indexes) != 1 or len(operations) != 1):
+        return fail(evidence_indexes[0], ": evidence_merge batches must be the sole operation until ordered-state simulation is implemented.")
     # Clobber guard: a DESTRUCTIVE op (create/write_file/remove_file/full rewrite) on
     # a file an earlier op touched would SILENTLY discard its work — reject it.
     # Additive patches are always legal. Paths are normalized against spelling variants.
@@ -139,9 +146,34 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
         # Approval gate for the WHOLE batch as one pending write.
         def _staging(wa):
             acts = ", ".join(op["action"] for op in operations)
+            staged_ops = []
+            evidence_targets = set()
+            for op in operations:
+                staged = dict(op)
+                delta = op.get("evidence_merge")
+                if delta is not None:
+                    nm = op.get("name") or default_name
+                    if nm in evidence_targets:
+                        raise ValueError(f"duplicate evidence_merge target in batch: {nm}")
+                    evidence_targets.add(nm)
+                    found = _smt._find_skill(nm)
+                    if not found:
+                        raise ValueError(f"skill '{nm}' was not found")
+                    current = Path(found["path"]).joinpath("SKILL.md").read_text(encoding="utf-8")
+                    candidate = _smt.merge_evidence(current, delta)
+                    staged["evidence_merge"] = {
+                        **delta, "_source_digest": _smt.content_digest(current),
+                        "_candidate_content": candidate}
+                    staged["evidence_merge"]["_preview"] = wa.skill_pending_diff(
+                        {"payload": {"action": "patch", "name": nm,
+                                     "evidence_merge": staged["evidence_merge"]}})
+                staged_ops.append(staged)
             gist = f"batch({len(operations)} ops: {acts}) on {', '.join(sorted(set(names)))}"
-            return {"action": "batch", "operations": operations}, gist
-        staged = _smt._run_write_gate(_staging)
+            return {"action": "batch", "operations": staged_ops}, gist
+        try:
+            staged = _smt._run_write_gate(_staging)
+        except (ValueError, _smt.EvidenceMergeError, OSError) as exc:
+            return tool_error(f"cannot stage batch evidence_merge: {exc}", success=False)
         if staged is not None:
             return staged
     snap_root = Path(tempfile.mkdtemp(prefix="skill_batch_"))
@@ -149,6 +181,21 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
     if snap_err is not None:
         shutil.rmtree(snap_root, ignore_errors=True)
         return tool_error(snap_err, success=False)
+    # Approved evidence candidates are bound to the exact pre-stage source. Check every
+    # candidate before the first operation mutates any skill.
+    for op in operations:
+        evidence = op.get("evidence_merge")
+        if not isinstance(evidence, dict) or "_candidate_content" not in evidence:
+            continue
+        nm = op.get("name") or default_name
+        found = _smt._find_skill(nm)
+        if not found:
+            shutil.rmtree(snap_root, ignore_errors=True)
+            return tool_error(f"batch evidence_merge target disappeared: {nm}", success=False)
+        current = Path(found["path"]).joinpath("SKILL.md").read_text(encoding="utf-8")
+        if _smt.content_digest(current) != evidence.get("_source_digest"):
+            shutil.rmtree(snap_root, ignore_errors=True)
+            return tool_error(f"batch evidence_merge for '{nm}' is stale; source changed after approval", success=False)
     # Single-op path with the gate bypassed (the batch already cleared/staged it).
     results = []
     rollback_failed = False

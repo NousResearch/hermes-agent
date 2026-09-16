@@ -9,7 +9,10 @@ revive it.
 Contracts:
   * plain restart + dead stopper -> drain cancels: flags reset, marker cleared, stop() never
     called, service resumes
-  * live stopper / via_service / detached / no marker -> the drain proceeds exactly as before
+  * via_service + live marker naming a dead stopper -> same cancel (2026-09-15 incident: the
+    stopper that took responsibility died mid-drain, so nobody performs the service restart)
+  * live stopper / detached / no marker (incl. marker-less via_service requesters) -> the
+    drain proceeds exactly as before
 """
 
 from __future__ import annotations
@@ -135,8 +138,10 @@ async def test_live_stopper_still_drains_and_stops(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_via_service_ignores_dead_stopper(tmp_path, monkeypatch):
-    """A service restart is completed by the service manager, not the stopper: never cancel."""
+async def test_via_service_cancels_when_live_markers_stopper_is_dead(tmp_path, monkeypatch):
+    """2026-09-15 incident: a via_service restart whose live marker names a dead stopper is
+    orphaned in the plain-restart sense — nobody performs the service restart — so the drain
+    cancels exactly like a plain restart (flags reset, marker cleared, service resumes)."""
     marker = _marker_path(tmp_path, monkeypatch)
     _write_marker(marker, _dead_pid())
     runner = _runner_with_active_work()
@@ -144,8 +149,24 @@ async def test_via_service_ignores_dead_stopper(tmp_path, monkeypatch):
     assert runner.request_restart(via_service=True) is True
     await asyncio.wait_for(runner._restart_task, 5)
 
+    assert marker.exists() is False  # orphaned marker cleared
+    assert runner._draining is False
+    assert runner._restart_requested is False
+    assert runner._restart_task_started is False
+    runner.stop.assert_not_awaited()  # gateway keeps serving
+
+
+@pytest.mark.asyncio
+async def test_via_service_no_marker_drains_untouched(tmp_path, monkeypatch):
+    """Marker-less via_service requesters (updater SIGUSR1, control-socket pause-for-update)
+    write no marker: nothing opts them into the orphan probe, drain/stop exactly as before."""
+    _marker_path(tmp_path, monkeypatch)
+    runner = _runner_with_active_work()
+
+    assert runner.request_restart(via_service=True) is True
+    await asyncio.wait_for(runner._restart_task, 5)
+
     runner.stop.assert_awaited_once()
-    assert marker.exists() is True  # untouched; the stop path consumes it
 
 
 @pytest.mark.asyncio

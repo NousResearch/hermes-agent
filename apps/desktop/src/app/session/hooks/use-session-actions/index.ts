@@ -30,6 +30,7 @@ import { migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
 import { $connectionRequests } from '@/store/connection-request'
 import {
+  $gateway,
   openGatewayForAgent,
   openGatewayForProfile,
   requestGatewayForAgent,
@@ -51,7 +52,7 @@ import {
   resolveNewChatOwnerRoute
 } from '@/store/profile'
 import { $projectScope, resolveNewSessionCwd } from '@/store/projects'
-import { receiveApprovalRequest } from '@/store/prompts'
+import { receiveApprovalRequest, replayPendingApproval } from '@/store/prompts'
 import { clearStoredTranscriptReadOnly, markStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
   $activeSessionStoredIdRotation,
@@ -365,6 +366,7 @@ function restorePendingApproval(response: SessionResumeResult, sessionId: string
     sessionId,
     smartDenied: pending.smart_denied === true
   })
+  void replayPendingApproval($gateway.get(), sessionId).catch(() => undefined)
 
   return true
 }

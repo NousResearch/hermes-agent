@@ -86,6 +86,24 @@ Menus and popovers use their own shared `shadow-md` +
 dashed targets and local blur. These are semantic surface classes, not licenses
 for call-site shadow or border inventions.
 
+**Queued cards:** `CardStack` (`src/components/ui/card-stack.tsx`) consumes a live,
+keyed list, retaining the current item when more arrive. Inline and floating
+approvals and both toast placements share its gesture handling and geometry.
+The Cursor-reference treatment uses one 96%-scale silhouette 7px above the
+front, 220ms promotion, and 180ms upward clearance; no rotation or lateral throw
+on button/keyboard decisions. Consumers supply the existing surface tokens and
+own the exact-request response. Gestures never grant approval. Departing cards
+are immediately inert; toasts can expand to the full live list. One persistent
+transcript-level host owns approvals, independent of tool rows and assistant
+message boundaries. Prepared approvals can precede tool.start: execution must
+not relocate or remount the stack. While approvals remain, a real activity line
+above the cards changes from awaiting approval to current-turn command status;
+represented execution rows appear only when explicitly expanded. Empty text
+continuations must not introduce paragraph gaps. Keep inline approvals beside
+the conversation and let genuine content scroll normally; do not inject padding
+or write scroll offsets to pin the decision. Preview this order with delayed
+start and completion events, not pre-created tool rows.
+
 ## Window glass
 
 Glass defaults to **29% Tint, Sidebar only** in both light and dark appearances.
@@ -303,6 +321,16 @@ so glass and message-bubble transparency do not reveal scrolling text.
   pause/resume preserve the user's disclosure choice. Error banners meet the
   stack's top edge without a blank padding strip. File and preview links remain
   visible at the bottom of the stack, below the queue and all status groups.
+- Popping out a composer makes it the window's only visible composer. It keeps
+  its viewport placement while hover or keyboard focus selects a chat pane;
+  moving back into the editor retains that recipient. Drafts, attachments and
+  queues stay session-owned. Docking restores the individual pane composers.
+  In either placement, moving into a chat pane gives its editor typing focus
+  immediately and preserves its caret. Layout-only hover events and delayed
+  focus callbacks cannot replace that choice. Movement within the same pane
+  must not flush React; deliberate Tab navigation and clicked controls still work.
+  Active dictation or voice conversation pins the recipient until capture ends,
+  keeping the microphone's stop controls and shortcut attached to its owner.
 - Status-stack rows use `StatusRow` with a leading `dismiss` action, a state
   icon and optional trailing actions. `StatusDismissButton` owns the Codicon
   close button for previews, background tasks and queued prompts; do not swap
@@ -388,6 +416,8 @@ long transcript or a busy terminal.
 - Focusing the Sessions sidebar preserves the last active chat's visual emphasis.
   Dimming still distinguishes session panes; sidebar navigation must not desaturate
   the chat or transfer its active highlight to a hidden primary tab.
+- Focused and hovered chat panes both retain full color and opacity. Only panes
+  that are neither focused nor hovered recede, with 20% desaturation.
 - Register global shortcuts through the shared layer, not ad-hoc listeners.
 - One cancel gesture does one thing: cancel the active interaction, or close the
   topmost dismissable surface — never both, never the control underneath.

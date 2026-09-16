@@ -1,0 +1,41 @@
+name: imessage-imsg-platform
+label: iMessage (local imsg)
+kind: platform
+version: 1.0.0
+description: >
+  Native macOS Apple Messages adapter for Hermes Agent. Uses the local imsg
+  JSON-RPC bridge for durable inbound watching and same-thread outbound sends.
+author: Steven Shoaf, Hermes Agent
+optional_env:
+  - name: IMESSAGE_CLI_PATH
+    description: "Path to the imsg CLI (default: /opt/homebrew/bin/imsg)"
+    prompt: "imsg CLI path"
+    password: false
+  - name: IMESSAGE_DB_PATH
+    description: "Path to the Apple Messages chat.db"
+    prompt: "Messages database path"
+    password: false
+  - name: IMESSAGE_ALLOWED_USERS
+    description: "Comma-separated Apple Messages senders allowed to use Hermes"
+    prompt: "Allowed senders"
+    password: false
+  - name: IMESSAGE_DM_ALLOWED_USERS
+    description: "Comma-separated senders allowed in direct messages"
+    prompt: "Allowed DM senders"
+    password: false
+  - name: IMESSAGE_GROUP_ALLOWED_USERS
+    description: "Comma-separated senders allowed in group chats"
+    prompt: "Allowed group senders"
+    password: false
+  - name: IMESSAGE_ALLOWED_CHATS
+    description: "Comma-separated Apple Messages group chat IDs allowed to use Hermes"
+    prompt: "Allowed group chat IDs"
+    password: false
+  - name: IMESSAGE_HOME_CHANNEL
+    description: "Default chat id for cron and notification delivery"
+    prompt: "Home chat id"
+    password: false
+  - name: IMESSAGE_REQUIRE_MENTION
+    description: "Whether group messages must mention Hermes"
+    prompt: "Require a group mention"
+    password: false

@@ -19,6 +19,8 @@ from tools.url_safety import (
     _is_blocked_ip,
     _global_allow_private_urls,
     _reset_allow_private_cache,
+    _global_allow_tun_fakeip,
+    _reset_allow_tun_fakeip_cache,
 )
 
 import ipaddress
@@ -156,6 +158,88 @@ class TestProxyEnvironmentDnsDelegation:
     def test_qq_multimedia_hostname_exception(self, url, expected):
         with _resolves_to("198.18.0.23"):
             assert is_safe_url(url) is expected
+
+    def test_tun_fakeip_allowed_when_enabled(self, monkeypatch):
+        monkeypatch.setenv("HERMES_ALLOW_TUN_FAKEIP", "true")
+        with _resolves_to("198.18.0.23"):
+            # Hostnames resolving to TUN fake-IP are permitted
+            assert is_safe_url("https://example.com/file.jpg") is True
+            assert is_safe_url("http://example.com/file.jpg") is True
+            # Literal 198.18.x IP is still blocked
+            assert is_safe_url("http://198.18.0.23/file.jpg") is False
+            # Private LAN and loopback remain blocked
+            assert is_safe_url("http://192.168.1.1/admin") is False
+            assert is_safe_url("http://127.0.0.1:8080/") is False
+            # Cloud metadata remains blocked
+            assert is_safe_url("http://169.254.169.254/latest/meta-data") is False
+
+    def test_tun_fakeip_connect_resolution_checks(self, monkeypatch):
+        monkeypatch.setenv("HERMES_ALLOW_TUN_FAKEIP", "true")
+        answers = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.5", 443))
+        ]
+        with patch("socket.getaddrinfo", return_value=answers):
+            # Allowed for hostnames
+            ips = _resolved_http_connect_ips("example.com", 443, "https")
+            assert "198.18.0.5" in ips
+
+        # Blocked for literal IP dial
+        with pytest.raises(SSRFConnectionBlocked, match="private/internal"):
+            _resolved_http_connect_ips("198.18.0.5", 80, "http")
+
+    def test_proxy_auto_requires_fakeip_route(self, monkeypatch):
+        """Proxy-auto must fail closed: a proxy env var ALONE (corp/CI machines with no
+        TUN) does not permit 198.18/15 — a remote A record could otherwise steer the
+        request into routing-table territory that is not the tunnel."""
+        monkeypatch.delenv("HERMES_ALLOW_TUN_FAKEIP", raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://corp-proxy:3128")
+        fake_route = {"fakeip_route": False}  # captured mutable over the stub
+
+        def stub_probe():
+            return fake_route["fakeip_route"]
+
+        with patch("tools.url_safety._has_tun_fakeip_route", side_effect=lambda: stub_probe()):
+            assert _global_allow_tun_fakeip() is False
+            fake_route["fakeip_route"] = True
+            _reset_allow_tun_fakeip_cache()  # clear the resolved-flag so the stub re-runs
+            assert _global_allow_tun_fakeip() is True
+
+    def test_proxy_auto_route_probe_darwin_parses_netstat(self, monkeypatch):
+        """On macOS the netstat output with a blanket 2/7 utun route means fake-IP is live."""
+        monkeypatch.delenv("HERMES_ALLOW_TUN_FAKEIP", raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://corp-proxy:3128")
+        netstat_out = "\n".join([
+            "Routing tables",
+            "",
+            "Internet:",
+            "Destination        Gateway            Flags        Netif Expire",
+            "default            192.168.31.1       UGScg             en0",
+            "2/7                198.18.0.1         UGSc          utun1024",
+            "198.18.0.1/32      198.18.0.1         UH            utun1024",
+        ])
+        _reset_allow_tun_fakeip_cache()
+        with patch("tools.url_safety.subprocess.run") as run, \
+             patch("tools.url_safety.sys") as sysmod:
+            sysmod.platform = "darwin"
+            run.return_value = type("P", (), {"stdout": netstat_out, "returncode": 0})()
+            assert _global_allow_tun_fakeip() is True
+            run.assert_called_once()  # probed once, then cached
+
+    def test_proxy_auto_route_probe_absent_stays_closed(self, monkeypatch):
+        """No 198.18.x route, or any probe error → proxy-auto keeps the allowance closed."""
+        monkeypatch.delenv("HERMES_ALLOW_TUN_FAKEIP", raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://corp-proxy:3128")
+        _reset_allow_tun_fakeip_cache()
+        with patch("tools.url_safety.subprocess.run",
+                   side_effect=FileNotFoundError("netstat missing")):
+            assert _global_allow_tun_fakeip() is False
+
+    def test_env_false_overrides_all(self, monkeypatch):
+        """HERMES_ALLOW_TUN_FAKEIP=false explicitly disables even with proxy + route."""
+        monkeypatch.setenv("HERMES_ALLOW_TUN_FAKEIP", "false")
+        monkeypatch.setenv("HTTPS_PROXY", "http://corp-proxy:3128")
+        with patch("tools.url_safety._has_tun_fakeip_route", return_value=True):
+            assert _global_allow_tun_fakeip() is False
 
 
 class TestAsyncIsSafeUrl:

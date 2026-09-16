@@ -13,6 +13,8 @@ import os
 import socket
 import asyncio
 import re
+import subprocess
+import sys
 from contextlib import contextmanager
 from typing import Any, Optional
 from urllib.parse import parse_qsl, quote, unquote, urljoin, urlparse, urlsplit, urlunsplit
@@ -29,6 +31,13 @@ _IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
 
 def _proxy_is_configured() -> bool:
+    """Return True if an outbound proxy is configured via environment variables.
+
+    Only checks explicit environment variables (HTTPS_PROXY, HTTP_PROXY, ALL_PROXY).
+    We intentionally do NOT check macOS system proxy / urllib.request.getproxies()
+    here because DNS failures on local/CI machines should fail closed unless the
+    process environment explicitly routes through an outbound proxy.
+    """
     return any(os.environ.get(v) for v in _PROXY_ENV_VARS)
 
 
@@ -122,6 +131,92 @@ _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 _allow_private_resolved, _cached_allow_private = False, False
 
 
+_BENCHMARKING_NET = ipaddress.ip_network("198.18.0.0/15")
+_allow_tun_fakeip_resolved, _cached_allow_tun_fakeip = False, False
+_fakeip_route_probed, _cached_fakeip_route = False, False
+
+
+def _global_allow_tun_fakeip() -> bool:
+    """True when 198.18.0.0/15 fake-IP resolution for hostnames should be permitted (TUN/Clash/sing-box)."""
+    env_val = os.getenv("HERMES_ALLOW_TUN_FAKEIP", "").strip().lower()
+    if env_val in {"true", "1", "yes"}:
+        return True
+    if env_val in {"false", "0", "no"}:
+        return False
+    global _allow_tun_fakeip_resolved, _cached_allow_tun_fakeip
+    if get_hermes_home_override() is not None:
+        return _resolve_allow_tun_fakeip()
+    if not _allow_tun_fakeip_resolved:
+        _allow_tun_fakeip_resolved, _cached_allow_tun_fakeip = True, _resolve_allow_tun_fakeip()
+    return _cached_allow_tun_fakeip
+
+
+def _resolve_allow_tun_fakeip() -> bool:
+    env_val = os.getenv("HERMES_ALLOW_TUN_FAKEIP", "").strip().lower()
+    if env_val in {"true", "1", "yes"}:
+        return True
+    if env_val in {"false", "0", "no"}:
+        return False
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        sec = cfg.get("security", {})
+        if isinstance(sec, dict) and "allow_tun_fakeip" in sec:
+            return is_truthy_value(sec.get("allow_tun_fakeip"), default=False)
+    except Exception:
+        pass  # config unavailable (tests, early import) — keep default
+    # Proxy-auto is deliberately narrow: a proxy env var alone also exists on corp/CI
+    # machines with no TUN, where 198.18/15 routes to the default gateway instead of
+    # the tunnel. Only auto-enable when a fake-IP route is actually present.
+    if _proxy_is_configured() and _has_tun_fakeip_route():
+        logger.info("TUN fake-IP allowance active via proxy-auto (198.18.0.0/15 route present)")
+        return True
+    return False
+
+
+def _has_tun_fakeip_route() -> bool:
+    """True when the OS routes 198.18.0.0/15 into a tunnel interface (TUN fake-IP active).
+
+    Best-effort routing-table check, probed once and cached; any error keeps the default
+    (closed). On a machine without the tunnel this fails closed — set HERMES_ALLOW_TUN_FAKEIP
+    or ``security.allow_tun_fakeip`` explicitly if you know the setup provides fake-IP DNS.
+    """
+    global _fakeip_route_probed, _cached_fakeip_route
+    if _fakeip_route_probed:
+        return _cached_fakeip_route
+    _fakeip_route_probed, _cached_fakeip_route = True, _probe_tun_fakeip_route()
+    return _cached_fakeip_route
+
+
+def _probe_tun_fakeip_route() -> bool:
+    try:
+        if sys.platform == "darwin":
+            out = subprocess.run(["netstat", "-rn", "-f", "inet"], capture_output=True, text=True,
+                                 timeout=5).stdout
+        else:
+            out = subprocess.run(["ip", "route"], capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return False
+    for line in out.splitlines():
+        fields = line.split()
+        if not fields:
+            continue
+        target = fields[0]
+        # macOS: "198.18.0.1/32 ... utunNN" / "2/7 ... utunNN" (the /15 covered by that mask
+        # form); Linux: "198.18.0.0/15 via ... dev utunNN" or "198.18.0.0/15 dev utunNN".
+        if target in {"198.18.0.0/15", "2/7"} or target.startswith("198.18."):
+            iface = fields[-1]
+            if iface.startswith("utun") or iface.startswith("tun") or iface.startswith("wg"):
+                return True
+    return False
+
+
+def _reset_allow_tun_fakeip_cache() -> None:
+    global _allow_tun_fakeip_resolved, _cached_allow_tun_fakeip, _fakeip_route_probed, _cached_fakeip_route
+    _allow_tun_fakeip_resolved = _cached_allow_tun_fakeip = False
+    _fakeip_route_probed = _cached_fakeip_route = False
+
+
 def _global_allow_private_urls() -> bool:
     """True when the user has opted out of private-IP blocking. Priority: ``HERMES_ALLOW_PRIVATE_URLS``
     env, ``security.allow_private_urls``, legacy ``browser.allow_private_urls``. Profile-scoped turns
@@ -198,6 +293,13 @@ def _is_blocked_ip(ip: _IPAddress) -> bool:
             or ip.is_multicast or ip.is_unspecified or ip in _CGNAT_NETWORK)
 
 
+def _is_tun_fakeip(ip: _IPAddress) -> bool:
+    """Return True if the IP falls in 198.18.0.0/15 benchmarking pool used by TUN fake-IP."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip in _BENCHMARKING_NET
+
+
 def is_always_blocked_url(url: str) -> bool:
     """True when the URL targets the always-blocked floor (cloud metadata) — only the sentinel
     hostnames/IPs, regardless of backend, routing, or ``allow_private_urls``. For callers that
@@ -242,12 +344,18 @@ def _allows_private_ip_resolution(hostname: str, scheme: str) -> bool:
     return scheme == "https" and hostname in _TRUSTED_PRIVATE_IP_HOSTS
 
 
-def _resolved_ip_block_reason(ip: _IPAddress, allow_private: bool) -> Optional[str]:
+def _resolved_ip_block_reason(
+    ip: _IPAddress,
+    allow_private: bool,
+    is_hostname_resolution: bool = False,
+) -> Optional[str]:
     """Why a resolved answer must be rejected, or None if it may be dialed. The metadata floor
     ignores ``allow_private``; ordinary private/internal classes are blocked only when it is False."""
     if _is_always_blocked_ip(ip):
         return "cloud metadata address"
     if not allow_private and _is_blocked_ip(ip):
+        if is_hostname_resolution and _is_tun_fakeip(ip) and _global_allow_tun_fakeip():
+            return None
         return "private/internal address"
     return None
 
@@ -287,11 +395,12 @@ def is_safe_url(url: str) -> bool:
                 return True
             logger.warning("Blocked request — DNS resolution failed for: %s", hostname)
             return False
+        is_hostname = _parse_ip(hostname) is None
         for raw, ip_str, ip in _iter_resolved_ips(addr_info):
             if ip is None:
                 logger.warning("Blocked request — unparseable IP address %r for hostname %s", raw, hostname)
                 return False
-            reason = _resolved_ip_block_reason(ip, allow_private)
+            reason = _resolved_ip_block_reason(ip, allow_private, is_hostname_resolution=is_hostname)
             if reason is not None:
                 logger.warning("Blocked request to %s: %s -> %s", reason, hostname, ip_str)
                 return False
@@ -330,12 +439,13 @@ def _resolved_http_connect_ips(host: str, port: int, scheme: str) -> list[str]:
     except socket.gaierror as exc:
         raise SSRFConnectionBlocked(f"Blocked request - DNS resolution failed for: {hostname}") from exc
     safe_ips: list[str] = []
+    is_hostname = _parse_ip(hostname) is None
     for raw, ip_str, ip in _iter_resolved_ips(addr_info):
         if ip is None:
             raise SSRFConnectionBlocked(
                 f"Blocked request - unparseable IP address {raw!r} for hostname {hostname}"
             ) from ValueError(f"{ip_str!r} does not appear to be an IPv4 or IPv6 address")
-        reason = _resolved_ip_block_reason(ip, allow_private)
+        reason = _resolved_ip_block_reason(ip, allow_private, is_hostname_resolution=is_hostname)
         if reason is not None:
             raise SSRFConnectionBlocked(f"Blocked request to {reason} during connect: {hostname} -> {ip_str}")
         if ip_str not in safe_ips and len(safe_ips) < _MAX_SSRF_CONNECT_IPS:

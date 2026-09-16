@@ -303,6 +303,24 @@ to use. Like every schema change, that lands on the next session — a running
 conversation keeps the toolset it started with, and the app declines the call in
 the meantime.
 
+## `goal` toolset
+
+`goal_control` manages the current session's persisted standing goal. It can set,
+update, inspect, pause, resume, or clear the goal, and it rejects cross-session
+requests. Successful calls return an authoritative `goal_readback` whose receipt
+identity comes from the persisted goal revision. Set/update calls may include
+portable `acceptance_evidence`; on update, omit the field to preserve existing
+evidence, pass `[]` to clear it, or pass a list to replace it. Each evidence
+locator and assertion must occur verbatim in the goal condition.
+
+The `goal` toolset can be enabled by itself, and `goal_control` is also included
+in the default platform bundles such as `hermes-cli`. The `/goal` slash command
+remains the human-facing control path.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `goal_control` | Manage the current session's persisted standing goal and return an authoritative revision-bound readback. | — |
+
 ## `todo` toolset
 
 | Tool | Description | Requires environment |
@@ -402,5 +420,4 @@ Registered only on the `hermes-yuanbao` platform toolset. Yuanbao is Tencent's c
 | `yb_send_dm` | Send a private/direct message to a user in a group, with optional media files. | Yuanbao credentials |
 | `yb_search_sticker` | Search the built-in Yuanbao sticker (TIM face) catalogue by keyword. | Yuanbao credentials |
 | `yb_send_sticker` | Send a built-in sticker to the current Yuanbao chat. | Yuanbao credentials |
-
 

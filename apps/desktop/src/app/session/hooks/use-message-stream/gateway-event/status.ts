@@ -9,7 +9,7 @@ import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgent
 import { clearSettledClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting, setSessionCompacting, takeCompressDeferred } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
-import { applyGoalStatusText } from '@/store/goals'
+import { applyGoalStatusUpdate } from '@/store/goals'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
@@ -118,7 +118,7 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       // completions / watch matches here — re-sync the status stack.
       void refreshBackgroundProcesses(sessionId)
     } else if (sessionId && payload?.kind === 'goal') {
-      applyGoalStatusText(sessionId, coerceGatewayText(payload?.text))
+      applyGoalStatusUpdate(sessionId, coerceGatewayText(payload?.text), payload?.goal)
     } else if (sessionId && isFallbackSwitchStatus(payload?.kind, coerceGatewayText(payload?.text))) {
       // A provider/model switch is durable: the TUI paints it on the status rail, but Desktop
       // used to swallow every non-compaction status.update, so the reply came from a different

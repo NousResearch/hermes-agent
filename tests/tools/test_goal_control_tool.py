@@ -35,6 +35,145 @@ def _home(tmp_path, monkeypatch):
     return home
 
 
+def test_readback_receipt_is_stable_for_a_revision_and_rotates_on_mutation(
+    tmp_path, monkeypatch
+):
+    _home(tmp_path, monkeypatch)
+
+    created = _call(
+        "set",
+        session_id="session-current",
+        condition="Run checks",
+        max_turns=3,
+    )
+    status = _call("status", session_id="session-current")
+    paused = _call("pause", session_id="session-current")
+
+    assert created["goal_readback"]["receipt_id"] == (
+        "goal_control:session-current:revision:1"
+    )
+    assert status["goal_readback"] == created["goal_readback"]
+    assert paused["goal_readback"]["revision"] == 2
+    assert paused["goal_readback"]["receipt_id"] == (
+        "goal_control:session-current:revision:2"
+    )
+
+
+def test_acceptance_evidence_update_omit_clear_and_replace_semantics(
+    tmp_path, monkeypatch
+):
+    _home(tmp_path, monkeypatch)
+    original = [
+        {"kind": "file_exists", "locator": "report.json", "assertion": "exists"}
+    ]
+    replacement = [
+        {"kind": "test_result", "locator": "goal tests", "assertion": "passes"}
+    ]
+
+    created = _call(
+        "set",
+        session_id="session-current",
+        condition="Finish when report.json exists",
+        acceptance_evidence=original,
+    )
+    preserved = _call(
+        "update",
+        session_id="session-current",
+        condition="Still finish when report.json exists",
+    )
+    cleared = _call(
+        "update",
+        session_id="session-current",
+        condition="Continue without structured checks",
+        acceptance_evidence=[],
+    )
+    replaced = _call(
+        "update",
+        session_id="session-current",
+        condition="Finish when goal tests passes",
+        acceptance_evidence=replacement,
+    )
+
+    assert created["goal_readback"]["acceptance_evidence"] == original
+    assert preserved["goal_readback"]["acceptance_evidence"] == original
+    assert cleared["goal_readback"]["acceptance_evidence"] == []
+    assert replaced["goal_readback"]["acceptance_evidence"] == replacement
+    assert goals.load_goal_authoritative("session-current").acceptance_evidence == (
+        replacement
+    )
+
+
+def test_update_rejects_preserved_evidence_missing_from_new_condition(
+    tmp_path, monkeypatch
+):
+    _home(tmp_path, monkeypatch)
+    _call(
+        "set",
+        session_id="session-current",
+        condition="Finish when report.json exists",
+        acceptance_evidence=[
+            {"kind": "file_exists", "locator": "report.json", "assertion": "exists"}
+        ],
+    )
+    before = goals.load_goal_authoritative("session-current").to_json()
+
+    result = _call(
+        "update",
+        session_id="session-current",
+        condition="Finish the report",
+    )
+
+    assert result["success"] is False
+    assert result["error"]["code"] == "invalid_acceptance_evidence"
+    assert goals.load_goal_authoritative("session-current").to_json() == before
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        None,
+        [{"kind": "invented", "locator": "report.json", "assertion": "exists"}],
+        [{"kind": "file_exists", "locator": "report.json", "assertion": "passes"}],
+        [{"kind": "file_exists", "locator": "", "assertion": "exists"}],
+        [{"kind": "file_exists", "locator": "report.json", "assertion": "exists", "extra": "no"}],
+    ],
+)
+def test_set_rejects_malformed_or_unsupported_acceptance_evidence(
+    tmp_path, monkeypatch, evidence
+):
+    _home(tmp_path, monkeypatch)
+
+    result = _call(
+        "set",
+        session_id="session-current",
+        condition="Finish when report.json exists",
+        acceptance_evidence=evidence,
+    )
+
+    assert result["success"] is False
+    assert result["error"]["code"] == "invalid_acceptance_evidence"
+    assert goals.load_goal("session-current") is None
+
+
+def test_evidence_locator_and_assertion_must_be_named_in_condition(
+    tmp_path, monkeypatch
+):
+    _home(tmp_path, monkeypatch)
+
+    result = _call(
+        "set",
+        session_id="session-current",
+        condition="Finish the run",
+        acceptance_evidence=[
+            {"kind": "file_exists", "locator": "report.json", "assertion": "exists"}
+        ],
+    )
+
+    assert result["success"] is False
+    assert result["error"]["code"] == "invalid_acceptance_evidence"
+    assert goals.load_goal("session-current") is None
+
+
 def test_set_returns_authoritative_persisted_current_session_state(tmp_path, monkeypatch):
     _home(tmp_path, monkeypatch)
 
@@ -75,6 +214,18 @@ def test_goal_control_is_exposed_on_the_core_model_surface(tmp_path, monkeypatch
 
     names = {item["function"]["name"] for item in definitions}
     assert "goal_control" in names
+
+
+def test_goal_control_can_be_enabled_as_a_narrow_toolset(tmp_path, monkeypatch):
+    _home(tmp_path, monkeypatch)
+
+    definitions = get_tool_definitions(
+        enabled_toolsets=["goal"],
+        quiet_mode=True,
+        skip_tool_search_assembly=True,
+    )
+
+    assert {item["function"]["name"] for item in definitions} == {"goal_control"}
 
 
 def test_set_uses_configured_goal_budget_when_omitted(tmp_path, monkeypatch):

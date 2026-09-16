@@ -11,6 +11,7 @@ uses to render a system line and fire the kickoff prompt.
 from __future__ import annotations
 
 import importlib
+import json
 import threading
 import types
 from pathlib import Path
@@ -524,6 +525,65 @@ def test_real_queued_prompt_preempts_goal_compression_retry(
     assert server._GOAL_COMPRESSION_RECOVERY_ATTEMPTS not in session
 
 
+def test_model_goal_control_event_projects_exact_persisted_condition(
+    server, turn_env, monkeypatch
+):
+    from hermes_cli.goals import GoalManager, load_goal_authoritative
+    from tools.goal_control_tool import goal_control_tool
+
+    session_key = "goal-control-projection"
+    condition = "Ship the exact backend-to-Desktop projection"
+    model_receipt = {}
+
+    def run_conversation(_message, **_kwargs):
+        model_receipt.update(
+            json.loads(
+                goal_control_tool(
+                    action="set",
+                    condition=condition,
+                    session_id=session_key,
+                )
+            )["goal_readback"]
+        )
+        return {"final_response": "Goal persisted."}
+
+    monkeypatch.setattr(
+        GoalManager,
+        "evaluate_after_turn",
+        lambda self, response, **kwargs: {
+            "message": "↻ Continuing toward goal (1/20): more work remains",
+            "should_continue": False,
+        },
+    )
+    agent = types.SimpleNamespace(
+        session_id=session_key,
+        run_conversation=run_conversation,
+        clear_interrupt=lambda: None,
+    )
+    session = _turn_session(agent, session_key)
+
+    server._run_prompt_submit("rid", "desktop-runtime", session, "set a goal")
+
+    persisted = load_goal_authoritative(session_key)
+    assert persisted is not None
+    assert persisted.goal == condition
+    goal_events = [
+        (sid, payload)
+        for event, sid, payload in turn_env
+        if event == "status.update" and payload.get("kind") == "goal"
+    ]
+    assert len(goal_events) == 1
+    sid, payload = goal_events[0]
+    expected_goal = {
+        "exists": True,
+        "status": "active",
+        "condition": condition,
+    }
+    assert sid == "desktop-runtime"
+    assert model_receipt["goal"] == expected_goal
+    assert payload["goal"] == expected_goal
+
+
 @pytest.mark.parametrize("failure", ["missing", "read", "invalid"])
 def test_compression_recovery_goal_read_failure_is_visible_and_preserves_retry_state(
     server, turn_env, monkeypatch, failure
@@ -562,12 +622,13 @@ def test_compression_recovery_goal_read_failure_is_visible_and_preserves_retry_s
     judge.assert_not_called()
     assert session[server._GOAL_COMPRESSION_RECOVERY_ATTEMPTS] == retained_retry
     notices = [
-        p["text"]
+        p
         for event, _sid, p in turn_env
         if event == "status.update" and p.get("kind") == "goal"
     ]
-    assert any("Goal status unavailable" in text for text in notices)
-    assert all("private recovery detail" not in text for text in notices)
+    assert any("Goal status unavailable" in p["text"] for p in notices)
+    assert all("private recovery detail" not in p["text"] for p in notices)
+    assert all("goal" not in p for p in notices)
 
 
 @pytest.mark.parametrize("failure", ["missing", "read", "invalid"])
@@ -603,12 +664,13 @@ def test_normal_post_turn_goal_read_failure_is_visible_and_never_judged(
 
     judge.assert_not_called()
     notices = [
-        p["text"]
+        p
         for event, _sid, p in turn_env
         if event == "status.update" and p.get("kind") == "goal"
     ]
-    assert any("Goal status unavailable" in text for text in notices)
-    assert all("private post-turn detail" not in text for text in notices)
+    assert any("Goal status unavailable" in p["text"] for p in notices)
+    assert all("private post-turn detail" not in p["text"] for p in notices)
+    assert all("goal" not in p for p in notices)
 
 
 def test_compression_deferred_is_not_treated_as_exhaustion(server):

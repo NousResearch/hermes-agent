@@ -4600,6 +4600,13 @@ export interface PersistedTurn {
 export interface StatusUpdatePayload {
   kind: string
   text: string
+  goal?: GoalStatusPayload | null
+}
+/** Authoritative persisted goal identity attached to goal status updates. */
+export interface GoalStatusPayload {
+  exists: boolean
+  status: string | null
+  condition: string | null
 }
 /** ``server._start_usage_ticker``. */
 export interface SessionUsagePayload {

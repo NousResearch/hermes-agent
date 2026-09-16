@@ -558,7 +558,8 @@ class OpenAICompatRoutesMixin:
             return await self._run_agent(**run_kwargs)
         outcome, err = await self._run_idempotent(
             request, body, _compute_completion, log_label="chat completions",
-            fingerprint_keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream"],
+            fingerprint_keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream",
+                              "hermes_notification_category"],
             route="chat_completions",
         )
         if err is not None:

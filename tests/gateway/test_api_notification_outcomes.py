@@ -165,3 +165,36 @@ async def test_http_unhandled_diagnostic_error_is_quiet_but_failed(tmp_path, mon
         assert frames[-1]["choices"][0]["finish_reason"] == "error"
         assert frames[-1]["hermes"]["failed"] is True
     assert adapter._inflight_agent_runs == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("categories", [("diagnostic", "result"), ("result", "diagnostic")])
+async def test_http_idempotency_does_not_replay_opposite_presentation(tmp_path, monkeypatch, categories):
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    from gateway.platforms.api_server import _IdempotencyCache
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("gateway.platforms.api_server._idem_cache", _IdempotencyCache())
+    (tmp_path / "config.yaml").write_text("display: {suppress_warning_notifications: true}\n")
+    adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "test-local-key"}))
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
+    agent = MagicMock()
+    agent.session_id = "session"
+    agent._last_compaction_in_place = False
+    agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+    agent.run_conversation.side_effect = lambda **kwargs: {"final_response": "required result", "messages": []}
+    with patch.object(adapter, "_create_agent", return_value=agent):
+        async with TestClient(TestServer(app)) as client:
+            for category in categories:
+                body = {"messages": [{"role": "user", "content": "event"}],
+                        "hermes_notification_category": category}
+                for repeat in range(2):
+                    response = await client.post("/v1/chat/completions", headers={
+                        "Authorization": "Bearer test-local-key", "X-Hermes-Session-Id": "session",
+                        "Idempotency-Key": "same-key"}, json=body)
+                    wire = await response.json()
+                    assert response.status == 200, wire
+                    assert wire["choices"][0]["message"]["content"] == ("" if category == "diagnostic" else "required result")
+    assert agent.run_conversation.call_count == 2

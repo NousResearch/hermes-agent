@@ -125,9 +125,9 @@ gateway:
     denied_reason_plural:  "❌ 指令已拒絕（{count} 條指令）。 已將原因轉達給代理: \"{reason}\""
 
   fast:
-    not_supported:         "⚡ /fast 僅適用於支援 Priority Processing 的 OpenAI 模型。"
-    status:                "⚡ Priority Processing\n\n目前模式：`{mode}`\n\n_用法：_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ 未知參數：`{arg}`\n\n**有效選項：** normal、fast、status"
+    not_supported:         "⚡ /fast 僅在目前工作階段的模型與路由支援快速模式時可用（OpenAI、Anthropic、xAI 或 OpenRouter）。"
+    status:                "⚡ Priority Processing\n\n目前模式：`{mode}`\n\n_用法：_ `/fast <normal|fast|flex|auto|cold|status>`"
+    unknown_arg:           "⚠️ 未知參數：`{arg}`\n\n**有效選項：** normal、fast、flex、auto、cold、status"
     saved:                 "⚡ ✓ Priority Processing：**{label}**（已儲存到設定）\n_（下一則訊息生效）_"
     session_only:          "⚡ ✓ Priority Processing：**{label}**（僅本次工作階段）"
     label_fast:            "FAST"
@@ -139,6 +139,8 @@ gateway:
     choice_normal:         "normal — 標準處理"
     choice_auto:           "auto — 每輪的前幾秒快速"
     choice_cold:           "cold — 僅會話的第一輪快速"
+    status_flex:           "flex"
+    choice_flex:           "flex — OpenRouter 彈性處理"
 
   footer:
     status:                "📎 執行階段頁尾：**{state}**\n欄位：`{fields}`\n平台：`{platform}`"

@@ -623,6 +623,214 @@ def test_review_runtime_passes_auxiliary_curator_credentials(curator_env):
     assert binding.explicit_base_url == "http://localhost:11434/v1"
 
 
+def test_review_provider_applies_aux_service_tier(curator_env, monkeypatch):
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+        "auxiliary": {
+            "curator": {
+                "provider": "openrouter",
+                "model": "openai/gpt-5",
+                "service_tier": "flex",
+            },
+        },
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_k: {
+            "provider": "openrouter",
+            "model": "openai/gpt-5",
+            "api_key": "k",
+            "base_url": "https://openrouter.ai/api/v1",
+            "request_overrides": {},
+        },
+    )
+    _rp, _model, _provider, overrides = curator._resolve_review_provider()
+    assert overrides.get("service_tier") == "flex"
+
+
+def test_review_provider_applies_aux_service_tier_priority(curator_env, monkeypatch):
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+        "auxiliary": {
+            "curator": {
+                "provider": "openrouter",
+                "model": "openai/gpt-5",
+                "service_tier": "priority",
+            },
+        },
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_k: {
+            "provider": "openrouter",
+            "model": "openai/gpt-5",
+            "api_key": "k",
+            "base_url": "https://openrouter.ai/api/v1",
+            "request_overrides": {},
+        },
+    )
+    _rp, _model, _provider, overrides = curator._resolve_review_provider()
+    assert overrides.get("service_tier") == "priority"
+
+
+def test_review_provider_ignores_aux_service_tier_on_first_party(curator_env, monkeypatch):
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openai", "default": "gpt-5.4"},
+        "auxiliary": {
+            "curator": {
+                "provider": "openai",
+                "model": "gpt-5.4",
+                "service_tier": "flex",
+            },
+        },
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_k: {
+            "provider": "openai",
+            "model": "gpt-5.4",
+            "api_key": "k",
+            "base_url": "https://api.openai.com/v1",
+            "request_overrides": {},
+        },
+    )
+    _rp, _model, _provider, overrides = curator._resolve_review_provider()
+    assert "service_tier" not in overrides
+    assert "speed" not in overrides
+
+
+def test_review_provider_ignores_aux_priority_on_first_party(curator_env, monkeypatch):
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openai", "default": "gpt-5.4"},
+        "auxiliary": {
+            "curator": {
+                "provider": "openai",
+                "model": "gpt-5.4",
+                "service_tier": "priority",
+            },
+        },
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_k: {
+            "provider": "openai",
+            "model": "gpt-5.4",
+            "api_key": "k",
+            "base_url": "https://api.openai.com/v1",
+            "request_overrides": {},
+        },
+    )
+    _rp, _model, _provider, overrides = curator._resolve_review_provider()
+    assert "service_tier" not in overrides
+    assert "speed" not in overrides
+
+
+def test_curator_final_api_kwargs_slot_beats_global_main_tier(monkeypatch):
+    """auxiliary.curator.service_tier wins over global agent.service_tier on the wire."""
+    from run_agent import AIAgent
+
+    from agent.curator import _run_llm_review
+
+    cfg = {
+        "agent": {"service_tier": "priority", "service_tier_overrides": {}},
+        "model": {"provider": "openrouter", "default": "openai/gpt-5"},
+        "auxiliary": {
+            "curator": {
+                "provider": "openrouter",
+                "model": "openai/gpt-5",
+                "service_tier": "flex",
+            },
+        },
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_k: {
+            "provider": "openrouter",
+            "model": "openai/gpt-5",
+            "api_key": "k",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+            "request_overrides": {},
+        },
+    )
+    captured = {}
+    real_agent = AIAgent
+
+    def _capturing(*args, **kwargs):
+        agent = real_agent(*args, **kwargs)
+        captured["agent"] = agent
+        agent.run_conversation = lambda *_a, **_k: {"final_response": "ok", "messages": []}
+        return agent
+
+    monkeypatch.setattr("run_agent.AIAgent", _capturing)
+    _run_llm_review("review skills")
+    agent = captured["agent"]
+    try:
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs.get("service_tier") == "flex"
+        assert agent._service_tier_session_pinned is True
+    finally:
+        agent.close()
+
+
+def test_curator_final_api_kwargs_extra_body_beats_slot_tier(monkeypatch):
+    """auxiliary.curator.extra_body.service_tier beats slot.service_tier on the wire."""
+    from run_agent import AIAgent
+
+    from agent.curator import _run_llm_review
+
+    cfg = {
+        "agent": {"service_tier": "flex", "service_tier_overrides": {}},
+        "model": {"provider": "openrouter", "default": "openai/gpt-5"},
+        "auxiliary": {
+            "curator": {
+                "provider": "openrouter",
+                "model": "openai/gpt-5",
+                "service_tier": "flex",
+                "extra_body": {"service_tier": "priority"},
+            },
+        },
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_k: {
+            "provider": "openrouter",
+            "model": "openai/gpt-5",
+            "api_key": "k",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+            "request_overrides": {},
+        },
+    )
+    captured = {}
+    real_agent = AIAgent
+
+    def _capturing(*args, **kwargs):
+        agent = real_agent(*args, **kwargs)
+        captured["agent"] = agent
+        agent.run_conversation = lambda *_a, **_k: {"final_response": "ok", "messages": []}
+        return agent
+
+    monkeypatch.setattr("run_agent.AIAgent", _capturing)
+    _run_llm_review("review skills")
+    agent = captured["agent"]
+    try:
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs.get("service_tier") == "priority"
+    finally:
+        agent.close()
+
+
 def test_review_runtime_strips_blank_aux_credentials(curator_env):
     curator = curator_env["curator"]
     cfg = {

@@ -125,9 +125,9 @@ gateway:
     denied_reason_plural:  "❌ Befehle abgelehnt ({count} Befehle). Grund an den Agenten weitergeleitet: \"{reason}\""
 
   fast:
-    not_supported:         "⚡ /fast ist nur für OpenAI-Modelle mit Priority Processing verfügbar."
-    status:                "⚡ Priority Processing\n\nAktueller Modus: `{mode}`\n\n_Verwendung:_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ Unbekanntes Argument: `{arg}`\n\n**Gültige Optionen:** normal, fast, status"
+    not_supported:         "⚡ /fast ist nur verfügbar, wenn Modell und Route dieser Sitzung Fast Mode unterstützen (OpenAI, Anthropic, xAI oder OpenRouter)."
+    status:                "⚡ Priority Processing\n\nAktueller Modus: `{mode}`\n\n_Verwendung:_ `/fast <normal|fast|flex|auto|cold|status>`"
+    unknown_arg:           "⚠️ Unbekanntes Argument: `{arg}`\n\n**Gültige Optionen:** normal, fast, flex, auto, cold, status"
     saved:                 "⚡ ✓ Priority Processing: **{label}** (in Konfiguration gespeichert)\n_(wird ab nächster Nachricht wirksam)_"
     session_only:          "⚡ ✓ Priority Processing: **{label}** (nur diese Sitzung)"
     label_fast:            "FAST"
@@ -139,6 +139,8 @@ gateway:
     choice_normal:         "normal — Standardverarbeitung"
     choice_auto:           "auto — schnell in den ersten Sekunden jedes Zugs"
     choice_cold:           "cold — schnell nur im ersten Zug einer Sitzung"
+    status_flex:           "flex"
+    choice_flex:           "flex — OpenRouter Flex-Verarbeitung"
 
   footer:
     status:                "📎 Laufzeit-Fußzeile: **{state}**\nFelder: `{fields}`\nPlattform: `{platform}`"

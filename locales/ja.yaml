@@ -125,9 +125,9 @@ gateway:
     denied_reason_plural:  "❌ コマンドを拒否しました ({count} 件)。 理由をエージェントに伝達しました: \"{reason}\""
 
   fast:
-    not_supported:         "⚡ /fast は Priority Processing をサポートする OpenAI モデルでのみ利用できます。"
-    status:                "⚡ Priority Processing\n\n現在のモード: `{mode}`\n\n_使い方:_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ 不明な引数: `{arg}`\n\n**有効なオプション:** normal、fast、status"
+    not_supported:         "⚡ /fast は、このセッションのモデルとルートが高速モードに対応している場合のみ利用できます（OpenAI、Anthropic、xAI、または OpenRouter）。"
+    status:                "⚡ Priority Processing\n\n現在のモード: `{mode}`\n\n_使い方:_ `/fast <normal|fast|flex|auto|cold|status>`"
+    unknown_arg:           "⚠️ 不明な引数: `{arg}`\n\n**有効なオプション:** normal、fast、flex、auto、cold、status"
     saved:                 "⚡ ✓ Priority Processing: **{label}** (設定に保存しました)\n_(次のメッセージから有効)_"
     session_only:          "⚡ ✓ Priority Processing: **{label}** (このセッションのみ)"
     label_fast:            "FAST"
@@ -139,6 +139,8 @@ gateway:
     choice_normal:         "normal — 標準処理"
     choice_auto:           "auto — 各ターンの最初の数秒間だけ高速"
     choice_cold:           "cold — セッションの最初のターンのみ高速"
+    status_flex:           "flex"
+    choice_flex:           "flex — OpenRouter Flex 処理"
 
   footer:
     status:                "📎 ランタイムフッター: **{state}**\nフィールド: `{fields}`\nプラットフォーム: `{platform}`"

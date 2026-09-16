@@ -165,6 +165,8 @@ class GatewaySessionCommandsMixin:
         # so the run's finally calling it again is harmless.
         old_entry = self.session_store._entries.get(session_key)
         await self._cleanup_old_agent_for_reset(session_key)
+        # * Evict rather than reuse: unlike CLI /new there is no live
+        # ``_primary_runtime`` snapshot that could revive a baked /fast tier.
         self._evict_cached_agent(session_key)
         # Conversation boundary: ALL conversation-scoped per-session state + security state in one
         # funnel call (see _CONVERSATION_SCOPED_STATE in gateway/run.py).

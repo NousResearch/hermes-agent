@@ -194,6 +194,8 @@ provider_routing:
 
 Provider routing preferences are passed to OpenRouter on agent chat requests and iteration-limit summaries via the `extra_body.provider` field. (`extra_body` is the OpenAI Python SDK argument; it becomes the top-level `provider` object in the JSON request.) Auxiliary tasks such as compression and title generation are configured independently under `auxiliary.<task>.extra_body`.
 
+Service tier is **not** part of `extra_body.provider`. OpenRouter `flex` / `priority` (and per-model `agent.service_tier_overrides`) are top-level `service_tier` request fields — see [Fast Mode](../configuration.md#fast-mode).
+
 - **CLI mode** — configured in `~/.hermes/config.yaml`, loaded at startup
 - **Gateway mode** — same config file, loaded when the gateway starts
 

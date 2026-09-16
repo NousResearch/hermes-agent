@@ -376,10 +376,18 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     if values["base_url"] and not is_native_sdk_provider:
         return _direct_endpoint_credentials(values, explicit_request_overrides)
     if not values["provider"]:
-        # Pure inherit; explicit request_overrides still merge OVER the parent's.
+        # Pure inherit; strip the parent's framework-baked tier keys first so a
+        # /fast bake cannot leak unmarked onto the child, then merge explicit
+        # delegation.request_overrides (user config) OVER that remainder.
+        from agent.fast_mode import strip_inherited_framework_baked_overrides
+
+        inherited = strip_inherited_framework_baked_overrides(
+            getattr(parent_agent, "request_overrides", None),
+            parent_agent,
+        )
         return _credential_bundle(
             values["model"], None, None, None, None,
-            _merge_request_overrides(getattr(parent_agent, "request_overrides", None), explicit_request_overrides),
+            _merge_request_overrides(inherited, explicit_request_overrides),
         )
     return _runtime_provider_credentials(values, explicit_request_overrides)
 

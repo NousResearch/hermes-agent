@@ -994,9 +994,14 @@ def _(rid, params: dict) -> dict:
 
     def body():
         from run_agent import AIAgent
-        kwargs = _background_agent_kwargs(session["agent"], task_id)
+        live = session["agent"]
+        snap = _background_tier_snapshot(live)
+        kwargs = _background_agent_kwargs(live, task_id, snap)
         with _side_agent_session_db(kwargs.get("session_db")) as session_db:
-            result = AIAgent(**{**kwargs, "session_db": session_db}).run_conversation(
+            bg_agent = AIAgent(**{**kwargs, "session_db": session_db})
+            _apply_background_tier_provenance(bg_agent, live, snap)
+            bg_agent._block_service_tier_escalation = True
+            result = bg_agent.run_conversation(
                 user_message=text, task_id=task_id)
         return _final_response_text(result)
 
@@ -1089,12 +1094,17 @@ def _(rid, params: dict) -> dict:
             {"task_id": task_id, "text": f"Starting hidden restart agent{history_note}"})
         # Deliberately NOT closed via AIAgent.close(): it would kill the background
         # server this task exists to leave running.
+        live = session["agent"]
+        snap = _background_tier_snapshot(live)
         result = AIAgent(
-            **_ephemeral_preview_agent_kwargs(session["agent"], task_id),
+            **_ephemeral_preview_agent_kwargs(live, task_id, snap),
             **_preview_restart_callbacks(parent, task_id),
-        ).run_conversation(
+        )
+        _apply_background_tier_provenance(result, live, snap)
+        result._block_service_tier_escalation = True
+        outcome = result.run_conversation(
             user_message=prompt, task_id=task_id, conversation_history=parent_history or None)
-        return _final_response_text(result)
+        return _final_response_text(outcome)
 
     def cleanup():
         with contextlib.suppress(Exception):

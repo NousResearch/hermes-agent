@@ -2829,6 +2829,14 @@ def _load_gateway_config(config_path: "Path | None" = None) -> dict:
         return {}
 
 
+def _load_gateway_runtime_config() -> dict:
+    """Runtime-read alias of ``_load_gateway_config`` for /fast's function-local import/patch seam.
+
+    * ``_load_gateway_config`` already expands ``${VAR}`` via ``load_user_config_effective``.
+    """
+    return _load_gateway_config()
+
+
 def _checkpoint_agent_kwargs(config: dict | None) -> dict:
     """Translate gateway checkpoint config into ``AIAgent`` constructor args.
     Gateway bypasses ``load_config()``, so defaults are here; legacy ``checkpoints: true`` works."""

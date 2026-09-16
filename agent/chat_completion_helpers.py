@@ -1943,6 +1943,19 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             _reresolve_fallback_reasoning_config(agent)
             _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
             rewrite_prompt_model_identity(agent, fb_model, fb_provider)
+            try:
+                from agent.service_tier_escalation import (
+                    escalation_base_tier,
+                    rebase_escalation_runtime,
+                )
+
+                rebase_escalation_runtime(agent, escalation_base_tier(agent))
+            except Exception:
+                logger.debug(
+                    "Fallback %s: service-tier escalation rebase failed",
+                    agent.model,
+                    exc_info=True,
+                )
 
             notice = (
                 f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
@@ -2084,6 +2097,9 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
     # prompt_cache_key, xAI alias, Moonshot sanitization). Do not omit tools or force
     # tool_choice="none" here: SGLang renders the prompt with tools=None in that mode and the KV
     # prefix diverges. (cache_control breakpoint decoration is not re-applied on this path.)
+    # * Effective service_tier (pin / per-model / TTFT) is applied inside
+    # `_build_api_kwargs_for_mode` via effective_request_overrides. Do not
+    # re-merge those overrides onto the result: extra_body would be applied twice.
     summary_kwargs = agent._build_api_kwargs(api_messages)
     # The summary now carries ``tools``; on cache-planned routes the main loop scrubbed a deep
     # copy, so ``agent.tools`` may still hold bytes the provider 400s on.
@@ -2285,7 +2301,11 @@ def _with_stream_emitters(agent, run):
 def _stream_codex_passthrough(agent, api_kwargs: dict, on_first_delta):
     """Codex streams internally via _run_codex_stream (reached through
     _interruptible_api_call); park ``on_first_delta`` on the agent so it can pick
-    it up, and bracket the call with the stream start/end emitters."""
+    it up, and bracket the call with the stream start/end emitters.
+
+    TTFT escalation does not time this path (matching the streaming
+    ``_StreamingCall`` / ``mark_ttft_send`` hook, which is chat-completions only).
+    """
     agent._codex_on_first_delta = on_first_delta
     try:
         return _with_stream_emitters(agent, lambda: agent._interruptible_api_call(api_kwargs))
@@ -2550,6 +2570,18 @@ class _StreamingCall(StreamingWaitMonitor):
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
         # The route ``api_kwargs`` was assembled for; a retry must not replay it on another one.
         self._request_route = self._live_route()
+        # * Bind TTFT marks only when perform_api_call already stacked an obs
+        # (escalation is active). Disabled: no clock reads and no module import;
+        # a single None-check per streamed delta. `_fire_first_delta` reads these.
+        stack = getattr(agent, "_ttft_obs_stack", None)
+        if stack:
+            from agent.service_tier_escalation import mark_ttft_first_delta, mark_ttft_send
+
+            self._mark_ttft_send = mark_ttft_send
+            self._mark_ttft_first_delta = mark_ttft_first_delta
+        else:
+            self._mark_ttft_send = None
+            self._mark_ttft_first_delta = None
 
     # ── shared small helpers ────────────────────────────────────────────
 
@@ -2637,6 +2669,12 @@ class _StreamingCall(StreamingWaitMonitor):
         )
 
     def _fire_first_delta(self):
+        mark = self._mark_ttft_first_delta
+        if mark is not None:
+            try:
+                mark(self.agent)
+            except Exception:
+                pass
         if not self.first_delta_fired["done"] and self.on_first_delta:
             self.first_delta_fired["done"] = True
             self._quiet(self.on_first_delta)
@@ -2739,6 +2777,12 @@ class _StreamingCall(StreamingWaitMonitor):
         # #93650: as above — the streaming path carries the same bulk
         # messages/tools payload and pays the same client-side walk.
         stream_kwargs = bypass_chat_sdk_request_transform(stream_kwargs, request_client)
+        mark = self._mark_ttft_send
+        if mark is not None:
+            try:
+                mark(self.agent)
+            except Exception:
+                pass
         return request_client.chat.completions.create(**stream_kwargs)
 
     def _chat_stream_created(self, raw_stream: Any) -> None:
@@ -2905,6 +2949,12 @@ class _StreamingCall(StreamingWaitMonitor):
                 _flush_pending_stream_text()
                 for tc_delta in delta_tool_calls:
                     name = tool_calls.feed(tc_delta)
+                    mark = self._mark_ttft_first_delta
+                    if mark is not None:
+                        try:
+                            mark(self.agent)
+                        except Exception:
+                            pass
                     if name is not None:
                         self._emit_tool_started(name)
                         # Lets the stub-builder warn if streaming dies before the args

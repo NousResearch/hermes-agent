@@ -337,8 +337,8 @@ async def test_base_delivery_completes_gateway_review_with_actual_outcome(
     outcomes = []
 
     async def _handler(_event):
-        _event._gateway_review_delivery_complete = (
-            lambda *, delivery_succeeded: outcomes.append(delivery_succeeded)
+        _event._gateway_review_delivery_complete = lambda *, delivery_succeeded: (
+            outcomes.append(delivery_succeeded)
         )
         return "visible response"
 
@@ -625,9 +625,10 @@ def test_goal_clear_and_empty_promotion_keep_overflow_fenced_and_visible(monkeyp
     first = _event(text="first real follow-up")
     second = _event(text="second real follow-up")
     adapter._pending_messages[session_key] = goal
-    runner._session_state(session_key).conversation.queued_events.extend(
-        [first, second]
-    )
+    runner._session_state(session_key).conversation.queued_events.extend([
+        first,
+        second,
+    ])
 
     assert runner._clear_goal_pending_continuations(session_key, adapter) == 1
     assert admission.epoch == 1

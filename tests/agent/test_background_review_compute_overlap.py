@@ -176,9 +176,12 @@ def test_live_turn_on_the_same_session_blocks_the_automatic_review(
 
     assert review_forks == [], "review forked while a live turn held the session"
     assert review_admission.REASON_LIVE_TURN in caplog.text
-    assert review_admission.owner_tag(
-        review_admission.current_profile_key(), agent.session_id
-    ) in caplog.text
+    assert (
+        review_admission.owner_tag(
+            review_admission.current_profile_key(), agent.session_id
+        )
+        in caplog.text
+    )
 
 
 def test_second_agent_cancels_canonical_review_for_the_same_owner(monkeypatch):
@@ -235,12 +238,14 @@ def test_rotated_parent_keeps_review_ownership_scoped_to_each_session():
 
     try:
         assert second is not None
-        assert review_admission.current_review_run(
-            "session-before-rotation", profile_key
-        ) is first
-        assert review_admission.current_review_run(
-            "session-after-rotation", profile_key
-        ) is second
+        assert (
+            review_admission.current_review_run("session-before-rotation", profile_key)
+            is first
+        )
+        assert (
+            review_admission.current_review_run("session-after-rotation", profile_key)
+            is second
+        )
         cancelled = background_review_module.cancel_background_review_for_live_turn(
             agent,
             wait=False,
@@ -282,12 +287,14 @@ def test_rotated_parent_cancel_targets_the_registry_owner_not_the_slot():
         assert second.cancel_requested.is_set() is False
         # An unadmitted run is revoked on the spot; its successor keeps its ownership.
         assert first.request_done.is_set()
-        assert review_admission.current_review_run(
-            "session-before-rotation", profile_key
-        ) is None
-        assert review_admission.current_review_run(
-            "session-after-rotation", profile_key
-        ) is second
+        assert (
+            review_admission.current_review_run("session-before-rotation", profile_key)
+            is None
+        )
+        assert (
+            review_admission.current_review_run("session-after-rotation", profile_key)
+            is second
+        )
     finally:
         background_review_module.finish_background_review_run(agent, second)
         background_review_module.finish_background_review_run(agent, first)
@@ -318,7 +325,9 @@ def test_cancelling_prepared_unstarted_review_acknowledges_without_worker():
     assert review_admission.current_review_run(agent.session_id) is None
 
 
-def test_live_turn_does_not_enter_conversation_loop_until_review_acknowledges(monkeypatch):
+def test_live_turn_does_not_enter_conversation_loop_until_review_acknowledges(
+    monkeypatch,
+):
     """The foreground fences and interrupts an admitted fork, but must not start its own
     provider work until that fork publishes its request exit — with no timeout escape."""
     import agent.conversation_loop as conversation_loop_module
@@ -339,7 +348,9 @@ def test_live_turn_does_not_enter_conversation_loop_until_review_acknowledges(mo
 
     run = background_review_module.prepare_background_review_run(agent)
     assert run is not None
-    assert run.begin_request(object()) is True  # an admitted fork with a request on the wire
+    assert (
+        run.begin_request(object()) is True
+    )  # an admitted fork with a request on the wire
 
     entered_wait = threading.Event()
     release = threading.Event()
@@ -428,9 +439,7 @@ def test_review_uses_the_durable_turn_lease_shared_by_other_processes(tmp_path):
     assert foreground_db.try_acquire_session_turn_lease(
         "shared-session", foreground_holder, ttl_seconds=5
     )
-    foreground_db.release_session_turn_lease(
-        "shared-session", foreground_holder
-    )
+    foreground_db.release_session_turn_lease("shared-session", foreground_holder)
 
 
 def test_queued_gateway_followup_blocks_the_automatic_review(
@@ -452,9 +461,12 @@ def test_queued_gateway_followup_blocks_the_automatic_review(
         "review forked while a follow-up was queued for the session"
     )
     assert review_admission.REASON_QUEUED_FOLLOWUP in caplog.text
-    assert review_admission.owner_tag(
-        review_admission.current_profile_key(), agent.session_id
-    ) in caplog.text
+    assert (
+        review_admission.owner_tag(
+            review_admission.current_profile_key(), agent.session_id
+        )
+        in caplog.text
+    )
 
 
 def test_raising_followup_probe_fails_safe_and_blocks_automatic_review(
@@ -477,18 +489,19 @@ def test_raising_followup_probe_fails_safe_and_blocks_automatic_review(
 
     assert review_forks == []
     assert "admission_probe_failed" in caplog.text
-    assert review_admission.owner_tag(
-        review_admission.current_profile_key(), agent.session_id
-    ) in caplog.text
+    assert (
+        review_admission.owner_tag(
+            review_admission.current_profile_key(), agent.session_id
+        )
+        in caplog.text
+    )
 
 
 def test_raising_request_admission_gate_fails_safe():
     def raise_from_gate():
         raise RuntimeError("gate failed")
 
-    run = background_review_module._BackgroundReviewRun(
-        admission_gate=raise_from_gate
-    )
+    run = background_review_module._BackgroundReviewRun(admission_gate=raise_from_gate)
 
     assert run.begin_request(object()) is False
     assert run.refused_reason == "admission_probe_failed"
@@ -746,9 +759,10 @@ def test_admission_gate_refusal_logs_one_body_free_line(
     assert len(refusals) == 1, "gate refusal must log exactly once"
     assert refusals[0].levelname == "INFO"
     refusal_text = refusals[0].getMessage()
-    assert review_admission.owner_tag(
-        review_admission.current_profile_key(), session_id
-    ) in refusal_text
+    assert (
+        review_admission.owner_tag(review_admission.current_profile_key(), session_id)
+        in refusal_text
+    )
     assert session_id not in refusal_text
     assert "private message body" not in refusal_text
 
@@ -879,7 +893,8 @@ def test_cancelled_review_does_not_log_a_gate_refusal(
         ),
         (
             functools.partial(
-                background_review_module.cancel_background_review_for_live_turn, wait=False
+                background_review_module.cancel_background_review_for_live_turn,
+                wait=False,
             ),
             "live_turn_cancelled",
         ),

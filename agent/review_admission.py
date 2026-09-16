@@ -115,9 +115,7 @@ def remove_review_run(run: Any) -> None:
             _review_runs.pop(key, None)
 
 
-def current_review_run(
-    session_id: str, profile_key: Optional[str] = None
-) -> Any:
+def current_review_run(session_id: str, profile_key: Optional[str] = None) -> Any:
     """Return the current canonical review owner without creating registry state."""
     key = _admission_key(session_id, profile_key)
     with _lock:
@@ -219,7 +217,9 @@ def foreground_block_reason(
     outside the gateway's per-turn profile scope, so "current" is not their answer.
     """
     if other_live_turn(
-        session_id if session_id is not None else getattr(agent, "session_id", None) or "",
+        session_id
+        if session_id is not None
+        else getattr(agent, "session_id", None) or "",
         turn_token,
         profile_key,
     ):

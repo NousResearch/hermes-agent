@@ -46,6 +46,9 @@ def replay_decisions(
     for case in corpus:
         if set(case.expected) != set(case.questions):
             raise ValueError("replay expected labels must exactly match question keys")
+        for key, expected in case.expected.items():
+            if expected not in case.questions[key].labels:
+                raise ValueError(f"expected label for {key!r} is outside the question domain")
         grouped.setdefault(case.task, []).append(case)
 
     reports: Dict[str, Dict[str, ReplayMetrics]] = {}

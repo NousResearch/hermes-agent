@@ -13,11 +13,14 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Protocol
 
 from agent.decision_provider import (
+    BinaryQuestion,
+    ChoiceQuestion,
     DecisionProvider,
     DecisionQuestion,
     DecisionRequest,
     DecisionResponse,
     DecisionStatus,
+    OrdinalQuestion,
     ProviderDecision,
     validate_provider_decision,
 )
@@ -136,7 +139,7 @@ class DecisionRuntime:
         for key, question in questions.items():
             if not isinstance(key, str) or not key:
                 raise ValueError("decision question names must be non-empty strings")
-            if not hasattr(question, "labels"):
+            if not isinstance(question, (BinaryQuestion, ChoiceQuestion, OrdinalQuestion)):
                 raise TypeError(f"decision question {key!r} has an unsupported type")
             clean_questions[key] = question
         if mode not in _VALID_MODES:
@@ -154,7 +157,7 @@ class DecisionRuntime:
         if timeout <= 0:
             raise ValueError("decision timeout must be a positive number")
         outcome: queue.Queue[Any] = queue.Queue(maxsize=1)
-        context = contextvars.copy_context()
+        context = contextvars.Context()
 
         def run() -> None:
             try:
@@ -189,7 +192,6 @@ class DecisionRuntime:
             },
             "latency_ms": response.latency_ms,
             "usage": dict(response.usage),
-            "fallback_reason": response.fallback_reason,
         }
         try:
             self.recorder.record(event)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 import time
 from pathlib import Path
@@ -115,6 +116,41 @@ def test_plugin_facade_preserves_typed_probabilities_and_explicit_state_boundary
     assert unavailable.status is DecisionStatus.UNAVAILABLE
 
 
+def test_provider_receives_only_explicit_state_and_typed_questions(tmp_path):
+    ambient = contextvars.ContextVar("decision_test_ambient", default="default")
+
+    class InspectingProvider(_FixtureProvider):
+        def evaluate(self, request):
+            self.ambient = ambient.get()
+            return super().evaluate(request)
+
+    _, ctx = _context(tmp_path)
+    provider = InspectingProvider()
+    ctx.register_decision_provider(provider)
+    token = ambient.set("session-private")
+    try:
+        result = ctx.decision.evaluate(
+            task="isolation",
+            state={"projected": "visible"},
+            questions={"gate": BinaryQuestion("Continue?")},
+            provider="fixture",
+        )
+    finally:
+        ambient.reset(token)
+
+    assert result.status is DecisionStatus.AVAILABLE
+    assert provider.ambient == "default"
+    assert provider.requests[0].state == {"projected": "visible"}
+
+    class LabelsOnly:
+        labels = (False, True)
+
+    with pytest.raises(TypeError, match="unsupported type"):
+        ctx.decision.evaluate(
+            task="isolation", state={}, questions={"gate": LabelsOnly()}, provider="fixture",
+        )
+
+
 def test_failures_abstention_staging_and_replay_are_explicit(tmp_path):
     _, ctx = _context(tmp_path)
     good = _FixtureProvider("good")
@@ -166,6 +202,19 @@ def test_failures_abstention_staging_and_replay_are_explicit(tmp_path):
     assert abstained.status is DecisionStatus.ABSTAINED
     assert abstained.fallback_reason == "insufficient evidence"
 
+    private_abstention = _FixtureProvider("private-abstention", behavior="abstain")
+    private_abstention.evaluate = lambda request: ProviderDecision(
+        {}, abstained=True, abstention_reason=request.state["secret"],
+    )
+    ctx.register_decision_provider(private_abstention)
+    private_result = ctx.decision.evaluate(
+        task="private", state={"secret": "raw-private-state"}, questions=question,
+        provider="private-abstention",
+    )
+    assert private_result.fallback_reason == "raw-private-state"
+    telemetry = (tmp_path / "logs" / "decisions.jsonl").read_text(encoding="utf-8")
+    assert "raw-private-state" not in telemetry
+
     corpus = [
         ReplayCase("routing", {"row": 1}, question, {"gate": True}),
         ReplayCase("routing", {"row": 2}, question, {"gate": True}),
@@ -176,3 +225,10 @@ def test_failures_abstention_staging_and_replay_are_explicit(tmp_path):
     assert report["bad"]["routing"].top1_error == 1.0
     assert report["good"]["routing"].brier_score < report["bad"]["routing"].brier_score
     assert report["good"]["routing"].usage == {"cost": 0.002, "requests": 2.0}
+
+    with pytest.raises(ValueError, match="outside the question domain"):
+        replay_decisions(
+            ctx.decision,
+            [ReplayCase("routing", {}, question, {"gate": "outside-domain"})],
+            ["abstaining"],
+        )

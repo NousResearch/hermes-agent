@@ -226,6 +226,40 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     return ("unknown", None)
 
 
+def _claimer_gateway_is_gone(claimer: Optional[str]) -> bool:
+    """True when ``claimer`` (``host:pid``) names a *local* dispatcher process
+    that is no longer alive.
+
+    A worker is only reapable by the dispatcher that spawned it:
+    ``_recent_worker_exits`` is in-memory and ``os.waitpid`` only reaps one's
+    own children. A gateway restart therefore makes every in-flight worker
+    unreapable by its successor — ``_classify_worker_exit`` returns ``unknown``
+    for all of them and each card is charged a failure it never earned, so two
+    sweeps reach ``failure_limit`` and block the whole board at once.
+
+    The claim lock already carries what's needed to tell that apart from a real
+    crash: it records ``host:pid`` (``kanban_db._claimer_id``). A local claimer
+    that is gone means the claiming dispatcher died; a foreign host is never
+    judged from here (its PIDs are meaningless locally), so remote claims keep
+    the old behaviour.
+    """
+    if not claimer:
+        return False
+    if not str(claimer).startswith(_kb._host_prefix()):
+        # Another host's PID namespace is meaningless here — stay conservative.
+        return False
+    try:
+        claimer_pid = int(str(claimer).split(":", 1)[1])
+    except (IndexError, TypeError, ValueError):
+        return False
+    if claimer_pid == os.getpid():
+        # Our own dispatcher is obviously alive; nothing was orphaned.
+        return False
+    # ``_pid_alive`` (not a bare ``os.kill``) — on Windows ``sig=0`` is a
+    # CTRL_C_EVENT broadcast, and it also treats unreaped zombies as dead.
+    return not _pid_alive(claimer_pid)
+
+
 def reap_worker_zombies() -> "list[int]":
     """Reap all zombie children without blocking; returns reaped PIDs. No-op on Windows."""
     reaped: "list[int]" = []
@@ -957,16 +991,23 @@ class _DeadWorker:
     event_payload: dict
     protocol_violation: bool = False
     rate_limited: bool = False
+    # Set for an orphan reclaim (dispatcher restart). Distinct from
+    # ``rate_limited`` because that outcome feeds ``check_respawn_guard``'s
+    # 300s rate-limit cooldown; an orphan must not be parked as a quota wall.
+    run_outcome_override: Optional[str] = None
 
     @property
     def run_outcome(self) -> str:
         # A rate-limited requeue is recorded as ``rate_limited`` so board history
         # doesn't show a phantom crash for a quota wall.
+        if self.run_outcome_override:
+            return self.run_outcome_override
         return "rate_limited" if self.rate_limited else "crashed"
 
 
 def _classify_dead_worker(
     pid: int, claimer: Optional[str], *, task_id: Optional[str] = None, board: Optional[str] = None,
+    orphan_reclaim: bool = False,
 ) -> _DeadWorker:
     """Map a dead worker's reaped exit status to its reclaim bookkeeping.
 
@@ -974,7 +1015,7 @@ def _classify_dead_worker(
     in the event payload, appended to the error text) so the board and the retry
     worker see WHY instead of a bare label; a rate-limited requeue does not need it.
     """
-    dead = _classify_dead_worker_exit(pid, claimer)
+    dead = _classify_dead_worker_exit(pid, claimer, orphan_reclaim=orphan_reclaim)
     if task_id and not dead.rate_limited:
         worker_output = _worker_final_output(task_id, board=board)
         if worker_output:
@@ -983,7 +1024,9 @@ def _classify_dead_worker(
     return dead
 
 
-def _classify_dead_worker_exit(pid: int, claimer: Optional[str]) -> _DeadWorker:
+def _classify_dead_worker_exit(
+    pid: int, claimer: Optional[str], *, orphan_reclaim: bool = False,
+) -> _DeadWorker:
     """Exit status -> reclaim bookkeeping, before the worker's own words are folded in."""
     kind, code = _classify_worker_exit(pid)
     if kind == "clean_exit":
@@ -1012,6 +1055,28 @@ def _classify_dead_worker_exit(pid: int, claimer: Optional[str]) -> _DeadWorker:
         error_text = f"pid {pid} exited with code {code}"
     elif kind == "signaled":
         error_text = f"pid {pid} killed by signal {code}"
+    elif orphan_reclaim and kind == "unknown" and _claimer_gateway_is_gone(claimer):
+        # The dispatcher that spawned this worker is gone, so its exit status
+        # was never reapable here — "unknown" reflects the restart, not the
+        # task. Requeue like the quota wall does, WITHOUT counting a failure:
+        # charging one here (and again on the next sweep) trips
+        # ``failure_limit`` and blocks every in-flight card on the board.
+        return _DeadWorker(
+            kind, code,
+            f"pid {pid} orphaned by dispatcher restart (claimer {claimer} is gone) "
+            "— requeued without counting a failure",
+            # NOT ``rate_limited``: that string is also the run outcome, and
+            # ``check_respawn_guard`` parks any task whose latest run is
+            # ``rate_limited`` for DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS — a
+            # bogus *quota* cooldown for what is really a restart.
+            "reclaimed",
+            {
+                "pid": pid, "claimer": claimer,
+                "orphaned_by_restart": True, "reason": "orphaned_by_restart",
+            },
+            rate_limited=True,
+            run_outcome_override="reclaimed",
+        )
     else:
         error_text = f"pid {pid} not alive"
     event_payload = {"pid": pid, "claimer": claimer}
@@ -1035,7 +1100,9 @@ class _CrashSweep:
     exited_hook_payloads: list[dict] = field(default_factory=list)
 
 
-def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> _CrashSweep:
+def _reclaim_dead_workers(
+    conn: sqlite3.Connection, board: Optional[str] = None, *, orphan_reclaim: bool = False,
+) -> _CrashSweep:
     """Release every host-local ``running`` task whose worker PID is dead."""
     sweep = _CrashSweep()
     with _kb.write_txn(conn):
@@ -1058,7 +1125,10 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 continue
 
             pid = int(row["worker_pid"])
-            dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
+            dead = _classify_dead_worker(
+                pid, row["claim_lock"], task_id=row["id"], board=board,
+                orphan_reclaim=orphan_reclaim,
+            )
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
@@ -1090,7 +1160,9 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             if dead.rate_limited or dead.protocol_violation:
                 # Stamp last_failure_error WITHOUT touching ``consecutive_failures``:
                 # a rate-limited requeue must show ``check_respawn_guard`` a quota
-                # blocker; a below-budget protocol violation never reaches
+                # blocker; an orphan requeue (also ``rate_limited=True``) needs its
+                # own sentence so the board and the retry worker don't read it as a
+                # quota wall; a below-budget protocol violation never reaches
                 # ``_record_task_failure`` (which stamps this column), yet the
                 # board UI and retry worker need the corrective message.
                 conn.execute(
@@ -1167,7 +1239,9 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
     return auto_blocked
 
 
-def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> list[str]:
+def detect_crashed_workers(
+    conn: sqlite3.Connection, board: Optional[str] = None, *, orphan_reclaim: bool = False,
+) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Restores the source phase immediately (no waiting for the claim TTL), for
@@ -1177,7 +1251,7 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     wall, released WITHOUT counting a failure and surfaced via the
     ``_last_rate_limited`` attribute (the return stays crashed-only).
     """
-    sweep = _reclaim_dead_workers(conn, board=board)
+    sweep = _reclaim_dead_workers(conn, board=board, orphan_reclaim=orphan_reclaim)
     # Outside the main txn: account each crash and maybe trip the breaker.
     auto_blocked = _account_crashes(conn, sweep.crash_details) if sweep.crash_details else []
     # Side-channel attributes keep the public ``list[str]`` return stable;
@@ -1719,6 +1793,7 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    orphan_reclaim: bool = False,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -1740,6 +1815,7 @@ def dispatch_once(
             stale_timeout_seconds=stale_timeout_seconds,
             board=board,
             default_assignee=default_assignee,
+            orphan_reclaim=orphan_reclaim,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
         )
@@ -1922,6 +1998,7 @@ def _run_reclaim_phase(
     failure_limit: int,
     reconcile_orphans: bool,
     board: Optional[str] = None,
+    orphan_reclaim: bool = False,
 ) -> None:
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
     reap_worker_zombies()
@@ -1930,7 +2007,7 @@ def _run_reclaim_phase(
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)
     result.stale = detect_stale_running(conn, stale_timeout_seconds=stale_timeout_seconds)
-    result.crashed = detect_crashed_workers(conn, board=board)
+    result.crashed = detect_crashed_workers(conn, board=board, orphan_reclaim=orphan_reclaim)
     # Side-channel attributes (see detect_crashed_workers); rate-limited tasks
     # went back to ``ready`` and the respawn guard defers them until quota clears.
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
@@ -2052,6 +2129,7 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    orphan_reclaim: bool = False,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
@@ -2062,6 +2140,7 @@ def _dispatch_once_locked(
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
+        orphan_reclaim=orphan_reclaim,
     )
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
@@ -2669,6 +2748,14 @@ def run_daemon(
                     max_spawn=max_spawn,
                     max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
+                    # Only the long-lived daemon may treat an unreapable death
+                    # as an orphan: it is the parent of its workers and outlives
+                    # them, so a dead claimer really does mean a restart. Under
+                    # one-shot ``hermes kanban dispatch`` the claiming process
+                    # exits right after spawning, by design — enabling this
+                    # there would misread every genuine crash as an orphan and
+                    # silently disable the crash breaker.
+                    orphan_reclaim=True,
                 )
             if on_tick is not None:
                 with contextlib.suppress(Exception):

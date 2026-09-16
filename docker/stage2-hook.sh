@@ -515,72 +515,75 @@ elif ! grep -q '^API_SERVER_KEY=..*' "$HERMES_HOME/.env" 2>/dev/null; then
 fi
 
 # --- Sync deploy-injected Nous routing overrides into every profile .env ---
-# Hosted deploys point an instance at a non-production Portal / inference
-# host with HERMES_PORTAL_BASE_URL (or its NOUS_PORTAL_BASE_URL alias) and
-# NOUS_INFERENCE_BASE_URL in the container environment, and run the gateway
-# with GATEWAY_MULTIPLEX_PROFILES.
-# Under multiplex, hermes_cli.auth_nous resolves both through the profile
-# secret scope (agent.secret_scope.get_secret, #108319 / #111809), which is
-# built from <profile>/.env and never falls back to os.environ. A value that
-# lives only in the process env is therefore invisible on every routed turn:
-# the Portal allowlist then heals the URL to production, the staging refresh
-# token is POSTed to portal.nousresearch.com, the Portal answers
-# invalid_grant, and the login is quarantined ("No access token found for
-# Nous Portal login") within seconds of every boot. The two commits that
-# scoped these reads assign the deploy this duty: "Deployments that set
-# HERMES_PORTAL_BASE_URL only in the process env must carry it in each served
-# profile's .env". The container value wins over a stale line (the platform
-# is the authority on where this instance routes); operators who never set
-# the variable are untouched. Idempotent: an already-correct line is left
-# alone so the volume is not rewritten every boot. Known gap: a profile
-# created while the container runs gets a placeholder .env and is not
-# re-synced until the next boot; the durable home for these stamps is the
-# managed scope (/etc/hermes/.env), once its profile-scope composition is
-# restored (reverted by #111600).
-sync_routing_override() {
-    _name="$1"
-    _value="$2"
-    _file="$3"
-    if refuse_symlinked_path "sync $_name" "$_file"; then
+# Under multiplex, hermes_cli.auth_nous reads HERMES_PORTAL_BASE_URL (or its
+# NOUS_PORTAL_BASE_URL alias) and NOUS_INFERENCE_BASE_URL through the profile
+# secret scope (agent.secret_scope.get_secret, #108319 / #111809), built from
+# <profile>/.env with no os.environ fallback — a value that lives only in the
+# container env is invisible on every routed turn, the Portal URL heals to
+# production and a non-production login is quarantined. The deploy therefore
+# carries the value into $HERMES_HOME/.env and every profiles/*/.env: the
+# container wins over a stale line, an already-correct line is left alone, and
+# lines written here carry a marker so a boot WITHOUT the variable removes them
+# again (a hand-set line is never touched). Known gap: a profile created while the container
+# runs is synced on the next boot. Interim until the managed scope
+# (/etc/hermes/.env) composition reverted by #111600 is restored.
+_ROUTING_MARK='# stage2-managed'
+# rewrite_env_var FILE NAME DROP_PATTERN [LINE]: drop the lines matching DROP_PATTERN (a BRE),
+# append LINE when given. Rewritten through the existing inode (owner and mode kept — sed -i would
+# re-create the file). `grep -v` exits 1 when nothing remains (fine) and 2 when the file could not
+# be read (then a rewrite would wipe every other secret — refuse). A read-only volume degrades to a
+# warning, never a boot abort.
+rewrite_env_var() {
+    _rc=0
+    _rest=$(grep -v -- "$3" "$1" 2>/dev/null) || _rc=$?
+    if [ "$_rc" -gt 1 ]; then
+        echo "[stage2] Warning: could not read $1 — leaving $2 untouched"
+        return 1
+    fi
+    if [ $# -ge 4 ]; then
+        _rest="${_rest:+$_rest
+}$4"
+    fi
+    if printf '%s' "${_rest:+$_rest
+}" 2>/dev/null > "$1"; then
         return 0
     fi
-    if grep -qxF -- "$_name=$_value" "$_file" 2>/dev/null; then
+    echo "[stage2] Warning: could not write $2 to $1 (read-only volume?) — routed turns will fall back to the production Portal"
+    return 1
+}
+sync_routing_overrides() {
+    _file="$1"
+    if refuse_symlinked_path "sync" "$_file"; then
         return 0
     fi
-    if [ ! -f "$_file" ]; then
-        # Owner-only from the first instant, hermes-owned (same shape as the
-        # API_SERVER_KEY bootstrap above).
-        if ! (umask 077 && as_hermes touch "$_file") 2>/dev/null; then
-            echo "[stage2] Warning: could not create $_file — $_name will not reach this profile's secret scope"
+    for _name in HERMES_PORTAL_BASE_URL NOUS_PORTAL_BASE_URL NOUS_INFERENCE_BASE_URL; do
+        eval "_value=\${$_name:-}"
+        _managed="^$_name=.* $_ROUTING_MARK\$"
+        if [ -z "$_value" ]; then
+            if grep -q -- "$_managed" "$_file" 2>/dev/null && rewrite_env_var "$_file" "$_name" "$_managed"; then
+                echo "[stage2] Removed $_name from $_file (no longer set in the container environment)"
+            fi
+            continue
+        fi
+        _line="$_name=$_value $_ROUTING_MARK"
+        if grep -qxF -- "$_line" "$_file" 2>/dev/null; then
+            continue
+        fi
+        if [ ! -f "$_file" ] && ! (umask 077 && as_hermes touch "$_file") 2>/dev/null; then
+            echo "[stage2] Warning: could not create $_file — the Nous routing overrides will not reach this profile's secret scope"
             return 0
         fi
-    fi
-    # Rewrite in place (redirect keeps inode, owner and mode) so a stale value
-    # is replaced, not shadowed by a second assignment. `grep -v` exits 1 when
-    # nothing remains (new or single-line file) — that is not an error here.
-    # Guarded: a read-only volume degrades to a warning, never a boot abort
-    # under `set -e`.
-    if _rewritten=$( { grep -v -- "^$_name=" "$_file" 2>/dev/null || true; } ; printf '%s=%s\n' "$_name" "$_value") \
-        && printf '%s\n' "$_rewritten" > "$_file" 2>/dev/null; then
-        echo "[stage2] Synced $_name from the container environment into $_file"
-    else
-        echo "[stage2] Warning: could not write $_name to $_file (read-only volume?) — routed turns will fall back to the production Portal"
-    fi
-    unset _rewritten
-}
-
-# NOUS_PORTAL_BASE_URL is the alias _nous_portal_env_override() accepts beside
-# HERMES_PORTAL_BASE_URL; a deploy may set either.
-for _routing_name in HERMES_PORTAL_BASE_URL NOUS_PORTAL_BASE_URL NOUS_INFERENCE_BASE_URL; do
-    eval "_routing_value=\${$_routing_name:-}"
-    [ -n "$_routing_value" ] || continue
-    sync_routing_override "$_routing_name" "$_routing_value" "$HERMES_HOME/.env"
-    for _profile_dir in "$HERMES_HOME"/profiles/*/; do
-        [ -d "$_profile_dir" ] || continue
-        sync_routing_override "$_routing_name" "$_routing_value" "${_profile_dir}.env"
+        if rewrite_env_var "$_file" "$_name" "^$_name=" "$_line"; then
+            echo "[stage2] Synced $_name from the container environment into $_file"
+        fi
     done
+}
+sync_routing_overrides "$HERMES_HOME/.env"
+for _profile_dir in "$HERMES_HOME"/profiles/*/; do
+    [ -d "$_profile_dir" ] || continue
+    sync_routing_overrides "${_profile_dir}.env"
 done
-unset _routing_name _routing_value _profile_dir
+unset _profile_dir _file _name _value _managed _line _rest _rc
 
 # .env holds API keys and secrets — restrict to owner-only access. Applied
 # unconditionally (not only on first-seed) so a host-mounted .env that was

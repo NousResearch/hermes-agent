@@ -1020,11 +1020,13 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         context_token = self._token_store.get(self._account_id, chat_id)
         last_message_id: Optional[str] = None
-        # Extract MEDIA: tags and bare local file paths before text delivery.
-        media_files, cleaned_content = self.extract_media(content)
-        local_files, final_content = self.extract_local_files(self.extract_images(cleaned_content)[1])
-        deliveries = [(p, v, "media") for p, v in self.filter_media_delivery_paths(media_files)]
-        deliveries += [(p, False, "local file") for p in self.filter_local_delivery_paths(local_files)]
+        # Extract MEDIA: tags and bare local file paths before text delivery, under the routed
+        # profile's scope: Docker MEDIA translation infers the sandbox from the active profile (#109024).
+        with self._media_delivery_scope(self.build_source(chat_id=chat_id)):
+            media_files, cleaned_content = self.extract_media(content)
+            local_files, final_content = self.extract_local_files(self.extract_images(cleaned_content)[1])
+            deliveries = [(p, v, "media") for p, v in self.filter_media_delivery_paths(media_files)]
+            deliveries += [(p, False, "local file") for p in self.filter_local_delivery_paths(local_files)]
         try:
             for path, is_voice, label in deliveries:
                 ext = Path(path).suffix.lower()

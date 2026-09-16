@@ -134,7 +134,7 @@ class TestProviderModelIds:
             assert provider_model_ids("anthropic") == ["enterprise-claude"]
 
         req = mock_urlopen.call_args[0][0]
-        assert req.full_url == "http://localhost:6655/anthropic/v1/models"
+        assert req.full_url == "http://localhost:6655/anthropic/v1/models?limit=1000"
         assert req.get_header("X-api-key") == "proxy-key"
 
     def test_custom_provider_passes_anthropic_mode_for_versioned_proxy_catalog(self):
@@ -285,7 +285,7 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-zen", "x-preview-f-free") == "chat_completions"
         assert opencode_model_api_mode("opencode-zen", "opencode-zen/x-preview-f-free") == "chat_completions"
         # Other free-tier Zen models are chat/completions too.
-        assert opencode_model_api_mode("opencode-zen", "hy3-free") == "chat_completions"
+        assert opencode_model_api_mode("opencode-zen", "mimo-v2.5-free") == "chat_completions"
         assert opencode_model_api_mode("opencode-zen", "nemotron-3.5-lightning-free") == "chat_completions"
         # Hy3 on Go is chat/completions (Go endpoint table).
         assert opencode_model_api_mode("opencode-go", "hy3") == "chat_completions"
@@ -827,3 +827,17 @@ class TestValidateCustomUnreachableFallback:
         assert "was not saved" in result["message"]
         # A reachable catalog keeps authoritative validation regardless of mode.
         assert self._validate("my-model", "custom", models=["my-model"], api_mode="chat_completions")["recognized"] is True
+
+    def test_anthropic_messages_reachable_listing_without_slug_is_not_called_unimplemented(self):
+        """A listing that answered 200 but lacks the slug must not be described as a proxy that
+        'does not implement GET /v1/models'; it names the alias candidates instead (#111436)."""
+        result = self._validate("kimi-k3", "kimi-coding", models=["k3", "k3-turbo"], api_mode="anthropic_messages")
+        assert (result["accepted"], result["persist"], result["recognized"]) == (True, True, False)
+        assert "do not implement" not in result["message"]
+        assert "not named in this endpoint's model listing" in result["message"]
+        assert "`k3`" in result["message"]
+        # Case-only spelling differences are a match, not a warning.
+        assert self._validate("K3", "kimi-coding", models=["k3"], api_mode="anthropic_messages")["recognized"] is True
+        # The unreachable-listing wording is unchanged.
+        unreachable = self._validate("kimi-k3", "kimi-coding", models=None, api_mode="anthropic_messages")
+        assert "do not implement GET /v1/models" in unreachable["message"]

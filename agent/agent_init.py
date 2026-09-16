@@ -587,6 +587,10 @@ _SESSION_STATE: Dict[str, Any] = {
     # prefix, kept separately only to place an early cache marker.
     "_cached_system_prompt": None,
     "_cached_system_prompt_static": None,
+    # skills.auto_load rendered ONCE per agent: every rebuild (model switch, compression,
+    # static-prefix restoration) reuses these exact bytes instead of re-reading config/skills.
+    "_auto_load_skills_resolved": False,
+    "_auto_load_skills_result": ("", [], []),
     # ``(cwd, workspace_block)`` pinned on the first build: the git/workspace snapshot is
     # probed once per session and replayed on every rebuild, so a moving repo can't push the
     # prefix-cache divergence point ahead of the volatile band at a compaction boundary.
@@ -877,20 +881,19 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
     )
 
 
-_FINE_GRAINED_BETA = "fine-grained-tool-streaming-2025-05-14"
-
-
 def _apply_openai_header_policy(agent, client_kwargs: Dict[str, Any]) -> None:
     """Mutate ``client_kwargs`` (== ``agent._client_kwargs``) with header/TLS policy, in order:
     OpenRouter Claude beta header → model.default_headers → custom-provider TLS/extra_headers."""
     # Fine-grained tool streaming for Claude on OpenRouter: without the beta header
     # Anthropic buffers the whole tool call and OpenRouter's proxy times out.
+    from agent.anthropic_adapter import _TOOL_STREAMING_BETA
+
     _effective_base = str(client_kwargs.get("base_url", "")).lower()
     if base_url_host_matches(_effective_base, "openrouter.ai") and "claude" in (agent.model or "").lower():
         headers = client_kwargs.get("default_headers") or {}
         existing_beta = headers.get("x-anthropic-beta", "")
-        if _FINE_GRAINED_BETA not in existing_beta:
-            headers["x-anthropic-beta"] = ",".join(filter(None, (existing_beta, _FINE_GRAINED_BETA)))
+        if _TOOL_STREAMING_BETA not in existing_beta:
+            headers["x-anthropic-beta"] = ",".join(filter(None, (existing_beta, _TOOL_STREAMING_BETA)))
             client_kwargs["default_headers"] = headers
     # model.default_headers override provider/SDK defaults (WAFs rejecting SDK headers).
     agent._apply_user_default_headers()
@@ -1212,12 +1215,17 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
             _st = agent._session_db.get_session_title(agent.session_id)
             if _st:
                 kwargs["session_title"] = _st
+                _source = agent._session_db.get_session_title_source(agent.session_id)
+                if _source:
+                    kwargs["session_title_source"] = _source
     # Gateway user/chat identity for per-user scoping (gateway_session_key: stable per-chat
     # Honcho session isolation).
     for _ident in _GATEWAY_IDENTITY_PARAMS:
         _val = getattr(agent, f"_{_ident}")
         if _val:
             kwargs[_ident] = _val
+    if agent.session_cwd:
+        kwargs["cwd"] = agent.session_cwd
     # Profile identity for per-profile provider scoping
     with suppress(Exception):
         from hermes_cli.profiles import get_active_profile_name
@@ -2163,7 +2171,7 @@ _CALLBACK_PARAMS = (
     "tool_progress_callback", "tool_start_callback", "tool_complete_callback",
     "thinking_callback", "reasoning_callback", "clarify_callback",
     "read_terminal_callback", "read_preview_callback", "drive_preview_callback",
-    "read_window_below_callback", "setup_mcp_callback", "tour_callback",
+    "read_window_below_callback", "connection_callback", "tour_callback",
     "step_callback", "stream_delta_callback", "interim_assistant_callback",
     "status_callback", "notice_callback", "notice_clear_callback",
     "event_callback", "reaction_callback", "tool_gen_callback",
@@ -2186,7 +2194,7 @@ def init_agent(
     thinking_callback: callable = None, reasoning_callback: callable = None,
     clarify_callback: callable = None, read_terminal_callback: callable = None,
     read_preview_callback: callable = None, drive_preview_callback: callable = None,
-    read_window_below_callback: callable = None, setup_mcp_callback: callable = None,
+    read_window_below_callback: callable = None, connection_callback: callable = None,
     tour_callback: callable = None, step_callback: callable = None,
     stream_delta_callback: callable = None, interim_assistant_callback: callable = None,
     tool_gen_callback: callable = None, status_callback: callable = None,
@@ -2204,13 +2212,15 @@ def init_agent(
     fallback_model: Dict[str, Any] = None, credential_pool=None, checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
-    requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None,
+    requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None, cwd: Optional[str] = None,
 ):
     """Initialize the AI Agent (body of :meth:`AIAgent.__init__`).
 
     Non-obvious parameters:
       max_iterations: default unlimited (sys.maxsize); the budget is shared with subagents.
       requested_provider: provider identity before runtime canonicalization.
+      cwd: logical session workspace, available to memory providers during construction;
+        None or empty leaves the runtime cwd resolver unpinned.
       openrouter_min_coding_score: coding-score floor for ``openrouter/pareto-code`` only.
       clarify_callback: ``(question, choices) -> str``; None → the clarify tool errors.
       reasoning_config: None → ``{"enabled": True, "effort": "medium"}`` on OpenRouter.
@@ -2226,6 +2236,7 @@ def init_agent(
         setattr(agent, _name, _params[_name])
     for _name in _GATEWAY_IDENTITY_PARAMS:
         setattr(agent, f"_{_name}", _params[_name])
+    agent.session_cwd = cwd or None
     # Shared iteration budget: parent creates, children inherit.
     agent.iteration_budget = iteration_budget or IterationBudget(max_iterations)
     # CLI replaces this with _cprint so raw ANSI status lines go through prompt_toolkit's

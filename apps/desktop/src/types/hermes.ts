@@ -1,3 +1,5 @@
+import type { ConnectionRequestPayload } from '@hermes/shared'
+
 export interface ConfigFieldSchema {
   category?: string
   description?: string
@@ -128,6 +130,11 @@ export interface OAuthPollResponse {
    *  `account_not_anonymous` / `account_busy` / `timeout` (status `error`).
    *  `error_message` carries the matching user-facing text. */
   reason?: null | string
+  /** Failed sign-ins over a free-tier identity: the seconds the account service
+   *  asked the client to wait before trying again (0 or absent when none). */
+  retry_after?: null | number
+  /** Failed sign-ins over a free-tier identity: whether a later attempt can succeed. */
+  retryable?: boolean | null
   session_id: string
   status: 'approved' | 'denied' | 'error' | 'expired' | 'pending'
 }
@@ -147,6 +154,14 @@ export interface FreeTierStatus {
   model: string
   /** True until the one-time introduction has been acknowledged. */
   notice_pending: boolean
+  /** Present only while `enabled` and no identity exists: why the last attempt
+   *  to create one failed. `error_code` is one of the backend's `anon_*` codes
+   *  (`hermes_cli/anon_auth.py`), `error` its sentence, `retryable` whether a
+   *  later attempt can succeed, `retry_after` the seconds still to wait. */
+  error?: string
+  error_code?: string
+  retryable?: boolean
+  retry_after?: number
 }
 
 export interface MemoryProviderOAuthStatus {
@@ -413,6 +428,7 @@ export interface HermesConfig {
     timestamps?: boolean
   }
   desktop?: {
+    font_family?: string
     repo_scan_enabled?: boolean
     repo_scan_roots?: string[]
     repo_scan_exclude_paths?: string[]
@@ -628,7 +644,7 @@ export interface SessionMessagesResponse {
   session_id: string
 }
 
-export interface SessionResumeResponse {
+export interface SessionResumeResult {
   /** Present when the backend found a fresh crash-interrupted turn and
    *  scheduled its automatic continuation; the turn arrives as a normal
    *  message.start stream right after this resume. */
@@ -673,17 +689,13 @@ export interface SessionResumeResponse {
     request_id?: string
     smart_denied?: boolean
   }
-  // The clarify question still blocking this session, if any. Same replay
-  // class as pending_approval: emitted-while-detached prompts are restored
-  // from the resume snapshot instead of being lost until server-side timeout.
-  pending_clarify?: {
-    answers?: Record<string, unknown>
-    choices?: null | string[]
-    multi_select?: boolean
-    question?: string
-    questions?: unknown
-    request_id?: string
-  }
+  // Server→client requests still unanswered for this session (clarify, sudo,
+  // vault prompts, …). The shared channel re-delivers them to the request
+  // handlers before this response resolves; listed here so resume can tell an
+  // authoritative "nothing pending" from a request the handler declined.
+  open_requests?: Array<{ id: string; method: string; params: Record<string, unknown> & { session_id?: string } }>
+  // The connection operation still blocking this session; resume restores the backend-owned card projection.
+  pending_connection?: ConnectionRequestPayload
   info?: SessionRuntimeInfo
   message_count: number
   messages: SessionMessage[]
@@ -791,6 +803,15 @@ export interface ContextUsageCategory {
   tokens: number
 }
 
+export interface ContextFileSource {
+  label: string
+  path: string
+  chars: number
+  est_tokens: number
+  loaded: boolean
+  status: string
+}
+
 export interface ContextBreakdown {
   categories: ContextUsageCategory[]
   context_max: number
@@ -800,6 +821,7 @@ export interface ContextBreakdown {
   context_used: number
   estimated_total: number
   model?: string
+  context_files?: ContextFileSource[]
 }
 
 export interface AnalyticsDailyEntry {
@@ -1410,6 +1432,9 @@ export interface AuxiliaryTaskAssignment {
   local_endpoint?: boolean
   model: string
   provider: string
+  /** Task-level effort override (`auxiliary.<task>.reasoning_effort`); null/absent
+   *  means the task inherits the main agent's effort. */
+  reasoning_effort?: null | string
   task: string
 }
 
@@ -1467,6 +1492,9 @@ export interface ModelAssignmentRequest {
   confirm_expensive_model?: boolean
   model: string
   provider: string
+  /** Auxiliary only. Omitted → leave the task's override alone; null → clear it
+   *  (inherit); a level → set it. */
+  reasoning_effort?: null | string
   scope: 'main' | 'auxiliary'
   task?: string
 }

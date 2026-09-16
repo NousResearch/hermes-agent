@@ -24,6 +24,7 @@ import type { ReactNode } from 'react'
 import { capabilityScoped } from '@/api/client'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
+import { syncWorkspaceRoute } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
 import {
   $narrowViewport,
@@ -663,7 +664,16 @@ export const host = {
 
   /** Navigate the app router (hash routes, e.g. '/command-center?section=system'). */
   navigate: (path: string) => {
-    window.location.hash = path.startsWith('#') ? path : `#${path}`
+    const to = path.startsWith('#') ? path.slice(1) : path
+
+    window.location.hash = `#${to}`
+    // The router follows the hash and fronts the workspace pane on a route
+    // CHANGE (wiring's `syncWorkspaceRoute` effect). Re-issuing the current
+    // route — palette/statusbar/hotkey while already on the page with a tile
+    // focused — changes nothing, so no event fires and the page stays behind
+    // the tile. Reveal imperatively, the same way `navigateToWorkspacePage`
+    // does for the sidebar and keybinds.
+    syncWorkspaceRoute(to)
   },
 
   /** Pre-dial a profile's gateway socket in the background — pool-only, no
@@ -1683,6 +1693,10 @@ export { triggerHaptic as haptic } from '@/lib/haptics'
 export type { HermesOpenTarget } from '@/lib/hermes-open-target'
 /** The app's lucide icon set (RefreshCw, LayoutDashboard, Activity, …). */
 export * as icons from '@/lib/icons'
+/** IME-aware Enter: true only for a real submit Enter, never a CJK composition
+ *  commit (`isComposing` or the legacy keyCode 229). Use it on every plugin
+ *  text field whose bare Enter performs an action. */
+export { isSubmitEnter } from '@/lib/ime'
 export { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 export { formatModifierToken } from '@/lib/keybinds/combo'
 /** A `Map` with a ceiling, for the module-level caches a plugin keeps across

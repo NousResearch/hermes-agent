@@ -86,6 +86,30 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     assert resolved["source"] == "manual"
 
 
+def test_codex_pool_honors_hermes_codex_base_url(monkeypatch):
+    """The profile-wide Codex endpoint override must apply to pool credentials too."""
+    class _Entry:
+        access_token = "pool-token"
+        source = "manual"
+        base_url = "https://chatgpt.com/backend-api/codex"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/v1")
+
+    resolved = rp.resolve_runtime_provider(requested="openai-codex")
+
+    assert resolved["provider"] == "openai-codex"
+    assert resolved["base_url"] == "http://127.0.0.1:8787/v1"
+
+
 class TestCustomProviderPoolLoopbackNoKeyExemption:
     """Regression for issue #86864: legacy custom_providers configs often
     used short/placeholder api_keys ('123', 'm') for local no-auth
@@ -734,6 +758,62 @@ def test_bare_custom_resolves_providers_dict_entry_named_custom(monkeypatch):
     assert resolved["requested_provider"] == "custom"
 
 
+def test_bare_custom_without_credentials_for_remote_endpoint_fails_fast(monkeypatch):
+    """#111741: a bare ``custom`` placeholder that falls through to the OpenRouter default with no
+    key must raise a typed AuthError naming the request at resolve time, instead of returning a
+    dead runtime that dies later as "No LLM provider configured". A local alias (``ollama``) in the
+    same state keeps resolving tolerantly: ``/model`` direct-alias switching supplies its endpoint
+    after this call. With an OpenRouter key present the bare request resolves exactly as before."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "volcano": {
+                    "api": "https://ark.example.com/v1",
+                    "key_env": "ARK_API_KEY",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "volcano"})
+
+    with pytest.raises(rp.AuthError, match="provider 'custom'.*credentials.*real name") as error:
+        rp.resolve_runtime_provider(requested="custom")
+    assert error.value.provider == "custom"
+    assert error.value.code == "missing_api_key"
+
+    alias = rp.resolve_runtime_provider(requested="ollama")
+    assert alias["provider"] == "custom" and not alias["api_key"]
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-usable-key")
+    resolved = rp.resolve_runtime_provider(requested="custom")
+    assert resolved["provider"] == "custom"
+    assert resolved["api_key"] == "sk-or-v1-usable-key"
+
+
+def test_bare_custom_without_credentials_keeps_loopback_noauth(monkeypatch):
+    """Control: a configured no-auth local endpoint still resolves with the placeholder key."""
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "custom": {
+                    "api": "http://localhost:11434/v1",
+                }
+            }
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["base_url"] == "http://localhost:11434/v1"
+    assert resolved["api_key"] == "no-key-required"
 
 
 def test_named_custom_provider_same_url_uses_matching_key_env_and_api_mode(monkeypatch):

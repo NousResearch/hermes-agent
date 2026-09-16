@@ -82,6 +82,7 @@ import {
   normalizeProfileKey,
   sidebarProfileForScope
 } from '@/store/profile'
+import { $profileRailVisible } from '@/store/profile-rail-prefs'
 import {
   $activeProjectId,
   $newProjectDropPlacement,
@@ -497,6 +498,7 @@ export function ChatSidebar({
   }, [])
 
   const activeSidebarSessionId = currentView === 'chat' ? selectedSessionId : null
+  const profileRailVisible = useStore($profileRailVisible)
 
   const dndSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -1930,9 +1932,13 @@ export function ChatSidebar({
 
         {!showSessionSections && <SidebarBlankState onNewProject={openProjectCreate} />}
 
-        <div className="shrink-0 px-0.5 pb-1 pt-0.5">
-          <ProfileRail />
-        </div>
+        {/* Off, the statusbar's profile dropdown (beside the gateway switcher)
+            takes over — the rail is a duplicate door for bot-only setups. */}
+        {profileRailVisible && (
+          <div className="shrink-0 px-0.5 pb-1 pt-0.5">
+            <ProfileRail />
+          </div>
+        )}
       </SidebarContent>
       <ProjectDialog />
       {/* One mount for the whole app. The header of WorktreeDialog tells why. */}

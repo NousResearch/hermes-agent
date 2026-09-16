@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -974,9 +976,10 @@ def test_relaunchable_fixup_legacy_adhoc_success_still_verifies_and_never_delete
 
 @pytest.mark.linux_only
 def test_gui_registers_linux_desktop_entry_before_launch(tmp_path, monkeypatch):
-    """`hermes desktop` gives the app a launcher presence on Linux."""
+    """A terminal launch (no DESKTOP_STARTUP_ID) still installs the entry before spawning Electron."""
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.delenv("DESKTOP_STARTUP_ID", raising=False)
     packaged_exe = _make_packaged_executable(root, monkeypatch)
 
     registered: list[Path] = []
@@ -996,6 +999,46 @@ def test_gui_registers_linux_desktop_entry_before_launch(tmp_path, monkeypatch):
         cli_main.cmd_gui(_ns())
 
     assert registered == [root]
+
+
+@pytest.mark.linux_only
+def test_gui_shell_launch_defers_desktop_entry_until_window_reveal(tmp_path, monkeypatch):
+    """An app-grid launch (DESKTOP_STARTUP_ID set) writes the entry only after Electron reports
+    its window on screen — never before the spawn, while gnome-shell has the app in STARTING
+    (#111906). Electron gets the pipe's write end via HERMES_DESKTOP_READY_FD."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.setenv("DESKTOP_STARTUP_ID", "gnome-shell/Hermes/1-0_TIME1")
+    monkeypatch.setattr("hermes_cli.linux_desktop_entry.time.sleep", lambda _s: None)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+
+    events: list[str] = []
+    monkeypatch.setattr("hermes_cli.linux_desktop_entry.is_supported", lambda: True)
+    monkeypatch.setattr(
+        "hermes_cli.linux_desktop_entry.install_desktop_entry",
+        lambda project_root: events.append(f"install:{project_root}") or (tmp_path / "hermes.desktop"),
+    )
+
+    def fake_electron(cmd, **kwargs):
+        events.append("spawn")
+        fd = int(kwargs["env"]["HERMES_DESKTOP_READY_FD"])
+        assert fd in kwargs["pass_fds"]
+        os.write(fd, b"r")  # main window revealed
+        deadline = time.monotonic() + 10
+        while not any(e.startswith("install:") for e in events) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    with patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main.subprocess.run", side_effect=fake_electron), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 0
+    assert events == ["spawn", f"install:{root}"]
+    assert packaged_exe.exists()
 
 
 @pytest.mark.linux_only

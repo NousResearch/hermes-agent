@@ -106,8 +106,20 @@ describe("reconnect message copy", () => {
     expect(eventsReconnectingMessage(30_000)).toContain("30s");
   });
 
-  it("names the close code in the rejection message", () => {
-    expect(eventsRejectedMessage(4403)).toContain("4403");
+  it("tells the user to reload on an auth rejection without printing the close code", () => {
+    expect(eventsRejectedMessage(4403)).toMatch(/reload the page/i);
+    expect(eventsRejectedMessage(4403)).not.toContain("4403");
+  });
+
+  it("never names the transport ('events feed', 'WebSocket') in user-facing copy", () => {
+    for (const message of [
+      EVENTS_DISCONNECTED_MESSAGE,
+      eventsReconnectingMessage(1_000),
+      eventsRejectedMessage(4401),
+      eventsGaveUpMessage(),
+    ]) {
+      expect(message).not.toMatch(/events feed|websocket/i);
+    }
   });
 
   it("does not reference the tools box removed in #51737", () => {

@@ -1,7 +1,7 @@
 """disk-cleanup plugin — auto-cleanup of ephemeral Hermes session files.
 
-``post_tool_call`` silently tracks test/temp paths created by write_file/patch/terminal;
-``on_session_end`` runs :func:`disk_cleanup.quick` when any test file was tracked this turn;
+``post_tool_call`` silently tracks paths inside Hermes-owned ephemeral roots;
+``on_session_end`` removes only file generations tracked by that exact turn;
 ``/disk-cleanup`` exposes status / dry-run / quick / deep / track / forget.
 """
 
@@ -11,7 +11,6 @@ import contextlib
 import logging
 import re
 import shlex
-import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
@@ -19,11 +18,6 @@ from . import disk_cleanup as dg
 
 logger = logging.getLogger(__name__)
 
-
-# Test files newly tracked this turn, keyed by task_id (or session_id) so on_session_end can
-# decide whether to run cleanup. Locked: post_tool_call fires concurrently on parallel calls.
-_recent_test_tracks: Dict[str, Set[str]] = {}
-_lock = threading.Lock()
 
 _TERMINAL_PATH_REGEX = re.compile(r"(?:^|\s)(/[^\s'\"`]+|\~/[^\s'\"`]+)")
 
@@ -51,36 +45,36 @@ _PATH_EXTRACTORS: Dict[str, Callable[[Dict[str, Any], str], Set[str]]] = {
     "write_file": _extract_path_arg,
     "patch": _extract_path_arg,
     "terminal": _extract_paths_from_terminal}
+def _turn_key(turn_id: str, task_id: str, session_id: str) -> str:
+    return turn_id or task_id or session_id or "default"
 
 
 def _on_post_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None, result: Any = None,
-                       task_id: str = "", session_id: str = "", tool_call_id: str = "", **_: Any) -> None:
+                       task_id: str = "", session_id: str = "", turn_id: str = "",
+                       tool_call_id: str = "", status: str = "", **_: Any) -> None:
     """Auto-track ephemeral files created by recent tool calls. Best-effort, never raises."""
     extractor = _PATH_EXTRACTORS.get(tool_name)
     if not isinstance(args, dict) or extractor is None:
         return
-    for path_str in extractor(args, result if isinstance(result, str) else ""):
+    candidates = extractor(args, result if isinstance(result, str) else "")
+    owner = _turn_key(turn_id, task_id, session_id)
+    for path_str in candidates:
         try:
             p = Path(path_str).expanduser()
-        except Exception:
+            category = dg.guess_category(p) if p.exists() else None
+            if category is not None:
+                dg.track(str(p), category, silent=True, owner=owner)
+        except (OSError, RuntimeError, ValueError):
             continue
-        category = dg.guess_category(p) if p.exists() else None
-        if category is not None and dg.track(str(p), category, silent=True) and category == "test":
-            with _lock:
-                _recent_test_tracks.setdefault(task_id or session_id or "default", set()).add(str(p))
 
 
 def _on_session_end(
-    session_id: str = "", completed: bool = True, interrupted: bool = False, **_: Any) -> None:
-    """Run quick cleanup if any test files were tracked during this turn."""
-    # Drain the session bucket plus every task-scoped bucket (subagents record into their own).
-    with _lock:
-        had_tracks = bool(_recent_test_tracks.pop(session_id or "default", None) or _recent_test_tracks)
-        _recent_test_tracks.clear()
-    if not had_tracks:
-        return
+    session_id: str = "", task_id: str = "", turn_id: str = "",
+    completed: bool = True, interrupted: bool = False, **_: Any) -> None:
+    """Run retention cleanup each turn; scope immediate files to the ending turn."""
+    key = _turn_key(turn_id, task_id, session_id)
     try:
-        summary = dg.quick()
+        summary = dg.quick(immediate_owner=key)
     except Exception as exc:
         logger.debug("disk-cleanup quick cleanup failed: %s", exc)
         return
@@ -102,8 +96,9 @@ Subcommands:
 
 Categories: temp | test | research | download | chrome-profile | cron-output | other
 
-All operations are scoped to HERMES_HOME and /tmp/hermes-*.
-Test files are auto-tracked on write_file / terminal and auto-cleaned at session end.
+Automatic deletion is limited to fixed Hermes-owned cache/cron roots. Terminal text,
+successful file creation, and a platform-temp pathname never grant ownership.
+Arbitrary workspace files are never classified as disposable by filename.
 """
 
 

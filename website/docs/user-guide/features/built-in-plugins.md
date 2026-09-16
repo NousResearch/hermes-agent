@@ -55,7 +55,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 
 | Plugin | Kind | Purpose |
 |---|---|---|
-| `disk-cleanup` | hooks + slash command | Auto-track ephemeral files and clean them on session end |
+| `disk-cleanup` | hooks + slash command | Track files in fixed Hermes-owned ephemeral roots and clean them safely |
 | `security-guidance` | hooks | Pattern-match dangerous code on `write_file`/`patch` and append a security warning (or block) — 25 rules (Apache-2.0 fork of Anthropic's `claude-plugins-official` patterns) |
 | `observability/langfuse` | hooks | Trace turns / LLM calls / tools to [Langfuse](https://langfuse.com) |
 | `teams_pipeline` | standalone | Microsoft Teams meeting pipeline — Graph-backed, transcript-first meeting summaries |
@@ -71,23 +71,23 @@ Memory providers (`plugins/memory/*`) and context engines (`plugins/context_engi
 
 ### disk-cleanup
 
-Auto-tracks and removes ephemeral files created during sessions — test scripts, temp outputs, cron logs, stale chrome profiles — without requiring the agent to remember to call a tool.
+Tracks and removes generated media caches and cron run output only within fixed Hermes-owned ephemeral roots. A directory name, terminal output, successful file creation, manual category, or filename such as `test_*` / `tmp_*` never establishes ownership outside those roots.
 
 **How it works:**
 
 | Hook | Behaviour |
 |---|---|
-| `post_tool_call` | When `write_file` / `terminal` / `patch` creates a file matching `test_*`, `tmp_*`, or `*.test.*` inside `HERMES_HOME` or `/tmp/hermes-*`, track it silently as `test` / `temp` / `cron-output`. |
-| `on_session_end` | If any test files were auto-tracked during the turn, run the safe `quick` cleanup and log a one-line summary. Stays silent otherwise. |
+| `post_tool_call` | Track regular files found in fixed Hermes-owned ephemeral roots and bind each record to the current profile, turn, file generation, and root generation. |
+| `on_session_end` | After every completed turn, run aged cache/cron retention and delete only immediate-cleanup file generations owned by that exact turn. Long-running bot sessions therefore still clean incrementally. |
 
 **Deletion rules:**
 
 | Category | Threshold | Confirmation |
 |---|---|---|
-| `test` | every session end | Never |
+| `test` | end of the creating turn | Never |
 | `temp` | >7 days since tracked | Never |
 | `cron-output` | >14 days since tracked | Never |
-| empty dirs under HERMES_HOME | always | Never |
+| empty dirs in owned ephemeral roots | always | Never |
 | `research` | >30 days, beyond 10 newest | Always (deep only) |
 | `chrome-profile` | >14 days since tracked | Always (deep only) |
 | files >500 MB | never auto | Always (deep only) |
@@ -111,7 +111,7 @@ Auto-tracks and removes ephemeral files created during sessions — test scripts
 | `tracked.json.bak` | Atomic-write backup of the above |
 | `cleanup.log` | Append-only audit trail of every track / skip / reject / delete |
 
-**Safety** — cleanup only ever touches paths under `HERMES_HOME` or `/tmp/hermes-*`. Windows mounts (`/mnt/c/...`) are rejected. Well-known top-level state dirs (`logs/`, `memories/`, `sessions/`, `cron/`, `cache/`, `skills/`, `plugins/`, `disk-cleanup/` itself) are never removed even when empty — a fresh install does not get gutted on first session end.
+**Safety** — automatic deletion requires current membership in an explicit owned root: `$HERMES_HOME/cache/vision/temp_vision_images/`, `$HERMES_HOME/cache/video/temp_video_files/`, or `$HERMES_HOME/cron/output/` (plus `cronjobs/output/`). Each tracked row is bound to the current profile and turn plus the filesystem identity of both the file and owned root. Deletion traverses from an opened, verified root directory handle and revalidates the final file generation before unlinking, so replacing a file or swapping an ancestor path cannot redirect cleanup. Hosts without that secure unlink capability skip automatic deletion and retain their records. Legacy or malformed records fail closed. Platform-temp and workspace paths remain durable regardless of their filename or which tool created them.
 
 **Enabling:** `hermes plugins enable disk-cleanup` (or check the box in `hermes plugins`).
 

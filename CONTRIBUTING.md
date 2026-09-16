@@ -141,6 +141,30 @@ git checkout -b fix/description
 scripts/run_tests.sh
 ```
 
+### Windows (native) — PowerShell installer
+
+On native Windows, prefer the supported PowerShell installer (same layout the
+CLI and updater expect). Full details:
+[Windows (Native) Guide](https://hermes-agent.nousresearch.com/docs/user-guide/windows-native).
+
+```powershell
+iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
+
+# Open a *new* terminal so User PATH picks up `hermes`, then:
+cd "$env:LOCALAPPDATA\hermes\hermes-agent"
+
+# Add dev/test extras on top of the standard install.
+uv pip install -e ".[all,dev]"
+
+# Optional: browser tools / docs site dependencies.
+npm install
+```
+
+Native Windows defaults: `HERMES_HOME` is `%LOCALAPPDATA%\hermes`, and the
+git checkout lives at `%LOCALAPPDATA%\hermes\hermes-agent`. Do **not** assume
+`%USERPROFILE%\.hermes` unless you deliberately override `HERMES_HOME` (for
+example to mirror a Linux/WSL layout).
+
 ### Manual clone fallback
 
 Use this only if you intentionally do not want Hermes' managed install layout
@@ -171,6 +195,32 @@ uv pip install -e ".[all,dev]"
 npm install
 ```
 
+#### Manual clone on Windows (PowerShell)
+
+Same rule as above: create the venv **outside** the cloned source tree so a
+workspace-relative agent command cannot wipe the running runtime.
+
+```powershell
+git clone https://github.com/NousResearch/hermes-agent.git
+cd hermes-agent
+
+$HermesHome = Join-Path $env:LOCALAPPDATA "hermes"
+$VenvDir = Join-Path $HermesHome "venvs\hermes-dev"
+New-Item -ItemType Directory -Force -Path (Join-Path $HermesHome "venvs") | Out-Null
+
+uv venv $VenvDir --python 3.11
+& (Join-Path $VenvDir "Scripts\Activate.ps1")
+
+uv pip install -e ".[all,dev]"
+
+# Optional: browser tools
+npm install
+```
+
+Set `$env:HERMES_HOME = $HermesHome` in that session (or permanently as a User
+environment variable) so config and secrets resolve under
+`%LOCALAPPDATA%\hermes`, matching the supported native layout.
+
 ### Configure for development
 
 ```bash
@@ -180,6 +230,19 @@ touch ~/.hermes/.env
 
 # Add at minimum an LLM provider key:
 echo "OPENROUTER_API_KEY=***" >> ~/.hermes/.env
+```
+
+On native Windows, create the same layout under `%LOCALAPPDATA%\hermes`
+(not `%USERPROFILE%\.hermes`, unless you overrode `HERMES_HOME`):
+
+```powershell
+$HermesHome = Join-Path $env:LOCALAPPDATA "hermes"
+foreach ($d in "cron", "sessions", "logs", "memories", "skills") {
+    New-Item -ItemType Directory -Force -Path (Join-Path $HermesHome $d) | Out-Null
+}
+Copy-Item -Path "cli-config.yaml.example" -Destination (Join-Path $HermesHome "config.yaml")
+New-Item -ItemType File -Force -Path (Join-Path $HermesHome ".env") | Out-Null
+Add-Content -Path (Join-Path $HermesHome ".env") -Value "OPENROUTER_API_KEY=***"
 ```
 
 ### Run

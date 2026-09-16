@@ -63,6 +63,18 @@ def:
             attributing writes to a human actor rather than the agent.
           globs:
             - "tui_gateway/methods_tools.py"
+        - title: "Tool-less chat mode (voice conversation replies)"
+          description: |
+            `prompt.submit` accepts `mode: "chat"`: `methods_prompt.py` flags the turn and
+            `server.py` forwards it as `no_tools=True`, so `conversation_loop.py` sends that turn
+            with an empty tool list — a plain completion, no tool loop, no action side effects.
+            `run_agent.py`'s `AIAgent.run_conversation` just threads the flag through. The path is
+            signature-gated, so an older agent lacking the parameter still runs a normal
+            tool-enabled turn. Portal's hands-free voice conversation routes its replies here.
+          globs:
+            - "tui_gateway/methods_prompt.py"
+            - "agent/conversation_loop.py"
+            - "run_agent.py"
     - title: "Wiki API and changesets"
       description: |
         Portal renders the LLM Wiki as a live graph with a timeline. Upstream only had a

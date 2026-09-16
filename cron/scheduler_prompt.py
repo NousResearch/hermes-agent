@@ -74,7 +74,8 @@ def _extract_context_payload_from_job_output(raw_output: str) -> str:
     """
     document = raw_output or ""
     length_match = re.match(r"\A\*\*Result Chars:\*\*[ \t]*(\d+)[ \t]*\r?\n", document)
-    if length_match:
+    # A payload length cannot exceed its document; bound conversion of corrupt metadata.
+    if length_match and len(length_match.group(1)) <= len(str(len(document))):
         result_chars = int(length_match.group(1))
         content_end = len(document) - 1 if document.endswith("\n") else len(document)
         if 0 < result_chars <= content_end:

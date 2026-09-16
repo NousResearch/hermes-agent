@@ -64,6 +64,24 @@ def test_saved_run_payload_survives_repeated_chaining(cron_env, monkeypatch, sel
     assert "wrapper sentinel" not in injected
 
 
+def test_oversized_result_length_falls_back_during_context_injection(cron_env):
+    from cron.jobs import create_job, save_job_output
+    from cron.scheduler_prompt import _inject_context_from
+
+    source = create_job(prompt="upstream", schedule="every 1h")
+    save_job_output(
+        source["id"],
+        "**Result Chars:** " + "9" * 5000 + "\n\n## Response\n\nusable result\n",
+    )
+    prompt, injected = _inject_context_from(
+        {"id": "abcdef123456", "context_from": [source["id"]]}, "downstream task"
+    )
+    assert injected
+    assert "usable result" in prompt
+    assert "Result Chars" not in prompt
+    assert "downstream task" in prompt
+
+
 class TestJobContextFromField:
     """Test that context_from is stored and retrieved correctly."""
 

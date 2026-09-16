@@ -361,6 +361,42 @@ def test_sweep_drains_a_free_slot_and_never_expires_a_held_one(adapter, home):
             for r in (first, second)] == [q.STATUS_DELIVERED, q.STATUS_DELIVERED]
 
 
+def test_sweep_drains_a_named_profile_home_under_the_root(adapter, home):
+    """The drainer must drain EVERY lane's queue, not just the default home's.
+
+    Live evidence: the multiplexing gateway admits a peer delivery into the
+    TARGET lane's own home (``_bot_send_home`` resolves the request-scoped
+    profile to ``profiles/<lane>``), but the 30s sweep drained only
+    ``_default_home()`` -- so 13 records sat in two lanes' per-profile queues
+    while the root queue stayed empty and the sweep logged ``actions=0``
+    forever. The drainer runs against the root and must enumerate the roster.
+    """
+    from gateway.platforms import api_server_bot_delivery as drain
+
+    profile = "lane-beta"
+    lane_home = home / "profiles" / profile  # root/profiles/lane-beta
+
+    record = q.admit(
+        lane_home,
+        sender_profile="lane-alpha",
+        target_profile=profile,
+        target_session_id="sess-1",
+        idempotency_key=q.validate_idempotency_key("auto:sweep:named"),
+        fingerprint="fp",
+        delivery_id="d" * 32,
+        message="hello lane-beta",
+    )
+    assert record["status"] == q.STATUS_QUEUED
+    assert q.queued_target_profiles(home) == [], "the root/default home is empty"
+    assert q.queued_target_profiles(lane_home) == [profile]
+
+    # One sweep tick against the ROOT home must drain the named lane's queue.
+    assert asyncio.run(drain.drain_once(adapter, home)) == 1
+    assert [call["user_message"] for call in adapter.calls] == ["hello lane-beta"]
+    assert q.read_record(lane_home, record["delivery_id"])["status"] == q.STATUS_DELIVERED
+    assert q.queue_depth(lane_home, profile) == 0
+
+
 def test_queued_receipt_reports_the_slot_state_observed(adapter, home):
     """D2: a receipt says WHY it queued, from the slot's real state.
 

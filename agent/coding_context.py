@@ -222,11 +222,20 @@ def _marker_root(cwd: Path) -> Optional[Path]:
     and the shared temp root are skipped: a Makefile/AGENTS.md in the home dir is global
     config, and a stray manifest in /tmp must not flip every session under it."""
     current = cwd.resolve()
+    skip = {_home()}
     try:
-        temp_root = Path(tempfile.gettempdir()).resolve()
+        skip.add(Path(tempfile.gettempdir()).resolve())
     except Exception:
-        temp_root = None
-    skip = (_home(), temp_root)
+        pass
+    # The canonical temp roots must be skipped even when TMPDIR points elsewhere
+    # (self-hosted CI runners set a deep TMPDIR but anchor pytest temproots at
+    # /tmp): a stray manifest under /tmp — exactly what the docstring promises
+    # to ignore — would otherwise flip every session rooted under it.
+    for canonical in ("/tmp", "/var/tmp"):
+        try:
+            skip.add(Path(canonical).resolve())
+        except OSError:
+            pass
     for parent in (current, *current.parents)[:7]:
         if parent not in skip and any((parent / marker).exists() for marker in _PROJECT_MARKERS):
             return parent

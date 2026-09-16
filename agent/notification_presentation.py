@@ -28,6 +28,36 @@ def diagnostic_process_event(event: dict) -> bool:
     }
 
 
+def notification_config_snapshot():
+    """Read the canonical owning effective config once; presentation fails open."""
+    from copy import deepcopy
+    from hermes_cli.config_effective import load_user_config_effective
+    try:
+        config = load_user_config_effective()
+        return deepcopy(config) if isinstance(config, dict) else {}
+    except Exception:
+        return {}
+
+
+@contextmanager
+def notification_policy_snapshot(agent, platform, config):
+    """Bind one foreground policy for callbacks, including worker threads."""
+    from copy import deepcopy
+    missing = object()
+    saved = {key: getattr(agent, key, missing)
+             for key in ("_notification_config", "_notification_platform")}
+    try:
+        agent._notification_config = deepcopy(config)
+        agent._notification_platform = platform
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is missing:
+                delattr(agent, key)
+            else:
+                setattr(agent, key, value)
+
+
 @contextmanager
 def notification_turn(agent, *, muted: bool, session_id: str = ""):
     """Freeze the current turn's presentation without touching prompts or tool schemas."""

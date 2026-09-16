@@ -72,32 +72,34 @@ class CLIChatTurnMixin:
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         print(flush=True)
 
-        turn = _ChatTurn()
-        from gateway.warning_notifications import warning_notifications_enabled
-        turn.mute_notification_reply = (
-            (agent._pending_cli_user_message.get("display_metadata") or {}).get("notification_category") == "diagnostic"
-            and not warning_notifications_enabled("cli")
-        )
-        try:
-            self._reset_stream_state()
-            # Not part of _reset_stream_state: must persist across intermediate turn
-            # boundaries (tool-calling loops), reset once per user turn.
-            self._reasoning_shown_this_turn = False
-            self._chat_setup_turn_audio(turn, message, voice_input)
-            # Per-prompt elapsed timer — frozen when the agent thread finishes.
-            self._prompt_start_time = time.time()
-            self._prompt_duration = 0.0
-            # Daemon: closing the terminal tab (SIGHUP) must not be kept alive by it.
-            agent_thread = threading.Thread(target=self._chat_run_agent, args=(turn, message), daemon=True)
-            agent_thread.start()
-            interrupt_msg = self._chat_monitor_agent_thread(turn, agent_thread)
-            self._chat_settle_turn(turn)
-            return self._chat_render_turn(turn, agent_thread, interrupt_msg)
-        except Exception as e:
-            print(f"Error: {e}")
-            return None
-        finally:
-            self._chat_release_turn_audio(turn)
+        from agent.notification_presentation import notification_config_snapshot, notification_policy_snapshot
+        with notification_policy_snapshot(agent, "cli", notification_config_snapshot()):
+            turn = _ChatTurn()
+            from gateway.warning_notifications import warning_notifications_enabled
+            turn.mute_notification_reply = (
+                (agent._pending_cli_user_message.get("display_metadata") or {}).get("notification_category") == "diagnostic"
+                and not warning_notifications_enabled("cli", agent._notification_config)
+            )
+            try:
+                self._reset_stream_state()
+                # Not part of _reset_stream_state: must persist across intermediate turn
+                # boundaries (tool-calling loops), reset once per user turn.
+                self._reasoning_shown_this_turn = False
+                self._chat_setup_turn_audio(turn, message, voice_input)
+                # Per-prompt elapsed timer — frozen when the agent thread finishes.
+                self._prompt_start_time = time.time()
+                self._prompt_duration = 0.0
+                # Daemon: closing the terminal tab (SIGHUP) must not be kept alive by it.
+                agent_thread = threading.Thread(target=self._chat_run_agent, args=(turn, message), daemon=True)
+                agent_thread.start()
+                interrupt_msg = self._chat_monitor_agent_thread(turn, agent_thread)
+                self._chat_settle_turn(turn)
+                return self._chat_render_turn(turn, agent_thread, interrupt_msg)
+            except Exception as e:
+                print(f"Error: {e}")
+                return None
+            finally:
+                self._chat_release_turn_audio(turn)
 
     def _chat_release_turn_audio(self, turn):
         """Every exit path: stop the thinking sound, send the TTS sentinel, cut TTS only if abnormal."""

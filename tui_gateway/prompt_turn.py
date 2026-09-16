@@ -848,9 +848,11 @@ def _run_prompt_submit(
         return False
     images, agent = admitted
     from gateway.warning_notifications import warning_notifications_enabled
+    from agent.notification_presentation import notification_config_snapshot
     with _session_profile_runtime_scope(session):
+        notification_config = notification_config_snapshot()
         muted = ((display_metadata or {}).get("notification_category") == "diagnostic"
-                 and not warning_notifications_enabled("tui"))
+                 and not warning_notifications_enabled("tui", notification_config))
     if muted:
         display_kind = "hidden"
     # The ONE INFO record proving a prompt was accepted by THIS process; ties ui sid,
@@ -944,7 +946,8 @@ def _run_prompt_submit(
         from agent.notification_presentation import notification_turn
         # _prepare_turn_input owns profile binding for the worker. The context
         # here only gates presentation; do not introduce a second runtime scope.
-        with notification_turn(agent, muted=muted, session_id=sid):
+        from agent.notification_presentation import notification_policy_snapshot
+        with notification_policy_snapshot(agent, "tui", notification_config), notification_turn(agent, muted=muted, session_id=sid):
             followup = run_body()
         if followup is not None:
             _run_post_turn_followups(rid, sid, session, *followup)

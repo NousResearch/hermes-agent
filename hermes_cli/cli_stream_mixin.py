@@ -51,7 +51,7 @@ class CLIStreamMixin:
         if getattr(getattr(self, "agent", None), "_mute_notification_reply", False):
             return
         from gateway.warning_notifications import DiagnosticText, warning_notifications_enabled
-        if isinstance(text, DiagnosticText) and not warning_notifications_enabled("cli"):
+        if isinstance(text, DiagnosticText) and not warning_notifications_enabled("cli", getattr(getattr(self, "agent", None), "_notification_config", None)):
             return
         if not text:
             self._flush_reasoning_preview(force=True)
@@ -74,7 +74,7 @@ class CLIStreamMixin:
                 return
             level = getattr(notice, "level", "info") or "info"
             from gateway.warning_notifications import warning_notifications_enabled
-            if level in {"warn", "error"} and not warning_notifications_enabled("cli"):
+            if level in {"warn", "error"} and not warning_notifications_enabled("cli", getattr(getattr(self, "agent", None), "_notification_config", None)):
                 return
             if not hasattr(self, "_pending_credit_notices"):
                 self._pending_credit_notices = []

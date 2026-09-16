@@ -89,7 +89,7 @@ def _agent_presentation_enabled(sid: str, *, diagnostic: bool) -> bool:
     if not diagnostic:
         return True
     with _session_profile_runtime_scope(session or {}):
-        return warning_notifications_enabled("tui")
+        return warning_notifications_enabled("tui", getattr((session or {}).get("agent"), "_notification_config", None))
 
 
 def _agent_status_update(sid: str, kind: str, text: str | None = None) -> None:

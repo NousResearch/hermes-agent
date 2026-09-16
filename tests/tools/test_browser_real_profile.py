@@ -132,6 +132,26 @@ class TestSnapshotRealProfile:
         assert not (home / "browser-profile" / "chrome" / "Crashpad").exists()
         assert not (home / "browser-profile" / "chrome" / "SingletonLock").exists()
 
+    def test_snapshot_succeeds_when_optional_auth_dbs_are_locked(self, tmp_path, monkeypatch):
+        """A running Chrome often blocks Login Data / Web Data backups for >5s while
+        Cookies still copy. That must not fail the snapshot (POSIX copy-while-running)."""
+        import hermes_cli.browser_connect as bc
+        src = self._make_profile(tmp_path / "real")
+        home = tmp_path / "hh"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        optional = {"Login Data", "Login Data For Account", "Web Data"}
+        orig = bc._copy_auth_file
+
+        def copy_skip_optional(src_file, dst_file, **_kw):
+            if os.path.basename(src_file) in optional:
+                return False
+            return orig(src_file, dst_file, **_kw)
+
+        monkeypatch.setattr(bc, "_copy_auth_file", copy_skip_optional)
+        dst, err = bc.snapshot_real_profile("chrome", src=str(src))
+        assert err is None and dst
+        assert _auth_db((home / "browser-profile" / "chrome" / "Default" / "Cookies")) == "sqlite-cookies"
+
     def test_existing_snapshot_refreshes_auth_files_only(self, tmp_path, monkeypatch):
         import hermes_cli.browser_connect as bc
         src = self._make_profile(tmp_path / "real")
@@ -1144,7 +1164,7 @@ class TestWindowsLockedProfileCopy:
         assert open(dst).read() == '{"k":1}'
 
     def test_fail_closed_when_db_unreadable(self, tmp_path, monkeypatch):
-        """If even the online-backup can't read the DB, snapshot fails closed
+        """If even the online-backup can't read session cookies, snapshot fails closed
         rather than launching a silently signed-out session."""
         import hermes_cli.browser_connect as bc
         import json
@@ -1157,7 +1177,8 @@ class TestWindowsLockedProfileCopy:
         monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
         # Force both sqlite-backup and raw copy to fail for the DB.
         monkeypatch.setattr(bc, "_copy_auth_file",
-                            lambda s, d: False if os.path.basename(s) in bc._SQLITE_AUTH_DBS else True)
+                            lambda s, d, **_k: False if os.path.basename(s) in bc._SQLITE_AUTH_DBS else True)
         dst, err = bc.snapshot_real_profile("chrome", src=str(root))
         assert dst is None
-        assert err and "login data" in err.lower() and "close" in err.lower()
+        assert err and err.startswith(bc._PROFILE_LOCKED_PREFIX)
+        assert "quit" in err.lower() or "close" in err.lower()

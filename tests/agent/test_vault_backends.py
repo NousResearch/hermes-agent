@@ -256,3 +256,23 @@ def test_managed_bitwarden_session_lists_headless_via_config(fake_bw, tmp_path, 
     assert all(call["BW_SESSION"] == "SESSION-TOKEN-123" for call in calls)
     assert all(call["appdata"] == str(appdata) for call in calls)
     assert os.environ.get("BW_SESSION") is None
+
+
+def test_managed_session_file_unlocks_headless_backend_and_sets_cli_appdata(fake_bw, tmp_path):
+    exe, log = fake_bw
+    session_file = tmp_path / "bw-session"
+    session_file.write_text("SESSION-TOKEN-123\n", encoding="utf-8")
+    session_file.chmod(0o600)
+    appdata = tmp_path / "bw-appdata"
+    backend = BitwardenLoginBackend({
+        "enabled": True,
+        "binary_path": str(exe),
+        "session_file": str(session_file),
+        "appdata_dir": str(appdata),
+    })
+
+    assert backend.is_unlocked()
+    assert backend.list_items()[0].id == "bw:abc"
+    call = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    assert call["BW_SESSION"] == "SESSION-TOKEN-123"
+    assert os.environ.get("BW_SESSION") is None

@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -48,12 +49,28 @@ class BitwardenLoginBackend(LoginBackend):
     def _env(self, session_token: Optional[str]) -> Dict[str, str]:
         env = {k: os.environ[k] for k in _ENV_KEEP if k in os.environ}
         env["NO_COLOR"] = "1"
+        appdata = str(self.cfg.get("appdata_dir") or "").strip()
+        if appdata:
+            env["BITWARDENCLI_APPDATA_DIR"] = appdata
         if session_token:
             env["BW_SESSION"] = session_token
         return env
 
     def is_unlocked(self) -> bool:
-        return _unlock.is_unlocked(self.name)
+        if _unlock.is_unlocked(self.name):
+            return True
+        session_file = str(self.cfg.get("session_file") or "").strip()
+        if not session_file:
+            return False
+        path = Path(session_file)
+        try:
+            if stat.S_IMODE(path.stat().st_mode) & 0o077:
+                raise RuntimeError("Bitwarden session_file must not be group/world-accessible")
+            token = path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            logger.warning("Could not read managed Bitwarden session file: %s", exc)
+            return False
+        return bool(token) and _unlock.store_session_token(self.name, token)
 
     def unlock(self, master_password: str) -> None:
         # bw refuses a piped password ("Master password is required"); its non-interactive contract is

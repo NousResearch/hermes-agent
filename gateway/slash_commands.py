@@ -232,6 +232,13 @@ class GatewaySlashCommandsMixin(
         fields = {k[len("checkpoint_"):]: v for k, v in cp.items() if k.startswith("checkpoint_")}
         return CheckpointManager(enabled=True, **fields)
 
+    def _checkpoint_unavailable_reason(self, event: MessageEvent) -> Optional[str]:
+        """Refuse host checkpoint operations for the event's container-backed session."""
+        from tools.checkpoint_manager import checkpoint_unavailable_reason
+
+        task_id = self._session_key_for_source(event.source) if event.source else "default"
+        return checkpoint_unavailable_reason(task_id)
+
     def _write_approval_setter(self, section: str, event: MessageEvent):
         """``set_mode_fn`` for /memory and /skills: persist ``<section>.write_approval``. Raw read is
         correct for the write-back round-trip (merged defaults must not be persisted back to the
@@ -679,6 +686,8 @@ class GatewaySlashCommandsMixin(
         mgr = self._checkpoint_manager()
         if mgr is None:
             return t("gateway.rollback.not_enabled")
+        if reason := self._checkpoint_unavailable_reason(event):
+            return reason
         cwd = self._terminal_cwd()
         # --all / --force: classic full restore, overwriting user edits too.
         tokens = event.get_command_args().strip().split()
@@ -724,6 +733,8 @@ class GatewaySlashCommandsMixin(
             mgr = self._checkpoint_manager()
             if mgr is None:
                 return t("gateway.diff.not_enabled")
+            if reason := self._checkpoint_unavailable_reason(event):
+                return reason
             result = await asyncio.to_thread(mgr.session_diff, cwd)
         else:
             from tools.working_diff import collect_working_diff

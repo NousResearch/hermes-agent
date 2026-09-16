@@ -212,10 +212,13 @@ test('cancelAndWait keeps the drain up through afterCancel teardown', async () =
   const coordinator = createBootstrapCoordinator()
   const events: string[] = []
   let releaseAfter: (() => void) | undefined
+
   const afterGate = new Promise<void>(resolve => {
     releaseAfter = resolve
   })
+
   let teardownStarted: (() => void) | undefined
+
   const started = new Promise<void>(resolve => {
     teardownStarted = resolve
   })
@@ -228,6 +231,7 @@ test('cancelAndWait keeps the drain up through afterCancel teardown', async () =
   })
 
   await started
+
   const next = coordinator.start('scope', 'new', async () => {
     events.push('new-start')
 
@@ -289,6 +293,7 @@ test('a second cancelAndWait on the same scope composes with the teardown still 
 
   await teardownStarted.promise
   const apply = coordinator.cancelAndWait('scope').then(() => events.push('apply-drained'))
+
   const next = coordinator.start('scope', 'new', async () => {
     events.push('new-start')
 

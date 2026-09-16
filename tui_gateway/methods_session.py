@@ -151,9 +151,11 @@ def _branch_title(db, parent_key: str) -> str:
 
 
 def _cwd_info(session: dict, cwd: str, branch=None) -> dict:
-    """session.info after a cwd change: the full agent view, or the lazy shape."""
+    """session.info after a cwd change as a MAPPING: the full agent view, or the lazy shape. Both consumers
+    validate it into a SessionLiveInfo SUBCLASS (result or payload), and pydantic rejects a base-class
+    instance there — a dict is the one representation every destination accepts."""
     if (agent := session.get("agent")) is not None:
-        return srv._session_info(agent, session)
+        return srv._session_info(agent, session).model_dump(mode="json")
     return {"cwd": cwd, "branch": srv.git_probe.branch(cwd) if branch is None else branch,
             "project": srv._project_info_for_cwd(cwd), "lazy": True}
 
@@ -923,7 +925,7 @@ def _(rid, params: SessionCwdSetParams, session: dict) -> SessionCwdSetResult | 
     except ValueError as e:
         return srv._err(rid, 4017, str(e))
     info = SessionCwdSetResult.model_validate(srv._cwd_info(session, cwd))
-    srv._emit("session.info", params.session_id, SessionInfoPayload.model_validate(dict(vars(info))))
+    srv._emit("session.info", params.session_id, SessionInfoPayload.of(info))
     return info
 
 
@@ -959,7 +961,7 @@ def _(rid, params: SessionWorkspaceMoveParams) -> SessionWorkspaceMoveResult | d
             srv._set_session_cwd(live, resolved)
         except ValueError as e:
             return srv._err(rid, 4017, str(e))
-        srv._emit("session.info", live_sid, SessionInfoPayload.model_validate(srv._cwd_info(live, resolved, branch=branch)))
+        srv._emit("session.info", live_sid, SessionInfoPayload.of(srv._cwd_info(live, resolved, branch=branch)))
     return SessionWorkspaceMoveResult(cwd=resolved, branch=branch, git_repo_root=root)
 
 

@@ -269,8 +269,9 @@ input action goes to that same window (input actions ignore `app=`).
 When the user is on a messaging platform (Telegram, Discord, etc.) and
 you took a screenshot they should see, save it somewhere durable and
 use `MEDIA:/absolute/path.png` in your reply. cua-driver's screenshots
-are PNG or JPEG bytes (mimeType is on the response); write them out
-with `write_file` or the terminal (`base64 -d`).
+are PNG or JPEG bytes (mimeType is on the response). `write_file` is
+text-only and cannot write image bytes, so save them with the terminal
+(`base64 -d`). Never fabricate or reconstruct image bytes you were not given.
 
 On CLI, you can just describe what you see — the screenshot data stays
 in your conversation context.
@@ -306,7 +307,7 @@ in your conversation context.
 | "tool 'capture' has no reviewed risk classification" / `Unknown tool` | Something called the driver's MCP vocabulary directly (`capture`, `screenshot`, `get_window_state`, `click` with raw args). Only the `computer_use(action=…)` vocabulary in this file exists on the Hermes side |
 | Click had no effect | Read the structured verdict. `effect:"unverifiable"` → fresh capture/state before retry, even with an escalation hint. `effect:"suspected_noop"` or a structured refusal → climb the recommended ladder: coordinate (px), then foreground. Browser chrome/native prompts remain native; page content is a separate toolset. Don't conclude the app is undrivable |
 | Type text disappears into a terminal emulator | cua-driver detects terminals (Ghostty, iTerm2, Terminal.app, Windows Terminal, mintty, etc.) and routes through key-event synthesis — should "just work" on a recent cua-driver. If it doesn't, ask the user to run `hermes computer-use doctor` |
-| `blocked pattern in type text` | You tried to `type` a shell command matching the dangerous-pattern block list (`curl ... \| bash`, `sudo rm -rf`, etc.). Break the command up or reconsider |
+| `blocked pattern in type text` | You tried to `type` a shell command matching the dangerous-pattern block list (`curl ... \| bash`, `sudo rm -rf`, etc.). Do not split, obfuscate, or retype the command to get around the block. Reassess whether the command is safe, use a safer non-GUI tool, or ask the user |
 | `hermes computer-use doctor` says "could not be started … Access is denied" (Windows) | The Hermes venv interpreter can't execute a binary under `C:\Program Files\WindowsApps`; the tool itself may still work because the shell resolves another copy on PATH. Fix once: reinstall cua-driver with the upstream installer (lands under the user profile) or set `HERMES_CUA_DRIVER_CMD` to a copy outside `WindowsApps`. The same denial spams `errors.log` for any other `WindowsApps` binary Hermes spawns (e.g. `bws.exe`) |
 | Anything else weird | **First action: ask the user to run `hermes computer-use doctor`.** It runs the cua-driver `health_report` MCP tool and prints a structured per-check matrix. Their output tells you (and them) exactly what's wrong |
 

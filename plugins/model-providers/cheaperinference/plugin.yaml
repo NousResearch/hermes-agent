@@ -1,0 +1,5 @@
+name: cheaperinference-provider
+kind: model-provider
+version: 1.0.0
+description: Cheaper Inference — OpenAI-compatible discount gateway
+author: aiapienthusiast

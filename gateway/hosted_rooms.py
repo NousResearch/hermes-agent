@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import re
 import sqlite3
 from contextlib import closing
@@ -45,8 +44,6 @@ MAX_GATEWAY_EVENT_BYTES = 16 * 1024 * 1024
 CONTROL_EVENT_COUNT_RESERVE = 64
 CONTROL_EVENT_BYTE_RESERVE = 1024 * 1024
 _JOURNAL_MODE_LOCK_RETRIES = 8
-
-logger = logging.getLogger(__name__)
 
 _EVENT_KIND_RE = re.compile(r"^[a-z][a-z0-9_.-]*$")
 _CONTROL_EVENT_KINDS = frozenset({"authority.claimed", "authority.lost", "room.disbanded", "room.stop_requested"})
@@ -339,28 +336,15 @@ def _migrate_remote_run_schema(conn: sqlite3.Connection) -> None:
 # Draft builds before the actor contract carried no identity. Preserve their inert replay rows explicitly
 # as legacy system events rather than guessing a user or Bot author.
 _LEGACY_ACTOR_JSON = _system_actor_json("legacy").replace("'", "''")
-# (table, column, ddl) applied in this exact order; each table's PRAGMA is read on first use.
-_LEGACY_COLUMN_DDL = (
-    ("hosted_rooms", "authority_gateway_id",
-     "ALTER TABLE hosted_rooms ADD COLUMN authority_gateway_id TEXT NOT NULL DEFAULT 'legacy'"),
-    ("hosted_rooms", "authority_epoch",
-     "ALTER TABLE hosted_rooms ADD COLUMN authority_epoch INTEGER NOT NULL DEFAULT 1"),
-    ("hosted_rooms", "event_bytes", "ALTER TABLE hosted_rooms ADD COLUMN event_bytes INTEGER NOT NULL DEFAULT 0"),
-    ("hosted_room_events", "actor_json",
-     "ALTER TABLE hosted_room_events " f"ADD COLUMN actor_json TEXT NOT NULL DEFAULT '{_LEGACY_ACTOR_JSON}'"),
-    ("hosted_room_events", "authority_epoch", "ALTER TABLE hosted_room_events ADD COLUMN authority_epoch INTEGER"))
-
-
-def _migrate_legacy_columns(conn: sqlite3.Connection) -> None:
-    """Add columns draft schemas lacked; backfill event_bytes when first introduced."""
-    columns: dict[str, frozenset[str]] = {}
-    for table, column, ddl in _LEGACY_COLUMN_DDL:
-        if table not in columns:
-            columns[table] = table_columns(conn, table)
-        if column not in columns[table]:
-            conn.execute(ddl)
-    if "event_bytes" not in columns["hosted_rooms"]:
-        conn.execute("""UPDATE hosted_rooms
+# (table, column, declaration, default literal) applied in this exact order; each table's PRAGMA is read on
+# first use. The default is also what the pre-isolation import selects for a source that predates the column.
+_LEGACY_COLUMNS = (
+    ("hosted_rooms", "authority_gateway_id", "TEXT NOT NULL", "'legacy'"),
+    ("hosted_rooms", "authority_epoch", "INTEGER NOT NULL", "1"),
+    ("hosted_rooms", "event_bytes", "INTEGER NOT NULL", "0"),
+    ("hosted_room_events", "actor_json", "TEXT NOT NULL", f"'{_LEGACY_ACTOR_JSON}'"),
+    ("hosted_room_events", "authority_epoch", "INTEGER", None))
+_EVENT_BYTES_BACKFILL = """UPDATE hosted_rooms
                   SET event_bytes=COALESCE((
                       SELECT SUM(
                           length(CAST(event_id AS BLOB)) +
@@ -370,7 +354,20 @@ def _migrate_legacy_columns(conn: sqlite3.Connection) -> None:
                       )
                       FROM hosted_room_events
                       WHERE hosted_room_events.room_id=hosted_rooms.room_id
-                  ), 0)""")
+                  ), 0) WHERE {where}"""
+
+
+def _migrate_legacy_columns(conn: sqlite3.Connection) -> None:
+    """Add columns draft schemas lacked; backfill event_bytes when first introduced."""
+    columns: dict[str, frozenset[str]] = {}
+    for table, column, declaration, default in _LEGACY_COLUMNS:
+        if table not in columns:
+            columns[table] = table_columns(conn, table)
+        if column not in columns[table]:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}"
+                         + (f" DEFAULT {default}" if default is not None else ""))
+    if "event_bytes" not in columns["hosted_rooms"]:
+        conn.execute(_EVENT_BYTES_BACKFILL.format(where="1"))
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
@@ -425,104 +422,19 @@ def local_authority_gateway_id() -> str:
     return _actor_id(f"install:{install_id}", "authority_gateway_id")
 
 
-# --- pre-isolation import -------------------------------------------------------
-# ``0e422e0ece`` repointed the room store from the root ``state.db`` to ``shared-state.db`` without
-# moving the rows it already held, so an install that had rooms started with an empty coordination
-# set and every pre-existing room resolved to "hosted room not found" (#109775). The first open
-# after the upgrade copies the rows across once; the marker row keeps that a one-shot step, because
-# a purge in THIS store must never be undone by re-importing rows the legacy store still holds.
-_LEGACY_SOURCE_NAME = "state.db"
-_LEGACY_MARKER_TABLE = "hosted_room_legacy_imports"
-# Liveness state, never copied: a lease is a ~15s heartbeat plus a process generation, so a copied
-# lease names a process that is gone. The driver claims a fresh one instead.
-_LEGACY_IMPORT_SKIP = frozenset({"hosted_room_driver_leases"})
-
-
-def _legacy_source_path(db_path: Path) -> Path | None:
-    """The pre-isolation store for ``db_path``, or ``None`` when this database has no predecessor.
-
-    Only the shared coordination database has one: callers that pass any other path (older
-    layouts, tests) own that file directly.
-    """
-    return db_path.with_name(_LEGACY_SOURCE_NAME) if db_path.name == "shared-state.db" else None
-
-
-def _legacy_import_settled(conn: sqlite3.Connection, db_path: Path) -> bool:
-    """True once the pre-isolation import for this database has been recorded (or never applies)."""
-    if _legacy_source_path(db_path) is None:
-        return True
-    return table_exists(conn, _LEGACY_MARKER_TABLE) and conn.execute(
-        f"SELECT 1 FROM {_LEGACY_MARKER_TABLE} WHERE source=?", (_LEGACY_SOURCE_NAME,)).fetchone() is not None
-
-
-def _copy_legacy_rows(target: sqlite3.Connection, source: Path) -> int:
-    """Copy the ``hosted_room*`` rows ``target`` is missing from ``source``; returns rooms copied.
-
-    ``INSERT OR IGNORE`` means rows this store already has always win. A table this store has not
-    created yet (the driver, policy and replica schemas are initialized by their own modules) is
-    created from the source's own DDL so its rows survive the upgrade too.
-    """
-    copied = 0
-    with closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=10)) as legacy:
-        names = [str(row[0]) for row in legacy.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'hosted_room*'")]
-        # Parents first: hosted_room_events carries a foreign key into hosted_rooms.
-        for name in sorted(names, key=lambda name: (name != "hosted_rooms", name)):
-            if name in _LEGACY_IMPORT_SKIP or name == _LEGACY_MARKER_TABLE or name.endswith(("_next", "_migrating")):
-                continue
-            if not table_exists(target, name):
-                target.execute(str(legacy.execute(
-                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()[0]))
-            target_columns = table_columns(target, name)
-            # Source PRAGMA order (a frozenset would not be deterministic); columns this store
-            # lacks are dropped, ones it added take their DDL default.
-            columns = [str(row[1]) for row in legacy.execute(f"PRAGMA table_info({name})")
-                       if str(row[1]) in target_columns]
-            if not columns:
-                continue
-            cursor = target.executemany(
-                f"INSERT OR IGNORE INTO {name} ({', '.join(columns)}) VALUES ({', '.join('?' * len(columns))})",
-                legacy.execute(f"SELECT {', '.join(columns)} FROM {name}"))
-            if name == "hosted_rooms":
-                copied = max(0, cursor.rowcount)
-    return copied
-
-
-def _import_legacy_rooms(conn: sqlite3.Connection, db_path: Path) -> None:
-    """Copy the pre-isolation rows in once, then record the marker; never fails the open.
-
-    The copy runs inside the caller's schema transaction, so a crash leaves either both the
-    copied rows and the marker or neither.
-    """
-    if _legacy_import_settled(conn, db_path):
-        return
-    source = _legacy_source_path(db_path)
-    try:
-        copied = _copy_legacy_rows(conn, source) if source.is_file() else 0
-    except (OSError, sqlite3.Error) as exc:
-        # A locked or unreadable legacy store must not take hosted rooms down with it: skip this
-        # open, leave the marker unset, retry on the next one.
-        logger.warning("hosted rooms: could not import the pre-isolation %s (%s); will retry", source, exc)
-        return
-    conn.execute(
-        f"CREATE TABLE IF NOT EXISTS {_LEGACY_MARKER_TABLE} ("
-        "source TEXT PRIMARY KEY, imported_at REAL NOT NULL, rooms INTEGER NOT NULL)")
-    conn.execute(
-        f"INSERT OR IGNORE INTO {_LEGACY_MARKER_TABLE} (source, imported_at, rooms) VALUES (?, ?, ?)",
-        (_LEGACY_SOURCE_NAME, _now(None), copied))
-    if copied:
-        logger.info("hosted rooms: imported %d pre-isolation Group Chat(s) from %s", copied, source)
-
-
 def _store_ready(conn: sqlite3.Connection, db_path: Path) -> bool:
     """The store can serve rooms once its schema is current and the pre-isolation import has run."""
-    return _schema_is_current(conn) and _legacy_import_settled(conn, db_path)
+    from gateway.hosted_rooms_legacy_import import settled
+
+    return _schema_is_current(conn) and settled(conn, db_path)
 
 
 def _initialize_store(conn: sqlite3.Connection, db_path: Path) -> None:
-    """Create or migrate the schema, then copy the pre-isolation rows in."""
+    """Create or migrate the schema, then copy the pre-isolation rows in (#109775)."""
+    from gateway.hosted_rooms_legacy_import import import_legacy_rooms
+
     _initialize_schema(conn)
-    _import_legacy_rooms(conn, db_path)
+    import_legacy_rooms(conn, db_path)
 
 
 def _connect(db_path: DbPath) -> sqlite3.Connection:

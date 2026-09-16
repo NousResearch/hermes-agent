@@ -234,6 +234,33 @@ def _compressor_attempt_is_current(compressor: Any, generation: int) -> bool:
         return int(getattr(compressor, "_compression_attempt_generation", 0) or 0) == generation
 
 
+def _record_summarizer_invocation(compressor: Any, generation: int) -> None:
+    """Stamp the attempt that is about to invoke the summarizer.
+
+    Entry claims own compressor-attribute writes (#96949). Candidate admission
+    keys on this stamp so sit-outs and other no-op claims cannot discard a
+    completed summary (#112482). Frozen/slotted compressors that reject the
+    attribute leave the stamp unset; admission then treats no later summarizer
+    as having started.
+    """
+    if not generation:
+        return
+    with _COMPRESSOR_ATTEMPT_LOCK:
+        with contextlib.suppress(Exception):
+            compressor._compression_summarizer_generation = generation
+
+
+def _summarizer_has_superseded(compressor: Any, generation: Any) -> bool:
+    """True when a later attempt has already invoked the summarizer."""
+    if not generation:
+        return False
+    with _COMPRESSOR_ATTEMPT_LOCK:
+        owner = getattr(compressor, "_compression_summarizer_generation", None)
+        if owner is None:
+            return False
+        return int(owner) > int(generation)
+
+
 def _install_compression_cancelled_check(compressor: Any, check: Any, generation: int) -> None:
     """Install the F4 cancellation consult, stamped with its owner attempt."""
     with _COMPRESSOR_ATTEMPT_LOCK:
@@ -2710,6 +2737,9 @@ def _run_summary_dispatch(
                 aux_progress_hook(_progress_hook), aux_stream_deadline(_host_stream_deadline),
                 aux_interrupt_protection(cancel_check=_compression_cancel_requested),
             ):
+                # After the cancelled-fence skip: only an attempt that actually
+                # calls the summarizer can supersede an in-flight candidate.
+                _record_summarizer_invocation(agent.context_compressor, attempt_generation)
                 compressed = compress_fn(messages, **compress_kwargs)
                 # Freeze a hard stop that arrived after the last provider attempt but before session state rotates.
                 if hard_cancel_event is not None and hard_cancel_event.is_set():
@@ -3213,13 +3243,16 @@ def _candidate_rejected(
             )
         return True
 
-    # A newer attempt claiming this compressor supersedes us; discard the late
-    # candidate. Fence poison alone misses a successor that minted its own fence.
-    if not _compressor_attempt_is_current(agent.context_compressor, attempt_generation):
+    # A later summarizer invocation supersedes us; discard the late candidate.
+    # Entry claims (lock sit-outs, breaker gates) bump ownership generation
+    # without calling the summarizer and must not discard completed work.
+    # Fence poison alone misses a successor that minted its own fence.
+    if _summarizer_has_superseded(agent.context_compressor, attempt_generation):
         logger.warning(
             "Discarding late compression candidate: attempt generation "
-            "%s was superseded by a newer attempt (current: %s) (session=%s).", attempt_generation,
-            getattr(agent.context_compressor, "_compression_attempt_generation", None),
+            "%s was superseded by a later summarizer (current: %s) (session=%s).",
+            attempt_generation,
+            getattr(agent.context_compressor, "_compression_summarizer_generation", None),
             agent.session_id or "none",
         )
         _restore_messages_snapshot(messages, messages_before_compression)
@@ -3536,6 +3569,7 @@ def _route_codex_compaction(
         attempt.restore_compressor(agent.context_compressor)
         return messages, _existing_system_prompt(agent, system_message)
     try:
+        _record_summarizer_invocation(agent.context_compressor, attempt.generation)
         return _compress_context_via_codex_app_server(
             agent, messages, system_message, approx_tokens=approx_tokens, task_id=task_id, force=force
         )

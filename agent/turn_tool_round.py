@@ -82,9 +82,16 @@ def run_tool_round(
     if _tvv.action == "continue":
         return _verdict("continue")
 
-    # Post-call guardrails.
+    # Post-call guardrails. Guarded desktop runs (RFC #112639) are admitted BEFORE
+    # dedup: intentional repeats (two Tab presses) must survive normalization, so
+    # the admitted calls are exempt from duplicate removal here.
+    from agent.guarded_desktop_runs import find_guarded_desktop_runs, guarded_run_preserve_indices
+    _capped_tool_calls = agent._cap_delegate_task_calls(assistant_message.tool_calls)
     assistant_message.tool_calls = agent._deduplicate_tool_calls(
-        agent._cap_delegate_task_calls(assistant_message.tool_calls)
+        _capped_tool_calls,
+        preserve_indices=guarded_run_preserve_indices(
+            _capped_tool_calls, find_guarded_desktop_runs(_capped_tool_calls)
+        ),
     )
 
     # Mixed batch: the assistant message keeps EVERY emitted call (each tool_call needs a

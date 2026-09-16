@@ -118,3 +118,71 @@ class TestAuxClientHonorsUserDefaultHeaders:
         assert client is not None
         headers = mock_openai.call_args.kwargs.get("default_headers", {}) or {}
         assert headers.get("User-Agent") == "curl/8.7.1"
+
+
+class TestPerProviderExtraHeadersReachAuxPath:
+    """A provider entry's OWN ``extra_headers`` must apply to auxiliary calls.
+
+    The main agent client already reads per-provider ``extra_headers``. The
+    auxiliary client historically read only the global ``model.default_headers``
+    / ``model.extra_headers``, so a provider that REQUIRES a custom client
+    header (AgentRouter enforces ``User-Agent: claude-cli/2.0.0``; Kimi,
+    Copilot and NVIDIA NIM each needed a hardcoded branch for the same reason)
+    worked for main turns but failed every auxiliary call with
+    ``unauthorized client detected``. The aux path then misreported that as a
+    payment error and marked the provider unhealthy for 600s.
+
+    Reading the provider entry — rather than adding another hardcoded branch —
+    keeps the fix SCOPED: only a provider that declares a header gets one.
+    """
+
+    _AR = {
+        "name": "areg",
+        "base_url": "https://agentrouter.org/v1",
+        "key_env": "AGENTROUTER_API_KEY",
+        "extra_headers": {"User-Agent": "claude-cli/2.0.0 (external, cli)"},
+    }
+
+    def test_provider_extra_headers_applied_for_matching_base_url(self, tmp_path):
+        _write_config(tmp_path, {"model": {"default": "m"}, "custom_providers": [self._AR]})
+        from agent.auxiliary_client import _apply_user_default_headers
+        assert _apply_user_default_headers(None, "https://agentrouter.org/v1") == {
+            "User-Agent": "claude-cli/2.0.0 (external, cli)"
+        }
+
+    def test_provider_headers_not_applied_to_other_base_urls(self, tmp_path):
+        """The scoping invariant: declaring a header for one provider must not
+        leak it onto every other provider."""
+        _write_config(tmp_path, {"model": {"default": "m"}, "custom_providers": [self._AR]})
+        from agent.auxiliary_client import _apply_user_default_headers
+        assert _apply_user_default_headers(None, "https://api.deepseek.com/v1") is None
+        assert _apply_user_default_headers(None, "https://openrouter.ai/api/v1") is None
+
+    def test_explicit_model_headers_still_win_over_provider_headers(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "m", "default_headers": {"User-Agent": "curl/8.7.1"}},
+            "custom_providers": [self._AR],
+        })
+        from agent.auxiliary_client import _apply_user_default_headers
+        merged = _apply_user_default_headers(None, "https://agentrouter.org/v1")
+        assert merged is not None
+        assert merged["User-Agent"] == "curl/8.7.1"
+
+    def test_no_base_url_argument_preserves_previous_behaviour(self, tmp_path):
+        """Callers that pass no base_url keep the old global-only semantics."""
+        _write_config(tmp_path, {"model": {"default": "m"}, "custom_providers": [self._AR]})
+        from agent.auxiliary_client import _apply_user_default_headers
+        assert _apply_user_default_headers(None) is None
+        assert _apply_user_default_headers({"X-Keep": "1"}) == {"X-Keep": "1"}
+
+    def test_provider_and_user_headers_merge(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "m", "default_headers": {"X-User": "u"}},
+            "custom_providers": [self._AR],
+        })
+        from agent.auxiliary_client import _apply_user_default_headers
+        assert _apply_user_default_headers({"X-Existing": "e"}, "https://agentrouter.org/v1") == {
+            "X-Existing": "e",
+            "User-Agent": "claude-cli/2.0.0 (external, cli)",
+            "X-User": "u",
+        }

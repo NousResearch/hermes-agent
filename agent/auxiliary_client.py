@@ -823,10 +823,25 @@ _OR_HEADERS_BASE = {
 }
 
 
-def _apply_user_default_headers(headers: dict | None) -> dict | None:
+def _apply_user_default_headers(headers: dict | None, base_url: str | None = None) -> dict | None:
     """Merge user ``model.default_headers`` onto resolved headers (user wins; ``model.extra_headers``
     alias wins over both). Mirrors ``AIAgent._apply_user_default_headers`` so a custom endpoint behind a
-    WAF rejecting ``User-Agent`` / ``X-Stainless-*`` works for aux calls. SECURITY: never log values."""
+    WAF rejecting ``User-Agent`` / ``X-Stainless-*`` works for aux calls. SECURITY: never log values.
+
+    When *base_url* is given, the route-matching ``providers`` / ``custom_providers`` entry's own
+    ``extra_headers`` are merged in too — the same source the main agent client reads. Without this a
+    provider that requires a custom client header (AgentRouter enforces ``User-Agent:
+    claude-cli/2.0.0``) reaches the main turn with it and every auxiliary call without it, so aux
+    fails ``unauthorized client detected`` regardless of the API key. Reading the provider entry
+    keeps the change SCOPED: only a provider that declares a header gets one. Provider headers are
+    the most specific level so they land first; an explicit ``model.*`` override still wins."""
+    provider_headers: dict = {}
+    if base_url:
+        try:
+            from hermes_cli.config import get_custom_provider_extra_headers
+            provider_headers = get_custom_provider_extra_headers(base_url) or {}
+        except Exception:
+            provider_headers = {}
     try:
         from hermes_cli.config import cfg_get, load_config
         _cfg = load_config()
@@ -835,11 +850,13 @@ def _apply_user_default_headers(headers: dict | None) -> dict | None:
         if isinstance(alias_headers, dict) and alias_headers:
             user_headers = {**(user_headers if isinstance(user_headers, dict) else {}), **alias_headers}
     except Exception:
-        return headers
-    if not isinstance(user_headers, dict) or not user_headers:
+        user_headers = None
+    if not provider_headers and (not isinstance(user_headers, dict) or not user_headers):
         return headers
     merged = dict(headers or {})
-    merged.update({str(k): str(v) for k, v in user_headers.items() if v is not None})
+    merged.update({str(k): str(v) for k, v in provider_headers.items() if v is not None})
+    if isinstance(user_headers, dict):
+        merged.update({str(k): str(v) for k, v in user_headers.items() if v is not None})
     return merged or headers
 
 
@@ -2106,7 +2123,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         else:
             headers = _profile_default_headers(provider_id)
         extra = {"default_headers": headers} if headers else {}
-        merged = _apply_user_default_headers(extra.get("default_headers"))
+        merged = _apply_user_default_headers(extra.get("default_headers"), base_url)
         if merged:
             extra["default_headers"] = merged
         client = _create_openai_client(api_key=api_key, base_url=base_url, **extra)
@@ -2135,7 +2152,7 @@ def _endpoint_default_headers(
         headers = dict(hermes_xai_default_headers())
     else:
         headers = _profile_default_headers(provider) or {}
-    return _apply_user_default_headers(headers or None) or None
+    return _apply_user_default_headers(headers or None, base_url) or None
 
 
 def _profile_default_headers(provider: str) -> Optional[dict]:
@@ -2740,7 +2757,7 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     _clean_base, _dq = _extract_url_query_params(custom_base)
     _extra = {"default_query": _dq} if _dq else {}
     # User model.default_headers override SDK fingerprint headers (as on the main client) for strict gateways/WAFs.
-    _custom_headers = _apply_user_default_headers(None)
+    _custom_headers = _apply_user_default_headers(None, _clean_base)
     if _custom_headers:
         _extra["default_headers"] = _custom_headers
     if custom_mode == "codex_responses":
@@ -4377,9 +4394,10 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     sync_base_url = str(sync_client.base_url)
     async_kwargs = {"api_key": sync_client.api_key, "base_url": sync_base_url}
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
-        headers = _apply_user_default_headers(build_or_headers())
+        headers = _apply_user_default_headers(build_or_headers(), sync_base_url)
     elif _is_official_codex_base_url(sync_base_url):
-        headers = _apply_user_default_headers(_codex_cloudflare_headers(sync_client.api_key, base_url=sync_base_url))
+        headers = _apply_user_default_headers(
+            _codex_cloudflare_headers(sync_client.api_key, base_url=sync_base_url), sync_base_url)
     else:
         # Provider for the profile-header fallback is inferred from the hostname.
         try:
@@ -4771,7 +4789,7 @@ def _named_custom_openai_wire_client(custom_base: str, custom_key: Any):
     """Plain OpenAI client on the /v1 equivalent of a named custom entry's base URL."""
     _clean_base, _dq = _extract_url_query_params(_to_openai_base_url(custom_base))
     _extra = {"default_query": _dq} if _dq else {}
-    _headers = _apply_user_default_headers(None)
+    _headers = _apply_user_default_headers(None, custom_base)
     if _headers:
         _extra["default_headers"] = _headers
     return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)

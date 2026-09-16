@@ -36,7 +36,10 @@ gateway:
         poll_interval: 4           # seconds between inbound poll sweeps
         cli_path: ""               # buzz binary (default: PATH, then ~/bin/buzz)
         credentials_file: ""       # JSON file with the nsec (BUZZ_PRIVATE_KEY fallback)
-        allowed_users: []          # empty = allow all; hex pubkeys or npubs
+        allowed_users: []          # empty = deny all unless allow_all_users is true
+        allow_all_users: false
+        require_mention: true
+        thread_require_mention: true
 ```
 
 Plus, in `~/.hermes/.env`:
@@ -55,6 +58,8 @@ BUZZ_PRIVATE_KEY=nsec1...
 | `BUZZ_HOME_CHANNEL` | — | Channel UUID for cron / notification delivery (defaults to the first watched channel) |
 | `BUZZ_ALLOWED_USERS` | — | Comma-separated npubs or hex pubkeys allowed to talk to the agent |
 | `BUZZ_ALLOW_ALL_USERS` | — | Allow any community member to talk to the agent |
+| `BUZZ_REQUIRE_MENTION` | — | Require an explicit mention in top-level shared-channel messages (`true`/`false`) |
+| `BUZZ_THREAD_REQUIRE_MENTION` | — | Independently require an explicit mention in structurally threaded replies (`true`/`false`) |
 | `BUZZ_POLL_INTERVAL` | — | Seconds between inbound poll sweeps (default: 4) |
 | `BUZZ_CLI_PATH` | — | Path to the `buzz` binary (default: `buzz` on PATH, then `~/bin/buzz`) |
 | `BUZZ_CREDENTIALS_FILE` | — | JSON credentials file holding the nsec, used when `BUZZ_PRIVATE_KEY` is unset |
@@ -84,6 +89,7 @@ gateway:
         credentials_file: ""              # JSON file with the nsec (BUZZ_PRIVATE_KEY fallback)
         allowed_users: []                 # empty = allow all if allow_all_users is true; otherwise restrict to listed npubs/hex pubkeys
         require_mention: true             # in channels: only respond when addressed (@name, npub, or hex pubkey); DMs always dispatch regardless
+        thread_require_mention: true      # apply the same default independently to marked and legacy NIP-10 thread replies
         allow_all_users: false            # set true for community mode (everyone can chat, only owner is admin); false for private mode (only allowed_users)
 ```
 
@@ -94,6 +100,7 @@ gateway:
 - `poll_interval: 4` — balances inbound latency (up to 4s delay) against relay load. Lower values increase polling frequency; higher values reduce it.
 - `allowed_users: []` + `allow_all_users: false` — private mode by default. Only listed users can interact. Set `allow_all_users: true` for community mode where everyone can chat (admin tier still restricted to the owner).
 - `require_mention: true` — in channels, the agent only responds when addressed. DMs always dispatch regardless of this setting.
+- `thread_require_mention: true` — threaded replies have an independent mention policy. Hermes recognizes both marked and legacy positional NIP-10 thread structures.
 
 **Rationale:** Channels are for final results and conversation, not for the agent's internal tool execution log. Users see the final answer, not the steps taken to get there. This matches the behavior on Telegram and email, which already have these defaults.
 
@@ -124,7 +131,9 @@ The opt-out applies to **all** send paths — final answers, streamed updates, i
 
 ## Access control
 
-By default the allow-list is empty, which means every community member who mentions the agent gets a response only if `BUZZ_ALLOW_ALL_USERS=true`; otherwise restrict access by listing npubs or hex pubkeys in `BUZZ_ALLOWED_USERS` (or `allowed_users` in config.yaml). Community membership itself is enforced by the relay — only members can post.
+By default the Buzz-specific allow-list is empty. Buzz-specific access is granted by `BUZZ_ALLOW_ALL_USERS=true` or by listing npubs/hex pubkeys in `BUZZ_ALLOWED_USERS` (or `allowed_users` in config.yaml). These controls are not the complete Gateway authorization boundary: profile pairing approvals and global `GATEWAY_ALLOWED_USERS`, its `*` wildcard, or `GATEWAY_ALLOW_ALL_USERS` are additive and can authorize users beyond the Buzz-specific policy. Community membership itself is enforced by the relay — only members can post.
+
+Policy changes to `allowed_users`, `allow_all_users`, `require_mention` and `thread_require_mention` in the profile's `config.yaml` or `.env` take effect on the next inbound event; no Gateway restart is required for these four fields. Precedence is explicit environment policy (`BUZZ_*`, managed values first), then the managed `config.yaml` overlay, then the profile's `config.yaml`, then restrictive defaults: no allowed users, allow-all off, mentions required in channels and threads.
 
 The allow-list also gates **inbound attachments**: relay media is fetched with the agent's own Buzz credentials, so a download only happens for a sender the gateway explicitly authorizes. A denied, missing, or failed authorization leaves the message text untouched and makes no credentialed request.
 

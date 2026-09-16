@@ -99,6 +99,11 @@ class PlatformEntry:
     # ``async (pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False)
     # -> {"success": True, "message_id": ...} | {"error": str}``.
     standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
+    # Per-decision narrow policy: allowed_users (list[str]), allow_all_users (bool).
+    # Explicit transport-scoped environment (including empty/false) wins per field;
+    # absent environment falls back to the resolver. Acquisition errors deny.
+    authorization_config_fn: Optional[Callable[..., Optional[dict]]] = None
+    authorization_user_normalizer: Optional[Callable[[str], Optional[str]]] = None
 
 
 class PlatformRegistry:
@@ -311,9 +316,9 @@ class PlatformRegistry:
             or (scope, name) in self._inflight or (None, name) in self._inflight
         )
 
-    def get(self, name: str) -> Optional[PlatformEntry]:
-        """Look up a platform entry by name."""
-        scope = self.current_scope_key()
+    def get(self, name: str, *, scope: Optional[str] = None) -> Optional[PlatformEntry]:
+        """Look up a platform entry in the active or explicit transport scope."""
+        scope = self.current_scope_key() if scope is None else scope
         with self._lock:
             entries, _deferred = self._scope_maps(scope)
             needs_resolve = name not in entries and self._load_pending(scope, name)

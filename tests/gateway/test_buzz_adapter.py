@@ -97,6 +97,72 @@ def _make_adapter(extra=None):
     return adapter
 
 
+@pytest.fixture
+def release_owner_policy(tmp_path, monkeypatch):
+    """Real atomic owner config; never replace the runtime policy resolver."""
+    home = tmp_path / "release-owner"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    for name in ("GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS",
+                 "BUZZ_REQUIRE_MENTION", "BUZZ_THREAD_REQUIRE_MENTION"):
+        monkeypatch.delenv(name, raising=False)
+    (home / ".env").write_text("")
+    def save(**policy):
+        temporary = home / "next.yaml"
+        temporary.write_text(json.dumps({"buzz": policy}))
+        temporary.replace(home / "config.yaml")
+    save(require_mention=True, thread_require_mention=True)
+    return home, save
+
+
+@pytest.fixture
+def release_central_intake(release_owner_policy):
+    """Actual startup callback and real runner denial/command path; fake transport only."""
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from gateway.platform_registry import platform_registry
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+    home, save = release_owner_policy
+    scope = platform_registry.current_scope_key()
+    previous = platform_registry.snapshot_registration("buzz", scope=scope)
+    manager = PluginManager()
+    register(PluginContext(PluginManifest(name="buzz"), manager))
+    runner = GatewayRunner(config=GatewayConfig(sessions_dir=home / "sessions"))
+    adapter = _make_adapter()
+    adapter._allowed_pubkeys = {OTHER_PUBKEY}  # deliberately stale, not authority
+    runner.adapters[adapter.platform] = adapter
+    adapter.gateway_runner = runner
+    adapter.set_session_store(runner.session_store)
+    handler = AsyncMock(wraps=runner._handle_message)
+    adapter.set_message_handler(handler)
+    adapter.set_authorization_check(runner._make_adapter_auth_check(adapter.platform))
+    adapter._run_cli = AsyncMock(return_value=(0, "[]", ""))
+    adapter.send_reaction = AsyncMock(return_value=True)
+    adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="reply"))
+    adapter.send_typing = AsyncMock()
+    adapter._channel_state[CHANNEL] = adapter._new_channel_state("group")
+    adapter._channel_meta[CHANNEL] = {"name": "Synthetic group", "description": "Not DM"}
+    adapter._channel_names[CHANNEL] = "Synthetic group"
+    try:
+        yield SimpleNamespace(adapter=adapter, runner=runner, handler=handler, save=save)
+    finally:
+        manager.unload()
+        current = platform_registry.snapshot_registration("buzz", scope=scope)
+        platform_registry.restore_registration("buzz", current, previous, scope=scope)
+
+
+async def _release_emit(probe, event):
+    adapter = probe.adapter
+    await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], event)
+    tasks = tuple(adapter._session_tasks.values())
+    if tasks:
+        await asyncio.wait_for(asyncio.gather(*tasks), 5)
+    if adapter.send.await_count:
+        response = adapter.send.await_args.kwargs["content"]
+        assert "**You** — buzz (group/channel)" in response
+        assert f"User ID: `{event['pubkey']}`" in response
+
+
 class _ScriptedCli:
     """Fake ``_run_cli`` that routes on the buzz subcommand and records calls."""
 
@@ -1325,33 +1391,35 @@ class TestInboundAttachments:
         adapter._dispatch_message.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_unauthorized_sender_attachment_is_not_downloaded(self):
-        adapter = _make_adapter()
-        adapter._allowed_pubkeys = {"f" * 64}
-        authorization_check = MagicMock(return_value=True)
-        adapter.set_authorization_check(authorization_check)
-        adapter._cache_inbound_attachments = AsyncMock()
-        adapter._download_attachment = AsyncMock()
-        adapter._channel_state[CHANNEL] = {
-            "chat_type": "group",
-            "last_ts": 0,
-            "seen": {},
-        }
-        event = _event("unauthorized-attachment", content="@Chip inspect")
-        event["tags"].append([
-            "imeta",
-            "url https://test.relay/media/file.bin",
-            "m application/octet-stream",
-            "x " + "a" * 64,
-            "size 1",
-            "filename file.bin",
-        ])
-
-        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], event)
-
-        authorization_check.assert_not_called()
-        adapter._cache_inbound_attachments.assert_not_awaited()
-        adapter._download_attachment.assert_not_awaited()
+    @pytest.mark.parametrize("allowed", [False, True])
+    async def test_central_attachment_authority_overrides_local_snapshot(self, release_central_intake, allowed, caplog):
+        probe = release_central_intake
+        adapter = probe.adapter
+        probe.save(allowed_users=[OTHER_PUBKEY] if allowed else ["f" * 64])
+        adapter._allowed_pubkeys = {"f" * 64} if allowed else {OTHER_PUBKEY}
+        assert adapter._is_sender_authorized(OTHER_PUBKEY, "group", CHANNEL) is allowed
+        # Preserve real parser/cache pipeline; only the HTTP download is faked.
+        adapter._download_attachment = AsyncMock(return_value=CachedMedia(
+            path="/tmp/synthetic.bin", media_type="application/octet-stream", kind="document", display_name="synthetic.bin"))
+        event = _event("central-attachment", content="@Chip /whoami")
+        event["tags"].append(["imeta", "url https://test.relay/media/file.bin",
+            "m application/octet-stream", "x " + "a" * 64, "size 1", "filename file.bin"])
+        await _release_emit(probe, event)
+        probe.handler.assert_awaited_once()
+        delivered = probe.handler.await_args.args[0]
+        if allowed:
+            adapter._download_attachment.assert_awaited_once()
+            assert delivered.media_urls == ["/tmp/synthetic.bin"]
+            assert any(c.args[0][:2] == ["users", "get"] for c in adapter._run_cli.call_args_list)
+            adapter.send_reaction.assert_awaited_once()
+            adapter.send.assert_awaited()
+        else:
+            adapter._download_attachment.assert_not_awaited()
+            assert delivered.media_urls == []
+            adapter._run_cli.assert_not_awaited()
+            adapter.send_reaction.assert_not_awaited()
+            adapter.send.assert_not_awaited()
+            assert "Unauthorized user:" in caplog.text
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("authorization", [False, None, "raise", "truthy"])
@@ -1617,10 +1685,28 @@ class TestMentionGating:
         assert adapter._dispatched == []
 
     @pytest.mark.asyncio
-    async def test_require_mention_false_still_dispatches_unaddressed_message(self, adapter):
-        adapter.require_mention = False
-        await self._poll_with(adapter, _event("e1", content="just chatting", created_at=10))
-        assert len(adapter._dispatched) == 1
+    async def test_live_owner_mention_policy_changes_without_adapter_reconstruction(self, release_owner_policy):
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        home, save = release_owner_policy
+        adapter = _make_adapter()
+        adapter._dispatch_message = AsyncMock()
+        adapter._message_handler = AsyncMock()
+        state = adapter._new_channel_state("group")
+        routed = home / "routed"
+        routed.mkdir()
+        (routed / "config.yaml").write_text('{"buzz":{"require_mention":false}}')
+        token = set_hermes_home_override(routed)
+        try:
+            for index, strict in enumerate([True, False, True]):
+                save(require_mention=strict, thread_require_mention=True)
+                adapter._dispatch_message.reset_mock()
+                await adapter._handle_event(CHANNEL, state, _event(f"live-{index}", content="ordinary", created_at=index+1))
+                assert adapter._dispatch_message.await_count == (0 if strict else 1)
+                adapter._dispatch_message.reset_mock()
+                await adapter._handle_event(CHANNEL, state, _event(f"addressed-{index}", content="@Chip control", created_at=index+10))
+                adapter._dispatch_message.assert_awaited_once()
+        finally:
+            reset_hermes_home_override(token)
 
     def test_strip_mention_requires_at_for_display_name(self, adapter):
         assert adapter._strip_mention("@Chip: /whoami") == "/whoami"
@@ -1629,10 +1715,27 @@ class TestMentionGating:
 
 
     @pytest.mark.asyncio
-    async def test_allowlist_blocks_unauthorized(self, adapter):
-        adapter._allowed_pubkeys = {"b" * 64}
-        await self._poll_with(adapter, _event("e1", content="@Chip hello", created_at=10))
-        assert adapter._dispatched == []
+    async def test_central_live_authority_not_local_allowlist_controls_intake(self, release_central_intake, caplog):
+        probe = release_central_intake
+        adapter = probe.adapter
+        for index, allowed in enumerate([False, True, False]):
+            adapter._allowed_pubkeys = {"f" * 64} if allowed else {OTHER_PUBKEY}
+            probe.save(allowed_users=[OTHER_PUBKEY] if allowed else ["f" * 64])
+            assert adapter._is_sender_authorized(OTHER_PUBKEY, "group", CHANNEL) is allowed
+            adapter._run_cli.reset_mock(); adapter.send_reaction.reset_mock(); adapter.send.reset_mock()
+            probe.handler.reset_mock(); caplog.clear()
+            await _release_emit(probe, _event(f"central-live-{index}", content="@Chip /whoami", created_at=index+1))
+            probe.handler.assert_awaited_once()
+            assert probe.runner._is_user_authorized_for_source(probe.handler.await_args.args[0].source) is allowed
+            if allowed:
+                assert any(c.args[0][:2] == ["users", "get"] for c in adapter._run_cli.call_args_list)
+                adapter.send_reaction.assert_awaited_once()
+                adapter.send.assert_awaited()
+            else:
+                adapter._run_cli.assert_not_awaited()
+                adapter.send_reaction.assert_not_awaited()
+                adapter.send.assert_not_awaited()
+                assert "Unauthorized user:" in caplog.text
 
     @pytest.mark.asyncio
     async def test_explicit_agent_tag_reacts_without_dispatch(self, adapter):
@@ -1675,24 +1778,35 @@ class TestMentionGating:
         assert adapter._dispatched == []
 
     @pytest.mark.asyncio
-    async def test_unknown_sender_tag_gets_no_reaction(self, adapter):
-        adapter._allowed_pubkeys = {OTHER_PUBKEY}
+    @pytest.mark.parametrize("allowed", [False, True])
+    async def test_unknown_sender_tag_reaches_only_central_denial_or_authorized_command(self, release_central_intake, allowed, caplog):
+        probe = release_central_intake
+        adapter = probe.adapter
+        unknown = "c" * 64
+        probe.save(allowed_users=[unknown] if allowed else [OTHER_PUBKEY])
         adapter._reaction_only_pubkeys = {AGENT_PUBKEY}
-        adapter.send_reaction = AsyncMock(return_value=True)
-        event = _event("e1", pubkey="c" * 64, content="@Chip coordinate", created_at=10)
+        assert unknown not in adapter._allowed_pubkeys | adapter._reaction_only_pubkeys
+        event = _event("unknown-central", pubkey=unknown, content="@Chip /whoami")
         event["tags"].append(["p", SELF_PUBKEY])
-
-        await self._poll_with(adapter, event)
-
-        adapter.send_reaction.assert_not_awaited()
-        assert adapter._dispatched == []
+        await _release_emit(probe, event)
+        probe.handler.assert_awaited_once()
+        assert probe.handler.await_args.args[0].source.user_id == unknown
+        if allowed:
+            adapter.send_reaction.assert_awaited_once()
+            adapter.send.assert_awaited()
+            assert any(c.args[0][:2] == ["users", "get"] for c in adapter._run_cli.call_args_list)
+        else:
+            adapter.send_reaction.assert_not_awaited()
+            adapter._run_cli.assert_not_awaited()
+            adapter.send.assert_not_awaited()
+            assert "Unauthorized user:" in caplog.text
 
 
 # ── NIP-10 thread replies as addressed (issue #75826) ────────────────────
 #
-# With require_mention (default), channel replies whose direct parent is the
-# agent's own message must dispatch even when the text has no @name — Buzz
-# Desktop's natural reply affordance for /approve never types a mention.
+# Ordinary replies follow independent live thread policy, including replies to
+# ourselves. Exact /approve and /deny use bounded control admission; real pending
+# resolution is covered by test_buzz_pending_controls.py (not these dispatch spies).
 
 
 def _tagged_event(event_id, channel, *, content, pubkey=OTHER_PUBKEY,
@@ -1748,31 +1862,27 @@ class TestNip10ThreadReplyMentionGate:
         ) == "only-root"
 
     @pytest.mark.asyncio
-    async def test_thread_reply_to_own_message_dispatches_without_mention(self, adapter):
-        # Live agent prompt lands first (self-echo is cached, not dispatched).
-        await self._poll_with(
-            adapter,
-            _tagged_event(
-                "agent-prompt",
-                CHANNEL,
-                content="⚠️ Dangerous command requires approval",
-                pubkey=SELF_PUBKEY,
-                created_at=10,
-            ),
-            _tagged_event(
-                "user-reply",
-                CHANNEL,
-                content="sure go ahead",
-                root="agent-prompt",
-                reply_to="agent-prompt",
-                created_at=11,
-            ),
-        )
-        assert [d["message_id"] for d in adapter._dispatched] == ["user-reply"]
-        assert adapter._dispatched[0]["text"] == "sure go ahead"
-        assert adapter._dispatched[0]["reply_to_message_id"] == "agent-prompt"
-        assert adapter._dispatched[0]["reply_to_is_own_message"] is True
-        assert "approval" in (adapter._dispatched[0]["reply_to_text"] or "")
+    @pytest.mark.parametrize("channel_strict,thread_strict", [(False, True), (True, False)])
+    async def test_ordinary_reply_to_self_obeys_independent_thread_policy(self, release_owner_policy, channel_strict, thread_strict):
+        _, save = release_owner_policy
+        save(require_mention=channel_strict, thread_require_mention=thread_strict)
+        adapter = _make_adapter()
+        adapter._dispatched = []
+        async def capture(**kwargs):
+            adapter._dispatched.append(kwargs)
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+        adapter._channel_state[CHANNEL] = adapter._new_channel_state("group")
+        await self._poll_with(adapter,
+            _tagged_event("agent-prompt", CHANNEL, content="Approval required", pubkey=SELF_PUBKEY, created_at=10),
+            _tagged_event("ordinary", CHANNEL, content="sure go ahead", root="agent-prompt", reply_to="agent-prompt", created_at=11),
+            _tagged_event("addressed", CHANNEL, content="@Chip control", root="agent-prompt", reply_to="agent-prompt", created_at=12))
+        assert [d["message_id"] for d in adapter._dispatched] == (["addressed"] if thread_strict else ["ordinary", "addressed"])
+        for delivered in adapter._dispatched:
+            assert delivered["reply_to_is_own_message"] is True
+            assert delivered["reply_to_message_id"] == "agent-prompt"
+        # Exact pending /approve and /deny resolution is gated separately through
+        # real base/runner/pending-store journeys in test_buzz_pending_controls.py.
 
     @pytest.mark.asyncio
     async def test_approve_thread_reply_dispatches(self, adapter):

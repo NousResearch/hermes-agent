@@ -12,6 +12,7 @@ import dataclasses
 import logging
 import os
 import shlex
+import time
 from typing import Optional, Union
 
 from agent.i18n import t
@@ -109,8 +110,124 @@ def _strip_resume_name(parts: list[str]) -> str:
     return name
 
 
+class _PausedRecoveryOwner:
+    """Distinct native admission owner: never queue or interrupt it as an agent."""
+
+
 class GatewaySessionCommandsMixin:
     """Session-transcript slash commands (/new, /resume, /sessions, /branch, /title, /save, /undo, /retry, /topic, /compress)."""
+
+    def _paused_recovery_busy_reply(self, session_key):
+        state = self._peek_session_state(session_key)
+        if state is not None and isinstance(state.turn.agent, _PausedRecoveryOwner):
+            return "Session recovery is still settling. Please retry after it finishes."
+        return None
+
+    @contextlib.asynccontextmanager
+    async def _paused_recovery_admission(self, source, *, force=False):
+        """Claim the native slot for a paused command, releasing only this exact owner.
+
+        The synchronous identity check at release is authoritative across /new's
+        intentional generation bump; stale ordinary finalizers still use their old
+        generation. No await separates either the claim or checked release.
+        """
+        session_key = self._session_key_for_source(source)
+        busy = self._paused_recovery_busy_reply(session_key)
+        if busy is not None:
+            yield None, busy
+            return
+        entry = await self.async_session_store.lookup_by_session_key(session_key)
+        busy = self._paused_recovery_busy_reply(session_key)
+        if busy is not None:
+            yield entry, busy
+            return
+        manual = "manual_fallback_index" in (getattr(entry, "metadata", None) or {})
+        if not force and not manual and getattr(entry, "compression_paused", False) is not True:
+            yield entry, None
+            return
+        if self._is_session_running(session_key):
+            yield entry, "Another turn is still running. Please retry recovery after it finishes."
+            return
+        lease, refusal = self._claim_active_session_slot(session_key, source)
+        if refusal is not None:
+            yield entry, refusal
+            return
+        owner = _PausedRecoveryOwner()
+        state = self._session_state(session_key)
+        state.turn.lease = lease
+        state.turn.agent = owner
+        state.turn.started_ts = time.time()
+        self._begin_session_run_generation(session_key)
+        try:
+            self._persist_active_agents()
+            yield entry, None
+        finally:
+            current = self._peek_session_state(session_key)
+            if current is not None and current.turn.agent is owner:
+                self._release_running_agent_state(
+                    session_key, run_generation=current.persistent.run_generation,
+                )
+
+    async def _handle_fallback_command(self, event):
+        """Durable, index-only manual selection. Automatic fallback and pauses are independent."""
+        from gateway.run import _manual_fallback_runtime
+        from agent.redact import redact_sensitive_text
+
+        action = event.get_command_args().strip().lower() or "status"
+        if action not in {"status", "on", "off"}:
+            return "Usage: /fallback [on|off|status]"
+        source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
+        session_key = self._session_key_for_source(source)
+        if action == "status":
+            entry = await self.async_session_store.lookup_by_session_key(session_key)
+            selected = "manual_fallback_index" in (getattr(entry, "metadata", None) or {})
+            agent = self._cached_agent_for(session_key)
+            automatic = getattr(agent, "_fallback_activated", False) is True
+            label = ""
+            if automatic:
+                label = " (" + " / ".join(
+                    " ".join(redact_sensitive_text(str(getattr(agent, key, "") or ""), force=True, redact_url_credentials=True).split())[:120]
+                    for key in ("model", "provider")
+                ) + ")"
+            return (f"Manual fallback: {'ON' if selected else 'OFF'} (persisted selection)\n"
+                    f"Automatic fallback: {'active' if automatic else 'inactive'}{label}")
+        async with self._paused_recovery_admission(source, force=True) as (entry, refusal):
+            if refusal is not None:
+                return refusal
+            try:
+                if action == "on":
+                    async def validate():
+                        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+                            from gateway.run import _async_profile_runtime_scope
+                            async with _async_profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                                return await asyncio.to_thread(_manual_fallback_runtime, 0)
+                        return await asyncio.to_thread(_manual_fallback_runtime, 0)
+
+                    # Settle scope entry, validation and restoration before releasing admission.
+                    # Cancellation never reaches the separate persistence step below.
+                    await self._await_session_policy_commit(validate())
+                async def commit():
+                    current = entry
+                    if current is None:
+                        if action == "off":
+                            return
+                        current = await self.async_session_store.get_or_create_session(source)
+                    if action == "on":
+                        committed = await self.async_session_store.set_session_metadata(
+                            session_key, "manual_fallback_index", 0, require_primary=True,
+                            expected_session_id=current.session_id,
+                        )
+                    else:
+                        committed = await self.async_session_store.delete_session_metadata(
+                            session_key, "manual_fallback_index", expected_session_id=current.session_id,
+                        )
+                    if not committed:
+                        raise RuntimeError("Session changed before manual selection")
+                    self._evict_cached_agent(session_key)
+                await self._await_session_policy_commit(commit())
+            except Exception:
+                return "Manual fallback could not be changed. Check configuration/storage, or use /fallback off or /new."
+            return f"Manual fallback: {action.upper()}"
 
     # ------------------------------------------------------------------ /new, /reset
 
@@ -150,25 +267,44 @@ class GatewaySessionCommandsMixin:
         await self.hooks.emit("session:reset", dict(hook_payload))
 
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
-        """Handle /new or /reset command."""
+        """Hold a paused command's admission through cancellation and storage settlement."""
+        session_key = self._session_key_for_source(event.source)
+        async with self._paused_recovery_admission(event.source) as (old_entry, refusal):
+            if refusal is not None:
+                return refusal
+            paused = (getattr(old_entry, "compression_paused", False) is True
+                      or "manual_fallback_index" in (getattr(old_entry, "metadata", None) or {}))
+            return await self._reset_command_with_entry(event, session_key, old_entry, paused)
+
+    async def _commit_reset_command(self, event, session_key, old_entry, paused):
+        """Settle the paused route before teardown; keep its publication tail under admission."""
         source = event.source
-        session_key = self._session_key_for_source(source)
-        self._invalidate_session_run_generation(session_key, reason="session_reset")
+        if paused:
+            new_entry = await self.async_session_store.reset_session(
+                session_key, require_primary=True, expected_session_id=old_entry.session_id,
+            )
+            if new_entry is None:
+                raise RuntimeError("Session route changed before compression recovery")
+        if paused:
+            # Full conversation clearing below retires one-shot state after resource cleanup.
+            # Restoring it here would evict the old agent before its resources can be closed.
+            self._begin_session_run_generation(session_key)
+        else:
+            self._invalidate_session_run_generation(session_key, reason="session_reset")
         # Evict the running-agent slot now that the generation is bumped: the in-flight run's own
         # guarded release (old generation) returns False and would leave a zombie slot that silently
         # drops all later messages. Idempotent, so the run's finally calling it again is harmless.
-        self._release_running_agent_state(session_key)
+        if not paused:
+            self._release_running_agent_state(session_key)
         # Snapshot the old entry so on_session_finalize can report the expiring session id.
         # Evict the running-agent slot now that the generation is bumped. The in-flight run's own guarded
         # release (run_generation=old) will return False and leave its dead agent behind; clearing here
         # keeps the slot from becoming a zombie that silently drops all later messages (#28686). Idempotent,
         # so the run's finally calling it again is harmless.
-        old_entry = self.session_store._entries.get(session_key)
         await self._cleanup_old_agent_for_reset(session_key)
-        self._evict_cached_agent(session_key)
-        # Conversation boundary: ALL conversation-scoped per-session state + security state in one
-        # funnel call (see _CONVERSATION_SCOPED_STATE in gateway/run.py).
-        self._clear_conversation_scope(session_key, reason="session_reset")
+        if not paused:
+            self._evict_cached_agent(session_key)
+            self._clear_conversation_scope(session_key, reason="session_reset")
         # In-flight async delegations end WITH the conversation: once the id rotates their
         # completions have no live owner. Expire by durable id, routing key as legacy fallback.
         with contextlib.suppress(Exception):
@@ -177,7 +313,33 @@ class GatewaySessionCommandsMixin:
                                   parent_session_id=str(getattr(old_entry, "session_id", "") or ""))
         _reset_process_scoped_tool_state()
 
-        new_entry = await self.async_session_store.reset_session(session_key)
+        if paused:
+            self._evict_cached_agent(session_key)
+            self._clear_conversation_scope(session_key, reason="session_reset")
+            try:
+                await asyncio.to_thread(
+                    self._sync_compression_recovery_binding, source, new_entry, new_entry.session_id,
+                    reason="compression-exhausted-reset",
+                )
+            except Exception:
+                logger.warning("Compression recovery committed but topic binding sync failed", exc_info=True)
+        else:
+            new_entry = await self.async_session_store.reset_session(session_key)
+        return new_entry
+
+
+    async def _reset_command_with_entry(self, event, session_key, old_entry, paused):
+        """Native /new cleanup and presentation around the routing commit."""
+        commit = self._commit_reset_command(event, session_key, old_entry, paused)
+        if paused:
+            try:
+                new_entry = await self._await_session_policy_commit(commit)
+            except Exception:
+                logger.warning("Explicit paused-session reset could not be persisted", exc_info=True)
+                return self._compression_pause_notice(persistence_failed=True)
+        else:
+            new_entry = await commit
+        source = event.source
         _old_sid = old_entry.session_id if old_entry else None
         await self._fire_session_reset_hooks(source, session_key, _old_sid,
                                              new_entry.session_id if new_entry else None)
@@ -198,7 +360,7 @@ class GatewaySessionCommandsMixin:
             header = await self._reset_titled_header(header, new_entry.session_id, _title_arg)
         # Telegram DM topic lane: rebind (chat_id, thread_id) → session_id so the next message uses
         # the fresh session instead of switching back to the old one.
-        if await asyncio.to_thread(self._is_telegram_topic_lane, source) and new_entry is not None:
+        if not paused and await asyncio.to_thread(self._is_telegram_topic_lane, source) and new_entry is not None:
             try:
                 await asyncio.to_thread(self._record_telegram_topic_binding, source, new_entry)
             except Exception:
@@ -487,6 +649,15 @@ class GatewaySessionCommandsMixin:
         except Exception as exc:
             return t("gateway.compress.failed", error=exc)
         if getattr(compressor, "compression_count", 0) > count_before:
+            try:
+                committed = await self._await_session_policy_commit(
+                    self.async_session_store.commit_manual_compression(session_key, session_id, session_id)
+                )
+                if not committed:
+                    raise RuntimeError("Session route changed during compaction")
+            except Exception:
+                logger.warning("Codex compaction could not persist recovery", exc_info=True)
+                return self._compression_pause_notice(persistence_failed=True)
             return (
                 "🗜️ Codex app-server thread compacted (thread/compact). The transcript mirror is "
                 "unchanged by design — the app-server now carries the compacted context.")
@@ -495,6 +666,12 @@ class GatewaySessionCommandsMixin:
             "app-server logs, retry /compress, or /reset for a clean session.")
 
     async def _handle_compress_command_inner(self, event: MessageEvent) -> str:
+        async with self._paused_recovery_admission(event.source) as (_, refusal):
+            if refusal is not None:
+                return refusal
+            return await self._compress_command_with_admission(event)
+
+    async def _compress_command_with_admission(self, event: MessageEvent) -> str:
         """Handle /compress -- manually compress conversation context; ``/compress <focus>`` tells
         the summariser what to preserve. Flags/positional forms are parsed by the shared core."""
         from agent.conversation_compression_manual import MIN_MESSAGES, parse_compress_args
@@ -514,7 +691,12 @@ class GatewaySessionCommandsMixin:
         if request.preview:
             return _compress_preview_reply(history, request.partial, request.keep_last, request.focus_topic, _agg_note)
         try:
-            return await self._run_manual_compression(source, session_entry, history, request)
+            work = self._run_manual_compression(source, session_entry, history, request)
+            if getattr(session_entry, "compression_paused", False) is True:
+                # The compressor itself may commit in its executor. Keep that worker,
+                # route/binding publication and cleanup owned through cancellation too.
+                return await self._await_session_policy_commit(work)
+            return await work
         except Exception as e:
             logger.warning("Manual compress failed: %s", e)
             return t("gateway.compress.failed", error=e)
@@ -534,7 +716,7 @@ class GatewaySessionCommandsMixin:
             # Context lives in the server-side thread of the LIVE cached agent; a temporary agent
             # has none (and finally-eviction would destroy the real context).
             return await self._compress_codex_app_server_session(session_key, session_entry.session_id)
-        if not runtime_kwargs.get("api_key"):
+        if not (runtime_kwargs.get("api_key") or runtime_kwargs.get("has_header_auth")):
             return t("gateway.compress.no_provider")
         # FULL transcript (tool results included), like auto-compress: user/assistant-only starves
         # tool-result pruning and can trip the protect-first/last early-return.
@@ -545,7 +727,8 @@ class GatewaySessionCommandsMixin:
             runtime_kwargs["platform"] = platform_key
         runtime_kwargs["gateway_session_key"] = session_key
 
-        tmp_agent = await self._build_manual_compression_agent(session_entry.session_id, model, runtime_kwargs)
+        expected_session_id = session_entry.session_id
+        tmp_agent = await self._build_manual_compression_agent(expected_session_id, model, runtime_kwargs)
         try:
             # Not a bare run_in_executor: the profile secret scope is a contextvar the default
             # executor hop would drop, failing aux-client credential resolution closed.
@@ -555,8 +738,11 @@ class GatewaySessionCommandsMixin:
                 return t("gateway.compress.nothing_to_do")
             if result.status != "compressed":
                 return "\n".join(render_compress_result(result))
-            await self._persist_manual_compression(tmp_agent, session_entry, source, result.after_messages)
-            finalize_context_engine_compression_notification(tmp_agent, committed=True)
+            committed = await self._persist_manual_compression(
+                tmp_agent, session_entry, source, result.after_messages, expected_session_id=expected_session_id,
+            )
+            if not committed:
+                return "No compression was committed. The conversation is unchanged; use /compress or /new."
             compressor = tmp_agent.context_compressor
             summary = result.summary
         finally:
@@ -591,7 +777,8 @@ class GatewaySessionCommandsMixin:
         _checkpoint_required = _is_truthy(
             ((_load_cfg() or {}).get("compression") or {}).get("checkpoint_required"),
             default=False)
-        tmp_agent = AIAgent(**runtime_kwargs, model=model, max_iterations=4, quiet_mode=True,
+        from gateway.run import _runtime_kwargs_for_agent_constructor
+        tmp_agent = AIAgent(**_runtime_kwargs_for_agent_constructor(runtime_kwargs), model=model, max_iterations=4, quiet_mode=True,
                             skip_memory=not _checkpoint_required, enabled_toolsets=["memory"],
                             session_id=session_id,
                             session_db=getattr(self._session_db, "_db", self._session_db))
@@ -604,26 +791,43 @@ class GatewaySessionCommandsMixin:
         tmp_agent._end_session_on_close = False
         return tmp_agent
 
-    async def _persist_manual_compression(self, tmp_agent, session_entry, source, compressed) -> None:
-        """Commit a manual /compress result to the session store.  Rotation (new continuation id)
-        writes the compressed messages into the NEW session so the original stays searchable;
-        persist BEFORE repointing so a failed write is fatal and old history stays reachable.
-        In-place compaction already archived + inserted rows, and a rewrite would DELETE the
-        archive; an unchanged id without in-place means rotation FAILED."""
-        new_session_id = tmp_agent.session_id
-        if new_session_id != session_entry.session_id:
-            if not await self.async_session_store.rewrite_transcript(new_session_id, compressed):
-                raise RuntimeError(
-                    f"failed to persist compressed transcript for session {new_session_id}")
-            session_entry.session_id = new_session_id
-            await self.async_session_store._save()
-            await asyncio.to_thread(self._sync_telegram_topic_binding, source, session_entry,
-                                    reason="compress-command")
-        elif not getattr(tmp_agent, "_last_compaction_in_place", False):
-            logger.warning(
-                "Manual /compress: session rotation did not occur (session_id unchanged) and in-place "
-                "mode is off — preserving original transcript instead of overwriting it (#44794).")
-        await self.async_session_store.update_session(session_entry.session_key, last_prompt_tokens=0)
+    async def _persist_manual_compression(
+        self, tmp_agent, session_entry, source, compressed, *, expected_session_id=None,
+    ) -> bool:
+        """Require an actual history commit, then durably release the pause before notification."""
+        from agent.conversation_compression import finalize_context_engine_compression_notification
+
+        expected_id = expected_session_id or session_entry.session_id
+        new_id = tmp_agent.session_id
+        rotated = new_id != expected_id
+        if not rotated and getattr(tmp_agent, "_last_compaction_in_place", False) is not True:
+            return False
+
+        async def commit():
+            if rotated:
+                db = await asyncio.to_thread(self.session_store._db_for_session_id, new_id)
+                if db is None:
+                    raise RuntimeError("Transcript storage is unavailable")
+                if await self.async_session_store.rewrite_transcript(new_id, compressed) is not True:
+                    raise RuntimeError("Failed to persist compressed transcript")
+            # In-place history is already committed by the compressor. Never rewrite its archive.
+            if await self.async_session_store.commit_manual_compression(
+                session_entry.session_key, expected_id, new_id,
+            ) is not True:
+                return False
+            try:
+                await asyncio.to_thread(
+                    self._sync_compression_recovery_binding, source, session_entry, new_id,
+                    reason="compress-command",
+                )
+            except Exception:
+                logger.warning("Compression committed but topic binding sync failed", exc_info=True)
+            try:
+                finalize_context_engine_compression_notification(tmp_agent, committed=True)
+            except Exception:
+                logger.warning("Compression committed but notification failed", exc_info=True)
+            return True
+        return await self._await_session_policy_commit(commit())
 
     # ------------------------------------------------------------------------ /topic
 
@@ -854,6 +1058,12 @@ class GatewaySessionCommandsMixin:
             return self._session_db_unavailable_reply()
         source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_key = self._session_key_for_source(source)
+        async with self._paused_recovery_admission(source) as (_, refusal):
+            if refusal is not None:
+                return refusal
+            return await self._resume_command_with_admission(event, source, session_key)
+
+    async def _resume_command_with_admission(self, event, source, session_key):
         try:
             parts = shlex.split(event.get_command_args().strip())
         except ValueError as exc:
@@ -879,8 +1089,27 @@ class GatewaySessionCommandsMixin:
         current_entry = await self.async_session_store.get_or_create_session(source)
         if current_entry.session_id == target_id:
             return t("gateway.resume.already_on", name=name)
-        self._release_running_agent_state(session_key)
-        new_entry = await self.async_session_store.switch_session(session_key, target_id)
+        if getattr(current_entry, "compression_paused", False) is True:
+            async def commit_switch():
+                entry = await self.async_session_store.switch_session(session_key, target_id)
+                if entry is not None:
+                    self._clear_conversation_scope(session_key, reason="resume")
+                    self._evict_cached_agent(session_key)
+                    try:
+                        await asyncio.to_thread(
+                            self._sync_compression_recovery_binding, source, entry, target_id, reason="resume",
+                        )
+                    except Exception:
+                        logger.warning("Session switch committed but topic binding sync failed", exc_info=True)
+                return entry
+            try:
+                new_entry = await self._await_session_policy_commit(commit_switch())
+            except Exception:
+                logger.warning("Paused session switch could not be persisted", exc_info=True)
+                return self._compression_pause_notice(persistence_failed=True)
+        else:
+            self._release_running_agent_state(session_key)
+            new_entry = await self.async_session_store.switch_session(session_key, target_id)
         if not new_entry:
             return t("gateway.resume.switch_failed")
         # Conversation boundary: all conversation-scoped state + security state in one funnel call.

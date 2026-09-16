@@ -261,15 +261,17 @@ class SessionGatewayMixin:
     def replace_gateway_routing_entries(self, entries: Dict[str, str], *, scope: str = "") -> None:
         """Atomically replace the routing index for *scope* (keys absent from *entries*
         are removed); other scopes untouched."""
+        self._execute_write(lambda conn: self._replace_gateway_routing_entries_conn(conn, entries, scope=scope))
+
+    def _replace_gateway_routing_entries_conn(self, conn, entries: Dict[str, str], *, scope: str) -> None:
+        """SQL-only replacement, also used by the atomic topic restore writer."""
         now = time.time()
-        def _do(conn):
-            conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (scope,))
-            if entries:
-                conn.executemany(
-                    "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    [(scope, k, v, now) for k, v in entries.items() if k and v])
-        self._execute_write(_do)
+        conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (scope,))
+        if entries:
+            conn.executemany(
+                "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
+                "VALUES (?, ?, ?, ?)",
+                [(scope, k, v, now) for k, v in entries.items() if k and v])
 
     def load_gateway_routing_entries(self, *, scope: str = "") -> Dict[str, str]:
         """Load routing entries for *scope* as {session_key: entry_json}."""

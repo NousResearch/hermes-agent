@@ -26,7 +26,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.response_filters import display_kind_for_event, is_machinery_display_kind
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
-    build_session_context,
+    build_session_context, COMPRESSION_EXHAUSTED_METADATA_KEY,
 )
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
@@ -127,6 +127,13 @@ class GatewayTurnMixin:
         )
         skey = self._resolve_session_key_or_none(source, session_key)
 
+        store = getattr(self, "session_store", None)
+        if skey and callable(getattr(type(store), "get_session_metadata", None)):
+            missing = object()
+            index = store.get_session_metadata(skey, "manual_fallback_index", missing)
+            if index is not missing:
+                from gateway.run import _manual_fallback_runtime
+                return _manual_fallback_runtime(index)
         model = _resolve_gateway_model(user_config)
         if skey:
             self._rehydrate_session_model_override(skey)
@@ -181,7 +188,7 @@ class GatewayTurnMixin:
                 if ch.model:
                     model = ch.model
                 if ch.provider:
-                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider)
+                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider, target_model=ch.model)
                     ch_runtime_model = runtime_kwargs.pop("model", None)
                     # Adopt the provider's bundled model only when the override named none.
                     if ch_runtime_model and not ch.model:
@@ -237,6 +244,9 @@ class GatewayTurnMixin:
                 "credential_pool", "max_tokens", "capabilities",
             )
         }
+        for key in ("manual_fallback_index", "fallback_model", "has_header_auth", "fallback_service_tier_override"):
+            if key in runtime_kwargs:
+                runtime[key] = runtime_kwargs[key]
         runtime["args"] = list(runtime["args"] or [])
         runtime["capabilities"] = dict(runtime["capabilities"] or {})
         base_request_overrides = dict(runtime_kwargs.get("request_overrides") or {})
@@ -246,6 +256,7 @@ class GatewayTurnMixin:
             "signature": (
                 model, runtime["provider"], runtime["requested_provider"], runtime["base_url"],
                 runtime["api_mode"], runtime["command"], tuple(runtime["args"]),
+                runtime.get("manual_fallback_index"), runtime.get("fallback_service_tier_override"),
             ),
         }
         if getattr(self, "_service_tier", None) != "priority":
@@ -262,7 +273,9 @@ class GatewayTurnMixin:
         route["request_overrides"] = _deep_merge_request_overrides(base_request_overrides, overrides or {})
         return route
 
-    def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
+    def _sync_session_model_from_agent(
+        self, session_id: str, agent: Any, *, manual_fallback: bool = False,
+    ) -> None:
         """Persist the runtime model/provider a gateway turn actually used (provider fallback can
         switch them after the row was created). Runs in the ``run_sync`` executor thread, so it
         uses the sync ``SessionDB`` (``_db``), not the AsyncSessionDB forwarder."""
@@ -272,6 +285,9 @@ class GatewayTurnMixin:
         if not model:
             return
         runtime = {k: getattr(agent, k, None) for k in ("provider", "base_url", "api_mode")}
+        if manual_fallback:
+            # A configured endpoint can contain credentials; retain it only in the runtime route.
+            runtime.pop("base_url", None)
         runtime["fallback_active"] = bool(getattr(agent, "_fallback_activated", False))
         runtime = {k: v for k, v in runtime.items() if v not in (None, "")}
         try:
@@ -292,7 +308,11 @@ class GatewayTurnMixin:
             if not isinstance(config, dict):
                 config = {}
             gateway_runtime = dict(config.get("gateway_runtime") or {})
-            if row.get("model") == model and all(gateway_runtime.get(k) == v for k, v in runtime.items()):
+            if (
+                row.get("model") == model
+                and all(gateway_runtime.get(k) == v for k, v in runtime.items())
+                and not (manual_fallback and "base_url" in gateway_runtime)
+            ):
                 return
             config["gateway_runtime"] = runtime
             db.update_session_meta(session_id, json.dumps(config), model=model)
@@ -348,6 +368,7 @@ class GatewayTurnMixin:
                 )
                 return
 
+        topic_lane = await asyncio.to_thread(self._is_telegram_topic_lane, source)
         strict_session = bool(event_metadata.get("gateway_session_strict"))
         pinned_session_id = str(event_metadata.get("gateway_session_id") or "").strip()
         if strict_session:
@@ -359,10 +380,22 @@ class GatewayTurnMixin:
                 )
                 return
         else:
-            # Internal wakes observe reset policy without counting as user activity, or periodic
-            # notifications keep the routing key alive across every daily/idle boundary.
+            recovery = {}
+            if topic_lane and self._session_db is not None:
+                try:
+                    binding = await self._session_db.get_telegram_topic_binding(
+                        chat_id=str(source.chat_id), thread_id=str(source.thread_id),
+                        profile_name=self._telegram_topic_profile_name(source),
+                    )
+                    if binding:
+                        recovery["recovery_session_id"] = str(binding.get("session_id") or "")
+                except Exception:
+                    logger.debug("Failed to read Telegram topic binding", exc_info=True)
+            # Bindings are recovery hints only. The store decides under its lock whether the
+            # route is absent; a route committed during this lookup must also win.
+            # Internal wakes preserve the user-activity clock.
             session_entry = await self.async_session_store.get_or_create_session(
-                source, touch_activity=not bool(getattr(event, "internal", False)),
+                source, touch_activity=not bool(getattr(event, "internal", False)), **recovery,
             )
         session_key = session_entry.session_key
         if not strict_session and pinned_session_id:
@@ -371,7 +404,7 @@ class GatewayTurnMixin:
                 return
             session_entry = resolved_entry
         self._cache_session_source(session_key, source)
-        if await asyncio.to_thread(self._is_telegram_topic_lane, source):
+        if topic_lane:
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
         from gateway.run_heartbeat_acceptance import resolve_heartbeat_owner
         if not await resolve_heartbeat_owner(self, event, session_entry):
@@ -379,48 +412,13 @@ class GatewayTurnMixin:
         return source, session_entry, session_key
 
     async def _hmwa_heal_telegram_topic_binding(self, source, session_entry, session_key):
-        """Follow the (chat_id, thread_id) topic binding — healed to its compression tip — or record
-        a fresh one. Returns the (possibly switched) session entry."""
-        binding = None
-        try:
-            if self._session_db:
-                binding = await self._session_db.get_telegram_topic_binding(
-                    chat_id=str(source.chat_id), thread_id=str(source.thread_id),
-                    profile_name=self._telegram_topic_profile_name(source),
-                )
-        except Exception:
-            logger.debug("Failed to read Telegram topic binding", exc_info=True)
-        if not binding:
-            try:
-                await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry)
-            except Exception:
-                logger.debug("Failed to record Telegram topic binding", exc_info=True)
+        """Repair the secondary topic binding from the committed route, never the reverse."""
+        if getattr(session_entry, "compression_paused", False) is True:
             return session_entry
-        stored_session_id = str(binding.get("session_id") or "")
-        bound_session_id = stored_session_id
-        # A binding pointing at a pre-compression parent is walked forward to the tip so the next
-        # message resumes the compressed child instead of reloading the oversized parent.
-        # Returns the input unchanged when the session isn't a compression parent, so this is cheap and
-        # safe. See #20470, #29712, #33414.
-        if bound_session_id and self._session_db is not None:
-            try:
-                canonical_session_id = await self._session_db.get_compression_tip(bound_session_id)
-            except Exception:
-                logger.debug("compression-tip lookup failed for %s", bound_session_id, exc_info=True)
-                canonical_session_id = bound_session_id
-            if canonical_session_id and canonical_session_id != bound_session_id:
-                bound_session_id = canonical_session_id
-        if bound_session_id and bound_session_id != session_entry.session_id:
-            # Route through SessionStore so the key → id mapping persists and the previous lane
-            # session ends cleanly (in-place mutation split-brained the JSON index).
-            switched = await self.async_session_store.switch_session(session_key, bound_session_id)
-            if switched is not None:
-                session_entry = switched
-        if bound_session_id and bound_session_id != stored_session_id:
-            # The stored binding pointed at a parent: rewrite it to the canonical descendant.
-            await asyncio.to_thread(
-                self._sync_telegram_topic_binding, source, session_entry, reason="compression-tip-walk",
-            )
+        await asyncio.to_thread(
+            self._sync_compression_recovery_binding, source, session_entry, session_entry.session_id,
+            reason="committed-route",
+        )
         return session_entry
 
     async def _hmwa_open_session(self, session_entry, session_key, source):
@@ -1188,8 +1186,9 @@ class GatewayTurnMixin:
         _hyg_checkpoint_required = _is_truthy(
             ((_load_cfg() or {}).get("compression") or {}).get("checkpoint_required"), default=False,
         )
+        from gateway.run import _runtime_kwargs_for_agent_constructor
         _hyg_agent = AIAgent(
-            **_hyg_runtime, model=_hyg_model, max_iterations=4, quiet_mode=True,
+            **_runtime_kwargs_for_agent_constructor(_hyg_runtime), model=_hyg_model, max_iterations=4, quiet_mode=True,
             skip_memory=not _hyg_checkpoint_required, enabled_toolsets=["memory"],
             session_id=session_entry.session_id, session_db=_hyg_session_db,
         )
@@ -1286,7 +1285,7 @@ class GatewayTurnMixin:
             )
             if str(_hyg_runtime.get("api_mode") or "").lower() == "codex_app_server":
                 await self._hmwa_hygiene_codex_compaction(hs, plan, history, session_entry, session_key, _hyg_runtime)
-            elif _hyg_runtime.get("api_key"):
+            elif _hyg_runtime.get("api_key") or _hyg_runtime.get("has_header_auth"):
                 # Pass the FULL transcript (tool results included) as the agent loop does: filtering
                 # to user/assistant starved the compressor (tool results are the bulk of context).
                 _hyg_msgs = [m for m in history if m.get("role") in {"user", "assistant", "tool"}]
@@ -1676,49 +1675,160 @@ class GatewayTurnMixin:
             )
         return agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure
 
-    async def _hmwa_compression_exhaustion_reset(
-        self, agent_result, response, session_entry, session_key, source,
+    @staticmethod
+    async def _await_session_policy_commit(awaitable):
+        """Keep admission owned until a storage worker and its publication tail settle."""
+        task = asyncio.ensure_future(awaitable)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            try:
+                task.result()
+            except BaseException:
+                logger.warning("Session policy write failed during cancellation", exc_info=True)
+            raise
+
+    async def _compression_exhaustion_action(self, source) -> Optional[str]:
+        """Read only the explicit policy leaf; uncertainty is never permission to clear a pause."""
+        def read():
+            import yaml
+            from gateway.run import _gateway_config_home
+            from hermes_cli.config import _expand_env_vars
+            from hermes_cli.managed_scope import get_managed_dir
+
+            home = (self._resolve_profile_home_for_source(source)
+                    if getattr(self.config, "multiplex_profiles", False) else _gateway_config_home())
+            if home is None:
+                raise RuntimeError("Source profile home is unavailable")
+            managed = get_managed_dir()
+            paths = [Path(home) / "config.yaml"]
+            if managed is not None:
+                paths.append(managed / "config.yaml")
+            choice = None
+            for path in paths:
+                try:
+                    raw = path.read_text(encoding="utf-8")
+                except FileNotFoundError:
+                    continue
+                layer = yaml.safe_load(raw)
+                if layer is None:
+                    continue
+                if not isinstance(layer, dict):
+                    raise ValueError("Configuration must be a mapping")
+                if "compression" not in layer:
+                    continue
+                compression = layer["compression"]
+                if not isinstance(compression, dict):
+                    raise ValueError("compression must be a mapping")
+                if "exhaustion_action" in compression:
+                    choice = compression["exhaustion_action"]
+            # The adapter installs the source profile scope; to_thread preserves it.
+            # Expand only the winning leaf after both layers pass the strict guards.
+            if isinstance(choice, str):
+                choice = _expand_env_vars(choice)
+            return choice if isinstance(choice, str) and choice in {"reset", "pause"} else None
+        try:
+            return await asyncio.to_thread(read)
+        except Exception:
+            logger.warning("Could not establish explicit compression.exhaustion_action; existing pause retained")
+            return None
+
+    @staticmethod
+    def _compression_pause_notice(*, persistence_failed=False):
+        if persistence_failed:
+            return ("Compression recovery could not be persisted. Retry /compress or /new after fixing "
+                    "storage, or /resume an authorized session. An initial pause held only in memory "
+                    "cannot be guaranteed after a restart while storage is unavailable.")
+        return ("Session paused: the conversation could not be compressed further. History is preserved. "
+                "Use /compress, /new, or /resume another authorized session. Setting "
+                "compression.exhaustion_action: reset explicitly resets this pause on your next message.")
+
+    def _sync_compression_recovery_binding(self, source, entry, expected_id, *, reason):
+        """Do not let a settled old tail rebind a route replaced by /new or /resume."""
+        with self.session_store._lock:
+            current = self.session_store._entries.get(entry.session_key)
+            if current is entry and current.session_id == expected_id:
+                self._sync_telegram_topic_binding(source, entry, reason=reason)
+
+    async def _reset_session_after_compression_exhaustion(
+        self, session_key, session_entry, source, *, require_primary=True, cleanup_for_manual_reset=False,
     ):
-        """Auto-reset a permanently oversized session so the next message starts fresh instead of
-        replaying the oversized context forever. Never on a lock-contended defer — that is the
-        OPPOSITE case (a concurrent path holds the lock and is shrinking it). Returns
-        ``(response, session_entry)``."""
-        # When compression is exhausted, the session is permanently too large to process. (#9893) Never wipe
-        # the session for that — retry-next-message semantics apply (#69870 lock-skip consumer; salvaged
-        # from #49874).
-        if agent_result.get("compression_deferred"):
-            logger.info(
-                "Compression deferred for session %s — the compression "
-                "lock is held by a concurrent compressor. Keeping the "
-                "session intact; the next message retries normally.",
-                session_entry.session_id if session_entry else "?",
+        expected_id = session_entry.session_id
+        async def commit():
+            new_entry = await self.async_session_store.reset_session(
+                session_key, require_primary=require_primary, expected_session_id=expected_id,
             )
-        elif agent_result.get("compression_exhausted") and session_entry and session_key:
-            logger.info("Auto-resetting session %s after compression exhaustion.", session_entry.session_id)
-            new_entry = await self.async_session_store.reset_session(session_key)
+            if new_entry is None:
+                raise RuntimeError("Session route changed before compression recovery")
+            if cleanup_for_manual_reset:
+                # /new is a full resource boundary. Keep its teardown inside the settled commit
+                # so failure preserves the old resources and repeated cancellation retains admission.
+                from gateway.slash_commands_session import _reset_process_scoped_tool_state
+                await self._cleanup_old_agent_for_reset(session_key)
+                with suppress(Exception):
+                    from tools.async_delegation import interrupt_for_session
+                    interrupt_for_session(session_key=session_key, reason="session_reset",
+                                          parent_session_id=str(expected_id or ""))
+                _reset_process_scoped_tool_state()
             self._evict_cached_agent(session_key)
-            # Conversation boundary: the funnel clears every conversation-scoped per-session dict.
             self._clear_conversation_scope(session_key, reason="compression_exhausted_reset")
-            if new_entry is not None:
-                # Re-point the Telegram topic binding at the fresh session, or the binding-heal walk
-                # switches the next message back onto the bloated child and re-triggers exhaustion
-                # forever. No-op on non-topic lanes.
-                # Compression rotated session_entry.session_id to the oversized compressed child earlier
-                # this turn (the agent-result sync above), and that _sync also rewrote the (chat_id,
-                # thread_id) -> bloated-child binding. reset_session swaps in a clean, parentless session,
-                # but without re-syncing the binding the next inbound message in this topic gets
-                # switch_session'd back onto the bloated child by the binding-heal walk, reloads the
-                # oversized transcript, and re-triggers compression exhaustion forever (#35809 — regression
-                # of the #9893/#10063 auto-reset).
-                session_entry = new_entry
+            try:
                 await asyncio.to_thread(
-                    self._sync_telegram_topic_binding, source, session_entry, reason="compression-exhausted-reset",
+                    self._sync_compression_recovery_binding, source, new_entry, new_entry.session_id,
+                    reason="compression-exhausted-reset",
                 )
-            response = (response or "") + (
-                "\n\n🔄 Session auto-reset — the conversation exceeded the maximum context size and "
-                "could not be compressed further. Your next message will start a fresh session."
-            )
-        return response, session_entry
+            except Exception:
+                logger.warning("Compression recovery committed but topic binding sync failed", exc_info=True)
+            return new_entry
+        return await self._await_session_policy_commit(commit())
+
+    async def _hmwa_compression_exhaustion_reset(
+        self, agent_result, response, session_entry, session_key, source, *, event=None, run_generation=None,
+    ):
+        """Native reset by default; explicit pause preserves an exhausted conversation."""
+        if agent_result.get("compression_deferred"):
+            return response, session_entry
+        if not (agent_result.get("compression_exhausted") and session_entry and session_key):
+            return response, session_entry
+        if event is not None:
+            event._gateway_skip_goal_continuation = True
+        expected_id = session_entry.session_id
+        action = await self._compression_exhaustion_action(source)
+        if run_generation is not None and not self._is_session_run_current(session_key, run_generation):
+            return response, session_entry
+        try:
+            if action == "pause":
+                async def commit_pause():
+                    try:
+                        committed = await self.async_session_store.set_session_metadata(
+                            session_key, COMPRESSION_EXHAUSTED_METADATA_KEY, True,
+                            require_primary=True, expected_session_id=expected_id,
+                        )
+                        if not committed:
+                            raise RuntimeError("Session route changed before compression pause")
+                    finally:
+                        self._evict_cached_agent(session_key)
+                await self._await_session_policy_commit(commit_pause())
+                notice = self._compression_pause_notice()
+            else:
+                # New exhaustion keeps the native JSON fallback. Existing paused routes force a
+                # strict primary commit inside SessionStore even when require_primary is False.
+                session_entry = await self._reset_session_after_compression_exhaustion(
+                    session_key, session_entry, source, require_primary=False,
+                )
+                notice = ("🔄 Session auto-reset - the conversation exceeded the maximum context size and "
+                          "could not be compressed further. Your next message will start a fresh session.")
+        except Exception:
+            logger.warning("Compression exhaustion policy could not be persisted", exc_info=True)
+            notice = self._compression_pause_notice(persistence_failed=True)
+        return (response or "") + "\n\n" + notice, session_entry
 
     @staticmethod
     def _hmwa_user_transcript_entry(event, prepared, ts):
@@ -2066,6 +2176,17 @@ class GatewayTurnMixin:
         if resolved is None:
             return
         source, session_entry, session_key = resolved
+        if getattr(session_entry, "compression_paused", False) is True:
+            event._gateway_skip_goal_continuation = True
+            action = await self._compression_exhaustion_action(source)
+            if action == "reset" and self._is_session_run_current(_quick_key, run_generation):
+                try:
+                    await self._reset_session_after_compression_exhaustion(session_key, session_entry, source)
+                except Exception:
+                    logger.warning("Paused session recovery could not be persisted", exc_info=True)
+                    return self._compression_pause_notice(persistence_failed=True)
+                return "Session reset after compression pause. Your next message will start a fresh session."
+            return self._compression_pause_notice()
         prepared, _session_env_tokens = await self._hmwa_prepare_turn(
             event, source, session_entry, session_key, _quick_key, run_generation,
         )
@@ -2143,6 +2264,7 @@ class GatewayTurnMixin:
                 response = self._hmwa_add_failed_turn_notice(response, self._hmwa_failed_turn_notice(agent_result))
             response, session_entry = await self._hmwa_compression_exhaustion_reset(
                 agent_result, response, session_entry, session_key, source,
+                event=event, run_generation=run_generation,
             )
             await self._hmwa_persist_turn_transcript(
                 event=event, source=source, session_entry=session_entry, session_key=session_key,
@@ -2306,9 +2428,13 @@ class GatewayTurnMixin:
                     logger.warning("Background task vision enrichment failed: %s", e)
 
             def run_sync():
+                from gateway.run import _runtime_kwargs_for_agent_constructor
+                runtime = _runtime_kwargs_for_agent_constructor(turn_route["runtime"])
+                if "fallback_model" not in runtime:
+                    runtime["fallback_model"] = self._refresh_fallback_model()
                 agent = AIAgent(
                     model=turn_route["model"],
-                    **turn_route["runtime"],
+                    **runtime,
                     **_checkpoint_agent_kwargs(user_config),
                     max_iterations=max_iterations,
                     quiet_mode=True,
@@ -2330,9 +2456,6 @@ class GatewayTurnMixin:
                         "user_id", "user_id_alt", "user_name", "chat_id", "chat_name", "chat_type", "thread_id",
                     )},
                     session_db=getattr(self._session_db, "_db", self._session_db),
-                    # Reload from disk — do not reuse the startup snapshot.
-                    # See #60955.
-                    fallback_model=self._refresh_fallback_model(),
                 )
                 try:
                     return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)
@@ -4107,7 +4230,11 @@ class GatewayTurnMixin:
             result = turn_ctx.result_holder[0]
             adapter = self._adapter_for_source(source)
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
-            pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
+            terminal_exhaustion = (result and result.get("compression_exhausted")
+                                   and not result.get("compression_deferred"))
+            pending_event, pending = (None, None) if terminal_exhaustion else await self._run_agent_drain_pending(
+                result, adapter, source, session_key,
+            )
             if pending_event or pending:
                 return await self._run_agent_queued_followup(
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,

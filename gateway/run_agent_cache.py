@@ -114,12 +114,15 @@ class GatewayAgentCacheMixin:
         # Fingerprint the FULL credential, not a short prefix: OAuth/JWT-style tokens often share a
         # common prefix (e.g. "eyJhbGci"), so a prefix would give false cache hits across auth switches.
         _api_key = str(runtime.get("api_key", "") or "")
+        # Manual output limits also configure compressor reservations at construction. Include
+        # removal (None), while leaving the ordinary route's identity byte-for-byte unchanged.
         blob = _j.dumps(
             [
                 model,
                 hashlib.sha256(_api_key.encode()).hexdigest() if _api_key else "",
                 runtime.get("base_url", ""), runtime.get("provider", ""),
                 runtime.get("requested_provider", ""), runtime.get("api_mode", ""),
+                runtime.get("manual_fallback_index"), runtime.get("fallback_service_tier_override"),
                 sorted((runtime.get("capabilities") or {}).items()),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
                 # reasoning_config excluded — set per-message on the cached agent; no prompt/tool effect.
@@ -129,7 +132,7 @@ class GatewayAgentCacheMixin:
                 # skip_context_files changes the agent's frozen system prompt (context files in vs out):
                 # a toggled edit must rebuild the cached agent, not silently reuse it.
                 bool(skip_context_files),
-            ],
+            ] + ([runtime.get("max_tokens")] if "manual_fallback_index" in runtime else []),
             sort_keys=True, default=str,
         )
         return hashlib.sha256(blob.encode()).hexdigest()[:16]
@@ -161,7 +164,7 @@ class GatewayAgentCacheMixin:
             # since the switch) keep the credential-less override — _resolve_session_agent_runtime
             # falls back to env resolution and layers model/provider.
             try:
-                runtime = _resolve_runtime_agent_kwargs_for_provider(provider)
+                runtime = _resolve_runtime_agent_kwargs_for_provider(provider, target_model=persisted.get("model"))
                 for k in ("api_key", "api_mode", "credential_pool", "requested_provider", "max_tokens"):
                     override[k] = runtime.get(k)
                 override["request_overrides"] = dict(runtime.get("request_overrides") or {})

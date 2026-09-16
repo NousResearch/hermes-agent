@@ -8,6 +8,7 @@ in neither chain (undocumented, shifting allow-list): main provider or explicit
 ``auxiliary.<task>.provider`` only. HTTP 402 in call_llm() falls through the chain.
 """
 
+import asyncio
 import contextlib
 import contextvars
 import functools
@@ -4408,6 +4409,48 @@ def _effective_provider_for_client(client: Any, fallback: str) -> str:
 # client (auth, base URL, headers, API format) from (provider, model). Never read auth env vars ad-hoc.
 
 
+def _async_credential_from_sync_client(sync_client) -> Any:
+    """The credential to hand the async client, preserving per-request minting.
+
+    A ``key_cmd`` credential reaches the sync client as a CALLABLE so the OpenAI SDK can mint a
+    fresh short-lived bearer per request. The SDK stores that callable in ``_api_key_provider``
+    and deliberately leaves ``client.api_key`` an EMPTY STRING, so copying ``.api_key`` across
+    drops the credential entirely and every async auxiliary call (vision, compression, chat
+    titles) is sent unauthenticated. Prefer the provider; fall back to the plain string key.
+
+    ``AsyncOpenAI`` awaits its provider, so a sync callable is wrapped in an async shim.
+    """
+    provider = getattr(sync_client, "_api_key_provider", None)
+    if provider is None:
+        return getattr(sync_client, "api_key", None)
+    if inspect.iscoroutinefunction(provider):
+        return provider
+
+    async def _async_api_key_provider() -> str:
+        # Minting typically shells out (key_cmd); keep the event loop free.
+        return await asyncio.to_thread(provider)
+
+    return _async_api_key_provider
+
+
+def _credential_header_value(credential: Any) -> str:
+    """A credential as a STRING, for header builders that need a concrete token.
+
+    Only used for header extras (Codex/Cloudflare): the client itself keeps the callable, so
+    per-request minting still applies. An async provider is not invoked — there is no loop to
+    await it on at client-construction time.
+    """
+    if not callable(credential):
+        return credential or ""
+    if inspect.iscoroutinefunction(credential):
+        return ""
+    try:
+        return credential() or ""
+    except Exception:  # pragma: no cover - a header extra is never worth failing the call
+        logger.debug("Could not mint a credential for default headers", exc_info=True)
+        return ""
+
+
 def _to_async_client(sync_client, model: str, is_vision: bool = False):
     """Sync client → async counterpart, preserving Codex routing (``is_vision`` adds the Copilot vision header)."""
     from openai import AsyncOpenAI
@@ -4427,11 +4470,17 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     if _client_declares(sync_client, "HERMES_SKIP_ASYNC_WRAP"):
         return sync_client, model
     sync_base_url = str(sync_client.base_url)
-    async_kwargs = {"api_key": sync_client.api_key, "base_url": sync_base_url}
+    async_credential = _async_credential_from_sync_client(sync_client)
+    # Header builders need a concrete token: mint from the SYNC provider (a plain callable),
+    # never from the async shim handed to the client.
+    header_token = _credential_header_value(
+        getattr(sync_client, "_api_key_provider", None) or getattr(sync_client, "api_key", ""))
+    async_kwargs = {"api_key": async_credential, "base_url": sync_base_url}
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         headers = _apply_user_default_headers(build_or_headers())
     elif _is_official_codex_base_url(sync_base_url):
-        headers = _apply_user_default_headers(_codex_cloudflare_headers(sync_client.api_key, base_url=sync_base_url))
+        headers = _apply_user_default_headers(
+            _codex_cloudflare_headers(header_token, base_url=sync_base_url))
     else:
         # Provider for the profile-header fallback is inferred from the hostname.
         try:
@@ -4448,7 +4497,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
             headers = {**(headers or {}), **opencode_zen_free_headers()}
     if headers:
         async_kwargs["default_headers"] = headers
-    _apply_required_codex_headers(async_kwargs, access_token=sync_client.api_key, base_url=sync_base_url)
+    _apply_required_codex_headers(async_kwargs, access_token=header_token, base_url=sync_base_url)
     async_kwargs = {**_openai_http_client_kwargs(sync_base_url, async_mode=True), **async_kwargs}
     # Hermes owns the auxiliary retry/timeout budget; disable SDK-internal retries.
     # See #54465.

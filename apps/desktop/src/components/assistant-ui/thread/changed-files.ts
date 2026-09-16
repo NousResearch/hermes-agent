@@ -13,6 +13,8 @@ import { type ToolResultMetadata, toolResultRecord } from '@/lib/tool-result-met
 
 export interface ChangedFile {
   added: number
+  /** Tool-reported unified diffs, retained in edit order for non-Git review. */
+  diff: string
   /** Basename, for the row label. */
   name: string
   /** Path exactly as the tool reported it (absolute or repo-relative). */
@@ -26,6 +28,13 @@ interface ChangedFilePart {
   result?: unknown
   toolName?: unknown
   type?: unknown
+}
+
+function withoutLeadingDiffPreamble(diff: string): string {
+  const lines = diff.split('\n')
+  const firstHunk = lines.findIndex(line => line.startsWith('@@'))
+
+  return firstHunk > 0 ? lines.slice(firstHunk).join('\n') : diff
 }
 
 /**
@@ -61,9 +70,10 @@ export function deriveChangedFiles(parts: readonly unknown[]): ChangedFile[] {
 
     if (existing) {
       existing.added += stats.added
+      existing.diff = `${existing.diff}\n${withoutLeadingDiffPreamble(diff)}`
       existing.removed += stats.removed
     } else {
-      byPath.set(path, { added: stats.added, name: fileEditBasename(path), path, removed: stats.removed })
+      byPath.set(path, { added: stats.added, diff, name: fileEditBasename(path), path, removed: stats.removed })
     }
   }
 

@@ -855,6 +855,16 @@ class TurnRunner:
         if self._ctx._native_slack_task_cards:
             self.native_tool_start_callback(call_id, tool_name, args)
 
+    def _tool_gen_started_sync(self, tool_name):
+        """Agent-thread callback: the model began emitting a tool call mid-stream (_emit_tool_started,
+        both wires). Arm the thinking timer so the native bubble keeps animating through the
+        tool-arg-generation vacuum. Same on_llm_thinking arm path / supports_tool_timer gate as the
+        llm.request_started handler in progress_callback; on_llm_thinking is idempotent (no-op if the
+        timer is already armed) so overlapping with a later llm.request_started cannot double-arm."""
+        sc = self._stream_consumer()
+        if sc is not None and getattr(sc, "supports_tool_timer", False):
+            sc.on_llm_thinking()
+
     # ── hook / status bridges (agent thread → gateway loop) ────────────────────────────────
 
     def _step_callback_sync(self, iteration: int, prev_tools: list) -> None:
@@ -1288,6 +1298,14 @@ class TurnRunner:
         agent.status_callback, agent.notice_callback = ctx._status_callback_sync, self._notice_callback_sync
         agent.notice_clear_callback = None  # sends can't be retracted
         agent.event_callback = ctx._event_callback_sync
+        # Tool-generation start (streaming boundary): _emit_tool_started fires on BOTH wires
+        # (chat_completions: first tool-call delta carrying a name; anthropic_messages:
+        # content_block_start(type=tool_use)) the instant the model stops emitting body text and
+        # begins a tool call — i.e. at the START of the tool-arg-generation vacuum, long before the
+        # tool executes (tool.started) or the next API request fires (llm.request_started). Arming
+        # the thinking timer here keeps the native bubble animated through that vacuum. Bound to the
+        # same zombie-safe on_llm_thinking path the llm.request_started handler uses.
+        agent.tool_gen_callback = self._tool_gen_started_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
         self._merge_turn_request_overrides(agent, turn_route)
         # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never

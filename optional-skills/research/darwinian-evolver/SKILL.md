@@ -189,7 +189,13 @@ ls "$DE_DIR/darwinian_evolver/lineage_visualizer.html" >/dev/null && \
 cd "$DE_DIR" && uv run darwinian_evolver --help >/dev/null && \
 echo "darwinian-evolver: OK"
 ```
+## Security
 
+⚠️ **Pickle deserialization risk.** Snapshots produced by `darwinian_evolver` are Python pickle files. Loading a pickle from an untrusted source can execute arbitrary code on your machine.
+
+- Only load snapshots you generated yourself, or that come from a source you fully trust.
+- Never load snapshots shared over chat, email, or unverified Git repos without inspecting them first.
+- If you need to distribute snapshots, prefer signing them (e.g. with `gpg --detach-sign`) and verifying signatures before load.
 ## References
 
 - [Imbue research post](https://imbue.com/research/2026-02-27-darwinian-evolver/)

@@ -61,8 +61,34 @@ _PRE_SANDBOX_KANBAN_OVERRIDE = os.environ.get("HERMES_KANBAN_HOME", "").strip()
 _PRE_SANDBOX_HERMES_HOME = os.environ.get("HERMES_HOME", "")
 
 
+def _production_hermes_roots() -> tuple[Path, ...]:
+    """Production roots as ``hermes_state_guard._real_platform_state_root`` sees them.
+
+    Mirrored rather than imported: this runs before the sandbox below exists,
+    and the guard is the component the sandbox protects. Keep the two in step —
+    a root the guard calls production but this does not is an isolation escape.
+    """
+    try:
+        home = Path(os.path.expanduser("~"))
+    except Exception:
+        return ()
+    roots = [home / ".hermes"]
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA", "").strip()
+        roots.append(
+            Path(base) / "hermes" if base else home / "AppData" / "Local" / "hermes"
+        )
+    resolved = []
+    for root in roots:
+        try:
+            resolved.append(root.resolve())
+        except Exception:
+            continue
+    return tuple(resolved)
+
+
 def _hermes_home_points_at_production(value: str) -> bool:
-    """True when a pre-set HERMES_HOME resolves to the real production root.
+    """True when a pre-set HERMES_HOME resolves to a real production root.
 
     Gateway-launched shells (and developer shells that ``export
     HERMES_HOME=~/.hermes``) hand pytest the PRODUCTION home. Historically
@@ -73,18 +99,26 @@ def _hermes_home_points_at_production(value: str) -> bool:
     scopes) in the live state.db and flipped its journal mode under the
     WAL-mode gateway writer. Only a genuinely custom (non-production)
     HERMES_HOME is honored now.
+
+    The platform default counts as production on every OS, not just
+    ``~/.hermes``: on Windows the real root is ``%LOCALAPPDATA%\\hermes``, so a
+    pytest run started from a Desktop/gateway shell there inherited a
+    production home the old check did not recognize, honored it, and answered
+    from the developer's live config (approval mode included).
     """
     if not value:
         return True
     try:
         resolved = Path(value).expanduser().resolve()
-        real_root = (Path.home() / ".hermes").resolve()
     except Exception:
         return True
-    if resolved == real_root:
-        return True
-    # Profile home directly under the production root: <root>/profiles/<name>
-    return resolved.parent.name == "profiles" and resolved.parent.parent == real_root
+    for real_root in _production_hermes_roots():
+        if resolved == real_root:
+            return True
+        # Profile home directly under the production root: <root>/profiles/<name>
+        if resolved.parent.name == "profiles" and resolved.parent.parent == real_root:
+            return True
+    return False
 
 
 if _hermes_home_points_at_production(os.environ.get("HERMES_HOME", "")):
@@ -286,6 +320,15 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_SESSION_KEY",
     "HERMES_GATEWAY_SESSION",
     "HERMES_CRON_SESSION",
+    # Desktop/serve runtime: the Hermes Desktop app exports these to every
+    # shell it hands out, so the suite inherits them whenever pytest is run
+    # from inside a Hermes session. HERMES_SERVE_HEADLESS flips mount_spa()
+    # into its no-frontend branch and HERMES_WEB_DIST is read at IMPORT time
+    # (before any fixture can run), so the namespace scrub below is what
+    # actually neutralises them — named here so the registry documents them.
+    "HERMES_DESKTOP",
+    "HERMES_SERVE_HEADLESS",
+    "HERMES_WEB_DIST",
     "_HERMES_GATEWAY",
     "HERMES_PLATFORM",
     "HERMES_MODEL",
@@ -450,6 +493,74 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "DINGTALK_REQUIRE_MENTION",
     "MATRIX_REQUIRE_MENTION",
 })
+
+
+# ── Inherited Hermes runtime env ────────────────────────────────────────────
+# The suite is routinely launched from INSIDE a Hermes session (the desktop
+# app's terminal, a gateway-spawned shell, an agent's own tool call). Those
+# parents hand the child their runtime state: HERMES_DESKTOP=1,
+# HERMES_SERVE_HEADLESS=1, HERMES_WEB_DIST=<packaged dist>, HERMES_RPC_*,
+# the HERMES_SESSION_* identity, ... That state configures the process that
+# exported it, not the suite, and a per-test delenv cannot repair it: product
+# code reads some of it at IMPORT time (``hermes_cli.web_server.WEB_DIST`` is
+# frozen when the module is first imported, during collection) or per call
+# (``mount_spa``/``_serve_index`` branch on HERMES_SERVE_HEADLESS).
+#
+# Measured on unmodified main from a Desktop session: HERMES_SERVE_HEADLESS
+# alone turns tests/hermes_cli/test_web_server.py red — the headless
+# no-frontend catch-all answers instead of the SPA, so "GET /chat" 404s and
+# "GET / with no dist" 200s — and other inherited session vars fail 6 tests in
+# tests/gateway/test_hosted_room_peer.py. All of them pass once the namespace
+# is scrubbed.
+#
+# So scrub the whole namespace once, at import, and keep the names below: they
+# are instructions TO the run (runner configuration, opt-ins, the sandbox home)
+# rather than inherited state. ``_HERMES_BEHAVIORAL_VARS`` above stays too — it
+# covers non-HERMES_ names and vars a *test* writes into os.environ mid-run.
+_HERMES_ENV_ALLOWLIST = frozenset({
+    # Owned by this conftest: the per-session sandbox home (a custom,
+    # non-production HERMES_HOME is deliberately honored, see above) and the
+    # subprocess-surviving isolation marker.
+    "HERMES_HOME",
+    "HERMES_TEST_ISOLATION",
+    # Windows dev shells: bash resolution for tests that spawn real shells.
+    # CI never sets it, so scrubbing only ever breaks a developer's run.
+    "HERMES_GIT_BASH_PATH",
+    # Runner configuration and opt-ins (see scripts/run_tests.sh). Scrubbing
+    # these would silently disable a lane the operator explicitly asked for.
+    "HERMES_TEST_IMAGE",
+    "HERMES_TEST_WORKERS",
+    "HERMES_TEST_PATHS",
+    "HERMES_TEST_FILE_TIMEOUT",
+    "HERMES_TEST_FILE_RETRIES",
+    "HERMES_TEST_SLICE",
+    "HERMES_LIVE_TESTS",
+    "HERMES_RUN_SLOW_PET_TESTS",
+    "HERMES_E2E_BROWSER",
+    "HERMES_PYTHON_SRC_ROOT",
+})
+
+
+def _scrub_inherited_hermes_env(environ=None) -> list[str]:
+    """Unset inherited ``HERMES_*`` runtime vars, keeping the allowlist.
+
+    Returns the names removed so a test can pin the contract without touching
+    the live environment.
+    """
+    target = os.environ if environ is None else environ
+    removed = sorted(
+        name
+        for name in list(target)
+        if name.startswith("HERMES_") and name not in _HERMES_ENV_ALLOWLIST
+    )
+    for name in removed:
+        target.pop(name, None)
+    return removed
+
+
+# Import time — before any test module (or its transitive deps) can freeze an
+# inherited value into a module-level constant.
+_SCRUBBED_INHERITED_HERMES_ENV = _scrub_inherited_hermes_env()
 
 
 @pytest.fixture(autouse=True)

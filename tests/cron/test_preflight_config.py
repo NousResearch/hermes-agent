@@ -26,6 +26,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import cron.jobs as cron_jobs
 from cron.scheduler import run_job
 import cron.scheduler as sched
+import cron.scheduler_delivery as scheduler_delivery
+import cron.scheduler_preflight as scheduler_preflight
 
 
 _RUNTIME = {
@@ -340,3 +342,38 @@ class TestDeliveryPlatform:
 
         assert success is True
         assert agent_constructed is True
+
+
+class TestWhatsAppCloudDelivery:
+    """``deliver: whatsapp_cloud`` must be an accepted cron delivery target.
+
+    ``whatsapp_cloud`` is a BUILT-IN gateway adapter, not a plugin, so
+    ``_plugin_cron_env_var`` can never resolve it and the hardcoded
+    ``_KNOWN_DELIVERY_PLATFORMS`` set (now defined in
+    ``cron.scheduler_delivery``, split out of ``cron.scheduler`` — see
+    COMPAT_MANIFEST.md) is the only place it can be declared. The rest of
+    the stack already supports it — ``_HOME_TARGET_ENV_VARS`` maps it to
+    ``WHATSAPP_CLOUD_HOME_CHANNEL`` and ``gateway/config.py`` reports it
+    among the connectable platforms — so without this entry preflight
+    blocked every ``deliver: whatsapp_cloud`` job as "not a known cron
+    delivery target", which no amount of configuration could fix.
+    """
+
+    def test_whatsapp_cloud_is_a_known_delivery_platform(self):
+        assert scheduler_delivery._is_known_delivery_platform("whatsapp_cloud") is True
+
+    def test_whatsapp_cloud_resolves_its_home_channel_env_var(self):
+        assert (
+            scheduler_delivery._resolve_home_env_var("whatsapp_cloud")
+            == "WHATSAPP_CLOUD_HOME_CHANNEL"
+        )
+
+    def test_preflight_does_not_reject_whatsapp_cloud_as_unknown(self):
+        # Gateway config unavailable => the credential half of the check fails
+        # open, so the only reason left would be "unknown platform".
+        with patch("gateway.config.load_gateway_config",
+                   side_effect=RuntimeError("gateway config unavailable")):
+            reason = scheduler_preflight._preflight_check_delivery(
+                {"deliver": "whatsapp_cloud"})
+
+        assert reason is None

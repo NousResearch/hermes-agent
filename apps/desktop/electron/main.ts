@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -397,7 +397,14 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
-import { branchTipApiUrl, cacheIsFresh, compareApiUrl, githubRepoSlug, parseCompare } from './update-api-check'
+import {
+  branchTipApiUrl,
+  cacheIsFresh,
+  compareApiUrl,
+  githubRepoSlug,
+  parseCompare,
+  resolveGitHubToken
+} from './update-api-check'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
@@ -3342,7 +3349,49 @@ function describeUpdateCheckFailure(error) {
   return `api.github.com: ${error?.message || String(error)}`
 }
 
-function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
+// Anonymous api.github.com is 60 requests/hour *per IP* — shared with every
+// other unauthenticated caller behind the same NAT, and exhausted for long
+// stretches once something else on that IP polls. Authenticated calls get
+// 5000/hour per user, so attach the credential the machine already has, in the
+// order tools/skills_hub_github.py::GitHubAuth uses: the process env (CLI
+// launches), then GITHUB_TOKEN in ~/.hermes/.env (GUI launches inherit no shell
+// env), then `gh auth token`. Resolved once per process.
+let githubApiTokenCache: Promise<string> | undefined
+
+function githubApiToken() {
+  if (githubApiTokenCache === undefined) {
+    githubApiTokenCache = resolveGitHubToken(
+      process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '',
+      () => {
+        try {
+          return fs.readFileSync(path.join(HERMES_HOME, '.env'), 'utf8')
+        } catch {
+          return ''
+        }
+      },
+      ghCliAuthToken
+    )
+  }
+
+  return githubApiTokenCache
+}
+
+// `gh auth token` through the same binary resolution the rest of the desktop
+// uses: GUI-launched apps get a PATH without Homebrew, so a bare `gh` ENOENTs.
+function ghCliAuthToken() {
+  return new Promise<string>(resolve => {
+    execFile(
+      resolveGhBinary(),
+      ['auth', 'token'],
+      { timeout: 5_000, windowsHide: true },
+      (error, stdout) => resolve(error ? '' : String(stdout))
+    )
+  })
+}
+
+async function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
+  const token = await githubApiToken()
+
   return new Promise((resolve, reject) => {
     const req = https.get(
       url,
@@ -3350,7 +3399,8 @@ function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
         headers: {
           Accept: accept,
           // GitHub requires a UA on api.github.com; requests without one 403.
-          'User-Agent': 'hermes-desktop-update-check'
+          'User-Agent': 'hermes-desktop-update-check',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
         },
         timeout: 10_000
       },

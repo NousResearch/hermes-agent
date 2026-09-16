@@ -3,7 +3,12 @@ import { type RefObject, useCallback, useLayoutEffect, useState } from 'react'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 
 /** Reserve actual chrome intersections, including after a neighbor becomes a rail. */
-export function usePanelTitlebar(ref: RefObject<HTMLElement | null>, enabled: boolean, minimized: boolean) {
+export function usePanelTitlebar(
+  ref: RefObject<HTMLElement | null>,
+  enabled: boolean,
+  minimized: boolean,
+  keepTabsBelowControls = false
+) {
   const [belowControls, setBelowControls] = useState(true)
 
   const measure = useCallback(() => {
@@ -34,8 +39,8 @@ export function usePanelTitlebar(ref: RefObject<HTMLElement | null>, enabled: bo
     const right = Math.min(rect.width - left, Math.max(0, rect.right - rightControls.left + 24))
     element.style.setProperty('--panel-titlebar-left', `${left}px`)
     element.style.setProperty('--panel-titlebar-right', `${right}px`)
-    setBelowControls(minimized || rect.width - left - right < 120)
-  }, [enabled, minimized, ref])
+    setBelowControls(keepTabsBelowControls || minimized || rect.width - left - right < 120)
+  }, [enabled, keepTabsBelowControls, minimized, ref])
 
   useResizeObserver(measure, ref)
   useLayoutEffect(() => {

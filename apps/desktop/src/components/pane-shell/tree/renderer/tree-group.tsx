@@ -239,8 +239,6 @@ export function TreeGroup({
   // The scrolling tab list inside the header (the strip also holds the
   // minimize chevron, which must not scroll away).
   const tabsRef = useRef<HTMLDivElement>(null)
-  const tabsBelowControls = usePanelTitlebar(ref, topEdge, Boolean(node.minimized))
-  const tabsInTitlebar = topEdge && !tabsBelowControls
   // The chip under the last right-click — the pane the zone menu's Split
   // actions carry into the new zone (header background = the active pane).
   // STATE, not a ref: the menu items (incl. Close's visibility) are JSX
@@ -284,6 +282,17 @@ export function TreeGroup({
     Boolean(paneFor(id)) && (editMode || !hiddenPanes.has(id)) && !(narrow && paneChrome(paneFor(id)).collapsible)
 
   const shown = node.panes.filter(paneShown)
+  // Standing sidebars keep their tabs on the same row as their content grows
+  // or the window changes width. Otherwise the width probe moves the entire
+  // Sessions/Bots strip between rows during a sash or window resize.
+  const standingSidebar =
+    shown.length > 0 &&
+    shown.every(id => {
+      const chrome = paneChrome(paneFor(id))
+      return chrome.hideOnly && (chrome.placement === 'left' || chrome.placement === 'right')
+    })
+  const tabsBelowControls = usePanelTitlebar(ref, topEdge, Boolean(node.minimized), standingSidebar)
+  const tabsInTitlebar = topEdge && !tabsBelowControls
   const memoryKey = workspaceScopeKey(workspaceMode, workspaceOwnerKey)
 
   const activeId = shown.includes(node.active)

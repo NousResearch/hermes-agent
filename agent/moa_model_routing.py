@@ -37,7 +37,7 @@ from agent.model_selection_types import RoutingBlocked
 
 __all__ = [
     "resolve_moa_slot_route", "moa_runtime_overrides", "enforce_moa_slot_route",
-    "MoARoutingBlocked", "MoARequiredSlotDenied", "is_moa_slot_required",
+    "MoARoutingBlocked", "MoARequiredSlotDenied", "is_moa_slot_required", "resolve_moa_cohort",
 ]
 
 DEFAULT_MOA_POLICY_ID = "kanban-default"
@@ -48,15 +48,16 @@ class MoARoutingBlocked(RoutingBlocked):
 
 
 class MoARequiredSlotDenied(MoARoutingBlocked):
-    """A managed slot that is REQUIRED (the default whenever ``routing_role`` is set, per design
-    §6 "MoA": "Missing/partial required output fails that review attempt... No silent
-    optional-reference or aggregator-only mode") could not resolve a route or was denied at the
-    call-boundary guard. The caller (``agent.moa_loop``) MUST propagate this as a hard failure of
-    the whole MoA attempt -- never swallow it into a labelled ``[failed: ...]`` note that quietly
-    degrades into aggregator-only/empty synthesis, and never let it fall through to an unmanaged
-    continuation. A slot may opt out of this by setting
-    ``routing_requirements: {"required": false}`` explicitly (preserves allowed partial/quorum
-    behavior for genuinely optional managed slots)."""
+    """A managed slot's route could not be resolved, or was denied at the call-boundary guard.
+
+    Per the BINDING design (plan §6 "MoA": "Missing/partial required output fails that review
+    attempt... No silent optional-reference or aggregator-only mode"), a managed slot
+    (``routing_role`` set) is REQUIRED BY DEFAULT -- the caller (``agent.moa_loop``) MUST
+    propagate this as a hard failure of the whole MoA attempt: never swallow it into a labelled
+    ``[failed: ...]`` note that quietly degrades into aggregator-only/empty synthesis, and never
+    let it fall through to an unmanaged continuation. A slot may opt OUT of this only via an
+    explicit ``routing_requirements: {"required": false}`` (a genuinely optional managed slot);
+    absence of the field, or ``required: true``, both mean required."""
 
     def __init__(self, slot_id: str, role: str, reason: str, detail: str = ""):
         self.slot_id = slot_id
@@ -65,15 +66,15 @@ class MoARequiredSlotDenied(MoARoutingBlocked):
 
 
 def is_moa_slot_required(slot: dict) -> bool:
-    """A managed slot (``routing_role`` set) is required ONLY when it opts in explicitly via
-    ``routing_requirements: {"required": true}``. This is intentionally NOT the default for
-    every ``routing_role`` slot: the pre-existing contract (test_moa_guided_routing_live_http.py
-    ``test_managed_reference_slot_denied_route_reaches_zero_endpoints`` /
-    ``test_managed_aggregator_denied_route_never_reaches_endpoint``) is that a denied managed
-    slot degrades to the ordinary labelled ``[failed: ...]`` note / "proceeding without
-    aggregated guidance" text -- zero content reaches the endpoint, but the turn still
-    completes. Only a slot that explicitly asks to gate the whole attempt on its success uses
-    the hard fail-closed path implemented here.
+    """Whether a managed slot (``routing_role`` set) gates the whole MoA attempt on its success.
+
+    BINDING default (plan §6 "MoA"): every managed slot is required. "Missing/partial required
+    output fails that review attempt" and "No silent optional-reference or aggregator-only
+    mode" are unconditional for the managed cohort -- a denied managed reference or aggregator
+    must raise, not degrade to a labelled ``[failed: ...]`` note that lets the turn quietly
+    complete as if the gate had passed. The ONLY way to keep a managed slot genuinely optional is
+    an explicit, operator-supplied ``routing_requirements: {"required": false}`` -- never a
+    default, and never inferred from a task/model-proposed classification.
     """
     if not isinstance(slot, dict):
         return False
@@ -81,7 +82,179 @@ def is_moa_slot_required(slot: dict) -> bool:
     if not (isinstance(role, str) and role.strip()):
         return False
     requirements = slot.get("routing_requirements")
-    return isinstance(requirements, dict) and requirements.get("required") is True
+    if isinstance(requirements, dict) and requirements.get("required") is False:
+        return False
+    return True
+
+
+def _resolved_maker(resolution: dict) -> str:
+    """The curated maker identity behind a receipted resolution -- read from the PERSISTED
+    receipt (``agent.model_selection_store.get_receipt``), never from slot-supplied text. A slot
+    cannot spoof independence by claiming its own maker: the roster/policy is the sole source of
+    truth for ``selected.maker`` (design §12 "Identity, provenance and classification")."""
+    from agent.model_selection_store import get_receipt
+
+    decision = get_receipt(resolution["routing_home"], resolution["receipt_id"])
+    if decision is None:
+        raise MoARoutingBlocked(
+            "stale_or_revoked_decision",
+            f"no routing receipt found for id={resolution['receipt_id']!r} while checking cohort maker diversity",
+        )
+    maker = decision["selected"].get("maker")
+    if not maker or str(maker).strip().lower() == "moa":
+        # Design §6: "the virtual maker 'moa' cannot satisfy an independence constraint."
+        raise MoARoutingBlocked(
+            "independence_unavailable",
+            f"resolved route has no real maker identity (maker={maker!r}); the virtual 'moa' "
+            "maker or an unknown maker cannot satisfy cohort diversity",
+        )
+    return str(maker)
+
+
+def resolve_moa_cohort(
+    reference_slots: list, aggregator: dict, *, execution_id: str,
+) -> dict:
+    """Resolve the COMPLETE MoA cohort (every reference slot plus the aggregator) ONCE, and
+    validate joint cohort diversity/independence before any content is sent to any slot (design
+    §6 "MoA": "Resolve the complete cohort once per MoA run and bind an immutable effective
+    preset to that client"; "Joint selection validates required cohort diversity/independence
+    and actual maker identities").
+
+    Returns ``{slot_id: resolution_or_None}`` -- ``None`` for an unmanaged slot (no
+    ``routing_role``), a ``resolve_moa_slot_route``-shaped dict for a managed one. Callers
+    (``agent.moa_loop``) MUST reuse these resolutions verbatim for the actual calls rather than
+    re-resolving per-slot -- re-resolving independently is exactly the bug this function fixes
+    (a joint cohort check cannot be expressed as N independent per-slot resolutions).
+
+    Raises ``MoARoutingBlocked``/``MoARequiredSlotDenied`` before ANY slot is called when:
+      * any REQUIRED slot's individual route resolution fails (missing policy, no qualified
+        route, independence unavailable for that slot alone), or
+      * the cohort of REQUIRED reference slots that resolve successfully has fewer than 2
+        distinct real maker identities among 2+ required references (design §6: "two required
+        references from different approved makers"). The aggregator MAY share a reference's
+        maker (design §6 explicitly allows this) so it is resolved but not counted in the
+        reference-diversity check.
+
+    A cohort with fewer than 2 managed required references (e.g. a single-reference preset, or a
+    fully unmanaged preset) has nothing to diversify and is not rejected on diversity grounds --
+    this function only enforces the plan's specific "two distinct-maker references" shape when
+    that shape is actually present (2+ required managed references), never invents a floor a
+    smaller/unmanaged preset never opted into.
+    """
+    resolutions: dict = {}
+    required_reference_makers: dict = {}
+    excluded_makers: set = set()
+
+    for idx, slot in enumerate(reference_slots):
+        slot_id = f"reference-{idx}"
+        resolve_slot = slot
+        if is_moa_slot_required(slot) and excluded_makers:
+            # Actively diversify: exclude makers already used by an EARLIER required reference
+            # in this same cohort, using the same real contributing-maker exclusion `select()`
+            # already implements for review roles (agent.model_selection._contributing_makers) --
+            # never a fabricated route filter, just the genuine mechanism fed real prior-cohort
+            # identities (design §6: "Joint selection validates required cohort diversity").
+            existing_requirements = slot.get("routing_requirements")
+            existing_requirements = dict(existing_requirements) if isinstance(existing_requirements, dict) else {}
+            existing_requirements["provenance"] = {
+                "frozen_sha": "0" * 40, "verified_by": "moa-cohort-diversity", "complete": True,
+                "contributors": [{"maker": m} for m in sorted(excluded_makers)],
+            }
+            resolve_slot = dict(slot)
+            resolve_slot["routing_requirements"] = existing_requirements
+        try:
+            resolution = resolve_moa_slot_route(resolve_slot, execution_id=execution_id, slot_id=slot_id)
+        except RoutingBlocked as exc:
+            if is_moa_slot_required(slot):
+                raise MoARequiredSlotDenied(slot_id, slot.get("routing_role", ""), exc.reason, exc.detail) from exc
+            resolutions[slot_id] = None
+            continue
+        resolutions[slot_id] = resolution
+        if resolution is not None and is_moa_slot_required(slot):
+            maker = _resolved_maker(resolution)
+            required_reference_makers[slot_id] = maker
+            excluded_makers.add(maker)
+
+    try:
+        agg_resolution = resolve_moa_slot_route(aggregator, execution_id=execution_id, slot_id="aggregator")
+    except RoutingBlocked as exc:
+        if is_moa_slot_required(aggregator):
+            raise MoARequiredSlotDenied("aggregator", aggregator.get("routing_role", ""), exc.reason, exc.detail) from exc
+        agg_resolution = None
+    resolutions["aggregator"] = agg_resolution
+
+    if len(required_reference_makers) >= 2 and len(set(required_reference_makers.values())) < 2:
+        raise MoARoutingBlocked(
+            "independence_unavailable",
+            "managed required references resolved to fewer than 2 distinct makers "
+            f"({sorted(set(required_reference_makers.values()))}); design §6 requires two "
+            "required references from different approved makers",
+        )
+    return resolutions
+
+
+import threading as _threading
+
+# Pinned-cohort cache (design §6 "MoA": "Resolve the complete cohort once per MoA run and bind
+# an immutable effective preset to that client... Cohort resumes only within the original live
+# pinned run; restarting a failed cohort is a new attempt"). Keyed by execution_id so repeated
+# fanout iterations and aggregator calls within the SAME run reuse the identical resolutions --
+# a config edit mid-run cannot reroute an already-pinned cohort, and a slot is never re-resolved
+# (no repeated reselection per iteration).
+_cohort_cache_lock = _threading.Lock()
+_cohort_cache: dict = {}
+
+
+def resolve_moa_cohort_pinned(
+    reference_slots: list, aggregator: dict, *, execution_id: str,
+) -> dict:
+    """Cached wrapper over ``resolve_moa_cohort``: the FIRST call for a given ``execution_id``
+    performs the real joint resolution (and may raise); every subsequent call for the SAME
+    ``execution_id`` within the same process returns the identical pinned resolutions dict
+    without re-resolving or re-validating diversity, even if the live policy changed in
+    between -- config/policy edits take effect on the NEXT run's execution_id, never retroactively
+    reroute an in-flight one.
+    """
+    with _cohort_cache_lock:
+        cached = _cohort_cache.get(execution_id)
+    if cached is not None:
+        return cached
+    resolved = resolve_moa_cohort(reference_slots, aggregator, execution_id=execution_id)
+    with _cohort_cache_lock:
+        _cohort_cache.setdefault(execution_id, resolved)
+        return _cohort_cache[execution_id]
+
+
+def resolve_moa_slot_route_pinned(
+    slot: dict, *, execution_id: str, attempt_id: str = "0", slot_id: str,
+) -> "Optional[dict]":
+    """Per-slot pinned wrapper over ``resolve_moa_slot_route`` (design §6 "MoA": "Resolve the
+    complete cohort once per MoA run and bind an immutable effective preset to that client").
+
+    The FIRST resolution for a given ``(execution_id, slot_id)`` is cached; every later call
+    within the same run (repeated fan-out iterations, the aggregator call after fan-out, a live
+    config/policy edit mid-run) returns the SAME resolution rather than re-resolving -- a config
+    change takes effect on the NEXT run's execution_id only, never reroutes an in-flight one, and
+    a slot is never reselected per iteration.
+    """
+    key = (execution_id, slot_id)
+    with _cohort_cache_lock:
+        per_slot = _cohort_cache.setdefault("__slots__", {})
+        if key in per_slot:
+            return per_slot[key]
+    resolved = resolve_moa_slot_route(slot, execution_id=execution_id, attempt_id=attempt_id, slot_id=slot_id)
+    with _cohort_cache_lock:
+        per_slot = _cohort_cache.setdefault("__slots__", {})
+        per_slot.setdefault(key, resolved)
+        return per_slot[key]
+
+
+def _forget_cohort(execution_id: str) -> None:
+    """Test/cleanup helper: drop a pinned cohort so a NEW attempt (never the same execution_id)
+    can resolve fresh. Production code never calls this for a live execution_id -- restarting a
+    failed cohort means a new attempt with a new execution_id, per design §6."""
+    with _cohort_cache_lock:
+        _cohort_cache.pop(execution_id, None)
 
 
 def _slot_intake(slot: dict) -> tuple[Optional[str], Optional[dict], Optional[str]]:

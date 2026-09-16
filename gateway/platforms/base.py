@@ -3322,8 +3322,8 @@ class BasePlatformAdapter(ABC):
             self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, eph_ttl)
 
     def _media_delivery_scope(self, source: Optional[SessionSource]):
-        """The runner's ``_media_delivery_scope_for_source`` (routed profile's home + terminal
-        policy) for validating outbound paths; a no-op without a runner or outside multiplexing."""
+        """Routed home + terminal policy for post-handler text, media and error delivery;
+        a no-op without a runner or outside multiplexing."""
         resolve = getattr(self.gateway_runner, "_media_delivery_scope_for_source", None)
         if not callable(resolve) or source is None:
             return contextlib.nullcontext()
@@ -4046,18 +4046,20 @@ class BasePlatformAdapter(ABC):
         a failing notice is logged, never raised). Returns the thread metadata used."""
         _thread_metadata = None
         from gateway.warning_notifications import diagnostic_wake_muted
-        with self._media_delivery_scope(event.source):
-            if diagnostic_wake_muted(event):
-                return _thread_metadata_for_event(event)
         try:
-            error_detail = str(e)[:300] if str(e) else "no details available"
-            _thread_metadata = _thread_metadata_for_event(event)
-            await self.send(
-                chat_id=event.source.chat_id,
-                content=((f"Sorry, I encountered an error ({type(e).__name__}).\n{error_detail}\n"
-                          "Try again or use /reset to start a fresh session.")
-                         if self.warning_notifications_enabled() else "Sorry, I encountered an error."),
-                metadata=_thread_metadata)
+            with self._media_delivery_scope(event.source):
+                _thread_metadata = _thread_metadata_for_event(event)
+                if diagnostic_wake_muted(event):
+                    return _thread_metadata
+                diagnostics_enabled = self.warning_notifications_enabled(
+                    event.source.platform, chat_id=event.source.chat_id, metadata=_thread_metadata)
+                error_detail = str(e)[:300] if str(e) else "no details available"
+                await self.send(
+                    chat_id=event.source.chat_id,
+                    content=((f"Sorry, I encountered an error ({type(e).__name__}).\n{error_detail}\n"
+                              "Try again or use /reset to start a fresh session.")
+                             if diagnostics_enabled else "Sorry, I encountered an error."),
+                    metadata=_thread_metadata)
         except Exception as notify_err:
             logger.error(
                 "[%s] Failed to send error notification to user: %s", self.name, notify_err, exc_info=True)
@@ -4199,50 +4201,52 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook("on_processing_start", event)
             response = await self._message_handler(event)
             from gateway.warning_notifications import diagnostic_wake_muted
+            # The handler has left the owner scope. Keep it for the whole delivery,
+            # including transport fallbacks, but exit before draining another turn.
             with self._media_delivery_scope(event.source):
                 if diagnostic_wake_muted(event):
                     response = None
-            is_ephemeral_response = isinstance(response, EphemeralReply)
-            # Unwrap EphemeralReply for downstream text processing; TTL applies after send.
-            response, _ephemeral_ttl = self._unwrap_ephemeral(response)
-            # None/empty is normal (streamed/queued). Suppress a stale response after an interrupt.
-            if response and interrupt_event.is_set() and session_key in self._pending_messages:
-                logger.info("[%s] Suppressing stale response for interrupted session %s", self.name,
-                            session_key)
-                response = None
-            if not response:
-                logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
-            else:
-                extracted = await self._extract_response_content(
-                    response, event, session_key, is_ephemeral_response=is_ephemeral_response)
-                text_content, media_files = extracted.text_content, extracted.media_files
-                # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
-                _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
-                _tts_paths, _tts_requested_path = [], None
-                if self._wants_auto_tts(
-                        event, session_key, interrupt_event, text_content, media_files):
-                    _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
-                # TTS plays before text; generated files are removed afterwards.
-                _tts_caption_delivered = False
-                for _tts_index, _tts_path in enumerate(_tts_paths):
-                    try:
-                        _tts_caption_delivered |= await self._play_tts_file(
-                            event, text_content, _tts_path, _tts_index == 0, _final_thread_metadata,
-                            _record_delivery)
-                    finally:
+                is_ephemeral_response = isinstance(response, EphemeralReply)
+                # Unwrap EphemeralReply for downstream text processing; TTL applies after send.
+                response, _ephemeral_ttl = self._unwrap_ephemeral(response)
+                # None/empty is normal (streamed/queued). Suppress a stale response after an interrupt.
+                if response and interrupt_event.is_set() and session_key in self._pending_messages:
+                    logger.info("[%s] Suppressing stale response for interrupted session %s", self.name,
+                                session_key)
+                    response = None
+                if not response:
+                    logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
+                else:
+                    extracted = await self._extract_response_content(
+                        response, event, session_key, is_ephemeral_response=is_ephemeral_response)
+                    text_content, media_files = extracted.text_content, extracted.media_files
+                    # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
+                    _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                    _tts_paths, _tts_requested_path = [], None
+                    if self._wants_auto_tts(
+                            event, session_key, interrupt_event, text_content, media_files):
+                        _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
+                    # TTS plays before text; generated files are removed afterwards.
+                    _tts_caption_delivered = False
+                    for _tts_index, _tts_path in enumerate(_tts_paths):
+                        try:
+                            _tts_caption_delivered |= await self._play_tts_file(
+                                event, text_content, _tts_path, _tts_index == 0, _final_thread_metadata,
+                                _record_delivery)
+                        finally:
+                            with contextlib.suppress(OSError):
+                                os.remove(_tts_path)
+                    if not _tts_paths and _tts_requested_path is not None:
                         with contextlib.suppress(OSError):
-                            os.remove(_tts_path)
-                if not _tts_paths and _tts_requested_path is not None:
-                    with contextlib.suppress(OSError):
-                        os.remove(_tts_requested_path)
-                if text_content and not _tts_caption_delivered:
-                    await self._send_final_text(
-                        event, session_key, text_content, _final_thread_metadata,
-                        is_ephemeral_response, _ephemeral_ttl, _record_delivery)
-                await self._deliver_attachments(
-                    event, extracted, _final_thread_metadata,
-                    anything_sent=delivery_attempted or _tts_caption_delivered,
-                    record_delivery=_record_delivery)
+                            os.remove(_tts_requested_path)
+                    if text_content and not _tts_caption_delivered:
+                        await self._send_final_text(
+                            event, session_key, text_content, _final_thread_metadata,
+                            is_ephemeral_response, _ephemeral_ttl, _record_delivery)
+                    await self._deliver_attachments(
+                        event, extracted, _final_thread_metadata,
+                        anything_sent=delivery_attempted or _tts_caption_delivered,
+                        record_delivery=_record_delivery)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(

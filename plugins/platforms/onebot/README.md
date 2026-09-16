@@ -49,7 +49,7 @@ gateway:
         host: "0.0.0.0"            # reverse: address to listen on
         port: 8643                 # reverse: listen port
         # url: "ws://127.0.0.1:3001"   # forward: bridge ws endpoint
-        # access_token: ""         # must match the bridge's token, if set
+        # access_token: ""         # must match the bridge's token; REQUIRED when host is 0.0.0.0
         # bot_qq: ""               # optional; auto-learned from meta events
         require_mention: true      # groups: only reply when @'d
         dm_policy: open            # open | allowlist | disabled
@@ -100,6 +100,30 @@ Environment variables: `ONEBOT_ALLOWED_USERS` (comma-separated admin ids), `ONEB
 | `forward` | Hermes dials the bridge's WebSocket server (`ws://<bridge-host>:3001` for NapCat's default). |
 
 If the bridge uses an access token, set the same value in `access_token` (Hermes sends it as `Authorization: Bearer <token>` on the reverse connection; forward mode includes it in the handshake headers).
+
+### Token & network security
+
+The reverse listener serves more than the WebSocket: the local helper
+endpoints `/api/group_history`, `/api/napcat` and `/api/send_media` (used by
+the qq_* model tools) hang off the same `host:port`, and all of them sit
+behind one shared auth gate:
+
+- **`access_token` set**: every request to `/ws` and `/api/*` must carry
+  `Authorization: Bearer <token>`; anything else gets `401`.
+- **`access_token` empty**: only loopback clients (`127.0.0.1` / `::1`) are
+  served; requests from other addresses get `401` and a WARNING is logged per
+  request. Default `127.0.0.1` deployments are unaffected.
+
+**If `host` is set to `0.0.0.0` (or any other non-loopback address), you MUST
+set `access_token`.** Without a token, any host that can reach the port can
+connect to `/ws` as if it were your bridge, while the local helper endpoints
+stay locked to loopback — leaving a `0.0.0.0` deployment unauthenticated for
+the very protocol it was bound for.
+
+Known limitation: the bundled qq_* model tools do not send credentials yet,
+so once `access_token` is set their calls to `/api/*` return 401 until
+tool-side auth support is added. Loopback deployments without a token are
+unaffected.
 
 ### NapCat-side setup (required)
 

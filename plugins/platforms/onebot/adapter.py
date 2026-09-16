@@ -34,8 +34,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hmac
 import importlib
 import io
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -104,6 +106,24 @@ def _set_hot_reload(enabled: bool) -> None:
     """开关 mtime 热加载（生产部署建议关闭；开发迭代样式时开启）。"""
     global _HOT_RELOAD
     _HOT_RELOAD = bool(enabled)
+
+
+def _is_loopback_peer(peer: Optional[str]) -> bool:
+    """True 仅当对端地址为 loopback（127.0.0.0/8、::1、IPv4-mapped loopback）。
+
+    无法解析的地址一律 False（fail-closed）。供 `_check_api_auth` 在未配
+    access_token 时判定对端来源；HTTP 头之外还可能出现 v4-mapped 形式，
+    统一在这里归一。
+    """
+    if not peer:
+        return False
+    try:
+        addr = ipaddress.ip_address(peer.strip("[]"))
+    except ValueError:
+        return False
+    if addr.version == 6 and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return addr.is_loopback
 
 
 def _load_onebot_utils():
@@ -392,13 +412,47 @@ class OneBotAdapter(BasePlatformAdapter):
             self._host, self._port,
         )
 
+    def _check_api_auth(self, request: web.Request) -> bool:
+        """统一鉴权闸门：/api/group_history、/api/napcat、/api/send_media 共用。
+
+        语义与日志风格对齐 `_handle_reverse_ws` 的 Bearer 检查：
+        - 已配 access_token：必须携带 `Authorization: Bearer <token>`，否则
+          拒绝（调用方回 401）——loopback 来源也不例外；
+        - 未配 token：仅 loopback 对端放行（默认 127.0.0.1 部署向后兼容），
+          非 loopback 一律拒绝；放行与拒绝都记 WARNING，便于发现裸奔部署。
+        返回 True = 放行。
+        """
+        if self._access_token:
+            auth = request.headers.get("Authorization", "")
+            expected = f"Bearer {self._access_token}"
+            # compare_digest 按字节比较：凭证头出现非 ASCII 也不会 TypeError → 500
+            if not hmac.compare_digest(auth.encode("utf-8"), expected.encode("utf-8")):
+                logger.warning("[onebot] /api auth rejected")
+                return False
+            return True
+        peer = request.remote or ""
+        if _is_loopback_peer(peer):
+            logger.warning(
+                "[onebot] /api no access_token configured; allowed loopback request from %s",
+                peer,
+            )
+            return True
+        logger.warning(
+            "[onebot] /api rejected non-loopback request from %s (no access_token configured)",
+            peer,
+        )
+        return False
+
     async def _handle_group_history(self, request: web.Request) -> web.Response:
         """Local helper endpoint: pull group message history via NapCat API.
 
         GET /api/group_history?group_id=123456789&count=20[&message_seq=N]
         Reuses the reverse-WS echo mechanism, so it works without an HTTP API
-        on the NapCat side. No auth (loopback/LAN only) — same posture as /ws.
+        on the NapCat side. Auth: shared `_check_api_auth` gate — Bearer token
+        required when `access_token` is set, loopback-only otherwise (401).
         """
+        if not self._check_api_auth(request):
+            return web.json_response({"status": "error", "error": "unauthorized"}, status=401)
         try:
             group_id = int(request.query.get("group_id", "0") or "0")
             count = int(request.query.get("count", "20") or "20")
@@ -417,8 +471,11 @@ class OneBotAdapter(BasePlatformAdapter):
         """Whitelisted NapCat action proxy for the qq_napcat_api tool.
 
         GET /api/napcat?action=<action>&params=<urlencoded-json>
-        Same loopback/LAN posture as /api/group_history (no auth).
+        Same auth gate as /api/group_history (`_check_api_auth`): Bearer token
+        required when `access_token` is set, loopback-only otherwise (401).
         """
+        if not self._check_api_auth(request):
+            return web.json_response({"status": "error", "error": "unauthorized"}, status=401)
         action = request.query.get("action", "")
         from plugins.platforms.onebot.tools import NAPCAT_API_WHITELIST
 
@@ -446,7 +503,12 @@ class OneBotAdapter(BasePlatformAdapter):
           - kind=video:   {path}
           - kind=file:    {path, file_name?}
           - kind=forward: {nodes: [{name, content}]}
+        Auth: shared `_check_api_auth` gate — this endpoint forwards local
+        files into a chat, so without valid credentials it never reaches a
+        send (401); loopback-only when no token is configured.
         """
+        if not self._check_api_auth(request):
+            return web.json_response({"status": "error", "error": "unauthorized"}, status=401)
         try:
             payload = await request.json()
         except Exception:

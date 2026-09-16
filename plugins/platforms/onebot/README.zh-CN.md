@@ -47,7 +47,7 @@ gateway:
         host: "0.0.0.0"            # reverse: 监听地址
         port: 8643                 # reverse: 监听端口
         # url: "ws://127.0.0.1:3001"   # forward: 桥接 ws 端点
-        # access_token: ""         # 必须与桥的 token 一致（如有）
+        # access_token: ""         # 必须与桥的 token 一致；host 为 0.0.0.0 时必配
         # bot_qq: ""               # 可选；自动从 meta 事件学习
         require_mention: true      # 群聊：仅被 @ 时回复
         dm_policy: open            # open | allowlist | disabled
@@ -97,6 +97,23 @@ gateway:
 | `forward` | Hermes 主动拨桥的 WebSocket 服务端（NapCat 默认 `ws://<bridge-host>:3001`）。 |
 
 桥若使用 access token，`access_token` 要设同值（reverse 连接上 Hermes 以 `Authorization: Bearer <token>` 发送；forward 模式在握手头里带）。
+
+### Token 与网络安全
+
+反向监听端口上不只挂着 WebSocket：本地辅助端点 `/api/group_history`、`/api/napcat`、
+`/api/send_media`（供 qq_* 模型工具使用）也在同一个 `host:port` 上，三者共用同一道鉴权闸门：
+
+- **设置了 `access_token`**：对 `/ws` 与 `/api/*` 的所有请求都必须携带
+  `Authorization: Bearer <token>`，否则一律 401。
+- **未设置 `access_token`**：仅放行 loopback 客户端（`127.0.0.1` / `::1`）；
+  其他来源一律 401 并逐条记录 WARNING。默认 `127.0.0.1` 部署不受影响。
+
+**`host` 配 `0.0.0.0`（或任何非 loopback 地址）时必须设置 `access_token`**：
+不配 token 时，能连上端口的任意主机都能以“桥”的身份接入 `/ws`，而本地辅助端点
+又只对 loopback 放行——等于绑定 `0.0.0.0` 却让桥协议处于无鉴权状态。
+
+已知限制：内置 qq_* 模型工具暂未携带凭证，设置 `access_token` 后它们调用
+`/api/*` 会收到 401，待工具侧补齐鉴权支持；未配 token 的 loopback 部署不受影响。
 
 ### NapCat 侧配置（必做）
 

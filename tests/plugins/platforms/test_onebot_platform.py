@@ -8,6 +8,7 @@ rendering, and a live reverse-WS round trip against a fake NapCat client.
 import asyncio
 import base64
 import json
+import logging
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -18,6 +19,7 @@ from gateway.config import Platform, PlatformConfig
 from plugins.platforms.onebot.adapter import (
     MAX_MESSAGE_LENGTH,
     OneBotAdapter,
+    _is_loopback_peer,
     render_text_image,
 )
 from plugins.platforms.onebot.onebot_utils import (
@@ -1279,6 +1281,7 @@ async def _start_api_server(adapter):
     from aiohttp import web
 
     app = web.Application()
+    app.router.add_get("/api/group_history", adapter._handle_group_history)
     app.router.add_get("/api/napcat", adapter._handle_napcat_api)
     app.router.add_post("/api/send_media", adapter._handle_send_media)
     runner = web.AppRunner(app)
@@ -1551,3 +1554,225 @@ def test_local_command_ocr_uses_last_inbound_image(monkeypatch) -> None:
         if p[0] == "send_msg"
     ]
     assert any("OCR 结果" in t and "第一行" in t for t in texts)
+
+
+# ---------------------------------------------------------------------------
+# /api/* auth gate (PR #84202 second-round review 4.1): _check_api_auth
+# ---------------------------------------------------------------------------
+
+
+def test_api_auth_token_missing_credentials_rejected() -> None:
+    """已配 access_token：三端点无凭证 → 401，且不触发任何 action。"""
+    from aiohttp import ClientSession
+
+    adapter = _make_adapter(access_token="s3cret-token")
+    calls: list = []
+
+    async def fake_call(*args, **kwargs):
+        calls.append(args)
+        return {}
+
+    adapter._call_action = fake_call
+
+    async def run():
+        runner, port = await _start_api_server(adapter)
+        try:
+            async with ClientSession() as sess:
+                for method, url in (
+                    ("get", f"http://127.0.0.1:{port}/api/group_history?group_id=88888"),
+                    ("get", f"http://127.0.0.1:{port}/api/napcat?action=get_group_member_list"),
+                    ("post", f"http://127.0.0.1:{port}/api/send_media"),
+                ):
+                    kwargs: dict = (
+                        {"json": {"chat_id": "group:88888", "kind": "file", "path": "x"}}
+                        if method == "post"
+                        else {}
+                    )
+                    async with getattr(sess, method)(url, **kwargs) as resp:
+                        assert resp.status == 401, f"{url} 无凭证应 401"
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+    assert not calls, "被拒请求不得触发任何 NapCat action"
+
+
+def test_api_auth_token_wrong_credentials_rejected() -> None:
+    """已配 access_token：错凭证 → 401。"""
+    from aiohttp import ClientSession
+
+    adapter = _make_adapter(access_token="s3cret-token")
+    calls: list = []
+
+    async def fake_call(*args, **kwargs):
+        calls.append(args)
+        return {}
+
+    adapter._call_action = fake_call
+
+    async def run():
+        runner, port = await _start_api_server(adapter)
+        try:
+            async with ClientSession() as sess:
+                async with sess.get(
+                    f"http://127.0.0.1:{port}/api/group_history?group_id=88888",
+                    headers={"Authorization": "Bearer wrong-token"},
+                ) as resp:
+                    assert resp.status == 401
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+    assert not calls
+
+
+def test_api_auth_token_correct_credentials_accepted() -> None:
+    """已配 access_token：正确 Bearer → 200。"""
+    from aiohttp import ClientSession
+
+    adapter = _make_adapter(access_token="s3cret-token")
+
+    async def fake_call(action, params, timeout=15.0):
+        assert action == "get_group_msg_history"
+        return {"messages": []}
+
+    adapter._call_action = fake_call
+
+    async def run():
+        runner, port = await _start_api_server(adapter)
+        try:
+            async with ClientSession() as sess:
+                async with sess.get(
+                    f"http://127.0.0.1:{port}/api/group_history?group_id=88888",
+                    headers={"Authorization": "Bearer s3cret-token"},
+                ) as resp:
+                    assert resp.status == 200
+                    body = await resp.json()
+                    assert body["status"] == "ok"
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_api_auth_no_token_loopback_allowed_warns(caplog) -> None:
+    """未配 token：loopback 放行且记 WARNING。"""
+    from aiohttp import ClientSession
+
+    adapter = _make_adapter()
+
+    async def fake_call(action, params, timeout=30.0):
+        return [{"user_id": 123456789}]
+
+    adapter._call_action = fake_call
+
+    async def run():
+        runner, port = await _start_api_server(adapter)
+        try:
+            async with ClientSession() as sess:
+                async with sess.get(
+                    f"http://127.0.0.1:{port}/api/napcat?action=get_group_member_list"
+                ) as resp:
+                    assert resp.status == 200
+                    assert (await resp.json())["status"] == "ok"
+        finally:
+            await runner.cleanup()
+
+    with caplog.at_level(logging.WARNING, logger="plugins.platforms.onebot.adapter"):
+        asyncio.run(run())
+
+    warn_texts = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("no access_token" in t and "loopback" in t for t in warn_texts), warn_texts
+
+
+def test_api_auth_no_token_non_loopback_rejected() -> None:
+    """未配 token：非 loopback 对端 → 401（handler 级，mock 对端地址）。"""
+    from aiohttp.test_utils import make_mocked_request
+
+    adapter = _make_adapter()
+    calls: list = []
+
+    async def fake_call(*args, **kwargs):
+        calls.append(args)
+        return {}
+
+    adapter._call_action = fake_call
+
+    class _FakeTransport:
+        def __init__(self, peername):
+            self._peername = peername
+
+        def get_extra_info(self, name, default=None):
+            if name == "peername":
+                return self._peername
+            return default
+
+    def _req(method, path):
+        return make_mocked_request(
+            method, path, transport=_FakeTransport(("192.0.2.77", 55555))
+        )
+
+    async def run():
+        for handler, method, path in (
+            (adapter._handle_group_history, "GET", "/api/group_history?group_id=88888"),
+            (adapter._handle_napcat_api, "GET", "/api/napcat?action=get_group_member_list"),
+            (adapter._handle_send_media, "POST", "/api/send_media"),
+        ):
+            resp = await handler(_req(method, path))
+            assert resp.status == 401, f"{path} 非 loopback 应 401"
+
+    asyncio.run(run())
+    assert not calls
+
+
+def test_api_send_media_local_file_requires_credentials() -> None:
+    """send_media 外泄路径闭环：有 token 无凭证 → 401 不触达发送；凭证正确 → 200。"""
+    from types import SimpleNamespace
+
+    from aiohttp import ClientSession
+
+    secret = str(Path(tempfile.gettempdir()) / "hermes_onebot_auth_secret.txt")
+    adapter = _make_adapter(access_token="s3cret-token")
+    sent: list = []
+
+    async def fake_send_document(chat_id, path, file_name=None):
+        sent.append((chat_id, path, file_name))
+        return SimpleNamespace(success=True, message_id="42")
+
+    adapter.send_document = fake_send_document  # type: ignore[method-assign]
+
+    async def run():
+        runner, port = await _start_api_server(adapter)
+        try:
+            async with ClientSession() as sess:
+                async with sess.post(
+                    f"http://127.0.0.1:{port}/api/send_media",
+                    json={"chat_id": "private:10001", "kind": "file", "path": secret},
+                ) as resp:
+                    assert resp.status == 401
+                async with sess.post(
+                    f"http://127.0.0.1:{port}/api/send_media",
+                    json={"chat_id": "private:10001", "kind": "file", "path": secret},
+                    headers={"Authorization": "Bearer s3cret-token"},
+                ) as resp:
+                    assert resp.status == 200
+                    assert (await resp.json())["status"] == "ok"
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+    assert len(sent) == 1, "只有携带正确凭证的请求才触达 send_document"
+    assert sent[0][1] == secret
+
+
+def test_is_loopback_peer_edges() -> None:
+    """loopback 判定边界：127/8、::1、v4-mapped 放行；私网/公网/垃圾输入拒绝。"""
+    assert _is_loopback_peer("127.0.0.1")
+    assert _is_loopback_peer("127.8.8.8")  # 127.0.0.0/8 整段
+    assert _is_loopback_peer("::1")
+    assert _is_loopback_peer("::ffff:127.0.0.1")
+    assert not _is_loopback_peer("192.168.1.5")  # LAN 私网 ≠ loopback
+    assert not _is_loopback_peer("203.0.113.9")
+    assert not _is_loopback_peer("")
+    assert not _is_loopback_peer(None)
+    assert not _is_loopback_peer("not-an-ip")

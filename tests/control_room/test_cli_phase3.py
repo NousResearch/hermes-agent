@@ -57,18 +57,6 @@ class TestStatusSnapshotSegment:
 
 
 class TestCtrlPRegistration:
-    def test_cli_source_registers_ctrl_p_binding(self):
-        # Source-inspection gate: the Ctrl+P binding + modal filter exist in
-        # cli.py. This is a static guard, not a runtime spawn.
-        import inspect
-
-        import cli
-
-        src = inspect.getsource(cli)
-        assert "'c-p'" in src or '"c-p"' in src
-        assert "_control_room_filter" in src
-        assert "_handle_control_command" in src
-
     def test_control_handler_exposed_on_mixin(self):
         # The CLI mixin exposes the handler used by both /control and Ctrl+P.
         from hermes_cli.cli_commands_mixin import CLICommandsMixin

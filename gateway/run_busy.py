@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING
 import asyncio
 import contextlib
+import dataclasses
 import json
 import os
 import time
@@ -1241,7 +1242,11 @@ class GatewayBusySessionMixin:
                     return None
             except Exception as exc:
                 logger.debug("send_slash_confirm failed for %s on %s: %s", command, source.platform, exc)
-        # Text fallback — the prompt message itself is the direct reply.
+        # Buzz text fallbacks reply to a top-level command inside a new NIP-10 root.
+        # Alias only that exact root; other Buzz threads cannot resolve this confirmation.
+        if source.platform.value == "buzz" and not source.thread_id and event.message_id:
+            reply_source = dataclasses.replace(source, thread_id=str(event.message_id))
+            _slash_confirm_mod.register_alias(session_key, self._session_key_for_source(reply_source))
         return message
 
     def _read_user_config(self) -> Dict[str, Any]:

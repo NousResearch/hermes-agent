@@ -319,28 +319,70 @@ def _resolve_chat_argv(
         profile_dir = _resolve_profile_dir(requested)
 
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
-    # Secrets kept — the spawned agent needs provider creds.  An explicit profile
-    # scope overrides HERMES_HOME before config is bridged into the env.
-    from tools.environments.local import build_subprocess_env
-    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
-    if profile_dir is not None:
-        env["HERMES_HOME"] = str(profile_dir)
+    # The current profile keeps its launch environment. A named profile must
+    # instead receive only its own credentials before the TUI spawns its gateway.
+    from tools.environments.local import build_subprocess_env, served_profile_child_env
+    launch_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
+    if profile_dir is None:
+        env = launch_env
+    else:
+        with _config_profile_scope(requested):
+            env = served_profile_child_env(
+                target_home=profile_dir,
+                inherit_credentials=True,
+            )
     try:
         from hermes_cli.config import (
-            apply_terminal_config_to_env, read_raw_config, terminal_config_owned_env_vars)
+            TERMINAL_CONFIG_ENV_MAP, apply_terminal_config_to_env, read_raw_config,
+            terminal_config_owned_env_vars)
 
         if profile_dir is not None:
-            # Drop only the terminal keys the launch profile owns before applying
-            # the selected profile; operator exports for other keys stay valid.
+            # served_profile_child_env drops every bridged TERMINAL_* value. Restore
+            # only operator exports not owned by the launch profile, then let the
+            # selected profile's explicit config override them as before. Values
+            # loaded from the launch profile's .env are profile residue, not exports.
+            from agent.secret_scope import load_env_file
+            from hermes_constants import get_process_hermes_home
+
             raw_launch_terminal = read_raw_config().get("terminal")
-            for env_var in terminal_config_owned_env_vars(raw_launch_terminal):
-                env.pop(env_var, None)
+            launch_owned = terminal_config_owned_env_vars(raw_launch_terminal)
+            if isinstance(raw_launch_terminal, dict) and "home_mode" in raw_launch_terminal:
+                launch_owned.add("TERMINAL_HOME_MODE")
+            launch_dotenv_owned = set(load_env_file(get_process_hermes_home() / ".env"))
+            restorable_terminal = set(TERMINAL_CONFIG_ENV_MAP.values()) | {
+                "TERMINAL_HOME_MODE"
+            }
+            for env_var in restorable_terminal - launch_owned - launch_dotenv_owned:
+                if env_var in launch_env:
+                    env[env_var] = launch_env[env_var]
             with _config_profile_scope(requested):
+                raw_selected_terminal = read_raw_config().get("terminal")
+                if isinstance(raw_selected_terminal, dict) and "home_mode" in raw_selected_terminal:
+                    selected_home_mode = raw_selected_terminal["home_mode"]
+                    if selected_home_mode is None:
+                        env.pop("TERMINAL_HOME_MODE", None)
+                    else:
+                        env["TERMINAL_HOME_MODE"] = str(selected_home_mode)
                 apply_terminal_config_to_env(env=env)
         else:
             apply_terminal_config_to_env(env=env)
     except Exception:
         _log.warning("Failed to apply terminal config bridge for dashboard chat", exc_info=True)
+    if profile_dir is not None:
+        # Profile .env files hold credentials, not routing authority. Re-pin the
+        # selected home after overlaying credentials, then apply the subprocess
+        # HOME policy using the launch process's real-home baseline.
+        from hermes_constants import apply_subprocess_home_env
+
+        env["HERMES_HOME"] = str(profile_dir)
+        real_home = launch_env.get("HERMES_REAL_HOME") or launch_env.get("HOME")
+        if real_home:
+            env["HERMES_REAL_HOME"] = real_home
+            env["HOME"] = real_home
+        else:
+            env.pop("HERMES_REAL_HOME", None)
+            env.pop("HOME", None)
+        apply_subprocess_home_env(env)
     _apply_tui_python_env(env)
     env.setdefault("NODE_ENV", "production")
     # Mouse tracking would swallow wheel events the browser needs for
@@ -370,8 +412,11 @@ def _resolve_chat_argv(
         env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
 
     # Without the attach URL, gatewayClient spawns its own `tui_gateway.entry`,
-    # which inherits the profile HERMES_HOME set above.
-    if profile_dir is None and (gateway_ws_url := _build_gateway_ws_url()):
+    # which inherits the profile HERMES_HOME set above. A profile .env cannot
+    # override this routing boundary.
+    if profile_dir is not None:
+        env.pop("HERMES_TUI_GATEWAY_URL", None)
+    elif gateway_ws_url := _build_gateway_ws_url():
         env["HERMES_TUI_GATEWAY_URL"] = gateway_ws_url
 
     return list(argv), str(cwd) if cwd else None, env

@@ -29933,6 +29933,13 @@
             },
             "title": "Connectors",
             "type": "array"
+          },
+          "committed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Committed",
+            "type": "array"
           }
         },
         "title": "OnboardingAnswers",

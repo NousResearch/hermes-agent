@@ -410,6 +410,9 @@ class OnboardingAnswers(Params):
     layout: str | None = None
     focus: list[str] = Field(default_factory=list)
     connectors: list[str] = Field(default_factory=list)
+    # Completed wizard-step ids; a current-main Desktop spreads its whole store into this call. Accepted
+    # and ignored by the writer (main took it via extra="allow") — never folded into ``focus``.
+    committed: list[str] = Field(default_factory=list)
 
 
 class ProfilesRememberOnboardingParams(MethodParams):

@@ -168,9 +168,10 @@ export function useOnboardingHandoff({
                 {
                   answers: {
                     accent: answers.accent,
+                    committed: answers.committed,
                     connectors: answers.connectors.map(connectorTitle),
                     context: answers.context,
-                    focus: answers.committed,
+                    focus: [],
                     layout: answers.layout,
                     name: answers.name,
                     theme: null

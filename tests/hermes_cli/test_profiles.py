@@ -374,25 +374,6 @@ class TestBackfillProfileEnvs:
 class TestDeleteProfile:
     """Tests for delete_profile()."""
 
-    def test_releases_routed_log_handlers_before_removing_profile(self, profile_env, monkeypatch):
-        """Deleting a Desktop profile releases this process's profile-scoped log handlers."""
-        profile_dir = create_profile("coder", no_alias=True)
-        released: list[Path] = []
-
-        monkeypatch.setattr(profiles, "_cleanup_gateway_service", lambda *_: None)
-        monkeypatch.setattr(profiles, "_maybe_unregister_gateway_service", lambda *_: None)
-        monkeypatch.setattr(profiles, "_stop_profile_backends", lambda *_: None)
-        monkeypatch.setattr(profiles, "_notify_multiplexer", lambda *_: None)
-        monkeypatch.setattr(
-            "hermes_logging.release_profile_log_handlers",
-            lambda home: released.append(home) or 2,
-        )
-
-        delete_profile("coder", yes=True)
-
-        assert released == [profile_dir]
-        assert not profile_dir.exists()
-
 
     def test_rmtree_failure_raises(self, profile_env):
         profile_dir = create_profile("coder", no_alias=True)

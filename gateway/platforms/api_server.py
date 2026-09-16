@@ -4006,7 +4006,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return False
 
     async def disconnect(self) -> None:
-        """Stop the aiohttp web server and release every owned resource, including the ResponseStore
+        """Stop the aiohttp server and release every owned resource, including the ResponseStore
         connection (the reconnect loop builds a fresh adapter per retry; leaked fds hit EMFILE).
 
         Without this, every adapter instance leaks 2 file descriptors (the database file and its WAL

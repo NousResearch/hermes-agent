@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent.credential_pool import (
+    custom_provider_pool_key_candidates,
     credential_pool_matches_provider,
     resolve_runtime_pool_key,
 )
@@ -233,3 +234,61 @@ def test_runtime_ignores_pool_loaded_for_different_provider(monkeypatch):
     assert resolved["provider"] == "deepseek"
     assert resolved["api_key"] == "deepseek-key"
     assert resolved["base_url"] == "https://api.deepseek.com/v1"
+
+
+# ── Same-URL sibling providers must not kill each other's pool ──────────────
+# runtime_provider.py stamps provider="custom" for ALL named custom providers,
+# so agent.provider is the bare string "custom" while pools are keyed
+# "custom:<name>". custom_provider_pool_key_candidates() used to return on the
+# FIRST entry whose base_url matched, so with two providers sharing an endpoint
+# (e.g. cline-free and cline-free-glm on api.cline.bot) the second sibling's
+# pool failed credential_pool_matches_provider and agent_init dropped
+# _credential_pool entirely — 429 recovery then had no keys to rotate.
+
+
+def _sibling_entries():
+    return [
+        ("cline-free", {"name": "cline-free", "base_url": "https://api.cline.bot/api/v1"}),
+        ("cline-free-glm", {"name": "cline-free-glm", "base_url": "https://api.cline.bot/api/v1"}),
+    ]
+
+
+def test_candidates_collect_all_same_url_siblings():
+    """The URL match loop must collect EVERY sibling entry, not return the first."""
+    with patch("agent.credential_pool._iter_custom_providers", return_value=_sibling_entries()):
+        keys = custom_provider_pool_key_candidates("https://api.cline.bot/api/v1")
+    assert "custom:cline-free" in keys
+    assert "custom:cline-free-glm" in keys
+
+
+def test_bare_custom_agent_keeps_named_sibling_pool():
+    """agent.provider='custom' (runtime stamp) + pool=custom:cline-free-glm
+    + same base_url as sibling cline-free -> pool must SURVIVE."""
+    with patch("agent.credential_pool._iter_custom_providers", return_value=_sibling_entries()):
+        assert credential_pool_matches_provider(
+            "custom:cline-free-glm", "custom", base_url="https://api.cline.bot/api/v1"
+        )
+
+
+def test_bare_custom_agent_keeps_first_provider_pool_too():
+    """Sibling order must not matter: pool=custom:cline-free also survives."""
+    with patch("agent.credential_pool._iter_custom_providers", return_value=_sibling_entries()):
+        assert credential_pool_matches_provider(
+            "custom:cline-free", "custom", base_url="https://api.cline.bot/api/v1"
+        )
+
+
+def test_bare_custom_agent_still_rejects_foreign_url():
+    """Fail-closed preserved: a pool for URL A must not match an agent on URL B."""
+    with patch("agent.credential_pool._iter_custom_providers", return_value=_sibling_entries()):
+        assert not credential_pool_matches_provider(
+            "custom:cline-free-glm", "custom", base_url="https://api.other-host.dev/v1"
+        )
+
+
+def test_bare_custom_agent_still_rejects_unconfigured_pool():
+    """A pool keyed to a name absent from config still fails closed."""
+    with patch("agent.credential_pool._iter_custom_providers", return_value=_sibling_entries()):
+        assert not credential_pool_matches_provider(
+            "custom:not-configured", "custom", base_url="https://api.cline.bot/api/v1"
+        )

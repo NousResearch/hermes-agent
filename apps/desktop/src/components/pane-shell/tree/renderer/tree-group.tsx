@@ -32,6 +32,7 @@ import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
 import { closeAllOpenSessionTiles } from '@/store/session-states'
+import { $zoomPercent } from '@/store/zoom'
 
 import { $layoutEditMode } from '../../edit-mode'
 import { useWindowControlsOverlap } from '../../geometry'
@@ -85,7 +86,7 @@ import {
 } from '../tab-selection'
 
 import { startPaneDrag } from './drag-session'
-import { usePanelTitlebar } from './panel-titlebar'
+import { usePanelTitlebar, zoomAdjustedGapCss } from './panel-titlebar'
 import { tabStripVisibleForZone } from './strip-visibility'
 import { useActiveTabVisible } from './tab-strip-scroll'
 import { paneChrome } from './track-model'
@@ -264,6 +265,7 @@ export function TreeGroup({
   const workspaceOwnerKey = useStore($workspaceOwnerKey)
   const newSessionTabAction = useStore($newSessionTabAction)
   const panesWithCloser = useStore($panesWithCloser)
+  useStore($zoomPercent)
   // Multi-tab selection (⌥/Ctrl-click, Shift-click) — null for every zone but
   // the one holding it, so this subscription is quiet during normal use.
   const tabSelection = useStore($tabSelection)
@@ -282,6 +284,7 @@ export function TreeGroup({
     Boolean(paneFor(id)) && (editMode || !hiddenPanes.has(id)) && !(narrow && paneChrome(paneFor(id)).collapsible)
 
   const shown = node.panes.filter(paneShown)
+
   // Standing sidebars keep their tabs on the same row as their content grows
   // or the window changes width. Otherwise the width probe moves the entire
   // Sessions/Bots strip between rows during a sash or window resize.
@@ -289,10 +292,13 @@ export function TreeGroup({
     shown.length > 0 &&
     shown.every(id => {
       const chrome = paneChrome(paneFor(id))
+
       return chrome.hideOnly && (chrome.placement === 'left' || chrome.placement === 'right')
     })
+
   const tabsBelowControls = usePanelTitlebar(ref, topEdge, Boolean(node.minimized), standingSidebar)
   const tabsInTitlebar = topEdge && !tabsBelowControls
+  const titlebarTabsGap = zoomAdjustedGapCss(TITLEBAR_TABS_GAP, window.hermesDesktop?.zoom?.factor?.() ?? 1)
   const memoryKey = workspaceScopeKey(workspaceMode, workspaceOwnerKey)
 
   const activeId = shown.includes(node.active)
@@ -523,7 +529,7 @@ export function TreeGroup({
           data-panel-header=""
           style={
             topEdge
-              ? { height: TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? 28 + TITLEBAR_TABS_GAP : 0) }
+              ? { height: TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? 28 + titlebarTabsGap : 0) }
               : undefined
           }
         >
@@ -793,12 +799,11 @@ export function TreeGroup({
             className="absolute inset-x-0 bottom-0 z-50 flex cursor-grab items-center justify-center outline-1 -outline-offset-2 outline-dashed backdrop-blur-[2px]"
             onPointerDown={e => startPaneDrag(activeId, e, undefined, undefined, active?.title ?? activeId)}
             style={{
-              top:
-                topEdge
-                  ? TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? 28 + TITLEBAR_TABS_GAP : 0)
-                  : headerVisible
-                    ? 28
-                    : 0,
+              top: topEdge
+                ? TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? 28 + titlebarTabsGap : 0)
+                : headerVisible
+                  ? 28
+                  : 0,
               background:
                 'color-mix(in srgb, var(--ui-accent) 6%, color-mix(in srgb, var(--ui-bg-chrome) 55%, transparent))',
               outlineColor: 'color-mix(in srgb, var(--ui-accent) 55%, transparent)'

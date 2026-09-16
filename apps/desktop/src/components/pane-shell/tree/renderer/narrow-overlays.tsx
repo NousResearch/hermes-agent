@@ -9,6 +9,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { TITLEBAR_HEIGHT, TITLEBAR_TABS_GAP } from '@/app/shell/titlebar'
 import { $chatOnboardingSolo } from '@/components/onboarding-chat/assembly'
 import { PaneTab, PaneTabLabel, PaneTabStrip } from '@/components/ui/pane-tab'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
@@ -16,11 +17,13 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import type { Contribution } from '@/contrib/types'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
 import { cn } from '@/lib/utils'
+import { $zoomPercent } from '@/store/zoom'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '../..'
 import { allPaneIds, findGroupOfPane } from '../model'
 import { $hiddenTreePanes, $layoutTree, $narrowViewport } from '../store'
 
+import { zoomAdjustedGapCss } from './panel-titlebar'
 import { paneChrome } from './track-model'
 
 export function NarrowOverlays() {
@@ -30,6 +33,7 @@ export function NarrowOverlays() {
   const panes = useContributions('panes')
   const hiddenPanes = useStore($hiddenTreePanes)
   const [reveal, setReveal] = useState<{ id: string; pinned: boolean } | null>(null)
+  useStore($zoomPercent)
 
   // Own an Escape layer only while something is revealed, so Escape closes the
   // overlay only when it's the top layer (never under a dialog / edit mode).
@@ -129,6 +133,13 @@ export function NarrowOverlays() {
     return shown.length > 0 ? shown : [revealed]
   })()
 
+  // Match the top-edge fixed sidebar: reserve the native controls, then add
+  // breathing room before a stacked zone's tab row. The overlay still starts
+  // at the window top so its opaque surface covers the layout underneath.
+  const zoomFactor = window.hermesDesktop?.zoom?.factor?.() ?? 1
+
+  const topChrome = TITLEBAR_HEIGHT + (zonePanes.length > 1 ? zoomAdjustedGapCss(TITLEBAR_TABS_GAP, zoomFactor) : 0)
+
   return (
     <>
       {/* Hover-intent strips on each edge that has a collapsed pane. */}
@@ -163,6 +174,7 @@ export function NarrowOverlays() {
           // Match the pane's docked width (sessions ~237px, files its rail
           // width) instead of a fat fixed 20rem — capped for tiny screens.
           style={{
+            paddingTop: topChrome,
             top: 0,
             width: `min(${(revealed.data as { width?: string } | undefined)?.width ?? '18rem'}, 85vw)`
           }}

@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
+import { TITLEBAR_HEIGHT, TITLEBAR_TABS_GAP } from '@/app/shell/titlebar'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { registry } from '@/contrib/registry'
 import { stubResizeObserver } from '@/test/jsdom'
@@ -62,13 +63,36 @@ const revealPane = (id: string) => {
 const overlayTab = (paneId: string) => document.querySelector<HTMLElement>(`[data-narrow-overlay-tab="${paneId}"]`)
 
 describe('narrow overlay of a stacked zone', () => {
-  it('extends the revealed side panel to the top of the window', () => {
+  it('keeps the overlay surface at the window top but puts tabs below the controls', () => {
     render(<NarrowOverlays />)
 
     revealPane('sessions')
 
     const overlay = document.querySelector<HTMLElement>('[data-glass-opaque]')
     expect(overlay?.style.top).toBe('0px')
+    expect(overlay?.style.paddingTop).toBe(`${TITLEBAR_HEIGHT + TITLEBAR_TABS_GAP}px`)
+  })
+
+  it('keeps the controls-to-tabs spacing constant when UI scale increases', () => {
+    const previousHermesDesktop = window.hermesDesktop
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { zoom: { factor: () => 1.5 } }
+    })
+
+    try {
+      render(<NarrowOverlays />)
+      revealPane('sessions')
+
+      const overlay = document.querySelector<HTMLElement>('[data-glass-opaque]')
+      expect(overlay?.style.paddingTop).toBe(`${TITLEBAR_HEIGHT + TITLEBAR_TABS_GAP / 1.5}px`)
+    } finally {
+      if (previousHermesDesktop === undefined) {
+        delete (window as Partial<Window>).hermesDesktop
+      } else {
+        Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: previousHermesDesktop })
+      }
+    }
   })
 
   it('mirrors the zone tab strip so every stacked collapsible stays reachable', () => {
@@ -97,6 +121,8 @@ describe('narrow overlay of a stacked zone', () => {
 
     revealPane('sessions')
 
+    const overlay = document.querySelector<HTMLElement>('[data-glass-opaque]')
+    expect(overlay?.style.paddingTop).toBe(`${TITLEBAR_HEIGHT}px`)
     expect(getByTestId('sessions-body')).toBeTruthy()
     expect(overlayTab('sessions')).toBeNull()
   })

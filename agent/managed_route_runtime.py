@@ -19,7 +19,10 @@ from typing import Optional
 
 from agent.model_selection import select
 from agent.model_selection_guard import managed_child_kwargs, validate_actual_route
-from agent.model_selection_store import append_outcome, get_active_policy, persist_receipt, get_receipt
+from agent.model_selection_store import (
+    append_outcome, find_active_revocation, get_active_policy, get_receipt,
+    get_receipt_created_at, persist_receipt,
+)
 from agent.model_selection_types import RoutingBlocked
 
 __all__ = ["resolve_route", "enforce_worker_route"]
@@ -82,17 +85,33 @@ def enforce_worker_route(
         )
     # Emergency revocation (design §12 "Availability, budget, reasoning and revocation":
     # "best-effort revocation generation check before each subsequent managed request; it never
-    # substitutes another model"). Already-in-flight requests cannot be recalled -- this
-    # checkpoint runs before the FIRST request AND before every later request in the same
-    # managed turn, so a policy edited/suspended between requests must still stop the NEXT one,
-    # never silently launch/continue under a routing that is no longer current.
-    active_policy = get_active_policy(hermes_home, decision["policy_id"])
-    if active_policy is None or active_policy.get("revision") != decision["policy_revision"]:
+    # substitutes another model"). This is deliberately NOT "does the active policy revision
+    # still equal the receipted revision" -- routine policy edits (publish + activate a new
+    # revision) are ordinary admin actions that must only affect NEW attempts, never an
+    # already-receipted, in-flight one (§12: "Routine policy edits affect new attempts, not
+    # active conversations"). Only an EXPLICIT emergency revocation record
+    # (``model_selection_store.revoke_route``), issued at or after this receipt's own
+    # creation time, blocks the next request. A missing active policy at all (e.g. the whole
+    # policy_id was never published/activated in this store) is still treated as blocked --
+    # that is not a routine edit, it means there is no admission for this policy at all.
+    if get_active_policy(hermes_home, decision["policy_id"]) is None:
         raise RoutingBlocked(
             "stale_or_revoked_decision",
-            f"policy {decision['policy_id']!r} revision {decision['policy_revision']} "
-            "is no longer the active revision (revoked/superseded since this decision "
-            "was receipted); refusing to launch under a stale route",
+            f"policy {decision['policy_id']!r} has no active revision in this store; "
+            "refusing to launch under a route with no current admission",
+        )
+    receipted_at = get_receipt_created_at(hermes_home, receipt_id) or 0
+    revocation = find_active_revocation(
+        hermes_home, decision["policy_id"], decision["selected"]["route_id"],
+        since_ts=receipted_at,
+    )
+    if revocation is not None:
+        raise RoutingBlocked(
+            "stale_or_revoked_decision",
+            f"policy {decision['policy_id']!r} route {decision['selected']['route_id']!r} was "
+            f"explicitly revoked (reason={revocation['reason']!r}, "
+            f"approval_ref={revocation['approval_ref']!r}); refusing to launch under a "
+            "revoked route",
         )
     validate_actual_route(
         decision,

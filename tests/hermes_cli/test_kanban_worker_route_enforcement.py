@@ -155,20 +155,40 @@ def test_resolve_task_route_carries_receipt_id_for_worker_enforcement(routing_ho
         )
 
 
-def test_revoked_policy_blocks_worker_even_with_matching_route(routing_home):
-    """A policy suspended/edited to a new revision AFTER the receipt was
-    persisted but BEFORE this worker's first inference must still block —
-    the worker matching its own receipted route is not sufficient once that
-    route's authorizing policy revision is no longer active (design §12
-    "Availability, budget, reasoning and revocation")."""
+def test_routine_policy_edit_does_not_block_a_matching_worker(routing_home):
+    """A ROUTINE policy edit (publish + activate a new revision, no explicit revocation)
+    AFTER the receipt was persisted must NOT block a worker whose actual construction still
+    matches the receipted route — routine edits affect only NEW attempts, never an already-
+    receipted in-flight one (design §12: "Routine policy edits affect new attempts, not active
+    conversations")."""
     from agent.model_selection_store import activate_policy, publish_policy
     from hermes_cli.kanban_model_routing import enforce_worker_route
 
     receipt_id = _persist_receipt(routing_home)
-    superseding = _policy()
-    superseding["revision"] = 2
-    record = publish_policy(routing_home, superseding, approval_ref="operator:revoke")
+    edited = _policy()
+    edited["revision"] = 2
+    record = publish_policy(routing_home, edited, approval_ref="operator:routine-edit")
     activate_policy(routing_home, "kanban-default", record["revision"])
+
+    enforce_worker_route(
+        routing_home, receipt_id,
+        actual_provider="openai", actual_model="gpt-5",
+        actual_endpoint="https://api.openai.com/v1", actual_reasoning="high",
+    )
+
+
+def test_explicit_revocation_blocks_worker_even_with_matching_route(routing_home):
+    """An EXPLICIT emergency revocation (not a routine publish/activate) of the receipted
+    route must still block a worker even though its actual construction matches the receipted
+    route byte-for-byte (design §12 "Availability, budget, reasoning and revocation")."""
+    from agent.model_selection_store import revoke_route
+    from hermes_cli.kanban_model_routing import enforce_worker_route
+
+    receipt_id = _persist_receipt(routing_home)
+    revoke_route(
+        routing_home, "kanban-default", route_id="openai-gpt5",
+        reason="incident", approval_ref="operator:revoke",
+    )
 
     with pytest.raises(RoutingBlocked, match="stale_or_revoked_decision"):
         enforce_worker_route(

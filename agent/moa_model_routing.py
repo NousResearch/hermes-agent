@@ -150,7 +150,7 @@ def _resolved_maker(resolution: dict) -> str:
 
 
 def resolve_moa_cohort(
-    reference_slots: list, aggregator: dict, *, execution_id: str,
+    reference_slots: list, aggregator: dict, *, execution_id: str, hermes_home: Optional[str] = None,
 ) -> dict:
     """Resolve the COMPLETE MoA cohort (every reference slot plus the aggregator) ONCE, and
     validate joint cohort diversity/independence before any content is sent to any slot (design
@@ -201,7 +201,9 @@ def resolve_moa_cohort(
             resolve_slot = dict(slot)
             resolve_slot["routing_requirements"] = existing_requirements
         try:
-            resolution = resolve_moa_slot_route(resolve_slot, execution_id=execution_id, slot_id=slot_id)
+            resolution = resolve_moa_slot_route(
+                resolve_slot, execution_id=execution_id, slot_id=slot_id, hermes_home=hermes_home,
+            )
         except RoutingBlocked as exc:
             if is_moa_slot_required(slot):
                 raise MoARequiredSlotDenied(slot_id, slot.get("routing_role", ""), exc.reason, exc.detail) from exc
@@ -214,7 +216,9 @@ def resolve_moa_cohort(
             excluded_makers.add(maker)
 
     try:
-        agg_resolution = resolve_moa_slot_route(aggregator, execution_id=execution_id, slot_id="aggregator")
+        agg_resolution = resolve_moa_slot_route(
+            aggregator, execution_id=execution_id, slot_id="aggregator", hermes_home=hermes_home,
+        )
     except RoutingBlocked as exc:
         if is_moa_slot_required(aggregator):
             raise MoARequiredSlotDenied("aggregator", aggregator.get("routing_role", ""), exc.reason, exc.detail) from exc
@@ -235,74 +239,113 @@ import threading as _threading
 
 # Pinned-cohort cache (design §6 "MoA": "Resolve the complete cohort once per MoA run and bind
 # an immutable effective preset to that client... Cohort resumes only within the original live
-# pinned run; restarting a failed cohort is a new attempt"). Keyed by execution_id so repeated
-# fanout iterations and aggregator calls within the SAME run reuse the identical resolutions --
-# a config edit mid-run cannot reroute an already-pinned cohort, and a slot is never re-resolved
-# (no repeated reselection per iteration).
+# pinned run; restarting a failed cohort is a new attempt"). Keyed by (execution_id, origin_home)
+# -- NOT execution_id alone -- so repeated fanout iterations and aggregator calls within the SAME
+# run reuse the identical resolutions while two DIFFERENT origin profiles (Hermes homes) that
+# happen to mint the same execution_id (e.g. concurrent multiplexed profiles in one process)
+# never share, evict, or leak into each other's pinned cohort/receipt/endpoint. A config edit
+# mid-run cannot reroute an already-pinned cohort, and a slot is never re-resolved (no repeated
+# reselection per iteration).
 _cohort_cache_lock = _threading.Lock()
 _cohort_cache: dict = {}
 
 
+def _origin_home_key(hermes_home: Optional[str] = None) -> str:
+    """The canonical origin-profile identity a cohort/slot cache entry is scoped to.
+
+    Host-owned: derived from the real Hermes home path this process/profile is bound to
+    (``hermes_constants.get_hermes_home()`` when not explicitly supplied), never an
+    arbitrary caller-supplied claim -- a caller cannot widen or narrow its own cache
+    isolation by passing a different string.
+    """
+    import os
+
+    home = hermes_home
+    if home is None:
+        from hermes_constants import get_hermes_home
+
+        home = get_hermes_home()
+    return os.path.realpath(str(home))
+
+
 def resolve_moa_cohort_pinned(
-    reference_slots: list, aggregator: dict, *, execution_id: str,
+    reference_slots: list, aggregator: dict, *, execution_id: str, hermes_home: Optional[str] = None,
 ) -> dict:
-    """Cached wrapper over ``resolve_moa_cohort``: the FIRST call for a given ``execution_id``
-    performs the real joint resolution (and may raise); every subsequent call for the SAME
-    ``execution_id`` within the same process returns the identical pinned resolutions dict
-    without re-resolving or re-validating diversity, even if the live policy changed in
-    between -- config/policy edits take effect on the NEXT run's execution_id, never retroactively
-    reroute an in-flight one.
+    """Cached wrapper over ``resolve_moa_cohort``: the FIRST call for a given
+    ``(execution_id, origin_home)`` performs the real joint resolution (and may raise); every
+    subsequent call for the SAME execution_id WITHIN THE SAME origin profile, within the same
+    process, returns the identical pinned resolutions dict without re-resolving or
+    re-validating diversity, even if the live policy changed in between -- config/policy edits
+    take effect on the NEXT run's execution_id, never retroactively reroute an in-flight one.
+
+    Scoped by origin Hermes home (design/root AGENTS.md named bug class: "module globals...
+    hold the launch profile's state... a silent default-profile leak") so two profiles that
+    independently mint the SAME execution_id in one process (e.g. concurrent multiplexed
+    profiles) never share, evict, or leak into each other's pinned cohort.
 
     Also seeds the per-slot cache (``resolve_moa_slot_route_pinned``'s backing store) with every
-    resolution from this cohort, keyed by the SAME ``execution_id`` -- so a later per-slot lookup
-    for one of these exact slot_ids (``reference-0``, ``reference-1``, ..., ``aggregator``) within
-    the same run reuses the joint resolution verbatim instead of re-resolving independently
-    (a joint cohort decision cannot be safely re-derived as N separate per-slot calls; this is
-    what makes the fan-out/aggregator call sites in ``agent.moa_loop`` share ONE cohort decision).
+    resolution from this cohort, keyed by the SAME ``(execution_id, origin_home)`` -- so a later
+    per-slot lookup for one of these exact slot_ids (``reference-0``, ``reference-1``, ...,
+    ``aggregator``) within the same run/profile reuses the joint resolution verbatim instead of
+    re-resolving independently (a joint cohort decision cannot be safely re-derived as N separate
+    per-slot calls; this is what makes the fan-out/aggregator call sites in ``agent.moa_loop``
+    share ONE cohort decision).
     """
+    home = _origin_home_key(hermes_home)
+    key = (execution_id, home)
     with _cohort_cache_lock:
-        cached = _cohort_cache.get(execution_id)
+        cached = _cohort_cache.get(key)
     if cached is not None:
         return cached
-    resolved = resolve_moa_cohort(reference_slots, aggregator, execution_id=execution_id)
+    resolved = resolve_moa_cohort(reference_slots, aggregator, execution_id=execution_id, hermes_home=home)
     with _cohort_cache_lock:
-        _cohort_cache.setdefault(execution_id, resolved)
+        _cohort_cache.setdefault(key, resolved)
         per_slot = _cohort_cache.setdefault("__slots__", {})
         for slot_id, resolution in resolved.items():
-            per_slot.setdefault((execution_id, slot_id), resolution)
-        return _cohort_cache[execution_id]
+            per_slot.setdefault((execution_id, slot_id, home), resolution)
+        return _cohort_cache[key]
 
 
 def resolve_moa_slot_route_pinned(
     slot: dict, *, execution_id: str, attempt_id: str = "0", slot_id: str,
+    hermes_home: Optional[str] = None,
 ) -> "Optional[dict]":
     """Per-slot pinned wrapper over ``resolve_moa_slot_route`` (design §6 "MoA": "Resolve the
     complete cohort once per MoA run and bind an immutable effective preset to that client").
 
-    The FIRST resolution for a given ``(execution_id, slot_id)`` is cached; every later call
-    within the same run (repeated fan-out iterations, the aggregator call after fan-out, a live
-    config/policy edit mid-run) returns the SAME resolution rather than re-resolving -- a config
-    change takes effect on the NEXT run's execution_id only, never reroutes an in-flight one, and
-    a slot is never reselected per iteration.
+    The FIRST resolution for a given ``(execution_id, slot_id, origin_home)`` is cached; every
+    later call within the same run/profile (repeated fan-out iterations, the aggregator call
+    after fan-out, a live config/policy edit mid-run) returns the SAME resolution rather than
+    re-resolving -- a config change takes effect on the NEXT run's execution_id only, never
+    reroutes an in-flight one, and a slot is never reselected per iteration. Scoped by origin
+    Hermes home so a same-execution_id collision across two concurrently-running profiles in one
+    process never shares or evicts either profile's pinned entry.
     """
-    key = (execution_id, slot_id)
+    home = _origin_home_key(hermes_home)
+    key = (execution_id, slot_id, home)
     with _cohort_cache_lock:
         per_slot = _cohort_cache.setdefault("__slots__", {})
         if key in per_slot:
             return per_slot[key]
-    resolved = resolve_moa_slot_route(slot, execution_id=execution_id, attempt_id=attempt_id, slot_id=slot_id)
+    resolved = resolve_moa_slot_route(
+        slot, execution_id=execution_id, attempt_id=attempt_id, slot_id=slot_id, hermes_home=home,
+    )
     with _cohort_cache_lock:
         per_slot = _cohort_cache.setdefault("__slots__", {})
         per_slot.setdefault(key, resolved)
         return per_slot[key]
 
 
-def _forget_cohort(execution_id: str) -> None:
+def _forget_cohort(execution_id: str, *, hermes_home: Optional[str] = None) -> None:
     """Test/cleanup helper: drop a pinned cohort so a NEW attempt (never the same execution_id)
     can resolve fresh. Production code never calls this for a live execution_id -- restarting a
-    failed cohort means a new attempt with a new execution_id, per design §6."""
+    failed cohort means a new attempt with a new execution_id, per design §6. Scoped to the
+    SAME origin home a pinning call would have used, so forgetting one profile's entry never
+    touches another profile's pinned cohort under a colliding execution_id."""
+    home = _origin_home_key(hermes_home)
+    key = (execution_id, home)
     with _cohort_cache_lock:
-        _cohort_cache.pop(execution_id, None)
+        _cohort_cache.pop(key, None)
 
 
 def _slot_intake(slot: dict) -> tuple[Optional[str], Optional[dict], Optional[str]]:
@@ -364,6 +407,7 @@ def _build_requirements(
 
 def resolve_moa_slot_route(
     slot: dict, *, execution_id: str, attempt_id: str = "0", slot_id: str,
+    hermes_home: Optional[str] = None,
 ) -> Optional[dict]:
     """Resolve a managed route for one MoA reference/aggregator slot, or ``None`` when the slot
     carries no ``routing_role`` (the existing unmanaged path, byte-for-byte).
@@ -372,13 +416,20 @@ def resolve_moa_slot_route(
     (``agent.moa_loop``) must propagate it as a real slot failure (a labelled ``[failed: ...]``
     reference note, or an aborted aggregator call) and must NEVER fall back to constructing an
     unmanaged/default-route slot instead (§5 no silent escape).
+
+    ``hermes_home``: the origin profile to resolve against. Defaults to
+    ``hermes_constants.get_hermes_home()`` (the existing byte-for-byte behavior for every
+    caller that does not explicitly pin a profile) -- explicitly threaded through by the
+    ``*_pinned`` wrappers below so a cache lookup keyed on one profile's home actually resolves
+    against THAT profile's store, not whatever profile this process happens to be launched as.
     """
     role, requirements_intake, policy_id_override = _slot_intake(slot)
     if role is None:
         return None
-    from hermes_constants import get_hermes_home
+    if hermes_home is None:
+        from hermes_constants import get_hermes_home
 
-    hermes_home = get_hermes_home()
+        hermes_home = get_hermes_home()
     policy_id = policy_id_override or DEFAULT_MOA_POLICY_ID
     requirements = _build_requirements(
         slot, requirements_intake, role=role, execution_id=execution_id, attempt_id=attempt_id, slot_id=slot_id,

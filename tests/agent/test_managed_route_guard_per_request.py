@@ -82,21 +82,41 @@ def test_matching_route_passes_every_iteration(tmp_path):
         assert enforce_managed_route_per_request(agent) is None
 
 
-def test_revocation_between_requests_blocks_the_next_one(tmp_path):
-    """Policy revoked (superseded revision) after request 1 must block request 2 —
-    the exact between-request revocation check design §12 requires."""
+def test_routine_policy_edit_after_pin_never_blocks_the_live_run(tmp_path):
+    """A ROUTINE policy edit (publish + activate a new revision, e.g. a requalification or
+    an unrelated route tweak, WITHOUT an explicit emergency revocation) after request 1 must
+    NOT block request 2 of the same live run: pinned routes affect only NEW attempts, not the
+    live one (plan §12/§13; root AGENTS binding note on emergency revocation semantics)."""
     from agent.managed_route_guard import enforce_managed_route_per_request
 
     receipt_id, policy, revision = _receipted(tmp_path)
     agent = _agent(receipt_id, tmp_path)
     assert enforce_managed_route_per_request(agent) is None  # request 1: fine
 
-    # Revoke: publish + activate a new revision (supersedes the one this receipt
-    # was decided under) — simulates an operator suspending the policy mid-turn.
+    # Routine edit: publish + activate a new revision of the SAME route, no explicit
+    # revocation call. This must be transparent to the already-pinned live run.
     new_policy = dict(policy)
     new_policy["revision"] = revision + 1
-    record = publish_policy(tmp_path, new_policy, approval_ref="operator:revoke")
+    record = publish_policy(tmp_path, new_policy, approval_ref="operator:routine-edit")
     activate_policy(tmp_path, "kanban-default", record["revision"])
+
+    assert enforce_managed_route_per_request(agent) is None  # request 2: still fine
+
+
+def test_explicit_emergency_revocation_blocks_the_next_request(tmp_path):
+    """An explicit emergency revocation (NOT a routine publish/activate) after request 1
+    must block request 2 — the only mechanism allowed to kill a live run mid-turn."""
+    from agent.managed_route_guard import enforce_managed_route_per_request
+    from agent.model_selection_store import revoke_route
+
+    receipt_id, policy, _ = _receipted(tmp_path)
+    agent = _agent(receipt_id, tmp_path)
+    assert enforce_managed_route_per_request(agent) is None  # request 1: fine
+
+    revoke_route(
+        tmp_path, "kanban-default", route_id=policy["routes"][0]["route_id"],
+        reason="incident", approval_ref="operator:revoke",
+    )
 
     reason = enforce_managed_route_per_request(agent)  # request 2: must block
     assert reason == "stale_or_revoked_decision"

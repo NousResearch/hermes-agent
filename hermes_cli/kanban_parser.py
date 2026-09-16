@@ -94,6 +94,19 @@ _ROUTING_SPECS = [
         _arg("policy_id"),
         _arg("revision", type=int),
     ], help="Mark one published revision as the active one used at claim/start time"),
+    _cmd("revoke", [
+        _arg("policy_id"),
+        _arg("--route-id", help="Revoke only this route; omit to revoke every route "
+             "of the policy (whole-policy emergency suspension)"),
+        _arg("--reason", required=True,
+             help="Human-readable reason this route/policy is being emergency-revoked "
+                  "(distinct from an ordinary republish -- required, never inferred)"),
+        _arg("--approval-ref", required=True,
+             help="Human-readable record of who/what approved this revocation"),
+        _json_flag(),
+    ], help="Emergency: explicitly revoke a route (or whole policy) for ALREADY-receipted, "
+            "in-flight attempts -- distinct from publish/activate, which only affect new "
+            "attempts"),
     _cmd("show", [
         _arg("policy_id", nargs="?", default="kanban-default"),
         _json_flag(),

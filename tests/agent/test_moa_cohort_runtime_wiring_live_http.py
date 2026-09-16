@@ -197,9 +197,10 @@ def test_two_separate_runs_each_resolve_and_pin_their_own_cohort(routed_home, mo
     # Each run fans out to 1 reference + 1 aggregator call = 2 real requests; two runs = 4 total.
     assert len(handler.requests) == 4, "each independent run must reach the real endpoint on its own"
 
-    from agent.moa_model_routing import _cohort_cache
-    assert "turn-AAA" in _cohort_cache and "turn-BBB" in _cohort_cache
-    assert _cohort_cache["turn-AAA"] is not _cohort_cache["turn-BBB"], (
+    from agent.moa_model_routing import _cohort_cache, _origin_home_key
+    home_key = _origin_home_key(hermes_home)
+    assert ("turn-AAA", home_key) in _cohort_cache and ("turn-BBB", home_key) in _cohort_cache
+    assert _cohort_cache[("turn-AAA", home_key)] is not _cohort_cache[("turn-BBB", home_key)], (
         "two separate runs must never share the identical pinned cohort object"
     )
 
@@ -239,13 +240,13 @@ def test_multi_iteration_same_run_reuses_pinned_cohort_receipt(routed_home, monk
 
 
 def test_config_edit_mid_run_never_silently_reroutes(routed_home, monkeypatch):
-    """A live policy edit performed AFTER a run's cohort is pinned must never silently reroute
-    that in-flight run to the new policy -- it either keeps serving the pinned receipt (no
-    change happened to invalidate it) or fails closed (design §12's per-request revocation
-    check), but it NEVER quietly substitutes a different route the run never resolved. Only a
-    subsequent NEW run (new turn id) observes the edit."""
-    from agent.moa_model_routing import MoARequiredSlotDenied
-
+    """A ROUTINE live policy edit (publish + activate a new revision, same route,
+    no explicit revocation) performed AFTER a run's cohort is pinned must never affect
+    that in-flight run at all (design §12: "Routine policy edits affect new attempts,
+    not active conversations"). The pinned receipt keeps serving the run unchanged --
+    only an EXPLICIT emergency revocation (see
+    ``test_emergency_revocation_mid_run_blocks_next_request`` below) blocks it. A
+    subsequent NEW run (new turn id) observes the routine edit normally."""
     hermes_home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
     _publish_active(hermes_home, url, route_id="route-v1", revision=1)
     _patch_custom_provider(monkeypatch, url)
@@ -258,28 +259,26 @@ def test_config_edit_mid_run_never_silently_reroutes(routed_home, monkeypatch):
     first_round_requests = len(handler.requests)
     assert first_round_requests == 2  # 1 reference + 1 aggregator
 
-    from agent.moa_model_routing import _cohort_cache
-    pinned_before = dict(_cohort_cache.get("turn-config-edit") or {})
+    from agent.moa_model_routing import _cohort_cache, _origin_home_key
+    home_key = _origin_home_key(hermes_home)
+    pinned_before = dict(_cohort_cache.get(("turn-config-edit", home_key)) or {})
     assert pinned_before, "the cohort must be pinned after the first call in this run"
 
-    # Mid-run policy edit: republish a new revision. Design §12's per-request revocation check
-    # means the NEXT call in this same run must fail closed rather than silently substituting
-    # the newly-active route -- the pinned cohort decision is never quietly swapped out.
+    # Routine mid-run policy edit: republish + activate a new revision of the SAME route,
+    # with NO explicit revocation. This must be a complete no-op for the already-pinned,
+    # in-flight run -- the next call in the SAME run succeeds, reusing the identical pinned
+    # receipt, never re-resolving and never failing closed.
     _publish_active(hermes_home, url, route_id="route-v1", revision=2)
 
-    with pytest.raises(MoARequiredSlotDenied):
-        client.chat.completions.create(
-            messages=[{"role": "user", "content": "After the edit, same run: what next?"}],
-        )
-    # The mid-run edit must never have caused a SECOND real request under a silently
-    # substituted route: the in-flight run's aggregator call is never reached once its
-    # reference slot's receipt fails the per-request revocation check.
-    assert len(handler.requests) == first_round_requests, (
-        "a mid-run policy edit must never let the in-flight run reach the endpoint again "
-        "under a silently substituted route"
+    client.chat.completions.create(
+        messages=[{"role": "user", "content": "After the routine edit, same run: what next?"}],
+    )
+    assert len(handler.requests) == first_round_requests + 2, (
+        "a ROUTINE mid-run policy edit (no explicit revocation) must never block the "
+        "in-flight run's next request"
     )
 
-    pinned_after = dict(_cohort_cache.get("turn-config-edit") or {})
+    pinned_after = dict(_cohort_cache.get(("turn-config-edit", home_key)) or {})
     assert pinned_after.keys() == pinned_before.keys()
     for slot_id in pinned_before:
         before_val, after_val = pinned_before[slot_id], pinned_after[slot_id]
@@ -287,9 +286,8 @@ def test_config_edit_mid_run_never_silently_reroutes(routed_home, monkeypatch):
             assert after_val is None
         else:
             assert before_val["receipt_id"] == after_val["receipt_id"], (
-                f"slot {slot_id} was re-resolved after a mid-run config edit -- the pinned cohort "
-                "must remain immutable for the life of this run even when the underlying route "
-                "is later revoked"
+                f"slot {slot_id} was re-resolved after a routine mid-run config edit -- the "
+                "pinned cohort must remain immutable for the life of this run"
             )
 
     # A brand-new run (new turn id) picks up the edited policy fresh and succeeds normally.
@@ -297,4 +295,39 @@ def test_config_edit_mid_run_never_silently_reroutes(routed_home, monkeypatch):
     client_new.chat.completions.create(
         messages=[{"role": "user", "content": "Brand new run after the edit: what next?"}],
     )
-    assert len(handler.requests) == first_round_requests + 2
+
+
+def test_emergency_revocation_mid_run_blocks_next_request(routed_home, monkeypatch):
+    """An EXPLICIT emergency revocation (``model_selection_store.revoke_route``), issued
+    AFTER a run's cohort is pinned, must block that in-flight run's NEXT request -- fail
+    closed, never silently reroute to a different route (design §12: "it never substitutes
+    another model"). This is distinct from an ordinary republish/activate, which must never
+    have this effect (see the routine-edit test above)."""
+    from agent.moa_model_routing import MoARequiredSlotDenied
+
+    hermes_home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
+    _publish_active(hermes_home, url, route_id="route-v1", revision=1)
+    _patch_custom_provider(monkeypatch, url)
+    _write_moa_config(hermes_home, _managed_preset())
+
+    client, agent = _make_client("turn-revoke")
+    client.chat.completions.create(
+        messages=[{"role": "user", "content": "Before the revocation: what next?"}],
+    )
+    first_round_requests = len(handler.requests)
+    assert first_round_requests == 2
+
+    from agent.model_selection_store import revoke_route
+    revoke_route(
+        hermes_home, "kanban-default", route_id="route-v1",
+        reason="emergency: credential compromised", approval_ref="operator:test-emergency",
+    )
+
+    with pytest.raises(MoARequiredSlotDenied):
+        client.chat.completions.create(
+            messages=[{"role": "user", "content": "After the revocation, same run: what next?"}],
+        )
+    assert len(handler.requests) == first_round_requests, (
+        "an explicit emergency revocation must never let the in-flight run reach the "
+        "endpoint again under a silently substituted route"
+    )

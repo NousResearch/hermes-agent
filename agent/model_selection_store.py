@@ -55,6 +55,15 @@ CREATE TABLE IF NOT EXISTS routing_outcomes (
     created_at INTEGER NOT NULL,
     UNIQUE(receipt_id, seq)
 );
+CREATE TABLE IF NOT EXISTS route_revocations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    policy_id TEXT NOT NULL,
+    route_id TEXT,
+    generation INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    approval_ref TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
 """
 
 
@@ -189,6 +198,84 @@ def get_receipt(hermes_home, receipt_id: str) -> Optional[dict]:
             "SELECT decision_json FROM routing_receipts WHERE id=?", (receipt_id,),
         ).fetchone()
     return json.loads(row["decision_json"]) if row is not None else None
+
+
+def get_receipt_created_at(hermes_home, receipt_id: str) -> Optional[int]:
+    """The unix timestamp this receipt was first persisted at.
+
+    Used to distinguish a routine policy edit (which must never affect an
+    already-receipted, in-flight attempt) from an explicit emergency
+    revocation issued AFTER this attempt was authorized -- only a
+    revocation whose ``created_at`` is at or after this timestamp is
+    relevant to this receipt (design §12: revocation is a distinct,
+    auditable act, never inferred from an ordinary republish).
+    """
+    with transaction(_connect(hermes_home)) as conn:
+        row = conn.execute(
+            "SELECT created_at FROM routing_receipts WHERE id=?", (receipt_id,),
+        ).fetchone()
+    return int(row["created_at"]) if row is not None else None
+
+
+def revoke_route(
+    hermes_home, policy_id: str, *, route_id: Optional[str] = None,
+    reason: str, approval_ref: str,
+) -> dict:
+    """Explicit, auditable EMERGENCY revocation/suspension (design §12).
+
+    Distinct from ``activate_policy``: publishing/activating a new policy
+    revision is an ordinary edit that only affects NEW attempts (§12
+    "Routine policy edits affect new attempts, not active conversations").
+    This function is the ONLY mechanism that blocks an already-receipted,
+    in-flight attempt -- it never happens as a side effect of publish/
+    activate. ``route_id=None`` revokes every route of ``policy_id``
+    (whole-policy emergency suspension); a specific ``route_id`` revokes
+    only that route, leaving receipts pinned to other routes of the same
+    policy unaffected.
+
+    Never substitutes another route: a revoked attempt is blocked and the
+    caller must not reroute it (§12: "it never substitutes another model").
+    Returns the persisted revocation record including a monotonic
+    ``generation`` (the autoincrement row id) for audit/CLI display.
+    """
+    if not approval_ref or not str(approval_ref).strip():
+        raise RoutingBlocked("schema_invalid", "approval_ref is required to revoke a route")
+    if not reason or not str(reason).strip():
+        raise RoutingBlocked("schema_invalid", "reason is required to revoke a route")
+    now = int(time.time())
+    with transaction(_connect(hermes_home)) as conn:
+        cur = conn.execute(
+            "INSERT INTO route_revocations (policy_id, route_id, generation, reason, approval_ref, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (policy_id, route_id, now, reason, approval_ref, now),
+        )
+        revocation_id = cur.lastrowid
+    return {
+        "id": revocation_id, "policy_id": policy_id, "route_id": route_id,
+        "reason": reason, "approval_ref": approval_ref, "created_at": now,
+    }
+
+
+def find_active_revocation(
+    hermes_home, policy_id: str, route_id: str, *, since_ts: int,
+) -> Optional[dict]:
+    """The most recent EMERGENCY revocation covering ``route_id`` of ``policy_id``
+    issued at or after ``since_ts`` (a receipt's ``created_at``), or ``None``.
+
+    Matches a revocation whose ``route_id`` is either the exact route or
+    ``NULL`` (whole-policy revocation). A revocation issued BEFORE the
+    receipt was persisted does not apply to it -- an operator revoking an
+    old route and later re-publishing/re-activating a policy that
+    legitimately reintroduces it must not permanently poison new receipts.
+    """
+    with transaction(_connect(hermes_home)) as conn:
+        row = conn.execute(
+            "SELECT id, policy_id, route_id, reason, approval_ref, created_at "
+            "FROM route_revocations WHERE policy_id=? AND (route_id=? OR route_id IS NULL) "
+            "AND created_at >= ? ORDER BY created_at DESC, id DESC LIMIT 1",
+            (policy_id, route_id, since_ts),
+        ).fetchone()
+    return dict(row) if row is not None else None
 
 
 def append_outcome(hermes_home, receipt_id: str, kind: str, payload: dict) -> None:

@@ -1266,6 +1266,7 @@ def _cmd_routing(args: argparse.Namespace) -> int:
     """
     from agent.model_selection_store import (
         activate_policy, get_active_policy, get_receipt, list_policy_revisions, publish_policy,
+        revoke_route,
     )
     from agent.model_selection_types import RoutingBlocked
     from hermes_constants import get_hermes_home
@@ -1287,6 +1288,18 @@ def _cmd_routing(args: argparse.Namespace) -> int:
         if action == "activate":
             activate_policy(hermes_home, args.policy_id, args.revision)
             print(f"activated {args.policy_id} revision {args.revision}")
+            return 0
+        if action == "revoke":
+            record = revoke_route(
+                hermes_home, args.policy_id, route_id=args.route_id,
+                reason=args.reason, approval_ref=args.approval_ref,
+            )
+            if as_json:
+                _print_json(record)
+            else:
+                scope = record["route_id"] or "ALL ROUTES"
+                print(f"revoked {scope} of {record['policy_id']} "
+                      f"(generation {record['id']}, reason={record['reason']!r})")
             return 0
         if action == "show":
             policy = get_active_policy(hermes_home, args.policy_id)

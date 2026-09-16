@@ -15,6 +15,7 @@ import path from 'node:path'
 import { describe, it } from 'vitest'
 
 import {
+  classifyProbeFailure,
   formatBlockerMessage,
   formatProbeFailedMessage,
   parseVenvBlockerScanOutput,
@@ -80,6 +81,28 @@ describe('formatProbeFailedMessage', () => {
     const msg = formatProbeFailedMessage('timed out after 60 seconds')
     assert.ok(msg.includes('timed out after 60 seconds'))
     assert.ok(msg.includes('no blocking process was confirmed'))
+  })
+})
+
+describe('classifyProbeFailure', () => {
+  it('reports no-local-venv, not a generic probe failure, when a remote-mode install has no venv', () => {
+    const { code, message } = classifyProbeFailure('venv python not found', true)
+    assert.equal(code, 'no-local-venv')
+    assert.ok(message.includes('remote'))
+    assert.ok(!message.includes('installation is not free'))
+    assert.ok(!message.includes('Close other Hermes windows'))
+  })
+
+  it('still reports a generic probe failure for a missing venv on a local install', () => {
+    const { code, message } = classifyProbeFailure('venv python not found', false)
+    assert.equal(code, 'venv-probe-failed')
+    assert.equal(message, formatProbeFailedMessage('venv python not found'))
+  })
+
+  it('does not reclassify a real probe failure (e.g. a timeout) even in remote mode', () => {
+    const { code, message } = classifyProbeFailure('timed out after 60 seconds', true)
+    assert.equal(code, 'venv-probe-failed')
+    assert.equal(message, formatProbeFailedMessage('timed out after 60 seconds'))
   })
 })
 

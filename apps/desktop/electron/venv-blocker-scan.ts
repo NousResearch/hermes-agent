@@ -306,6 +306,38 @@ export function formatBlockerMessage(result: VenvBlockerScanResult): string {
 }
 
 /**
+ * Build the message for a remote-mode install with no local venv.  Distinct
+ * from formatProbeFailedMessage: there is nothing wrong with the install and
+ * no reason to ask the user to close windows/terminals or run `hermes
+ * update` — a remote-mode Desktop has no local Hermes CLI to run it with.
+ */
+export function formatNoLocalVenvMessage(): string {
+  return (
+    'Update aborted: no local Hermes install found to update.\n\n' +
+    'This Desktop is connected to a remote backend (remote mode) and has no ' +
+    'local Python install to update. Update the remote host directly, or ' +
+    'switch this Desktop out of remote mode to manage a local install here.'
+  )
+}
+
+/**
+ * Classify a probe-failure outcome.  A remote-mode Desktop never provisions a
+ * local venv — there is no local backend for the scan to guard — so
+ * `resolveVenvPython()` legitimately finding nothing there is not the same
+ * failure as an unreadable/timed-out scan on a local install.
+ */
+export function classifyProbeFailure(
+  error: string | undefined,
+  isRemoteMode: boolean
+): { code: 'no-local-venv' | 'venv-probe-failed'; message: string } {
+  if (error === 'venv python not found' && isRemoteMode) {
+    return { code: 'no-local-venv', message: formatNoLocalVenvMessage() }
+  }
+
+  return { code: 'venv-probe-failed', message: formatProbeFailedMessage(error) }
+}
+
+/**
  * Build a probe-failure error message.
  */
 export function formatProbeFailedMessage(error?: string): string {

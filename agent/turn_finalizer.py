@@ -589,8 +589,8 @@ def finalize_turn(
     if failed and str(_turn_exit_reason) == "session_persistence_failed":
         from hermes_constants import profile_cli_selector
 
-        # A separate local: final_response feeds the memory sync and the background-review
-        # gate below, which must still see the turn as having produced no text.
+        # Never rebind final_response here: the memory sync and the background-review gate
+        # below must still see an empty response on a persistence-failed turn.
         result["error"] = final_response or (
             "session storage could not be written — check the state database "
             f"health (`hermes {profile_cli_selector()}doctor`), then send your message again"

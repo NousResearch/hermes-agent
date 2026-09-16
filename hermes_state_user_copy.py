@@ -43,7 +43,7 @@ _STORAGE_FAILURES: dict[str, tuple[str, str, str]] = {
     "corrupt": (
         "storage_corrupt",
         "the session database file is damaged",
-        f"{_DOCTOR} Recovery: `hermes {{profile_arg}}sessions recover --source <state.db> --inspect-only`.",
+        _DOCTOR + " Recovery: `hermes {profile_arg}sessions recover --source <state.db> --inspect-only`.",
     ),
     "fts_index": (
         "storage_index_corrupt",
@@ -88,9 +88,7 @@ def describe_storage_failure(exc_or_str) -> StorageFailure:
     cause = classify_persistence_error(exc_or_str)
     key = "disk_full" if cause == "disk" and is_disk_full_error(exc_or_str) else cause
     code, gloss, action = _STORAGE_FAILURES.get(key, _STORAGE_FAILURES["unknown"])
-    # Pin the copy-pasteable command to the profile whose store failed: a multi-profile backend
-    # serves sessions whose state.db is not the process default, and a bare `hermes` follows the
-    # sticky active_profile (#105887).
+    # Pin the copy-pasteable command to the failing profile — see profile_cli_selector.
     from hermes_constants import profile_cli_selector
 
     return StorageFailure(

@@ -58,10 +58,11 @@ export interface VirtualSessionListProps {
   sortable: boolean
 }
 
-// Matches the card's typical rendered height (four lines when a preview
-// exists) so long card lists don't jump under the scroll thumb before
-// self-measurement catches up.
-const CARD_ROW_ESTIMATE_PX = 74
+// Cover the tallest allowed card before self-measurement: 12px body padding,
+// the 20px header action, two 6.4px card gaps, two 13px title lines, the 2.4px
+// title/preview gap, and 13.5px preview + footer lines = 100.2px. Rounding up
+// keeps an initially unmeasured list from correcting downward under the thumb.
+const CARD_ROW_ESTIMATE_PX = 101
 const DIVIDER_ESTIMATE_PX = 28
 const OVERSCAN_ROWS = 12
 

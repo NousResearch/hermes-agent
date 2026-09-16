@@ -142,14 +142,38 @@ class DecisionProvider(abc.ABC):
         """Evaluate one request and return full probability distributions."""
 
 
-def validate_provider_decision(request: DecisionRequest, result: ProviderDecision) -> Dict[str, DecisionAnswer]:
+def validate_provider_decision(request: DecisionRequest, result: ProviderDecision) -> ProviderDecision:
     """Validate and copy a provider result without normalizing its probabilities."""
     if not isinstance(result, ProviderDecision):
         raise ValueError("provider must return ProviderDecision")
+    if not isinstance(result.model, str):
+        raise ValueError("provider model must be a string")
+    if not isinstance(result.version, str):
+        raise ValueError("provider version must be a string")
+    if not isinstance(result.usage, Mapping):
+        raise ValueError("provider usage must be a mapping")
+    usage: Dict[str, float] = {}
+    for key, value in result.usage.items():
+        if not isinstance(key, str):
+            raise ValueError("provider usage keys must be strings")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("provider usage values must be numeric")
+        if not math.isfinite(float(value)):
+            raise ValueError("provider usage values must be finite")
+        usage[key] = float(value)
+    if not isinstance(result.abstained, bool):
+        raise ValueError("provider abstained must be a boolean")
+    if result.abstention_reason is not None and not isinstance(result.abstention_reason, str):
+        raise ValueError("provider abstention reason must be a string or None")
+    if not isinstance(result.answers, Mapping):
+        raise ValueError("provider answers must be a mapping")
     if result.abstained and result.answers:
         raise ValueError("a request-level abstention cannot also contain answers")
     if result.abstained:
-        return {}
+        return ProviderDecision(
+            answers={}, model=result.model, version=result.version, usage=usage,
+            abstained=True, abstention_reason=result.abstention_reason,
+        )
     if set(result.answers) != set(request.questions):
         raise ValueError("provider answer keys must exactly match request question keys")
 
@@ -158,6 +182,8 @@ def validate_provider_decision(request: DecisionRequest, result: ProviderDecisio
         answer = result.answers[key]
         if not isinstance(answer, DecisionAnswer):
             raise ValueError(f"answer {key!r} must be DecisionAnswer")
+        if not isinstance(answer.probabilities, Mapping):
+            raise ValueError(f"answer {key!r} probabilities must be a mapping")
         probabilities = dict(answer.probabilities)
         if set(probabilities) != set(question.labels):
             raise ValueError(f"answer {key!r} probability labels do not match the question domain")
@@ -173,10 +199,21 @@ def validate_provider_decision(request: DecisionRequest, result: ProviderDecisio
             selected = max(question.labels, key=lambda label: float(probabilities[label]))
         if selected is not None and selected not in question.labels:
             raise ValueError(f"answer {key!r} selected label is outside the question domain")
+        if not isinstance(answer.abstained, bool):
+            raise ValueError(f"answer {key!r} abstained must be a boolean")
+        if not isinstance(answer.metadata, Mapping):
+            raise ValueError(f"answer {key!r} metadata must be a mapping")
         validated[key] = DecisionAnswer(
             probabilities={label: float(probabilities[label]) for label in question.labels},
             selected=selected,
             abstained=bool(answer.abstained),
             metadata=dict(answer.metadata),
         )
-    return validated
+    return ProviderDecision(
+        answers=validated,
+        model=result.model,
+        version=result.version,
+        usage=usage,
+        abstained=False,
+        abstention_reason=result.abstention_reason,
+    )

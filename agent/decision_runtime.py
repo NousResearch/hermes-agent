@@ -10,7 +10,7 @@ import queue
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Protocol
+from typing import Any, Callable, Dict, Mapping, Optional, Protocol, TypeVar
 
 from agent.decision_provider import (
     BinaryQuestion,
@@ -35,6 +35,7 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 logger = logging.getLogger(__name__)
 _VALID_MODES = frozenset({"active", "shadow", "replay"})
 _TELEMETRY_LOCK = threading.Lock()
+T = TypeVar("T")
 
 
 class DecisionRecorder(Protocol):
@@ -82,7 +83,14 @@ class DecisionRuntime:
         is inherited. ``shadow`` changes only telemetry labeling; policy remains entirely with the caller.
         """
         request = self._request(task=task, state=state, questions=questions, mode=mode)
-        selected = resolve_provider(provider, scope=self.scope)
+        secret_scope = current_secret_scope()
+        selected = resolve_provider(
+            provider,
+            scope=self.scope,
+            available=lambda candidate: self._in_profile_context(
+                candidate.is_available, self.scope, secret_scope,
+            ),
+        )
         if selected is None:
             name = provider or ""
             return self._finish(DecisionResponse(
@@ -93,22 +101,24 @@ class DecisionRuntime:
 
         started = time.perf_counter()
         try:
-            raw = self._invoke(selected, request, timeout, self.scope)
-            answers = validate_provider_decision(request, raw)
-            status = DecisionStatus.ABSTAINED if raw.abstained or (
-                answers and all(answer.abstained for answer in answers.values())
+            raw = self._invoke(selected, request, timeout, self.scope, secret_scope)
+            validated = validate_provider_decision(request, raw)
+            status = DecisionStatus.ABSTAINED if validated.abstained or (
+                validated.answers and all(answer.abstained for answer in validated.answers.values())
             ) else DecisionStatus.AVAILABLE
             response = DecisionResponse(
                 task=request.task,
                 provider=selected.name,
-                model=raw.model,
-                version=raw.version,
+                model=validated.model,
+                version=validated.version,
                 mode=request.mode,
                 status=status,
-                answers=answers,
-                usage={key: float(value) for key, value in raw.usage.items()},
+                answers=validated.answers,
+                usage=validated.usage,
                 latency_ms=(time.perf_counter() - started) * 1000,
-                fallback_reason=raw.abstention_reason if status is DecisionStatus.ABSTAINED else None,
+                fallback_reason=(
+                    validated.abstention_reason if status is DecisionStatus.ABSTAINED else None
+                ),
             )
         except queue.Empty:
             response = DecisionResponse(
@@ -155,8 +165,29 @@ class DecisionRuntime:
         )
 
     @staticmethod
+    def _in_profile_context(
+        callback: Callable[[], T], scope: str, secret_scope: Optional[Mapping[str, str]],
+    ) -> T:
+        context = contextvars.Context()
+
+        def run() -> T:
+            home_token = set_hermes_home_override(scope)
+            secret_token = set_secret_scope(secret_scope)
+            try:
+                return callback()
+            finally:
+                reset_secret_scope(secret_token)
+                reset_hermes_home_override(home_token)
+
+        return context.run(run)
+
+    @staticmethod
     def _invoke(
-        provider: DecisionProvider, request: DecisionRequest, timeout: float, scope: str,
+        provider: DecisionProvider,
+        request: DecisionRequest,
+        timeout: float,
+        scope: str,
+        secret_scope: Optional[Mapping[str, str]],
     ) -> ProviderDecision:
         try:
             timeout = float(timeout)
@@ -165,21 +196,12 @@ class DecisionRuntime:
         if timeout <= 0:
             raise ValueError("decision timeout must be a positive number")
         outcome: queue.Queue[Any] = queue.Queue(maxsize=1)
-        context = contextvars.Context()
-        secret_scope = current_secret_scope()
-
-        def evaluate() -> ProviderDecision:
-            home_token = set_hermes_home_override(scope)
-            secret_token = set_secret_scope(secret_scope)
-            try:
-                return provider.evaluate(request)
-            finally:
-                reset_secret_scope(secret_token)
-                reset_hermes_home_override(home_token)
 
         def run() -> None:
             try:
-                outcome.put((True, context.run(evaluate)))
+                outcome.put((True, DecisionRuntime._in_profile_context(
+                    lambda: provider.evaluate(request), scope, secret_scope,
+                )))
             except Exception as exc:  # provider failures are re-raised and normalized at the boundary
                 outcome.put((False, exc))
 

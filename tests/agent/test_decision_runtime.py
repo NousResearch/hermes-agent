@@ -168,6 +168,12 @@ def test_provider_keeps_owning_profile_capabilities_without_ambient_context(tmp_
     profile_home = tmp_path / "profiles" / "secondary"
 
     class ProfileProvider(_FixtureProvider):
+        def is_available(self):
+            self.availability_home = get_hermes_home()
+            self.availability_secret = get_secret("PROBE_KEY")
+            self.availability_ambient = ambient.get()
+            return True
+
         def evaluate(self, request):
             self.home = get_hermes_home()
             self.secret = get_secret("PROBE_KEY")
@@ -196,6 +202,9 @@ def test_provider_keeps_owning_profile_capabilities_without_ambient_context(tmp_
         set_multiplex_active(prior_multiplex)
 
     assert result.status is DecisionStatus.AVAILABLE
+    assert provider.availability_home == profile_home
+    assert provider.availability_secret == "secondary-secret"
+    assert provider.availability_ambient == "default"
     assert provider.home == profile_home
     assert provider.secret == "secondary-secret"
     assert provider.ambient == "default"
@@ -246,6 +255,14 @@ def test_failures_abstention_staging_and_replay_are_explicit(tmp_path):
     assert ctx.decision.evaluate(
         task="failure", state={}, questions=question, provider="failing",
     ).status is DecisionStatus.PROVIDER_ERROR
+    malformed_usage = _FixtureProvider("malformed-usage")
+    malformed_usage.evaluate = lambda request: ProviderDecision(
+        {"gate": DecisionAnswer({False: 0.1, True: 0.9})}, usage=None,
+    )
+    ctx.register_decision_provider(malformed_usage)
+    assert ctx.decision.evaluate(
+        task="failure", state={}, questions=question, provider="malformed-usage",
+    ).status is DecisionStatus.MALFORMED
     abstained = ctx.decision.evaluate(
         task="failure", state={}, questions=question, provider="abstaining",
     )

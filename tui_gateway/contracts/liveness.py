@@ -24,3 +24,15 @@ class GatewayCapabilitiesResult(Result):
 
 method("gateway.capabilities", params=PingParams, result=GatewayCapabilitiesResult,
        doc="What THIS build enforces (a client withholds a feature unless advertised).")
+
+
+class ClientCapabilitiesParams(Params):
+    server_requests: bool
+
+
+class ClientCapabilitiesResult(Result):
+    accepted: bool
+
+
+method("client.capabilities", params=ClientCapabilitiesParams, result=ClientCapabilitiesResult,
+       doc="Advertise client protocol support before ready-triggered RPCs can start a turn.")

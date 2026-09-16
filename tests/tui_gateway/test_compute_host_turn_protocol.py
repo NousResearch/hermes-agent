@@ -18,7 +18,7 @@ import types
 import pytest
 
 from tui_gateway import server
-from tui_gateway.compute_host import ComputeHost
+from tui_gateway.compute_host import ComputeHost, _HostTransport
 
 
 def _frames(out: io.StringIO) -> list[dict]:
@@ -77,6 +77,20 @@ def _session(agent) -> dict:
         "cols": 80, "slash_worker": None, "show_reasoning": False, "tool_progress_mode": "all",
         "inflight_turn": None, "active_session_lease": object(),
     }
+
+
+def test_compute_host_server_request_capability_is_session_scoped():
+    transport = _HostTransport(lambda _frame: None)
+    transport.set_server_request_support("modern", True)
+    transport.set_server_request_support("legacy", False)
+    server._sessions["modern"] = {"transport": transport}
+    server._sessions["legacy"] = {"transport": transport}
+    try:
+        assert server._client_supports_server_requests("modern") is True
+        assert server._client_supports_server_requests("legacy") is False
+    finally:
+        server._sessions.pop("modern", None)
+        server._sessions.pop("legacy", None)
 
 
 def test_turn_start_streams_deltas_then_turn_end_with_history_identity(turn_env):

@@ -38,6 +38,9 @@ def server():
     }):
         import importlib
         mod = importlib.import_module("tui_gateway.server")
+    # This fixture models the current shared clients, which advertise support immediately after
+    # gateway.ready. The legacy-client regression test below explicitly clears the capability.
+    mod._stdio_transport.supports_server_requests = True
 
     # Snapshot the RPC registry: several tests below stub handlers
     # ("slash.exec", "fast.ping", ...) directly in the module-level dict,
@@ -311,6 +314,107 @@ def test_server_request_round_trip_uses_response_frame(capture):
     assert box["r"] == "hunter2"
     with server_requests._lock:
         assert not server_requests._open
+
+
+def test_server_request_first_settler_wins_without_stale_cancel(capture):
+    """A response that owns the settlement lock cannot also be cancelled from a stale request ref."""
+    from tui_gateway import server_requests
+    server, buf = capture
+    req = server_requests.ServerRequest("s1", "sudo", {})
+    with server_requests._lock:
+        server_requests._open[req.id] = req
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _PausedResponse(dict):
+        def __contains__(self, key):
+            if key == "error":
+                entered.set()
+                assert release.wait(2)
+            return super().__contains__(key)
+
+    response = _PausedResponse(id=req.id, result={"value": "kept"})
+    resolved = threading.Thread(target=lambda: server_requests.resolve_response(response), daemon=True)
+    resolved.start()
+    assert entered.wait(2)
+    cancelled = {}
+    cancel = threading.Thread(
+        target=lambda: cancelled.setdefault("count", server_requests.cancel("s1")), daemon=True)
+    cancel.start()
+    release.set()
+    resolved.join(2); cancel.join(2)
+
+    assert not resolved.is_alive() and not cancel.is_alive()
+    assert cancelled == {"count": 0}
+    assert req.result == {"value": "kept"} and req.answered is True
+    assert not [f for f in _frames(buf) if f.get("method") == "event"]
+
+
+def test_server_request_fails_fast_until_client_advertises(capture):
+    server, buf = capture
+    server._stdio_transport.supports_server_requests = False
+
+    started = time.monotonic()
+    assert server._ask("sudo", "legacy", {}, timeout=300) == ""
+    assert time.monotonic() - started < 0.5
+    assert _frames(buf) == []
+
+    advertised = server.handle_request({
+        "id": "cap-1", "method": "client.capabilities", "params": {"server_requests": True}})
+    assert advertised["result"] == {"accepted": True}
+    assert server._stdio_transport.supports_server_requests is True
+
+
+def test_unsupported_client_denies_queue_backed_approval_immediately(server):
+    from tools import approval
+    from tools.approval_gateway_wait import _ApprovalEntry
+
+    sid = "legacy-approval"
+    session_key = "legacy-key"
+    request_id = "approval-1"
+    entry = _ApprovalEntry({"request_id": request_id, "command": "rm -rf build"})
+    server._sessions[sid] = {"session_key": session_key, "transport": server._stdio_transport}
+    server._stdio_transport.supports_server_requests = False
+    approval._gateway_queues[session_key] = [entry]
+    try:
+        server._emit_approval_request(sid, entry.data)
+        assert entry.event.is_set()
+        assert entry.result == "deny"
+        assert session_key not in approval._gateway_queues
+    finally:
+        approval._gateway_queues.pop(session_key, None)
+
+
+def test_server_request_publication_precedes_concurrent_cancel(capture, monkeypatch):
+    from tui_gateway import server_requests
+    _, buf = capture
+    original_write = server_requests._write
+    entered = threading.Event()
+    release = threading.Event()
+
+    def paused_write(frame):
+        entered.set()
+        assert release.wait(2)
+        return original_write(frame)
+
+    monkeypatch.setattr(server_requests, "_write", paused_write)
+    req = server_requests.ServerRequest("s1", "sudo", {})
+    published = threading.Thread(target=lambda: server_requests._register(req), daemon=True)
+    published.start()
+    assert entered.wait(2)
+    cancelled = threading.Thread(target=lambda: server_requests.cancel("s1"), daemon=True)
+    cancelled.start()
+    assert cancelled.is_alive()
+    release.set()
+    published.join(2)
+    cancelled.join(2)
+
+    assert not published.is_alive() and not cancelled.is_alive()
+    frames = _frames(buf)
+    assert frames[0]["id"] == req.id
+    assert frames[1]["params"]["type"] == "request.cancel"
+    assert frames[1]["params"]["payload"]["id"] == req.id
 
 
 @pytest.mark.parametrize("method", ["secret", "sudo", "terminal.read", "tour"])

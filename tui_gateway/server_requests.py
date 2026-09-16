@@ -73,18 +73,21 @@ _open: dict[str, ServerRequest] = {}
 # fixtures that patch ``sys.modules`` around the server import.
 _write: Callable[[dict], Any] = lambda frame: None  # noqa: E731
 _emit: Callable[[str, str, dict], Any] = lambda event, sid, payload: None  # noqa: E731
+_supports: Callable[[str], bool] = lambda sid: True  # noqa: E731
 
 
-def bind_sinks(write_json: Callable[[dict], Any], emit: Callable[[str, str, dict], Any]) -> None:
-    global _write, _emit
+def bind_sinks(write_json: Callable[[dict], Any], emit: Callable[[str, str, dict], Any],
+               supports: Callable[[str], bool] | None = None) -> None:
+    global _write, _emit, _supports
     _write, _emit = write_json, emit
+    _supports = supports or (lambda sid: True)
 
 
 def _emit_cancel(req: ServerRequest, reason: str) -> None:
     _emit("request.cancel", req.sid, {"id": req.id, "method": req.method, "reason": reason})
 
 
-def _register(req: ServerRequest) -> None:
+def _register(req: ServerRequest) -> bool:
     from tui_gateway.contracts import registry as contracts
 
     contract = contracts.SERVER_REQUESTS.get(req.method)
@@ -93,9 +96,14 @@ def _register(req: ServerRequest) -> None:
     _, problem = contracts.validate_params(contract, {"session_id": req.sid, **req.params})
     if problem is not None:
         raise ValueError(problem)  # a key the renderer's typed handler would never read: our bug
+    if not _supports(req.sid):
+        return False
     with _lock:
         _open[req.id] = req
-    _write(req.frame())
+        # Publication and withdrawal are one ordered operation. Otherwise cancel() can remove the
+        # request and emit request.cancel before this frame is written, leaving an orphan prompt.
+        _write(req.frame())
+    return True
 
 
 def send(method: str, sid: str, params: dict, *, timeout: float | None,
@@ -108,13 +116,13 @@ def send(method: str, sid: str, params: dict, *, timeout: float | None,
     returns ``{"answers": <locked so far>, "timed_out": True}`` instead of None.
     """
     req = ServerRequest(sid, method, params, qids=qids)
-    _register(req)
-    timed_out = False
-    try:
-        timed_out = not req.event.wait(timeout)
-    finally:
-        with _lock:
-            _open.pop(req.id, None)
+    if not _register(req):
+        return None
+    signaled = req.event.wait(timeout)
+    with _lock:
+        # Every completion path removes under this lock. If the waiter observes its deadline but a
+        # response already removed the request, that response won; otherwise the timeout wins now.
+        timed_out = not signaled and _open.pop(req.id, None) is req
     if timed_out:
         _emit_cancel(req, "timeout")
         if req.qids is not None:
@@ -128,11 +136,19 @@ def send_async(method: str, sid: str, params: dict, on_result: Callable[[dict | 
     runs on the dispatching thread when the response lands. Returns ``settle(reason)``: call it when
     the underlying wait ends; if the request is still open it is withdrawn with ``request.cancel``."""
     req = ServerRequest(sid, method, params, on_result=on_result)
-    _register(req)
+    if not _register(req):
+        # ``None`` means the queue ended through its own timeout/interrupt path. An unsupported
+        # client is instead an immediate empty answer, which fails approval closed ("deny") and
+        # wakes the queue now rather than after its independent deadline.
+        on_result({})
+        return lambda reason: None
 
     def settle(reason: str) -> None:
         with _lock:
             still_open = _open.pop(req.id, None) is not None
+            if still_open:
+                req.result, req.answered = None, False
+                req.event.set()
         if still_open:
             _emit_cancel(req, reason)
 
@@ -149,26 +165,25 @@ def resolve_response(frame: dict) -> bool:
         req = _open.get(rid)
         if req is None:
             return False
-        if req.on_result is not None:
-            _open.pop(rid, None)
-    if "error" in frame:
-        logger.debug("server request %s (%s) answered with error: %s", rid, req.method, frame.get("error"))
-        req.result, req.answered = None, False
-    else:
-        result = frame.get("result")
-        req.result = result if isinstance(result, dict) else {}
-        if req.qids and "answers" in req.result:
-            # Batch clarify: answers locked early via clarify.lock belong to the final set even when
-            # the closing response only carries the tail the user answered last.
-            answers = req.result.get("answers")
-            merged = dict(req.locked)
-            if isinstance(answers, dict):
-                merged.update(answers)
-            req.result = {**req.result, "answers": merged}
-        req.answered = True
+        _open.pop(rid, None)
+        if "error" in frame:
+            logger.debug("server request %s (%s) answered with error: %s", rid, req.method, frame.get("error"))
+            req.result, req.answered = None, False
+        else:
+            result = frame.get("result")
+            req.result = result if isinstance(result, dict) else {}
+            if req.qids and "answers" in req.result:
+                # Batch clarify: answers locked early via clarify.lock belong to the final set even when
+                # the closing response only carries the tail the user answered last.
+                answers = req.result.get("answers")
+                merged = dict(req.locked)
+                if isinstance(answers, dict):
+                    merged.update(answers)
+                req.result = {**req.result, "answers": merged}
+            req.answered = True
+        req.event.set()
     if req.on_result is not None:
         req.on_result(req.result)
-    req.event.set()
     return True
 
 
@@ -185,9 +200,9 @@ def lock_answer(request_id: str, question_id: str, answer: str) -> list[str] | N
         req.locked[question_id] = answer
         remaining = [qid for qid in req.qids if qid not in req.locked]
         if not remaining:
+            _open.pop(request_id, None)
             req.result, req.answered = {"answers": dict(req.locked)}, True
-    if not remaining:
-        req.event.set()
+            req.event.set()
     return remaining
 
 
@@ -199,11 +214,11 @@ def cancel(sid: str | None = None, reason: str = "interrupted") -> int:
         targets = [req for req in _open.values() if sid is None or req.sid == sid]
         for req in targets:
             _open.pop(req.id, None)
+            req.result, req.answered = None, False
+            req.event.set()
     for req in targets:
-        req.result, req.answered = None, False
         if req.on_result is not None:
             req.on_result(None)
-        req.event.set()
         _emit_cancel(req, reason)
     return len(targets)
 

@@ -625,7 +625,9 @@ describe('GatewayClient websocket attach mode', () => {
       )
       await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_DEAD_MS + WS_HEARTBEAT_INTERVAL_MS)
       expect(socket.readyState).toBe(FakeWebSocket.OPEN)
-      expect(socket.sent).toEqual([])
+      expect(socket.sent.map(frame => JSON.parse(frame))).toEqual([
+        expect.objectContaining({ method: 'client.capabilities', params: { server_requests: true } })
+      ])
       expect(FakeWebSocket.instances).toHaveLength(1)
     } finally {
       gw.kill()

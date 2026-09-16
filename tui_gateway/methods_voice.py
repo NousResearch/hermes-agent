@@ -439,6 +439,14 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"per_session_exclusive_submit": bool(PER_SESSION_EXCLUSIVE_SUBMIT)})
 
 
+@method("client.capabilities")
+def _(rid, params: dict) -> dict:
+    """Latch protocol support on the authenticated transport, never on client-supplied session data."""
+    transport = _caller_transport()
+    transport.supports_server_requests = bool(params.get("server_requests"))
+    return _ok(rid, {"accepted": transport.supports_server_requests})
+
+
 @method("ping")
 def _(rid, params: dict) -> dict:
     """Cheapest liveness probe, answered on the WS reader thread (works while every agent is mid-turn)

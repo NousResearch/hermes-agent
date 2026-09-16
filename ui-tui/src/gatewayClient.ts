@@ -180,6 +180,12 @@ export class GatewayClient extends EventEmitter {
       this.clearReconnect()
       this.reconnectAttempts = 0
 
+      // Queue this before ready subscribers can create/resume a session or submit a turn.
+      // Legacy backends reject it harmlessly; current backends latch this transport generation.
+      void this.channel
+        .request('client.capabilities', { server_requests: true }, 10_000)
+        .catch(() => undefined)
+
       if (this.readyTimer) {
         clearTimeout(this.readyTimer)
         this.readyTimer = null

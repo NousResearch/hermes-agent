@@ -742,19 +742,17 @@ function Get-PowerShellHostExe {
     return "powershell"
 }
 
-# Shared by Install-Uv and Resolve-UvCmd: a managed uv.exe is only usable
-# if `uv --version` exits 0 and prints a version. Resolve-UvCmd may run in
-# a fresh process where Install-Uv never ran, so this must live at script
-# scope rather than nested inside Install-Uv.
-function Get-UsableUvVersion($UvPath) {
+# Run `<exe> --version` and return its merged output lines, or $null when the
+# executable does not launch or exits non-zero. Shared by the uv and managed
+# Git probes: a broken Chocolatey shim writes its failure to stderr and a
+# truncated exe throws before there is an exit code, so the script-wide Stop
+# policy is suspended for the probe instead of letting it abort the installer.
+function Get-VersionProbeOutput($ExePath) {
     $prevEAP = $ErrorActionPreference
     try {
-        # A broken Chocolatey shim commonly writes its failure to stderr.
-        # Do not let PowerShell's global Stop policy turn that probe into a
-        # terminating exception before we can inspect the native exit code.
         $ErrorActionPreference = "Continue"
         $global:LASTEXITCODE = 0
-        $versionOutput = @(& $UvPath --version 2>&1)
+        $output = @(& $ExePath --version 2>&1)
         $exitCode = $LASTEXITCODE
     } catch {
         return $null
@@ -762,6 +760,16 @@ function Get-UsableUvVersion($UvPath) {
         $ErrorActionPreference = $prevEAP
     }
     if ($exitCode -ne 0) { return $null }
+    return $output
+}
+
+# Shared by Install-Uv and Resolve-UvCmd: a managed uv.exe is only usable
+# if `uv --version` exits 0 and prints a version. Resolve-UvCmd may run in
+# a fresh process where Install-Uv never ran, so this must live at script
+# scope rather than nested inside Install-Uv.
+function Get-UsableUvVersion($UvPath) {
+    $versionOutput = Get-VersionProbeOutput $UvPath
+    if ($null -eq $versionOutput) { return $null }
     # stderr is merged into the stream, so a warning (e.g. from a wrapper
     # script) can land before the version line. Anchoring on the joined
     # stream would misclassify a healthy uv and purge it; match per line.
@@ -1548,7 +1556,12 @@ function Set-ManagedGitPath {
     # installed, so every stage can call it unconditionally before probing git.
     param([string]$GitDir = (Join-Path $HermesHome "git"))
 
-    if (-not (Test-Path -LiteralPath (Join-Path $GitDir "cmd\git.exe") -PathType Leaf)) { return }
+    $gitExe = Join-Path $GitDir "cmd\git.exe"
+    if (-not (Test-Path -LiteralPath $gitExe -PathType Leaf)) { return }
+    # A half-extracted or AV-quarantined PortableGit must not shadow a working
+    # system Git for the rest of the run. Leave PATH alone unless it launches;
+    # Install-Git then falls through to system git or a fresh download.
+    if ($null -eq (Get-VersionProbeOutput $gitExe)) { return }
 
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $updated = Get-ManagedGitUserPath -UserPath $userPath -GitDir $GitDir

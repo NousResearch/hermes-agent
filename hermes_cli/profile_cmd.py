@@ -416,6 +416,10 @@ def _profile_alias(args):
             print(f"✓ Removed alias '{alias_name}'")
         else:
             print(f"No alias '{alias_name}' found to remove.")
+            print(
+                "  Tip: run `hermes doctor` -- its \"Orphan alias\" section lists "
+                "wrapper/profile mismatches, including wrappers whose profile is gone."
+            )
         return
     if not profile_exists(name):
         _die(f"Error: Profile '{name}' does not exist.")

@@ -16,7 +16,11 @@ import hermes_cli.providers as providers_mod
 import pytest
 import yaml
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
-from hermes_cli.model_switch_providers import _fetch_picker_live_models, _save_discovered_models_to_config
+from hermes_cli.model_switch_providers import (
+    _fetch_picker_live_models,
+    _NativePickerModelList,
+    _save_discovered_models_to_config,
+)
 from hermes_cli.providers import resolve_provider_full
 
 
@@ -60,6 +64,56 @@ def test_picker_native_probe_failure_falls_back_to_openai_catalog(monkeypatch):
     assert _fetch_picker_live_models(
         "key", "http://127.0.0.1:11434/v1", "ollama", False
     ) == ["fallback-model"]
+
+
+def test_picker_native_catalog_is_admitted_to_the_shared_model_cache(monkeypatch):
+    """A live ``/api/tags`` probe must land in ``provider_models_cache.json``.
+
+    Only the CURRENT custom endpoint is probed on a normal picker open; every other one is
+    served from that file (``cache_only``). A native catalog that answered the probe but was
+    never stored therefore read back empty on the next open, and the row's whole provider group
+    disappeared from the picker until someone hit Refresh Models. The round-trip stays a
+    ``_NativePickerModelList``: the native flag is what lets a genuinely model-less Ollama
+    persist an authoritative empty catalog.
+    """
+    monkeypatch.setattr(
+        "hermes_cli.models_local.should_use_ollama_native_catalog", lambda *a, **k: True
+    )
+    monkeypatch.setattr("hermes_cli.models._get_ollama_native_headers", lambda *a, **k: {})
+    monkeypatch.setattr(
+        "hermes_cli.models_local.fetch_ollama_local_models", lambda *a, **k: ["qwen3:8b"]
+    )
+
+    from hermes_cli.models import cached_fetch_api_models
+
+    url = "http://127.0.0.1:11434/v1"
+    assert _fetch_picker_live_models(None, url, "custom", False) == ["qwen3:8b"]
+
+    no_probe = cached_fetch_api_models(None, url, cache_only=True, timeout=1.5)
+    assert isinstance(no_probe, _NativePickerModelList)
+    assert no_probe == ["qwen3:8b"]
+
+
+def test_picker_native_catalog_skips_cache_admission_when_cache_is_off(monkeypatch):
+    """``cache=False`` is the inner call the callable-key path makes to stay token-lazy.
+
+    It must keep probing without admitting anything, or a command-token provider would be
+    minted and persisted outside the cache-entry decision that exists to avoid that.
+    """
+    monkeypatch.setattr(
+        "hermes_cli.models_local.should_use_ollama_native_catalog", lambda *a, **k: True
+    )
+    monkeypatch.setattr("hermes_cli.models._get_ollama_native_headers", lambda *a, **k: {})
+    monkeypatch.setattr(
+        "hermes_cli.models_local.fetch_ollama_local_models", lambda *a, **k: ["qwen3:8b"]
+    )
+
+    from hermes_cli.models import cached_fetch_api_models
+
+    url = "http://127.0.0.1:11434/v1"
+    assert _fetch_picker_live_models(None, url, "custom", False, cache=False) == ["qwen3:8b"]
+
+    assert cached_fetch_api_models(None, url, cache_only=True, timeout=1.5) is None
 
 
 def test_picker_generic_discovery_preserves_api_mode(monkeypatch):

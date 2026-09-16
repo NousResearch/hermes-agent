@@ -129,9 +129,22 @@ def _fetch_picker_live_models(
     if use_native:
         if preserve_native_models:
             return None
-        native_models = fetch_ollama_local_models(api_url, timeout=timeout, headers=resolved_headers)
+
+        def _probe_native_catalog() -> _NativePickerModelList | None:
+            models = fetch_ollama_local_models(api_url, timeout=timeout, headers=resolved_headers)
+            return None if models is None else _NativePickerModelList(models)
+
+        # Admit the native catalog to the SHARED disk cache: a no-probe picker open (every endpoint
+        # that is not the current one) reads ``provider_models_cache.json`` only, so a native probe
+        # that answered here but was never stored came back empty on the next open — the provider's
+        # whole group vanished from the picker until the user hit Refresh Models.
+        native_models = (
+            cached_fetch_api_models(
+                api_key, api_url, timeout=timeout, headers=resolved_headers, api_mode=api_mode,
+                fetch_models=_probe_native_catalog)
+            if cache else _probe_native_catalog())
         if native_models is not None:
-            return _NativePickerModelList(native_models)
+            return native_models
         # A failed native probe is not authoritative: retry the cached generic catalog.
         api_url = _normalize_openai_base_url(api_url)
     generic_models = (cached_fetch_api_models if cache else fetch_api_models)(

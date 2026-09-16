@@ -130,3 +130,94 @@ async def test_sse_event_split_across_chunks_counts_prefix():
             async with client.stream("GET", "http://mcp.test/sse") as resp:
                 async for _ in resp.aiter_bytes():
                     pass
+
+
+def _sse_client(chunks, limit=64):
+    class _Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for c in chunks:
+                yield c
+
+    async def handler(request):
+        return httpx.Response(
+            200, stream=_Stream(),
+            headers={"content-type": "text/event-stream"},
+        )
+    return _client_for(handler, limit=limit)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sep,cut", [
+    (b"\n\n", 1),            # ...\n | \n...
+    (b"\r\n\r\n", 1),        # ...\r | \n\r\n...
+    (b"\r\n\r\n", 2),        # ...\r\n | \r\n...
+    (b"\r\n\r\n", 3),        # ...\r\n\r | \n...
+    # The spec also allows CR terminators and mixed styles; every pairing is a boundary.
+    (b"\r\r", 1),            # ...\r | \r...
+    (b"\n\r", 1),            # ...\n | \r...
+    (b"\n\r\n", 1),          # ...\n | \r\n...
+    (b"\n\r\n", 2),          # ...\n\r | \n...
+    (b"\r\n\n", 1),          # ...\r\n | \n...
+    (b"\r\n\n", 2),          # ...\r\n\n | ...
+    (b"\r\n\r", 1),          # ...\r\n | \r...
+    (b"\r\n\r", 2),          # ...\r\n\r | ...
+    (b"\r\r\n", 1),          # ...\r | \r\n...
+    (b"\r\r\n", 2),          # ...\r\r | \n...
+])
+async def test_sse_boundary_split_across_chunks_still_resets(sep, cut):
+    # A completed event boundary straddling two chunks must still reset the
+    # per-event counter; otherwise the finished event's bytes are charged to
+    # the next event and the cap trips early.
+    event1 = b"data: " + b"a" * 40 + sep[:cut]
+    event2 = sep[cut:] + b"data: " + b"b" * 40 + sep
+    chunks = [event1, event2]
+    async with _sse_client(chunks) as client:
+        async with client.stream("GET", "http://mcp.test/sse") as resp:
+            async for _ in resp.aiter_bytes():
+                pass
+
+
+@pytest.mark.asyncio
+async def test_sse_crlf_inside_event_is_not_a_boundary():
+    # A lone CRLF ends a line, not the event. If \r\n could split the count, a
+    # multi-line event over the cap would evade it.
+    chunks = [b"data: " + b"a" * 40 + b"\r\ndata: " + b"b" * 40 + b"\r\n\r\n"]
+    async with _sse_client(chunks) as client:
+        with pytest.raises(httpx.ReadError, match=r"SSE event exceeds"):
+            async with client.stream("GET", "http://mcp.test/sse") as resp:
+                async for _ in resp.aiter_bytes():
+                    pass
+
+
+@pytest.mark.asyncio
+async def test_sse_crlf_split_across_chunks_inside_event_is_not_a_boundary():
+    # Same check with the \r and \n straddling the chunk seam: the carry must not
+    # turn a mid-event line ending into a boundary.
+    chunks = [b"data: " + b"a" * 40 + b"\r", b"\ndata: " + b"b" * 40 + b"\r\n\r\n"]
+    async with _sse_client(chunks) as client:
+        with pytest.raises(httpx.ReadError, match=r"SSE event exceeds"):
+            async with client.stream("GET", "http://mcp.test/sse") as resp:
+                async for _ in resp.aiter_bytes():
+                    pass
+
+
+@pytest.mark.asyncio
+async def test_sse_split_boundary_over_cap_event_still_rejected():
+    # The carry must not weaken the cap: an event genuinely over the limit is
+    # still rejected even when its preceding boundary straddled chunks.
+    chunks = [b"data: ok\n", b"\ndata: " + b"z" * 80 + b"\n\n"]
+    async with _sse_client(chunks) as client:
+        with pytest.raises(httpx.ReadError, match=r"SSE event exceeds"):
+            async with client.stream("GET", "http://mcp.test/sse") as resp:
+                async for _ in resp.aiter_bytes():
+                    pass
+
+
+@pytest.mark.asyncio
+async def test_sse_boundary_split_three_ways():
+    # A \r\n\r\n boundary dribbled across three chunks still resets the count.
+    chunks = [b"data: " + b"a" * 40 + b"\r", b"\n\r", b"\ndata: " + b"b" * 40 + b"\r\n\r\n"]
+    async with _sse_client(chunks) as client:
+        async with client.stream("GET", "http://mcp.test/sse") as resp:
+            async for _ in resp.aiter_bytes():
+                pass

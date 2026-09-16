@@ -74,7 +74,10 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
     """No live swap while a turn streams (agent.switch_model() mutates fields the worker thread
     reads every iteration): stash the pick for the NEXT turn start. Selection guards run HERE (the
     only moment a confirm round-trip is possible; an unconfirmed stashed pick is dropped at turn
-    start) — on a warning nothing is stashed."""
+    start) — on a warning nothing is stashed. Stale code is refused HERE for the same reason: the
+    deferred apply would hit the same guard at turn start, long after the toast can be acted on."""
+    if skew := _model_switch_skew_guard():
+        raise ValueError(skew)
     try:
         pending_model = parsed.model_input
     except Exception:

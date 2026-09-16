@@ -1,5 +1,8 @@
 import { chatMessageText } from './parts'
 import type { ChatMessage, ChatMessagePart } from './types'
+import { assistantTimelineMatch } from '@/app/chat/transcript-backfill-helpers'
+
+export { assistantTimelineMatch }
 
 const validTimelineBoundary = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value) && value > 0
@@ -18,27 +21,10 @@ const latestBoundary = (...values: (number | undefined)[]) => {
 
 const normalizedTimelineText = (message: ChatMessage) => chatMessageText(message).replace(/\s+/g, ' ').trim()
 
-const assistantTimelineMatch = (stored: ChatMessage, local: ChatMessage) => {
-  if (stored.id === local.id) {
-    return true
-  }
-
-  const localToolIds = new Set(
-    local.parts
-      .filter(part => part.type === 'tool-call')
-      .map(part => (part.type === 'tool-call' ? part.toolCallId : ''))
-  )
-
-  const toolMatch = stored.parts.some(part => part.type === 'tool-call' && localToolIds.has(part.toolCallId))
-
-  if (toolMatch) {
-    return true
-  }
-
-  const storedText = normalizedTimelineText(stored)
-
-  return Boolean(storedText) && storedText === normalizedTimelineText(local)
-}
+// assistantTimelineMatch (text/tool + temporal fallback) lives in
+// transcript-backfill-helpers.ts and is re-exported above; the local copy was
+// the disappearing-agent-message bug: text-only matching let hydration
+// replace a live streamed bubble whose text had been normalized differently.
 
 const userTurnMatch = (stored: ChatMessage, local: ChatMessage) =>
   stored.role === 'user' &&

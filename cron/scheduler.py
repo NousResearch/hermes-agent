@@ -41,6 +41,7 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
     load_config, load_config_readonly, resolve_cron_model_drift_defaults)
 from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.update_lock import read_live_update
 from hermes_time import now as _hermes_now
 from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
@@ -3817,6 +3818,16 @@ def tick(
         # Advance next_run_at for recurring jobs FIRST, under the lock, before any execution
         # (at-most-once). Re-advancing running jobs keeps the grace window alive; mark_job_run
         # overwrites it on completion. Composes with the claim-time advance in claim_job_for_fire.
+        #
+        # Update-window deferral (#113293): advancing here would consume the slot while the
+        # updater swaps the code underneath a dispatched job. A live update marker means the
+        # next tick (post-update) owns these jobs, so leave them due and dispatch nothing.
+        live_update = read_live_update()
+        if live_update is not None:
+            logger.warning(
+                "Cron tick deferred: update in progress (pid %d) — %d due job(s) kept for next tick",
+                live_update.pid, len(due_jobs))
+            return 0
         advance_next_runs([job["id"] for job in due_jobs])
 
         _max_workers = _resolve_max_parallel_workers()

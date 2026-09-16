@@ -60,8 +60,10 @@ const CLI_TIPS: Array<{ cmd: string; desc: string }> = [
 
 /**
  * عیب‌یابی — mirrors the standalone guide.html troubleshooting table (the
- * (-6) dist error, the misleading WS "session token" boot failure, and the
- * pip-environment drift checklist). Keep in sync with guide.html بخش ۱۷.
+ * (-6) dist error, the misleading WS "session token" boot failure, the
+ * pip-environment drift checklist, and the npm/Node drift checklist).
+ * Keep in sync with guide.html بخش ۱۷ — both sides currently carry four
+ * entries: (-6), WS token, pip drift, npm drift.
  */
 const TROUBLESHOOTING: Array<{ problem: string; fix: string }> = [
   {
@@ -75,6 +77,10 @@ const TROUBLESHOOTING: Array<{ problem: string; fix: string }> = [
   {
     problem: "چک‌لیست ناهم‌خوانی محیط پایتون (خطاهای import یا نسخه)",
     fix: "۱) pip check باید «No broken requirements found» بدهد. ۲) نسخه‌ها را با پین‌های pyproject.toml بسنجید و با pip install -e \".[web]\" هم‌تراز کنید. ۳) اگر pip هشدار «Ignoring invalid distribution ~xyz» داد، پوشه‌های «~...» را در Lib/site-packages حذف کنید (خرده‌نصب خراب). ۴) آزمون نهایی: python -c \"import uvicorn, fastapi, websockets; from tui_gateway.ws import handle_ws\" — بدون خطا یعنی محیط سالم است.",
+  },
+  {
+    problem: "چک‌لیست ناهم‌خوانی محیط npm/Node (خطاهای نصب، EENGINE، EALLOWSCRIPTS)",
+    fix: "۱) نصب‌های تکراری را با npm ci انجام دهید تا node_modules دقیقاً مطابق package-lock.json بازسازی شود؛ npm install ممکن است lockfile را جابه‌جا کند. ۲) بهداشت lockfile: این مخزن تک‌قفل‌نامه است — نصب از ریشه مخزن انجام شود و package-lock.json همراه هر تغییر وابستگی کامیت گردد؛ npm install در زیرپوشه‌ها (مثل ui-tui) رزولوشن پکیج‌های داخلی را می‌شکند. ۳) خطای EENGINE یعنی npm نصب‌شده در بازه مجاز engines پروژه نیست (<11.10.0 || >=11.17.0) — با npm i -g npm@12 هم‌تراز کنید و از دورزدن با --engine-strict=false جز در موارد ضروری پرهیز کنید. ۴) خطای EALLOWSCRIPTS یعنی ~/.npmrc کاربر اسکریپت‌های postinstall را غیرفعال کرده — خط allow-scripts را از آن حذف کنید تا postinstallهای لازم (مثل باینری Electron) اجرا شوند.",
   },
 ];
 

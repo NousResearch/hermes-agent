@@ -15,6 +15,8 @@ from urllib.parse import urlparse
 
 import yaml
 
+from hermes_constants import mkdir_under_hermes_home
+
 logger = logging.getLogger(__name__)
 
 
@@ -239,8 +241,11 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     volume mounts; an existing target with no *mode* keeps mkstemp's bits, as before. *fsync_dir*
     also fsyncs the parent so the rename itself is durable. The temp file is removed on any
     failure — ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still clean up.
+    Raises ``FileNotFoundError`` rather than materializing a deleted/missing named profile home.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # Guarded mkdir: a late writer (background refresh, long-lived gateway) must not resurrect
+    # a profile deleted after the caller's home was resolved (#112592).
+    mkdir_under_hermes_home(path.parent)
     if mode is None and not path.exists():
         mode = default_new_file_mode()
     original_owner = _preserve_file_owner(path) if preserve_owner else None
@@ -423,7 +428,7 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
     from hermes_cli.config import _greedy_literal_match, _split_key_path
 
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    mkdir_under_hermes_home(path.parent)  # never resurrect a deleted named profile home (#112592)
     yaml_rt, config = _roundtrip_load(path)
     current = config
     keys = _split_key_path(key_path)
@@ -467,7 +472,7 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict) -> None:
     from hermes_cli.config import require_readable_config_before_write
 
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    mkdir_under_hermes_home(path.parent)  # never resurrect a deleted named profile home (#112592)
     require_readable_config_before_write(path)
     yaml_rt, existing = _roundtrip_load(path)
 

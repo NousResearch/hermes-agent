@@ -964,6 +964,12 @@ auxiliary:
     base_url: null                                  # Custom OpenAI-compatible endpoint (overrides provider)
 ```
 
+`compression.exhaustion_action` controls terminal compression exhaustion in the messaging gateway. The default, `reset`, starts a fresh session for the next message. Set it to `pause` to preserve the exhausted session and history, persist a pause, and refuse further agent turns before preparation or enrichment. A deferred compression attempt does not pause or reset the conversation.
+
+An existing pause stays in place if this setting is removed, invalid, or unreadable. Only a positively read explicit `reset` automatically recovers it; that message returns a reset notice without invoking an agent. Managed configuration takes precedence over the source profile's user YAML. You can also recover with a committed `/compress`, `/new` (or `/reset`), or `/resume` to another session you are authorized to access. Resuming the same session does not clear its pause. Native suspension and compression-tip recovery still apply.
+
+Pause and recovery require a successful primary routing-storage write. A failed initial pause write keeps this process paused, but cannot guarantee survival across a restart while storage is unavailable. Manual compression no-ops and failures do not release a pause.
+
 :::info Legacy config migration
 Older configs with `compression.summary_model`, `compression.summary_provider`, and `compression.summary_base_url` are automatically migrated to `auxiliary.compression.*` on first load (config version 17). No manual action needed.
 :::

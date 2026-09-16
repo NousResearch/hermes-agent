@@ -204,6 +204,11 @@ _PREFIX_PATTERNS = [
     r"glwt-[A-Za-z0-9_\-]{10,}",        # GitLab workspace token
     r"GR1348941[A-Za-z0-9_\-]{10,}",    # GitLab legacy runner registration token
     r"pk-lf-[A-Za-z0-9\-]{8,}",         # Langfuse public key (sk-lf- already covered by sk- pattern)
+    # Google OAuth refresh token — raw form starts "1//" (2026-09-13: a
+    # subagent echoed a full Authorization header built from google_token.json
+    # into session history; 4 rows leaked, filter 403s as
+    # [SECRET:...refresh_token]). Seen lengths 60-103 chars; floor {35,}.
+    r"1//[A-Za-z0-9_.\-]{35,}",
 ]
 
 # ENV assignment: KEY=value where KEY carries a secret-like name. Uppercase keys

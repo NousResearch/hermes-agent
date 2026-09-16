@@ -380,7 +380,8 @@ export function resetTypingActivityTracking(): void {
 export function rehydrateLiveSessionStatuses(
   response: LiveSessionStatusResponse,
   nowMs = Date.now(),
-  profileKey = 'default'
+  profileKey = 'default',
+  stateAtRequest = $sessionStates.get()
 ): void {
   const seen = new Set<string>()
 
@@ -397,6 +398,14 @@ export function rehydrateLiveSessionStatuses(
     seen.add(runtimeSessionId)
 
     const existing = $sessionStates.get()[runtimeSessionId]
+
+    // The active-list response is an async snapshot. Stream events can start
+    // or finish this turn after the request begins but before its response is
+    // applied. In that case the event state is newer: an old idle row must not
+    // finish a live turn, and an old working row must not revive a terminal one.
+    if (existing !== stateAtRequest[runtimeSessionId]) {
+      continue
+    }
 
     // A turn we just submitted is not yet running as far as the backend is
     // concerned, so the snapshot honestly reports it idle — but the local
@@ -455,6 +464,10 @@ export function rehydrateLiveSessionStatuses(
       }
 
       const existing = $sessionStates.get()[runtimeSessionId]
+
+      if (existing !== stateAtRequest[runtimeSessionId]) {
+        continue
+      }
 
       if (existing?.busy || existing?.needsInput || existing?.awaitingResponse) {
         publishSessionState(runtimeSessionId, {
@@ -697,12 +710,13 @@ export function useBackgroundSync({
       }
 
       inFlight = true
+      const stateAtRequest = $sessionStates.get()
 
       try {
         const response = await requestGateway<LiveSessionStatusResponse>('session.active_list', {})
 
         if (!cancelled) {
-          rehydrateLiveSessionStatuses(response, Date.now(), activeGatewayProfile)
+          rehydrateLiveSessionStatuses(response, Date.now(), activeGatewayProfile, stateAtRequest)
         }
       } catch {
         // Older gateways may not expose session.active_list. Live stream events

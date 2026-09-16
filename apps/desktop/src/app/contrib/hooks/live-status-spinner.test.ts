@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { $selectedStoredSessionId, $unreadFinishedSessionIds } from '@/store/session'
-import { $workingSessionIds, clearAllSessionStates } from '@/store/session-states'
+import {
+  $sessionStates,
+  $workingSessionIds,
+  clearAllSessionStates,
+  publishSessionState
+} from '@/store/session-states'
 
 import { rehydrateLiveSessionStatuses, resetLiveRuntimeTracking } from './use-background-sync'
 
@@ -46,6 +52,50 @@ describe('rehydrateLiveSessionStatuses — seeding a turn the renderer never saw
     })
 
     expect($workingSessionIds.get()).toContain('stored-cold')
+  })
+
+  it('ignores an idle snapshot captured before a live turn event', () => {
+    const stateAtRequest = $sessionStates.get()
+
+    publishSessionState('runtime-race', {
+      ...createClientSessionState('stored-race'),
+      busy: true,
+      sawAssistantPayload: true,
+      turnLive: true
+    })
+
+    rehydrateLiveSessionStatuses(
+      { sessions: [{ id: 'runtime-race', session_key: 'stored-race', status: 'idle' }] },
+      Date.now(),
+      'default',
+      stateAtRequest
+    )
+
+    expect($workingSessionIds.get()).toContain('stored-race')
+    expect($unreadFinishedSessionIds.get()).not.toContain('stored-race')
+  })
+
+  it('ignores a working snapshot captured before the terminal event', () => {
+    const live = {
+      ...createClientSessionState('stored-race'),
+      busy: true,
+      sawAssistantPayload: true,
+      turnLive: true
+    }
+
+    publishSessionState('runtime-race', live)
+    const stateAtRequest = $sessionStates.get()
+    publishSessionState('runtime-race', { ...live, busy: false, turnLive: false })
+
+    rehydrateLiveSessionStatuses(
+      { sessions: [{ id: 'runtime-race', session_key: 'stored-race', status: 'working' }] },
+      Date.now(),
+      'default',
+      stateAtRequest
+    )
+
+    expect($workingSessionIds.get()).not.toContain('stored-race')
+    expect($unreadFinishedSessionIds.get()).toContain('stored-race')
   })
 
   it('shows the spinner when a runtime id is recycled onto a new stored session', () => {

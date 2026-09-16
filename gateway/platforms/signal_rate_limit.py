@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import threading
 import time
 from typing import Any, Optional
 
@@ -176,6 +177,10 @@ class SignalAttachmentScheduler:
                 "refill_seconds_per_token": round(1.0 / self.refill_rate, 1) if self.refill_rate > 0 else float("inf")}
 
 
+# Published atomically under ``_scheduler_lock``: concurrent first touches (gateway threads,
+# free-threaded runtimes) must converge on one scheduler, otherwise each orphaned instance keeps
+# its own token bucket and the burst allowance multiplies.
+_scheduler_lock = threading.Lock()
 _scheduler: Optional[SignalAttachmentScheduler] = None
 
 
@@ -183,9 +188,11 @@ def get_scheduler() -> SignalAttachmentScheduler:
     """Return the process-wide scheduler, creating it on first access."""
     global _scheduler
     if _scheduler is None:
-        _scheduler = SignalAttachmentScheduler()
-        logger.info("Signal scheduler: created (capacity=%d tokens, refill=%.4f/s ≈ %.1fs/token)",
-                    int(_scheduler.capacity), _scheduler.refill_rate, 1.0 / _scheduler.refill_rate)
+        with _scheduler_lock:
+            if _scheduler is None:
+                _scheduler = SignalAttachmentScheduler()
+                logger.info("Signal scheduler: created (capacity=%d tokens, refill=%.4f/s ≈ %.1fs/token)",
+                            int(_scheduler.capacity), _scheduler.refill_rate, 1.0 / _scheduler.refill_rate)
     return _scheduler
 
 

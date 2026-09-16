@@ -660,8 +660,8 @@ def _dispatch_to_plugin_provider(
     return _provider_result(result, "Provider returned a non-dict result")
 
 
-# Native Krea model ids are served by the Krea managed gateway (managed mode only —
-# direct/BYO users keep their pipeline).
+# Native Krea model ids route to the Krea managed gateway (managed mode only —
+# direct/BYO users keep their pipeline); ``fal-ai/krea/v2/*`` catalog ids stay on FAL.
 def _normalize_krea_model(model_id: Optional[str]) -> Optional[str]:
     """Return ``model_id`` when it is one of the Krea plugin's model ids, else ``None``."""
     from plugins.image_gen.krea import KREA_MODEL_IDS

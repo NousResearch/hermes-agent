@@ -34,6 +34,8 @@ const mockConfig = (config: Record<string, unknown>) =>
 
 describe('useHermesConfig refreshHermesConfig', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useRealTimers()
     // Reset atoms and localStorage between tests
     setCurrentCwd('')
     setCurrentFastMode(false)
@@ -42,6 +44,48 @@ describe('useHermesConfig refreshHermesConfig', () => {
     setDefaultReasoningEffort('')
     setTerminalFontFamilyFromConfig('')
     persistString(WORKSPACE_CWD_KEY, null)
+  })
+
+  it('does not expose the 120-second fallback while the voice config is still loading', async () => {
+    const config = deferred<Awaited<ReturnType<typeof getHermesConfig>>>()
+    vi.mocked(getHermesConfig).mockReturnValueOnce(config.promise)
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    expect(result.current.voiceMaxRecordingSeconds).toBeUndefined()
+
+    let refresh!: Promise<void>
+    act(() => {
+      refresh = result.current.refreshHermesConfig()
+    })
+
+    expect(result.current.voiceMaxRecordingSeconds).toBeUndefined()
+    config.resolve({ voice: { max_recording_seconds: 240 } } as Awaited<ReturnType<typeof getHermesConfig>>)
+
+    await act(async () => {
+      await refresh
+    })
+
+    expect(result.current.voiceMaxRecordingSeconds).toBe(240)
+  })
+
+  it('retries a transient config failure instead of falling back to 120 seconds', async () => {
+    vi.useFakeTimers()
+    vi.mocked(getHermesConfig)
+      .mockRejectedValueOnce(new Error('backend is still starting'))
+      .mockResolvedValueOnce({ voice: { max_recording_seconds: 240 } } as Awaited<ReturnType<typeof getHermesConfig>>)
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+
+    expect(result.current.voiceMaxRecordingSeconds).toBeUndefined()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000)
+    })
+
+    expect(result.current.voiceMaxRecordingSeconds).toBe(240)
   })
 
   // Regression: the composer keeps a manual model pick sticky, which skips the

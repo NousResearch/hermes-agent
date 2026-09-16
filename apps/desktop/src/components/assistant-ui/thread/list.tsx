@@ -1064,6 +1064,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       if (contentRef.current) {
         resizeObserver.observe(contentRef.current)
       }
+
       void scrollToBottom('instant')
     }
 

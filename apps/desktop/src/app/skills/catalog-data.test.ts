@@ -17,6 +17,7 @@ describe('public catalog data', () => {
       tags: [`${source}-tag`],
       envVars: [`${source.toUpperCase()}_KEY`]
     }))
+
     // Same source, different identifier is also a distinct install target.
     rows.push({ ...rows[0], identifier: 'official/alternate/research' })
 
@@ -42,10 +43,14 @@ describe('public catalog data', () => {
   })
 
   it('keeps catalog identity separate from the source-qualified skill install target', () => {
-    const [entry] = parseCatalog('skills', [{
-      name: 'Apple Design', identifier: 'apple-design', source: 'ClawHub',
-      installCmd: 'hermes skills install clawhub/apple-design'
-    }])
+    const [entry] = parseCatalog('skills', [
+      {
+        name: 'Apple Design',
+        identifier: 'apple-design',
+        source: 'ClawHub',
+        installCmd: 'hermes skills install clawhub/apple-design'
+      }
+    ])
 
     expect(entry.identifier).toBe('apple-design')
     expect(entry.installIdentifier).toBe('clawhub/apple-design')
@@ -98,14 +103,17 @@ describe('public catalog data', () => {
   })
 
   it.each(['skills', 'plugins'] as const)('fetches only the published %s snapshot and parses it', async kind => {
-    const rows = [{
-      name: 'weather',
-      identifier: 'official/weather',
-      source: 'official',
-      tier: 'official',
-      repo: 'https://github.com/example/weather',
-      sourceUrl: 'https://github.com/example/weather/blob/main/SKILL.md'
-    }]
+    const rows = [
+      {
+        name: 'weather',
+        identifier: 'official/weather',
+        source: 'official',
+        tier: 'official',
+        repo: 'https://github.com/example/weather',
+        sourceUrl: 'https://github.com/example/weather/blob/main/SKILL.md'
+      }
+    ]
+
     const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => rows })
     vi.stubGlobal('fetch', fetch)
 

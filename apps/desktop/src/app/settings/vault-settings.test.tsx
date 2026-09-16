@@ -68,14 +68,9 @@ describe('VaultSettings', () => {
     expect(requestGateway).toHaveBeenCalledWith('vault.list', {})
     // The scoped Settings dial must be foreground so a cold profile spawn is not
     // queued behind background work (#111651).
-    expect(requestGatewayForProfile).toHaveBeenCalledWith(
-      expect.any(String),
-      'vault.list',
-      {},
-      undefined,
-      undefined,
-      { spawnPriority: 'foreground' }
-    )
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(expect.any(String), 'vault.list', {}, undefined, undefined, {
+      spawnPriority: 'foreground'
+    })
   })
 
   it('lists items with label, kind badge, identifier, and origin — never passwords', async () => {

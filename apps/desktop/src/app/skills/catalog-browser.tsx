@@ -57,7 +57,9 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   const entries = useMemo(() => {
     return view === 'installed' ? (installedEntries ?? []) : (data ?? [])
   }, [data, installedEntries, view])
+
   const sources = useMemo(() => [...new Set(entries.map(entry => entry.source))], [entries])
+
   const categories = useMemo(() => {
     const values = new Map<string, string>()
 
@@ -70,11 +72,17 @@ export const CatalogBrowser = memo(function CatalogBrowser({
     return [...values].sort((a, b) => a[1].localeCompare(b[1]))
   }, [entries, source])
 
-  const filtered = useMemo(() => entries.filter(entry =>
-    (source === 'all' || entry.source === source) &&
-    (category === 'all' || entry.category === category) &&
-    (!deferredQuery || entry.search.includes(deferredQuery))
-  ), [entries, source, category, deferredQuery])
+  const filtered = useMemo(
+    () =>
+      entries.filter(
+        entry =>
+          (source === 'all' || entry.source === source) &&
+          (category === 'all' || entry.category === category) &&
+          (!deferredQuery || entry.search.includes(deferredQuery))
+      ),
+    [entries, source, category, deferredQuery]
+  )
+
   const selected = filtered.find(entry => entry.id === selectedId) ?? filtered[0]
   const installedDetail = selected ? renderInstalledDetail?.(selected) : null
 
@@ -83,6 +91,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
     setSelectedId(null)
     setDetailOpen(false)
   }
+
   useEffect(() => {
     setLimit(PAGE_SIZE)
     setSelectedId(null)
@@ -101,7 +110,12 @@ export const CatalogBrowser = memo(function CatalogBrowser({
     const installing = isInstalling?.(entry) ?? false
 
     return (
-      <Button disabled={installed || installing || (kind === 'skills' && !entry.installIdentifier)} onClick={() => onInstall(entry)} size="sm" variant={installed ? 'secondary' : 'default'}>
+      <Button
+        disabled={installed || installing || (kind === 'skills' && !entry.installIdentifier)}
+        onClick={() => onInstall(entry)}
+        size="sm"
+        variant={installed ? 'secondary' : 'default'}
+      >
         <ActionStatus
           busy={t.skills.hub.installing}
           done={c.installed}
@@ -113,67 +127,124 @@ export const CatalogBrowser = memo(function CatalogBrowser({
     )
   }
 
-  const metadata = selected ? [
-    [c.author, selected.author],
-    [c.source, prettyName(selected.source)],
-    [c.category, prettyName(selected.categoryLabel)],
-    [c.version, selected.version],
-    [c.platforms, selected.platforms.join(', ')],
-    [c.requires, selected.requiresHermes ? `Hermes ${selected.requiresHermes}` : ''],
-    [c.pinned, selected.sha ? <code title={selected.sha}>{selected.sha.slice(0, 8)}</code> : '']
-  ] as [string, ReactNode][] : []
+  const metadata = selected
+    ? ([
+        [c.author, selected.author],
+        [c.source, prettyName(selected.source)],
+        [c.category, prettyName(selected.categoryLabel)],
+        [c.version, selected.version],
+        [c.platforms, selected.platforms.join(', ')],
+        [c.requires, selected.requiresHermes ? `Hermes ${selected.requiresHermes}` : ''],
+        [c.pinned, selected.sha ? <code title={selected.sha}>{selected.sha.slice(0, 8)}</code> : '']
+      ] as [string, ReactNode][])
+    : []
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col" data-catalog={kind}>
-      {view === 'browse' && <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 px-3 py-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <div className="w-36">
-            <Select onValueChange={value => { setSource(value); setCategory('all'); resetSelection() }} value={source}>
-              <SelectTrigger aria-label={c.source}><SelectValue placeholder={c.allSources} /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">{c.allSources}</SelectItem>
-                {sources.map(value => <SelectItem key={value} value={value}>{prettyName(value)}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="w-40">
-            <Select onValueChange={value => { setCategory(value); resetSelection() }} value={category}>
-              <SelectTrigger aria-label={c.category}><SelectValue placeholder={c.allCategories} /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">{c.allCategories}</SelectItem>
-                {categories.map(([value, label]) => <SelectItem key={value} value={value || 'uncategorized'}>{prettyName(label)}</SelectItem>)}
-              </SelectContent>
-            </Select>
+      {view === 'browse' && (
+        <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 px-3 py-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <div className="w-36">
+              <Select
+                onValueChange={value => {
+                  setSource(value)
+                  setCategory('all')
+                  resetSelection()
+                }}
+                value={source}
+              >
+                <SelectTrigger aria-label={c.source}>
+                  <SelectValue placeholder={c.allSources} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{c.allSources}</SelectItem>
+                  {sources.map(value => (
+                    <SelectItem key={value} value={value}>
+                      {prettyName(value)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="w-40">
+              <Select
+                onValueChange={value => {
+                  setCategory(value)
+                  resetSelection()
+                }}
+                value={category}
+              >
+                <SelectTrigger aria-label={c.category}>
+                  <SelectValue placeholder={c.allCategories} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{c.allCategories}</SelectItem>
+                  {categories.map(([value, label]) => (
+                    <SelectItem key={value} value={value || 'uncategorized'}>
+                      {prettyName(label)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </div>
-      </div>}
+      )}
       <div className="min-h-0 flex-1">
-        {isPending && view === 'browse' && !entries.length ? <PageLoader label={t.skills.loading} /> : error && !entries.length ? (
+        {isPending && view === 'browse' && !entries.length ? (
+          <PageLoader label={t.skills.loading} />
+        ) : error && !entries.length ? (
           <div className="grid h-full place-items-center p-5">
             <ErrorState description={error.message} title={c.loadFailed}>
-              <Button onClick={() => void refetch()} size="sm" variant="secondary">{c.retry}</Button>
+              <Button onClick={() => void refetch()} size="sm" variant="secondary">
+                {c.retry}
+              </Button>
             </ErrorState>
           </div>
         ) : !selected ? (
-          <PanelEmpty action={<Button onClick={clearFilters} size="sm" variant="secondary">{c.clearFilters}</Button>} description={c.tryAnother} icon="search" title={c.noResults} />
+          <PanelEmpty
+            action={
+              <Button onClick={clearFilters} size="sm" variant="secondary">
+                {c.clearFilters}
+              </Button>
+            }
+            description={c.tryAnother}
+            icon="search"
+            title={c.noResults}
+          />
         ) : (
           <div className={cn('h-full min-h-0', detailOpen ? '[&_aside]:max-sm:hidden' : '[&_main]:max-sm:hidden')}>
             <MasterDetail resizeId="capabilities-split" split="wide">
-              <ListColumn header={<ListStrip left={<ListStripLabel>{c.results(filtered.length)}</ListStripLabel>} />} key={`${source}:${category}:${deferredQuery}`}>
+              <ListColumn
+                header={<ListStrip left={<ListStripLabel>{c.results(filtered.length)}</ListStripLabel>} />}
+                key={`${source}:${category}:${deferredQuery}`}
+              >
                 {filtered.slice(0, limit).map(entry => (
                   <RowButton
                     aria-pressed={entry.id === selected.id}
-                    className={cn('row-hover flex w-full min-w-0 items-start gap-3 rounded-md px-2 py-2 text-left', entry.id === selected.id && 'bg-(--ui-row-active-background)')}
+                    className={cn(
+                      'row-hover flex w-full min-w-0 items-start gap-3 rounded-md px-2 py-2 text-left',
+                      entry.id === selected.id && 'bg-(--ui-row-active-background)'
+                    )}
                     key={entry.id}
-                    onClick={() => { setSelectedId(entry.id); setDetailOpen(true) }}
+                    onClick={() => {
+                      setSelectedId(entry.id)
+                      setDetailOpen(true)
+                    }}
                   >
-                    <Codicon className="mt-0.5 shrink-0 text-(--ui-text-tertiary)" name={kind === 'plugins' ? 'extensions' : 'book'} size="1.1rem" />
+                    <Codicon
+                      className="mt-0.5 shrink-0 text-(--ui-text-tertiary)"
+                      name={kind === 'plugins' ? 'extensions' : 'book'}
+                      size="1.1rem"
+                    />
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center gap-2">
                         <span className="truncate text-[0.78rem] font-medium">{entry.name}</span>
                         {isInstalled(entry) && <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="check" />}
                       </span>
-                      <span className="mt-1 line-clamp-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">{entry.description}</span>
+                      <span className="mt-1 line-clamp-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+                        {entry.description}
+                      </span>
                       <span className="mt-1.5 flex items-center gap-2 text-[0.65rem] text-(--ui-text-quaternary)">
                         <span className="truncate">{entry.author || prettyName(entry.source)}</span>
                         {entry.stars !== null && <span className="shrink-0">☆ {entry.stars.toLocaleString()}</span>}
@@ -181,42 +252,88 @@ export const CatalogBrowser = memo(function CatalogBrowser({
                     </span>
                   </RowButton>
                 ))}
-                {filtered.length > limit && <Button onClick={() => setLimit(value => value + PAGE_SIZE)} size="sm" variant="text">{c.more}</Button>}
+                {filtered.length > limit && (
+                  <Button onClick={() => setLimit(value => value + PAGE_SIZE)} size="sm" variant="text">
+                    {c.more}
+                  </Button>
+                )}
               </ListColumn>
               <DetailColumn footer={c.snapshotHint}>
-                <div className="sm:hidden"><Button onClick={() => setDetailOpen(false)} size="sm" variant="text"><Codicon name="arrow-left" />{c.back}</Button></div>
-                {installedDetail || <>
-                  <header className="space-y-3">
-                    <div className="flex items-start gap-3">
-                      <Codicon className="mt-1 shrink-0 text-(--ui-text-tertiary)" name={kind === 'plugins' ? 'extensions' : 'book'} size="1.5rem" />
-                      <div className="min-w-0">
-                        <h3 className="break-words text-lg font-semibold tracking-tight">{selected.name}</h3>
-                        <p className="mt-1 text-xs text-(--ui-text-tertiary)">{selected.author || prettyName(selected.source)}</p>
+                <div className="sm:hidden">
+                  <Button onClick={() => setDetailOpen(false)} size="sm" variant="text">
+                    <Codicon name="arrow-left" />
+                    {c.back}
+                  </Button>
+                </div>
+                {installedDetail || (
+                  <>
+                    <header className="space-y-3">
+                      <div className="flex items-start gap-3">
+                        <Codicon
+                          className="mt-1 shrink-0 text-(--ui-text-tertiary)"
+                          name={kind === 'plugins' ? 'extensions' : 'book'}
+                          size="1.5rem"
+                        />
+                        <div className="min-w-0">
+                          <h3 className="break-words text-lg font-semibold tracking-tight">{selected.name}</h3>
+                          <p className="mt-1 text-xs text-(--ui-text-tertiary)">
+                            {selected.author || prettyName(selected.source)}
+                          </p>
+                        </div>
                       </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {installButton(selected)}
+                        <Badge variant="muted">{prettyName(selected.source)}</Badge>
+                        {selected.stars !== null && (
+                          <span className="text-xs text-(--ui-text-tertiary)">☆ {selected.stars.toLocaleString()}</span>
+                        )}
+                      </div>
+                    </header>
+                    <section className="space-y-2">
+                      <h4 className="text-xs font-medium">{c.about}</h4>
+                      <p className="whitespace-pre-wrap break-words text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-secondary)">
+                        {selected.description}
+                      </p>
+                      {selected.overview && selected.overview !== selected.description && (
+                        <p className="whitespace-pre-wrap break-words text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-tertiary)">
+                          {selected.overview}
+                        </p>
+                      )}
+                    </section>
+                    <dl className="space-y-2 text-[length:var(--conversation-caption-font-size)]">
+                      {metadata
+                        .filter(([, value]) => Boolean(value))
+                        .map(([label, value]) => (
+                          <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3" key={label}>
+                            <dt className="text-(--ui-text-tertiary)">{label}</dt>
+                            <dd className="m-0 break-words">{value}</dd>
+                          </div>
+                        ))}
+                    </dl>
+                    {[
+                      [c.tools, selected.tools],
+                      [c.hooks, selected.hooks],
+                      [c.requires, selected.requirements]
+                    ].map(
+                      ([label, values]) =>
+                        (values as string[]).length > 0 && (
+                          <section className="space-y-2" key={label as string}>
+                            <h4 className="text-xs font-medium">{label as string}</h4>
+                            <div className="flex flex-wrap gap-1">
+                              {(values as string[]).map(value => (
+                                <ToolChip key={value}>{value}</ToolChip>
+                              ))}
+                            </div>
+                          </section>
+                        )
+                    )}
+                    <div className="flex flex-wrap gap-3 text-xs">
+                      {selected.sourceUrl && <ExternalLink href={selected.sourceUrl}>{c.repository}</ExternalLink>}
+                      {selected.docsUrl && <ExternalLink href={selected.docsUrl}>{c.documentation}</ExternalLink>}
                     </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      {installButton(selected)}
-                      <Badge variant="muted">{prettyName(selected.source)}</Badge>
-                      {selected.stars !== null && <span className="text-xs text-(--ui-text-tertiary)">☆ {selected.stars.toLocaleString()}</span>}
-                    </div>
-                  </header>
-                  <section className="space-y-2">
-                    <h4 className="text-xs font-medium">{c.about}</h4>
-                    <p className="whitespace-pre-wrap break-words text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-secondary)">{selected.description}</p>
-                    {selected.overview && selected.overview !== selected.description && <p className="whitespace-pre-wrap break-words text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-tertiary)">{selected.overview}</p>}
-                  </section>
-                  <dl className="space-y-2 text-[length:var(--conversation-caption-font-size)]">
-                    {metadata.filter(([, value]) => Boolean(value)).map(([label, value]) => <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3" key={label}><dt className="text-(--ui-text-tertiary)">{label}</dt><dd className="m-0 break-words">{value}</dd></div>)}
-                  </dl>
-                  {[[c.tools, selected.tools], [c.hooks, selected.hooks], [c.requires, selected.requirements]].map(([label, values]) => (values as string[]).length > 0 && (
-                    <section className="space-y-2" key={label as string}><h4 className="text-xs font-medium">{label as string}</h4><div className="flex flex-wrap gap-1">{(values as string[]).map(value => <ToolChip key={value}>{value}</ToolChip>)}</div></section>
-                  ))}
-                  <div className="flex flex-wrap gap-3 text-xs">
-                    {selected.sourceUrl && <ExternalLink href={selected.sourceUrl}>{c.repository}</ExternalLink>}
-                    {selected.docsUrl && <ExternalLink href={selected.docsUrl}>{c.documentation}</ExternalLink>}
-                  </div>
-                  <p className="text-[0.65rem] leading-relaxed text-(--ui-text-quaternary)">{c.installHint}</p>
-                </>}
+                    <p className="text-[0.65rem] leading-relaxed text-(--ui-text-quaternary)">{c.installHint}</p>
+                  </>
+                )}
               </DetailColumn>
             </MasterDetail>
           </div>

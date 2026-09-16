@@ -231,22 +231,30 @@ describe('round lifecycle', () => {
   })
 
   it('does not retry ambiguous member admission in later rounds or continuations', async () => {
-    const room = await loadRoom({ turn: ({ profile }) => {
-      if (profile === 'builder') { throw new Error('Ambiguous admission failure') }
+    const room = await loadRoom({
+      turn: ({ profile }) => {
+        if (profile === 'builder') {
+          throw new Error('Ambiguous admission failure')
+        }
 
-      return '@builder please investigate'
-    } })
+        return '@builder please investigate'
+      }
+    })
 
     room.rounds.sendToGroupChat('Failure', MEMBERS.slice(0, 2), '@research start')
     await settle(room, 'Failure')
     expect(room.gateway.calls.filter(call => call.profile === 'builder')).toHaveLength(1)
-    expect(Object.keys(room.chat.$groupChats.get().Failure.watermarks).some(key => key.endsWith('::builder'))).toBe(false)
+    expect(Object.keys(room.chat.$groupChats.get().Failure.watermarks).some(key => key.endsWith('::builder'))).toBe(
+      false
+    )
   })
 
   it('does not retry an ambiguous submit from prequeued same-thread or cross-thread sends', async () => {
     let reject!: (error: Error) => void
-    const held = new Promise<string>((_resolve, fail) => { reject = fail })
-    const room = await loadRoom({ turn: ({ n }) => n === 1 ? held : '(pass)' })
+    const held = new Promise<string>((_resolve, fail) => {
+      reject = fail
+    })
+    const room = await loadRoom({ turn: ({ n }) => (n === 1 ? held : '(pass)') })
     const members = [MEMBERS[0]]
     const thread = room.rounds.sendToGroupChat('Failure', members, 'first')!
     await drain(() => room.gateway.calls.length < 1)
@@ -266,7 +274,9 @@ describe('round lifecycle', () => {
 
   it('attributes a queued drive failure to the thread whose harvest failed', async () => {
     let finish!: (reply: string) => void
-    const held = new Promise<string>(resolve => { finish = resolve })
+    const held = new Promise<string>(resolve => {
+      finish = resolve
+    })
     const room = await loadRoom({ turn: () => held })
     const first = room.rounds.sendToGroupChat('Failure', MEMBERS.slice(0, 2), '@research first')!
     await drain(() => room.gateway.calls.length < 1)
@@ -283,7 +293,8 @@ describe('round lifecycle', () => {
     }
 
     room.chat.updateGroupChat('Failure', state => ({
-      ...state, stranded: { builder: { before: 0, thread: first } }
+      ...state,
+      stranded: { builder: { before: 0, thread: first } }
     }))
     finish('(pass)')
     await drain(() => !room.activity.currentGroupActivity('Failure').some(event => event.kind === 'failed'))
@@ -358,8 +369,10 @@ describe('round lifecycle', () => {
 describe('per-member delta', () => {
   it('retained-log trimming cannot acknowledge messages appended during inference', async () => {
     let release!: (reply: string) => void
-    const held = new Promise<string>(resolve => { release = resolve })
-    const room = await loadRoom({ turn: ({ n }) => n === 1 ? held : '(pass)' })
+    const held = new Promise<string>(resolve => {
+      release = resolve
+    })
+    const room = await loadRoom({ turn: ({ n }) => (n === 1 ? held : '(pass)') })
     const members = [MEMBERS[0]]
     const thread = room.rounds.sendToGroupChat('Trim', members, 'delivered')!
     await drain(() => room.gateway.calls.length < 1)

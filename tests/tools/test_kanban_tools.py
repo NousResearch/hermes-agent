@@ -666,6 +666,33 @@ def test_kanban_guidance_orchestrator_decision_ownership():
     assert "workers cannot see sibling context" in KANBAN_GUIDANCE
 
 
+def test_kanban_guidance_not_injected_in_interactive_without_env_task(monkeypatch):
+    """Regression test for #112486: KANBAN_GUIDANCE must not leak into interactive
+    sessions when kanban_show is present unless HERMES_KANBAN_TASK is set in env."""
+    import os
+    from unittest.mock import MagicMock
+    from agent.system_prompt import _tool_guidance_block
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+    # Agent with kanban_show available but no HERMES_KANBAN_TASK
+    agent = MagicMock()
+    agent.tools = [{"function": {"name": "kanban_show"}}]
+    agent.valid_tool_names = {"kanban_show"}
+    agent.quiet_mode = True
+
+    # Test fallback path in _tool_guidance_block
+    agent._kanban_worker_guidance = None
+    guidance = _tool_guidance_block(agent)
+    assert guidance is None or KANBAN_GUIDANCE not in guidance
+
+    # Test with HERMES_KANBAN_TASK set
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+    guidance_with_task = _tool_guidance_block(agent)
+    assert guidance_with_task is not None and KANBAN_GUIDANCE in guidance_with_task
+
+
 # ---------------------------------------------------------------------------
 # Worker task-ownership enforcement (regression tests for #19534)
 # ---------------------------------------------------------------------------

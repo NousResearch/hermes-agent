@@ -11,6 +11,8 @@ loops.  The TUI is only a viewer of those sessions.
 import threading
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tui_gateway.server import _finalize_session, _is_gateway_owned_source, _teardown_session
 
 
@@ -74,6 +76,7 @@ def _make_real_session(tmp_path, monkeypatch, *, source, session_id):
     session = _make_session(session_id)
     session["agent"] = agent
     session["profile_home"] = str(hermes_home)
+    session["source"] = source
     return db_path, session, agent
 
 
@@ -125,3 +128,33 @@ class TestGatewayOwnedSessionTeardown:
         assert row["ended_at"] is None
         assert row["end_reason"] is None
         assert agent._end_session_on_close is False
+
+
+class TestDesktopAutomaticReclaimTeardown:
+    """#105588: automatic Desktop cleanup reclaims runtime but leaves the durable row open THROUGH the full
+    teardown — ``_finalize_session`` skipping ``end_session`` is not enough, ``agent.close()`` ends the row
+    as ``agent_close`` unless the spare decision reaches the agent."""
+
+    @pytest.mark.parametrize("reason", ["ws_orphan_reap", "idle_timeout", "lru_evict"])
+    def test_automatic_reclaim_leaves_desktop_row_open(self, tmp_path, monkeypatch, reason):
+        db_path, session, agent = _make_real_session(
+            tmp_path, monkeypatch, source="desktop", session_id=f"desktop-{reason}"
+        )
+
+        _teardown_session(session, end_reason=reason)
+
+        row = _read_real_row(db_path, f"desktop-{reason}")
+        assert (row["ended_at"], row["end_reason"]) == (None, None)
+        assert agent._end_session_on_close is False
+
+    @pytest.mark.parametrize("source,reason", [("desktop", "tui_close"), ("tui", "ws_orphan_reap")])
+    def test_explicit_close_and_non_desktop_reap_still_end_row(self, tmp_path, monkeypatch, source, reason):
+        db_path, session, _agent = _make_real_session(
+            tmp_path, monkeypatch, source=source, session_id=f"{source}-{reason}"
+        )
+
+        _teardown_session(session, end_reason=reason)
+
+        row = _read_real_row(db_path, f"{source}-{reason}")
+        assert row["ended_at"] is not None
+        assert row["end_reason"] == reason

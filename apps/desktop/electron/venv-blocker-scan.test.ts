@@ -69,6 +69,19 @@ describe('resolveVenvPython', () => {
       fs.rmSync(sandbox, { recursive: true, force: true })
     }
   })
+
+  it('does not bypass a broken legacy venv for a sibling .venv', () => {
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-vt-precedence-'))
+
+    try {
+      fs.mkdirSync(path.join(sandbox, 'venv'), { recursive: true })
+      fs.mkdirSync(path.join(sandbox, '.venv'), { recursive: true })
+      assert.equal(resolveVenvDir(sandbox), path.join(sandbox, 'venv'))
+      assert.equal(resolveVenvPython(sandbox), null)
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true })
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------

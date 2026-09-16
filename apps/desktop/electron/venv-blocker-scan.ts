@@ -262,31 +262,37 @@ export async function scanVenvBlockers(
 // Internal helpers (exported for testing)
 // ---------------------------------------------------------------------------
 
-/** Resolve the venv python path.  Returns null if the file does not exist. */
-export function resolveVenvPython(updateRoot: string): string | null {
-  const isWindows = process.platform === 'win32'
-  const pythonName = isWindows ? 'python.exe' : 'python3'
-  const scriptsDir = isWindows ? 'Scripts' : 'bin'
+/** Resolve the supported venv directory, preserving legacy ``venv`` precedence. */
+export function resolveVenvDir(updateRoot: string): string {
   for (const venvName of ['venv', '.venv']) {
-    const candidate = path.join(updateRoot, venvName, scriptsDir, pythonName)
+    const candidate = path.join(updateRoot, venvName)
 
     try {
-      fs.accessSync(candidate)
-
-      return candidate
+      if (fs.statSync(candidate).isDirectory()) {
+        return candidate
+      }
     } catch {
       // Try the next supported venv layout.
     }
   }
 
-  return null
+  return path.join(updateRoot, 'venv')
 }
 
-/** Resolve the supported venv that owns the runnable Python interpreter. */
-export function resolveVenvDir(updateRoot: string): string | null {
-  const python = resolveVenvPython(updateRoot)
+/** Resolve the venv python path. Returns null if the selected runtime is missing. */
+export function resolveVenvPython(updateRoot: string): string | null {
+  const isWindows = process.platform === 'win32'
+  const pythonName = isWindows ? 'python.exe' : 'python3'
+  const scriptsDir = isWindows ? 'Scripts' : 'bin'
+  const candidate = path.join(resolveVenvDir(updateRoot), scriptsDir, pythonName)
 
-  return python ? path.dirname(path.dirname(python)) : null
+  try {
+    fs.accessSync(candidate)
+
+    return candidate
+  } catch {
+    return null
+  }
 }
 
 /**

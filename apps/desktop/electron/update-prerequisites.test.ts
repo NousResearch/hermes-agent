@@ -27,3 +27,16 @@ test('handoff prerequisites fail closed without requiring dependencies, shim or 
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('handoff prerequisites accept the uv-default .venv layout', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'hermes-dot-venv-prerequisites-'))
+
+  try {
+    const python = path.join(root, '.venv', 'Scripts', 'python.exe')
+    mkdirSync(path.dirname(python), { recursive: true })
+    writeFileSync(python, 'file-presence fixture')
+    assert.equal(windowsUpdatePrerequisiteError(root), null)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

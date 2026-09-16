@@ -3,8 +3,7 @@ function Resolve-HermesVenvDir {
 
     foreach ($name in @("venv", ".venv")) {
         $candidate = Join-Path $InstallRoot $name
-        $python = Join-Path $candidate "Scripts\python.exe"
-        if (Test-Path -LiteralPath $python -PathType Leaf) {
+        if (Test-Path -LiteralPath $candidate -PathType Container) {
             return $candidate
         }
     }

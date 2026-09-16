@@ -288,7 +288,28 @@ def main():
             continue
 
         method = req.get("method") if isinstance(req, dict) else None
-        resp = dispatch(req)
+        try:
+            resp = dispatch(req)
+        except Exception:
+            # One failing inline handler must cost one error reply, not the gateway:
+            # unwinding here kills the child serving every session and the client stays
+            # wedged until a TUI restart. Pool-dispatched handlers catch their own and
+            # the ws.py transport guards its dispatch the same way (-32603 + continue).
+            req_id = req.get("id") if isinstance(req, dict) else None
+            logger.exception(
+                "stdio dispatch failed for method=%r id=%r",
+                method,
+                req_id,
+            )
+            _append_crash_log(
+                f"stdio dispatch crash · {time.strftime('%Y-%m-%d %H:%M:%S')} · method={method!r}",
+                lambda f: f.write(traceback.format_exc()),
+            )
+            resp = {
+                "jsonrpc": "2.0",
+                "error": {"code": -32603, "message": "internal error"},
+                "id": req_id,
+            }
         if resp is not None:
             _write_or_exit(
                 resp, f"response write failed for method={method!r} (broken stdout pipe)")

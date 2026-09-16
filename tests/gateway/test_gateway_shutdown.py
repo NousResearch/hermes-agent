@@ -1,16 +1,117 @@
 import asyncio
+import os
+import signal
 import subprocess
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import gateway.run as gateway_run
+from gateway import planned_stop_marker
+from gateway.run_shutdown import _resolve_gateway_exit_verdict
+from gateway import status
 from gateway.config import HomeChannel, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.restart import DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE
 from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 from tools import browser_tool_lifecycle as bt_lifecycle
+
+
+def _exit_verdict_runner(**overrides):
+    values = {
+        "should_exit_with_failure": False,
+        "exit_reason": None,
+        "exit_code": None,
+        "_restart_requested": False,
+        "_restart_via_service": False,
+        "stop": AsyncMock(),
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def test_unmarked_sigterm_resolves_to_failure_without_cancellation():
+    """The exit-one classification is a signal verdict, not cancellation fallout."""
+    assert _resolve_gateway_exit_verdict(_exit_verdict_runner(), True) is False
+
+
+def test_unmarked_sigterm_through_real_handler_resolves_to_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _exit_verdict_runner(_signal_initiated_shutdown=False)
+    signal_state = [False]
+    scheduled = []
+
+    def only_marker_checks(function, *_args):
+        return function() if function.__name__ in {"_takeover", "_planned_stop"} else None
+
+    monkeypatch.setattr(gateway_run, "_best_effort", only_marker_checks)
+    monkeypatch.setattr(
+        gateway_run.asyncio,
+        "create_task",
+        lambda coroutine: (coroutine.close(), scheduled.append(True))[1],
+    )
+
+    gateway_run._start_gateway_make_shutdown_signal_handler(runner, signal_state)(signal.SIGTERM)
+
+    assert signal_state == [True]
+    assert runner._signal_initiated_shutdown is True
+    assert scheduled == [True]
+    assert _resolve_gateway_exit_verdict(runner, signal_state[0]) is False
+
+
+def test_real_marker_consumed_by_real_sigterm_handler_resolves_cleanly(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    runner = _exit_verdict_runner(_signal_initiated_shutdown=False)
+    signal_state = [False]
+    scheduled = []
+
+    assert planned_stop_marker.main([str(os.getpid())]) == 0
+
+    def only_marker_checks(function, *_args):
+        return function() if function.__name__ in {"_takeover", "_planned_stop"} else None
+
+    monkeypatch.setattr(gateway_run, "_best_effort", only_marker_checks)
+    monkeypatch.setattr(
+        gateway_run.asyncio,
+        "create_task",
+        lambda coroutine: (coroutine.close(), scheduled.append(True))[1],
+    )
+
+    gateway_run._start_gateway_make_shutdown_signal_handler(runner, signal_state)(signal.SIGTERM)
+
+    assert signal_state == [False]
+    assert runner._signal_initiated_shutdown is False
+    assert scheduled == [True]
+    assert _resolve_gateway_exit_verdict(runner, signal_state[0]) is True
+
+
+@pytest.mark.asyncio
+async def test_shutdown_await_cancellation_propagates_without_planned_stop(monkeypatch):
+    runner, _adapter = make_restart_runner()
+    writer = MagicMock()
+    monkeypatch.setattr(status, "write_planned_stop_marker", writer)
+
+    with patch.object(
+        gateway_run.GatewayRunner,
+        "_stop_begin_teardown",
+        AsyncMock(side_effect=asyncio.CancelledError),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await runner._stop_impl()
+
+    writer.assert_not_called()
+
+
+def test_no_main_pid_helper_preserves_preexisting_failure(monkeypatch):
+    writer = MagicMock()
+    monkeypatch.setattr(status, "write_planned_stop_marker", writer)
+    runner = _exit_verdict_runner(should_exit_with_failure=True, exit_reason="pre-existing crash")
+
+    assert planned_stop_marker.main([]) == 0
+    writer.assert_not_called()
+    assert _resolve_gateway_exit_verdict(runner, False) is False
 
 
 @pytest.mark.asyncio

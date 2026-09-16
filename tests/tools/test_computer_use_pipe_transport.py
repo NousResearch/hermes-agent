@@ -381,3 +381,157 @@ def test_call_tool_post_dispatch_failure_on_mutation_fails_closed_without_replay
     mock_mcp3.assert_not_called()
 
 
+def test_lifecycle_start_and_end_session_routes_over_pipe(monkeypatch):
+    """start_session and end_session route over named pipe on Windows when pipe is available."""
+    if sys.platform != "win32":
+        pytest.skip("Windows pipe test")
+
+    session = _CuaDriverSession(_AsyncBridge())
+    session._started = True
+
+    mock_pipe = MagicMock()
+    mock_pipe.call_tool.return_value = {
+        "data": "session-started",
+        "images": [],
+        "structuredContent": {"session": "test-sess-1"},
+        "isError": False,
+    }
+    monkeypatch.setattr(session, "_get_pipe_transport", lambda: mock_pipe)
+
+    mock_mcp = MagicMock()
+    monkeypatch.setattr(session._bridge, "run", mock_mcp)
+
+    # 1. start_session routed to pipe
+    res = session.call_tool("start_session", {"session": "test-sess-1"})
+    assert res["data"] == "session-started"
+    mock_pipe.call_tool.assert_called_once_with("start_session", {"session": "test-sess-1"}, timeout=30.0)
+    mock_mcp.assert_not_called()
+    assert session._declared_session_id == "test-sess-1"
+    assert mock_pipe.session_id == "test-sess-1"
+
+    # 2. end_session routed to pipe
+    mock_pipe.call_tool.reset_mock()
+    mock_pipe.call_tool.return_value = {
+        "data": "session-ended",
+        "images": [],
+        "structuredContent": {},
+        "isError": False,
+    }
+    res_end = session.call_tool("end_session", {"session": "test-sess-1"})
+    assert res_end["data"] == "session-ended"
+    mock_pipe.call_tool.assert_called_once_with("end_session", {"session": "test-sess-1"}, timeout=30.0)
+    mock_mcp.assert_not_called()
+    assert session._declared_session_id is None
+    assert mock_pipe.session_id is None
+
+
+def test_session_not_available_pipe_error_falls_back_to_mcp_for_replay_safe_tools(monkeypatch):
+    """'session is not available to this transport' resets pipe transport and falls back to MCP for replay-safe tools."""
+    if sys.platform != "win32":
+        pytest.skip("Windows pipe test")
+
+    from tools.computer_use.cua_backend_pipe import PipePostDispatchError
+
+    # Sub-case 1: Pipe response carries isError: True with 'session is not available to this transport' on list_windows
+    session1 = _CuaDriverSession(_AsyncBridge())
+    session1._started = True
+    mock_pipe1 = MagicMock()
+    mock_pipe1.call_tool.return_value = {
+        "isError": True,
+        "data": "session is not available to this transport",
+        "images": [],
+        "structuredContent": {"error": "session is not available to this transport"},
+    }
+    session1._pipe_transport = mock_pipe1
+    monkeypatch.setattr(session1, "_get_pipe_transport", lambda: mock_pipe1)
+    mock_mcp1 = MagicMock(return_value={"data": "windows-from-mcp", "images": [], "structuredContent": {}, "isError": False})
+    monkeypatch.setattr(session1._bridge, "run", mock_mcp1)
+
+    res1 = session1.call_tool("list_windows", {"session": "sess-abc"}, timeout=5.0)
+    assert res1["data"] == "windows-from-mcp"
+    assert session1._pipe_transport is None
+    mock_pipe1.call_tool.assert_called_once()
+    mock_mcp1.assert_called_once()
+
+    # Sub-case 2: Pipe raises PipePostDispatchError with 'session is not available to this transport' on list_apps
+    session2 = _CuaDriverSession(_AsyncBridge())
+    session2._started = True
+    mock_pipe2 = MagicMock()
+    mock_pipe2.call_tool.side_effect = PipePostDispatchError("cua-driver error: session is not available to this transport")
+    session2._pipe_transport = mock_pipe2
+    monkeypatch.setattr(session2, "_get_pipe_transport", lambda: mock_pipe2)
+    mock_mcp2 = MagicMock(return_value={"data": "apps-from-mcp", "images": [], "structuredContent": {}, "isError": False})
+    monkeypatch.setattr(session2._bridge, "run", mock_mcp2)
+
+    res2 = session2.call_tool("list_apps", {"session": "sess-abc"}, timeout=5.0)
+    assert res2["data"] == "apps-from-mcp"
+    assert session2._pipe_transport is None
+    mock_pipe2.call_tool.assert_called_once()
+    mock_mcp2.assert_called_once()
+
+    # Sub-case 3: Mutating tool (click) receiving 'session is not available to this transport' fails closed WITHOUT replay
+    session3 = _CuaDriverSession(_AsyncBridge())
+    session3._started = True
+    mock_pipe3 = MagicMock()
+    mock_pipe3.call_tool.return_value = {
+        "isError": True,
+        "data": "session is not available to this transport",
+        "images": [],
+        "structuredContent": {"error": "session is not available to this transport"},
+    }
+    session3._pipe_transport = mock_pipe3
+    monkeypatch.setattr(session3, "_get_pipe_transport", lambda: mock_pipe3)
+    mock_mcp3 = MagicMock()
+    monkeypatch.setattr(session3._bridge, "run", mock_mcp3)
+
+    res3 = session3.call_tool("click", {"element": 1}, timeout=5.0)
+    assert res3["isError"] is True
+    assert "session is not available to this transport" in res3["data"]
+    assert session3._pipe_transport is None
+    mock_pipe3.call_tool.assert_called_once()
+    mock_mcp3.assert_not_called()
+
+
+def test_list_apps_propagates_transport_error():
+    """list_apps() uses _call_capture_tool so transport/logical errors raise RuntimeError instead of returning []."""
+    from tools.computer_use.cua_backend_capture import _CaptureMixin
+
+    class CaptureTestBackend(_CaptureMixin):
+        def __init__(self, session):
+            self._session = session
+            self._session_id = "sess-test"
+            self._active_target = None
+            self._active_pid = None
+            self._active_window_id = None
+            self._last_app = None
+
+        def _clear_active_target(self):
+            self._active_target = None
+            self._active_pid = None
+            self._active_window_id = None
+
+    # Error case: transport error must raise RuntimeError
+    mock_session = MagicMock()
+    mock_session.call_tool.return_value = {
+        "isError": True,
+        "data": "session is not available to this transport",
+        "images": [],
+        "structuredContent": None,
+    }
+    backend = CaptureTestBackend(mock_session)
+    with pytest.raises(RuntimeError) as exc_info:
+        backend.list_apps()
+    assert "cua-driver list_apps failed: session is not available to this transport" in str(exc_info.value)
+
+    # Success case: valid apps parsed properly
+    mock_session.call_tool.return_value = {
+        "isError": False,
+        "data": None,
+        "images": [],
+        "structuredContent": {"apps": [{"name": "calculator.exe", "pid": 1234}]},
+    }
+    apps = backend.list_apps()
+    assert apps == [{"name": "calculator.exe", "pid": 1234}]
+
+
+

@@ -544,10 +544,9 @@ class _CuaDriverSession:
         if not self._started:
             raise RuntimeError("cua-driver session not started")
 
-        pipe_result = None
+        pipe, pipe_result = None, None
         if (
             sys.platform == "win32"
-            and name not in self._LIFECYCLE_CALLS
             and os.environ.get("HERMES_CUA_DISABLE_PIPE", "").lower() not in ("1", "true")
         ):
             try:
@@ -565,7 +564,8 @@ class _CuaDriverSession:
                 except Exception as exc:
                     self._pipe_transport = None
                     is_pre_dispatch = isinstance(exc, PipePreDispatchError)
-                    is_replay_safe = name in self._TRANSPORT_REPLAY_SAFE_TOOLS
+                    is_session_unavailable = "session is not available to this transport" in str(exc).lower()
+                    is_replay_safe = name in self._TRANSPORT_REPLAY_SAFE_TOOLS or name in self._LIFECYCLE_CALLS
                     if not is_pre_dispatch and not is_replay_safe:
                         if isinstance(exc, (concurrent.futures.TimeoutError, TimeoutError)):
                             self._timeout_suspect = True
@@ -578,9 +578,29 @@ class _CuaDriverSession:
                             "cua-driver pipe transport failed during mutating tool %s (%s); "
                             "action outcome unknown, not replaying", name, exc)
                         return _outcome_unknown(name, exc, "transport_outcome_unknown")
-                    logger.warning(
-                        "cua-driver pipe transport failed before dispatch or on replay-safe tool %s (%s); "
-                        "falling back to MCP", name, exc)
+                    if is_session_unavailable:
+                        logger.warning(
+                            "cua-driver pipe transport reported session not available on %s (%s); "
+                            "falling back to MCP", name, exc)
+                    else:
+                        logger.warning(
+                            "cua-driver pipe transport failed before dispatch or on replay-safe tool %s (%s); "
+                            "falling back to MCP", name, exc)
+
+        if (
+            pipe_result is not None
+            and pipe_result.get("isError") is True
+            and "session is not available to this transport" in (
+                f"{pipe_result.get('data') or ''} {pipe_result.get('error') or ''} {_logical_error_text(pipe_result)}".lower()
+            )
+        ):
+            self._pipe_transport = None
+            if name in self._TRANSPORT_REPLAY_SAFE_TOOLS or name in self._LIFECYCLE_CALLS:
+                logger.warning(
+                    "cua-driver pipe transport reported session not available on replay-safe tool %s; "
+                    "resetting pipe transport and falling back to MCP", name
+                )
+                pipe_result = None
 
         if pipe_result is not None:
             result = pipe_result
@@ -612,10 +632,11 @@ class _CuaDriverSession:
                 result = self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
         # Remember only a SUCCESSFULLY declared identity: no stale recovery state.
         declared_id, ok = args.get("session"), result.get("isError") is not True
+        pipe_target = self._pipe_transport or pipe
         if name == "start_session" and ok and isinstance(declared_id, str) and declared_id:
             self._declared_session_id = declared_id
-            if self._pipe_transport is not None:
-                self._pipe_transport.session_id = declared_id
+            if pipe_target is not None:
+                pipe_target.session_id = declared_id
         if _is_ended_session_result(result):
             # Revive the stable session and replay the rejected call once; a 2nd rejection surfaces as-is.
             # Never re-runs lifecycle calls -> an end_session result is final.
@@ -626,6 +647,6 @@ class _CuaDriverSession:
                     result = self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
         elif name == "end_session" and ok and declared_id == self._declared_session_id:
             self._declared_session_id = None
-            if self._pipe_transport is not None:
-                self._pipe_transport.session_id = None
+            if pipe_target is not None:
+                pipe_target.session_id = None
         return result

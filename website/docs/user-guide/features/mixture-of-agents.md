@@ -244,3 +244,30 @@ So MoA does not sacrifice prompt caching on either call type. Its only real cost
 - A preset's aggregator cannot be another MoA preset. Recursive MoA trees are intentionally blocked.
 - Credential failures on one reference model do not abort the turn. Hermes includes the failure in the reference context and continues with whatever models returned.
 - MoA increases model-call count. A single model iteration can involve multiple reference calls plus the aggregator call.
+
+## Guided model routing for MoA slots (opt-in, per preset)
+
+A reference or aggregator slot in a preset can carry `routing_role` to have that
+slot's actual provider/model/reasoning resolved by the same guided-routing selector
+and policy store the Kanban and delegation adapters use, instead of a fixed
+`provider`/`model` pin. A slot without `routing_role` is entirely unaffected — this
+does not change any existing fixed preset.
+
+- **The cohort is resolved once per MoA run and pinned.** All managed slots in a
+  run resolve together and the resulting routes are bound to that run's client; a
+  config edit to the named preset mid-run cannot change an already-pinned cohort,
+  and restarting a failed cohort is a new attempt, not a resume.
+- **A managed preset can require cohort diversity.** A design-review-style preset can
+  require reference slots from different approved makers plus a required aggregator;
+  a denied or missing required slot fails that attempt's gate — there is no silent
+  aggregator-only fallback when a required reference can't resolve.
+- **The virtual maker `moa` cannot satisfy an independence requirement** — cohort
+  diversity is checked against each slot's actual resolved maker, never the
+  aggregation mechanism itself.
+- **Failure is a denied slot, not silent unmanaged.** A managed slot whose route is
+  denied or mismatched at the call boundary raises before that call is made, rather
+  than falling back to whatever the preset's static config would otherwise pick.
+
+See [Kanban worker lanes → Guided model routing](./kanban-worker-lanes.md#guided-model-routing-opt-in-per-task)
+for the `hermes kanban routing` commands that manage the shared policy this resolves
+against. No policy has been activated for live dispatch in this project.

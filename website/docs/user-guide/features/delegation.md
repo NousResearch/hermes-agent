@@ -662,3 +662,34 @@ Subagents compact at the same ratio trigger as their parent (`compression.thresh
 :::tip
 The agent handles delegation automatically based on the task complexity. You don't need to explicitly ask it to delegate — it will do so when it makes sense.
 :::
+
+## Guided model routing (opt-in, per task)
+
+A delegated task's dict can carry `routing_role` (plus optional `routing_requirements`
+and `routing_policy_id`) to have the child's actual provider/model/reasoning resolved
+by the same guided-routing selector and policy store the Kanban adapter uses, instead
+of a fixed `model`/`provider` override. This is opt-in and additive: a task without
+`routing_role` behaves exactly as documented above, unaffected.
+
+- **Batch members are independent decisions.** Each task in a batch resolves its own
+  route against its own requirements; there is no single static model chosen for the
+  whole batch.
+- **Nested delegation inherits managed authority, it cannot escape it.** If the parent
+  agent is itself running under a receipted managed route, any further child it
+  delegates inherits that same authority ceiling — it cannot clear managed status by
+  omitting `routing_role` on the sub-task, and it cannot request a different
+  `routing_policy_id`/broader role than the one it was itself authorized under. This
+  closes the "silent escape through parent inheritance" path the design calls out.
+- **`routing_role`/`routing_requirements`/`routing_policy_id` are structured,
+  operator/caller-supplied inputs**, mirroring the Kanban `--routing-role`/
+  `--routing-requirements` CLI contract — free-text task content cannot invent
+  admission into the roster; the selector call is the only place a route is chosen.
+- **The receipted route is validated before the child sends any content**, the same
+  managed-route guard used by Kanban and MoA; a mismatch blocks the child rather than
+  silently falling back to an inherited/global model.
+
+See [Kanban worker lanes → Guided model routing](./kanban-worker-lanes.md#guided-model-routing-opt-in-per-task)
+for the `hermes kanban routing` commands that manage the shared policy this resolves
+against. The public [Subagent lifecycle API](../../developer-guide/subagent-lifecycle-api.md#guided-model-routing--not-yet-wired-into-this-public-api)
+does **not** yet expose an equivalent field — only the `delegate_task` tool schema
+does today. No policy has been activated for live dispatch in this project.

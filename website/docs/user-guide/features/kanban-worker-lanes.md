@@ -135,6 +135,76 @@ So lane authors don't have to reimplement these:
 - **Stranded-task detection** — a ready task whose assignee never produces a claim within `kanban.stranded_threshold_seconds` (default 30 min) shows up in `hermes kanban diagnostics` as a `stranded_in_ready` warning. Severity escalates to error at 2x the threshold and critical at 6x. Catches typo'd assignees, deleted profiles, and down external worker pools in one signal — identity-agnostic, no per-board allowlist to curate.
 - **Legacy review dependency deadlock** — a parent sticky-blocked with `review-required:` while one or more direct children remain dependency-gated in `todo` produces an immediate `review_dependency_deadlock` error. The diagnostic is read-only: it suggests completing the finished phase or unlinking the incorrect edge but never removes a user block automatically.
 
+## Guided model routing (opt-in, per task)
+
+Guided model routing lets an operator assign a task to a curated, approved role
+(`--routing-role`) instead of a fixed profile/model override, and have the dispatcher
+resolve the actual provider/model/reasoning at **claim/start time** — not at card
+creation — against a versioned, approved policy. This is off by default: a task with
+no `--routing-role` behaves exactly as before, and existing `--model`/`--provider`
+overrides are untouched.
+
+**Approved membership is not qualification, and qualification is not availability.**
+A route can be a member of the roster (an operator has approved sending work to that
+provider/model combination at all) without being qualified for a given role, and a
+qualified route can still be temporarily unavailable (auth, quota, outage). The
+selector checks all three independently before choosing a route; none of them implies
+the others.
+
+```bash
+# Opt a task into a routing role. Requirements must be genuine, not fabricated —
+# see `hermes kanban create --help` for the exact JSON shape.
+hermes kanban create --title "..." --assignee <profile> \
+  --routing-role reviewarchitecture \
+  --routing-requirements '{"task_class": "cross-component", "required_capabilities": []}'
+
+# Manage the policy a board resolves routing roles against:
+hermes kanban routing publish <policy.json> --approval-ref "<who/what approved this>"
+hermes kanban routing activate <policy_id> <revision>
+hermes kanban routing show [policy_id]            # currently active revision, if any
+hermes kanban routing revisions [policy_id]        # every published revision (immutable, never overwritten)
+hermes kanban routing receipt <receipt_id>         # a persisted routing decision
+hermes kanban routing receipt-for-task <task_id>   # the decision receipted for a task's current attempt
+hermes kanban routing revoke <policy_id> [--route-id ID] --reason "..." --approval-ref "..."
+hermes kanban routing readmit <policy_id> [--route-id ID] --reason "..." --approval-ref "..."
+```
+
+Key properties, so operators know what this does and doesn't do:
+
+- **Publishing is not activating.** `publish` records an immutable, approval-referenced
+  policy revision; only `activate` makes one revision the one new claims resolve against.
+  A published-but-inactive policy has no effect on any running or queued task.
+- **Role, profile, and mandate are preserved.** Routing chooses the model; it does not
+  change which profile/toolset a task uses, its review requirements, or its lifecycle
+  transitions (`ready`/`running`/`review`/`done`/...).
+- **Resolution happens at claim/start, not at card creation**, so a task queued before a
+  policy revision or an emergency `revoke` sees the current approval state, never a
+  stale one baked in when the card was made.
+- **Per-attempt pinning.** Once a task claims and resolves a route, that receipted route
+  is what the worker is validated against before it sends any task content; a routine
+  policy edit affects new attempts, never an attempt already in flight.
+- **`revoke`/`readmit` are distinct from `publish`/`activate`.** `revoke` is the explicit
+  emergency path for already-receipted, in-flight attempts (a whole policy or a single
+  route); `readmit` is the only way to clear a revocation, and it is never implied by a
+  later `publish`/`activate` or automatic/time-based.
+- **Every decision is a receipt**, inspectable via `hermes kanban routing receipt` /
+  `receipt-for-task` — the selected route, rejection reasons for alternates considered,
+  and (once a run starts) the actually observed provider/model identity for comparison.
+  Receipts never contain prompts, credentials, or task text.
+- **Failure is closed, not silently unmanaged.** A missing/invalid receipt, a stale
+  worker build, or a routing decision that can't be resolved fails the attempt through
+  the normal Kanban breaker/re-queue path — it does not fall back to an unmanaged
+  default route.
+
+This project has not activated any policy for live dispatch. The delegation adapter
+(`delegate_task`'s `routing_role`/`routing_requirements`/`routing_policy_id`, see
+[Delegation → Guided model routing](./delegation.md#guided-model-routing-opt-in-per-task))
+and the MoA reference/aggregator adapter (see
+[Mixture of Agents](./mixture-of-agents.md#guided-model-routing-for-moa-slots-opt-in-per-preset))
+share this same policy store and selector. The public
+[Subagent lifecycle API](../../developer-guide/subagent-lifecycle-api.md#guided-model-routing--not-yet-wired-into-this-public-api)
+does not expose an equivalent field yet.
+
 ## Related
 
 - [Kanban overview](./kanban) — the user-facing intro.

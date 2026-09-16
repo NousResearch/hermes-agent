@@ -59,3 +59,20 @@ parent-broadening toolsets are rejected, and per-tool blocks, working-directory
 overrides, and per-launch timeouts are explicitly rejected until Hermes can
 support them without weakening isolation. Use `allowed_toolsets` to narrow a
 child; Hermes's existing unsafe-tool block remains enforced.
+
+## Guided model routing — not yet wired into this public API
+
+`delegate_task`'s task dict (the model-tool schema) accepts `routing_role` /
+`routing_requirements` / `routing_policy_id` to resolve a route through the shared
+guided-routing selector and policy store also used by Kanban and MoA (see
+[Delegation → Guided model routing](../user-guide/features/delegation.md#guided-model-routing-opt-in-per-task)).
+
+`SubagentLaunchRequest` above — the public, plugin-safe lifecycle API — has **no**
+equivalent field today. A plugin calling `service.launch(...)` gets the existing
+`model` override behavior only; it cannot opt a launch into guided routing, and it
+does not inherit a parent's managed-route authority the way a `delegate_task` child
+does. This is a known gap against the design's stated goal ("both the registry
+handler and public lifecycle API must enter the same selector") — treat any claim
+that this API supports guided routing as false until a `routing_role`-equivalent
+field ships here and is covered by an isolated integration test, not just the
+`delegate_task` adapter.

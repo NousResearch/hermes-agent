@@ -331,6 +331,11 @@ import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
 import { applyLaunchProfileOverride } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
+import {
+  getInstallMutationSet,
+  type InstallResourceLocks,
+  probeInstallResourceLocks
+} from './install-mutation-set'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import {
   decideLinuxGpuLaunch,
@@ -660,6 +665,11 @@ import {
   probeWindowsRemote,
   terminateOwnedWindowsDashboardForUpdate
 } from './windows-remote-lifecycle'
+import {
+  listRestartManagerHoldersForResources,
+  RESTART_MANAGER_DEFAULT_TIMEOUT_MS,
+  type RestartManagerHolder
+} from './windows-restart-manager'
 import {
   alreadyHasNoSandbox,
   buildNoSandboxRelaunchArgs,
@@ -4163,6 +4173,61 @@ function isShimLocked(shimPath) {
   }
 }
 
+// The historical venv files uninstall deletes: every native module, DLL,
+// and executable under venv\. Deletion needs these files released. The
+// shim alone only proves the uv launcher is gone; the real interpreter runs
+// from .hermes-runtime and keeps site-packages .pyd files mapped without
+// touching hermes.exe, so a shim-only probe missed native file holders in the
+// July 2026 brotlicffi/_sodium.pyd incidents.
+function installLockResources(updateRoot) {
+  return getInstallMutationSet(updateRoot)
+}
+
+// Exclusive-open probe over the mutation set, split into files only our
+// link can lock (definite) and uv-shared hard links that need per-process
+// attribution. Falls back to the shim probe on a checkout without a venv.
+function probeInstallLocks(updateRoot): InstallResourceLocks {
+  const resources = installLockResources(updateRoot)
+
+  if (resources.length === 0) {
+    const shim = venvHermesShimPath(updateRoot)
+
+    return { definite: isShimLocked(shim) ? [shim] : [], shared: [] }
+  }
+
+  return probeInstallResourceLocks(resources)
+}
+
+// Holders proven by the kernel: Restart Manager over the locked files, with
+// per-process module attribution for uv-shared files so a foreign venv that
+// maps the same wheel through its own hard link is never listed.
+async function attributedInstallHolders(
+  updateRoot,
+  timeoutMs = RESTART_MANAGER_DEFAULT_TIMEOUT_MS
+): Promise<RestartManagerHolder[]> {
+  const locks = probeInstallLocks(updateRoot)
+
+  if (locks.definite.length === 0 && locks.shared.length === 0) {return []}
+
+  return listRestartManagerHoldersForResources(locks.definite, {
+    shared: locks.shared,
+    // Attribute against the historical venv being deleted: a process
+    // that maps runtime DLLs but no venv file is not a holder of this mutation set.
+    attributionRoot: path.join(updateRoot, 'venv'),
+    timeoutMs
+  })
+}
+
+async function isAnyInstallResourceLocked(updateRoot): Promise<boolean> {
+  const locks = probeInstallLocks(updateRoot)
+
+  if (locks.definite.length > 0) {return true}
+
+  if (locks.shared.length === 0) {return false}
+
+  return (await attributedInstallHolders(updateRoot)).length > 0
+}
+
 // Kill only Hermes-OWNED venv daemons (the memory plugin's hindsight daemon:
 // exe under venv\Scripts AND cmdline referencing hindsight_api.main). The
 // daemon is spawned DETACHED, so it outlives the backend tree-kill and keeps
@@ -4698,7 +4763,7 @@ async function stopBackendsForUpdate(): Promise<void> {
 
 // Uninstall still deletes the installation and its historical venv. Unlike
 // generation updates, deletion must wait for those old files to be released.
-async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ unlocked: boolean }> {
+async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ unlocked: boolean; holders?: RestartManagerHolder[] }> {
   if (!IS_WINDOWS) {
     return { unlocked: true }
   }
@@ -4748,7 +4813,10 @@ async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ un
   const gate = await waitForBackendRelease(
     initialPids,
     {
-      isShimLocked: () => Boolean(isShimLocked(shim)),
+      // Prove the whole mutation set, not just the shim: a holder that maps a
+      // site-packages .pyd without touching hermes.exe used to pass this gate
+      // and leave native files behind during uninstall.
+      isShimLocked: () => isAnyInstallResourceLocked(updateRoot),
       isPidAlive: isPidAliveWindows,
       collectStragglerPids: () => {
         // Re-kill resurgent external holders (autostart gateway/dashboard) on
@@ -4788,18 +4856,23 @@ async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ un
     return { unlocked: true }
   }
 
-  // Do NOT proceed past a held lock: handing off to the updater while another
-  // process (a second desktop window, a user terminal, an unkillable child)
-  // still maps the venv's files guarantees a half-updated venv — the updater's
-  // dependency sync dies on access-denied partway through uninstalls, leaving
-  // imports broken (the July 2026 brotlicffi/_sodium.pyd incidents). Failing
-  // the update loudly and keeping the app running is strictly better than a
-  // bricked install that needs manual venv surgery.
+  // Report the remaining native holders to the uninstall caller. Generation
+  // updates do not use this gate because they retain old dependency readers.
+  let holders: RestartManagerHolder[] = []
+
+  try {
+    holders = await attributedInstallHolders(updateRoot)
+  } catch {
+    holders = []
+  }
+
   rememberLog(
-    `[${tag}] venv shim still locked after 15s; aborting hand-off (something outside this app holds the venv)`
+    `[${tag}] install files still locked after 15s; aborting hand-off. Holders: ${
+      holders.map(holder => `PID ${holder.pid} ${holder.name} (${path.relative(updateRoot, holder.resource)})`).join('; ') || 'none attributable'
+    }`
   )
 
-  return { unlocked: false }
+  return { unlocked: false, holders }
 }
 
 // applyUpdates — hand off to the installer's --update flow, then exit.

@@ -8,6 +8,8 @@ lock the tombstone + no-mkdir contract without depending on Desktop.
 
 from __future__ import annotations
 
+import contextvars
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,8 +26,13 @@ from hermes_cli.profiles import (
     resolve_profile_env,
     set_active_profile,
 )
-from hermes_constants import named_profile_home
+from hermes_constants import (
+    named_profile_home,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 from hermes_logging import setup_logging
+from utils import atomic_json_write
 
 
 @pytest.fixture()
@@ -66,6 +73,115 @@ class TestDeletedProfileTombstone:
         assert not profile_dir.exists()
         monkeypatch.setenv("HERMES_HOME", str(profile_env / ".hermes"))
         assert "worker" not in _named_homes(profile_env)
+
+    def test_delete_then_reasoning_caps_save_does_not_recreate_home(
+        self, profile_env
+    ):
+        from hermes_cli.models_reasoning_caps import _save_reasoning_caps_disk
+
+        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        _delete("worker")
+        assert not profile_dir.exists()
+
+        token = set_hermes_home_override(profile_dir)
+        try:
+            _save_reasoning_caps_disk(
+                "https://example.invalid/v1/models",
+                {"m": {"supports_reasoning": True}},
+            )
+        finally:
+            reset_hermes_home_override(token)
+
+        assert not profile_dir.exists()
+
+    def test_delete_then_models_dev_etag_save_does_not_recreate_home(
+        self, profile_env
+    ):
+        from agent.models_dev import _save_etag
+
+        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        _delete("worker")
+        assert not profile_dir.exists()
+
+        token = set_hermes_home_override(profile_dir)
+        try:
+            _save_etag("etag")
+        finally:
+            reset_hermes_home_override(token)
+
+        assert not profile_dir.exists()
+
+    def test_delete_then_context_carrying_worker_save_does_not_recreate_home(
+        self, profile_env
+    ):
+        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        release = threading.Event()
+        started = threading.Event()
+        errors: list[Exception] = []
+
+        def worker() -> None:
+            started.set()
+            release.wait()
+            try:
+                atomic_json_write(
+                    profile_dir / "cache" / "late.json",
+                    {},
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        token = set_hermes_home_override(profile_dir)
+        try:
+            context = contextvars.copy_context()
+            thread = threading.Thread(
+                target=context.run,
+                args=(worker,),
+            )
+            thread.start()
+        finally:
+            reset_hermes_home_override(token)
+
+        try:
+            assert started.wait(timeout=5)
+            _delete("worker")
+        finally:
+            release.set()
+            thread.join(timeout=5)
+
+        assert not thread.is_alive()
+        assert len(errors) == 1
+        assert isinstance(errors[0], FileNotFoundError)
+        assert not profile_dir.exists()
+
+    def test_delete_then_lifecycle_sentinel_does_not_recreate_home(
+        self, profile_env
+    ):
+        from gateway.lifecycle_ledger import mark_exited
+
+        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        _delete("worker")
+        assert not profile_dir.exists()
+
+        mark_exited(home=profile_dir)
+
+        assert not profile_dir.exists()
+
+    def test_delete_then_secret_cache_write_refuses_and_does_not_recreate_home(
+        self, profile_env
+    ):
+        from agent.secret_sources._cache import atomic_write_json
+
+        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        _delete("worker")
+        assert not profile_dir.exists()
+
+        with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+            atomic_write_json(
+                profile_dir / "cache" / "secrets.json",
+                {"k": "v"},
+            )
+
+        assert not profile_dir.exists()
 
     def test_empty_shell_after_delete_is_not_listed_or_served(self, profile_env):
         profile_dir = create_profile("worker", no_alias=True, no_skills=True)

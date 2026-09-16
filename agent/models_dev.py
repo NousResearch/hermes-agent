@@ -188,9 +188,7 @@ def _load_etag() -> str:
 
 def _save_etag(etag: str) -> None:
     def write() -> None:
-        etag_path = _get_etag_path()
-        etag_path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(etag_path, etag)
+        atomic_write_text(_get_etag_path(), etag)
     _quietly("save models.dev ETag", write)
 
 

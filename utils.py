@@ -239,8 +239,13 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     volume mounts; an existing target with no *mode* keeps mkstemp's bits, as before. *fsync_dir*
     also fsyncs the parent so the rename itself is durable. The temp file is removed on any
     failure — ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still clean up.
+    A missing or tombstoned named profile home is refused with ``FileNotFoundError``.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # A long-lived serve process can retain a deleted profile as its context home; route parent
+    # creation through the #97128 guard so a late writer cannot resurrect that profile.
+    from hermes_constants import mkdir_under_hermes_home
+
+    mkdir_under_hermes_home(path.parent)
     if mode is None and not path.exists():
         mode = default_new_file_mode()
     original_owner = _preserve_file_owner(path) if preserve_owner else None
@@ -421,9 +426,10 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
     # /model + TUI persistence wrote ``glm-5: {'3': ...}`` phantom siblings.
     # See #91607.
     from hermes_cli.config import _greedy_literal_match, _split_key_path
+    from hermes_constants import mkdir_under_hermes_home
 
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    mkdir_under_hermes_home(path.parent)
     yaml_rt, config = _roundtrip_load(path)
     current = config
     keys = _split_key_path(key_path)
@@ -465,9 +471,10 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict) -> None:
     from ruamel.yaml.comments import CommentedMap
     from ruamel.yaml.scalarstring import DoubleQuotedScalarString
     from hermes_cli.config import require_readable_config_before_write
+    from hermes_constants import mkdir_under_hermes_home
 
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    mkdir_under_hermes_home(path.parent)
     require_readable_config_before_write(path)
     yaml_rt, existing = _roundtrip_load(path)
 

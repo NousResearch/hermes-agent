@@ -21,16 +21,17 @@ async def test_playground_health_route_returns_generated_urls_without_restart(mo
 
     monkeypatch.setattr(messaging, "_playground_handshake", fake_handshake)
     monkeypatch.setattr(messaging, "_playground_payload", lambda _profile: {
-        "enabled": True, "base_url": "http://localhost:3979",
-        "test_url": "http://localhost:3979/hermes/teams-playground",
-        "callback_url": "http://localhost:3979/api/messages",
+        "enabled": True, "app_endpoint": "http://127.0.0.1:3978/api/messages",
+        "ui_url": "http://127.0.0.1:56150",
+        "test_url": "http://127.0.0.1:56150",
+        "callback_url": "http://127.0.0.1:3978/api/messages",
     })
     result = await messaging.test_teams_playground()
     assert result == {
         "ok": True,
         "message": "Playground health check passed.",
-        "test_url": "http://localhost:3979/hermes/teams-playground",
-        "callback_url": "http://localhost:3979/api/messages",
+        "test_url": "http://127.0.0.1:56150",
+        "callback_url": "http://127.0.0.1:3978/api/messages",
     }
 
 
@@ -41,9 +42,10 @@ async def test_playground_health_route_does_not_restart_or_expose_secrets(monkey
 
     monkeypatch.setattr(messaging, "_playground_handshake", fake_handshake)
     monkeypatch.setattr(messaging, "_playground_payload", lambda _profile: {
-        "enabled": True, "base_url": "http://localhost:3979",
-        "test_url": "http://localhost:3979/hermes/teams-playground",
-        "callback_url": "http://localhost:3979/api/messages",
+        "enabled": True, "app_endpoint": "http://127.0.0.1:3978/api/messages",
+        "ui_url": "http://127.0.0.1:56150",
+        "test_url": "http://127.0.0.1:56150",
+        "callback_url": "http://127.0.0.1:3978/api/messages",
     })
     result = await messaging.test_teams_playground()
     assert result["ok"] is False

@@ -407,15 +407,21 @@ past the system prefix.
 ```yaml
 auxiliary:
   background_review:
-    max_replay_tokens: 120000  # <= 0 means unlimited replay
+    max_replay_tokens: 120000  # hard ceiling; lower values narrow the replay
 ```
 
-The setting defaults to `120000` when omitted. An explicit null, a boolean, or
-another nonnumeric value is invalid: Hermes logs a warning and falls back to
-`120000`. Zero and negative numeric values make replay unlimited.
+The setting defaults to `120000` when omitted, and `120000` is also the hard
+ceiling: lower values narrow the replay; zero, negative, and larger values fall
+back to `120000`. Automatic replay cannot be made unlimited (set `enabled: false`
+to stop automatic reviews instead; explicit `/refine` is not bounded). An
+explicit null, a boolean, or another nonnumeric value is invalid: Hermes logs a
+warning and falls back to `120000`.
 
 The bound applies only to the conversation replay. The review prompt, system
-prompt, and tool definitions still contribute to the provider request.
+prompt, and tool definitions still contribute to the provider request. A second
+setting, `max_input_tokens` (default and hard ceiling `600000`), caps the input
+tokens one automatic review may consume across its whole tool loop; like
+`max_replay_tokens` it can only be lowered, and explicit `/refine` is exempt.
 
 ### Disabling automatic reviews (`enabled`)
 

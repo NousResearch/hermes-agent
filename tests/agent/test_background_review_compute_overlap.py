@@ -1341,6 +1341,35 @@ def test_oversized_snapshot_is_replayed_bounded(review_forks, monkeypatch, caplo
     assert review_admission.REASON_OVERSIZED in caplog.text
 
 
+def test_zero_max_replay_tokens_still_bounds_automatic_replay(
+    review_forks, monkeypatch, caplog
+):
+    """``max_replay_tokens: 0`` cannot switch the automatic replay bound off: on the composed
+    spawn path the ceiling still applies and the oversized snapshot is replayed bounded."""
+    monkeypatch.setattr(review_admission, "MAX_REPLAY_TOKENS_DEFAULT", 2_000)
+    _patch_config(monkeypatch, _config(max_replay_tokens=0))
+    snapshot = _snapshot(pairs=60, filler_chars=800)
+    assert estimate_messages_tokens_rough(snapshot) > 2_000
+
+    agent = _bare_agent()
+    with caplog.at_level("INFO"):
+        AIAgent._spawn_background_review(
+            agent,
+            messages_snapshot=snapshot,
+            review_memory=True,
+        )
+
+    assert len(review_forks) == 1
+    history = review_forks[0]["history"]
+    assert history is not None
+    assert len(history) < len(snapshot), (
+        "max_replay_tokens=0 replayed the full transcript into an automatic review"
+    )
+    assert estimate_messages_tokens_rough(history) <= 2_000
+    _assert_plain_user_anchor(history)
+    assert review_admission.REASON_OVERSIZED in caplog.text
+
+
 def test_bounded_snapshot_still_replays_the_full_transcript(review_forks, monkeypatch):
     """Normal sessions keep the verbatim (warm-cache) replay — learning is not degraded."""
     _patch_config(monkeypatch, _config(max_replay_tokens=2_000))

@@ -71,8 +71,9 @@ class TurnFacadeMixin:
         # BEFORE cancelling: a review that has not issued its first request yet refuses admission
         # (agent/review_admission.py) instead of racing the cancel with a full-transcript request
         # already on the wire. Then fence review startup / interrupt an admitted request and await
-        # its exit before opening live-turn instrumentation. Foreground priority is retained if the
-        # review does not acknowledge within the bounded deadline (#84423).
+        # its exit before opening live-turn instrumentation. That wait has no deadline: an admitted
+        # request must acknowledge, and a run that never admitted a fork is revoked atomically by
+        # the canceller, so no turn waits on a worker that may never start (#84423).
         from agent.background_review import (
             cancel_background_review_for_live_turn,
             wait_for_background_review_cancellation,

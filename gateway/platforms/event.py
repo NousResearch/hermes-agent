@@ -4,12 +4,59 @@ A leaf module: adapters, helpers and the runner import it, so it must not import
 gateway.platforms.*.
 """
 
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from gateway.session import SessionSource
+
+
+def _is_command_boundary_char(ch: str) -> bool:
+    """Invisible padding that messaging clients wrap around pasted text.
+
+    Covers whitespace/newlines plus Unicode ``Cc`` (control) and ``Cf``
+    (format), including WORD JOINER, ZWSP, ZWNJ/ZWJ, BOM, LRM, and RLM.
+    """
+    return ch.isspace() or unicodedata.category(ch) in {"Cc", "Cf"}
+
+
+def _strip_command_boundary_chars(text: str) -> str:
+    """Trim boundary padding without normalizing interior characters."""
+    start = 0
+    end = len(text)
+    while start < end and _is_command_boundary_char(text[start]):
+        start += 1
+    while end > start and _is_command_boundary_char(text[end - 1]):
+        end -= 1
+    return text[start:end]
+
+
+def _lstrip_command_boundary_chars(text: str) -> str:
+    """Trim leading boundary padding while preserving authored argument whitespace."""
+    start = 0
+    while start < len(text) and _is_command_boundary_char(text[start]):
+        start += 1
+    return text[start:]
+
+
+def _rstrip_invisible_chars(text: str) -> str:
+    """Drop trailing Cc/Cf characters while preserving trailing whitespace."""
+    end = len(text)
+    while end > 0 and unicodedata.category(text[end - 1]) in {"Cc", "Cf"}:
+        end -= 1
+    return text[:end]
+
+
+def looks_like_slash_command(text: str) -> bool:
+    """Return whether ``text`` starts with a slash after boundary trimming.
+
+    This is the shared classifier for adapters and ``MessageEvent``. It does
+    not authorize command execution; ``allow_gateway_control`` and gateway
+    slash-access checks retain that responsibility.
+    """
+    return _strip_command_boundary_chars(text or "").startswith("/")
 
 
 class MessageType(Enum):
@@ -89,13 +136,16 @@ class MessageEvent:
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
-        return self.allow_gateway_control and (self.text or "").lstrip().startswith("/")
+        return self.allow_gateway_control and looks_like_slash_command(self.text)
 
     def get_command(self) -> Optional[str]:
         """Extract command name if this is a command message."""
         if not self.is_command():
             return None
-        raw = (self.text or "").lstrip().split(maxsplit=1)[0][1:].lower().split("@", 1)[0]
+        token = _strip_command_boundary_chars(self.text or "").split(maxsplit=1)[0]
+        # Re-trim the token because clients may wrap only the command name,
+        # leaving invisible padding between it and the argument delimiter.
+        raw = _strip_command_boundary_chars(token[1:]).lower().split("@", 1)[0]
         # Reject file paths: valid command names never contain /
         return None if "/" in raw else raw
 
@@ -103,7 +153,7 @@ class MessageEvent:
         """Get the arguments after a command."""
         if not self.is_command():
             return self.text
-        parts = (self.text or "").lstrip().split(maxsplit=1)
-        args = parts[1] if len(parts) > 1 else ""
+        parts = _lstrip_command_boundary_chars(self.text or "").split(maxsplit=1)
+        args = _rstrip_invisible_chars(parts[1]) if len(parts) > 1 else ""
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         return args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")

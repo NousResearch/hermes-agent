@@ -48,8 +48,16 @@ function migrateRememberedNavigation(store: Storage, oldName: string, newName: s
   )
 
   for (const key of keys) {
-    if ((key.startsWith(LAST_SESSION_KEY) || key.startsWith(LAST_ROUTE_KEY)) && key.includes(oldScope)) {
-      moveStorageValue(store, key, key.replace(oldScope, newScope))
+    const base = [LAST_SESSION_KEY, LAST_ROUTE_KEY].find(candidate => {
+      const scopedKey = candidate + oldScope
+
+      return key === scopedKey || key.startsWith(`${scopedKey}.`)
+    })
+
+    if (base) {
+      const scopedKey = base + oldScope
+
+      moveStorageValue(store, key, base + newScope + key.slice(scopedKey.length))
     }
   }
 }

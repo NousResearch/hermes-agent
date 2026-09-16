@@ -6,13 +6,16 @@ beforeEach(() => {
 })
 
 it('re-homes every persisted session route after a profile rename', async () => {
-  const oldName = 'webdesign_bhp'
+  const oldName = 'work'
   const newName = 'hutnik-projectmanager'
+  const siblingName = 'work2'
   const oldTail = JSON.stringify(['local', oldName, 'session-1'])
   const newTail = JSON.stringify(['local', newName, 'session-1'])
 
   window.localStorage.setItem(`hermes.desktop.lastSessionId.profile.${oldName}`, 'session-1')
   window.localStorage.setItem(`hermes.desktop.lastRoute.profile.${oldName}`, '/session-1')
+  window.localStorage.setItem(`hermes.desktop.lastSessionId.profile.${siblingName}`, 'session-2')
+  window.localStorage.setItem(`hermes.desktop.lastRoute.profile.${siblingName}`, '/session-2')
   window.localStorage.setItem(
     'hermes.desktop.sessionTiles.v2',
     JSON.stringify({
@@ -47,6 +50,8 @@ it('re-homes every persisted session route after a profile rename', async () => 
   expect(window.localStorage.getItem(`hermes.desktop.lastSessionId.profile.${oldName}`)).toBeNull()
   expect(window.localStorage.getItem(`hermes.desktop.lastSessionId.profile.${newName}`)).toBe('session-1')
   expect(window.localStorage.getItem(`hermes.desktop.lastRoute.profile.${newName}`)).toBe('/session-1')
+  expect(window.localStorage.getItem(`hermes.desktop.lastSessionId.profile.${siblingName}`)).toBe('session-2')
+  expect(window.localStorage.getItem(`hermes.desktop.lastRoute.profile.${siblingName}`)).toBe('/session-2')
   expect(window.localStorage.getItem(`hermes.transcript-tail.v2:${oldTail}`)).toBeNull()
   expect(window.localStorage.getItem(`hermes.transcript-tail.v2:${newTail}`)).not.toBeNull()
 

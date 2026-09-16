@@ -48,6 +48,7 @@ import {
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
+  sanitizeRemoteHeaderValue,
   savedProfileSsh,
   tokenPreview,
   translateSelfProfileQuery,
@@ -98,6 +99,25 @@ test('normalizeRemoteHeaders keeps safe proxy headers and drops transport/auth h
       'CF-Access-Client-Secret': { encoding: 'plain', value: 'secret' }
     }
   )
+})
+
+test('sanitizeRemoteHeaderValue strips CR/LF so a pasted token cannot split a request', () => {
+  // Clipboard pastes of access-proxy service tokens routinely carry a trailing
+  // newline; a bare CR/LF inside the value is a request-splitting vector once
+  // it reaches setHeader / loadURL extraHeaders.
+  assert.equal(sanitizeRemoteHeaderValue('client-secret\r\n'), 'client-secret')
+  assert.equal(sanitizeRemoteHeaderValue('  client-secret\r  '), 'client-secret')
+  assert.equal(sanitizeRemoteHeaderValue('a\r\nX-Injected: evil'), 'aX-Injected: evil')
+  assert.equal(sanitizeRemoteHeaderValue(undefined), '')
+})
+
+test('normalizeRemoteHeaders sanitizes plaintext values at ingest', () => {
+  // A trailing newline was already handled by trim(); the gap this pins is an
+  // EMBEDDED CR/LF, which trim() leaves intact and which would otherwise reach
+  // the request as an injected second header.
+  assert.deepEqual(normalizeRemoteHeaders({ 'CF-Access-Client-Secret': 'secret\r\nX-Injected: evil' }), {
+    'CF-Access-Client-Secret': { encoding: 'plain', value: 'secretX-Injected: evil' }
+  })
 })
 
 test('remoteRequestMatchesBaseUrl treats HTTPS and WSS as the same gateway origin', () => {
@@ -800,6 +820,26 @@ test('resolveProfileApiRequest scopes complete safe families according to their 
       backendProfile: null,
       requestPath: '/api/profiles/worker'
     }
+  )
+})
+
+test('resolveProfileApiRequest keeps gateway lifecycle verbs on the primary with the profile scope', () => {
+  // A local sub-profile's gateway verbs must reach a backend that (a) receives
+  // `?profile=X` so the handler can answer "served by the multiplexer" (409 /
+  // restart the multiplexer) and (b) is the backend the gateway-restart status
+  // poll asks. A pooled `--profile X serve` gets neither: unscoped, it spawned a
+  // `-p X gateway restart` that exited 78 while the primary-routed poll read
+  // "no such action" as success.
+  for (const verb of ['restart', 'start', 'stop']) {
+    assert.deepEqual(resolveProfileApiRequest('iris', `/api/gateway/${verb}`, { requestMethod: 'POST' }), {
+      backendProfile: null,
+      requestPath: `/api/gateway/${verb}?profile=iris`
+    })
+  }
+
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/actions/gateway-restart/status?lines=200', { requestMethod: 'GET' }),
+    { backendProfile: null, requestPath: '/api/actions/gateway-restart/status?lines=200&profile=iris' }
   )
 })
 

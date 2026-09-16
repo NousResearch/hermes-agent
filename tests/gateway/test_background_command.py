@@ -108,7 +108,8 @@ class TestRunBackgroundTask:
         # Should have sent an error message
         mock_adapter.send.assert_called_once()
         call_args = mock_adapter.send.call_args
-        assert "failed" in call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "").lower()
+        content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
+        assert "couldn't start" in content and "/login" in content
 
     @pytest.mark.asyncio
     async def test_successful_task_sends_result(self):

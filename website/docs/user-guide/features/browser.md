@@ -257,6 +257,39 @@ to fully quit the browser — it won't loop or kill again on its own.
   Browser Profile** (the switch sits above the backend options), or in
   Settings → Config under the `browser` section.
 
+#### Scheduled and unattended runs
+
+A real-profile session lets a `cronjob` drive a site you're already signed into.
+The snapshot runs headless by default, and the auth files (`Cookies`,
+`Login Data`, …) are re-synced from your real profile on every fresh session —
+an already-open session is reused as-is, so the sync happens when a new one is
+launched. Without saved vault credentials, an expired session on that site
+surfaces as a login page that the unattended tick reports rather than hanging on.
+
+Three things to set up before scheduling one:
+
+- **Turn the toggle on.** `browser.use_real_profile` defaults to `false`, and
+  without it the job gets a clean, unauthenticated profile — see above.
+- **Give the job the browser toolset:**
+  `cronjob(action="create", enabled_toolsets=["browser", ...], ...)` — a per-job
+  list wins over the cron-platform config
+  ([details](./cron.md#toolsets-available-to-cron-jobs)).
+- **Assume nothing can be prompted for.** A cron, webhook, API or
+  `hermes chat -q` session has nobody to answer a prompt, so a site that is not
+  usable on the synced cookies alone — a login form, a fresh 2FA challenge —
+  needs its credentials saved ahead of time, authenticator key included. That is
+  the [credential vault's](./credential-vault.md#headless-sessions) job, and it
+  is what carries a run after your own session has expired.
+
+**Windows prerequisite:** the browser has to be fully quit before a snapshot can
+be taken at all, so a scheduled tick needs it closed beforehand — Hermes never
+closes it without asking you first (see the note above).
+
+The bundled `product-price-monitor` skill is a worked example of the recurring
+shape — a JSON watch contract written during setup, then one scheduled tick that
+re-reads it, compares, and alerts on change — though it covers the scheduling
+half, not logins.
+
 ### Camofox local mode
 
 [Camofox](https://github.com/jo-inc/camofox-browser) is a self-hosted Node.js server wrapping Camoufox (a Firefox fork with C++ fingerprint spoofing). It provides local anti-detection browsing without cloud dependencies.
@@ -523,7 +556,9 @@ Then launch the Hermes CLI and run `/browser connect`.
 
 **Why `--user-data-dir`?** Without it, launching a Chromium-family browser while a regular instance is already running typically opens a new window on the existing process — and that existing process was not started with `--remote-debugging-port`, so port 9222 never opens. A dedicated user-data-dir forces a fresh browser process where the debug port actually listens. `--no-first-run --no-default-browser-check` skips the first-launch wizard for the fresh profile.
 
-**Chrome 136+ makes the dedicated profile mandatory.** As a security hardening change, Chrome 136 and later silently refuse to open the remote debugging port when `--remote-debugging-port` is combined with the *default* user-data-dir — even from a cold start with no other Chrome running. The browser launches normally but nothing ever listens on 9222, so `/browser connect` (and any manual `curl http://127.0.0.1:9222/json/version`) fails with connection refused. There is no error message. The fix is exactly the commands above: always pass a `--user-data-dir` pointing somewhere other than your default profile directory (e.g. `$HOME/.hermes/chrome-debug`). This applies to Chrome, Chromium, Edge, and Brave builds that have picked up the change.
+**Chrome 136+ makes the dedicated profile mandatory.** Two separate mechanisms are in play, and neither applies once you pass a non-default `--user-data-dir`. First, since [Chrome 136](https://developer.chrome.com/blog/remote-debugging-port) `--remote-debugging-port` and `--remote-debugging-pipe` "will no longer be respected if attempting to debug the default Chrome data directory" — the flag is silently ignored, no dialog, and `/browser connect` (or `curl http://127.0.0.1:9222/json/version`) gets connection refused even from a cold start. Second, [Chrome 144+](https://developer.chrome.com/blog/chrome-devtools-mcp-debug-your-browser-session) adds an opt-in *approval* flow for debugging your real profile: you enable it under `chrome://inspect/#remote-debugging`, and Chrome then shows an **"Allow remote debugging?"** dialog for **every incoming connection** (not once per launch), with nothing listening until you press **Allow**. If you see that dialog, you are on the approval path, not the flag path. The fix is exactly the commands above: point `--user-data-dir` somewhere other than your default profile directory (e.g. `$HOME/.hermes/chrome-debug`), which needs neither the toggle nor the dialog. This applies to Chrome, Chromium, Edge, and Brave builds that have picked up the change.
+
+A dedicated profile starts out signed out of everything. If you want the agent to browse with your existing logins *and* no approval dialog, use [`browser.use_real_profile`](#real-profile-browsing-use-your-own-logins) instead: it snapshots your active profile into a copy and drives that, which is a non-default user-data-dir and so never triggers either mechanism.
 :::
 
 When connected via CDP, all browser tools (`browser_navigate`, `browser_click`, etc.) operate on your live browser instance instead of spinning up a cloud session.

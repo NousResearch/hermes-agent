@@ -1680,9 +1680,20 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
             orphan_identity[pid] = start
 
     reaped = False
+    windows = is_windows()
     for pid in orphans:
         with contextlib.suppress(Exception):
             write_planned_stop_marker(pid)
+        if windows:
+            # SIGTERM is TerminateProcess on Windows. Give the gateway's
+            # planned-stop watcher the full drain window before escalating.
+            reaped = True
+            _force_kill_survivors([
+                survivor for survivor in _await_gateway_exit([pid], pid_exists=_pid_exists)
+                if survivor in orphan_identity
+                and get_process_start_time(survivor) == orphan_identity[survivor]
+            ])
+            continue
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -1694,10 +1705,11 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
 
     # Wait, then force-kill survivors so the replacement can bind the port cleanly.
     # Fail-closed: SIGKILL only a PID that still names the process fingerprinted at scan time.
-    _force_kill_survivors([
-        pid for pid in _await_gateway_exit(orphans, pid_exists=_pid_exists)
-        if pid in orphan_identity and get_process_start_time(pid) == orphan_identity[pid]
-    ])
+    if not windows:
+        _force_kill_survivors([
+            pid for pid in _await_gateway_exit(orphans, pid_exists=_pid_exists)
+            if pid in orphan_identity and get_process_start_time(pid) == orphan_identity[pid]
+        ])
     return reaped
 
 
@@ -1768,7 +1780,9 @@ def _await_gateway_exit(
     return survivors
 
 
-def _force_kill_survivors(survivors, *, kill=None) -> None:
+def _force_kill_survivors(
+    survivors, *, kill=None, grace_s: float = _ORPHAN_EXIT_GRACE_SECONDS
+) -> None:
     """SIGKILL processes that outlasted the grace period, loudly — a force-kill can tear the store, so
     it must leave a trace."""
     kill = kill or os.kill
@@ -1777,7 +1791,7 @@ def _force_kill_survivors(survivors, *, kill=None) -> None:
             "Gateway PID %s did not exit within %.0fs of SIGTERM — sending "
             "SIGKILL. A kill during a WAL checkpoint can corrupt state.db; "
             "the next start will run an integrity check.",
-            pid, _ORPHAN_EXIT_GRACE_SECONDS,
+            pid, grace_s,
         )
         with contextlib.suppress((ProcessLookupError, PermissionError, OSError)):
             kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
@@ -1813,21 +1827,36 @@ def stop_profile_gateway() -> bool:
     if pid is None:
         return _reap_unsupervised_gateway_orphans()
 
+    windows = is_windows()
+    from gateway.status import _pid_exists, get_process_start_time
+    expected_start_time = get_process_start_time(pid) if windows else None
     _mark_planned_stop(pid)
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass  # Already gone
-    except PermissionError:
-        print(f"⚠ Permission denied to kill PID {pid}")
-        return False
+    if not windows:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass  # Already gone
+        except PermissionError:
+            print(f"⚠ Permission denied to kill PID {pid}")
+            return False
 
     # ``_pid_exists``, NOT ``os.kill(pid, 0)`` (TerminateProcess on Windows).
-    from gateway.status import _pid_exists
-    for _ in range(20):
-        if not _pid_exists(pid):
-            break
-        time.sleep(0.5)
+    if windows:
+        # The marker is the graceful stop request; force termination is
+        # reserved for a process that outlives the existing ten-second grace.
+        survivors = _await_gateway_exit(
+            [pid], pid_exists=_pid_exists, grace_s=10.0, poll_s=0.5
+        )
+        _force_kill_survivors([
+            survivor for survivor in survivors
+            if expected_start_time is not None
+            and get_process_start_time(survivor) == expected_start_time
+        ], grace_s=10.0)
+    else:
+        for _ in range(20):
+            if not _pid_exists(pid):
+                break
+            time.sleep(0.5)
 
     if get_running_pid() is None:
         remove_pid_file()

@@ -533,6 +533,7 @@ class TestStopProfileGateway:
     def test_stop_profile_gateway_keeps_pid_file_when_process_still_running(self, monkeypatch):
         calls = {"kill": 0, "alive_probes": 0, "remove": 0, "reap_calls": 0}
 
+        monkeypatch.setattr(gateway, "is_windows", lambda: False)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 12345)
         # Post-#21561: the stop loop sends one SIGTERM via ``os.kill`` then
         # polls liveness via ``gateway.status._pid_exists`` (safe on
@@ -562,7 +563,7 @@ class TestStopProfileGateway:
 
         assert gateway.stop_profile_gateway() is True
         assert calls["kill"] == 1          # one SIGTERM
-        assert calls["alive_probes"] == 20 # 20 liveness polls over the 2s window
+        assert calls["alive_probes"] == 20 # 20 liveness polls over the ten-second window
         assert calls["remove"] == 0
         assert calls["reap_calls"] == 1    # orphan sweep ran after kill
 
@@ -571,6 +572,7 @@ class TestStopProfileGateway:
         killed_pid = 99999
         reap_extra_excludes = []
 
+        monkeypatch.setattr(gateway, "is_windows", lambda: False)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: killed_pid)
         monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: None)
         monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
@@ -587,6 +589,50 @@ class TestStopProfileGateway:
         assert gateway.stop_profile_gateway() is True
         assert len(reap_extra_excludes) == 1
         assert killed_pid in reap_extra_excludes[0]
+
+    def test_windows_waits_for_planned_stop_before_force_kill(self, monkeypatch):
+        pid = 12345
+        events = []
+
+        monkeypatch.setattr(gateway, "is_windows", lambda: True)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: pid)
+        monkeypatch.setattr("gateway.status.get_process_start_time", lambda value: 77)
+        monkeypatch.setattr(gateway, "_mark_planned_stop", lambda value: events.append(("marker", value)))
+        monkeypatch.setattr(
+            gateway.os, "kill", lambda *_: (_ for _ in ()).throw(AssertionError("SIGTERM hard-kills on Windows"))
+        )
+        alive = iter([True, False])
+        monkeypatch.setattr("gateway.status._pid_exists", lambda value: next(alive))
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+        monkeypatch.setattr(gateway, "_reap_unsupervised_gateway_orphans", lambda **_: False)
+        monkeypatch.setattr(
+            gateway, "_force_kill_survivors", lambda survivors, **_: events.append(("force", survivors))
+        )
+
+        assert gateway.stop_profile_gateway() is True
+        assert events == [("marker", pid), ("force", [])]
+
+    def test_windows_force_kills_only_after_drain_timeout(self, monkeypatch):
+        pid = 12345
+        events = []
+
+        monkeypatch.setattr(gateway, "is_windows", lambda: True)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: pid)
+        monkeypatch.setattr("gateway.status.get_process_start_time", lambda value: 77)
+        monkeypatch.setattr(gateway, "_mark_planned_stop", lambda value: events.append(("marker", value)))
+        monkeypatch.setattr("gateway.status._pid_exists", lambda value: True)
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+        monkeypatch.setattr(gateway, "_reap_unsupervised_gateway_orphans", lambda **_: False)
+        monkeypatch.setattr(
+            gateway,
+            "_force_kill_survivors",
+            lambda survivors, **kwargs: events.append(("force", survivors, kwargs["grace_s"])),
+        )
+
+        assert gateway.stop_profile_gateway() is True
+        assert events == [("marker", pid), ("force", [pid], 10.0)]
 
 
 class TestReapUnsupervisedGatewayOrphansMacOS:
@@ -722,19 +768,41 @@ class TestReapUnsupervisedGatewayOrphansWindows:
         )
 
         killed_pids = []
+        marked_pids = []
         monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
         monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
-        monkeypatch.setattr("gateway.status.write_planned_stop_marker", lambda pid: None)
+        monkeypatch.setattr("gateway.status.write_planned_stop_marker", marked_pids.append)
         monkeypatch.setattr("time.sleep", lambda _: None)
         monkeypatch.setattr("time.monotonic", lambda: 1.0)
 
         result = gateway._reap_unsupervised_gateway_orphans()
 
         assert result is True  # at least one orphan was reaped
-        killed = [pid for pid, _ in killed_pids]
-        assert orphan_pid in killed       # the real orphan was killed
-        assert recorded_pid not in killed  # the recorded gateway was NOT killed
-        assert bootstrap_pid not in killed  # its supervision chain was NOT killed
+        assert marked_pids == [orphan_pid]  # the real orphan received a graceful stop request
+        assert killed_pids == []             # it exited before force termination was needed
+
+    def test_windows_orphan_force_kill_follows_drain_timeout(self, monkeypatch):
+        orphan_pid = 99998
+        events = []
+
+        monkeypatch.setattr(gateway, "is_windows", lambda: True)
+        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway, "_windows_scheduled_task_supervises", lambda _: False)
+        monkeypatch.setattr(gateway, "_reaper_exclusion_pids", lambda _: set())
+        monkeypatch.setattr(gateway, "_reaper_candidate_is_supervisor_owned", lambda _: False)
+        monkeypatch.setattr(gateway, "find_gateway_pids", lambda exclude_pids=None: [orphan_pid])
+        monkeypatch.setattr("gateway.status.get_process_start_time", lambda pid: 77)
+        monkeypatch.setattr("gateway.status.write_planned_stop_marker", lambda pid: events.append(("marker", pid)))
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        monkeypatch.setattr(
+            gateway,
+            "_force_kill_survivors",
+            lambda survivors, **_: events.append(("force", survivors)),
+        )
+
+        assert gateway._reap_unsupervised_gateway_orphans() is True
+        assert events == [("marker", orphan_pid), ("force", [orphan_pid])]
 
     def test_windows_no_orphans_when_only_recorded_gateway_running(self, monkeypatch):
         """If the only gateway processes are the recorded one and its
@@ -892,19 +960,18 @@ class TestReaperCandidateIsSupervisorOwned:
         )
 
         killed_pids = []
+        marked_pids = []
         monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
         monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
-        monkeypatch.setattr("gateway.status.write_planned_stop_marker", lambda pid: None)
+        monkeypatch.setattr("gateway.status.write_planned_stop_marker", marked_pids.append)
         monkeypatch.setattr("time.sleep", lambda _: None)
         monkeypatch.setattr("time.monotonic", lambda: 1.0)
 
         result = gateway._reap_unsupervised_gateway_orphans()
 
         assert result is True              # the genuine orphan was reaped
-        killed = [pid for pid, _ in killed_pids]
-        assert orphan_pid in killed          # orphan killed
-        assert gateway_pid not in killed     # supervisor-owned gateway spared (no pidfile!)
-        assert bootstrap_pid not in killed   # its bootstrap spared too
+        assert marked_pids == [orphan_pid]  # orphan drained via the planned-stop watcher
+        assert killed_pids == []             # supervisor-owned processes were untouched
 
     def test_macos_orphan_reparented_to_launchd_is_still_reaped(self, monkeypatch):
         """POSIX inertness guard: a genuine macOS orphan is reparented directly

@@ -314,6 +314,28 @@ def test_idle_phase_policy_is_narrow_and_preserves_operator_overrides(
     assert watchdogs.idle_requires_progress is requires_progress
 
 
+def test_compatible_backend_small_context_gets_reasoning_idle_budget(
+    tmp_path, monkeypatch
+):
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(
+        tmp_path, monkeypatch, provider="xai-oauth", base_url="https://api.x.ai/v1"
+    )
+    monkeypatch.delenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", raising=False)
+    request = {"model": "grok-4.6", "input": "x" * 32_000}
+
+    implicit = h._resolve_nonstream_watchdogs(agent, request)
+    assert implicit.est_tokens == 8_000
+    assert implicit.idle_enabled
+    assert implicit.idle_timeout == 60.0
+    assert not implicit.idle_requires_progress
+
+    monkeypatch.setenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", "12")
+    explicit = h._resolve_nonstream_watchdogs(agent, request)
+    assert explicit.idle_timeout == 12.0
+
+
 @pytest.mark.parametrize(
     "mode", ["initial_gap", "stall", "retry_gap", "retry_no_event"]
 )

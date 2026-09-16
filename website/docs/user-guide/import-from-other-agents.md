@@ -46,10 +46,12 @@ directories, plugin-cache discovery and supporting-file copying are not included
 Review relative paths and Claude-specific tool names before using an imported skill.
 Source symlinks and symlinks below the destination home are not followed.
 
-Existing command skills are conflicts unless `--overwrite` is passed. Unlike
-ordinary imported skill directories, converted commands are not automatically
-refreshed by `--sync`; rerun the explicit import to preview changes. Review source
-files before importing: command text is copied, not scrubbed for embedded secrets.
+Existing command skills are conflicts on a manual import unless `--overwrite`
+is passed. `--sync` refreshes previously imported commands while the installed
+skill still matches its recorded digest; local edits remain conflicts. Command
+ownership is tracked separately from ordinary skills, even with the same name.
+Use `--sync --dry-run` to preview updates. Review source files before importing:
+command text is copied, not scrubbed for embedded secrets.
 
 ### Codex CLI (`~/.codex`)
 

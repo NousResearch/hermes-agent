@@ -67,3 +67,76 @@ def test_unsupported_commands_are_reported_without_writing(tmp_path, content):
     assert item["reason"]
     assert not target.exists()
     assert (commands / "review.md").read_text() == content
+
+
+def test_command_sync_refreshes_independently_and_preserves_local_edits(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from hermes_cli.agent_import import import_agent_command
+    from hermes_cli.agent_import_sync import load_sync_manifest
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    source = tmp_path / ".claude"
+    commands = source / "commands"
+    commands.mkdir(parents=True)
+    command = commands / "review.md"
+    command.write_text("Review version one.\n")
+    # Ordinary skills and command skills may legitimately have the same basename.
+    skill = source / "skills" / "review" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("---\nname: review\n---\nOrdinary version one.\n")
+    target = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(target))
+
+    def run(sync=False, dry_run=False):
+        import_agent_command(SimpleNamespace(
+            agent=None if sync else "claude-code", source=None if sync else str(source),
+            sync=sync, dry_run=dry_run, overwrite=False, yes=True))
+
+    run()
+    imported_command = target / "skills/claude-code-commands/review/SKILL.md"
+    imported_skill = target / "skills/claude-code-imports/review/SKILL.md"
+    before = imported_command.read_text()
+    manifest = load_sync_manifest(target)
+    command.write_text("Review version two.\n")
+    run(sync=True, dry_run=True)
+    assert imported_command.read_text() == before
+    assert load_sync_manifest(target) == manifest
+    run(sync=True)
+    assert "Review version two." in imported_command.read_text()
+    assert "Ordinary version one." in imported_skill.read_text()
+
+    # Refresh the other category, then protect a locally edited command.
+    imported_command.write_text("My local command edits.\n")
+    command.write_text("Review version three.\n")
+    skill.write_text("---\nname: review\n---\nOrdinary version two.\n")
+    run(sync=True)
+    assert imported_command.read_text() == "My local command edits.\n"
+    assert "Ordinary version two." in imported_skill.read_text()
+    snapshot = {str(p.relative_to(target)): p.read_bytes()
+                for p in target.rglob("*") if p.is_file()}
+    run(sync=True)
+    assert {str(p.relative_to(target)): p.read_bytes()
+            for p in target.rglob("*") if p.is_file()} == snapshot
+
+
+def test_command_sync_digest_excludes_redirected_sources(tmp_path):
+    from hermes_cli.agent_import_sync import _iter_sync_files, compute_source_digest
+
+    source = tmp_path / "claude"
+    commands = source / "commands"
+    commands.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    external = outside / "review.md"
+    external.write_text("External version one.\n")
+    link = commands / "review.md"
+    link.symlink_to(external)
+    baseline = compute_source_digest("claude-code", source)
+    assert link not in list(_iter_sync_files("claude-code", source))
+    external.write_text("External version two.\n")
+    assert compute_source_digest("claude-code", source) == baseline
+    link.unlink()
+    commands.rmdir()
+    commands.symlink_to(outside, target_is_directory=True)
+    assert not any(p.parent == commands for p in _iter_sync_files("claude-code", source))
+    assert compute_source_digest("claude-code", source) == baseline

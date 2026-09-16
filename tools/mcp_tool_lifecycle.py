@@ -146,7 +146,7 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
         servers_snapshot = [_core._servers[key] for key in selected]
         if names is not None:
             selected_status = set(selected)
-        elif scope is None:
+        elif wildcard:
             selected_status = (
                 set(_core._servers) | set(_core._server_scope_keys)
                 | set(_core._server_tool_scopes)
@@ -184,7 +184,7 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
                     _core._servers.pop(key, None)
                     _core._server_scope_keys.pop(key, None)
                 clear_selected_status()
-                _clear_connect_cooldowns(None if scope is None and names is None else selected_status)
+                _clear_connect_cooldowns(None if wildcard else selected_status)
 
         with _core._lock:
             loop = _core._mcp_loop
@@ -203,8 +203,8 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
     with _core._lock:
         if not servers_snapshot:
             clear_selected_status()
-        _clear_connect_cooldowns(None if scope is None and names is None else selected_status)
-    _loop._stop_mcp_loop(only_if_idle=scope is not None or names is not None)
+        _clear_connect_cooldowns(None if wildcard else selected_status)
+    _loop._stop_mcp_loop(only_if_idle=not wildcard)
     # A removed subset still shares its profile's log with the remaining servers.
     # Full/profile shutdown must also release handles left by completed CLI/UI probes.
     if names is None:

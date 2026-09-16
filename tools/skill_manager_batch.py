@@ -35,6 +35,41 @@ _CROSS_ACTION_HINTS = {
 }
 
 
+def iter_recorded_skill_operations(arguments, *, raw_fallback=False):
+    """Yield legacy-like operation dicts from recorded flat or action-keyed calls."""
+    raw = arguments
+    if isinstance(raw, str):
+        try:
+            arguments = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            if raw_fallback:
+                yield {"_raw": raw}
+            return
+    if not isinstance(arguments, dict):
+        return
+    operations = arguments.get("operations")
+    if not isinstance(operations, list):
+        yield arguments
+        return
+    for op in operations:
+        if not isinstance(op, dict):
+            continue
+        if op.get("action"):
+            yield op
+            continue
+        keys = [key for key in _ACTION_KEY_MAP if key in op]
+        if len(keys) != 1 or not isinstance(op[keys[0]], dict):
+            continue
+        key = keys[0]
+        flat = {
+            "name": op.get("name"), "action": _ACTION_KEY_MAP[key],
+            "source_action": key, **op[key],
+        }
+        if key == "write_file" and "content" in flat:
+            flat["file_content"] = flat.pop("content")
+        yield flat
+
+
 def _normalize_batch_operations(operations, tool_error):
     """Translate the advertised action-keyed shape to the legacy flat handler shape."""
     normalized = []
@@ -63,7 +98,10 @@ def _normalize_batch_operations(operations, tool_error):
             return None, tool_error(
                 f"operations[{i}] has fields outside its '{key}' object: "
                 f"{', '.join(sorted(unexpected))}.", success=False)
-        flat = {"name": op.get("name"), "action": _ACTION_KEY_MAP[key], **payload}
+        flat = {
+            "name": op.get("name"), "action": _ACTION_KEY_MAP[key],
+            "source_action": key, **payload,
+        }
         if key == "write_file" and "content" in flat:
             flat["file_content"] = flat.pop("content")
         normalized.append(flat)
@@ -236,7 +274,7 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
                         if k not in ("success", "error") and v is not None:
                             fail.setdefault(k, v)
                     return json.dumps(fail, ensure_ascii=False)
-                results.append({"name": names[i], "action": op["action"],
+                results.append({"name": names[i], "action": op.get("source_action", op["action"]),
                                 "file_path": op.get("file_path"), "success": True})
         finally:
             _smt._skill_gate_bypass.reset(token)

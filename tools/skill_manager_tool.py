@@ -926,11 +926,19 @@ SKILL_MANAGE_SCHEMA = {
                             "additionalProperties": False,
                         },
                         "delete": {
-                            "type": "object", "properties": {}, "additionalProperties": False,
+                            "type": "object",
+                            "properties": {
+                                "absorbed_into": {"type": "string", "description":
+                                                  "Umbrella skill name, or empty string for pruning."},
+                            },
+                            "required": ["absorbed_into"],
+                            "additionalProperties": False,
                             "description": "Delete the skill; this must be the sole operation.",
                         },
                     },
                     "required": ["name"],
+                    "minProperties": 2,
+                    "maxProperties": 2,
                     "additionalProperties": False,
                 }
             },

@@ -42,6 +42,9 @@ class TestSkillManageSchemaDiet(unittest.TestCase):
             {"old_string", "new_string", "replace_all", "file_path"},
         )
         self.assertEqual(set(self._action_props("write_file")), {"file_path", "content"})
+        self.assertEqual(set(self._action_props("delete")), {"absorbed_into"})
+        self.assertEqual(
+            self._op_props()["delete"]["required"], ["absorbed_into"])
 
     def test_patch_args_defer_to_patch_tool(self):
         props = self._action_props("patch")

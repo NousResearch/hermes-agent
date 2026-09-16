@@ -77,6 +77,17 @@ class TestSkillManageBatch(unittest.TestCase):
         self.assertIn("file_content", r["error"])
         self.assertIn("write_file.content", r["error"])
 
+    def test_action_keyed_delete_preserves_absorbed_into(self):
+        self._call("umbrella", [{"action": "create", "content": SK.format(n="umbrella")}])
+        self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])
+
+        r = json.loads(self.smt.skill_manage(
+            action="", name="", operations=[{
+                "name": "probe", "delete": {"absorbed_into": "umbrella"},
+            }]))
+
+        self.assertTrue(r["success"], r)
+
     def test_midbatch_failure_rolls_back_existing_skill(self):
         self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])
         r = self._call("probe", [

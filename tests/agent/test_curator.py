@@ -562,10 +562,10 @@ def test_review_prompt_tells_reviewer_to_read_before_writing(curator_env, monkey
 
     prompt = captured["prompt"]
     assert "skill_view" in prompt
-    for action in ("edit", "patch", "write_file", "remove_file"):
-        assert f"action={action}" in prompt, (
+    for action in ("rewrite", "patch", "write_file", "remove_file"):
+        assert action in prompt, (
             "the delivered prompt never tells the reviewer to call skill_view "
-            f"before skill_manage action={action}, which the read-before-write "
+            f"before skill_manage {action}, which the read-before-write "
             "guard refuses without it"
         )
 

@@ -335,7 +335,7 @@ CURATOR_REVIEW_PROMPT = (
     "section for each sibling's unique insight, then archive the "
     "siblings.\n"
     "   b. CREATE A NEW UMBRELLA SKILL.md — no existing member is broad "
-    "enough. Use skill_manage action=create to write a new class-level "
+    "enough. Use skill_manage `{name, create: {content}}` to write a new class-level "
     "skill whose SKILL.md covers the shared workflow and has short "
     "labeled subsections. Archive the now-absorbed narrow siblings.\n"
     "   c. DEMOTE TO REFERENCES/TEMPLATES/SCRIPTS — a sibling has "
@@ -350,10 +350,10 @@ CURATOR_REVIEW_PROMPT = (
     "      • `scripts/<name>.<ext>` for statically re-runnable actions "
     "(verification scripts, fixture generators, probes)\n"
     "      Then archive the old sibling. Re-home the content through the "
-    "LEDGERED tool surface: `skill_manage action=write_file` on the umbrella "
+    "LEDGERED tool surface: `skill_manage {name, write_file: {file_path, content}}` on the umbrella "
     "to place the file (subdirectories are created for you), then "
-    "`skill_manage action=remove_file` on the source to drop the original, "
-    "then `skill_manage action=delete` on the source. Never a terminal move "
+    "`skill_manage {name, remove_file: {file_path}}` on the source to drop the original, "
+    "then `skill_manage {name, delete: {absorbed_into}}` on the source. Never a terminal move "
     "— a shell mv/cp writes the same bytes with no ledger entry, so the "
     "archive that follows snapshots an already-stripped package and "
     "`hermes curator rollback` restores a hollow skill (issue #96962).\n\n"
@@ -386,19 +386,19 @@ CURATOR_REVIEW_PROMPT = (
     "Your toolset:\n"
     "  - skills_list, skill_view        — read the current landscape\n"
     "    READ BEFORE WRITE — enforced, not advisory. Before skill_manage "
-    "action=patch, action=edit, action=write_file on a file that already "
-    "exists, or action=remove_file, call skill_view on that SAME target in "
+    "patch/rewrite/write_file on a file that already exists, or remove_file, "
+    "call skill_view on that SAME target in "
     "this review turn — skill_view(name) for SKILL.md, "
     "skill_view(name, file_path=...) for a supporting file — and build the "
     "write from the content it just returned. A write without that read is "
     "REFUSED and nothing is saved.\n"
-    "  - skill_manage action=patch      — add sections to the umbrella\n"
-    "  - skill_manage action=create     — create a new umbrella SKILL.md\n"
-    "  - skill_manage action=write_file — add a references/, templates/, "
+    "  - skill_manage `{name, patch: {old_string, new_string}}` — add sections to the umbrella\n"
+    "  - skill_manage `{name, create: {content}}` — create a new umbrella SKILL.md\n"
+    "  - skill_manage `{name, write_file: {file_path, content}}` — add a references/, templates/, "
     "or scripts/ file under an existing skill (the skill must already "
     "exist)\n"
-    "  - skill_manage action=delete     — archive a skill. MUST pass "
-    "`absorbed_into=<umbrella>` naming the skill you merged its content "
+    "  - skill_manage `{name, delete: {absorbed_into: <umbrella>}}` — archive a skill. "
+    "MUST name the skill you merged its content "
     "into (the umbrella must already exist). Deletes without a verified "
     "forwarding target are refused — pruning with no absorption target is "
     "the deterministic staleness pass's job, never this one's. "
@@ -486,6 +486,15 @@ def _skill_manage_args(tc: Any, *, raw_fallback: bool) -> Optional[Dict[str, Any
     return args if isinstance(args, dict) else None
 
 
+def _skill_manage_operations(tc: Any, *, raw_fallback: bool) -> List[Dict[str, Any]]:
+    """Recorded operations from either the legacy flat or advertised action-keyed shape."""
+    args = _skill_manage_args(tc, raw_fallback=raw_fallback)
+    if args is None:
+        return []
+    from tools.skill_manager_batch import iter_recorded_skill_operations
+    return list(iter_recorded_skill_operations(args, raw_fallback=raw_fallback))
+
+
 def _find_reference(args: Dict[str, Any], needles: Set[str]) -> Optional[str]:
     """First argument value (file_path, file_content, content, new_string, _raw — in that order) that references one of
     *needles*. ``file_path`` must match a whole path component; content fields match on word boundaries so "test" does not match "latest"."""
@@ -506,7 +515,11 @@ def _classify_removed_skills(
     Returns ``{"consolidated": [{name, into, evidence}], "pruned": [{name}]}``."""
     consolidated: List[Dict[str, Any]] = []
     pruned: List[Dict[str, Any]] = []
-    parsed_calls = [a for a in (_skill_manage_args(tc, raw_fallback=True) for tc in tool_calls or []) if a is not None]
+    parsed_calls = [
+        args
+        for tc in tool_calls or []
+        for args in _skill_manage_operations(tc, raw_fallback=True)
+    ]
     destinations = set(after_names) | set(added or [])
     for name in filter(None, removed):
         needles = {name, name.replace("-", "_"), name.replace("_", "-")}
@@ -555,8 +568,10 @@ def _extract_absorbed_into_declarations(tool_calls: List[Dict[str, Any]]) -> Dic
     signal (beats YAML parsing and substring heuristics). Returns ``{name: {"into": umbrella | "", "declared": True}}``;
     ``into == ""`` is an explicit prune. Deletes omitting ``absorbed_into`` are absent so the caller falls back to heuristic/YAML (older runs)."""
     out: Dict[str, Dict[str, Any]] = {}
-    for args in (_skill_manage_args(tc, raw_fallback=False) for tc in tool_calls or []):
-        if args is not None and args.get("action") == "delete":
+    for tc in tool_calls or []:
+        for args in _skill_manage_operations(tc, raw_fallback=False):
+            if args.get("action") != "delete":
+                continue
             name, target = args.get("name"), args.get("absorbed_into")
             if isinstance(name, str) and name.strip() and isinstance(target, str):
                 out[name.strip()] = {"into": target.strip(), "declared": True}

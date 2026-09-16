@@ -297,6 +297,23 @@ def test_extract_absorbed_into_picks_up_consolidation(curator_env):
     }
 
 
+def test_extract_absorbed_into_accepts_action_keyed_delete(curator_env):
+    declarations = curator_env._extract_absorbed_into_declarations([
+        {
+            "name": "skill_manage",
+            "arguments": json.dumps({
+                "operations": [{
+                    "name": "narrow-skill",
+                    "delete": {"absorbed_into": "umbrella"},
+                }],
+            }),
+        },
+    ])
+    assert declarations == {
+        "narrow-skill": {"into": "umbrella", "declared": True},
+    }
+
+
 
 
 

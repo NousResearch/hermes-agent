@@ -130,7 +130,12 @@ def test_quick_snapshot_listing_ignores_partial_directories(tmp_path) -> None:
 def test_failed_automatic_backup_preserves_previous_archive(tmp_path, monkeypatch) -> None:
     home = tmp_path / ".hermes"
     home.mkdir()
-    (home / "state.db").write_bytes(b"not-a-database")
+    # A real SQLite db so the monkeypatched ``_safe_copy_db`` below is the failure source;
+    # a non-SQLite ``.db`` is archived as a plain file and no longer fails (#75724).
+    conn = sqlite3.connect(home / "state.db")
+    conn.execute("CREATE TABLE t (x INTEGER)")
+    conn.commit()
+    conn.close()
     archive = tmp_path / "automatic.zip"
     archive.write_bytes(b"previous-valid-backup")
 

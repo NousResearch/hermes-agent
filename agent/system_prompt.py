@@ -285,7 +285,7 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
     # Kanban lifecycle: resolved once at __init__ (_kanban_worker_guidance);
     # the kanban_show fallback covers code paths that bypass agent_init.
     _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
-    if _kanban_guidance is None and "kanban_show" in names:
+    if _kanban_guidance is None and "kanban_show" in names and os.environ.get("HERMES_KANBAN_TASK"):
         _kanban_guidance = KANBAN_GUIDANCE
     tool_guidance = [
         memory_guidance,

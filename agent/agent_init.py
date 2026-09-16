@@ -1071,7 +1071,9 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     # Kanban guidance is session-static (kanban_show iff HERMES_KANBAN_TASK); resolve once.
     from agent.prompt_builder import KANBAN_GUIDANCE
     agent._kanban_worker_guidance = (
-        KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
+        KANBAN_GUIDANCE
+        if ("kanban_show" in agent.valid_tool_names and os.environ.get("HERMES_KANBAN_TASK"))
+        else ""
     )
     if agent.quiet_mode:
         return

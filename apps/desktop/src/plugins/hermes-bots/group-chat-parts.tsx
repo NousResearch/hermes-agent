@@ -283,7 +283,13 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
         // Input whose form submitted on every Enter — newlines were
         // impossible. Enter (no Shift) still submits via onSubmitDraft;
         // Shift+Enter falls through to the textarea's native newline.
-        className={cn('max-h-40 min-h-9 resize-none', inputProps.className)}
+        // Grow with wrapped text/newlines so long briefs stay reviewable
+        // (#95300), then scroll internally before the composer takes over
+        // the room — same field-sizing idiom as the Kanban drawer.
+        className={cn(
+          'field-sizing-content max-h-[min(50vh,24rem)] min-h-9 resize-none overflow-y-auto',
+          inputProps.className
+        )}
         onBlur={() => setToken(null)}
         onChange={event => {
           onChange(event.target.value)

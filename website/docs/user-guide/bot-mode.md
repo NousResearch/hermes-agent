@@ -117,6 +117,8 @@ Groups are standalone rows in the same activity-ordered roster as Bot DMs. A Bot
 
 A room row organizes like a Bot row. Right-click it → **Pin to top** to keep a daily-driver room above the unpinned Bots and rooms (**Unpin** puts it back into recency order); the pin is saved with the room on this Desktop. Right-click → **Move to section** files the room into one of your [sections](#organize-bots-into-sections) — or drag the row onto a section heading — and **Remove from section** returns it to the group-chat bucket. A room's section is stored on its room record (rooms have no profile), so it stays local to this Desktop like the section list itself.
 
+The room composer (and the reply-in-thread composer) starts as a single row and grows as your prompt wraps or gains **Shift+Enter** newlines, up to half the window (at most 24rem); past that it scrolls inside the box so the transcript keeps its space. **Enter** sends.
+
 Use the **Move up** and **Move down** arrows beside a room to choose its position among rooms. Until the first move, the existing pinned-first, recent-activity order is unchanged. After a move, room order is saved on this Desktop and survives reloads; new rooms follow the explicitly ordered rooms within their pinned or unpinned band. Moves cannot cross the pinned boundary, and filtering does not discard hidden rooms from the saved order. These controls reorder actual Group Chat rooms, not user-created Bot folders, and do not change membership or gateway ownership.
 
 **Open chat** on any group row (2–6 Bots) opens a shared room where the whole group coordinates:

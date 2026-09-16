@@ -62,7 +62,12 @@ def _running_under_pytest() -> bool:
 
 #: pytest launcher names, matched against each argv token's *basename* so
 #: ``/tmp/pytest-of-dev/...`` paths cannot false-positive.
-_PYTEST_LAUNCHER_NAMES = frozenset({"pytest", "py.test", "pytest.exe", "py.test.exe"})
+_PYTEST_LAUNCHER_NAMES = frozenset({
+    "pytest", "py.test", "pytest.exe", "py.test.exe",
+    #: Test runners that launch ``python -m pytest <file>`` per file; a child
+    #: that loses its PYTEST_* env must still be recognised via this ancestor.
+    "run_tests_parallel", "run_tests_parallel.py",
+})
 
 #: Memoised ancestry answer: the tree above us doesn't change; keep the hot path free.
 _PYTEST_ANCESTOR: Optional[bool] = None
@@ -110,8 +115,20 @@ def _has_pytest_ancestor() -> bool:
 
 
 def _in_test_context() -> bool:
-    """Test run by environment or ancestry (memoised; env checked first)."""
-    return _running_under_pytest() or _has_pytest_ancestor()
+    """Test run by environment, ancestry, or self-identification (memoised; env checked first)."""
+    return _running_under_pytest() or _has_pytest_ancestor() or _current_process_is_pytest()
+
+
+def _current_process_is_pytest() -> bool:
+    """True when *this* process is a pytest invocation, even with a scrubbed
+    environment. ``python -m pytest`` puts ``pytest/__main__.py`` at
+    ``sys.argv[0]`` (so a basename match against ``_PYTEST_LAUNCHER_NAMES``
+    misses it), and a rebuilt env strips ``PYTEST_*`` — but the ``pytest``
+    module in ``sys.modules`` and the module path in ``sys.argv`` are process
+    state that ``clear=True`` cannot touch."""
+    if "pytest" in sys.modules:
+        return True
+    return any("pytest" in str(arg).lower() for arg in sys.argv)
 
 
 def _is_production_state_db(resolved: Path, root: Path) -> bool:

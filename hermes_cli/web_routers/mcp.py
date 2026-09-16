@@ -413,15 +413,22 @@ async def list_mcp_catalog(profile: Optional[str] = None, detect_apps: bool = Fa
         import sys
 
         try:
-            from hermes_cli.mcp_app_detection import discover_catalog_apps
+            from hermes_cli.mcp_app_detection import discover_catalog_apps, validate_applications
 
-            # Discovery is read-only and backend-local. Keep filesystem work off the
-            # event loop and OUTSIDE the profile/skills lock used for config reads.
-            detected = await asyncio.to_thread(discover_catalog_apps, {
-                entry["name"]: (entry["suggest"] or {}).get("applications") or [
+            applications = {}
+            for entry in entries:
+                labels = (entry["suggest"] or {}).get("applications") or [
                     entry["name"].replace("-", " ").replace("_", " ")
-                ] for entry in entries
-            })
+                ]
+                try:
+                    applications[entry["name"]] = validate_applications(labels)
+                except ValueError:
+                    # Catalog identifiers allow more than app labels; one unusable
+                    # inference must not suppress valid observations for other entries.
+                    applications[entry["name"]] = []
+
+            # Keep backend-local filesystem work off the event loop and profile lock.
+            detected = await asyncio.to_thread(discover_catalog_apps, applications)
         except Exception:
             _log.warning("Backend application discovery unavailable")
             detected = {"matches": {}, "discovery": {

@@ -806,6 +806,7 @@ def write_runtime_status(
     active_agents: Any = _UNSET, active_work: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
     error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
     retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
+    multiplex_standalone_reason: Any = _UNSET,
     ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
     drop_profile_platforms: Optional[str] = None,
 ) -> None:
@@ -838,10 +839,19 @@ def write_runtime_status(
         ("active_work", active_work, lambda v: list(v) if v else None),
         # Multiplexed profiles; absent/empty for a single-profile gateway.
         ("served_profiles", served_profiles, lambda v: list(v or [])),
+        # Why an unset-default (multiplex on) gateway is serving one profile; None clears it.
+        ("multiplex_standalone_reason", multiplex_standalone_reason, lambda v: str(v) if v else None),
         ("session_store", session_store, _coerce_session_store),
     ))
     if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})
+        if platform_state == "connected":
+            # Every writer that publishes ``connected`` (startup stamp, adapter ``_mark_connected``,
+            # Telegram's in-place polling recovery) ends the retry episode; only the watcher's
+            # reconnect path used to say so, and a restart after a NEEDS_ATTENTION escalation
+            # carried the flag into a healthy record for weeks.
+            needs_attention = False if needs_attention is _UNSET else needs_attention
+            retrying_since = None if retrying_since is _UNSET else retrying_since
         _apply_set_fields(platform_payload, (
             ("state", platform_state, None), ("error_code", error_code, None),
             ("error_message", error_message, None),

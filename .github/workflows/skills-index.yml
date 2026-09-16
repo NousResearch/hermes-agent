@@ -49,11 +49,21 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: python scripts/build_skills_index.py
 
+      # Plugin-catalog star counts follow the same rule as the index: GitHub is consulted
+      # only here, on the schedule (one GraphQL request for every catalog repo), and docs
+      # deploys reuse the artifact / live copy without touching the API.
+      - name: Probe plugin catalog stars
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: python website/scripts/fetch-plugin-stars.py --probe
+
       - name: Upload index artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: skills-index
-          path: website/static/api/skills-index.json
+          path: |
+            website/static/api/skills-index.json
+            website/static/api/plugin-stars.json
           retention-days: 7
 
   # Re-trigger the docs deploy so the refreshed index lands on the live site.

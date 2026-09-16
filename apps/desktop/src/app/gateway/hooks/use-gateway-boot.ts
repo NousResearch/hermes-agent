@@ -47,7 +47,7 @@ import {
   setPrimaryGatewayConnection,
   touchSecondaryGateways
 } from '@/store/gateway'
-import { registerGatewayReconnect } from '@/store/gateway-reconnect'
+import { reconnectGateway, registerGatewayReconnect } from '@/store/gateway-reconnect'
 import {
   $gatewaySwitching,
   beginGatewaySwitch,
@@ -55,8 +55,8 @@ import {
   isCurrentGatewaySwitch,
   registerGatewaySwitchLifecycle
 } from '@/store/gateway-switch'
-import { checkLocalRuntimeUpdate, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
-import { notify, notifyError } from '@/store/notifications'
+import { watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
+import { notify, notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
 import { loadPoolLimits } from '@/store/pool-limits'
 import {
   $activeGatewayProfile,
@@ -64,6 +64,7 @@ import {
   refreshActiveProfile,
   touchActiveGatewayBackend
 } from '@/store/profile'
+import { requestBackendRestart } from '@/store/recovery-requests'
 import {
   $activeSessionId,
   $connection,
@@ -91,9 +92,11 @@ import {
   recordSessionEventScope,
   resetTileRuntimeBindings
 } from '@/store/session-states'
-import { windowProfileOverride } from '@/store/windows'
+import { warnIfTerminalBackendUnavailable } from '@/store/terminal-backend-warning'
+import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
+import { useDefaultProfilePreference } from './use-default-profile-preference'
 
 // After the reconnect loop has been failing for this long, raise a NON-blocking
 // warning toast. Full-screen BootFailureOverlay used to lock the user out of
@@ -170,6 +173,8 @@ export function useGatewayBoot({
   refreshHermesConfig,
   refreshSessions
 }: GatewayBootOptions) {
+  useDefaultProfilePreference()
+
   const callbacksRef = useRef({
     beforeConnectionSwitch,
     handleGatewayEvent,
@@ -436,7 +441,19 @@ export function useGatewayBoot({
 
           if (isActivePrimary()) {
             reauthNotified = true
-            notifyError(err, translateNow('boot.errors.gatewaySignInRequired'))
+            // Plain "signed out" copy; the raw ticket/HTTP text stays under
+            // Details. The boot overlay carries the sign-in flow itself, so
+            // the button hands off to it (desktop-14).
+            notify({
+              kind: 'error',
+              title: translateNow('boot.errors.gatewaySignInRequired'),
+              message: translateNow('boot.errors.gatewaySignInRequiredDetail'),
+              detail: primaryReauthError,
+              action: {
+                label: translateNow('boot.errors.signInAgain'),
+                onClick: () => failDesktopBoot(primaryReauthError ?? '')
+              }
+            })
           }
         }
       } finally {
@@ -455,7 +472,12 @@ export function useGatewayBoot({
               kind: 'warning',
               title: translateNow('boot.errors.gatewayConnectionLost'),
               message: translateNow('boot.errors.gatewayConnectionLostDetail'),
-              durationMs: 0
+              durationMs: 0,
+              action: {
+                label: translateNow('boot.errors.reconnectNow'),
+                onClick: () => void reconnectGateway().catch(() => undefined)
+              },
+              secondaryAction: RECOVERY_ACTIONS.openGateways()
             })
           }
 
@@ -564,8 +586,31 @@ export function useGatewayBoot({
     // session id against the wrong backend — the HUD then falls back to the
     // default profile's last session (#82285). The override wins over the
     // stored preference; absent, behavior is unchanged.
-    async function adoptPrimaryProfile(shouldPublish: () => boolean = () => true): Promise<boolean> {
-      const override = windowProfileOverride()
+    async function getWindowBackend(startup = false): Promise<HermesConnection> {
+      const profile = windowProfileOverride()
+      const peer = isPeerInstanceWindow()
+      const route = profile
+        ? { profile, connectionId: peer ? new URLSearchParams(window.location.search).get('connectionId') : null }
+        : startup && !peer
+          ? await desktop.profile?.getDefault?.()
+          : null
+
+      // Initial registry publication can precede boot. Resolve captured launch
+      // intent explicitly rather than through that still-initializing mirror.
+      if (route?.connectionId && desktop.getConnectionFor) {
+        return desktop.getConnectionFor(route)
+      }
+
+      return desktop.getConnection(route?.profile ?? undefined)
+    }
+
+    async function adoptPrimaryProfile(
+      connection: HermesConnection,
+      shouldPublish: () => boolean = () => true
+    ): Promise<boolean> {
+      // The resolved descriptor reflects the explicit startup default. The
+      // legacy profile.get preference only remembers the last workspace used.
+      const override = windowProfileOverride() ?? connection.profile
 
       try {
         const profileKey = override ?? (await desktop.profile?.get?.())?.profile ?? ''
@@ -648,7 +693,7 @@ export function useGatewayBoot({
         // shared backend-boot budget rather than the reconnect budget because
         // ensureBackend may cold-spawn a pooled helper backend here.
         const conn = await withTimeout(
-          desktop.getConnection(windowProfileOverride() ?? undefined),
+          getWindowBackend(),
           BACKEND_BOOT_WAIT_TIMEOUT_MS,
           'Timed out reconnecting to Hermes backend'
         )
@@ -688,7 +733,7 @@ export function useGatewayBoot({
         // list rather than blanking the rail. NOT awaited: refreshProfiles
         // now carries a bounded retry chain (#70679), and switch completion
         // must not wait out backoff timers against an unhealthy backend.
-        if (!(await adoptPrimaryProfile(ownsSwitch)) || !ownsSwitch()) {
+        if (!(await adoptPrimaryProfile(conn, ownsSwitch)) || !ownsSwitch()) {
           return
         }
 
@@ -710,8 +755,9 @@ export function useGatewayBoot({
         // that were running before a reload — the backend registry is the
         // authority; this just resumes following it.
         watchLocalRuntimeJobs()
-        // One-per-session engine-update pointer (enabled runtimes only).
-        void checkLocalRuntimeUpdate()
+        // A Docker/SSH terminal backend that fails its probe means shell
+        // commands silently cannot run — say so once, with a way out.
+        void warnIfTerminalBackendUnavailable()
       } catch (err) {
         const mayPublishFailure =
           !cancelled && (switchToken === null ? !$gatewaySwitching.get() : isCurrentGatewaySwitch(switchToken))
@@ -1070,15 +1116,32 @@ export function useGatewayBoot({
         return
       }
 
+      // While the boot overlay is up it already shows the failure with its own
+      // Retry, and the reconnect handler below is a no-op before boot completes
+      // — a toast whose button does nothing would only mislead. Fail the
+      // overlay and stop there.
       if ($desktopBoot.get().running || $desktopBoot.get().visible) {
         failDesktopBoot(translateNow('boot.errors.backgroundExitedDuringStartup'))
+
+        return
       }
 
+      // Post-boot: the shell's restart intent recycles a local service via main
+      // (or re-dials a remote one) and does not depend on this hook's
+      // reconnect gate, unlike reconnectGateway().
       notify({
         kind: 'error',
         title: translateNow('boot.errors.backendStopped'),
         message: translateNow('boot.errors.backgroundExited'),
-        durationMs: 0
+        durationMs: 0,
+        action: {
+          label: translateNow('boot.errors.restartHermes'),
+          onClick: requestBackendRestart
+        },
+        secondaryAction: {
+          label: translateNow('boot.errors.openLogs'),
+          onClick: () => void desktop.revealLogs?.().catch(() => undefined)
+        }
       })
     })
 
@@ -1091,13 +1154,13 @@ export function useGatewayBoot({
       try {
         // A profile-pinned helper window (the HUD) dials its target profile's
         // backend directly — ensureBackend spawns/reuses it from the pool.
-        // Everything else keeps dialing the primary.
+        // Full peers use the source/profile Electron pinned before loading.
         // Bounded like the reconnect path (#93454): a wedged main-process
         // round-trip must not hang "Starting Hermes…" forever. Initial boot
         // rides out a full backend cold spawn, so it gets the shared 45s
         // backend-boot budget, not the 20s reconnect budget.
         const conn = await withTimeout(
-          desktop.getConnection(windowProfileOverride() ?? undefined),
+          getWindowBackend(true),
           BACKEND_BOOT_WAIT_TIMEOUT_MS,
           'Timed out connecting to Hermes backend'
         )
@@ -1160,7 +1223,7 @@ export function useGatewayBoot({
         // (cwd seed, config, sessions) are independent REST calls — running
         // them serially added their sum to time-to-populated-sidebar when only
         // the max is needed.
-        await adoptPrimaryProfile()
+        await adoptPrimaryProfile(conn)
 
         setDesktopBootStep({
           phase: 'renderer.config',
@@ -1192,6 +1255,10 @@ export function useGatewayBoot({
         completeDesktopBoot()
         bootCompleted = true
         bootRetryAttempt = 0
+        // A Docker/SSH terminal backend that fails its probe means shell
+        // commands silently cannot run — say so once, with a way out. Cold
+        // launch is the common path, so it must warn too, not only softSwitch.
+        void warnIfTerminalBackendUnavailable()
       } catch (err) {
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err)
@@ -1255,6 +1322,12 @@ export function useGatewayBoot({
       }
 
       await callbacksRef.current.refreshSessions().catch(() => undefined)
+
+      if (cancelled) {
+        return
+      }
+
+      void warnIfTerminalBackendUnavailable()
     }
 
     if (adoptedFromHmr) {

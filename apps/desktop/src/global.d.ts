@@ -78,9 +78,9 @@ declare global {
         opts?: { cwd?: string; profile?: string }
       ) => Promise<{ ok: boolean; error?: string }>
       // Open a new full-chrome app window — a peer instance of the primary that
-      // renders the complete app against the shared backend, so the user can run
-      // multiple GUI windows at once.
-      openWindow: () => Promise<{ ok: boolean; error?: string }>
+      // renders the complete app on an explicit connection/profile, or inherits
+      // the calling window's route when no options are supplied.
+      openWindow: (options?: DesktopProfileRoute) => Promise<{ ok: boolean; error?: string }>
       // Pop the in-app Browser (webview + address bar) into its own OS window.
       // `tabId` is the `$previewTabs` id; closing the window fires
       // `onBrowserPopoutClosed` so the caller can dock the tab again.
@@ -252,9 +252,12 @@ declare global {
         agentSignIn: (dashboardUrl: string) => Promise<DesktopCloudAgentSignInResult>
       }
       profile: {
+        getDefault: () => Promise<DesktopProfileRoute | null>
+        setDefault: (route: DesktopProfileRoute) => Promise<DesktopProfileRoute>
+        onDefaultChanged: (callback: (route: DesktopProfileRoute | null) => void) => () => void
         get: () => Promise<DesktopActiveProfile>
-        // Persists the profile used on the next Desktop launch without
-        // interrupting the live gateway workspace switch.
+        // Remembers last use without interrupting a live workspace switch or
+        // replacing an explicit default route.
         remember: (name: string | null) => Promise<DesktopActiveProfile>
         // Persists the desktop's profile choice and relaunches the local
         // backend under the new HERMES_HOME (reloads the window). Pass null to
@@ -368,13 +371,13 @@ declare global {
       /** One-shot loopback callback listener for MCP OAuth against remote
        *  backends (electron/mcp-oauth-callback-ipc.ts): bind on THIS machine,
        *  pass redirectUri as client_redirect_uri to mcp.servers.oauth.start,
-       *  await the provider redirect, relay code/state via oauth.callback. */
+       *  await the provider redirect, relay code/state/iss via oauth.callback. */
       mcpOauth?: {
         listen: () => Promise<{ id: string; redirectUri: string }>
         wait: (
           id: string,
           timeoutMs?: number
-        ) => Promise<{ code: null | string; error: null | string; state: null | string }>
+        ) => Promise<{ code: null | string; error: null | string; iss: null | string; state: null | string }>
         cancel: (id: string) => Promise<boolean>
       }
       openPreviewInBrowser?: (url: string) => Promise<void>
@@ -863,6 +866,11 @@ export interface HermesWindowState {
   windowButtonPosition: { x: number; y: number } | null
 }
 
+export interface DesktopProfileRoute {
+  connectionId: null | string
+  profile: string
+}
+
 export interface DesktopActiveProfile {
   // The desktop's stored profile preference, or null when unset (legacy launch
   // that defers to the sticky active_profile / default).
@@ -1299,6 +1307,10 @@ export interface HermesApiRequest {
   // fails fast without spawning a child or consuming a pool slot, so background
   // tile reconciles cannot starve interactive opens.
   passive?: boolean
+  // An interactive Settings scope selection may cold-start a profile backend.
+  // Keep that intent separate from passive hydration so the pool can reserve a
+  // slot for the user's visible request.
+  priority?: 'foreground'
 }
 
 export interface HermesPreviewTarget {

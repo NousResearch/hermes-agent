@@ -25,12 +25,8 @@ _OWNER_KEYS = ("profile_home", "session_id", "lease_id", "live_session_id")
 _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
 
 
-def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None:
-    """Resolve exact Bot Chat's compression tip without creating/migrating its DB.
-
-    Capability advertisement is mandatory; old Desktop/TUI processes must not
-    receive work they cannot consume. Registry errors propagate, failing closed.
-    """
+def find_canonical_owner(profile_home: Path | str) -> dict[str, Any] | None:
+    """Return the exact Bot Chat tip's lease, including unsupported CLI owners."""
     from hermes_cli.active_sessions import active_session_registry_snapshot
     from hermes_state import SessionDB
 
@@ -46,12 +42,18 @@ def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None
     if not session_id:
         return None
     for entry in active_session_registry_snapshot(registry_home=home):
-        meta = entry.get("metadata") or {}
-        if (entry["session_id"] == session_id
-                and meta.get("bot_live_delivery_consumer") is True
-                and meta.get("live_session_id")):
-            return dict(profile_home=str(home), session_id=session_id,
-                        lease_id=entry["lease_id"], live_session_id=meta["live_session_id"])
+        if entry["session_id"] == session_id:
+            return {**entry, "profile_home": str(home)}
+    return None
+
+
+def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None:
+    """Only advertised consumers may receive owner-pinned mailbox deliveries."""
+    entry = find_canonical_owner(profile_home)
+    meta = (entry or {}).get("metadata") or {}
+    if entry and meta.get("bot_live_delivery_consumer") is True and meta.get("live_session_id"):
+        return {key: entry[key] for key in ("profile_home", "session_id", "lease_id")} | {
+            "live_session_id": meta["live_session_id"]}
     return None
 
 
@@ -72,6 +74,13 @@ def _delivery_id(value: str) -> str:
 
 def _root(home: Path | str) -> Path:
     return Path(home).resolve() / "runtime" / DELIVERY_DIR_NAME
+
+
+def has_mailbox(profile_home: Path | str) -> bool:
+    """Whether any delivery was ever admitted for this profile (the mailbox directory is created on
+    first admission only). A cheap pre-check for pollers: no mailbox means nothing to claim, so the
+    owner lookup — a state.db open plus the exclusive active-session registry lock — can be skipped."""
+    return _root(profile_home).is_dir()
 
 
 @contextmanager

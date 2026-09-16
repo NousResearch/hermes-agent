@@ -66,9 +66,9 @@ describe('session resolution', () => {
     // Rooms persisted before roomIds keep name-based titles so their existing
     // "Group: <name>" sessions keep resolving after an upgrade.
     room.chat.updateGroupChat('Legacy', current => current)
-    const legacy = await room.turns.ensureGroupChatSession('Legacy', { name: 'research', title: '' })
+    const legacy = await room.turns.ensureGroupChatSession('Legacy', { name: 'research', title: '' }, 't1')
 
-    expect(room.gateway.sessions.get(String(legacy.stored))?.title).toBe('Group: Legacy')
+    expect(room.gateway.sessions.get(String(legacy.stored))?.title).toBe('Group: Legacy · t1')
 
     // New rooms pin the title to the immutable roomId, never the display name.
     room.chat.updateGroupChat('New', current => {
@@ -76,9 +76,9 @@ describe('session resolution', () => {
 
       return current
     })
-    const fresh = await room.turns.ensureGroupChatSession('New', { name: 'research', title: '' })
+    const fresh = await room.turns.ensureGroupChatSession('New', { name: 'research', title: '' }, 't1')
 
-    expect(room.gateway.sessions.get(String(fresh.stored))?.title).toBe('Group: r-abc')
+    expect(room.gateway.sessions.get(String(fresh.stored))?.title).toBe('Group: r-abc · t1')
   })
 
   it('creates member sessions with the room_plumbing + follow_profile_config contracts', async () => {
@@ -93,7 +93,7 @@ describe('session resolution', () => {
 
       return current
     })
-    const handle = await room.turns.ensureGroupChatSession('Contract', { name: 'research', title: '' })
+    const handle = await room.turns.ensureGroupChatSession('Contract', { name: 'research', title: '' }, 't1')
 
     expect(room.gateway.sessions.get(String(handle.stored))?.contracts).toEqual({
       follow_profile_config: true,
@@ -110,7 +110,7 @@ describe('session resolution', () => {
 
       return current
     })
-    const first = await room.turns.ensureGroupChatSession('Alpha', member)
+    const first = await room.turns.ensureGroupChatSession('Alpha', member, 't1')
 
     // Disband: the room record is gone; the member's gateway session survives.
     const rooms = { ...room.chat.$groupChats.get() }
@@ -123,11 +123,11 @@ describe('session resolution', () => {
 
       return current
     })
-    const second = await room.turns.ensureGroupChatSession('Alpha', member)
+    const second = await room.turns.ensureGroupChatSession('Alpha', member, 't1')
 
     expect(first.stored).not.toBe(second.stored)
-    expect(room.gateway.sessions.get(String(first.stored))?.title).toBe('Group: r-one')
-    expect(room.gateway.sessions.get(String(second.stored))?.title).toBe('Group: r-two')
+    expect(room.gateway.sessions.get(String(first.stored))?.title).toBe('Group: r-one · t1')
+    expect(room.gateway.sessions.get(String(second.stored))?.title).toBe('Group: r-two · t1')
   })
 
   it('fails closed on a transient resume failure instead of forking the member session', async () => {
@@ -144,7 +144,7 @@ describe('session resolution', () => {
 
       return current
     })
-    const first = await room.turns.ensureGroupChatSession('Alpha', member)
+    const first = await room.turns.ensureGroupChatSession('Alpha', member, 't1')
     const before = room.chat.$groupChats.get().Alpha.sessions
 
     // A real gateway error on the NEXT resume of the member's own stored
@@ -159,7 +159,9 @@ describe('session resolution', () => {
       return request(method, params)
     }
 
-    await expect(room.turns.ensureGroupChatSession('Alpha', member)).rejects.toThrow(/Could not check .*group session/)
+    await expect(room.turns.ensureGroupChatSession('Alpha', member, 't1')).rejects.toThrow(
+      /Could not check .*group session/
+    )
 
     host.request = request
 
@@ -181,10 +183,87 @@ describe('session resolution', () => {
       return current
     })
 
-    const result = await room.turns.ensureGroupChatSession('Alpha', { name: 'research', title: '' })
+    const result = await room.turns.ensureGroupChatSession('Alpha', { name: 'research', title: '' }, 't1')
 
     expect(result.stored).toBeTruthy()
     expect(result.stored).not.toBe('sid-gone')
+  })
+
+  it('gives each thread its own session, and reuses it within that thread (#90420)', async () => {
+    // The defect: sessions were keyed by member alone, so thread B resumed
+    // thread A's transcript and answered carrying A's context.
+    const room = await loadRoom()
+    const member: GroupMember = { name: 'research', title: '' }
+
+    room.chat.updateGroupChat('Alpha', current => {
+      current.roomId = 'r-one'
+
+      return current
+    })
+
+    const a = await room.turns.ensureGroupChatSession('Alpha', member, 't-a')
+    const b = await room.turns.ensureGroupChatSession('Alpha', member, 't-b')
+    const aAgain = await room.turns.ensureGroupChatSession('Alpha', member, 't-a')
+
+    expect(a.stored).not.toBe(b.stored)
+    expect(aAgain.stored).toBe(a.stored)
+    expect(room.gateway.sessions.get(String(a.stored))?.title).not.toBe(
+      room.gateway.sessions.get(String(b.stored))?.title
+    )
+  })
+
+  it('adopts a pre-thread member session into the first thread that speaks', async () => {
+    // Rooms persisted before thread scoping hold ONE bare member pointer.
+    // The first thread continues that conversation; every later thread gets
+    // its own session, so the upgrade never orphans existing history.
+    const room = await loadRoom()
+    const member: GroupMember = { name: 'research', title: '' }
+
+    room.chat.updateGroupChat('Alpha', current => {
+      current.roomId = 'r-one'
+
+      return current
+    })
+    const legacy = await room.turns.ensureGroupChatSession('Alpha', member, 'legacy')
+    // Re-seat it under the pre-thread bare key, as an upgraded room has it.
+    room.chat.updateGroupChat('Alpha', current => {
+      current.sessions = { research: String(legacy.stored) }
+
+      return current
+    })
+
+    const adopted = await room.turns.ensureGroupChatSession('Alpha', member, 't-first')
+
+    expect(adopted.stored).toBe(legacy.stored)
+
+    const later = await room.turns.ensureGroupChatSession('Alpha', member, 't-second')
+
+    expect(later.stored).not.toBe(legacy.stored)
+  })
+
+  it('keeps thread-scoped keys source-safe for remote members', async () => {
+    // The member half of the key is still the source-qualified roster key, so
+    // `research` on the Mini and a local `research` never share a session.
+    const room = await loadRoom()
+
+    room.chat.updateGroupChat('Alpha', current => {
+      current.roomId = 'r-one'
+
+      return current
+    })
+
+    await room.turns.ensureGroupChatSession('Alpha', { name: 'research', title: '' }, 't-a')
+    await room.turns.ensureGroupChatSession(
+      'Alpha',
+      { connectionId: 'mini', name: 'research', remoteSource: true },
+      't-a'
+    )
+
+    const keys = Object.keys(room.chat.$groupChats.get().Alpha.sessions || {})
+
+    expect(keys).toHaveLength(2)
+    expect(keys.some(key => key.endsWith('::mini::research'))).toBe(true)
+    expect(keys.some(key => key.endsWith('::research') && !key.includes('mini'))).toBe(true)
   })
 })
 
@@ -213,7 +292,7 @@ describe('session-gone classification', () => {
     // One failed submit + exactly one retry — never more.
     expect(room.gateway.rpcFor('prompt.submit')).toHaveLength(2)
     // The recovery re-resumed the durable stored id, not the dead runtime id.
-    expect(room.chat.$groupChats.get().Room.sessions?.helper).toBeTruthy()
+    expect(room.chat.$groupChats.get().Room.sessions?.['thread:t1::helper']).toBeTruthy()
   })
 
   it('does not retry a persistent non-4001 submit failure', async () => {
@@ -402,7 +481,7 @@ describe('clarify and approvals (#90694)', () => {
     const { chat, turns } = await loadRoom()
     const member: GroupMember = { name: 'research', title: '' }
 
-    expect(turns.syncGroupClarify('Core', member, { open_requests: [CLARIFY] })).toBe(true)
+    expect(turns.syncGroupClarify('Core', member, 't1', { open_requests: [CLARIFY] })).toBe(true)
 
     const mirrored = Object.values(chat.$groupClarify.get())
 
@@ -415,13 +494,13 @@ describe('clarify and approvals (#90694)', () => {
     expect(turns.groupHasPendingClarify(chat.$groupClarify.get(), 'Core')).toBe(true)
 
     // Same request again: no new entry, identity preserved.
-    turns.syncGroupClarify('Core', member, { open_requests: [CLARIFY] })
+    turns.syncGroupClarify('Core', member, 't1', { open_requests: [CLARIFY] })
 
     expect(Object.values(chat.$groupClarify.get())[0]).toBe(mirrored[0])
 
     // Question resolved server-side: the mirror clears, and so does the
     // derived badge — no separate cleanup path required.
-    expect(turns.syncGroupClarify('Core', member, {})).toBe(false)
+    expect(turns.syncGroupClarify('Core', member, 't1', {})).toBe(false)
     expect(Object.keys(chat.$groupClarify.get())).toHaveLength(0)
     expect(turns.groupHasPendingClarify(chat.$groupClarify.get(), 'Core')).toBe(false)
   })
@@ -429,7 +508,7 @@ describe('clarify and approvals (#90694)', () => {
   it('never mirrors a question for older backends without open_requests', async () => {
     const { chat, turns } = await loadRoom()
 
-    expect(turns.syncGroupClarify('Core', { name: 'research' }, { messages: [] })).toBe(false)
+    expect(turns.syncGroupClarify('Core', { name: 'research' }, 't1', { messages: [] })).toBe(false)
     expect(Object.keys(chat.$groupClarify.get())).toHaveLength(0)
   })
 
@@ -437,7 +516,7 @@ describe('clarify and approvals (#90694)', () => {
     const room = await loadRoom()
     const member: GroupMember = { name: 'research', title: '' }
 
-    room.turns.syncGroupClarify('Core', member, { open_requests: [CLARIFY] })
+    room.turns.syncGroupClarify('Core', member, 't1', { open_requests: [CLARIFY] })
     await room.turns.answerGroupClarify(Object.values(room.chat.$groupClarify.get())[0], member, 'staging')
 
     expect(room.gateway.rpcFor('request.answer').map(call => call.params)).toEqual([
@@ -450,7 +529,7 @@ describe('clarify and approvals (#90694)', () => {
     const room = await loadRoom()
     const member: GroupMember = { name: 'research', title: '' }
 
-    room.turns.syncGroupClarify('Core', member, {
+    room.turns.syncGroupClarify('Core', member, 't1', {
       open_requests: [
         {
           id: 'req-batch-1',
@@ -479,8 +558,8 @@ describe('clarify and approvals (#90694)', () => {
   it('clears only the disbanded room’s mirrored questions', async () => {
     const room = await loadRoom()
 
-    room.turns.syncGroupClarify('Core', { name: 'research' }, { open_requests: [CLARIFY] })
-    room.turns.syncGroupClarify('Other', { name: 'ops' }, { open_requests: [{ ...CLARIFY, id: 'req-2' }] })
+    room.turns.syncGroupClarify('Core', { name: 'research' }, 't1', { open_requests: [CLARIFY] })
+    room.turns.syncGroupClarify('Other', { name: 'ops' }, 't1', { open_requests: [{ ...CLARIFY, id: 'req-2' }] })
     room.turns.clearGroupClarify('Core')
 
     const remaining = Object.values(room.chat.$groupClarify.get())
@@ -495,16 +574,16 @@ describe('clarify and approvals (#90694)', () => {
   it('keeps pending prompts independent from mention attention through their lifecycle', async () => {
     const { chat, turns } = await loadRoom()
     const member = { name: 'research', title: '' }
-    turns.syncGroupClarify('Core', member, { open_requests: [CLARIFY] })
+    turns.syncGroupClarify('Core', member, 't1', { open_requests: [CLARIFY] })
     expect(chat.$groupNeedsYou.get().Core).toBeFalsy()
-    turns.syncGroupClarify('Core', { name: 'ops' }, { pending_approval: APPROVAL })
+    turns.syncGroupClarify('Core', { name: 'ops' }, 't1', { pending_approval: APPROVAL })
     expect(Object.values(chat.$groupClarify.get())).toHaveLength(2)
-    turns.syncGroupClarify('Core', member, {})
+    turns.syncGroupClarify('Core', member, 't1', {})
     expect(turns.groupHasPendingClarify(chat.$groupClarify.get(), 'Core')).toBe(true)
-    turns.syncGroupClarify('Core', { name: 'ops' }, {})
+    turns.syncGroupClarify('Core', { name: 'ops' }, 't1', {})
     expect(turns.groupHasPendingClarify(chat.$groupClarify.get(), 'Core')).toBe(false)
     chat.appendGroupChatEntry('Core', { kind: 'member', name: 'research' }, '@user please review')
-    turns.syncGroupClarify('Core', member, { pending_approval: APPROVAL })
+    turns.syncGroupClarify('Core', member, 't1', { pending_approval: APPROVAL })
     await turns.answerGroupClarify(Object.values(chat.$groupClarify.get())[0], member, 'deny')
     expect(Object.values(chat.$groupClarify.get())).toHaveLength(0)
     expect(chat.$groupNeedsYou.get().Core).toBe(true)
@@ -731,7 +810,7 @@ describe('clarify and approvals (#90694)', () => {
 
       if (recreate) {
         room.chat.updateGroupChat('Core', current => ({ ...current, roomId: 'replacement-room' }))
-        room.turns.syncGroupClarify('Core', member, { open_requests: [CLARIFY] })
+        room.turns.syncGroupClarify('Core', member, 't1', { open_requests: [CLARIFY] })
       }
 
       const roomsBefore = structuredClone(room.chat.$groupChats.get())
@@ -858,14 +937,10 @@ describe('clarify and approvals (#90694)', () => {
     const { chat, turns } = await loadRoom()
 
     expect(
-      turns.syncGroupClarify(
-        'Core',
-        { name: 'research', title: '' },
-        {
-          pending_approval: APPROVAL,
-          session_id: 'rt-research-1'
-        }
-      )
+      turns.syncGroupClarify('Core', { name: 'research', title: '' }, 't1', {
+        pending_approval: APPROVAL,
+        session_id: 'rt-research-1'
+      })
     ).toBe(true)
 
     const entry = Object.values(chat.$groupClarify.get())[0]
@@ -880,7 +955,9 @@ describe('clarify and approvals (#90694)', () => {
   it('falls back to once/deny when the server sends no choice set', async () => {
     const { chat, turns } = await loadRoom()
 
-    turns.syncGroupClarify('Core', { name: 'research' }, { pending_approval: { command: 'ls', request_id: 'req-a2' } })
+    turns.syncGroupClarify('Core', { name: 'research' }, 't1', {
+      pending_approval: { command: 'ls', request_id: 'req-a2' }
+    })
 
     expect(Object.values(chat.$groupClarify.get())[0].choices).toEqual(['once', 'deny'])
   })
@@ -889,7 +966,7 @@ describe('clarify and approvals (#90694)', () => {
     const room = await loadRoom()
     const member: GroupMember = { name: 'research', title: '' }
 
-    room.turns.syncGroupClarify('Core', member, { pending_approval: APPROVAL, session_id: 'rt-research-1' })
+    room.turns.syncGroupClarify('Core', member, 't1', { pending_approval: APPROVAL, session_id: 'rt-research-1' })
     await room.turns.answerGroupClarify(Object.values(room.chat.$groupClarify.get())[0], member, 'once')
 
     expect(room.gateway.rpcFor('approval.respond').map(call => call.params)).toEqual([
@@ -902,7 +979,7 @@ describe('clarify and approvals (#90694)', () => {
   it('lets clarify outrank approval when a snapshot carries both', async () => {
     const { chat, turns } = await loadRoom()
 
-    turns.syncGroupClarify('Core', { name: 'research' }, { open_requests: [CLARIFY], pending_approval: APPROVAL })
+    turns.syncGroupClarify('Core', { name: 'research' }, 't1', { open_requests: [CLARIFY], pending_approval: APPROVAL })
 
     const entry = Object.values(chat.$groupClarify.get())[0]
 

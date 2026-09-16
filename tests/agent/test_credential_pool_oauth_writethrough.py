@@ -73,6 +73,129 @@ def profile_and_root(tmp_path, monkeypatch):
     return profile_path, root_path
 
 
+@pytest.mark.parametrize(
+    ("provider", "state"),
+    [
+        (
+            "openai-codex",
+            {
+                "tokens": {
+                    "access_token": "dead-access",
+                    "refresh_token": "dead-refresh",
+                }
+            },
+        ),
+        (
+            "nous",
+            {
+                "client_id": "hermes-cli",
+                "portal_base_url": "https://portal.example.com",
+                "inference_base_url": "https://inference.example.com/v1",
+                "token_type": "Bearer",
+                "scope": "inference:invoke",
+                "access_token": "dead-access",
+                "refresh_token": "dead-refresh",
+                "agent_key": "dead-agent-key",
+            },
+        ),
+    ],
+    ids=["tokens", "nous"],
+)
+@pytest.mark.parametrize("source_store", ["root", "active"])
+def test_terminal_grant_is_quarantined_at_its_source(
+    profile_and_root, monkeypatch, provider, state, source_store
+):
+    """A profile must quarantine a terminal grant in the store that owns it."""
+    profile_path, root_path = profile_and_root
+    profile_store = {"version": 1, "active_provider": "openrouter"}
+    root_store = {"version": 1, "active_provider": "anthropic"}
+    source_path = root_path if source_store == "root" else profile_path
+    source_active_provider = "anthropic" if source_store == "root" else "openrouter"
+    (root_store if source_store == "root" else profile_store)["providers"] = {
+        provider: state,
+    }
+    _write_store(profile_path, profile_store)
+    _write_store(root_path, root_store)
+
+    error = A.AuthError(
+        "refresh grant rejected",
+        provider=provider,
+        code="invalid_grant",
+        relogin_required=True,
+    )
+
+    def reject_refresh(*_args, **_kwargs):
+        raise error
+
+    refresh_name = (
+        "resolve_nous_runtime_credentials"
+        if provider == "nous"
+        else "refresh_codex_oauth_pure"
+    )
+    monkeypatch.setattr(A, refresh_name, reject_refresh)
+
+    pool = load_pool(provider)
+    [grant] = pool.entries()
+    assert pool.try_refresh_matching(credential_id=grant.id) is None
+
+    source_state = _read_store(source_path)["providers"][provider]
+    assert "last_auth_error" in source_state
+    if provider == "nous":
+        assert "refresh_token" not in source_state
+        assert "access_token" not in source_state
+        assert "agent_key" not in source_state
+    else:
+        assert source_state["tokens"] == {}
+
+    other_path = profile_path if source_store == "root" else root_path
+    assert provider not in _read_store(other_path).get("providers", {})
+    assert _read_store(source_path)["active_provider"] == source_active_provider
+
+    sibling_path = profile_path.parent.parent / "sibling" / "auth.json"
+    _write_store(sibling_path, {"version": 1})
+    monkeypatch.setattr(A, "_auth_file_path", lambda: sibling_path)
+    assert load_pool(provider).select() is None
+
+
+def test_terminal_nous_fallback_persists_active_pool_quarantine(profile_and_root):
+    """Quarantining root Nous state must also persist the active store's pool mutation."""
+    profile_path, root_path = profile_and_root
+    entry = _entry(
+        "nous", id="nous-device-code", access_token="dead-access", refresh_token="dead-refresh"
+    )
+    _write_store(
+        profile_path,
+        {
+            "version": 1,
+            "active_provider": "openrouter",
+            "credential_pool": {"nous": [entry.to_dict()]},
+        },
+    )
+    _write_store(
+        root_path,
+        {
+            "version": 1,
+            "providers": {
+                "nous": {
+                    "access_token": "dead-access",
+                    "refresh_token": "dead-refresh",
+                }
+            },
+        },
+    )
+    error = A.AuthError(
+        "refresh grant rejected",
+        provider="nous",
+        code="invalid_grant",
+        relogin_required=True,
+    )
+
+    CredentialPool("nous", [entry])._clear_terminal_nous_state(entry, error)
+
+    assert _read_store(profile_path)["credential_pool"]["nous"] == []
+    assert "refresh_token" not in _read_store(root_path)["providers"]["nous"]
+
+
 
 
 
@@ -428,4 +551,3 @@ def test_manual_hermes_pkce_refresh_does_not_create_duplicate_singleton(
     assert len(matching) == 1
     assert matching[0].source == "manual:hermes_pkce"
     assert matching[0].refresh_token == "manual-rt-1"
-

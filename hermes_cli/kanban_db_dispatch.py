@@ -1444,28 +1444,32 @@ def check_respawn_guard(
         if not requeued_after:
             return "recent_success"
 
-    # An explicit requeue after the comments requests another attempt. Compare
-    # event IDs, not second-resolution timestamps: unblock and comment can share
-    # a timestamp, and a later publication must reactivate duplicate protection.
-    latest_event = conn.execute(
-        "SELECT kind FROM task_events WHERE task_id = ? "
-        "AND kind IN ('commented', 'status', 'promoted', 'promoted_manual', 'unblocked', 'reclaimed', 'changes_requested') "
-        "AND (kind != 'commented' OR json_extract(payload, '$.author') IN (?, 'worker')) "
-        "ORDER BY id DESC LIMIT 1", (task_id, row["assignee"]),
+    # Compare publication and explicit requeue events, not arbitrary progress
+    # comments. New comment events retain their row ID for same-second ordering.
+    requeue = conn.execute(
+        "SELECT id, created_at FROM task_events WHERE task_id = ? "
+        "AND kind IN ('status', 'promoted', 'promoted_manual', 'unblocked', 'reclaimed', 'changes_requested') "
+        "ORDER BY id DESC LIMIT 1", (task_id,),
     ).fetchone()
-    if latest_event is not None and latest_event["kind"] != "commented":
-        return None
-
-    # 4. Only worker comments are publication evidence. Operator reference links
-    # supply context; they do not say this task's worker already opened a PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ? "
-        "AND author IN (?, 'worker')",
+        "SELECT c.body, c.created_at, (SELECT MAX(e.id) FROM task_events e "
+        "WHERE e.task_id = c.task_id AND e.kind = 'commented' "
+        "AND json_extract(e.payload, '$.comment_id') = c.id) AS event_id "
+        "FROM task_comments c WHERE c.task_id = ? AND c.created_at >= ? "
+        "AND c.author IN (?, 'worker')",
         (task_id, pr_cutoff, row["assignee"]),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+        if not c["body"] or not _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+            continue
+        if requeue is not None:
+            if c["event_id"] is not None and c["event_id"] < requeue["id"]:
+                continue
+            # Legacy events lack comment IDs. Only an unambiguously later
+            # requeue supersedes them; equal timestamps retain protection.
+            if c["event_id"] is None and c["created_at"] < requeue["created_at"]:
+                continue
+        return "active_pr"
 
     return None
 

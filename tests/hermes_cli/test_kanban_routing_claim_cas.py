@@ -209,3 +209,46 @@ def test_dispatch_worker_argv_carries_origin_home_env(origin_home, monkeypatch, 
     assert "env" in captured, "subprocess.Popen was not invoked by _default_spawn"
     assert captured["env"].get("HERMES_KANBAN_ROUTING_RECEIPT") == "rr_fake_for_env_test"
     assert captured["env"].get("HERMES_KANBAN_ROUTING_ORIGIN_HOME") == str(origin_home)
+
+
+def test_worker_argv_propagates_routing_endpoint_via_base_url():
+    """``_worker_argv`` must translate ``task.routing_endpoint`` (set by
+    ``dispatch_lane_task`` from ``managed_child_kwargs()["endpoint"]``) into
+    a ``--base-url`` flag on the actual worker command line, so the
+    constructed client (not just the receipt) targets the selected route's
+    endpoint. Previously this field was computed by resolve_task_route and
+    then silently dropped -- never reaching argv at all."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kdd
+
+    task = kb.Task(
+        id="t1", title="x", body=None, assignee="alice", status="running",
+        priority=0, created_by=None, created_at=0, started_at=None,
+        completed_at=None, workspace_kind="none", workspace_path=None,
+        claim_lock=None, claim_expires=None, tenant=None,
+        model_override="fake-model", provider_override="custom-fake",
+        reasoning_effort="high", routing_role="builder",
+        routing_receipt_id="rr1",
+        routing_endpoint="http://127.0.0.1:9999/v1",
+    )
+    task.routing_origin_home = "/tmp/origin"
+    argv = kdd._worker_argv(task, "alice", None)
+    assert "--base-url" in argv, f"routing_endpoint must reach argv as --base-url; got {argv!r}"
+    idx = argv.index("--base-url")
+    assert argv[idx + 1] == "http://127.0.0.1:9999/v1"
+
+
+def test_worker_argv_omits_base_url_for_unmanaged_task():
+    """An unmanaged task (no routing_endpoint) must not gain a spurious
+    ``--base-url`` -- this propagation is scoped to guided-routing only."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kdd
+
+    task = kb.Task(
+        id="t2", title="x", body=None, assignee="alice", status="running",
+        priority=0, created_by=None, created_at=0, started_at=None,
+        completed_at=None, workspace_kind="none", workspace_path=None,
+        claim_lock=None, claim_expires=None, tenant=None,
+    )
+    argv = kdd._worker_argv(task, "alice", None)
+    assert "--base-url" not in argv

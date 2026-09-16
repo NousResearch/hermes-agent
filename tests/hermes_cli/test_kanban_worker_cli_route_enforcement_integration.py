@@ -201,7 +201,8 @@ def _worker_python() -> str:
 
 
 def _run_worker(*, profile_home: Path, provider: str, model: str, receipt_id: str,
-                 query: str, reasoning: str = "high", timeout: float = 60.0):
+                 query: str, reasoning: str = "high", timeout: float = 60.0,
+                 base_url: str = None):
     """Launches the REAL CLI entry point exactly as
     ``hermes_cli.kanban_db_dispatch._worker_argv``/``_resolve_hermes_argv``
     would (module form, since no ``hermes`` console script is guaranteed on
@@ -219,8 +220,12 @@ def _run_worker(*, profile_home: Path, provider: str, model: str, receipt_id: st
     argv = [
         _worker_python(), "-m", "hermes_cli.main",
         "--provider", provider, "-m", model, "--reasoning", reasoning,
-        "chat", "-q", query, "-Q",
     ]
+    if base_url:
+        # Mirrors _default_spawn's ``--base-url`` propagation of the
+        # receipted route's endpoint (kanban_db_dispatch.py::_worker_argv).
+        argv.extend(["--base-url", base_url])
+    argv.extend(["chat", "-q", query, "-Q"])
     proc = subprocess.run(
         argv, cwd=str(REPO_ROOT), env=env,
         capture_output=True, text=True, timeout=timeout,
@@ -317,7 +322,97 @@ def test_actual_model_diverging_from_receipt_sends_zero_requests(tmp_path, fake_
     )
 
 
-# ── A-B-A profile scope: each worker only ever finds its own receipt ────────
+# ── selected endpoint propagation: --base-url must reach the actual client ──
+
+def test_selected_endpoint_reaches_actual_client_via_base_url_override(tmp_path):
+    """The receipted route's endpoint may differ from the worker profile's
+    OWN configured default base_url (a real guided-routing scenario: the
+    policy picked a route whose endpoint isn't the profile's config.yaml
+    default). Propagating ``--base-url`` (mirrors kanban_db_dispatch.py's
+    ``_worker_argv`` under ``routing_endpoint`` set from
+    ``managed_child_kwargs()["endpoint"]``) must make the ACTUAL constructed
+    client hit the route's real endpoint (own fake server, own request
+    count), and must make ``enforce_worker_route``'s ``actual_endpoint``
+    check compare correctly against that same nondefault endpoint --
+    without ``--base-url`` the worker would silently start the OTHER
+    server's endpoint (the profile default) instead."""
+    default_server, default_handler_cls = _start_fake_server()
+    routed_server, routed_handler_cls = _start_fake_server()
+    try:
+        default_port = default_server.server_address[1]
+        routed_port = routed_server.server_address[1]
+        default_base_url = f"http://127.0.0.1:{default_port}/v1"
+        routed_base_url = f"http://127.0.0.1:{routed_port}/v1"
+        assert default_base_url != routed_base_url
+
+        home = tmp_path / "profileA" / ".hermes"
+        # Profile's OWN config.yaml default endpoint is the "default" server —
+        # NOT the one the receipted route actually selected.
+        _write_profile_home(home, default_base_url, "fake-model", "custom-fake")
+        receipt_id = _persist_receipt(
+            home, provider="custom-fake", model="fake-model", endpoint=routed_base_url,
+        )
+
+        proc = _run_worker(
+            profile_home=home, provider="custom-fake", model="fake-model",
+            receipt_id=receipt_id, query="routed endpoint task",
+            base_url=routed_base_url,
+        )
+
+        assert proc.returncode == 0, f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+        assert default_handler_cls.requests == [], (
+            "the worker must never fall back to the profile's own default "
+            f"endpoint when a route endpoint was selected: got "
+            f"{default_handler_cls.requests!r}"
+        )
+        assert len(routed_handler_cls.requests) >= 1, (
+            "the actual constructed client must reach the SELECTED route's "
+            f"endpoint (stdout={proc.stdout!r} stderr={proc.stderr!r})"
+        )
+        assert any(
+            "routed endpoint task" in json.dumps(r) for r in routed_handler_cls.requests
+        )
+    finally:
+        default_server.shutdown()
+        routed_server.shutdown()
+
+
+def test_selected_endpoint_not_propagated_blocks_before_any_request(tmp_path):
+    """Same setup as above, but WITHOUT ``--base-url`` -- the worker
+    constructs its client against its own profile-default endpoint, which
+    diverges from the receipted route's endpoint. enforce_worker_route's
+    actual_endpoint check must catch this BEFORE any request reaches either
+    server (fail-closed), proving the endpoint check has real teeth and is
+    not vacuously satisfied by two servers that happen to both work."""
+    default_server, default_handler_cls = _start_fake_server()
+    routed_server, routed_handler_cls = _start_fake_server()
+    try:
+        default_port = default_server.server_address[1]
+        routed_port = routed_server.server_address[1]
+        default_base_url = f"http://127.0.0.1:{default_port}/v1"
+        routed_base_url = f"http://127.0.0.1:{routed_port}/v1"
+
+        home = tmp_path / "profileA" / ".hermes"
+        _write_profile_home(home, default_base_url, "fake-model", "custom-fake")
+        receipt_id = _persist_receipt(
+            home, provider="custom-fake", model="fake-model", endpoint=routed_base_url,
+        )
+
+        # No base_url passed: worker boots against its own profile default.
+        proc = _run_worker(
+            profile_home=home, provider="custom-fake", model="fake-model",
+            receipt_id=receipt_id, query="must not be sent anywhere",
+        )
+
+        assert proc.returncode != 0, (
+            "an endpoint mismatch (selected route's endpoint never propagated) "
+            "must fail closed, not silently launch against the profile default"
+        )
+        assert default_handler_cls.requests == []
+        assert routed_handler_cls.requests == []
+    finally:
+        default_server.shutdown()
+        routed_server.shutdown()
 
 def test_profile_a_and_b_workers_only_find_their_own_receipt(tmp_path, fake_server):
     server, handler_cls = fake_server

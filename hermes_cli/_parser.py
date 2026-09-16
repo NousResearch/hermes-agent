@@ -21,7 +21,7 @@ PRE_ARGPARSE_INHERITED_FLAGS: list[tuple[str, bool]] = [("--profile", True), ("-
 # snapshot lacks AND derivation regresses.
 _VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({
     "-z", "--oneshot", "-m", "--model", "--provider", "--reasoning", "-t", "--toolsets",
-    "-r", "--resume", "-s", "--skills", "--usage-file", "--in",
+    "-r", "--resume", "-s", "--skills", "--usage-file", "--in", "--base-url",
 })
 _OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
 
@@ -144,6 +144,12 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
         "high, xhigh, max, or ultra. Overrides agent.reasoning_effort in "
         "config.yaml for this run only; the persistent level lives there "
         "(or per-model under agent.reasoning_overrides)."))
+    inherited(parser, "--base-url", dest="base_url", default=None, metavar="URL", help=(
+        "Endpoint base URL override for this invocation. Takes precedence "
+        "over model.base_url in config.yaml and any startup-alias-resolved "
+        "endpoint. Used by the Kanban dispatcher to propagate a guided-"
+        "routing decision's selected endpoint to the actual worker; not "
+        "generally needed for interactive use."))
     add("-t", "--toolsets", default=None,
         help="Comma-separated toolsets to enable for this invocation. Applies to -z/--oneshot and --tui.")
     add("--resume", "-r", metavar="SESSION", default=None, help=(
@@ -230,6 +236,8 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
     # too; runtime resolution (resolve_runtime_provider) validates, same as the top-level flag.
     inherited(chat_parser, "--provider", default=SUPPRESS,
               help="Inference provider (default: auto). Built-in or a user-defined name from `providers:` in config.yaml.")
+    inherited(chat_parser, "--base-url", dest="base_url", default=SUPPRESS, metavar="URL", help=(
+        "Endpoint base URL override for this session (see top-level --base-url)."))
     add("-v", "--verbose", action="store_true", default=SUPPRESS, help="Verbose output")
     add("-Q", "--quiet", action="store_true",
         help="Quiet mode for programmatic use: suppress banner, spinner, and tool previews. Only output the final response and session info.")

@@ -1688,6 +1688,15 @@ def _dispatch_lane_task(
             # worker's own profile scope) so enforce_worker_route validates
             # against the SAME store the decision was actually persisted in.
             claimed.routing_origin_home = origin_hermes_home
+            # Propagate the selected route's endpoint to the actual spawned
+            # worker (design §4 step 7 / §12): resolve_task_route's decision
+            # is authoritative on provider/model/reasoning AND endpoint, but
+            # managed_child_kwargs()["endpoint"] was previously dropped on
+            # the floor here -- enforce_worker_route's actual_endpoint check
+            # then compared the worker's OWN profile-default base_url against
+            # the receipted endpoint, which is only ever a false match by
+            # coincidence. Threaded through _default_spawn -> --base-url below.
+            claimed.routing_endpoint = kwargs.get("endpoint")
     try:
         resolved_branch_name = None
         if claimed.workspace_kind == "worktree":
@@ -2258,6 +2267,14 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     # model at a different depth.
     if task.reasoning_effort:
         cmd.extend(["--reasoning", task.reasoning_effort])
+    if getattr(task, "routing_endpoint", None):
+        # Guided-routing endpoint propagation (design §4 step 7, §12): the
+        # selected route's endpoint must reach the ACTUAL constructed worker
+        # client via a supported runtime override, not just live in the
+        # receipt for the worker-side comparison to (coincidentally) pass.
+        # Without this, enforce_worker_route's actual_endpoint always came
+        # from the worker's own profile-default base_url, never the route's.
+        cmd.extend(["--base-url", task.routing_endpoint])
     worker_toolsets = _resolve_worker_cli_toolsets(hermes_home)
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])

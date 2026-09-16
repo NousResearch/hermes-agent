@@ -715,6 +715,12 @@ class Task:
     completion_contract: Optional[str] = None
     routing_role: Optional[str] = None       # guided-routing role requested for this task; NULL = unmanaged
     routing_receipt_id: Optional[str] = None  # id of the resolved decision receipt in model_routing.db
+    # In-memory-only fields set on the ``claimed`` object between resolve_task_route()
+    # and _default_spawn() within a single dispatch tick — never persisted as task
+    # columns (routing_origin_home already follows this same non-persisted pattern).
+    routing_endpoint: Optional[str] = None    # selected route's endpoint (design §4 step 4/7);
+                                               # must reach the worker argv so enforce_worker_route's
+                                               # actual_endpoint comparison is ever meaningful.
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":

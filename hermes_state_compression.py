@@ -14,9 +14,21 @@ from typing import Any, Dict, List, Optional, Tuple
 from hermes_state_common import (
     _BOUNDARY_END_REASONS, _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _ended_by_compression,
     _sql_json_extract, _sql_session_last_active, is_automatic_end_reason)
+from hermes_state_messages import _redact_durable_projection
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
+
+
+def _redact_origin_json(origin_json):
+    if origin_json is None:
+        return None
+    try:
+        parsed = json.loads(origin_json) if isinstance(origin_json, str) else origin_json
+    except (TypeError, ValueError):
+        parsed = "[REDACTED: invalid durable JSON projection]"
+    projected = _redact_durable_projection(parsed)
+    return origin_json if isinstance(origin_json, str) and projected == parsed else json.dumps(projected)
 
 _COOLDOWN_ROW_SQL = (
     "SELECT compression_failure_cooldown_until, compression_failure_error FROM sessions WHERE id = ?"
@@ -218,7 +230,7 @@ class SessionCompressionMixin:
                 parent["git_repo_root"],
                 profile_name or parent["profile_name"] or self._own_profile_name(),
                 parent["user_id"], parent["session_key"], parent["chat_id"], parent["chat_type"],
-                parent["thread_id"], parent["display_name"], parent["origin_json"], time.time()),
+                parent["thread_id"], parent["display_name"], _redact_origin_json(parent["origin_json"]), time.time()),
         )
 
     def publish_compression_child(
@@ -324,7 +336,7 @@ class SessionCompressionMixin:
             "UPDATE sessions SET compression_failure_cooldown_until = CASE "
             "WHEN compression_failure_cooldown_until IS NOT NULL  AND compression_failure_cooldown_until > ? "
             "THEN compression_failure_cooldown_until ELSE ? END, compression_failure_error = ? WHERE id = ?",
-            (cooldown_until, cooldown_until, error, session_id))
+            (cooldown_until, cooldown_until, _redact_durable_projection(error), session_id))
 
     def get_compression_failure_cooldown(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Return the active (unexpired) compression-failure cooldown, or None."""
@@ -355,7 +367,8 @@ class SessionCompressionMixin:
         def _do(conn):
             cursor = conn.execute(
                 "UPDATE sessions SET compression_failure_cooldown_until = ?, "
-                "compression_failure_error = ? WHERE id = ?", (deadline, error, session_id))
+                "compression_failure_error = ? WHERE id = ?",
+                (deadline, _redact_durable_projection(error), session_id))
             return cursor.rowcount == 1
         if not self._execute_write(_do):
             logger.warning("compression cooldown rollback session missing: %s", session_id)

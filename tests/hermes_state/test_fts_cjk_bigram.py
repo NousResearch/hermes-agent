@@ -14,6 +14,8 @@ import pytest
 from hermes_state import SessionDB
 from hermes_state_common import FTS_CJK_STALE_KEY
 
+SECRET = "redaction-fts-fixture-secret"
+
 REPO = Path(__file__).resolve().parent.parent.parent
 SRC = REPO / "native" / "fts5_cjk" / "fts5_cjk.c"
 VENDOR = REPO / "native" / "fts5_cjk" / "vendor"
@@ -322,3 +324,40 @@ def test_integrity_after_lifecycle(db):
             "INSERT INTO messages_fts_cjk(messages_fts_cjk) "
             "VALUES('integrity-check')"
         )
+
+
+def test_v31_redaction_rebuilds_detached_cjk_index(cjk_so, tmp_path, monkeypatch):
+    """A triggerless external CJK index must not retain legacy secret terms."""
+    monkeypatch.setenv("HERMES_FTS5_CJK_SO", str(cjk_so))
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path)
+    db.create_session("legacy", source="cli")
+    db.append_message("legacy", "assistant", content="safe")
+    db.close()
+
+    with sqlite3.connect(db_path) as conn:
+        conn.enable_load_extension(True)
+        conn.load_extension(str(cjk_so))
+        conn.executescript("""
+            DROP TRIGGER IF EXISTS messages_fts_cjk_insert;
+            DROP TRIGGER IF EXISTS messages_fts_cjk_delete;
+            DROP TRIGGER IF EXISTS messages_fts_cjk_update;
+        """)
+        conn.execute("UPDATE messages SET content = ? WHERE session_id = ?", (SECRET, "legacy"))
+        conn.execute("INSERT INTO messages_fts_cjk(messages_fts_cjk) VALUES('rebuild')")
+        conn.execute("UPDATE schema_version SET version = 30")
+        assert conn.execute(
+            "SELECT 1 FROM messages_fts_cjk WHERE messages_fts_cjk MATCH ?", (f'"{SECRET}"',)
+        ).fetchone() is not None
+
+    migrated = SessionDB(db_path)
+    try:
+        row = migrated._conn.execute(
+            "SELECT content FROM messages WHERE session_id = ?", ("legacy",)
+        ).fetchone()
+        assert SECRET not in row["content"]
+        assert migrated._conn.execute(
+            "SELECT 1 FROM messages_fts_cjk WHERE messages_fts_cjk MATCH ?", (f'"{SECRET}"',)
+        ).fetchone() is None
+    finally:
+        migrated.close()

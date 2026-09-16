@@ -28,8 +28,36 @@ _SESSIONS_JSON_README = (
     "table in ~/.hermes/state.db). Maps messaging session keys (agent:main:<platform>:...) to "
     "active session IDs. This is NOT the session list. ALL sessions (CLI, TUI, and gateway) live "
     "in ~/.hermes/state.db and are shown by `hermes sessions list` and `/sessions`. Disable this "
-    "file with `gateway.write_sessions_json: false` in config.yaml."
+    "file with `gateway.write_sessions_json: false` in config.yaml. Display names, provenance labels, "
+    "and metadata are redacted before persistence. Restart-critical routing/session/model fields and "
+    "delivery obligations remain operational metadata exceptions; this is not encryption at rest."
 )
+
+_ORIGIN_ROUTING_FIELDS = frozenset({
+    "platform", "chat_id", "chat_type", "user_id", "thread_id", "user_id_alt", "chat_id_alt", "scope_id",
+    "guild_id", "parent_chat_id", "profile", "prospective_thread_id", "auto_thread_created",
+})
+
+
+def _sessions_json_projection(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Durable redacted mirror preserving only loader-required operational metadata.
+
+    ``sessions.json`` remains a restart-routing fallback, not a general encrypted metadata store.
+    Session/routing IDs, resume state, and model override are deliberately retained; display/provenance
+    labels and arbitrary metadata cross the durable-redaction boundary.
+    """
+    from hermes_state_messages import _redact_durable_projection
+
+    projected = dict(entry)
+    projected["display_name"] = _redact_durable_projection(projected.get("display_name"))
+    projected["metadata"] = _redact_durable_projection(projected.get("metadata") or {})
+    origin = projected.get("origin")
+    if isinstance(origin, dict):
+        routing = {key: origin[key] for key in _ORIGIN_ROUTING_FIELDS if key in origin}
+        display = {key: value for key, value in origin.items() if key not in _ORIGIN_ROUTING_FIELDS}
+        routing.update(_redact_durable_projection(display))
+        projected["origin"] = routing
+    return projected
 
 
 def _is_live_system_guard(exc: BaseException) -> bool:
@@ -276,19 +304,23 @@ class SessionPersistenceMixin:
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         db_load_succeeded = self._load_routing_rows_locked()
         db_had_entries = db_load_succeeded and bool(self._entries)
-        self._import_legacy_sessions_json(db_had_entries)
+        legacy_mirror_needs_rewrite = self._import_legacy_sessions_json(db_had_entries)
         self._loaded = True
         self._routing_db_loaded = db_load_succeeded
         self._routing_fallback_baseline = None if db_load_succeeded else self._entries_as_dicts()
         # A hard crash skips graceful shutdown and leaves sessions.json pointing at ended sessions.
         self._prune_stale_sessions_locked()
+        # Pre-boundary mirrors may contain raw display/provenance/metadata. Rewrite
+        # the loaded index immediately; do not wait for an unrelated routing change.
+        if legacy_mirror_needs_rewrite:
+            self._save()
 
-    def _import_legacy_sessions_json(self, db_had_entries: bool) -> None:
+    def _import_legacy_sessions_json(self, db_had_entries: bool) -> bool:
         """Legacy import: sessions.json fills only keys the DB lacks. Lock held."""
         from gateway.session import SessionEntry
         sessions_file = self.sessions_dir / "sessions.json"
         if not sessions_file.exists():
-            return
+            return False
         try:
             with open(sessions_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -311,8 +343,13 @@ class SessionPersistenceMixin:
                 logger.info(
                     "gateway.session: imported %d legacy sessions.json entr%s missing from "
                     "state.db routing table", imported, "y" if imported == 1 else "ies")
+            return any(
+                isinstance(entry_data, dict) and _sessions_json_projection(entry_data) != entry_data
+                for key, entry_data in data.items() if not key.startswith("_")
+            )
         except Exception as e:
             print(f"[gateway] Warning: Failed to load sessions: {e}")
+        return False
 
     def _prune_stale_sessions_locked(self) -> None:
         """Remove routing entries whose session has ended in state.db (startup, lock held). Stale ==
@@ -473,7 +510,11 @@ class SessionPersistenceMixin:
 
     def _save_sessions_json(self, data: Dict[str, Any]) -> None:
         """Write the legacy sessions.json mirror of the routing index (atomic + fsync)."""
-        atomic_json_write(self.sessions_dir / "sessions.json", {"_README": _SESSIONS_JSON_README, **data}, mode=0o600)
+        data = {"_README": _SESSIONS_JSON_README, **{
+            key: _sessions_json_projection(value) if isinstance(value, dict) else value
+            for key, value in data.items()
+        }}
+        atomic_json_write(self.sessions_dir / "sessions.json", data, mode=0o600)
 
     def _save_entries(self) -> None:
         """Snapshot latest state under ``_lock`` and persist after releasing it."""

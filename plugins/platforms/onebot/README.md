@@ -46,8 +46,8 @@ gateway:
       enabled: true
       extra:
         mode: reverse              # reverse | forward
-        host: "0.0.0.0"            # reverse: address to listen on
-        port: 8643                 # reverse: listen port
+        host: "0.0.0.0"            # listen address (reverse: WS+API; forward: /api-only server)
+        port: 8643                 # listen port (reverse: WS+API; forward: /api-only server)
         # url: "ws://127.0.0.1:3001"   # forward: bridge ws endpoint
         # access_token: ""         # must match the bridge's token; REQUIRED when host is 0.0.0.0
         # bot_qq: ""               # optional; auto-learned from meta events
@@ -67,7 +67,7 @@ gateway:
 | Key | Default | Meaning |
 |---|---|---|
 | `mode` | `reverse` | `reverse` (bridge dials in) / `forward` (adapter dials out) |
-| `host` / `port` | `0.0.0.0` / `8643` | reverse listener |
+| `host` / `port` | `0.0.0.0` / `8643` | reverse: WS + `/api/*` listener; forward: `/api/*`-only server (no `/ws`) |
 | `url` | `ws://127.0.0.1:3001` | forward target |
 | `access_token` | empty | OneBot token, must match the bridge |
 | `bot_qq` | empty | bot's QQ (empty = learned from meta events) |
@@ -97,16 +97,28 @@ Environment variables: `ONEBOT_ALLOWED_USERS` (comma-separated admin ids), `ONEB
 | Mode | Description |
 |------|-------------|
 | `reverse` (default) | Hermes hosts a WebSocket server; the bridge's **ws-reverse** client dials in (`ws://<hermes-host>:8643/ws`). One connection carries both events and actions. |
-| `forward` | Hermes dials the bridge's WebSocket server (`ws://<bridge-host>:3001` for NapCat's default). |
+| `forward` | Hermes dials the bridge's WebSocket server (`ws://<bridge-host>:3001` for NapCat's default). Also serves the qq_* tools via a local `/api/*` server (see below). |
 
 If the bridge uses an access token, set the same value in `access_token` (Hermes sends it as `Authorization: Bearer <token>` on the reverse connection; forward mode includes it in the handshake headers).
 
+#### Tool availability in forward mode
+
+Forward mode also serves the qq_* tools: once the forward WS connection is
+up, the adapter starts a local HTTP server on `host:port` that registers only
+the `/api/*` helper endpoints (`/api/group_history`, `/api/napcat`,
+`/api/send_media`) — the reverse-only `/ws` route is **not** registered. The
+server reuses the same `host` / `port` keys as reverse mode (code default
+`127.0.0.1:8643`, matching the qq_* tools' default base URL
+`http://127.0.0.1:8643`), and its endpoints sit behind the same auth gate
+described below. Reverse and forward are mutually exclusive: each adapter
+instance runs exactly one of the two servers, never both.
+
 ### Token & network security
 
-The reverse listener serves more than the WebSocket: the local helper
-endpoints `/api/group_history`, `/api/napcat` and `/api/send_media` (used by
-the qq_* model tools) hang off the same `host:port`, and all of them sit
-behind one shared auth gate:
+The local helper endpoints `/api/group_history`, `/api/napcat` and
+`/api/send_media` (used by the qq_* model tools) hang off the same
+`host:port` — alongside `/ws` on the reverse listener, on their own in
+forward mode — and all of them sit behind one shared auth gate:
 
 - **`access_token` set**: every request to `/ws` and `/api/*` must carry
   `Authorization: Bearer <token>`; anything else gets `401`.

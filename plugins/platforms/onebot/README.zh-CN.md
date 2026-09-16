@@ -44,8 +44,8 @@ gateway:
       enabled: true
       extra:
         mode: reverse              # reverse | forward
-        host: "0.0.0.0"            # reverse: 监听地址
-        port: 8643                 # reverse: 监听端口
+        host: "0.0.0.0"            # 监听地址（reverse: WS+API；forward: 仅 /api 的 server）
+        port: 8643                 # 监听端口（reverse: WS+API；forward: 仅 /api 的 server）
         # url: "ws://127.0.0.1:3001"   # forward: 桥接 ws 端点
         # access_token: ""         # 必须与桥的 token 一致；host 为 0.0.0.0 时必配
         # bot_qq: ""               # 可选；自动从 meta 事件学习
@@ -65,7 +65,7 @@ gateway:
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `mode` | `reverse` | `reverse`（桥拨入）/ `forward`（适配器拨出） |
-| `host` / `port` | `0.0.0.0` / `8643` | 反向监听 |
+| `host` / `port` | `0.0.0.0` / `8643` | reverse：WS + `/api/*` 监听；forward：仅 `/api/*` 的 server（无 `/ws`） |
 | `url` | `ws://127.0.0.1:3001` | 正向目标 |
 | `access_token` | 空 | OneBot token，必须与桥一致 |
 | `bot_qq` | 空 | 机器人 QQ（空 = 从 meta 事件学习） |
@@ -94,14 +94,25 @@ gateway:
 | 模式 | 说明 |
 |---|---|
 | `reverse`（默认） | Hermes 起 WebSocket 服务端；桥的 **ws-reverse** 客户端拨入（`ws://<hermes-host>:8643/ws`）。一条连接同时承载事件和动作。 |
-| `forward` | Hermes 主动拨桥的 WebSocket 服务端（NapCat 默认 `ws://<bridge-host>:3001`）。 |
+| `forward` | Hermes 主动拨桥的 WebSocket 服务端（NapCat 默认 `ws://<bridge-host>:3001`）。拨通后同样通过本地 `/api/*` server 提供 qq_* 工具（见下）。 |
 
 桥若使用 access token，`access_token` 要设同值（reverse 连接上 Hermes 以 `Authorization: Bearer <token>` 发送；forward 模式在握手头里带）。
 
+#### forward 模式的工具可用性
+
+forward 模式同样提供 qq_* 工具：forward WS 拨通后，适配器会在 `host:port`
+上起一个只注册 `/api/*` 辅助端点（`/api/group_history`、`/api/napcat`、
+`/api/send_media`）的本地 HTTP server——reverse 专属的 `/ws` 路由**不**注册。
+server 复用与 reverse 相同的 `host` / `port` 配置（代码默认 `127.0.0.1:8643`，
+与 qq_* 工具默认 base URL `http://127.0.0.1:8643` 一致），端点同样在下述
+鉴权闸门之后。reverse 与 forward 互斥：每个 adapter 实例只会运行两者之一，
+绝不会同时起两个 server。
+
 ### Token 与网络安全
 
-反向监听端口上不只挂着 WebSocket：本地辅助端点 `/api/group_history`、`/api/napcat`、
-`/api/send_media`（供 qq_* 模型工具使用）也在同一个 `host:port` 上，三者共用同一道鉴权闸门：
+本地辅助端点 `/api/group_history`、`/api/napcat`、`/api/send_media`
+（供 qq_* 模型工具使用）挂在同一个 `host:port` 上——reverse 模式与 `/ws` 同端口，
+forward 模式单独成 server——共用同一道鉴权闸门：
 
 - **设置了 `access_token`**：对 `/ws` 与 `/api/*` 的所有请求都必须携带
   `Authorization: Bearer <token>`，否则一律 401。

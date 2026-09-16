@@ -350,6 +350,15 @@ class OneBotAdapter(BasePlatformAdapter):
         try:
             if self._mode == "forward":
                 await self._connect_forward_once()
+                try:
+                    # forward 也提供 /api/* 服务（review 4.2 / T2）：NapCat
+                    # 拨不进来的部署同样要用 qq_* 工具。API server 起不来
+                    # （如端口被占）就回滚 forward 传输，不留半连接状态，
+                    # 也不让 reader task 的 finally 调度自动重连。
+                    await self._start_api_server()
+                except Exception:
+                    await self._teardown_forward_transport()
+                    raise
             else:
                 await self._start_reverse_server()
             self._mark_connected()
@@ -395,14 +404,18 @@ class OneBotAdapter(BasePlatformAdapter):
 
     # -- reverse mode --------------------------------------------------
 
+    def _register_api_routes(self, app: web.Application) -> None:
+        """注册 /api/* 辅助端点（reverse 与 forward 共用，保证两边路由一致）。"""
+        app.router.add_get("/api/group_history", self._handle_group_history)
+        app.router.add_get("/api/napcat", self._handle_napcat_api)
+        app.router.add_post("/api/send_media", self._handle_send_media)
+
     async def _start_reverse_server(self) -> None:
         app = web.Application()
         app.router.add_get("/ws", self._handle_reverse_ws)
         app.router.add_get("/onebot", self._handle_reverse_ws)
         app.router.add_get("/", self._handle_reverse_ws)
-        app.router.add_get("/api/group_history", self._handle_group_history)
-        app.router.add_get("/api/napcat", self._handle_napcat_api)
-        app.router.add_post("/api/send_media", self._handle_send_media)
+        self._register_api_routes(app)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         self._site = web.TCPSite(self._runner, self._host, self._port)
@@ -622,6 +635,72 @@ class OneBotAdapter(BasePlatformAdapter):
         return ws
 
     # -- forward mode ---------------------------------------------------
+
+    async def _start_api_server(self) -> None:
+        """forward 模式的 /api-only HTTP server（review 4.2，T2）。
+
+        forward 分支 connect 成功后在 `host:port` 上补挂一个只含 /api 路由
+        的 server（不注册 /ws —— 那是 reverse 专属路由），qq_* 工具链路
+        （tools.py `_BASE`，默认 http://127.0.0.1:8643）在 forward 部署下
+        因此可用。host/port 复用现有配置（不新增键，代码默认与 tools 的
+        base URL 一致）；鉴权复用 `_check_api_auth`，语义与 reverse 完全
+        一致。与 reverse 分支互斥：单个 adapter 实例按 `mode` 只走其中一条
+        connect 路径，两个 server 不会同时存在。
+        """
+        app = web.Application()
+        self._register_api_routes(app)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, self._host, self._port)
+            await site.start()
+        except Exception:
+            # 绑定失败（如端口占用）：回滚本次 runner，避免半初始化对象
+            # 泄漏；self._runner/_site 只在真正开始服务后才赋值。
+            await runner.cleanup()
+            raise
+        self._runner = runner
+        self._site = site
+        logger.info(
+            "[onebot] forward mode API server listening on http://%s:%s/api/* "
+            "(qq_* tools base; no /ws route — reverse only)",
+            self._host, self._port,
+        )
+
+    async def _teardown_forward_transport(self) -> None:
+        """回滚 forward 拨号传输（reader task + ws + session）。
+
+        仅供 connect() 中 API server 启动失败的路径使用：先置 `_stopping`
+        阻止 reader task 的 finally 重新调度自动重连，再按 disconnect()
+        同序收掉任务与连接，确保 connect 失败后不留半连接状态。
+        """
+        self._stopping = True
+        if self._reconnect_task is not None:
+            self._reconnect_task.cancel()
+            self._reconnect_task = None
+        if self._reader_task is not None:
+            self._reader_task.cancel()
+            try:
+                await self._reader_task
+            except asyncio.CancelledError:
+                pass  # 读循环任务本身是被 cancel 的，吞掉取消信号
+            except Exception:
+                pass
+            self._reader_task = None
+        ws = self._ws
+        self._ws = None
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+        sess = self._forward_session
+        self._forward_session = None
+        if sess is not None:
+            try:
+                await sess.close()
+            except Exception:
+                pass
 
     async def _connect_forward_once(self) -> None:
         headers = {"Authorization": f"Bearer {self._access_token}"} if self._access_token else {}

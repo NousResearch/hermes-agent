@@ -1776,3 +1776,163 @@ def test_is_loopback_peer_edges() -> None:
     assert not _is_loopback_peer("")
     assert not _is_loopback_peer(None)
     assert not _is_loopback_peer("not-an-ip")
+
+
+# ---------------------------------------------------------------------------
+# Forward mode API server (review 4.2 / T2): forward 分支也提供 /api/* 服务
+# ---------------------------------------------------------------------------
+
+
+async def _start_fake_napcat_ws():
+    """假 NapCat ws 服务端（forward 模式适配器的拨入目标）。
+
+    收到带 echo 的 action 帧时按 OneBot 11 语义回 status=ok + data；
+    返回 (runner, port, received_frames)。
+    """
+    from aiohttp import WSMsgType, web
+
+    received: list = []
+
+    async def handler(request):
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        async for msg in ws:
+            if msg.type == WSMsgType.TEXT:
+                data = json.loads(msg.data)
+                received.append(data)
+                echo = data.get("echo")
+                if echo is not None:
+                    await ws.send_str(
+                        json.dumps(
+                            {
+                                "echo": echo,
+                                "status": "ok",
+                                "retcode": 0,
+                                "data": {"messages": [{"message_id": 7}]},
+                            }
+                        )
+                    )
+        return ws
+
+    app = web.Application()
+    app.router.add_get("/ws", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    return runner, port, received
+
+
+def _forward_adapter_kwargs(napcat_port: int, **overrides):
+    kwargs = {
+        "mode": "forward",
+        "url": f"ws://127.0.0.1:{napcat_port}/ws",
+        "host": "127.0.0.1",
+        "port": 0,
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_forward_connect_serves_group_history_and_no_ws_route(monkeypatch) -> None:
+    """forward connect 后：/api/group_history 经 forward WS echo 全链路 200
+    （无 token + loopback → 放行，复用 T1 鉴权闸门）；/ws、/onebot、/ 三条
+    reverse-only 路由一律 404（forward server 不注册 /ws）；单实例只有一个
+    server 槽位被占用（单模式互斥佐证）。"""
+    from aiohttp import ClientSession
+
+    # 绕过 per-mode 平台锁（与 test_reverse_ws_round_trip 同理，live gateway 可能占锁）
+    monkeypatch.setattr(
+        OneBotAdapter, "_acquire_platform_lock", lambda self, *a, **k: True
+    )
+
+    async def run():
+        napcat_runner, napcat_port, frames = await _start_fake_napcat_ws()
+        adapter = _make_adapter(**_forward_adapter_kwargs(napcat_port))
+        assert await adapter.connect()
+        api_port = adapter._site._server.sockets[0].getsockname()[1]
+        try:
+            async with ClientSession() as sess:
+                async with sess.get(
+                    f"http://127.0.0.1:{api_port}/api/group_history?group_id=88888"
+                ) as resp:
+                    assert resp.status == 200
+                    body = await resp.json()
+                    assert body["status"] == "ok"
+                    assert body["data"]["messages"][0]["message_id"] == 7
+                # echo 请求确实经 forward WS 到达 NapCat（全链路打通）
+                actions = [f.get("action") for f in frames if "action" in f]
+                assert actions == ["get_group_msg_history"]
+                # reverse-only 路由不得出现在 forward server 上
+                for path in ("/ws", "/onebot", "/"):
+                    async with sess.get(f"http://127.0.0.1:{api_port}{path}") as resp:
+                        assert resp.status == 404, f"forward server 不应注册 {path}"
+                # 唯一 server 槽位由 forward API server 占用
+                assert adapter._runner is not None
+                assert adapter._site is not None
+        finally:
+            await adapter.disconnect()
+            await napcat_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_forward_connect_port_occupied_fails_clean(monkeypatch) -> None:
+    """生命周期①：API 端口被占 → forward connect 返回 False，且 forward 拨号
+    被完整回滚——不留 ws/session/reader，也不调度自动重连（端口冲突不回归）。"""
+    import socket
+
+    monkeypatch.setattr(
+        OneBotAdapter, "_acquire_platform_lock", lambda self, *a, **k: True
+    )
+
+    async def run():
+        napcat_runner, napcat_port, _frames = await _start_fake_napcat_ws()
+        with socket.socket() as blocker:
+            blocker.bind(("127.0.0.1", 0))
+            blocker.listen(1)
+            blocked_port = blocker.getsockname()[1]
+            adapter = _make_adapter(
+                **_forward_adapter_kwargs(napcat_port, port=blocked_port)
+            )
+            # forward WS 已拨通，但 /api server 绑定失败 → 整体 connect 失败
+            assert await adapter.connect() is False
+            assert adapter._ws is None
+            assert adapter._forward_session is None
+            assert adapter._reader_task is None
+            assert adapter._reconnect_task is None, "失败路径不得调度自动重连"
+            assert adapter._runner is None
+            assert adapter._site is None
+        await napcat_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_forward_disconnect_releases_api_port(monkeypatch) -> None:
+    """生命周期②：forward disconnect 后 runner/site/ws/session/任务全部收干净，
+    API 端口立即可被重新绑定（SO_REUSEADDR 探测，等价下一个 server 复用端口）。"""
+    import socket
+
+    monkeypatch.setattr(
+        OneBotAdapter, "_acquire_platform_lock", lambda self, *a, **k: True
+    )
+
+    async def run():
+        napcat_runner, napcat_port, _frames = await _start_fake_napcat_ws()
+        adapter = _make_adapter(**_forward_adapter_kwargs(napcat_port))
+        assert await adapter.connect()
+        api_port = adapter._site._server.sockets[0].getsockname()[1]
+        await adapter.disconnect()
+        assert adapter._runner is None
+        assert adapter._site is None
+        assert adapter._ws is None
+        assert adapter._forward_session is None
+        assert adapter._reader_task is None
+        assert adapter._reconnect_task is None
+        with socket.socket() as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind(("127.0.0.1", api_port))
+        await napcat_runner.cleanup()
+
+    asyncio.run(run())

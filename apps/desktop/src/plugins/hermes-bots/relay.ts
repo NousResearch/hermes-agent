@@ -227,10 +227,8 @@ async function relayAgentsOn(connection: RelayConnection): Promise<RelayAgentRow
     const label = String(connection.route?.connectionLabel || connection.route?.label || connection.id)
 
     return profiles
-      // A bot that went private left the agent-to-agent mesh: never advertise it to other
-      // machines. Enforced here at the publisher AND in the gateway consumer (bot_relay.py),
-      // so a peer on an older build cannot put it back. `hidden` is deliberately not
-      // consulted — that is a roster-display concern for this desktop only.
+      // A private bot is never advertised (enforced here and in the gateway consumer, so an
+      // older peer cannot put it back); `hidden` is this desktop's display concern only.
       .filter(profile => !isPrivateFlag(profile?.ui_meta?.['hermes-bots']?.private))
       .map(profile => ({
         profile: String(profile?.name || ''),

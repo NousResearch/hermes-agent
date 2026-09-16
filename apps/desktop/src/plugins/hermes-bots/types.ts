@@ -75,12 +75,8 @@ export interface BotMeta {
   /** Legacy single-group scalar, projected alongside `groups`. */
   group?: null | string
   pinned?: boolean
-  /** OUT of the agent-to-agent mesh: not advertised to other agents and not addressable by
-   *  them. Distinct from `hidden`, which is a roster-DISPLAY concern for this desktop only —
-   *  a private bot keeps running and stays fully reachable by the human, it just stops being
-   *  a teammate other agents can see or message. Read by the gateway (bot_mode_probe) and by
-   *  the relay publisher (relay.ts), so it crosses the wire in profile.yaml like every other
-   *  bot setting. */
+  /** Out of the agent-to-agent mesh (neither advertised to nor addressable by other agents),
+   *  unlike `hidden`, this desktop's display concern. Read by the gateway and the relay publisher. */
   private?: boolean
   shape?: string
   title?: string

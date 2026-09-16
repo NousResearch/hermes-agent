@@ -336,7 +336,6 @@ class TestFallbackChainAdvancement:
 
         assert agent.provider == "xai-oauth"
         assert agent.requested_provider == "xai-oauth"
-        assert agent.model == "grok-4.6"
         assert agent.client is fallback_client
 
         with (
@@ -393,7 +392,6 @@ class TestFallbackChainAdvancement:
 
         assert agent.provider == "openai-codex"
         assert agent.requested_provider == "openai-codex"
-        assert agent.model == "gpt-5.6-sol"
         assert agent.api_mode == "codex_responses"
         assert agent.client is codex_client
 

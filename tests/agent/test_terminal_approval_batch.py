@@ -3,6 +3,7 @@
 import json
 import queue
 import threading
+from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -38,7 +39,7 @@ def _agent():
 @pytest.mark.parametrize("read_count", [0, 1, 2])
 @pytest.mark.parametrize("threaded_middleware", [False, True])
 def test_desktop_publishes_final_commands_before_wait_and_runs_in_order(tmp_path, monkeypatch, read_count, threaded_middleware):
-    from tools.terminal_scope import terminal_scope
+    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
     from tools.terminal_tool_lifecycle import cleanup_vm
     monkeypatch.delenv("HERMES_DESKTOP", raising=False)
     monkeypatch.setenv("HERMES_EXEC_ASK", "1")
@@ -110,9 +111,10 @@ def test_desktop_publishes_final_commands_before_wait_and_runs_in_order(tmp_path
         except BaseException as exc:
             errors.append(exc)
 
-    with terminal_scope({"TERMINAL_ENV": "local", "TERMINAL_CWD": str(tmp_path)}), patch(
+    with ExitStack() as scope, patch(
         "hermes_cli.plugins._dispatch_pre_tool_call_hooks", side_effect=pre_hook
     ):
+        scope.callback(reset_terminal_scope, set_terminal_scope({"TERMINAL_ENV": "local", "TERMINAL_CWD": str(tmp_path)}))
         worker = threading.Thread(target=propagate_context_to_thread(run), daemon=True)
         worker.start()
         try:
@@ -145,7 +147,7 @@ def test_desktop_publishes_final_commands_before_wait_and_runs_in_order(tmp_path
 
 
 def test_cancelled_preparation_drains_requests_without_reusing_once(tmp_path, monkeypatch):
-    from tools.terminal_scope import terminal_scope
+    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
     from tools.terminal_tool_lifecycle import cleanup_vm
 
     monkeypatch.setenv("HERMES_EXEC_ASK", "1")
@@ -180,7 +182,8 @@ def test_cancelled_preparation_drains_requests_without_reusing_once(tmp_path, mo
         "session_key": key, "source": "desktop", "agent": agent, "cwd": str(tmp_path),
     }})
     tokens = server._set_session_context(key)
-    with terminal_scope({"TERMINAL_ENV": "local", "TERMINAL_CWD": str(tmp_path)}):
+    with ExitStack() as scope:
+        scope.callback(reset_terminal_scope, set_terminal_scope({"TERMINAL_ENV": "local", "TERMINAL_CWD": str(tmp_path)}))
         worker = threading.Thread(target=propagate_context_to_thread(lambda: run(agent, calls, messages)), daemon=True)
         retry_worker = None
         retry_agent = None

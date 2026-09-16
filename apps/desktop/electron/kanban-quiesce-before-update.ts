@@ -29,8 +29,8 @@ export const KANBAN_QUIESCE_TIMEOUT_MS = 60_000
 function parseQuiesceResult(raw: unknown): KanbanQuiesceResult | undefined {
   try {
     const parsed = JSON.parse(String(raw))
-    if (!parsed || typeof parsed !== 'object' || typeof parsed.ok !== 'boolean') {
 
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.ok !== 'boolean') {
       return undefined
     }
 
@@ -72,16 +72,16 @@ export function quiesceKanbanWorkersForUpdate(
     } as ExecFileSyncOptionsWithStringEncoding)
 
     const parsed = parseQuiesceResult(raw)
-    if (!parsed) {
 
+    if (!parsed) {
       throw new Error('invalid quiesce response')
     }
 
     return parsed
   } catch (error: any) {
     const parsed = parseQuiesceResult(error?.stdout)
-    if (parsed) {
 
+    if (parsed) {
       return parsed
     }
 

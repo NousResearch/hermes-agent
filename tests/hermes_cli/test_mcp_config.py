@@ -533,6 +533,24 @@ class TestProbeEnvResolution:
         assert tools == [("do_thing", "a tool")]
         assert seen["config"]["headers"]["Authorization"] == "Bearer jwt-token-xyz"
 
+    def test_probe_names_unset_placeholder_instead_of_connecting(self, monkeypatch):
+        """Sibling of the runtime rule: an unset ${VAR} in ``url`` never reaches the server; the
+        probe error names the variable (the server's own failure would not)."""
+        import hermes_cli.mcp_config as mc
+
+        monkeypatch.delenv("MCP_PROBE_UNSET_URL", raising=False)
+        connected = []
+
+        async def _fake_connect(name, config):
+            connected.append(config)
+            raise AssertionError("must not connect")
+
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fake_connect)
+
+        with pytest.raises(ValueError, match="MCP_PROBE_UNSET_URL"):
+            mc._probe_single_server("remote", {"url": "${MCP_PROBE_UNSET_URL}/mcp"})
+        assert connected == []
+
 
 class TestProbeCapabilityGating:
     """The ``details`` probe must not fire prompts/list or resources/list at

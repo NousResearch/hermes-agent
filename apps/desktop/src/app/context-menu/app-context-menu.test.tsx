@@ -423,6 +423,28 @@ describe('AppContextMenu', () => {
     expect($contextMenu.get()).toBeNull()
   })
 
+  it('takes the gesture back from a radix trigger the moment it disables', () => {
+    installBridge()
+    mountMenu()
+    // A menu that mounts-but-deactivates (message context menus that only arm
+    // while text is selected) stamps the trigger marker AND data-disabled. The
+    // gesture must fall through to the app menu — deferring would leave the
+    // right-click with no menu at all.
+    const host = attach(
+      `<div data-slot="context-menu-trigger" data-disabled=""><span>message bubble</span></div>`
+    )
+
+    // Bare chrome under a disabled trigger -> the shell fallback opens.
+    fireEvent.contextMenu(host.querySelector('span')!)
+    expect($contextMenu.get()).not.toBeNull()
+
+    // And the moment the trigger enables again, the app menu stands down.
+    $contextMenu.set(null)
+    host.querySelector('div')!.removeAttribute('data-disabled')
+    fireEvent.contextMenu(host.querySelector('span')!)
+    expect($contextMenu.get()).toBeNull()
+  })
+
   it('shows the terminal menu through a registered handle', async () => {
     installBridge()
     mountMenu()

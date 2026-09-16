@@ -8,7 +8,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
 import { readDesktopFileDataUrlLocalFirst } from '@/lib/desktop-fs'
-import { AlertCircle, FileText, FolderOpen, ImageIcon, Link, Loader2, MessageCode, Terminal } from '@/lib/icons'
+import { AlertCircle, FileText, FolderOpen, ImageIcon, Link, Loader2, MessageCode, MessageSquareText, Terminal } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
@@ -45,7 +45,8 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
     image: ImageIcon,
     review: MessageCode,
     terminal: Terminal,
-    url: Link
+    url: Link,
+    text: MessageSquareText,
   }[attachment.kind]
 
   // The tile's cwd when this pill lives in a tile composer, not the primary's:
@@ -57,7 +58,7 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
   // A review card's detail is its resolved-comment JSON, not a previewable
   // path — clicking it should do nothing rather than toast a bogus failure.
   const canPreview =
-    attachment.kind !== 'folder' && attachment.kind !== 'terminal' && attachment.kind !== 'review' && !isUploading
+    attachment.kind !== 'folder' && attachment.kind !== 'terminal' && attachment.kind !== 'review' && attachment.kind !== 'text' && !isUploading
 
   const detail =
     attachment.kind !== 'review' && attachment.detail && attachment.detail !== attachment.label

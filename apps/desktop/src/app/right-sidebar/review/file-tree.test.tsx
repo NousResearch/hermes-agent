@@ -127,4 +127,17 @@ describe('ReviewFileTree', () => {
     expect(screen.getByText('src')).toBeTruthy()
     expect(screen.getByText('c.ts')).toBeTruthy()
   })
+
+  it('offers Add as context on the review tree rows (same gesture as the browser tree)', async () => {
+    $reviewFiles.set([file('a.ts')])
+
+    renderTree()
+
+    // Right-click a review row: the row's context menu must include the
+    // "Add as context" item — the PR description promises both trees.
+    fireEvent.pointerDown(screen.getByText('a.ts'), { button: 2, pointerType: 'mouse' })
+    fireEvent.contextMenu(screen.getByText('a.ts'), { button: 2 })
+
+    expect(await screen.findByText('Add as context')).toBeTruthy()
+  })
 })

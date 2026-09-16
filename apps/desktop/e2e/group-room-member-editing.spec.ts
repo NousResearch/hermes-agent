@@ -57,10 +57,23 @@ async function createRoom(page: Page) {
   await dialog.getByRole('textbox', { name: 'Group name' }).fill(ROOM)
   await dialog.getByRole('button', { name: 'Create Group (2)' }).click()
 
-  const groupComposer = page.getByRole('textbox', { name: `Message ${ROOM}` }).filter({ visible: true })
-  await expect(groupComposer).toBeVisible({ timeout: 20_000 })
+  return frontRoom(page)
+}
 
-  return groupComposer
+/** A just-created Bot's canonical Bot Chat hydrates late and can front its
+ *  "Draft" tab over the room tab; bring the room back before typing into it. */
+async function frontRoom(page: Page) {
+  const tab = page.getByRole('tab', { name: ROOM }).first()
+  await expect(tab).toBeVisible({ timeout: 20_000 })
+
+  if ((await tab.getAttribute('aria-selected')) !== 'true') {
+    await tab.click()
+  }
+
+  const composer = page.getByRole('textbox', { name: `Message ${ROOM}` }).filter({ visible: true })
+  await expect(composer).toBeVisible({ timeout: 20_000 })
+
+  return composer
 }
 
 test.beforeEach(async () => {
@@ -76,7 +89,8 @@ test.afterEach(async () => {
 test('Group settings edits the room roster and the next round seats only the saved members', async () => {
   test.setTimeout(300_000)
   const page = fixture!.page
-  const groupComposer = await createRoom(page)
+  await createRoom(page)
+
   expect(await durableMembers(page)).toEqual(['programmer', 'reviewer'])
 
   // Group settings → Manage members: the checklist opens pre-checked.
@@ -119,6 +133,7 @@ test('Group settings edits the room roster and the next round seats only the sav
   }, ROOM), { timeout: 30_000 }).toEqual(['planner', 'programmer'])
 
   // An unaddressed send seats exactly the saved roster.
+  const groupComposer = await frontRoom(page)
   await groupComposer.fill('ROOM_EDIT_ROUND who is here?')
   await groupComposer.press('Enter')
   await expect.poll(() => fixture!.mock.receivedPrompts.filter(p => p.includes('ROOM_EDIT_ROUND')).length, { timeout: 90_000 }).toBeGreaterThanOrEqual(2)

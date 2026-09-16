@@ -50,6 +50,24 @@ def test_async_client_keeps_a_working_credential(token_source):
     assert asyncio.run(provider()) == "token-abc123"
 
 
+def test_async_conversion_does_not_mint_for_an_ordinary_endpoint():
+    """LiteLLM/OpenAI-compatible endpoints authenticate through the client provider, not headers."""
+    from agent.auxiliary_client import _to_async_client
+    from openai import OpenAI
+
+    calls = []
+
+    def provider():
+        calls.append(1)
+        return "token-abc123"
+
+    async_client, _ = _to_async_client(
+        OpenAI(api_key=provider, base_url="https://litellm.example.com/v1"), "claude-opus")
+
+    assert async_client._api_key_provider is not None
+    assert calls == [], "ordinary async endpoints must not mint a token during client construction"
+
+
 def test_async_conversion_preserves_a_plain_string_key():
     """The common path must be untouched: a string credential still copies across verbatim."""
     from agent.auxiliary_client import _to_async_client

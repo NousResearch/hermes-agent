@@ -4451,6 +4451,18 @@ def _credential_header_value(credential: Any) -> str:
         return ""
 
 
+def _codex_header_token(sync_client) -> str:
+    """A concrete bearer for the Codex/Cloudflare header builders.
+
+    Minting a ``key_cmd`` credential shells out, so this is called ONLY on the Codex paths that
+    need a literal token in a header — never for ordinary endpoints, which authenticate through
+    the client credential itself. Mints from the SYNC provider (a plain callable), never from the
+    async shim: there is no running loop at client-construction time.
+    """
+    return _credential_header_value(
+        getattr(sync_client, "_api_key_provider", None) or getattr(sync_client, "api_key", ""))
+
+
 def _to_async_client(sync_client, model: str, is_vision: bool = False):
     """Sync client → async counterpart, preserving Codex routing (``is_vision`` adds the Copilot vision header)."""
     from openai import AsyncOpenAI
@@ -4471,14 +4483,12 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         return sync_client, model
     sync_base_url = str(sync_client.base_url)
     async_credential = _async_credential_from_sync_client(sync_client)
-    # Header builders need a concrete token: mint from the SYNC provider (a plain callable),
-    # never from the async shim handed to the client.
-    header_token = _credential_header_value(
-        getattr(sync_client, "_api_key_provider", None) or getattr(sync_client, "api_key", ""))
     async_kwargs = {"api_key": async_credential, "base_url": sync_base_url}
+    header_token = ""
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         headers = _apply_user_default_headers(build_or_headers())
     elif _is_official_codex_base_url(sync_base_url):
+        header_token = _codex_header_token(sync_client)
         headers = _apply_user_default_headers(
             _codex_cloudflare_headers(header_token, base_url=sync_base_url))
     else:

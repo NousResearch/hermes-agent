@@ -1068,10 +1068,15 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     )
 
     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()
-    # Kanban guidance is session-static (kanban_show iff HERMES_KANBAN_TASK); resolve once.
+    # Toolset opt-in exposes kanban_show without assigning a worker task.
+    from agent.delegation_context import is_dispatcher_owned_worker_context
     from agent.prompt_builder import KANBAN_GUIDANCE
     agent._kanban_worker_guidance = (
-        KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
+        KANBAN_GUIDANCE
+        if ("kanban_show" in agent.valid_tool_names
+            and os.environ.get("HERMES_KANBAN_TASK")
+            and is_dispatcher_owned_worker_context())
+        else ""
     )
     if agent.quiet_mode:
         return

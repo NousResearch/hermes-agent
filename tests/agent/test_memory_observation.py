@@ -7,6 +7,7 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -198,6 +199,67 @@ def test_legacy_string_context_and_injected_bytes_are_unchanged(monkeypatch):
         "utf-8"
     )
     assert structured_text.encode("utf-8") == legacy_text.encode("utf-8")
+
+
+def _canonicalize_spill_path(context: str) -> str:
+    """Compare real spill placeholders without depending on their UUID filenames."""
+    marker = "full content saved to "
+    prefix, saved = context.split(marker, 1)
+    _, suffix = saved.split("]", 1)
+    return f"{prefix}{marker}<spill>]{suffix}"
+
+
+def test_external_prefetch_spill_matches_legacy_and_structured_context_digest(
+    monkeypatch, tmp_path
+):
+    """Structured results use the real external spill path and bind its final bytes."""
+    events = []
+    _capture_hook(monkeypatch, events)
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    context = "oversized résumé recall\n" + ("x" * 10_100)
+
+    legacy_provider = FakeMemoryProvider(name="external")
+    legacy_provider._prefetch_result = context
+    legacy_manager = MemoryManager()
+    legacy_manager.add_provider(legacy_provider)
+    legacy_result = legacy_manager.prefetch_all_result(
+        "question", session_id="spill-session"
+    )
+
+    structured_provider = StructuredMemoryProvider(
+        name="external",
+        result=MemoryPrefetchResult(
+            context=context, observations=(_observation({"kind": "recall"}),)
+        ),
+    )
+    structured_manager = MemoryManager()
+    structured_manager.add_provider(structured_provider)
+    structured_result = structured_manager.prefetch_all_result(
+        "question", session_id="spill-session", task_id="task", turn_id="turn"
+    )
+
+    assert legacy_result.context != context
+    assert structured_result.context != context
+    assert _canonicalize_spill_path(legacy_result.context) == _canonicalize_spill_path(
+        structured_result.context
+    )
+    assert _canonicalize_spill_path(
+        build_memory_context_block(legacy_result.context)
+    ) == _canonicalize_spill_path(build_memory_context_block(structured_result.context))
+
+    for result in (legacy_result, structured_result):
+        marker = "full content saved to "
+        saved_path = Path(result.context.split(marker, 1)[1].split("]", 1)[0])
+        assert saved_path.is_relative_to(hermes_home)
+        assert saved_path.read_text(encoding="utf-8") == context + "\n"
+
+    assert len(events) == 1
+    event = events[0]
+    encoded = structured_result.context.encode("utf-8")
+    assert event["context_sha256"] == hashlib.sha256(encoded).hexdigest()
+    assert event["context_byte_length"] == len(encoded)
+    assert event["observations"] is structured_result.observations
 
 
 def test_structured_context_merge_and_minimal_operation_event(monkeypatch):

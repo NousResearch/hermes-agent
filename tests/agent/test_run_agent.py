@@ -1222,6 +1222,56 @@ class TestTaskCompletionGuidance:
             assert TASK_COMPLETION_GUIDANCE not in a._build_system_prompt()
 
 
+class TestCronRestraintGuidance:
+    """Tests for the cron/schedule restraint guidance — injected only when the
+    cronjob tool is loaded (``agent/prompt_builder.py`` CRON_RESTRAINT_GUIDANCE).
+
+    The block is tool-gated rather than model- or config-gated: it only makes
+    sense for agents that can actually schedule something."""
+
+    def _make_agent(self, model="anthropic/claude-opus-4.8",
+                    tools=("terminal", "web_search"), **extra_cfg):
+        agent_cfg = {"task_completion_guidance": True}
+        agent_cfg.update(extra_cfg)
+        with (
+            patch(
+                "model_tools.get_tool_definitions",
+                return_value=_make_tool_defs(*tools),
+            ),
+            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("agent.process_bootstrap.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": agent_cfg},
+            ), patch(
+                "hermes_cli.config.load_config_readonly",
+                return_value={"agent": agent_cfg},
+            ),
+        ):
+            a = AIAgent(
+                model=model,
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_injects_when_cronjob_tool_loaded(self):
+        """CRON_RESTRAINT_GUIDANCE must appear when cronjob is in the tool set."""
+        from agent.prompt_builder import CRON_RESTRAINT_GUIDANCE
+        agent = self._make_agent(tools=("cronjob", "terminal", "web_search"))
+        assert CRON_RESTRAINT_GUIDANCE in agent._build_system_prompt()
+
+    def test_absent_when_cronjob_tool_not_loaded(self):
+        """CRON_RESTRAINT_GUIDANCE must NOT appear when cronjob is absent."""
+        from agent.prompt_builder import CRON_RESTRAINT_GUIDANCE
+        agent = self._make_agent(tools=("terminal", "web_search"))
+        assert CRON_RESTRAINT_GUIDANCE not in agent._build_system_prompt()
+
+
 class TestEnvironmentProbeIntegration:
     """Tests for the local Python toolchain probe wiring (config.yaml
     ``agent.environment_probe``).  The probe itself is unit-tested in

@@ -1028,6 +1028,12 @@ export function setSessionOwnerHint(sessionId: string, route: SessionOwnerRoute)
 export function migrateSessionOwnerHintsProfile(oldName: string, newName: string, connectionId: string): void {
   const oldProfile = oldName.trim() || 'default'
   const newProfile = newName.trim() || 'default'
+
+  // Another renderer may have persisted a newer route since this window
+  // hydrated. Merge that shared truth before re-keying so this migration
+  // cannot erase hints it has never seen.
+  hydrateSessionOwnerHints()
+
   const entries = [...sessionOwnerHints.values()]
 
   if (

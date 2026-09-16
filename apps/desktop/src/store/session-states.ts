@@ -970,6 +970,17 @@ export function migrateSessionTilesProfile(oldName: string, newName: string, con
     return
   }
 
+  // Shared storage may contain tiles opened by another renderer after this
+  // window hydrated. Reload before re-keying so a stale window cannot clobber
+  // those newer tabs when it receives the rename broadcast.
+  const latestTiles = loadTilesByProfile()
+
+  for (const profile of Object.keys(tilesByProfile)) {
+    delete tilesByProfile[profile]
+  }
+
+  Object.assign(tilesByProfile, latestTiles)
+
   const belongsToRenamedProfile = (tile: StoredTile): boolean => {
     const route = tile.ownerRoute
 

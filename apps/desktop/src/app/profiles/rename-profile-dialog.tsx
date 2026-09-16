@@ -148,7 +148,7 @@ export function RenameProfileDialog({
       setStatus('done')
       window.setTimeout(onClose, 800)
     } catch (err) {
-      if (!isDefault) {
+      if (!isDefault && renameAttemptId) {
         cancelProfileRenameState(currentName, trimmed, renameStateScope, renameAttemptId)
       }
 

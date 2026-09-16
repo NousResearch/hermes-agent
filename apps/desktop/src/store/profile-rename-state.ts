@@ -221,12 +221,23 @@ export function stageProfileRenameState(
   newName: string,
   scope: ProfileRenameStateScope = { connectionId: 'local', newNavigationSuffix: '', oldNavigationSuffix: '' }
 ): string {
+  const connectionId = scope.connectionId.trim() || 'local'
+  const normalizedNewName = normalizedName(newName)
+
+  if (
+    readPending().some(
+      entry => entry.pending.connectionId === connectionId && entry.pending.newName === normalizedNewName
+    )
+  ) {
+    throw new Error(`A rename to ${normalizedNewName} is already in progress on this connection`)
+  }
+
   const pending = {
     ...scope,
     attemptId: newAttemptId(),
-    connectionId: scope.connectionId.trim() || 'local',
+    connectionId,
     oldName: normalizedName(oldName),
-    newName: normalizedName(newName)
+    newName: normalizedNewName
   }
 
   try {

@@ -142,6 +142,7 @@ def test_turn_start_hands_pre_persisted_user_to_the_worker_session(turn_env, mon
         host.close()
 
     assert seen == [marker]
+    assert "_prepersisted_user_message" not in session
 
 
 def test_turn_start_without_sid_is_a_turn_error(turn_env):

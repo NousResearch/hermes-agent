@@ -668,6 +668,11 @@ _server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, 
 # events, which write_json would otherwise drop on stdio (see _broadcast_global_event).
 _live_transports: set[Transport] = set()
 _live_transports_lock = threading.Lock()
+# True only when real stdout IS the JSON-RPC client channel (``tui_gateway.entry.main``, the stdio TUI).
+# `hermes serve` / dashboard processes speak JSON-RPC over WS only: their stdout is captured into
+# desktop.log, so a peer-less global broadcast (the change watcher keeps ticking after the last WS client
+# leaves) must be dropped there, not printed.
+_stdio_is_rpc_channel = False
 
 
 def register_live_transport(transport: Transport | None) -> None:
@@ -686,11 +691,15 @@ def unregister_live_transport(transport: Transport | None) -> None:
 
 def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
     """Fan a session-less, surface-global event (``skin.changed``) to every connected client — background
-    emitters bottom out at stdio in ``write_json``'s ladder. No registered transports (stdio TUI, tests) → ``_emit``."""
+    emitters bottom out at stdio in ``write_json``'s ladder. No registered transports → ``_emit`` when stdout is the
+    stdio TUI's JSON-RPC channel, else dropped (nobody is listening; stdout is a log sink)."""
     with _live_transports_lock:
         targets = list(_live_transports)
     if not targets:
-        return _emit(event, "", payload)
+        if _stdio_is_rpc_channel:
+            return _emit(event, "", payload)
+        logger.debug("global-event broadcast dropped (no connected client) type=%s", event)
+        return None
     frame = _event_frame(event, "", payload)
     for transport in targets:
         try:

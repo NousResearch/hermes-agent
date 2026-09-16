@@ -2,8 +2,8 @@ import { spawn, type SpawnOptions } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 
-import { hiddenWindowsChildOptions } from './windows-child-options'
 import { resolveVenvDir } from './venv-blocker-scan'
+import { hiddenWindowsChildOptions } from './windows-child-options'
 
 /** File prerequisites only: dependency recovery must remain reachable through update. */
 export function windowsUpdatePrerequisiteError(updateRoot: string): string | null {

@@ -1,11 +1,11 @@
-"""Rekey a renamed profile's session/routing identity (#111926), and purge a deleted profile's.
+"""Rekey a renamed profile's durable identity (#111926), and purge a deleted profile's (#112727).
 
 ``rename_profile`` moves ``profiles/<old>/`` to ``profiles/<new>/`` so row DATA travels with the
-directory, but the profile name is also baked into keys and values the move never touches:
+directory, but several identities are derived from the old name or absolute path and do not:
 ``agent:<old>:*`` session-key namespaces (routing index + the profile's own ``sessions`` rows),
-``sessions.profile_name``, ``gateway_heartbeats.profile`` and ``delivery_obligations``. Left alone,
-every inbound event on a chat keyed to the old name logs ``Profile 'old' does not exist`` and
-falls back to the global home, and renamed sessions drop out of the Desktop sidebar.
+``sessions.profile_name``, ``gateway_heartbeats.profile``, ``delivery_obligations``, and checkpoint
+project refs/metadata/ledgers keyed by the absolute workdir path. Left alone, routing resolves to a
+profile that no longer exists and profile-local `/rollback` history disappears under the new path.
 
 The same identity has to be *purged* when a profile is deleted — the mirror image of the rekey,
 and ``delete_profile`` calls :func:`purge_profile_identity` for it.
@@ -17,6 +17,7 @@ control verb and the delete to the delete-only ``purge-profile-identity`` verb. 
 ``_unserve_profile()``: that hook fires for every name leaving the served set, and a rename's old
 name leaves it exactly like a deleted one, so identity must survive it for the rekey that follows.
 With no live multiplexer nothing else holds the store and the durable rewrite is safe here.
+Checkpoint project state has no live in-memory owner and is rekeyed locally after the directory move.
 """
 from __future__ import annotations
 
@@ -26,18 +27,20 @@ from pathlib import Path
 
 
 def migrate_profile_identity(old_name: str, new_name: str) -> bool:
-    """Retry the session/routing identity migration of a rename that already completed.
+    """Retry the durable identity migration of a rename that already completed.
 
     ``rename_profile`` runs the migration itself; this is the standalone retry behind
     ``hermes profile migrate-identity <old> <new>`` for when that attempt failed. The rename
     cannot simply be repeated — ``profiles/<old>`` is gone — and the identity to migrate is read
-    from the DB rows that still name *old*, so only the new profile has to exist here.
+    from rows/metadata that still name the old profile or old absolute workdir, so only the new
+    profile has to exist here.
 
-    A live multiplexer holds the routing index in memory and therefore stays the owner of the
-    migration (the CLI delegates to its control verb); with no live multiplexer the durable
-    rewrite is safe because nothing else holds the store. Idempotent: re-running a completed
-    migration succeeds with nothing left to rekey. Returns True when the identity was migrated,
-    False when a live gateway would not do it — the caller reports that as a failure.
+    A live multiplexer holds the routing index in memory and therefore stays the owner of that
+    portion of the migration (the CLI delegates to its control verb); checkpoint identity and,
+    with no live multiplexer, session identity are durable-only and safe to rewrite here.
+    Idempotent: re-running a completed migration succeeds with nothing left to rekey. Returns True
+    when all applicable identity was migrated, False when any durable migration failed or a live
+    gateway would not accept the routing migration.
     """
     from hermes_cli.profiles import _canon_valid, _live_default_multiplexer, _unknown_profile_error, get_profile_dir
     old_canon = _canon_valid(old_name)
@@ -158,13 +161,37 @@ def _gateway_accepts_profile_identity_verb(root: Path) -> bool:
         return False
 
 
+def _migrate_checkpoint_identity(old_canon: str, new_canon: str) -> bool:
+    """Rekey checkpoint projects whose absolute workdirs moved with the profile directory."""
+    from hermes_cli.profiles import get_profile_dir
+    from tools.checkpoint_profile_migration import migrate_profile_checkpoint_projects
+
+    old_dir = get_profile_dir(old_canon)
+    new_dir = get_profile_dir(new_canon)
+    result = migrate_profile_checkpoint_projects(old_dir, new_dir)
+    if result["migrated"]:
+        print(f"✓ Checkpoint identity updated: {result['migrated']} project(s)")
+    if not result["errors"]:
+        return True
+    print(
+        "⚠ Profile was renamed, but checkpoint identity migration failed for "
+        f"{result['errors']} project(s). Retry with:\n"
+        f"    hermes profile migrate-identity {old_canon} {new_canon}",
+        file=sys.stderr,
+    )
+    return False
+
+
 def _migrate_profile_identity(old_canon: str, new_canon: str, live_mux: bool) -> bool:
     """Rekey renamed-profile identity without racing a live gateway's in-memory routing index.
 
-    Returns True when the identity was migrated — by the gateway's control verb, or by this
-    process's durable rewrite when no gateway holds the store — and False when a live gateway did
-    not accept it. Never fatal to the rename, which has already happened by this point.
+    Returns True when every applicable identity was migrated. Session/routing identity is handled
+    by the gateway's control verb when it owns the live store, otherwise by this process; checkpoint
+    project identity is always durable-only. Never fatal to the rename, which has already happened
+    by this point.
     """
+    checkpoint_migrated = _migrate_checkpoint_identity(old_canon, new_canon)
+
     if live_mux:
         from hermes_constants import get_default_hermes_root
         root = get_default_hermes_root()
@@ -175,7 +202,7 @@ def _migrate_profile_identity(old_canon: str, new_canon: str, live_mux: bool) ->
             reason = f"{type(exc).__name__}: {exc}"
         else:
             if isinstance(answer, dict) and answer.get("ok") is True:
-                return True
+                return checkpoint_migrated
             reason = _control_answer_failure(answer)
             if answer is None and _gateway_accepts_profile_identity_verb(root):
                 reason += (" — the gateway is running but does not implement "
@@ -191,7 +218,7 @@ def _migrate_profile_identity(old_canon: str, new_canon: str, live_mux: bool) ->
     from hermes_state_registry import acquire, release_or_close
     from hermes_constants import get_default_hermes_root
     root = get_default_hermes_root()
-    migrated = True
+    migrated = checkpoint_migrated
     for db_path in (root / "state.db", get_profile_dir(new_canon) / "state.db"):
         if not db_path.exists():
             continue

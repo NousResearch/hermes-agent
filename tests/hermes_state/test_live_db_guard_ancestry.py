@@ -159,3 +159,63 @@ class TestPytestProcessRecognition:
                 raise PermissionError("access denied")
 
         assert not hermes_state_guard._process_looks_like_pytest(_Denied())
+
+
+_SELF_ID_PROBE = """
+import sys
+sys.path.insert(0, {repo!r})
+import hermes_state_guard
+
+# A fresh interpreter has no `pytest` import, so the sys.modules arm is off
+# unless injected — this isolates each detection branch of the self-check.
+sys.modules.pop("pytest", None)
+if {inject_module}:
+    import types
+    sys.modules["pytest"] = types.ModuleType("pytest")
+
+sys.argv = {argv!r}
+
+print("IS-PYTEST" if hermes_state_guard._current_process_is_pytest() else "NOT-PYTEST")
+"""
+
+
+def _run_self_id_probe(argv, inject_module=False):
+    script = _SELF_ID_PROBE.format(repo=str(REPO_ROOT), argv=argv, inject_module=inject_module)
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        timeout=120,
+    )
+    verdict = result.stdout.strip().splitlines()[-1]
+    assert verdict in ("IS-PYTEST", "NOT-PYTEST"), (
+        f"self-id probe produced no verdict.\nstdout={result.stdout!r}\nstderr={result.stderr!r}"
+    )
+    return verdict
+
+
+class TestCurrentProcessSelfIdentification:
+    """The self-check arm: a ``python -m pytest`` process writing the live DB
+    with a scrubbed env is the *process itself*, so neither ``PYTEST_*``
+    (stripped) nor ancestry (it has no pytest ancestor above it) fires — only
+    ``sys.argv`` / ``sys.modules`` can identify it."""
+
+    def test_argv_module_path_detects_python_m_pytest(self):
+        # `python -m pytest` puts pytest/__main__.py at argv[0]; its basename is
+        # __main__.py so the launcher-name match misses it — the substring must not.
+        argv = ["/venv/lib/python/site-packages/pytest/__main__.py", "tests/gateway/test_x.py"]
+        assert _run_self_id_probe(argv) == "IS-PYTEST"
+
+    def test_loaded_module_detects_pytest(self):
+        assert _run_self_id_probe(["-c"], inject_module=True) == "IS-PYTEST"
+
+    def test_normal_process_is_not_pytest(self):
+        assert _run_self_id_probe(["hermes", "gateway", "start"]) == "NOT-PYTEST"
+
+    def test_in_test_context_consults_self_check(self, monkeypatch):
+        # With env and ancestry both disabled, the self-check must still arm it.
+        monkeypatch.setattr(hermes_state_guard, "_running_under_pytest", lambda: False)
+        monkeypatch.setattr(hermes_state_guard, "_has_pytest_ancestor", lambda: False)
+        # Under the test runner "pytest" is in sys.modules, so the arm fires.
+        assert hermes_state_guard._in_test_context()

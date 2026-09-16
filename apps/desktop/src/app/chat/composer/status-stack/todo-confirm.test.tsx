@@ -137,8 +137,13 @@ vi.mock('@/store/composer-status', () => ({
 }))
 vi.mock('@/store/goals', () => ({ refreshSessionGoal: vi.fn() }))
 vi.mock('@/store/preview-status', () => ({ $previewStatusBySession: 'preview-store', dismissPreviewArtifact: vi.fn() }))
-vi.mock('@/store/thread-scroll', () => ({ $threadScrolledUp: 'scroll' }))
-vi.mock('@/store/windows', () => ({ openSessionInNewWindow: vi.fn() }))
+vi.mock('@/store/thread-scroll', () => ({ $threadScrolledUp: 'scroll', $threadScrolledUpBySession: 'scroll-by-session' }))
+vi.mock('@/store/windows', async importOriginal => ({
+  ...(await importOriginal()),
+  openSessionInNewWindow: vi.fn(),
+  isSecondaryWindow: () => false,
+  isBrowserWindow: () => false
+}))
 vi.mock('@/store/todos', () => ({
   $sessionTodoSnapshots: 'authority-store',
   applyOptimisticTodoStatus: vi.fn(() => true),

@@ -24,7 +24,8 @@ class CLI(CLIStreamMixin):
 
 
 @pytest.mark.parametrize("initial", [False, True])
-def test_tui_real_turn_snapshot_next_turn_and_child_threads(turn_env, marker_home, monkeypatch, initial):
+@pytest.mark.parametrize("fail", [False, True])
+def test_tui_real_turn_snapshot_next_turn_and_child_threads(turn_env, marker_home, monkeypatch, initial, fail):
     home = marker_home / "snapshot-owner"
     home.mkdir()
     cfg = home / "config.yaml"
@@ -56,6 +57,8 @@ def test_tui_real_turn_snapshot_next_turn_and_child_threads(turn_env, marker_hom
         assert not worker.is_alive()
         warnings = [f for f in frames[before:] if f.get("params", {}).get("type") == "status.update"]
         seen.append(len(warnings))
+        if fail:
+            raise RuntimeError("fixture turn failure")
         return {"final_response": "requested result", "messages": []}
     agent.run_conversation = run
     for _ in expected:

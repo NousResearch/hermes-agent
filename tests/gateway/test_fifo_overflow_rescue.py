@@ -17,6 +17,8 @@ orphan in the slot, so FIFO order (#28503) holds and nothing runs twice.
 import threading
 from unittest.mock import MagicMock
 
+import pytest
+
 from agent.background_review import _BackgroundReviewRun
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -87,7 +89,98 @@ class _PausingRLock:
             assert self.resume_owner.wait(timeout=1.0)
 
 
+class _TrackingRLock:
+    """RLock test double that exposes ownership without platform-private methods."""
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._owner = None
+        self._depth = 0
+
+    def __enter__(self):
+        self._lock.acquire()
+        owner = threading.get_ident()
+        if self._owner == owner:
+            self._depth += 1
+        else:
+            self._owner = owner
+            self._depth = 1
+        return self
+
+    def __exit__(self, *_args):
+        self._depth -= 1
+        if self._depth == 0:
+            self._owner = None
+        self._lock.release()
+
+    def held_by_current_thread(self) -> bool:
+        return self._owner == threading.get_ident()
+
+
 class TestRescueOrphanedOverflow:
+    @pytest.mark.parametrize("orphans", [1, 2], ids=["lone_orphan", "two_orphans"])
+    def test_rescue_advances_epoch_and_fences_under_admission_lock(self, orphans):
+        """The rescue is one fenced admission mutation for both staging shapes: the epoch
+        advances and the review fence fires while the admission lock is still held."""
+        runner = _runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:user:fenced"
+        events = [_text_event(f"orphan-{i}", f"o{i}") for i in range(1, orphans + 1)]
+        runner._session_state(session_key).conversation.queued_events.extend(events)
+        incoming = _text_event("new-msg", "new1")
+        admission = adapter.followup_admission_state(session_key)
+        admission.lock = tracked = _TrackingRLock()
+        seen = []
+        adapter.register_followup_review_cancel(
+            session_key, lambda: seen.append(tracked.held_by_current_thread())
+        )
+
+        rescued = runner._rescue_orphaned_overflow(
+            session_key, adapter, incoming_event=incoming
+        )
+
+        assert rescued is events[0]
+        assert admission.epoch == 1
+        assert seen == [True]
+        if orphans == 1:
+            assert adapter._pending_messages[session_key] is incoming
+            assert runner._overflow_queue(session_key) == []
+        else:
+            assert adapter._pending_messages[session_key] is events[1]
+            assert runner._overflow_queue(session_key) == [incoming]
+
+    @pytest.mark.parametrize("orphans", [1, 2], ids=["lone_orphan", "two_orphans"])
+    def test_rescue_never_exposes_an_empty_slot_and_overflow_to_the_probe(self, orphans):
+        """A review whose admission lock is a stale, already-popped state object probes the
+        live slot/overflow without serialising against the rescue. No instant of the mutation
+        may show both empty, or that review is admitted against the rescued turn."""
+        runner = _runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:user:probe"
+        observed = []
+
+        class ProbedOverflow(list):
+            def pop(self, index=-1):
+                item = super().pop(index)
+                observed.append(
+                    adapter.has_pending_message(session_key)
+                    or bool(runner._overflow_queue(session_key))
+                )
+                return item
+
+        events = [_text_event(f"orphan-{i}", f"o{i}") for i in range(1, orphans + 1)]
+        runner._session_state(session_key).conversation.queued_events = ProbedOverflow(
+            events
+        )
+        incoming = _text_event("new-msg", "new1")
+
+        rescued = runner._rescue_orphaned_overflow(
+            session_key, adapter, incoming_event=incoming
+        )
+
+        assert rescued is events[0]
+        assert observed and all(observed), observed
+
     def test_lone_orphan_and_incoming_are_one_admission_transaction(self):
         runner = _runner()
         adapter = _StubAdapter()
@@ -188,7 +281,8 @@ class TestRescueOrphanedOverflow:
     def test_fifo_order_preserved_across_rescue_and_new_message(self):
         """Oldest orphan runs first, new arrival last — FIFO (#28503).
 
-        Mirrors the idle-arrival call site: rescue → _enqueue_fifo(new).
+        Mirrors the idle-arrival call site: the incoming event is published inside the
+        rescue's own admission transaction (``incoming_event=``), never as a separate enqueue.
         """
         runner = _runner()
         adapter = _StubAdapter()
@@ -197,9 +291,10 @@ class TestRescueOrphanedOverflow:
             [_text_event("orphan-1", "o1"), _text_event("orphan-2", "o2")]
         )
 
-        rescued = runner._rescue_orphaned_overflow(session_key, adapter)
+        rescued = runner._rescue_orphaned_overflow(
+            session_key, adapter, incoming_event=_text_event("new-msg", "new1")
+        )
         assert rescued is not None and rescued.text == "orphan-1"
-        runner._enqueue_fifo(session_key, _text_event("new-msg", "new1"), adapter)
 
         # Drain order after this turn: slot (orphan-2), then overflow (new-msg)
         assert adapter._pending_messages[session_key].text == "orphan-2"
@@ -209,8 +304,9 @@ class TestRescueOrphanedOverflow:
         assert overflow_texts == ["new-msg"]
 
     def test_single_orphan_then_new_message_lands_in_slot(self):
-        """With one orphan the slot is free after rescue, so the incoming
-        message must go to the slot (not overflow) or the drain never sees it."""
+        """With one orphan the slot is free after rescue, so the incoming message (published
+        in the same admission transaction) must go to the slot, not overflow, or the drain
+        never sees it."""
         runner = _runner()
         adapter = _StubAdapter()
         session_key = "telegram:user:5"
@@ -218,9 +314,10 @@ class TestRescueOrphanedOverflow:
             _text_event("orphan-1", "o1")
         )
 
-        rescued = runner._rescue_orphaned_overflow(session_key, adapter)
+        rescued = runner._rescue_orphaned_overflow(
+            session_key, adapter, incoming_event=_text_event("new-msg", "new1")
+        )
         assert rescued is not None and rescued.text == "orphan-1"
-        runner._enqueue_fifo(session_key, _text_event("new-msg", "new1"), adapter)
 
         assert adapter._pending_messages[session_key].text == "new-msg"
         assert runner._session_state(session_key).conversation.queued_events == []

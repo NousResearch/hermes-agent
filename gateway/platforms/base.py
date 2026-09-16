@@ -4515,6 +4515,21 @@ class BasePlatformAdapter(ABC):
                 if inspect.isawaitable(_post_result):
                     await asyncio.wait_for(_post_result, timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
 
+    @staticmethod
+    def _take_review_delivery_callback(
+        event: MessageEvent, interrupt_event: asyncio.Event) -> Optional[Callable[..., Any]]:
+        """Detach THIS turn's review-ownership completion from both carriers (Event first). Taken
+        the moment the handler returns: a drain handoff re-uses the session Event, and the
+        follow-up turn attaches its own callback there while this turn is still unwinding."""
+        callback = None
+        for carrier in (interrupt_event, event):
+            found = getattr(carrier, "_gateway_review_delivery_complete", None)
+            with contextlib.suppress(Exception):
+                delattr(carrier, "_gateway_review_delivery_complete")
+            if callback is None and callable(found):
+                callback = found
+        return callback
+
     def _finish_session_task(self, session_key: str, interrupt_event: asyncio.Event) -> None:
         """End-of-task guard/ownership reconciliation. A late ``_pending_messages`` arrival must not
         drop: re-queue it if another task already owns the session (drain handoff), else spawn the
@@ -4542,7 +4557,8 @@ class BasePlatformAdapter(ABC):
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
-        processing_ok = pending_handoff = False
+        processing_ok = pending_handoff = review_ownership_taken = False
+        review_delivery_complete = None
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -4558,6 +4574,8 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
             response = await self._message_handler(event)
+            review_delivery_complete = self._take_review_delivery_callback(event, interrupt_event)
+            review_ownership_taken = True
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.
             with self._media_delivery_scope(event.source):
@@ -4650,22 +4668,19 @@ class BasePlatformAdapter(ABC):
             if isinstance(e, (SystemExit, KeyboardInterrupt)):
                 raise
         finally:
+            if not review_ownership_taken:
+                # The handler raised, so no drain task exists yet and the carriers still hold
+                # only this turn's callback.
+                review_delivery_complete = self._take_review_delivery_callback(event, interrupt_event)
             await self._release_turn_marker(event)
             event._turn_marker_handoff = False  # a later run of this object clears its own marker
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
             # alive.
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
             await self._fire_post_delivery_callback(session_key, interrupt_event)
-            _review_delivery_complete = getattr(
-                interrupt_event, "_gateway_review_delivery_complete", None
-            ) or getattr(event, "_gateway_review_delivery_complete", None)
-            if callable(_review_delivery_complete):
-                with contextlib.suppress(Exception):
-                    delattr(interrupt_event, "_gateway_review_delivery_complete")
-                with contextlib.suppress(Exception):
-                    delattr(event, "_gateway_review_delivery_complete")
+            if callable(review_delivery_complete):
                 with contextlib.suppress(asyncio.TimeoutError, Exception):
-                    _review_result = _review_delivery_complete(
+                    _review_result = review_delivery_complete(
                         delivery_succeeded=bool(processing_ok and not pending_handoff)
                     )
                     if inspect.isawaitable(_review_result):

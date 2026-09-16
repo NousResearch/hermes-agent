@@ -829,6 +829,59 @@ def test_terminal_review_cannot_be_relabeled_preempted_before_slot_cleanup():
     assert run.cancel_requested.is_set() is False
 
 
+def test_cancel_after_provider_phase_returns_does_not_requeue_completed_review(
+    review_forks, monkeypatch
+):
+    """A cancel landing after the provider phase returned, while the lease release, usage
+    attribution and fork unregister are still pending, must not relabel a COMPLETED review as
+    preempted: its memory/skill writes already happened, so a requeue would run it all again."""
+    _patch_config(monkeypatch, _config())
+    agent = _bare_agent()
+    runs, enqueued, interrupts = [], [], []
+    original_prepare = background_review_module.prepare_background_review_run
+
+    def _capture_prepare(*args, **kwargs):
+        runs.append(original_prepare(*args, **kwargs))
+        return runs[-1]
+
+    monkeypatch.setattr(
+        background_review_module, "prepare_background_review_run", _capture_prepare
+    )
+    monkeypatch.setattr(
+        agent, "_requeue_deferred_review", lambda kwargs: enqueued.append(kwargs)
+    )
+    monkeypatch.setattr(
+        background_review_module,
+        "_interrupt_background_review",
+        lambda review_agent: interrupts.append(review_agent),
+    )
+    # Land the live-turn cancel inside the post-return window of the fork's finally.
+    monkeypatch.setattr(
+        background_review_module,
+        "_record_review_usage_to_parent",
+        lambda *_args, **_kwargs: (
+            background_review_module.cancel_background_review_for_live_turn(
+                agent, wait=False
+            )
+        ),
+    )
+
+    AIAgent._spawn_background_review_now(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+        task_cfg={"defer": "auto"},
+        _idle_queue_origin=True,
+        _review_session_id=agent.session_id,
+    )
+
+    assert review_forks and review_forks[0]["history"] is not None
+    assert runs[0].request_done.is_set()
+    assert runs[0].cancel_requested.is_set() is False
+    assert interrupts == []
+    assert enqueued == []
+
+
 def test_foreground_wait_has_no_timeout_escape_into_provider_work():
     entered = threading.Event()
     release = threading.Event()

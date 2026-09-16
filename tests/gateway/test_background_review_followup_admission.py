@@ -290,10 +290,16 @@ async def test_cancelled_gateway_admission_wait_releases_live_turn_owner(monkeyp
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("send_succeeded", [True, False])
+@pytest.mark.parametrize(
+    "send_succeeded, handoff, expected",
+    [(True, False, True), (False, False, False), (True, True, False)],
+    ids=["sent", "send_failed", "handoff"],
+)
 async def test_base_delivery_completes_gateway_review_with_actual_outcome(
-    monkeypatch, send_succeeded
+    monkeypatch, send_succeeded, handoff, expected
 ):
+    """Ownership completes with the ACTUAL outcome: a failed send or a queued follow-up
+    handed to the drain task is not a confirmed terminal delivery, so no review may spawn."""
     monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
     adapter = BasePlatformAdapter(
         PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM
@@ -314,10 +320,69 @@ async def test_base_delivery_completes_gateway_review_with_actual_outcome(
     adapter.set_message_handler(_handler)
     adapter.send = _send
     adapter._active_sessions[session_key] = asyncio.Event()
+    if handoff:
+        adapter._pending_messages[session_key] = _event(text="queued follow-up")
+        adapter._spawn_drain_task = lambda _pending, _key: None
 
     await adapter._process_message_background(event, session_key)
 
-    assert outcomes == [send_succeeded]
+    assert outcomes == [expected]
+
+
+@pytest.mark.asyncio
+async def test_drain_handoff_completes_only_its_own_review_ownership(monkeypatch):
+    """Turn N's cleanup completes turn N's ownership, never the drain follow-up's.
+
+    A queued follow-up is handed to a fresh task on the SAME session Event, and that task's
+    ``_handle_message_with_agent`` attaches its own delivery-complete callback to the Event
+    while turn N is still unwinding (stop-typing / post-delivery awaits). Reading the Event in
+    turn N's finally would release turn N+1's live-turn token mid-turn (re-opening the overlap
+    window for a deferred review) and leak turn N's token, so every later automatic review for
+    the session would be skipped as ``live_turn_active``.
+    """
+    monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
+    adapter = BasePlatformAdapter(
+        PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM
+    )
+    monkeypatch.setattr(adapter.config, "typing_indicator", False, raising=False)
+    session_key = "gateway-drain-handoff"
+    guard = asyncio.Event()
+    adapter._active_sessions[session_key] = guard
+    queued = _event(text="queued follow-up")
+    adapter._pending_messages[session_key] = queued
+    finished_n, finished_n1, drained, attached = [], [], [], []
+
+    def finish_n(*, delivery_succeeded):
+        finished_n.append(delivery_succeeded)
+
+    def finish_n1(*, delivery_succeeded):
+        finished_n1.append(delivery_succeeded)
+
+    async def _handler(_event):
+        guard._gateway_review_delivery_complete = finish_n
+        return "reply"
+
+    async def _send(*_args, **_kwargs):
+        return SendResult(success=True, message_id="sent")
+
+    async def _stop_typing(*_args, **_kwargs):
+        # First cleanup await after the handoff: the drain task's turn N+1 has already landed
+        # its own callback on the shared Event.
+        if drained and not attached:
+            attached.append(True)
+            guard._gateway_review_delivery_complete = finish_n1
+
+    adapter.set_message_handler(_handler)
+    adapter.send = _send
+    adapter._spawn_drain_task = lambda pending, _key: drained.append(pending)
+    adapter._stop_typing_refresh = _stop_typing
+
+    await adapter._process_message_background(_event(), session_key)
+
+    assert drained == [queued]
+    assert finished_n == [False]
+    assert finished_n1 == []
+    assert guard._gateway_review_delivery_complete is finish_n1
 
 
 def test_read_only_pending_probes_do_not_recreate_cleaned_admission_state(monkeypatch):

@@ -171,15 +171,19 @@ class GatewayBusySessionMixin:
                     return False
                 if pending_slot.get(session_key):
                     return False  # slot occupied (busy) — promotion owns this
+                # Stage the slot BEFORE popping the head. A prior turn's review probes the live
+                # slot/overflow through an admission state that was popped when the session went
+                # idle, so it is not serialised against this lock and must never observe both
+                # empty. Keeping the slot occupied also makes the drain promote in order and
+                # routes a mid-chain arrival to overflow instead of jumping the queue.
+                next_slot = overflow[1] if len(overflow) > 1 else incoming_event
+                if next_slot is not None:
+                    pending_slot[session_key] = next_slot
                 rescued.append(overflow.pop(0))
-                # Keep the slot occupied so the drain promotes in order and a mid-chain arrival
-                # routes to overflow instead of jumping the queue.
                 if overflow:
-                    pending_slot[session_key] = overflow.pop(0)
+                    overflow.pop(0)  # the orphan just staged into the slot
                     if incoming_event is not None:
                         overflow.append(incoming_event)
-                elif incoming_event is not None:
-                    pending_slot[session_key] = incoming_event
                 remaining.append(overflow)
                 return True
 

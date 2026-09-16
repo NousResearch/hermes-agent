@@ -51,7 +51,7 @@ class _BackgroundReviewRun:
         self._review_agent = None
         self._parent_agent = None
         self._review_owner_key = None
-        self._request_finished = self._cancel_dispatched = False
+        self._request_finished = self._cancel_dispatched = self._completed = False
 
     def begin_request(self, review_agent: Any) -> bool:
         """Atomically admit the first provider-capable review phase.
@@ -104,9 +104,13 @@ class _BackgroundReviewRun:
             return REASON_ADMISSION_FAILURE
 
     def cancel(self) -> Any:
-        """Fence startup and return the running fork, if one was admitted."""
+        """Fence startup and return the running fork, if one was admitted.
+
+        A run whose provider phase already returned is complete, not preempted: its writes
+        happened, so it is neither interrupted nor requeued while its cleanup still runs.
+        """
         with self._lock:
-            if self._request_finished:
+            if self._request_finished or self._completed:
                 return None
             self.cancel_requested.set()
             if self._review_agent is None or self._cancel_dispatched:
@@ -119,6 +123,14 @@ class _BackgroundReviewRun:
         if not self._followup_cancellable:
             return None
         return self.cancel()
+
+    def mark_provider_phase_complete(self) -> None:
+        """Latch completion the moment the provider phase returns, before the lease release,
+        usage attribution and unregister that precede ``request_done``: a cancel landing in that
+        window must not relabel the run preempted. A run fenced mid-phase stays preempted."""
+        with self._lock:
+            if not self.cancel_requested.is_set():
+                self._completed = True
 
     def owns_request_agent(self, agent: Any) -> bool:
         """Whether ``agent`` is the fork currently executing this run's request phase."""
@@ -1470,6 +1482,8 @@ def _run_review_fork(
                     ),
                     conversation_history=_digest_history(messages_snapshot) if _routed else messages_snapshot,
                 )
+                if review_run is not None:
+                    review_run.mark_provider_phase_complete()
         elif reason := refusal_reason or (
             review_run.refused_reason if review_run is not None else None
         ):

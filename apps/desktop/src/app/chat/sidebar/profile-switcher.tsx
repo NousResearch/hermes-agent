@@ -449,6 +449,11 @@ export function ProfileRail() {
         // reorder, no long-press recolor, no per-square context menu — Manage
         // covers rename/delete at this scale.
         <div className="flex min-w-0 flex-1 items-center gap-1">
+          {/* In fleet mode the pinned pill is an all-profiles action, not the
+              default↔all toggle used by the single-gateway rail. The expanded
+              fleet strip carries its own default home square, so the condensed
+              dropdown must carry that same route or default becomes unreachable
+              as soon as the whole fleet crosses the collapse threshold. */}
           <ProfileDropdown
             activeKey={isAll ? null : activeKey}
             colors={colors}
@@ -456,7 +461,7 @@ export function ProfileRail() {
             onImport={() => void runImportProfileFlow()}
             onSelect={selectProfile}
             onSelectRest={switchToRest}
-            profiles={named}
+            profiles={fleet && defaultProfile ? [defaultProfile, ...named] : named}
             restGroups={restGroups}
           />
         </div>
@@ -766,7 +771,7 @@ function ProfileDropdown({
                 <ProfileGlyph
                   aria-hidden="true"
                   color={resolveProfileColor(activeProfile.name, colors)}
-                  isDefault={false}
+                  isDefault={activeProfile.is_default}
                   name={activeProfile.name}
                 />
                 <span className="truncate">{profileLabel(activeProfile)}</span>
@@ -792,6 +797,7 @@ function ProfileDropdown({
           {profiles.map(profile => (
             <ProfileDropdownItem
               color={resolveProfileColor(profile.name, colors)}
+              isDefault={profile.is_default}
               key={profile.name}
               label={profileLabel(profile)}
               name={profile.name}
@@ -833,7 +839,17 @@ function ProfileDropdown({
 
 // One dropdown row per profile — its own component so each row can own a
 // hover-intent prewarm timer (see useProfilePrewarm).
-function ProfileDropdownItem({ color, label, name }: { color: null | string; label: string; name: string }) {
+function ProfileDropdownItem({
+  color,
+  isDefault,
+  label,
+  name
+}: {
+  color: null | string
+  isDefault: boolean
+  label: string
+  name: string
+}) {
   const { cancelPrewarm, startPrewarm } = useProfilePrewarm(name)
 
   return (
@@ -844,7 +860,7 @@ function ProfileDropdownItem({ color, label, name }: { color: null | string; lab
       value={name}
     >
       <span className="flex min-w-0 items-center gap-1.5">
-        <ProfileGlyph aria-hidden="true" color={color} isDefault={false} name={name} />
+        <ProfileGlyph aria-hidden="true" color={color} isDefault={isDefault} name={name} />
         <span className="truncate">{label}</span>
       </span>
     </DropdownMenuRadioItem>

@@ -282,7 +282,10 @@ class SessionSessionsMixin:
         git_repo_root: str = None, origin_json: str = None, display_name: str = None,
     ) -> None:
         """Upsert a session row, never overwriting what an earlier writer set (the gateway creates a
-        bare row before create_session carries the real model/prompt). chat_id/thread_id scope gateway
+        bare row before create_session carries the real model/prompt) — the one exception is the
+        token-accounting guard's placeholder ``source='unknown'``, which a later writer's real surface
+        replaces (#111999): once minted, that placeholder otherwise labelled a real session anonymous
+        for life, because this upsert is the only writer that could correct it. chat_id/thread_id scope gateway
         /resume (IDOR). Children backfill from the parent; a missing profile_name is stamped with THIS
         store's own (NULL reads as unowned).
 
@@ -320,6 +323,11 @@ class SessionSessionsMixin:
                 )
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
+                       source = CASE
+                           WHEN sessions.source = 'unknown'
+                           THEN COALESCE(excluded.source, 'unknown')
+                           ELSE sessions.source
+                       END,
                        model = COALESCE(sessions.model, excluded.model),
                        model_config = CASE
                            WHEN excluded.model_config IS NOT NULL

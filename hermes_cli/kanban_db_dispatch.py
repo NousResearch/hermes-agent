@@ -757,6 +757,8 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
         outcome = row["outcome"] or ""
         if outcome == "rate_limited":
             continue
+        if outcome == "reclaimed" and _kb._json_dict(row["metadata"]).get("update_handoff_neutral"):
+            continue
         if outcome == "crashed" and (
             _kb._json_dict(row["metadata"]).get("protocol_violation")
             or "protocol violation" in (row["error"] or "")

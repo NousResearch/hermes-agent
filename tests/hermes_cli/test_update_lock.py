@@ -156,6 +156,13 @@ def test_dispatch_marker_state_stays_unknown_when_owner_probe_fails(marker, monk
     assert marker.exists()
 
 
+def test_dispatch_marker_state_stays_unknown_while_marker_is_partial(marker):
+    marker.write_text("", encoding="utf-8")
+
+    assert read_update_marker_state(path=marker) == "unknown"
+    assert marker.exists()
+
+
 def test_context_manager_releases_even_on_exception(marker):
     with pytest.raises(RuntimeError):
         with UpdateLock(path=marker) as lock:

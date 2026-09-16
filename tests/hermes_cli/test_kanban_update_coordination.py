@@ -17,6 +17,12 @@ def test_live_update_pauses_dispatch_and_quiesce_reclaims_without_failure(tmp_pa
     with kbc.connect_closing() as conn:
         running = kb.create_task(conn, title="in flight", assignee="dev")
         queued = kb.create_task(conn, title="queued", assignee="dev")
+        for ended_at in (1, 2):
+            conn.execute(
+                "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at, metadata) "
+                "VALUES (?, 'crashed', 'crashed', ?, ?, ?)",
+                (running, ended_at, ended_at, '{"protocol_violation": true}'),
+            )
         assert kb.claim_task(conn, running, claimer=f"{kb._host_prefix()}update-test") is not None
         conn.execute(
             "UPDATE tasks SET worker_pid = ?, worker_started_at = NULL, consecutive_failures = 2 "
@@ -57,6 +63,7 @@ def test_live_update_pauses_dispatch_and_quiesce_reclaims_without_failure(tmp_pa
         assert task.status == "ready"
         assert task.consecutive_failures == 2
         assert task.worker_pid is None
+        assert dispatch._protocol_violation_streak(conn, running) == 2
 
 
 def test_unknown_update_marker_state_keeps_dispatch_paused(monkeypatch):

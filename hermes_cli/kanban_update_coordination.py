@@ -49,6 +49,7 @@ def _quiesce_task_for_update(conn, task_id: str) -> bool:
         and termination.get("tree_terminated")
     ):
         return False
+    termination["update_handoff_neutral"] = True
 
     with kb.write_txn(conn):
         retry_status = kb._retry_status_for_run(conn, task_id)

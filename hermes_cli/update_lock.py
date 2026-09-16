@@ -123,9 +123,7 @@ def read_update_marker_state(*, path: Path | None = None) -> str:
         pid = int(lines[0].strip())
         started_at = float(lines[1].strip())
     except (IndexError, ValueError):
-        with suppress(OSError):
-            marker.unlink()
-        return "absent"
+        return "unknown"
 
     age = time.time() - started_at
     if age > UPDATE_MARKER_MAX_AGE_SECONDS:

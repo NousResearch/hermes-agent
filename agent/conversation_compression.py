@@ -990,6 +990,57 @@ def _release_cancelled_worker(
     fence.release_cancelled_compression_lock()
 
 
+def _apply_no_progress_prune_fallback(
+    agent: Any, messages: Any, *, progress_observed: bool,
+) -> list:
+    """Deterministic no-LLM prune after a silent summarizer stall (#112420).
+    Skips when the summarizer had already streamed (total-ceiling path) so a half-written
+    summary is not mixed with a second cache-breaking rewrite. Does not require the
+    opt-in ``proactive_prune_tokens`` hysteresis gate — that trigger is independent of
+    this emergency fallback. Returns the caller's list object when nothing was reclaimed.
+    """
+    if progress_observed or not isinstance(messages, list) or agent is None:
+        return messages
+    compressor = getattr(agent, "context_compressor", None)
+    prune = getattr(compressor, "_prune_old_tool_results", None)
+    if not callable(prune):
+        return messages
+    min_chars = getattr(compressor, "proactive_prune_min_result_chars", None)
+    if not isinstance(min_chars, int) or min_chars <= 0:
+        min_chars = 8000
+    try:
+        pruned_msgs, pruned_count = prune(
+            messages,
+            protect_tail_count=int(getattr(compressor, "protect_last_n", 0) or 0),
+            protect_tail_tokens=None,
+            min_prune_chars=min_chars,
+        )
+    except Exception:
+        logger.debug("stall fallback tool-result prune failed; keeping original transcript", exc_info=True)
+        return messages
+    if not pruned_count or not isinstance(pruned_msgs, list):
+        return messages
+    session_db = getattr(compressor, "_session_db", None)
+    session_id = getattr(compressor, "_session_id", "") or getattr(agent, "session_id", "")
+    if session_db and session_id and callable(getattr(session_db, "archive_and_compact", None)):
+        try:
+            from agent.context_compressor import stamp_db_persisted_markers
+            session_db.archive_and_compact(session_id, pruned_msgs)
+            stamp_db_persisted_markers(pruned_msgs)
+        except Exception:
+            logger.warning(
+                "Stall fallback prune DB commit failed; keeping the original transcript",
+                extra={"session_id": session_id},
+                exc_info=True,
+            )
+            return messages
+    logger.info(
+        "Stall fallback: pruned %d old tool result(s) after compression made no progress (session=%s)",
+        pruned_count, getattr(agent, "session_id", None) or "none",
+    )
+    return pruned_msgs
+
+
 def run_compress_context_with_progress_timeout(
     *, worker: Callable[[CompressionCommitFence], Tuple[list, str]], messages: list,
     system_prompt_fallback: Any, idle_timeout_seconds: float, total_ceiling_seconds: float,
@@ -1126,7 +1177,10 @@ def run_compress_context_with_progress_timeout(
             )
         # Leave the future on the shared pool: fence cancel won, so a late
         # commit cannot land (same detachment model as gateway hygiene).
-        return messages, _resolve_fallback_prompt()
+        degraded = _apply_no_progress_prune_fallback(
+            telemetry_agent, messages, progress_observed=bool(fence.progress_observed),
+        )
+        return degraded, _resolve_fallback_prompt()
     finally:
         if not handled_exit:
             # Any unwind while waiting: revoke commit admission and release the worker's
@@ -2829,11 +2883,16 @@ def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:
     else:
         new_system_prompt = agent._cached_system_prompt = rebuilt_system_prompt
         if cached_system_prompt is not None:
-            logger.info(
+            # Rebuild remains mandatory (#95681 / #98426). Repeat INFO on every compact of a
+            # long session drowned logs (19×/day in #112420); log the first drift per session
+            # at INFO and subsequent ones at DEBUG.
+            log = logger.debug if getattr(agent, "_compaction_prompt_drift_logged", False) else logger.info
+            log(
                 "Compaction rebuilt a drifted system prompt (session=%s, %d -> %d chars): builder output changed "
                 "since the stored snapshot (update, config change, or memory/skills growth)",
                 agent.session_id or "none", len(cached_system_prompt), len(new_system_prompt),
             )
+            agent._compaction_prompt_drift_logged = True
     return new_system_prompt
 
 

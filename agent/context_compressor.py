@@ -627,6 +627,9 @@ _TERMINAL_SUMMARY_FAILURES = (
 
 # Timeouts escalate 60s -> 300s -> 900s: structural repeat offenders back off longer.
 _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
+# Host no-progress stalls use these kinds. Their cooldown must not be shorter than the idle
+# window that just failed, or the next turn re-enters summarization immediately (#112420).
+_STALL_TIMEOUT_FAILURE_KINDS = frozenset({"stalled", "stall_interrupted", "ceiling_exhausted"})
 
 
 def _next_timeout_cooldown(compressor: Any) -> int:
@@ -2149,8 +2152,17 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     def record_timeout_failure(self, error: str, failure_kind: str = "timeout") -> None:
         """Consecutive timeout/stall via the ladder; error persisted as ``backoff:<kind>:strategy=<tail_mode>`` for restarts."""
-        stamped = f"backoff:{failure_kind or 'timeout'}:strategy={getattr(self, 'tail_mode', None) or 'unknown'}: {error}"
-        self._record_compression_failure_cooldown(float(_next_timeout_cooldown(self)), stamped)
+        kind = failure_kind or "timeout"
+        seconds = float(_next_timeout_cooldown(self))
+        if kind in _STALL_TIMEOUT_FAILURE_KINDS:
+            idle = 0.0
+            with contextlib.suppress(Exception):
+                from agent.conversation_compression import resolve_context_compression_timeouts
+                idle, _ceiling = resolve_context_compression_timeouts()
+            if idle > 0:
+                seconds = max(seconds, float(idle))
+        stamped = f"backoff:{kind}:strategy={getattr(self, 'tail_mode', None) or 'unknown'}: {error}"
+        self._record_compression_failure_cooldown(seconds, stamped)
 
     def _clear_compression_failure_cooldown(self) -> None:
         # Fence check BEFORE cooldown-clear: a late cancelled worker must not undo the host's timeout cooldown.

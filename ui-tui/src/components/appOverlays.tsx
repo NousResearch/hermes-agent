@@ -270,6 +270,7 @@ export function FloatingOverlays({
       render: width => (
         <FloatBox color={theme.color.border}>
           <ModelPicker
+            allowPersistGlobal={!pickerOpts.sessionOnly}
             gw={gw}
             initialRefresh={initialRefresh}
             initialStage={initialStage}

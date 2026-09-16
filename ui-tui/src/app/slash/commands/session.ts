@@ -132,11 +132,12 @@ export const sessionCommands: SlashCommand[] = [
       const intent = modelSlashIntent(arg)
 
       if (intent.type === 'overlay') {
-        if (intent.refresh || intent.stage) {
+        if (intent.refresh || intent.stage || intent.sessionOnly) {
           return patchOverlayState({
             modelPicker: {
               ...(intent.refresh ? { refresh: true } : {}),
-              ...(intent.stage ? { stage: intent.stage } : {})
+              ...(intent.stage ? { stage: intent.stage } : {}),
+              ...(intent.sessionOnly ? { sessionOnly: true } : {})
             }
           })
         }

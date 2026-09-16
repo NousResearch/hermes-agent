@@ -98,6 +98,29 @@ describe('modelSlashIntent', () => {
     expect(modelSlashIntent('--refresh')).toEqual({ type: 'overlay', refresh: true })
   })
 
+  it('opens a session-only hop for /model --session', () => {
+    expect(modelSlashIntent('--session')).toEqual({ type: 'overlay', sessionOnly: true })
+    expect(modelSlashIntent('--session --refresh')).toEqual({
+      type: 'overlay',
+      refresh: true,
+      sessionOnly: true
+    })
+    expect(modelSlashIntent('--session --provider')).toEqual({
+      type: 'overlay',
+      stage: 'provider',
+      sessionOnly: true
+    })
+  })
+
+  it('still sets when --session is attached to a model id', () => {
+    expect(modelSlashIntent('hermes-4 --session')).toEqual({ type: 'set' })
+  })
+
+  it('does not hide persist when --global is also present', () => {
+    expect(modelSlashIntent('--session --global')).toEqual({ type: 'overlay' })
+    expect(modelSlashIntent('--global --session')).toEqual({ type: 'overlay' })
+  })
+
   it('opens the provider list when --provider has no slug', () => {
     expect(modelSlashIntent('--provider')).toEqual({ type: 'overlay', stage: 'provider' })
     expect(modelSlashIntent('--provider --refresh')).toEqual({

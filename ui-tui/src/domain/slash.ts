@@ -3,7 +3,7 @@ export const TUI_SESSION_MODEL_FLAG = '--tui-session'
 
 export type ModelPickerStage = 'hop' | 'provider'
 
-export type ModelSlashIntent = { type: 'overlay'; refresh?: boolean; stage?: ModelPickerStage } | { type: 'set' }
+export type ModelSlashIntent = { type: 'overlay'; refresh?: boolean; stage?: ModelPickerStage; sessionOnly?: boolean } | { type: 'set' }
 
 /** Bare `/model` (and flag-only forms) open the overlay. `--provider` with no slug
  *  opens the provider list; a model id still goes to config.set. */
@@ -17,6 +17,8 @@ export function modelSlashIntent(arg: string): ModelSlashIntent {
   let refresh = false
   let providerBare = false
   let hasPositional = false
+  let wantSession = false
+  let wantGlobal = false
 
   for (let i = 0; i < parts.length; i++) {
     const raw = parts[i]
@@ -27,7 +29,13 @@ export function modelSlashIntent(arg: string): ModelSlashIntent {
       continue
     }
 
-    if (flag === '--session' || flag === '--global' || flag === TUI_SESSION_MODEL_FLAG) {
+    if (flag === '--session' || flag === TUI_SESSION_MODEL_FLAG) {
+      wantSession = true
+      continue
+    }
+
+    if (flag === '--global') {
+      wantGlobal = true
       continue
     }
 
@@ -54,11 +62,20 @@ export function modelSlashIntent(arg: string): ModelSlashIntent {
   }
 
   if (providerBare && !hasPositional) {
-    return { type: 'overlay', ...(refresh ? { refresh: true } : {}), stage: 'provider' }
+    return {
+      type: 'overlay',
+      ...(refresh ? { refresh: true } : {}),
+      ...(wantSession && !wantGlobal ? { sessionOnly: true } : {}),
+      stage: 'provider'
+    }
   }
 
   if (!hasPositional) {
-    return { type: 'overlay', ...(refresh ? { refresh: true } : {}) }
+    return {
+      type: 'overlay',
+      ...(refresh ? { refresh: true } : {}),
+      ...(wantSession && !wantGlobal ? { sessionOnly: true } : {})
+    }
   }
 
   return { type: 'set' }

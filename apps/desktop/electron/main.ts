@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -207,6 +207,7 @@ import {
 import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
+import { githubApiHeaders, resolveGithubToken } from './github-api-auth'
 import { desktopBackendSpawnEnv, guestOnboardingEnabled, skipIntroEnabled } from './guest-onboarding'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
@@ -2971,6 +2972,45 @@ function resolveGhBinary() {
   return _ghBinaryCache
 }
 
+// Credentials for the update check's api.github.com calls: env first (an
+// explicit GITHUB_TOKEN / GH_TOKEN wins), then the `gh` CLI's keyring token —
+// the same ladder the Python client uses (tools/skills_hub_github.py). A shared
+// exit IP (proxy/VPN/office NAT) exhausts the anonymous 60/hour budget for
+// everyone behind it, which is what makes an update check report a rate limit.
+//
+// Resolved once per process: a token cannot change under a running app, and
+// re-shelling `gh` on every check would be pure work. Anonymous stays a valid
+// rung — a missing `gh` is not an error.
+let _githubApiTokenCache = null
+let _githubApiTokenResolved = false
+
+function readGhCliToken(): Promise<string | null> {
+  return new Promise(resolve => {
+    execFile(
+      resolveGhBinary(),
+      ['auth', 'token'],
+      { env: process.env, windowsHide: true, timeout: 5_000 },
+      (err, stdout) => resolve(err ? null : String(stdout || ''))
+    )
+  })
+}
+
+async function resolveGithubApiToken() {
+  if (!_githubApiTokenResolved) {
+    const { token, source } = await resolveGithubToken({ env: process.env, readGhCliToken })
+
+    _githubApiTokenCache = token
+    _githubApiTokenResolved = true
+
+    if (token) {
+      // One line, so a rate-limit report can name the budget the check spent.
+      rememberLog(`[updates] api.github.com credentials: ${source}`)
+    }
+  }
+
+  return _githubApiTokenCache
+}
+
 function recentHermesLog() {
   return hermesLog.slice(-20).join('\n')
 }
@@ -3342,16 +3382,21 @@ function describeUpdateCheckFailure(error) {
   return `api.github.com: ${error?.message || String(error)}`
 }
 
-function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
+async function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
+  const token = await resolveGithubApiToken()
+
   return new Promise((resolve, reject) => {
     const req = https.get(
       url,
       {
-        headers: {
-          Accept: accept,
-          // GitHub requires a UA on api.github.com; requests without one 403.
-          'User-Agent': 'hermes-desktop-update-check'
-        },
+        headers: githubApiHeaders(
+          {
+            Accept: accept,
+            // GitHub requires a UA on api.github.com; requests without one 403.
+            'User-Agent': 'hermes-desktop-update-check'
+          },
+          token
+        ),
         timeout: 10_000
       },
       res => {

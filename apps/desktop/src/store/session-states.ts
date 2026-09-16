@@ -391,6 +391,20 @@ export function getRecentlySettledSessionIds(now: number = Date.now()): string[]
   return live
 }
 
+// --- Reconcile quiesce: no unread for synthetic busy→idle edges ----------
+// reconcileBusyStatesOnReconnect retires busy flags a respawned backend will
+// never speak for again (#53902/#73082), but a routine socket reconnect can
+// carry a live turn whose runtime id survives it — that retire is then a
+// synthetic busy→idle edge: the turn is still running on the backend and its
+// next event re-asserts busy. The unread writer treats any busy→idle edge as
+// a completion, so the completed-unread dot lit (and persisted) mid-turn and
+// then flipped back to blue with no new user turn. Only the unread side
+// effect is wrong: the watchdog disarm, stall clears and settle grace must
+// still run, and a turn that genuinely finished while disconnected still gets
+// its dot from the background-sync reaper, which settles vanished runtimes
+// through the normal publish path (rehydrateLiveSessionStatuses).
+let reconcilingBusyClaims = false
+
 // --- Transition detection (called automatically from publishSessionState) ---
 function handleTransition(previous: ClientSessionState | null, next: ClientSessionState, runtimeId: string) {
   // Compression id rotation: signal the route-follow effect with enough
@@ -443,7 +457,9 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
 
     // FOCUSED, not selected: a session finishing in the tile the user is
     // watching is already seen, and a tile is never the primary selection.
-    if (storedId !== $focusedStoredSessionId.get()) {
+    // A reconcile-fired retire (see reconcilingBusyClaims) is not a finish
+    // at all — the turn may still be running on the backend.
+    if (!reconcilingBusyClaims && storedId !== $focusedStoredSessionId.get()) {
       // Re-light only genuinely new completions: if the user already viewed
       // this session (or its family) at or after this settle moment, a
       // re-assert of the same completion must not re-arm the dot. `-1` for
@@ -623,25 +639,34 @@ export function clearAllSessionStates() {
 export function reconcileBusyStatesOnReconnect(scope?: string) {
   const states = $sessionStates.get()
 
-  for (const [runtimeId, state] of Object.entries(states)) {
-    if (!state || (!state.busy && !state.awaitingResponse)) {
-      continue
+  // Transitions fired below are synthetic busy→idle edges (stale-flag
+  // retirement, not turn completions) — the unread writer must not read them
+  // as a finish while the turn may still be running on the backend.
+  reconcilingBusyClaims = true
+
+  try {
+    for (const [runtimeId, state] of Object.entries(states)) {
+      if (!state || (!state.busy && !state.awaitingResponse)) {
+        continue
+      }
+
+      const recorded = sessionScopeByRuntimeId.get(runtimeId)
+
+      if (scope === undefined ? recorded !== undefined : recorded !== scope) {
+        continue
+      }
+
+      sessionTileDelegate()?.retireBusyClaim?.(runtimeId)
+
+      // Re-read — the write path may have republished (and released) this entry.
+      const published = $sessionStates.get()[runtimeId]
+
+      if (published?.busy || published?.awaitingResponse) {
+        publishSessionState(runtimeId, { ...published, awaitingResponse: false, busy: false })
+      }
     }
-
-    const recorded = sessionScopeByRuntimeId.get(runtimeId)
-
-    if (scope === undefined ? recorded !== undefined : recorded !== scope) {
-      continue
-    }
-
-    sessionTileDelegate()?.retireBusyClaim?.(runtimeId)
-
-    // Re-read — the write path may have republished (and released) this entry.
-    const published = $sessionStates.get()[runtimeId]
-
-    if (published?.busy || published?.awaitingResponse) {
-      publishSessionState(runtimeId, { ...published, awaitingResponse: false, busy: false })
-    }
+  } finally {
+    reconcilingBusyClaims = false
   }
 
   if (scope === undefined) {

@@ -206,4 +206,31 @@ describe('reconcileBusyStatesOnReconnect', () => {
 
     expect($workingSessionIds.get()).toContain('s1')
   })
+
+  // The unread writer reads any busy→idle edge as a completion, so a
+  // reconcile retire of a still-live turn used to light the completed-unread
+  // dot mid-turn (then flip back to blue on the busy re-assert) — and its
+  // persisted marker lingered until the row was read.
+  it('does not mark a still-live turn unread when reconcile retires its busy claim', () => {
+    $selectedStoredSessionId.set('other')
+    publishSessionState('rt1', state({ busy: true, storedSessionId: 's1' }))
+
+    reconcileBusyStatesOnReconnect()
+
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+  })
+
+  it('still marks the turn unread on the authoritative busy→idle afterwards', () => {
+    $selectedStoredSessionId.set('other')
+    const working = state({ busy: true, storedSessionId: 's1' })
+    publishSessionState('rt1', working)
+    reconcileBusyStatesOnReconnect()
+
+    // The still-live turn's next event re-asserts busy (rt stays warm), and
+    // its real terminal publish — not a retire — must light the dot.
+    publishSessionState('rt1', state({ busy: true, storedSessionId: 's1' }))
+    publishSessionState('rt1', state({ busy: false, storedSessionId: 's1' }))
+
+    expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
+  })
 })

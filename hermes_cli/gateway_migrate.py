@@ -36,27 +36,50 @@ class ProfileGateway:
     name: str
     home: Path
     pid: Optional[int] = None
-    service: Optional[tuple[str, bool]] = None  # ("systemd", system) | ("launchd", False)
+    # EVERY installed unit: [("systemd", system), ("launchd", False)]. A profile can carry a user AND a
+    # system unit at once; recording only the first found left the other live beside the multiplexer.
+    services: list[tuple[str, bool]] = field(default_factory=list)
+    run_as_user: Optional[str] = None  # User= recorded by a system-scope systemd unit
+    uid: Optional[int] = None  # owner of the gateway process/unit; None = unknown (never "different")
+    runtime_home: Optional[Path] = None  # HERMES_HOME the installed unit pins, when it differs from ``home``
 
     @property
     def is_default(self) -> bool:
         return self.name == "default"
 
     @property
+    def service(self) -> Optional[tuple[str, bool]]:
+        """The unit the default gateway is (re)started through; None when nothing is installed."""
+        return self.services[0] if self.services else None
+
+    @property
     def has_gateway(self) -> bool:
-        return self.pid is not None or self.service is not None
+        return self.pid is not None or bool(self.services)
+
+    @property
+    def has_system_unit(self) -> bool:
+        return ("systemd", True) in self.services
 
     def service_label(self) -> str:
-        if self.service is None:
-            return "none"
-        kind, system = self.service
-        return f"{kind} ({'system' if system else 'user'})" if kind == "systemd" else kind
+        return " + ".join(_service_label(s) for s in self.services) if self.services else "none"
 
     def to_dict(self) -> dict:
         return {
             "profile": self.name, "home": str(self.home), "pid": self.pid,
-            "service": None if self.service is None else {"kind": self.service[0], "system": self.service[1]},
+            "service": None if self.service is None else _service_dict(self.service),
+            "services": [_service_dict(s) for s in self.services],
+            "run_as_user": self.run_as_user,
+            "uid": self.uid, "runtime_home": None if self.runtime_home is None else str(self.runtime_home),
         }
+
+
+def _service_label(service: tuple[str, bool]) -> str:
+    kind, system = service
+    return f"{kind} ({'system' if system else 'user'})" if kind == "systemd" else kind
+
+
+def _service_dict(service: tuple[str, bool]) -> dict:
+    return {"kind": service[0], "system": service[1]}
 
 
 @dataclass
@@ -65,6 +88,9 @@ class MigrationPlan:
     profiles: list[ProfileGateway]
     multiplex_flag_on: bool
     live_served: Optional[list[str]]  # served_profiles the live default gateway recorded, if any
+    # A manifest with the flag on and no live default gateway: an earlier apply died between flipping
+    # the flag and bringing the multiplexer up (#110850). Not "already multiplexed" — resumable.
+    interrupted: bool = False
     blockers: list[str] = field(default_factory=list)
     notices: list[str] = field(default_factory=list)
 
@@ -78,6 +104,8 @@ class MigrationPlan:
 
     @property
     def already_multiplexed(self) -> bool:
+        if self.interrupted:
+            return False
         return self.multiplex_flag_on or bool(self.live_served and len(self.live_served) > 1)
 
     @property
@@ -95,6 +123,12 @@ class MigrationPlan:
             return self.default.service
         return next((p.service for p in self.secondaries if p.service is not None), None)
 
+    def target_run_as_user(self) -> Optional[str]:
+        """Preserve the system unit identity that the default unit replaces."""
+        if self.default.run_as_user:
+            return self.default.run_as_user
+        return next((p.run_as_user for p in self.secondaries if p.run_as_user), None)
+
     def to_dict(self) -> dict:
         return {
             "default_home": str(self.default_home),
@@ -102,6 +136,7 @@ class MigrationPlan:
             "multiplex_flag_on": self.multiplex_flag_on,
             "live_served": self.live_served,
             "already_multiplexed": self.already_multiplexed,
+            "interrupted": self.interrupted,
             "blockers": list(self.blockers),
             "notices": list(self.notices),
             "eligible": self.eligible_for_migration(),
@@ -109,7 +144,9 @@ class MigrationPlan:
         }
 
     def eligible_for_migration(self) -> bool:
-        """>= 2 profiles, at least one secondary with its own gateway, multiplex off, no blockers."""
+        """>= 2 profiles, at least one secondary with its own gateway, multiplex off, no blockers.
+        This is the AUTO-migration (``hermes update``) bar; the explicit command also proceeds with
+        zero standalone secondaries (see :func:`cmd_migrate`)."""
         return (
             len(self.profiles) >= 2 and bool(self.standalone_secondaries)
             and not self.already_multiplexed and not self.blocked
@@ -152,31 +189,41 @@ def _profile_homes() -> list[tuple[str, Path]]:
 
 
 def _live_gateway_pid(home: Path) -> Optional[int]:
-    """PID of a standalone gateway owned by ``home`` (pid file, then runtime status), else None."""
-    from gateway.status import get_running_pid, get_runtime_status_running_pid, read_runtime_status
+    """Verified PID of a standalone gateway owned by ``home``, else None (never raises: a probe
+    failure must not abort a migration plan)."""
+    from gateway.status import live_gateway_pid_for_home
     with contextlib.suppress(Exception):
-        pid = get_running_pid(home / "gateway.pid", cleanup_stale=False)
-        if pid is not None:
-            return pid
-    with contextlib.suppress(Exception):
-        return get_runtime_status_running_pid(read_runtime_status(home / "gateway_state.json"), expected_home=home)
+        return live_gateway_pid_for_home(home)
     return None
 
 
-def _installed_service(home: Path) -> Optional[tuple[str, bool]]:
-    """Installed service kind for ``home``'s gateway (unit / plist on disk), else None."""
+def _gateway_identity(home: Path, pid: Optional[int], services: list[tuple[str, bool]]) -> tuple[Optional[int], Path]:
+    from hermes_cli.gateway_migrate_guards import gateway_identity
+    return gateway_identity(home, pid, services)
+
+
+def _installed_services(home: Path) -> list[tuple[str, bool]]:
+    """Every installed service for ``home``'s gateway (units / plist on disk), user scope first."""
     from hermes_cli import gateway as gw
+    found: list[tuple[str, bool]] = []
     with _home_env(home):
         if gw.supports_systemd_services():
-            for system in (False, True):
-                if gw.get_systemd_unit_path(system=system).exists():
-                    return ("systemd", system)
+            found.extend(("systemd", system) for system in (False, True) if gw.get_systemd_unit_path(system=system).exists())
         if gw.is_macos() and gw.get_launchd_plist_path().exists():
-            return ("launchd", False)
-    return None
+            found.append(("launchd", False))
+    return found
 
 
-def _service_op(kind: str, system: bool, verb: str, home: Path) -> None:
+def _systemd_service_user(home: Path, services: list[tuple[str, bool]]) -> Optional[str]:
+    """Read ``User=`` before migration removes a system-scope unit."""
+    if ("systemd", True) not in services:
+        return None
+    from hermes_cli import gateway as gw
+    with _home_env(home):
+        return gw._read_systemd_user_from_unit(gw.get_systemd_unit_path(system=True))
+
+
+def _service_op(kind: str, system: bool, verb: str, home: Path, *, run_as_user: Optional[str] = None) -> None:
     """``stop`` / ``uninstall`` / ``start`` / ``restart`` / ``install`` on ``home``'s service."""
     from hermes_cli import gateway as gw
     with _home_env(home):
@@ -184,7 +231,7 @@ def _service_op(kind: str, system: bool, verb: str, home: Path) -> None:
             if kind == "launchd":
                 gw.launchd_install()
             else:
-                gw.systemd_install(system=system, non_interactive=True)
+                gw.systemd_install(system=system, run_as_user=run_as_user, non_interactive=True)
             return
         gw._service_call(kind, verb, system)
 
@@ -390,21 +437,29 @@ def build_migration_plan() -> MigrationPlan:
     """Enumerate profiles + their gateway footprint, then run every preflight check."""
     from hermes_cli.gateway_multiplex_served import recorded_served_profiles
     default_home = _default_home()
-    profiles = [
-        ProfileGateway(name=name, home=home, pid=_live_gateway_pid(home), service=_installed_service(home))
-        for name, home in _profile_homes()
-    ]
+    profiles = []
+    for name, home in _profile_homes():
+        pid, services = _live_gateway_pid(home), _installed_services(home)
+        uid, runtime_home = _gateway_identity(home, pid, services)
+        profiles.append(ProfileGateway(name=name, home=home, pid=pid, services=services,
+                                       run_as_user=_systemd_service_user(home, services), uid=uid,
+                                       runtime_home=None if runtime_home == home else runtime_home))
     plan = MigrationPlan(
         default_home=default_home, profiles=profiles,
         multiplex_flag_on=_read_multiplex_flag(default_home),
         live_served=recorded_served_profiles(default_home),
     )
+    plan.interrupted = plan.multiplex_flag_on and not plan.default.has_gateway and _read_manifest(default_home) is not None
     if len(plan.profiles) < 2:
         plan.notices.append("Only one profile exists: nothing to multiplex.")
         return plan
     configs = _load_profile_configs(plan)
     for check in _PREFLIGHT_CHECKS:
         check(plan, configs)
+    from hermes_cli.gateway_migrate_guards import auto_migration_blockers
+    # Notices, not blockers: the explicit command is the operator's decision; only the update hook
+    # refuses to cross these boundaries on its own.
+    plan.notices.extend(f"Not migrated automatically by `hermes update`: {b}" for b in auto_migration_blockers(plan))
     plan.notices.append(
         "Profiles created after the migration are served by the running multiplexer as soon as "
         "they exist (it rescans profiles/ on create/delete and every 30s)."
@@ -430,18 +485,29 @@ def format_plan(plan: MigrationPlan, *, dry_run: bool) -> list[str]:
         lines.append("  ✓ The default gateway is already multiplexing"
                      + (f" (serving {', '.join(plan.live_served)})" if plan.live_served else " (flag on)") + ".")
         return lines
+    if plan.interrupted:
+        lines.append(f"  ↻ An earlier migration was interrupted before the default gateway came up "
+                     f"(flag on, no gateway; manifest {plan.default_home / MANIFEST_NAME}); this run resumes it.")
     steps = []
     for p in plan.standalone_secondaries:
-        what = " + ".join(x for x in (f"stop pid {p.pid}" if p.pid else "", f"uninstall {p.service_label()}" if p.service else "") if x)
+        what = " + ".join(x for x in (f"stop pid {p.pid}" if p.pid else "", f"uninstall {p.service_label()}" if p.services else "") if x)
         steps.append(f"  - {p.name}: {what}")
+    if len(plan.profiles) < 2:  # the notice already says "only one profile exists"
+        return lines + _plan_tail(plan)
     if not steps:
-        lines.append("  No secondary profile runs its own gateway; nothing to migrate.")
+        lines.append("  No secondary profile runs its own gateway; the only step is turning the flag on:")
     else:
-        lines += ["  Steps:", *steps, f"  - default: set gateway.multiplex_profiles: true in {plan.default_home / 'config.yaml'}"]
-        target = plan.target_service_kind()
-        lines.append(f"  - default: {'restart' if plan.default.has_gateway else 'start'} the gateway"
-                     + (f" via {target[0]}" if target else " (detached)") + f", verify it serves {len(plan.profiles)} profiles")
-        lines.append(f"  - record removed services in {plan.default_home / MANIFEST_NAME} (rollback: hermes gateway migrate --standalone)")
+        lines += ["  Steps:", *steps]
+    lines.append(f"  - default: set gateway.multiplex_profiles: true in {plan.default_home / 'config.yaml'}")
+    target = plan.target_service_kind()
+    lines.append(f"  - default: {'restart' if plan.default.has_gateway else 'start'} the gateway"
+                 + (f" via {target[0]}" if target else " (detached)") + f", verify it serves {len(plan.profiles)} profiles")
+    lines.append(f"  - record the previous state in {plan.default_home / MANIFEST_NAME} (rollback: hermes gateway migrate --standalone)")
+    return lines + _plan_tail(plan)
+
+
+def _plan_tail(plan: MigrationPlan) -> list[str]:
+    lines: list[str] = []
     if plan.blockers:
         lines += ["", "  ✗ Blockers (fix these first, nothing will be changed):"]
         lines += [f"    • {b}" for b in plan.blockers]
@@ -451,11 +517,81 @@ def format_plan(plan: MigrationPlan, *, dry_run: bool) -> list[str]:
     return lines
 
 
-def format_update_warning(plan: MigrationPlan) -> list[str]:
+def _no_manifest_lines(default_home: Path) -> list[str]:
+    return [f"✗ No migration manifest at {_manifest_path(default_home)}; nothing to roll back.",
+            "  To leave multiplex mode by hand: hermes config set gateway.multiplex_profiles false && hermes gateway restart"]
+
+
+def _manifest_secondaries(manifest: dict) -> Optional[list[dict]]:
+    """The manifest's secondary records, or None when the (hand-edited) manifest is malformed."""
+    recs = manifest.get("secondaries", [])
+    if not isinstance(recs, list) or not all(isinstance(r, dict) and r.get("profile") and r.get("home") for r in recs):
+        return None
+    return recs
+
+
+def _service_from_dict(service) -> Optional[tuple[str, bool]]:
+    if isinstance(service, dict) and service.get("kind"):
+        return str(service["kind"]), bool(service.get("system"))
+    return None
+
+
+def _recorded_services(rec: dict) -> list[tuple[str, bool]]:
+    """Every service a manifest record names: ``services`` (all installed units) or, in a manifest
+    written before that key existed, the single ``service``."""
+    recorded = rec.get("services")
+    if isinstance(recorded, list):
+        return [s for s in (_service_from_dict(r) for r in recorded) if s is not None]
+    service = _service_from_dict(rec.get("service"))
+    return [service] if service is not None else []
+
+
+def _recorded_run_as_user(rec: dict) -> Optional[str]:
+    user = rec.get("run_as_user")
+    return user if isinstance(user, str) and user else None
+
+
+def _target_from_manifest(manifest: dict) -> tuple[Optional[tuple[str, bool]], Optional[str]]:
+    """Service manager + ``User=`` the resumed default install should use, read from the recorded
+    footprint (the units themselves are gone by the time an interrupted apply is re-run)."""
+    recs = [r for r in (manifest.get("default"), *(_manifest_secondaries(manifest) or [])) if isinstance(r, dict)]
+    target = next((s for r in recs for s in _recorded_services(r)), None)
+    user = next((u for r in recs if (u := _recorded_run_as_user(r)) is not None), None)
+    return target, user
+
+
+_NOTHING_RECORDED = "no gateway was recorded; nothing to restore"
+
+
+def format_rollback_plan(default_home: Path, manifest: dict, *, dry_run: bool) -> list[str]:
+    head = "Rollback plan (dry run — nothing changed)" if dry_run else "Rollback plan"
+    lines = [head, f"  default home: {default_home}", "", "  Steps:"]
+    lines.append("  - default: restore gateway.multiplex_profiles to its pre-migration value")
+    lines.append("  - default: clear multiplex-owned runtime status")
+    secondaries = _manifest_secondaries(manifest)
+    if secondaries is None:
+        return lines + [f"  ✗ malformed secondary records in {_manifest_path(default_home)}; fix or delete the manifest"]
+    for rec in secondaries:
+        services = _recorded_services(rec)
+        if services:
+            action = "reinstall and start its " + " + ".join(_service_label(s) for s in services) + " service"
+        elif rec.get("pid"):
+            action = "start its standalone gateway (detached)"
+        else:
+            action = _NOTHING_RECORDED
+        lines.append(f"  - {rec['profile']}: {action}")
+    lines += [
+        f"  - remove rollback manifest {_manifest_path(default_home)}",
+        "  - default: restart the standalone gateway last",
+    ]
+    return lines
+
+
+def format_update_warning(plan: MigrationPlan, auto_blockers: list[str]) -> list[str]:
     return [
         "⚠ Your profiles each run their own gateway. A single multiplexed gateway is the recommended",
         "  setup, but this install cannot be migrated automatically yet:",
-        *[f"    • {b}" for b in plan.blockers],
+        *[f"    • {b}" for b in (*plan.blockers, *auto_blockers)],
         f"  After fixing the above, run:  {MIGRATE_COMMAND}",
         "  (`hermes update` will migrate automatically once nothing blocks it.)",
     ]
@@ -480,7 +616,29 @@ def _read_manifest(default_home: Path) -> Optional[dict]:
 
 
 def _write_manifest(default_home: Path, data: dict) -> None:
-    _manifest_path(default_home).write_text(json.dumps(data, indent=2), encoding="utf-8")
+    from utils import atomic_json_write
+
+    atomic_json_write(_manifest_path(default_home), data)
+
+
+def _reconcile_standalone_runtime(default_home: Path, secondary_names: set[str]) -> None:
+    """Remove only status owned by multiplexing, without re-stamping gateway identity."""
+    from gateway.status import read_runtime_status
+    from utils import atomic_json_write
+
+    path = default_home / "gateway_state.json"
+    runtime = read_runtime_status(path)
+    if runtime is None:
+        return
+    runtime["served_profiles"] = []
+    platforms = runtime.get("platforms")
+    if isinstance(platforms, dict):
+        prefixes = tuple(f"{name}:" for name in secondary_names if name)
+        runtime["platforms"] = {
+            key: value for key, value in platforms.items()
+            if not (isinstance(key, str) and key.startswith(prefixes))
+        }
+    atomic_json_write(path, runtime, indent=None, separators=(",", ":"))
 
 
 def _wait_for_served(default_home: Path, expected: set[str], timeout: float) -> Optional[list[str]]:
@@ -497,7 +655,13 @@ def _wait_for_served(default_home: Path, expected: set[str], timeout: float) -> 
     return served
 
 
-def _restart_default(plan_default: ProfileGateway, target: Optional[tuple[str, bool]], default_home: Path) -> str:
+def _restart_default(
+    plan_default: ProfileGateway,
+    target: Optional[tuple[str, bool]],
+    default_home: Path,
+    *,
+    run_as_user: Optional[str] = None,
+) -> str:
     """Bring the default gateway up on the new flag value; returns a one-line description."""
     if plan_default.service is not None:
         kind, system = plan_default.service
@@ -505,7 +669,7 @@ def _restart_default(plan_default: ProfileGateway, target: Optional[tuple[str, b
         return f"restarted the default gateway via {kind}"
     if target is not None:
         kind, system = target
-        _service_op(kind, system, "install", default_home)
+        _service_op(kind, system, "install", default_home, run_as_user=run_as_user)
         _service_op(kind, system, "start", default_home)
         return f"installed and started the default gateway via {kind}"
     verb = "restarted" if plan_default.pid is not None else "started"
@@ -516,42 +680,72 @@ def _restart_default(plan_default: ProfileGateway, target: Optional[tuple[str, b
     return f"{verb} the default gateway (detached; no service manager was in use)"
 
 
+def _remove_secondary_gateways(plan: MigrationPlan) -> None:
+    for p in plan.standalone_secondaries:
+        for kind, system in p.services:
+            _service_op(kind, system, "stop", p.home)
+            _service_op(kind, system, "uninstall", p.home)
+            print(f"  ✓ {p.name}: stopped and removed its {_service_label((kind, system))} service")
+        if p.pid is not None:
+            _stop_gateway_process(p.home)
+            print(f"  ✓ {p.name}: stopped standalone gateway (pid {p.pid})")
+
+
 def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SECONDS) -> bool:
     """Stop/uninstall every secondary gateway, flip the flag, bring up the multiplexer, verify.
-    Returns True when the multiplexer verifiably serves every profile."""
+    Returns True when the multiplexer verifiably serves every profile.
+
+    Bringing the default up is the one step that can fail after the destructive ones (a system unit
+    that needs ``--run-as-user``, an unreachable user bus). It runs inside a rollback: on failure the
+    manifest written before the first destructive step restores the flag and every recorded per-profile
+    gateway (#110850), so the fleet never ends with the flag on and no gateway at all."""
     if plan.blocked:
         _print(["✗ Migration refused:", *[f"  • {b}" for b in plan.blockers]])
         return False
     if plan.already_multiplexed:
         print("✓ Already multiplexed — nothing to do.")
         return True
-    manifest = {
-        "version": 1, "migrated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "flag_was": plan.multiplex_flag_on,
-        "default": plan.default.to_dict(),
-        "secondaries": [p.to_dict() for p in plan.standalone_secondaries],
-    }
-    for p in plan.standalone_secondaries:
-        if p.service is not None:
-            kind, system = p.service
-            _service_op(kind, system, "stop", p.home)
-            _service_op(kind, system, "uninstall", p.home)
-            print(f"  ✓ {p.name}: stopped and removed its {p.service_label()} service")
-        if p.pid is not None:
-            _stop_gateway_process(p.home)
-            print(f"  ✓ {p.name}: stopped standalone gateway (pid {p.pid})")
-        # Record progressively so a crash mid-way still leaves a usable rollback manifest.
+    target, run_as_user = plan.target_service_kind(), plan.target_run_as_user()
+    if plan.interrupted:
+        # An earlier apply removed the secondaries and flipped the flag but never brought the default
+        # up; the manifest is the only record of the units that existed. Finish from it, don't rewrite it.
+        manifest = _read_manifest(plan.default_home) or {}
+        target, run_as_user = _target_from_manifest(manifest)
+        print(f"  ↻ resuming an interrupted migration recorded in {_manifest_path(plan.default_home)}")
+    elif _read_manifest(plan.default_home) is not None:
+        # Flag off + manifest present = a rollback that did not finish. Overwriting the manifest would
+        # discard the only record of the units that rollback still has to restore.
+        _print([f"✗ A previous migration's manifest is still at {_manifest_path(plan.default_home)} (its rollback did not finish).",
+                "  Finish it with: hermes gateway migrate --standalone   (or delete the manifest to start over)"])
+        return False
+    else:
+        manifest = {
+            "version": 1, "migrated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "flag_was": plan.multiplex_flag_on,
+            "default": plan.default.to_dict(),
+            "secondaries": [p.to_dict() for p in plan.standalone_secondaries],
+        }
+        # Recovery metadata must exist before the first destructive operation; the manifest never
+        # changes afterwards, so this is the only write it needs.
         _write_manifest(plan.default_home, manifest)
+    _remove_secondary_gateways(plan)
     _write_multiplex_flag(plan.default_home, True)
-    _write_manifest(plan.default_home, manifest)
     print(f"  ✓ default: gateway.multiplex_profiles: true ({plan.default_home / 'config.yaml'})")
-    print(f"  ✓ {_restart_default(plan.default, plan.target_service_kind(), plan.default_home)}")
+    try:
+        print(f"  ✓ {_restart_default(plan.default, target, plan.default_home, run_as_user=run_as_user)}")
+    except Exception as exc:
+        _print([f"  ✗ default: could not bring up the multiplexed gateway ({exc})",
+                "  ↩ Rolling back to per-profile gateways so no profile is left without one..."])
+        rolled_back = rollback_migration(plan.default_home)
+        if not rolled_back:
+            print(f"  Re-run {MIGRATE_COMMAND} to resume, or hermes gateway migrate --standalone to roll back.")
+        return False
 
     expected = {p.name for p in plan.profiles}
     served = _wait_for_served(plan.default_home, expected, served_wait)
     if served is not None and expected <= set(served):
         _print(["", f"✓ Migrated: the default gateway now serves {len(served)} profiles: {', '.join(served)}",
-                f"  Rollback any time with: hermes gateway migrate --standalone",
+                "  Rollback any time with: hermes gateway migrate --standalone",
                 *[f"  • {n}" for n in plan.notices]])
         return True
     missing = sorted(expected - set(served or []))
@@ -566,44 +760,80 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
     default_home = default_home or _default_home()
     manifest = _read_manifest(default_home)
     if manifest is None:
-        print(f"✗ No migration manifest at {_manifest_path(default_home)}; nothing to roll back.")
-        print("  To leave multiplex mode by hand: hermes config set gateway.multiplex_profiles false && hermes gateway restart")
+        _print(_no_manifest_lines(default_home))
         return False
-    _write_multiplex_flag(default_home, bool(manifest.get("flag_was", False)))
-    print("  ✓ default: gateway.multiplex_profiles restored")
-    default_rec = manifest.get("default") or {}
-    default_service = default_rec.get("service")
+    incomplete = f"⚠ Rollback incomplete; manifest kept at {_manifest_path(default_home)}."
+    secondaries = _manifest_secondaries(manifest)
+    if secondaries is None:
+        # Refuse before touching anything: a hand-edited manifest is not a rollback authority.
+        print(f"✗ Malformed secondary records in {_manifest_path(default_home)}; fix or delete the manifest.")
+        return False
+    try:
+        _write_multiplex_flag(default_home, bool(manifest.get("flag_was", False)))
+        print("  ✓ default: gateway.multiplex_profiles restored")
+    except Exception as exc:
+        print(f"  ✗ default: could not restore gateway.multiplex_profiles ({exc})")
+        print(incomplete)
+        return False
+
+    default_rec = manifest.get("default")
     default_gw = ProfileGateway(
         "default", default_home, pid=_live_gateway_pid(default_home),
-        service=(default_service["kind"], bool(default_service.get("system"))) if default_service else _installed_service(default_home),
+        services=(_recorded_services(default_rec) if isinstance(default_rec, dict) else []) or _installed_services(default_home),
     )
-    if default_gw.has_gateway:
-        print(f"  ✓ {_restart_default(default_gw, None, default_home)}")
+    # The live multiplexer's record still claims every secondary; a per-profile gateway started
+    # while it does is refused (exit 78, parked by RestartPreventExitStatus) — clear it FIRST.
+    try:
+        _reconcile_standalone_runtime(default_home, {str(rec["profile"]) for rec in secondaries})
+        print("  ✓ default: cleared multiplex-owned runtime status")
+    except Exception as exc:
+        print(f"  ✗ default: could not clear multiplex-owned runtime status ({exc})")
+        print(incomplete)
+        return False
     ok = True
-    for rec in manifest.get("secondaries", []):
-        home = Path(rec["home"])
-        name = rec["profile"]
+    for rec in secondaries:
+        name, home = str(rec["profile"]), Path(str(rec["home"]))
         try:
-            service = rec.get("service")
-            if service:
-                kind, system = service["kind"], bool(service.get("system"))
-                _service_op(kind, system, "install", home)
-                _service_op(kind, system, "start", home)
-                print(f"  ✓ {name}: reinstalled and started its {kind} service")
+            services = _recorded_services(rec)
+            if services:
+                for kind, system in services:
+                    _service_op(kind, system, "install", home, run_as_user=_recorded_run_as_user(rec))
+                    _service_op(kind, system, "start", home)
+                    print(f"  ✓ {name}: reinstalled and started its {_service_label((kind, system))} service")
             elif rec.get("pid"):
-                if _spawn_detached_gateway(home):
+                if _live_gateway_pid(home) is not None:  # re-run after a partial rollback
+                    print(f"  ✓ {name}: standalone gateway already running")
+                elif _spawn_detached_gateway(home):
                     print(f"  ✓ {name}: started its standalone gateway (detached)")
                 else:
                     ok = False
                     print(f"  ✗ {name}: could not start its standalone gateway")
+            else:
+                print(f"  ✓ {name}: {_NOTHING_RECORDED}")
         except Exception as exc:
             ok = False
             print(f"  ✗ {name}: {exc}")
     if ok:
         _manifest_path(default_home).unlink(missing_ok=True)
+    # The flag is already off, so the default must come back standalone even when a secondary
+    # failed (otherwise config and the live process disagree). The restart is LAST: from inside
+    # the gateway's cgroup a service-manager restart kills this process, so nothing after it runs.
+    if default_gw.has_gateway:
+        try:
+            print(f"  ✓ {_restart_default(default_gw, None, default_home)}")
+        except Exception as exc:
+            if ok:
+                try:
+                    _write_manifest(default_home, manifest)
+                except Exception as manifest_exc:
+                    print(f"  ✗ default: could not restore rollback manifest ({manifest_exc})")
+            ok = False
+            print(f"  ✗ default: could not restart its standalone gateway ({exc})")
+            print("    The default gateway is still multiplexing; stop it by hand (hermes gateway stop) and re-run.")
+    if ok:
         print("✓ Rolled back to per-profile gateways.")
     else:
-        print(f"⚠ Rollback incomplete; manifest kept at {_manifest_path(default_home)}.")
+        print(incomplete)
     return ok
 
 
@@ -623,6 +853,14 @@ def _host_supports_migration() -> Optional[str]:
 def cmd_migrate(args) -> None:
     """``hermes gateway migrate [--multiplex|--standalone] [--dry-run] [--yes]``."""
     if getattr(args, "standalone", False):
+        if getattr(args, "dry_run", False):
+            default_home = _default_home()
+            manifest = _read_manifest(default_home)
+            if manifest is None:
+                _print(_no_manifest_lines(default_home))
+                sys.exit(1)
+            _print(format_rollback_plan(default_home, manifest, dry_run=True))
+            return
         sys.exit(0 if rollback_migration() else 1)
     reason = _host_supports_migration()
     if reason:
@@ -635,10 +873,10 @@ def cmd_migrate(args) -> None:
         return
     if plan.already_multiplexed:
         return
-    if plan.blocked:
-        sys.exit(1)
-    if not plan.standalone_secondaries:
-        return
+    if plan.blocked or len(plan.profiles) < 2:
+        sys.exit(1 if plan.blocked else 0)
+    # Zero standalone secondaries is still a migration when the user asks for it explicitly: the flag
+    # goes on and the default gateway restarts (the update hook keeps treating that case as a no-op).
     if not getattr(args, "yes", False) and sys.stdin.isatty():
         from hermes_cli.setup import prompt_yes_no
         if not prompt_yes_no("Apply this migration now?", True):
@@ -650,15 +888,19 @@ def cmd_migrate(args) -> None:
 
 def maybe_auto_migrate_after_update() -> None:
     """``hermes update`` hook: with >= 2 profiles, per-profile gateways present and multiplex off,
-    migrate automatically when unblocked (deterministic, never prompts) or print the blocker block."""
-    if _host_supports_migration() is not None:
+    migrate automatically when unblocked (deterministic, never prompts) or print the blocker block.
+    ``gateway.auto_multiplex_migration: false`` on the default profile opts out; a secondary behind a
+    service-domain / UNIX-user / HERMES_HOME boundary blocks this path only (the explicit command decides)."""
+    from hermes_cli.gateway_migrate_guards import auto_migration_blockers, auto_migration_opted_out
+    if _host_supports_migration() is not None or auto_migration_opted_out(_default_home()):
         return
     plan = build_migration_plan()
     if plan.already_multiplexed or len(plan.profiles) < 2 or not plan.standalone_secondaries:
         return
     print()
-    if plan.blocked:
-        _print(format_update_warning(plan))
+    auto_blockers = auto_migration_blockers(plan)
+    if plan.blocked or auto_blockers:
+        _print(format_update_warning(plan, auto_blockers))
         return
     print("→ Migrating per-profile gateways onto one multiplexed default gateway...")
     _print(format_plan(plan, dry_run=False))

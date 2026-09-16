@@ -157,7 +157,7 @@ _RESET_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RESET_END_REASON
 # never heal one of these (#106459); tools/session_search_tool.py derives its fresh-reset set from it.
 _BOUNDARY_END_REASONS = frozenset(_RESET_END_REASONS) | {"new_session"}
 
-# Accidental end reasons recovery treats as resumable (docs/session-lifecycle.md); single source of truth for
+# Accidental end reasons recovery treats as resumable (website/docs/developer-guide/gateway-session-lifecycle.md); single source of truth for
 # recovery SQL and SessionDB.RECOVERABLE_END_REASONS.  superseded_by_resume = sentinel-parked runtime replaced
 # by a fresh session.resume; startup_orphan_reap = dead-gateway sweep, same class as ws_orphan_reap but kept
 # distinct for forensics.
@@ -622,7 +622,14 @@ END;
 DROP TRIGGER IF EXISTS messages_display_identity_update;
 CREATE TRIGGER IF NOT EXISTS messages_display_identity_update
 AFTER UPDATE OF role, content, timestamp, tool_call_id, tool_calls, tool_name,
-                display_kind, display_metadata ON messages
+                display_kind ON messages
+WHEN new.role IS NOT old.role
+  OR new.content IS NOT old.content
+  OR new.timestamp IS NOT old.timestamp
+  OR new.tool_call_id IS NOT old.tool_call_id
+  OR new.tool_calls IS NOT old.tool_calls
+  OR new.tool_name IS NOT old.tool_name
+  OR new.display_kind IS NOT old.display_kind
 BEGIN
     UPDATE messages SET display_identity = NULL, display_order = NULL
     WHERE id = new.id OR (

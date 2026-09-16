@@ -31,6 +31,7 @@ from tools.registry import registry, tool_error
 from hermes_time import get_timezone_name
 from tools.code_execution_env import _resolve_child_cwd, _resolve_child_python
 from tools.code_execution_rpc import _rpc_poll_loop
+from tools.tool_output_truncate import head_tail_split, truncation_notice
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +63,10 @@ def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
                                 "stdout_bytes_total": total, "stdout_bytes_omitted": total - captured}
     if total <= MAX_STDOUT_BYTES:
         return stdout_bytes.decode("utf-8", errors="replace"), metadata
-    head_bytes = int(MAX_STDOUT_BYTES * 0.4)
+    head_bytes, tail_bytes = head_tail_split(MAX_STDOUT_BYTES)
     text = (stdout_bytes[:head_bytes].decode("utf-8", errors="replace")
-            + f"\n\n... [OUTPUT TRUNCATED - {total - captured:,} bytes omitted out of {total:,} total] ...\n\n"
-            + stdout_bytes[head_bytes - MAX_STDOUT_BYTES:].decode("utf-8", errors="replace"))
+            + truncation_notice(total - captured, total, unit="bytes")
+            + stdout_bytes[-tail_bytes:].decode("utf-8", errors="replace"))
     metadata["warning"] = ("execute_code stdout was truncated; the script did run, but only "
                            "the captured head/tail output is included. Re-run only with "
                            "narrower output if the omitted data is required.")
@@ -494,9 +495,12 @@ def _with_timeout_notice(stdout_text: str, timeout_msg: str) -> str:
     return stdout_text + f"\n\n⏰ {timeout_msg}" if stdout_text else f"⏰ {timeout_msg}"
 
 
-def _error_result(error: str, *, tool_calls_made: int = 0, duration: float = 0) -> str:
-    return json.dumps({"status": "error", "error": error, "tool_calls_made": tool_calls_made,
-                       "duration_seconds": duration}, ensure_ascii=False)
+def _error_result(error: str, *, tool_calls_made: int = 0, duration: float = 0,
+                  user_summary: Optional[str] = None) -> str:
+    body = {"status": "error", "error": error, "tool_calls_made": tool_calls_made, "duration_seconds": duration}
+    if user_summary:
+        body["user_summary"] = user_summary  # one human sentence; surfaces show it before the model text
+    return json.dumps(body, ensure_ascii=False)
 
 
 def _remote_failure(exc: BaseException, exec_start: float, tool_calls_made: int) -> str:
@@ -710,7 +714,8 @@ def execute_code(
     from tools.approval import check_execute_code_guard
     _guard = check_execute_code_guard(code, env_type, has_host_access=_docker_has_host_access(_env_config))
     if not _guard.get("approved", False):
-        return _error_result(_guard.get("message") or "execute_code blocked by approval guard.")
+        return _error_result(_guard.get("message") or "execute_code blocked by approval guard.",
+                             user_summary=_guard.get("user_summary"))
     # Clear a stale interrupt bit that landed during the blocking approval-wait so it can't
     # kill the just-approved run on the first poll. A genuine post-clear interrupt re-sets it.
     if _guard.get("user_approved"):
@@ -758,11 +763,11 @@ def _kill_process_group(proc, escalate: bool = False):
 
 
 def _load_config() -> dict:
-    """``code_execution`` config section via the lightweight raw reader — runs while the
+    """Effective ``code_execution`` section (defaults + user file + managed overlay) — runs while the
     module-level schema is built at tool discovery, so it must not import ``cli``."""
     try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config().get("code_execution", {})
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly().get("code_execution", {})
         return cfg if isinstance(cfg, dict) else {}
     except Exception:
         return {}

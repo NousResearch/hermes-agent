@@ -73,6 +73,10 @@ Adding one: register in that table (no `if name == ...` chain); `tools/todo_tool
 
 ## Compression (`agent/compression_facade.py`, `conversation_compression.py`, `turn_context_compaction.py`)
 
+Manual `/compress` on every surface (CLI, gateway, TUI, ACP) runs through
+`agent/conversation_compression_manual.py::compress_now` (one parser for `here [N]` / focus /
+`--preview` / `--aggressive`; surfaces only parse their own argv, install `after_messages` and render).
+
 Two layers: gateway session hygiene (85% threshold) and the agent `ContextCompressor` (50%,
 configurable; per-model overrides; failure cooldown after provider-proven overflow). The algorithm
 prunes old tool results first (no LLM call), then picks boundaries, then generates a structured
@@ -99,6 +103,19 @@ plugins; `agent/context_engine.py` drives context-engine plugins; `agent/image_g
 image-gen plugins (all in `plugins/AGENTS.md`). `agent/curator.py` + `curator_backup.py` implement
 the skill curator (`skills/AGENTS.md`). Cron sessions pass `skip_memory=True` by default — memory
 providers intentionally do not run during cron.
+
+- End-of-session memory extraction and provider `on_session_end` run wherever the session ends —
+  turn, eviction, shutdown, `tui_gateway` teardown — and the CALLER binds the owning profile's scope
+  first (`_run_release_in_profile_scope`, `_session_profile_runtime_scope`); the agent never derives
+  its home from `os.environ` at flush time (`Path(_session_db.db_path).parent` is the ground truth).
+  Provider background work starts through `memory_provider.py::spawn_context_thread` (copies the
+  contextvars), never a bare `threading.Thread`; `title_generator.py` is the shape.
+- `agent/secret_scope.py::get_secret` fails closed (`UnscopedSecretError`) only after
+  `set_multiplex_active(True)`; the gateway, cron, migrate and `serve` set it. A new multi-home host
+  must too, or every guard is silently off. Isolation is BETWEEN profiles; children inherit via
+  `copy_context`; a child's `UnscopedSecretError` is a spawn-site bug, never grounds for an
+  `os.getenv` fallthrough. Delegated children carry `delegation_context.py::
+  DELEGATED_CHILD_ENV_MARKER` valued as the fenced Kanban board root, not a bare flag.
 
 ## Tests
 

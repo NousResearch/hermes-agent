@@ -293,13 +293,26 @@ def _codex_backend_urls(base_url: str) -> tuple[str, str, str]:
 
 
 def _resolve_codex_usage_credentials(
-    base_url: Optional[str], api_key: Optional[str],
+    base_url: Optional[str], api_key: Optional[str], *, force_refresh: bool = False,
 ) -> tuple[str, str, Optional[str]]:
     """Codex quota credentials: explicit live-agent creds → native runtime resolver (itself pool-aware) → direct
     pool select. Native OAuth stores device-code logins in the pool, so the singleton store alone is not enough."""
     explicit_key = str(api_key or "").strip()
-    if explicit_key:
+    if explicit_key and not force_refresh:
         return explicit_key, str(base_url or "").strip(), None
+    if explicit_key:
+        # Forced retry for a live agent's own credential: refresh THAT credential (singleton or the
+        # pool entry that issued it), never re-resolve — that would render another pool account's usage.
+        try:
+            singleton_key = str((_read_codex_tokens().get("tokens") or {}).get("access_token", "") or "").strip()
+        except AuthError:
+            singleton_key = ""
+        if singleton_key != explicit_key:
+            from agent.credential_pool import load_pool
+            entry = load_pool("openai-codex").try_refresh_matching(api_key_hint=explicit_key)
+            if entry is None:
+                raise RuntimeError("Could not refresh the Codex credential this session runs on")
+            return entry.runtime_api_key, str(entry.runtime_base_url or base_url or "").strip(), None
     # Only AuthError is caught so tier 3 can run: a broad except would mask a transient refresh/network failure
     # and hand back a DIFFERENT pool account's usage; such errors must propagate to the fail-open outer guard.
     # account_id is best-effort: a partial singleton store must not sink a usable credential.
@@ -309,7 +322,10 @@ def _resolve_codex_usage_credentials(
         # setup this returns a usable ``source="credential_pool"`` token. A refresh/network error must
         # propagate — the outer ``fetch_account_usage`` guard fails open (shows nothing this turn) rather
         # than reporting the wrong account.
-        creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
+        resolve_kwargs = {"refresh_if_expiring": True}
+        if force_refresh:
+            resolve_kwargs["force_refresh"] = True
+        creds = resolve_codex_runtime_credentials(**resolve_kwargs)
         account_id: Optional[str] = None
         try:
             tokens = _read_codex_tokens().get("tokens") or {}
@@ -370,7 +386,19 @@ def _fetch_codex_account_usage(
     base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
     token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
-    payload = _get_json(_codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=15.0)
+    try:
+        payload = _get_json(
+            _codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=15.0,
+        )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 401:
+            raise
+        token, resolved_base_url, account_id = _resolve_codex_usage_credentials(
+            base_url, api_key, force_refresh=True,
+        )
+        payload = _get_json(
+            _codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=15.0,
+        )
     windows = _usage_windows(payload.get("rate_limit") or {}, (("primary_window", "Session"), ("secondary_window", "Weekly")),
                              "used_percent", "reset_at")
     details: list[str] = []
@@ -468,23 +496,37 @@ def redeem_codex_reset_credit(
         token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
     except Exception:
         return _unavailable("No Codex credentials available. Run `hermes auth` to sign in with your ChatGPT account.")
-    usage_url, _credits_url, consume_url = _codex_backend_urls(resolved_base_url)
-    headers = _codex_headers(token, account_id)
+    redeem_request_id = str(uuid.uuid4())
     try:
-        with httpx.Client(timeout=15.0) as client:
-            usage_resp = client.get(usage_url, headers=headers)
-            usage_resp.raise_for_status()
-            payload = usage_resp.json() or {}
-            available = _codex_banked_resets(payload)
-            refused = _codex_reset_guard(payload, available, force)
-            if refused is not None:
-                return refused
-            consume_resp = client.post(
-                consume_url, headers={**headers, "Content-Type": "application/json"},
-                json={"redeem_request_id": str(uuid.uuid4())},
-            )
-            consume_resp.raise_for_status()
-            body = consume_resp.json() or {}
+        for attempt in range(2):
+            usage_url, _credits_url, consume_url = _codex_backend_urls(resolved_base_url)
+            headers = _codex_headers(token, account_id)
+            try:
+                with httpx.Client(timeout=15.0) as client:
+                    usage_resp = client.get(usage_url, headers=headers)
+                    usage_resp.raise_for_status()
+                    payload = usage_resp.json() or {}
+                    available = _codex_banked_resets(payload)
+                    refused = _codex_reset_guard(payload, available, force)
+                    if refused is not None:
+                        return refused
+                    consume_resp = client.post(
+                        consume_url, headers={**headers, "Content-Type": "application/json"},
+                        json={"redeem_request_id": redeem_request_id},
+                    )
+                    consume_resp.raise_for_status()
+                    body = consume_resp.json() or {}
+                break
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 401 or attempt > 0:
+                    raise
+                try:
+                    token, resolved_base_url, account_id = _resolve_codex_usage_credentials(
+                        base_url, api_key, force_refresh=True,
+                    )
+                except Exception:
+                    # Refresh token dead too: the 401 hint (re-login) is the actionable message.
+                    raise exc from None
     except httpx.HTTPStatusError as exc:
         code = exc.response.status_code
         if code in (401, 403):

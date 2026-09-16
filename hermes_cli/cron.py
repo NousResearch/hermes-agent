@@ -892,11 +892,77 @@ _CRON_SUBCOMMANDS = {
     "pause": lambda a: _job_action("pause", a.job_id, "Paused"),
     "resume": lambda a: cron_resume(a),
     "run": lambda a: _job_action("run", a.job_id, "Triggered"),
+    "stop": lambda a: cron_stop(a),
     "remove": lambda a: _job_action("remove", a.job_id, "Removed"),
+    "resnap": lambda a: _cron_resnap(a),
 }
 _CRON_SUBCOMMANDS["history"] = _CRON_SUBCOMMANDS["runs"]
 _CRON_SUBCOMMANDS["add"] = _CRON_SUBCOMMANDS["create"]
 _CRON_SUBCOMMANDS["rm"] = _CRON_SUBCOMMANDS["delete"] = _CRON_SUBCOMMANDS["remove"]
+
+
+def cron_stop(args) -> int:
+    """Handle ``hermes cron stop <job_id>`` — user-facing hard-interrupt of an in-flight job (#112892).
+
+    Resolves the running job's AIAgent(s) via ``interrupt_running_job`` and marks every in-flight
+    execution token interrupted. Returns 1 (not an error) when the job isn't currently running —
+    a "nothing to stop" is the operator's signal to look at ``hermes cron runs`` instead. Goes
+    straight to the scheduler, not through the cronjob tool, because ``stop`` is an out-of-band
+    signal that doesn't fit the tool's lifecycle action grammar.
+    """
+    job_id = str(getattr(args, "job_id", "") or "").strip()
+    if not job_id:
+        print(color("A job ID is required.", Colors.RED))
+        return 1
+    try:
+        from cron.scheduler import interrupt_running_job
+        marked, interrupted = interrupt_running_job(job_id, reason="user")
+    except Exception as exc:
+        logger.debug("cron stop raised", exc_info=True)
+        print(color(f"Failed to stop job: {exc}", Colors.RED))
+        return 1
+    if interrupted == 0:
+        print(color(
+            f"Job {job_id} is not currently running — nothing to stop. "
+            f"Use `hermes cron runs {job_id}` to see recent attempts.",
+            Colors.YELLOW))
+        return 1
+    token_word = "execution" if interrupted == 1 else "executions"
+    print(color(
+        f"Stopped job: {job_id} ({interrupted} {token_word} interrupted; "
+        f"last_status updated for {len(marked)} row{'s' if len(marked) != 1 else ''}).",
+        Colors.GREEN))
+    return 0
+
+
+def _cron_resnap(args) -> int:
+    """Handle `hermes cron resnap [job_id] [--all]`."""
+    if bool(getattr(args, "all", False)):
+        result = _cron_api(action="resnap", all=True)
+        if not result.get("success"):
+            print(color(f"Failed to resnap: {result.get('error', 'unknown error')}", Colors.RED))
+            return 1
+        updated = result.get("updated_jobs", [])
+        print(color(f"Resnapped {len(updated)} unpinned job(s) to the current global resolution.", Colors.GREEN))
+        for job in updated:
+            print(f"  • {job.get('name', job.get('job_id'))} ({job.get('job_id')})")
+        if not updated:
+            print("  (no unpinned agent jobs found — nothing to refresh)")
+        return 0
+
+    job_id = getattr(args, "job_id", None)
+    if not job_id:
+        print(color("resnap requires either a <job_id> or --all.", Colors.RED))
+        print("Usage: hermes cron resnap <job_id> | hermes cron resnap --all")
+        return 1
+    result = _cron_api(action="resnap", job_id=job_id)
+    if not result.get("success"):
+        print(color(f"Failed to resnap job: {result.get('error', 'unknown error')}", Colors.RED))
+        return 1
+    job = result.get("job", {})
+    print(color(f"Resnapped job: {job.get('name', job_id)} ({job.get('job_id', job_id)})", Colors.GREEN))
+    print("  Adopted the current global inference resolution; the job remains unpinned and will track future global changes.")
+    return 0
 
 
 def cron_command(args):
@@ -906,5 +972,5 @@ def cron_command(args):
     if handler is not None:
         return handler(args)
     print(f"Unknown cron command: {subcmd}\n"
-          "Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|runs|doctor|tick]")
+          "Usage: hermes cron [list|create|edit|pause|resume|run|stop|remove|resnap|status|runs|doctor|tick]")
     sys.exit(1)

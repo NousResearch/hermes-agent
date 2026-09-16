@@ -634,6 +634,12 @@ _INFLIGHT_MIN_ALLOWANCE_MINUTES = 30.0
 # false "ok" (#60432). Token keying keeps an interruption scoped to that exact execution: a later run of the
 # same job ID (recurring jobs reuse the ID every fire) must not inherit the stale flag.
 _interrupted_job_ids: set = set()
+# Per in-flight job execution (keyed by the same token as ``_running_fire_owners`` so the
+# user-facing ``interrupt_running_job`` helper can find the live AIAgent to hard-interrupt without
+# having to plumb a new side-channel through ``run_one_job``. The agent is the value the watchdog
+# already calls ``request_hard_interrupt`` on at line ~1638 — exposing it here makes that hook
+# reachable to ``hermes cron stop <id>`` (#112892).
+_running_cron_agents: dict[str, dict[object, Any]] = {}
 
 
 class _CancelEventLike(Protocol):
@@ -1083,6 +1089,64 @@ def mark_running_jobs_interrupted(
         except Exception as e:
             logger.warning("Failed to mark job %s interrupted: %s", job_id, e)
     return marked
+
+
+def interrupt_running_job(job_id: str, reason: str = "user") -> tuple:
+    """Hard-interrupt every in-flight execution of ``job_id``; ``hermes cron stop <id>`` entry point.
+
+    Mirrors the shutdown path that ``mark_running_jobs_interrupted`` serves: for every live
+    execution token of this job the agent receives ``request_hard_interrupt`` (the same call the
+    inactivity watchdog makes — ``_raise_inactivity_timeout``, line ~1638), the token is recorded
+    in ``_interrupted_job_ids`` BEFORE ``run_one_job`` writes ``last_status`` so the
+    pre-write ``_consume_interrupted_flag`` check (#60432) flips true, and
+    ``mark_running_jobs_interrupted`` writes ``last_status='interrupted'`` via the owner-fenced
+    path. Token keying keeps the flag scoped to THIS execution; a later recurring fire of the
+    same job ID is not poisoned (#60432, recurring reuse of job IDs).
+
+    Tokens already in ``_interrupted_job_ids`` (a previous stop, or shutdown) are skipped so the
+    same agent is never hard-interrupted twice — the second call is a no-op against the
+    bookkeeping path even though ``_running_fire_owners`` still references the token.
+
+    Returns ``(marked_job_ids, interrupted_count)``: ``marked_job_ids`` are the job IDs whose
+    ``last_status`` was successfully written; ``interrupted_count`` is the number of execution
+    tokens whose agents received the hard-interrupt request. Zero means the job was not currently
+    running and the caller should tell the user. See #112892.
+    """
+    reason_text = str(reason or "user").strip() or "user"
+    with _running_lock:
+        active_fires = [
+            (token, owner)
+            for token, (owner, _profile_home) in _running_fire_owners.get(job_id, {}).items()
+            if token not in _interrupted_job_ids
+        ]
+        active_agents = dict(_running_cron_agents.get(job_id, {}))
+        if active_fires:
+            tokens_to_flag = [token for token, _owner in active_fires]
+        elif job_id in _running_job_ids and job_id not in _interrupted_job_ids:
+            tokens_to_flag = [job_id]
+        else:
+            tokens_to_flag = []
+    if not tokens_to_flag:
+        return ([], 0)
+    _interrupted_job_ids.update(tokens_to_flag)
+    interrupted = 0
+    for token, _owner in active_fires:
+        agent = active_agents.get(token)
+        if agent is None:
+            continue
+        try:
+            request_hard_interrupt(agent, reason_text, tool_reason="cron_stop")
+            interrupted += 1
+        except Exception:
+            logger.debug(
+                "Job '%s': hard-interrupt request raised on token %r",
+                job_id, token, exc_info=True)
+    if active_fires:
+        only_owners = {(job_id, owner) for _token, owner in active_fires}
+    else:
+        only_owners = None
+    marked = mark_running_jobs_interrupted(reason_text, only_owners=only_owners)
+    return (marked, interrupted)
 
 
 def _is_interrupted(job_id: str, token: Optional[object] = None) -> bool:
@@ -2439,11 +2503,16 @@ class _FireAudit:
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None, extra_prompt: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None, execution_id: Optional[str] = None,
+    execution_token: Optional[object] = None,
 ) -> tuple[bool, str, str, Optional[str]]:
     """Execute a single cron job. Returns (success, full_output_doc, final_response, error).
     ``defer_agent_teardown``: if a list, the live agent is appended instead of torn down; the caller
     MUST call ``_teardown_cron_agent(agent)`` AFTER delivery (a torn-down async client can't
     deliver). ``extra_prompt``: per-fire context, never persisted.
+    ``execution_token``: the in-flight token from ``_running_fire_owners`` so a user-initiated
+    ``interrupt_running_job`` can resolve the live AIAgent and hard-interrupt it (#112892).
+    Optional; ``run_job`` synthesises a local token when the caller doesn't carry one (legacy
+    standalone callers).
 
     ``defer_agent_teardown``: when a caller passes a list, ``run_job`` skips the agent's async-resource
     teardown (``agent.close()`` + ``cleanup_stale_async_clients()``) in its ``finally`` block and instead
@@ -2472,6 +2541,10 @@ def run_job(
     _session_db = None
     _audit: Optional[_FireAudit] = None
     _worker_state: dict = {}
+    # Token used to register the live AIAgent in `_running_cron_agents` for `cron stop` (#112892).
+    # Initialised before the try so a blocked-config / pre-agent early return doesn't NameError
+    # in the finally unregister path.
+    _interrupt_token: Optional[object] = None
     scope = _CronRunScope(job, job_id, execution_id)
     try:
         scope.enter()
@@ -2492,6 +2565,13 @@ def run_job(
         agent = _construct_cron_agent(
             AIAgent, job, _cfg, setup, workdir=scope.workdir, session_id=_cron_session_id,
             session_db=_session_db)
+        # Register the live AIAgent so `hermes cron stop <id>` can find it via
+        # `_running_cron_agents[job_id][token] = agent` and call `request_hard_interrupt` (#112892).
+        # Token comes from the caller when present (recurring fires carry one) or is synthesised
+        # here so a legacy standalone caller is still interruptible.
+        _interrupt_token = execution_token if execution_token is not None else object()
+        with _running_lock:
+            _running_cron_agents.setdefault(job_id, {})[_interrupt_token] = agent
         _audit = _FireAudit(job, job_id, model)
 
         result = _run_agent_with_watchdog(
@@ -2558,6 +2638,17 @@ def run_job(
                     defer_agent_teardown.append(agent)
             else:
                 _teardown_cron_agent(agent, job_id)
+        # Unregister the live AIAgent so a late `interrupt_running_job` cannot call
+        # `request_hard_interrupt` on a torn-down agent (#112892). Done AFTER teardown so a
+        # caller holding the agent in `defer_agent_teardown` still has a live reference; the
+        # interrupt path resolves through `_running_cron_agents` only for the active run.
+        if _interrupt_token is not None:
+            with _running_lock:
+                _bucket = _running_cron_agents.get(job_id)
+                if _bucket is not None:
+                    _bucket.pop(_interrupt_token, None)
+                    if not _bucket:
+                        _running_cron_agents.pop(job_id, None)
 
 
 def _teardown_cron_agent(
@@ -3190,9 +3281,12 @@ def _run_one_job_body(
         _run_kwargs = {
             "defer_agent_teardown": _deferred_agents,
             "extra_prompt": extra_prompt,
-            "execution_id": execution_id}
+            "execution_id": execution_id,
+            "execution_token": execution_token}
         if fence.cancel_event is not None:
             _run_kwargs["cancel_event"] = fence.cancel_event
+        elif fire_claim_lost is not None:
+            _run_kwargs["cancel_event"] = fire_claim_lost
         try:
             success, output, final_response, error = run_job(job, **_run_kwargs)
         except BaseException:

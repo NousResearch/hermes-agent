@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # Deliberately anchored: a human discussing one of these strings mid-message is valid input.
 _INTERNAL_GATEWAY_TURN_RE = re.compile(
     r"^\s*(?:"
-    r"\[ASYNC (?:DELEGATION )?(?:BATCH )?COMPLETE[^\]]*\]|"
+    r"\[ASYNC (?:DELEGATION )?(?:BATCH |TASK )?(?:COMPLETE|FAILED)[^\]]*\]|"
     r"\[CONTEXT COMPACTION[^\]]*\]|"
     r"\[CONTEXT SUMMARY\]:?|"
     r"\[PRIOR CONTEXT[^\]]*\]|"

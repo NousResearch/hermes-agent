@@ -123,6 +123,38 @@ class TestCleanPlugin:
         runtime = _mk_plugin(tmp_path / "runtime", files)
         assert should_allow_plugin_install(scan_plugin(runtime), force=True)[0] is False
 
+    def test_benchmarking_fixture_critical_caps_but_runtime_secret_still_blocks(self, tmp_path):
+        """Redaction stress suites under `benchmarking/` deliberately embed
+        secret-shaped dummies to prove raw values do not leak (#111334), so a
+        critical there caps like a test tree: an inert quoted dummy steps down
+        with verdict `safe` and installs without `--force`. The same shape
+        in runtime code keeps full `critical` severity and stays `dangerous`."""
+        dummy_key = (
+            'DUMMY_PEM = "-----BEGIN PRIVATE KEY-----\\\\n'
+            'MIIBVAIBADANBgkqhkiG9w0BAQEFAASCAT4wggE6AgEAAkEA0RNTVX NOT A REAL KEY\\\\n'
+            '-----END PRIVATE KEY-----"\n'
+        )
+        files = dict(BASE_FILES)
+        files["benchmarking/stress.py"] = dummy_key
+        result = scan_plugin(_mk_plugin(tmp_path, files))
+        assert result.verdict == "safe", [(f.pattern_id, f.severity, f.file) for f in result.findings]
+        assert any(
+            f.pattern_id == "embedded_private_key" and f.severity == "medium" and f.file == "benchmarking/stress.py"
+            for f in result.findings
+        )
+        assert not any(f.pattern_id == "embedded_private_key" and f.severity == "critical" for f in result.findings)
+        assert should_allow_plugin_install(result)[0] is True
+
+        files["runtime_creds.py"] = dummy_key
+        (tmp_path / "runtime").mkdir()
+        runtime = _mk_plugin(tmp_path / "runtime", files)
+        runtime_result = scan_plugin(runtime)
+        assert any(
+            f.pattern_id == "embedded_private_key" and f.severity == "critical" and f.file == "runtime_creds.py"
+            for f in runtime_result.findings
+        )
+        assert should_allow_plugin_install(runtime_result, force=True)[0] is False
+
 
 class TestDefensiveDocumentation:
     """Threat *descriptions* (hardening comments, changelog entries) must not make a

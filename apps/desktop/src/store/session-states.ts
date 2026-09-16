@@ -962,7 +962,7 @@ function saveTiles(tiles: SessionTile[]) {
 
 /** Move persisted/open tabs with a renamed profile instead of leaving their
  * owner routes pointed at a backend name that no longer exists. */
-export function migrateSessionTilesProfile(oldName: string, newName: string): void {
+export function migrateSessionTilesProfile(oldName: string, newName: string, connectionId: string): void {
   const oldProfile = normalizeProfileKey(oldName)
   const newProfile = normalizeProfileKey(newName)
 
@@ -970,27 +970,41 @@ export function migrateSessionTilesProfile(oldName: string, newName: string): vo
     return
   }
 
-  const migrateTile = (tile: StoredTile): StoredTile => ({
-    ...tile,
-    ...(tile.ownerProfile === oldProfile ? { ownerProfile: newProfile } : {}),
-    ...(tile.ownerRoute
-      ? {
-          ownerRoute: {
-            ...tile.ownerRoute,
-            profile: tile.ownerRoute.profile === oldProfile ? newProfile : tile.ownerRoute.profile,
-            ...(tile.ownerRoute.targetProfile === oldProfile ? { targetProfile: newProfile } : {})
-          }
-        }
-      : {})
-  })
+  const belongsToRenamedProfile = (tile: StoredTile): boolean =>
+    tile.ownerRoute?.connectionId === connectionId &&
+    (tile.ownerProfile === oldProfile ||
+      tile.ownerRoute.profile === oldProfile ||
+      tile.ownerRoute.targetProfile === oldProfile)
+  const migrateTile = (tile: StoredTile): StoredTile => {
+    const route = tile.ownerRoute
 
-  const moved = [...(tilesByProfile[newProfile] ?? []), ...(tilesByProfile[oldProfile] ?? [])].map(migrateTile)
+    if (!route || !belongsToRenamedProfile(tile)) {
+      return tile
+    }
+
+    return {
+      ...tile,
+      ...(tile.ownerProfile === oldProfile ? { ownerProfile: newProfile } : {}),
+      ownerRoute: {
+        ...route,
+        profile: route.profile === oldProfile ? newProfile : route.profile,
+        ...(route.targetProfile === oldProfile ? { targetProfile: newProfile } : {})
+      }
+    }
+  }
+  const oldTiles = tilesByProfile[oldProfile] ?? []
+  const staying = oldTiles.filter(tile => !belongsToRenamedProfile(tile))
+  const moved = [...(tilesByProfile[newProfile] ?? []), ...oldTiles.filter(belongsToRenamedProfile).map(migrateTile)]
 
   if (moved.length > 0) {
-    tilesByProfile[newProfile] = [...new Map(moved.map(tile => [tile.storedSessionId, tile])).values()]
+    tilesByProfile[newProfile] = moved
   }
 
-  delete tilesByProfile[oldProfile]
+  if (staying.length > 0) {
+    tilesByProfile[oldProfile] = staying
+  } else {
+    delete tilesByProfile[oldProfile]
+  }
 
   if (tilesByProfile[BOTS_TILE_BUCKET]) {
     tilesByProfile[BOTS_TILE_BUCKET] = tilesByProfile[BOTS_TILE_BUCKET].map(migrateTile)
@@ -998,17 +1012,23 @@ export function migrateSessionTilesProfile(oldName: string, newName: string): vo
 
   persistTiles()
 
-  if ([oldProfile, newProfile].includes(profileKey())) {
+  const activeConnectionId = $connection.get()?.connectionId ?? LOCAL_CONNECTION_ID
+
+  if (activeConnectionId === connectionId && [oldProfile, newProfile].includes(profileKey())) {
     $sessionTiles.set([...(tilesByProfile[newProfile] ?? []), ...(tilesByProfile[BOTS_TILE_BUCKET] ?? [])])
   }
 }
 
 if (typeof window !== 'undefined') {
   window.addEventListener('hermes:profile-renamed', event => {
-    const detail = (event as CustomEvent<{ newName?: unknown; oldName?: unknown }>).detail
+    const detail = (event as CustomEvent<{ connectionId?: unknown; newName?: unknown; oldName?: unknown }>).detail
 
-    if (typeof detail?.oldName === 'string' && typeof detail.newName === 'string') {
-      migrateSessionTilesProfile(detail.oldName, detail.newName)
+    if (
+      typeof detail?.connectionId === 'string' &&
+      typeof detail.oldName === 'string' &&
+      typeof detail.newName === 'string'
+    ) {
+      migrateSessionTilesProfile(detail.oldName, detail.newName, detail.connectionId)
     }
   })
 }

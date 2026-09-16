@@ -15,6 +15,7 @@ import { Field, FieldHint } from '@/components/ui/field'
 import { SanitizedInput } from '@/components/ui/sanitized-input'
 import { renameProfile } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { activeConnectionScopeSuffix, connectionScopeSuffix } from '@/lib/connection-scoped'
 import { AlertTriangle } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
 import { retireLocalProfileGateways } from '@/store/gateway'
@@ -23,6 +24,7 @@ import {
   completeProfileRenameState,
   stageProfileRenameState
 } from '@/store/profile-rename-state'
+import { $connection } from '@/store/session'
 
 import { isValidProfileName } from './create-profile-dialog'
 
@@ -91,8 +93,20 @@ export function RenameProfileDialog({
     setError(null)
 
     try {
+      const connection = $connection.get()
+      const connectionId =
+        (scope && typeof scope === 'object' ? scope.connectionId : connection?.connectionId)?.trim() || 'local'
+      const ownsActiveNavigation = (connection?.connectionId?.trim() || 'local') === connectionId
+      const renameStateScope = {
+        connectionId,
+        oldNavigationSuffix: ownsActiveNavigation ? activeConnectionScopeSuffix() : null,
+        newNavigationSuffix: ownsActiveNavigation
+          ? connectionScopeSuffix(connection ? { ...connection, profile: trimmed } : null)
+          : null
+      }
+
       if (!isDefault) {
-        stageProfileRenameState(currentName, trimmed)
+        stageProfileRenameState(currentName, trimmed, renameStateScope)
       }
 
       // A retained renderer socket for the old name would treat the rename's
@@ -106,7 +120,7 @@ export function RenameProfileDialog({
       await (scope == null ? renameProfile(currentName, trimmed) : renameProfile(currentName, trimmed, scope))
 
       if (!isDefault) {
-        completeProfileRenameState(currentName, trimmed)
+        completeProfileRenameState(currentName, trimmed, renameStateScope)
       }
 
       await onRenamed?.(trimmed)

@@ -5,8 +5,17 @@ const LAST_SESSION_KEY = 'hermes.desktop.lastSessionId'
 const LAST_ROUTE_KEY = 'hermes.desktop.lastRoute'
 
 interface PendingProfileRename {
+  connectionId: string
   newName: string
+  newNavigationSuffix: null | string
   oldName: string
+  oldNavigationSuffix: null | string
+}
+
+export interface ProfileRenameStateScope {
+  connectionId: string
+  newNavigationSuffix: null | string
+  oldNavigationSuffix: null | string
 }
 
 function normalizedName(name: string): string {
@@ -23,7 +32,13 @@ function readPending(): PendingProfileRename | null {
       return null
     }
 
-    return { oldName: normalizedName(parsed.oldName), newName: normalizedName(parsed.newName) }
+    return {
+      connectionId: typeof parsed.connectionId === 'string' ? parsed.connectionId.trim() || 'local' : 'local',
+      oldName: normalizedName(parsed.oldName),
+      newName: normalizedName(parsed.newName),
+      oldNavigationSuffix: typeof parsed.oldNavigationSuffix === 'string' ? parsed.oldNavigationSuffix : '',
+      newNavigationSuffix: typeof parsed.newNavigationSuffix === 'string' ? parsed.newNavigationSuffix : ''
+    }
   } catch {
     return null
   }
@@ -39,30 +54,26 @@ function moveStorageValue(store: Storage, source: string, destination: string): 
   store.removeItem(source)
 }
 
-function migrateRememberedNavigation(store: Storage, oldName: string, newName: string): void {
+function migrateRememberedNavigation(
+  store: Storage,
+  oldName: string,
+  newName: string,
+  oldSuffix: null | string,
+  newSuffix: null | string
+): void {
+  if (oldSuffix === null || newSuffix === null) {
+    return
+  }
+
   const oldScope = `.profile.${encodeURIComponent(oldName)}`
   const newScope = `.profile.${encodeURIComponent(newName)}`
 
-  const keys = Array.from({ length: store.length }, (_, index) => store.key(index)).filter((key): key is string =>
-    Boolean(key)
-  )
-
-  for (const key of keys) {
-    const base = [LAST_SESSION_KEY, LAST_ROUTE_KEY].find(candidate => {
-      const scopedKey = candidate + oldScope
-
-      return key === scopedKey || key.startsWith(`${scopedKey}.`)
-    })
-
-    if (base) {
-      const scopedKey = base + oldScope
-
-      moveStorageValue(store, key, base + newScope + key.slice(scopedKey.length))
-    }
+  for (const base of [LAST_SESSION_KEY, LAST_ROUTE_KEY]) {
+    moveStorageValue(store, base + oldScope + oldSuffix, base + newScope + newSuffix)
   }
 }
 
-function migrateTranscriptTails(store: Storage, oldName: string, newName: string): void {
+function migrateTranscriptTails(store: Storage, oldName: string, newName: string, connectionId: string): void {
   let index: string[]
 
   try {
@@ -76,7 +87,7 @@ function migrateTranscriptTails(store: Storage, oldName: string, newName: string
     try {
       const scope = JSON.parse(suffix)
 
-      if (!Array.isArray(scope) || scope.length !== 3 || scope[1] !== oldName) {
+      if (!Array.isArray(scope) || scope.length !== 3 || scope[0] !== connectionId || scope[1] !== oldName) {
         return suffix
       }
 
@@ -92,19 +103,31 @@ function migrateTranscriptTails(store: Storage, oldName: string, newName: string
   store.setItem(TRANSCRIPT_INDEX_KEY, JSON.stringify([...new Set(migrated)]))
 }
 
-function migrateProfileState(oldName: string, newName: string): void {
+function migrateProfileState(oldName: string, newName: string, scope: ProfileRenameStateScope): void {
   const store = window.localStorage
 
-  migrateRememberedNavigation(store, oldName, newName)
-  migrateTranscriptTails(store, oldName, newName)
-  window.dispatchEvent(new CustomEvent('hermes:profile-renamed', { detail: { newName, oldName } }))
+  migrateRememberedNavigation(
+    store,
+    oldName,
+    newName,
+    scope.oldNavigationSuffix,
+    scope.newNavigationSuffix
+  )
+  migrateTranscriptTails(store, oldName, newName, scope.connectionId)
+  window.dispatchEvent(
+    new CustomEvent('hermes:profile-renamed', { detail: { connectionId: scope.connectionId, newName, oldName } })
+  )
 }
 
 /** Record intent before the rename request: a primary-profile rename reloads
  * the renderer before its request promise can settle, so the next boot must be
  * able to finish the presentation-state migration. */
-export function stageProfileRenameState(oldName: string, newName: string): void {
-  const pending = { oldName: normalizedName(oldName), newName: normalizedName(newName) }
+export function stageProfileRenameState(
+  oldName: string,
+  newName: string,
+  scope: ProfileRenameStateScope = { connectionId: 'local', newNavigationSuffix: '', oldNavigationSuffix: '' }
+): void {
+  const pending = { ...scope, oldName: normalizedName(oldName), newName: normalizedName(newName) }
 
   try {
     window.localStorage.setItem(PENDING_RENAME_KEY, JSON.stringify(pending))
@@ -121,12 +144,16 @@ export function cancelProfileRenameState(oldName: string, newName: string): void
   }
 }
 
-export function completeProfileRenameState(oldName: string, newName: string): void {
+export function completeProfileRenameState(
+  oldName: string,
+  newName: string,
+  scope: ProfileRenameStateScope = { connectionId: 'local', newNavigationSuffix: '', oldNavigationSuffix: '' }
+): void {
   const oldProfile = normalizedName(oldName)
   const newProfile = normalizedName(newName)
 
   if (oldProfile !== newProfile) {
-    migrateProfileState(oldProfile, newProfile)
+    migrateProfileState(oldProfile, newProfile, scope)
   }
 
   try {
@@ -145,7 +172,7 @@ export function recoverPendingProfileRenameState(activeProfile: string): boolean
     return false
   }
 
-  completeProfileRenameState(pending.oldName, pending.newName)
+  completeProfileRenameState(pending.oldName, pending.newName, pending)
 
   return true
 }

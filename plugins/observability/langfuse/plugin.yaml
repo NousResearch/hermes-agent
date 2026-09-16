@@ -8,7 +8,12 @@ requires_env:
 hooks:
   - pre_api_request
   - post_api_request
+  - api_request_error
   - pre_llm_call
   - post_llm_call
   - pre_tool_call
   - post_tool_call
+  - on_session_finalize
+  - on_session_end
+  - subagent_start
+  - subagent_stop

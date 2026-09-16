@@ -1,35 +1,19 @@
-"""
-Skills configuration for Hermes Agent.
-`hermes skills` enters this module.
-
-Toggle individual skills or categories on/off, globally or per-platform.
-Config stored in ~/.hermes/config.yaml under:
-
-  skills:
-    disabled: [skill-a, skill-b]          # global disabled list
-    platform_disabled:                    # per-platform overrides
-      telegram: [skill-c]
-      cli: []
-"""
+"""Skills configuration for Hermes Agent. `hermes skills` enters this module."""
 from typing import List, Optional, Set
 
 from hermes_cli.config import cfg_get, load_config, save_config
 from hermes_cli.colors import Colors, color
 from hermes_cli.platforms import PLATFORMS as _PLATFORMS
 
-# Backward-compatible view: {key: label_string} so existing code that
-# iterates ``PLATFORMS.items()`` or calls ``PLATFORMS.get(key)`` keeps
-# working without changes to every call site.
+# {key: label} view of the messaging platforms (``PLATFORMS.items()`` / ``.get(key)`` below).
 PLATFORMS = {k: info.label for k, info in _PLATFORMS.items() if k != "api_server"}
 
-# ─── Config Helpers ───────────────────────────────────────────────────────────
 
 def _normalize_skill_names(values) -> Set[str]:
-    """Normalize a config value into a set of skill names.
+    """Config value -> set of skill names (mirrors ``agent.skill_utils._normalize_string_set``):
+    ``None`` (YAML null) is empty and a bare scalar is a single-item list, NOT its characters.
 
-    Mirrors ``agent.skill_utils._normalize_string_set``: ``None`` (YAML null)
-    means empty, a bare scalar (``disabled: my-skill``) means a single-item
-    list — NOT a set of its characters (#13026).
+    See #13026.
     """
     if values is None:
         return set()
@@ -42,27 +26,25 @@ def _normalize_skill_names(values) -> Set[str]:
 
 
 def get_disabled_skills(config: dict, platform: Optional[str] = None) -> Set[str]:
-    """Return disabled skill names: the global list unioned with the
-    platform-specific list when a platform is given.
-
-    A globally-disabled skill stays disabled on every platform, so the
-    platform list adds to the global list rather than replacing it. This
-    mirrors ``agent.skill_utils.get_disabled_skill_names``.
-    """
+    """Disabled skill names: the global list unioned with the platform list when given (globally
+    disabled stays disabled everywhere; mirrors ``agent.skill_utils.get_disabled_skill_names``)."""
     skills_cfg = config.get("skills") or {}
     if not isinstance(skills_cfg, dict):
         return set()
-    global_disabled = _normalize_skill_names(skills_cfg.get("disabled"))
-    if platform is None:
-        return global_disabled
-    platform_disabled = cfg_get(skills_cfg, "platform_disabled", platform)
-    if platform_disabled is None:
-        return global_disabled
-    return global_disabled | _normalize_skill_names(platform_disabled)
+    from agent.skill_utils import ESSENTIAL_SKILLS
+    disabled = _normalize_skill_names(skills_cfg.get("disabled"))
+    if platform is not None:
+        platform_disabled = cfg_get(skills_cfg, "platform_disabled", platform)
+        if platform_disabled is not None:
+            disabled = disabled | _normalize_skill_names(platform_disabled)
+    return disabled - ESSENTIAL_SKILLS
 
 
 def save_disabled_skills(config: dict, disabled: Set[str], platform: Optional[str] = None):
-    """Persist disabled skill names to config."""
+    """Persist disabled skill names to config; essential skills (e.g. ``hermes-agent``) are
+    silently dropped — they cannot be disabled from any surface."""
+    from agent.skill_utils import ESSENTIAL_SKILLS
+    disabled = set(disabled) - ESSENTIAL_SKILLS
     config.setdefault("skills", {})
     if platform is None:
         config["skills"]["disabled"] = sorted(disabled)
@@ -71,8 +53,6 @@ def save_disabled_skills(config: dict, disabled: Set[str], platform: Optional[st
         config["skills"]["platform_disabled"][platform] = sorted(disabled)
     save_config(config)
 
-
-# ─── Skill Discovery ─────────────────────────────────────────────────────────
 
 def _list_all_skills() -> List[dict]:
     """Return all installed skills (ignoring disabled state)."""
@@ -88,10 +68,8 @@ def _get_categories(skills: List[dict]) -> List[str]:
     return sorted({s["category"] or "uncategorized" for s in skills})
 
 
-# ─── Platform Selection ──────────────────────────────────────────────────────
-
 def _select_platform() -> Optional[str]:
-    """Ask user which platform to configure, or global."""
+    """Ask which platform to configure; None means global."""
     options = [("global", "All platforms (global default)")] + list(PLATFORMS.items())
     print()
     print(color("  Configure skills for:", Colors.BOLD))
@@ -102,67 +80,47 @@ def _select_platform() -> Optional[str]:
         raw = input(color("  Select [1]: ", Colors.YELLOW)).strip()
     except (KeyboardInterrupt, EOFError):
         return None
-    if not raw:
-        return None  # global
     try:
-        idx = int(raw) - 1
-        if 0 <= idx < len(options):
-            key = options[idx][0]
-            return None if key == "global" else key
+        idx = int(raw) - 1  # empty input -> ValueError -> global
     except ValueError:
-        pass
+        return None
+    if 0 <= idx < len(options) and options[idx][0] != "global":
+        return options[idx][0]
     return None
 
-
-# ─── Category Toggle ─────────────────────────────────────────────────────────
 
 def _toggle_by_category(skills: List[dict], disabled: Set[str]) -> Set[str]:
     """Toggle all skills in a category at once."""
     from hermes_cli.curses_ui import curses_checklist
-
     categories = _get_categories(skills)
-    cat_labels = []
+    cat_skills = [{s["name"] for s in skills if (s["category"] or "uncategorized") == cat}
+                  for cat in categories]
+    cat_labels = [f"{cat} ({len(names)} skills)" for cat, names in zip(categories, cat_skills)]
     # A category is "enabled" (checked) when NOT all its skills are disabled
-    pre_selected = set()
-    for i, cat in enumerate(categories):
-        cat_skills = [s["name"] for s in skills if (s["category"] or "uncategorized") == cat]
-        cat_labels.append(f"{cat} ({len(cat_skills)} skills)")
-        if not all(s in disabled for s in cat_skills):
-            pre_selected.add(i)
-
-    chosen = curses_checklist(
-        "Categories — toggle entire categories",
-        cat_labels, pre_selected, cancel_returns=pre_selected,
-    )
-
+    pre_selected = {i for i, names in enumerate(cat_skills)
+                    if not all(s in disabled for s in names)}
+    chosen = curses_checklist("Categories — toggle entire categories",
+                              cat_labels, pre_selected, cancel_returns=pre_selected)
     new_disabled = set(disabled)
-    for i, cat in enumerate(categories):
-        cat_skills = {s["name"] for s in skills if (s["category"] or "uncategorized") == cat}
+    for i, names in enumerate(cat_skills):
         if i in chosen:
-            new_disabled -= cat_skills  # category enabled → remove from disabled
+            new_disabled -= names  # category enabled → remove from disabled
         else:
-            new_disabled |= cat_skills  # category disabled → add to disabled
+            new_disabled |= names  # category disabled → add to disabled
     return new_disabled
 
-
-# ─── Entry Point ──────────────────────────────────────────────────────────────
 
 def skills_command(args=None):
     """Entry point for `hermes skills`."""
     from hermes_cli.curses_ui import curses_checklist
-
     config = load_config()
     skills = _list_all_skills()
-
     if not skills:
         print(color("  No skills installed.", Colors.DIM))
         return
 
-    # Step 1: Select platform
     platform = _select_platform()
     platform_label = PLATFORMS.get(platform, "All platforms") if platform else "All platforms"
-
-    # Step 2: Select mode — individual or by category
     print()
     print(color(f"  Configure for: {platform_label}", Colors.DIM))
     print()
@@ -175,22 +133,15 @@ def skills_command(args=None):
         return
 
     disabled = get_disabled_skills(config, platform)
-
     if mode == "2":
         new_disabled = _toggle_by_category(skills, disabled)
     else:
-        # Build labels and map indices → skill names
-        labels = [
-            f"{s['name']}  ({s['category'] or 'uncategorized'})  —  {s['description'][:55]}"
-            for s in skills
-        ]
+        labels = [f"{s['name']}  ({s['category'] or 'uncategorized'})  —  {s['description'][:55]}"
+                  for s in skills]
         # "selected" = enabled (not disabled) — matches the [✓] convention
         pre_selected = {i for i, s in enumerate(skills) if s["name"] not in disabled}
-        chosen = curses_checklist(
-            f"Skills for {platform_label}",
-            labels, pre_selected, cancel_returns=pre_selected,
-        )
-        # Anything NOT chosen is disabled
+        chosen = curses_checklist(f"Skills for {platform_label}",
+                                  labels, pre_selected, cancel_returns=pre_selected)
         new_disabled = {skills[i]["name"] for i in range(len(skills)) if i not in chosen}
 
     if new_disabled == disabled:

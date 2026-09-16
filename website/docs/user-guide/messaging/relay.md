@@ -61,9 +61,13 @@ What it does:
 
 1. Resolves a fresh Nous Portal access token from your existing login
    (`~/.hermes/auth.json`) — this proves which Nous org (tenant) you own. If
-   `gateway.idp.token_url` is configured, a generic OAuth2 client-credentials
-   token from your own IdP is used instead (the air-gapped / self-hosted-IdP
-   path, no Nous Portal involved).
+   `gateway.idp.token_url` is configured, your own IdP is used instead (the
+   air-gapped / self-hosted-IdP path, no Nous Portal involved): with
+   `client_id`/`client_secret` configured it performs a generic OAuth2
+   client-credentials grant; with neither configured the URL is treated as an
+   ambient token endpoint (plain GET whose response body is the token — the
+   metadata-server pattern, e.g. Domino's `$DOMINO_API_PROXY/access-token`).
+   Configuring only one of the two credentials is an error.
 2. POSTs the enrollment token and a gateway id to the connector's
    `/relay/enroll` endpoint over TLS.
 3. The connector verifies the token (signature, single-use, tenant match),
@@ -92,12 +96,33 @@ environment.
 
 ## Configuration
 
-Relay activates when a connector relay URL is configured — there is no
-separate feature flag. Deployments that don't set it are unaffected.
+Relay activates when a connector relay URL is configured. To keep a profile off
+the relay even when the deployment injects a URL, disable the platform in
+`config.yaml`:
+
+```yaml
+platforms:
+  relay:
+    enabled: false
+```
+
+- **Explicit disable wins.** With `enabled: false` the gateway does not resolve
+  an identity token, provision or rewrite `GATEWAY_RELAY_*` credentials, register
+  the relay adapter or send the relevance policy — even with `gateway.relay_url`
+  or `GATEWAY_RELAY_URL` set. Native messaging adapters connect as if no relay
+  URL were present, and cron delivery treats no platform as relay-fronted.
+- **Omitting `enabled` keeps URL-based activation.** `enabled: true` still needs
+  a connector URL. A `gateway.json` `enabled: false` is advisory, as for every
+  other platform; put the opt-out in `config.yaml` (user or managed).
+
+The verdict comes from the same files and merge the gateway loader uses (top-level
+or `gateway.platforms` block, managed overlay) and is applied at activation time.
+Restart the gateway after changing it; an open relay socket is not torn down.
+`hermes gateway enroll` remains available while runtime relay is disabled.
 
 | Setting | Where | Meaning |
 |---------|-------|---------|
-| `GATEWAY_RELAY_URL` | env (`~/.hermes/.env`) | Connector relay WebSocket URL. Presence enables the relay platform. |
+| `GATEWAY_RELAY_URL` | env (`~/.hermes/.env`) | Connector relay WebSocket URL. Enables relay unless explicitly disabled in platform configuration. |
 | `gateway.relay_url` | `config.yaml` | Same as above, config-file form (env takes precedence). |
 | `GATEWAY_RELAY_ID` | env | This gateway instance's id (written by `enroll`). |
 | `GATEWAY_RELAY_SECRET` | env | Per-gateway secret authenticating the WebSocket upgrade (written by `enroll`). |
@@ -105,7 +130,7 @@ separate feature flag. Deployments that don't set it are unaffected.
 | `GATEWAY_RELAY_WAKE_URL` / `gateway.relay_wake_url` | env / `config.yaml` | Optional wake-poke target for idle/suspended gateways. |
 | `GATEWAY_RELAY_PLATFORMS` | env | Comma-separated list of platforms this gateway fronts over one connection (e.g. `discord,telegram`). Usually stamped by the deployment/orchestrator. |
 | `GATEWAY_RELAY_BOT_IDS` | env | JSON map of per-platform bot identities, e.g. `{"discord": {"botId": "…"}}`. Paired with `GATEWAY_RELAY_PLATFORMS`. |
-| `gateway.idp.token_url` | `config.yaml` | When set, enrollment/provisioning authenticates via generic OAuth2 client-credentials against your own IdP instead of Nous Portal. |
+| `gateway.idp.token_url` | `config.yaml` | When set, enrollment/provisioning authenticates against your own IdP instead of Nous Portal: OAuth2 client-credentials when `gateway.idp.client_id`/`client_secret` are also set; otherwise an ambient token endpoint (plain GET returning the token, raw or `{"access_token": …}`). |
 
 ## Supported capabilities
 

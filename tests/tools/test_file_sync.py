@@ -1,8 +1,10 @@
 """Tests for FileSyncManager — mtime tracking, deletion detection, transactional rollback."""
 
+import concurrent.futures
 import io
 import os
 import tarfile
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -18,7 +20,7 @@ def tmp_files(tmp_path):
     files = {}
     for name in ("cred_a.json", "cred_b.json", "skill_main.py"):
         p = tmp_path / name
-        p.write_text(f"content of {name}")
+        p.write_text(f"content of {name}", encoding="utf-8")
         files[name] = str(p)
     return files
 
@@ -68,7 +70,7 @@ class TestMtimeSkip:
 
         # Add a new file
         new_file = tmp_path / "new_skill.py"
-        new_file.write_text("new content")
+        new_file.write_text("new content", encoding="utf-8")
         tmp_files["new_skill.py"] = str(new_file)
         # Recreate manager with updated file list
         mgr._get_files_fn = _make_get_files(tmp_files)
@@ -183,7 +185,7 @@ class TestRateLimiting:
         upload.reset_mock()
 
         new_file = tmp_path / "env_forced.txt"
-        new_file.write_text("env forced")
+        new_file.write_text("env forced", encoding="utf-8")
         tmp_files["env_forced.txt"] = str(new_file)
         mgr._get_files_fn = _make_get_files(tmp_files)
 
@@ -245,7 +247,7 @@ class TestEdgeCases:
     def test_file_disappears_between_list_and_upload(self, tmp_path):
         """File listed by get_files but deleted before _file_mtime_key reads it."""
         f = tmp_path / "ephemeral.txt"
-        f.write_text("here now")
+        f.write_text("here now", encoding="utf-8")
 
         upload = MagicMock()
         mgr = FileSyncManager(
@@ -259,6 +261,59 @@ class TestEdgeCases:
 
         mgr.sync(force=True)
         upload.assert_not_called()  # _file_mtime_key returns None, skipped
+
+
+class TestConcurrency:
+    def test_sync_back_waits_for_active_sync_transaction(self, tmp_path):
+        initial_file = tmp_path / "initial.png"
+        new_file = tmp_path / "new.png"
+        initial_file.write_bytes(b"initial")
+        upload_started = threading.Event()
+        release_upload = threading.Event()
+        sync_back_transport_started = threading.Event()
+        overlap_detected = threading.Event()
+        download_calls = []
+
+        def get_files():
+            return [
+                (str(path), f"/root/.hermes/cache/images/{path.name}")
+                for path in sorted(tmp_path.glob("*.png"))
+            ]
+
+        def upload(_host_path, remote_path):
+            if remote_path == f"/root/.hermes/cache/images/{new_file.name}":
+                upload_started.set()
+                sync_back_transport_started.wait(timeout=1.0)
+                release_upload.set()
+
+        def bulk_download(destination):
+            if not release_upload.is_set():
+                overlap_detected.set()
+            sync_back_transport_started.set()
+            download_calls.append(destination)
+            with tarfile.open(destination, "w"):
+                pass
+
+        mgr = FileSyncManager(
+            get_files_fn=get_files,
+            upload_fn=upload,
+            delete_fn=MagicMock(),
+            bulk_download_fn=bulk_download,
+        )
+        mgr.sync(force=True)
+        new_file.write_bytes(b"new")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            sync_future = executor.submit(mgr.sync, force=True)
+            assert upload_started.wait(timeout=2.0)
+
+            sync_back_future = executor.submit(mgr.sync_back, hermes_home=tmp_path)
+
+            sync_future.result(timeout=3.0)
+            sync_back_future.result(timeout=3.0)
+
+        assert len(download_calls) == 1
+        assert not overlap_detected.is_set()
 
 
 class TestSyncBackSecurity:

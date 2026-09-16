@@ -3,6 +3,12 @@ import type * as React from 'react'
 /** `MouseEvent.button` for the middle (wheel) button. */
 const MIDDLE_BUTTON = 1
 
+/** ⌘-click (metaKey + primary button) — the Mac has no middle button, so this
+ *  is the trackpad equivalent of middle-click-to-close. Guarded on metaKey so
+ *  it never collides with left-click (activate/drag) or ⌃-click (macOS context
+ *  menu). */
+export const isMetaClose = (event: { button: number; metaKey: boolean }) => event.button === 0 && event.metaKey
+
 /** Where the current middle press started. One pointer holds one button, so a
  *  single slot is the whole state, and it's only ever compared by identity in
  *  the pointerup right after — a value left behind by a press released

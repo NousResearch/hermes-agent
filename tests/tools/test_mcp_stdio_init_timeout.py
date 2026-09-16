@@ -65,6 +65,7 @@ class TestStdioInitializeTimeout:
         """A stdio server that hangs at ``initialize`` must fail within
         ``connect_timeout`` — not block ``_run_stdio`` forever (#59349)."""
         from tools import mcp_tool
+        from tools import mcp_tool_config as _mcp_config
 
         server = mcp_tool.MCPServerTask("leak-guard")
         config = {"command": "fake-mcp", "args": [], "connect_timeout": 0.2}
@@ -72,8 +73,8 @@ class TestStdioInitializeTimeout:
         async def drive():
             with patch.object(mcp_tool, "stdio_client", _fake_stdio_client), \
                  patch.object(mcp_tool, "ClientSession", _fake_client_session), \
-                 patch.object(mcp_tool, "_resolve_stdio_command", lambda c, e: (c, e)), \
-                 patch.object(mcp_tool, "_write_stderr_log_header", lambda *_a, **_k: None), \
+                 patch.object(_mcp_config, "_resolve_stdio_command", lambda c, e: (c, e)), \
+                 patch.object(_mcp_config, "_write_stderr_log_header", lambda *_a, **_k: None), \
                  patch.object(mcp_tool, "_get_mcp_stderr_log", lambda: None), \
                  patch("tools.osv_check.check_package_for_malware",
                        lambda *_a, **_k: None):

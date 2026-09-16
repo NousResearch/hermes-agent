@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@hermes/shared": "file:../apps/shared",
-    "@nous-research/ui": "0.16.0",
+    "@nous-research/ui": "0.18.2",
     "@observablehq/plot": "0.6.17",
     "@react-three/fiber": "9.6.1",
     "@tailwindcss/vite": "4.3.3",
@@ -40,11 +40,15 @@
     "unicode-animations": "1.0.3"
   },
   "devDependencies": {
+    "@babel/core": "8.0.1",
+    "@rolldown/plugin-babel": "0.2.3",
+    "@types/babel__core": "7.20.5",
     "@types/node": "22.20.1",
     "@types/qrcode": "1.5.6",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.3",
+    "babel-plugin-react-compiler": "1.0.0",
     "eslint-plugin-react-refresh": "0.5.3",
     "three": "0.180.0",
     "typescript": "6.0.3",

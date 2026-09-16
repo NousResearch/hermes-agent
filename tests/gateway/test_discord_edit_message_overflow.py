@@ -71,7 +71,7 @@ def _wire_channel(adapter, *, original_msg, send_side_effect=None):
 
     channel = SimpleNamespace(
         id=555,
-        fetch_message=AsyncMock(return_value=original_msg),
+        get_partial_message=MagicMock(return_value=original_msg),
         send=AsyncMock(side_effect=fake_send),
     )
     adapter._client = SimpleNamespace(
@@ -290,3 +290,25 @@ class TestLengthOverflowDetector:
         err = RuntimeError("error code: 50035: Cannot reply to a system message")
         assert DiscordAdapter._is_length_overflow_error(err) is False
 
+
+
+class TestPartialMessageContinuationReferences:
+    """When the edit target is a PartialMessage (no to_reference — the
+    no-fetch edit path), overflow continuations must still thread: the
+    adapter builds the reference from ids instead of silently dropping it."""
+
+    @pytest.mark.asyncio
+    async def test_continuations_threaded_with_ids_built_reference(self):
+        adapter = _make_adapter()
+        partial = SimpleNamespace(id=42, edit=AsyncMock())  # no to_reference
+        channel, sends = _wire_channel(adapter, original_msg=partial)
+
+        long_text = "chunk alpha " * 600  # > MAX_MESSAGE_LENGTH
+        result = await adapter.edit_message("555", "42", long_text, finalize=True)
+
+        assert result.success is True
+        assert len(sends) >= 1, "overflow should send continuations"
+        for call in sends:
+            assert call["reference"] is not None, (
+                "continuation lost its reply reference — the ids-built "
+                "fallback for PartialMessage regressed")

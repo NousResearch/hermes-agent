@@ -13,8 +13,9 @@ import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useRef,
 
 import { HUD_SURFACE } from '@/app/floating-hud'
 import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
+import { useOnboardingChatActive } from '@/components/onboarding-chat/assembly'
 import { Codicon } from '@/components/ui/codicon'
-import { ContribBoundary } from '@/contrib/react/boundary'
+import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import type { Contribution } from '@/contrib/types'
 import { readJson, writeJson } from '@/lib/storage'
@@ -172,13 +173,13 @@ function FloatingPane({ pane }: { pane: Contribution }) {
           onClick={toggleCollapsed}
           type="button"
         >
-          <Codicon name={collapsed ? 'chevron-down' : 'chevron-up'} size="0.75rem" />
+          <Codicon name={collapsed ? 'chevron-up' : 'chevron-down'} size="0.75rem" />
         </button>
       </header>
 
       {!collapsed && (
         <div className="min-h-0 flex-1 overflow-auto">
-          <ContribBoundary id={pane.id}>{pane.render?.()}</ContribBoundary>
+          <ContribBoundary id={pane.id}>{pane.render && <ContribRender render={pane.render} />}</ContribBoundary>
         </div>
       )}
     </div>
@@ -190,7 +191,11 @@ export function FloatingPanes() {
   const panes = useContributions('panes')
   const hidden = useStore($hiddenTreePanes)
 
-  const floating = panes.filter(pane => paneChrome(pane).placement === FLOATING_PLACEMENT && !hidden.has(pane.id))
+  const onboardingActive = useOnboardingChatActive()
+
+  const floating = onboardingActive
+    ? []
+    : panes.filter(pane => paneChrome(pane).placement === FLOATING_PLACEMENT && !hidden.has(pane.id))
 
   if (floating.length === 0) {
     return null

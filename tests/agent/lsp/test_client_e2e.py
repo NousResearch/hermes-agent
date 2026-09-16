@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from agent.lsp.client import LSPClient
+from agent.lsp.protocol import LSPProtocolError
 
 
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
@@ -72,9 +73,54 @@ async def test_client_receives_published_errors(tmp_path: Path):
         await client.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_reader_exit_at_end_of_initialization_retires_client(tmp_path: Path):
+    client = _client(tmp_path, "crash")
+
+    try:
+        await client.start()
+    except LSPProtocolError:
+        pass
+    else:
+        reader_task = client._reader_task
+        if reader_task is not None:
+            await asyncio.wait_for(asyncio.shield(reader_task), timeout=3.0)
+
+    assert client.state == "error"
+    assert not client.is_running
+    assert client._proc is None
+    await client.shutdown()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("script", ["clean_eof", "malformed_frame"])
+async def test_reader_failure_retires_client_and_rejects_later_work(
+    tmp_path: Path, script: str
+):
+    f = tmp_path / "x.py"
+    f.write_text("print('hi')\n")
 
+    client = _client(tmp_path, script)
+    await client.start()
+    proc = client._proc
+    reader_task = client._reader_task
+    assert proc is not None
+    assert reader_task is not None
+    try:
+        version = await client.open_file(str(f), language_id="python")
+        await asyncio.wait_for(asyncio.shield(reader_task), timeout=3.0)
 
-
-
+        assert not client.is_running
+        await asyncio.wait_for(proc.wait(), timeout=3.0)
+        with pytest.raises(LSPProtocolError):
+            await asyncio.wait_for(
+                client.wait_for_diagnostics(str(f), version, timeout=3.0),
+                timeout=0.5,
+            )
+        with pytest.raises(LSPProtocolError):
+            await asyncio.wait_for(
+                client.open_file(str(f), language_id="python"),
+                timeout=0.5,
+            )
+    finally:
+        await client.shutdown()

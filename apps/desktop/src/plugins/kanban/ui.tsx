@@ -9,12 +9,13 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  FadeScroll,
   profileColor,
   profileColorSoft,
   relativeTime,
   useQuery
 } from '@hermes/plugin-sdk'
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 
 import { fetchOrchestration, ORCHESTRATION_KEY } from './api'
 import { columnLabel, useKanban } from './i18n'
@@ -270,67 +271,13 @@ export function Callout({
   )
 }
 
-// A short, edge-masked scroll area. The fades are EDGE-AWARE like the rest of
-// the app: a gradient only appears on a side that actually has clipped content
-// (nothing to scroll → no mask at all), tracked via scroll + resize. Plus
-// `overscroll-contain` so scrolling it never chains into the drawer. When
-// `deps` is provided it re-pins to the bottom on change — the activity feed's
-// newest-at-bottom behavior.
+// A short, edge-masked scroll area. Thin wrapper over the app's FadeScroll so
+// the drawer's scrollers behave exactly like the ones in chat; kept as a local
+// name because every call site here passes `max`.
 export function ScrollFade({ children, deps, max = '9rem' }: { children: ReactNode; deps?: unknown; max?: string }) {
-  const ref = useRef<HTMLDivElement>(null)
-  const [edges, setEdges] = useState({ above: false, below: false })
-
-  const measure = () => {
-    const el = ref.current
-
-    if (!el) {
-      return
-    }
-
-    const above = el.scrollTop > 1
-    const below = el.scrollTop + el.clientHeight < el.scrollHeight - 1
-
-    setEdges(prev => (prev.above === above && prev.below === below ? prev : { above, below }))
-  }
-
-  useLayoutEffect(() => {
-    if (deps !== undefined && ref.current) {
-      ref.current.scrollTop = ref.current.scrollHeight
-    }
-
-    measure()
-  }, [deps])
-
-  useLayoutEffect(() => {
-    const el = ref.current
-
-    if (!el) {
-      return
-    }
-
-    const observer = new ResizeObserver(measure)
-    observer.observe(el)
-
-    return () => observer.disconnect()
-  }, [])
-
-  const stops = [
-    edges.above ? 'transparent, black 1.25rem' : 'black',
-    edges.below ? 'calc(100% - 1.25rem), transparent' : 'black'
-  ]
-
-  const mask = `linear-gradient(to bottom, ${stops[0]}, black ${stops[1]})`
-
   return (
-    <div
-      className="overflow-y-auto overscroll-contain"
-      onScroll={measure}
-      ref={ref}
-      style={
-        edges.above || edges.below ? { maskImage: mask, maxHeight: max, WebkitMaskImage: mask } : { maxHeight: max }
-      }
-    >
+    <FadeScroll deps={deps} maxHeight={max}>
       {children}
-    </div>
+    </FadeScroll>
   )
 }

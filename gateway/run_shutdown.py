@@ -335,7 +335,7 @@ class GatewayShutdownMixin:
         config.platforms is pre-seeded with disabled placeholders, and the api_server is force-enabled
         on every hosted container (counting it silently disarmed the feature everywhere).
         """
-        if not self.config:
+        if not getattr(self, "config", None):
             return []
         non_messaging = {Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK}
         try:
@@ -458,6 +458,25 @@ class GatewayShutdownMixin:
                             "in-machine API and no brokered sleep URL); staying connected rather "
                             "than quiescing"
                         )
+                    continue
+                # Re-check the relay-only invariant at suspend time (not just at boot). A
+                # direct persistent platform like Photon iMessage may have been enabled
+                # after the watcher armed, or GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS may
+                # keep it direct while the relay fronts other platforms. Suspending with
+                # such a platform active severs its direct gRPC/websocket and inbound
+                # cannot wake the instance ( Hermes Cloud Photon bug #113546 ).
+                from gateway.scale_to_zero import messaging_is_relay_only_or_absent
+                if not messaging_is_relay_only_or_absent(self._scale_to_zero_active_messaging_platforms()):
+                    active = [getattr(p, "value", p) for p in self._scale_to_zero_active_messaging_platforms()]
+                    logger.info(
+                        "scale-to-zero: idle but direct messaging platform(s) %s remain enabled — "
+                        "they use a direct persistent connection that cannot wake the instance "
+                        "when suspended (e.g. Photon iMessage gRPC, BlueBubbles). Staying awake. "
+                        "To enable scale-to-zero with this platform, route it through the "
+                        "wake-capable relay by adding it to GATEWAY_RELAY_PLATFORMS and ensuring "
+                        "the connector fronts it, or disable the direct platform.",
+                        active or "unknown",
+                    )
                     continue
                 logger.info(
                     "scale-to-zero: gateway idle for >= %.0fs — going dormant "

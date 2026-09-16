@@ -9,6 +9,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { SessionTabStamp } from '@/app/chat/session-stamp'
 import { $chatOnboardingSolo } from '@/components/onboarding-chat/assembly'
 import { PaneTab, PaneTabLabel, PaneTabStrip } from '@/components/ui/pane-tab'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
@@ -180,7 +181,10 @@ export function NarrowOverlays() {
                     }
                   }}
                 >
-                  <PaneTabLabel>{pane.title ?? pane.id}</PaneTabLabel>
+                  <PaneTabLabel>
+                    {pane.title ?? pane.id}
+                    <SessionTabStamp paneId={pane.id} />
+                  </PaneTabLabel>
                 </PaneTab>
               ))}
             </PaneTabStrip>

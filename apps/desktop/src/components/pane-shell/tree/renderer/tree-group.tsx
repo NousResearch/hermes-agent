@@ -12,6 +12,7 @@
 import { useStore } from '@nanostores/react'
 import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 
+import { SessionTabStamp } from '@/app/chat/session-stamp'
 import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
@@ -497,7 +498,10 @@ export function TreeGroup({
                     side={railSide}
                     vertical
                   >
-                    <PaneTabLabel>{tabLabel(paneId)}</PaneTabLabel>
+                    <PaneTabLabel>
+                      {tabLabel(paneId)}
+                      <SessionTabStamp paneId={paneId} />
+                    </PaneTabLabel>
                   </PaneTab>
                 )
               })}
@@ -661,7 +665,10 @@ export function TreeGroup({
                           </TabKeyHint>
                         </span>
                       ) : null}
-                      <PaneTabLabel>{tabLabel(paneId)}</PaneTabLabel>
+                      <PaneTabLabel>
+                        {tabLabel(paneId)}
+                        <SessionTabStamp paneId={paneId} />
+                      </PaneTabLabel>
                     </PaneTab>
                   )
 

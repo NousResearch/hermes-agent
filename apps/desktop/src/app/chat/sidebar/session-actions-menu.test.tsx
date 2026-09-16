@@ -1,10 +1,22 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { atom } from 'nanostores'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type * as SessionStampModule from '@/store/session-stamp'
+import {
+  applySessionStamp,
+  normalizeSessionStamp,
+  SESSION_STAMP_MAX_LENGTH,
+  SESSION_STAMP_PRESETS
+} from '@/store/session-stamp'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
 afterEach(cleanup)
+
+beforeEach(() => {
+  vi.clearAllMocks()
+})
 
 // Exercises the real SessionActionsMenu end-to-end (no DropdownMenu mock) so
 // a broken asChild composition on the kebab trigger fails here — the menu
@@ -17,6 +29,7 @@ vi.mock('@/components/pane-shell/tree/store', () => ({
   treeTabCloseTargets: vi.fn(() => null)
 }))
 vi.mock('@/hermes', () => ({
+  listAllProfileSessions: vi.fn(() => Promise.resolve({ sessions: [] })),
   renameSession: vi.fn(),
   setApiRequestProfile: vi.fn(),
   setSessionUnreadRemote: vi.fn(() => Promise.resolve({ ok: true }))
@@ -62,6 +75,14 @@ vi.mock('@/i18n', () => ({
           renameTitle: 'Rename session',
           renamed: 'Renamed',
           sessionActions: 'Session actions',
+          stamp: 'Stamp',
+          stampClear: 'Clear stamp',
+          stampCustom: 'Custom stamp…',
+          stampCustomHint: 'Shown beside the title in the session list and tabs.',
+          stampCustomPlaceholder: 'e.g. Merged or Waiting on CI',
+          stampCustomTitle: 'Stamp this session',
+          stampCleared: 'Stamp cleared',
+          stampSaved: (label: string) => `Stamped ${label}`,
           unpin: 'Unpin',
           untitledPlaceholder: 'Untitled'
         }
@@ -103,6 +124,17 @@ vi.mock('@/store/session-states', () => ({
   closeAllOpenSessionTiles: vi.fn(),
   openSessionTile: vi.fn()
 }))
+// Keep the REAL presets / normalizer / cap (the menu must offer exactly what the
+// store module offers) and stub only the write, so a test can see precisely what
+// the menu handed the one write path.
+vi.mock('@/store/session-stamp', async importOriginal => {
+  const actual = await importOriginal<typeof SessionStampModule>()
+
+  return {
+    ...actual,
+    applySessionStamp: vi.fn(() => Promise.resolve(true))
+  }
+})
 vi.mock('@/store/windows', () => ({
   canOpenSessionInTerminal: () => false,
   canOpenSessionWindow: () => false,
@@ -286,5 +318,147 @@ describe('SessionActionsMenu', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     expect(await screen.findByText('Session deleted')).toBeTruthy()
     expect(onDelete).toHaveBeenCalledTimes(1)
+  })
+})
+
+// Radix's SubTrigger opens on click (MenuItemImpl's own onClick), so a plain
+// click is the whole gesture — no hover timer to wait out.
+async function openKebab() {
+  const trigger = screen.getByRole('button', { name: 'Session actions' })
+  fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+  fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+  fireEvent.click(trigger)
+  await screen.findByRole('menu')
+}
+
+async function openStampSubmenu() {
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Stamp' }))
+}
+
+function renderStampMenu(stamp?: null | string) {
+  return render(
+    <SessionActionsMenu profile="p1" sessionId="s1" stamp={stamp} title="My session">
+      <button aria-label="Session actions" type="button">
+        ⋮
+      </button>
+    </SessionActionsMenu>
+  )
+}
+
+describe('session menu — Stamp submenu', () => {
+  it('offers every preset plus the custom door on a session with no stamp', async () => {
+    renderStampMenu()
+    await openKebab()
+    await openStampSubmenu()
+
+    for (const preset of SESSION_STAMP_PRESETS) {
+      expect(await screen.findByRole('menuitem', { name: preset })).toBeTruthy()
+    }
+
+    expect(screen.getByRole('menuitem', { name: 'Custom stamp…' })).toBeTruthy()
+    // Nothing to clear yet — the row must not be there.
+    expect(screen.queryByRole('menuitem', { name: 'Clear stamp' })).toBeNull()
+  })
+
+  it('marks the stamp the session already carries and offers to clear it', async () => {
+    renderStampMenu('WIP')
+    await openKebab()
+    await openStampSubmenu()
+
+    const current = await screen.findByRole('menuitem', { name: 'WIP' })
+
+    // The selected row is the one wearing the check — and only that one.
+    expect(current.querySelector('.codicon-check')).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: 'Merged' }).querySelector('.codicon-check')).toBeNull()
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Clear stamp' }))
+
+    await waitFor(() => expect(applySessionStamp).toHaveBeenCalledWith('s1', 'p1', null))
+  })
+
+  it('writes a picked preset through applySessionStamp for this session and profile', async () => {
+    renderStampMenu()
+    await openKebab()
+    await openStampSubmenu()
+
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Handoff' }))
+
+    await waitFor(() => expect(applySessionStamp).toHaveBeenCalledWith('s1', 'p1', 'Handoff'))
+  })
+
+  it('clamps a custom stamp to the shared cap, and collapses its whitespace', async () => {
+    renderStampMenu()
+    await openKebab()
+    await openStampSubmenu()
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Custom stamp…' }))
+
+    const dialog = await screen.findByRole('dialog')
+    const input = within(dialog).getByRole('textbox')
+    const typed = 'Waiting on CI and then some more words'
+
+    fireEvent.change(input, { target: { value: typed } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(applySessionStamp).toHaveBeenCalledTimes(1))
+
+    const [, , written] = vi.mocked(applySessionStamp).mock.calls[0]!
+
+    // Exactly what the store module's own normalizer would produce from what was
+    // typed, and never longer than the cap it (and the backend) enforce.
+    expect(written).toBe(normalizeSessionStamp(typed))
+    expect(written!.length).toBeLessThanOrEqual(SESSION_STAMP_MAX_LENGTH)
+
+    // Re-open (a successful write closes the dialog). The row still carries no
+    // stamp, so the dialog is seeded empty — and submitting that must CLEAR,
+    // not write an empty string.
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await openKebab()
+    await openStampSubmenu()
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Custom stamp…' }))
+
+    const reopened = await screen.findByRole('dialog')
+    const reopenedInput = within(reopened).getByRole('textbox')
+
+    // Whitespace runs collapse rather than reaching the backend verbatim.
+    fireEvent.change(reopenedInput, { target: { value: '  Review   now  ' } })
+    fireEvent.click(within(reopened).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(applySessionStamp).toHaveBeenLastCalledWith('s1', 'p1', 'Review now'))
+  })
+
+  it('clears the stamp when the custom dialog is submitted empty', async () => {
+    renderStampMenu('Hold')
+    await openKebab()
+    await openStampSubmenu()
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Custom stamp…' }))
+
+    const dialog = await screen.findByRole('dialog')
+    const input = within(dialog).getByRole('textbox')
+
+    // Seeded from the row's own stamp, then emptied — an empty submit is a
+    // CLEAR (null), never an empty string the backend would have to interpret.
+    expect((input as HTMLInputElement).value).toBe('Hold')
+    fireEvent.change(input, { target: { value: '   ' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(applySessionStamp).toHaveBeenCalledWith('s1', 'p1', null))
+  })
+
+  it('routes the Stamp submenu through the right-click menu too', async () => {
+    render(
+      <SessionContextMenu sessionId="s1" title="My session">
+        <button aria-label="Session row" type="button">
+          Row
+        </button>
+      </SessionContextMenu>
+    )
+
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Session row' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Stamp' }))
+
+    expect(await screen.findByRole('menuitem', { name: 'Merged' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Review' }))
+
+    await waitFor(() => expect(applySessionStamp).toHaveBeenCalledWith('s1', undefined, 'Review'))
   })
 })

@@ -362,6 +362,27 @@ export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: st
   })
 }
 
+// Write a session's stamp to the backend `sessions.stamp` column. Unlike a pin
+// there is no local copy to reconcile (see store/session-stamp): the column is
+// the only truth, because a second Desktop install and the CLI read the same
+// row. An empty string clears the stamp, which is how the PATCH endpoint
+// distinguishes "clear" from "leave alone" (an ABSENT field).
+export function setSessionStampRemote(
+  id: string,
+  stamp: null | string,
+  profile?: null | string
+): Promise<{ ok: boolean; stamp?: null | string }> {
+  // Owning profile in the PATCH body (see setSessionArchived / renameSession):
+  // the handler reads its target DB from body.profile, so a remote/foreign
+  // profile's stamp must travel in the body or it no-ops on the wrong state.db.
+  return hermesApi<{ ok: boolean; stamp?: null | string }>({
+    ...(profile ? { profile } : {}),
+    path: `/api/sessions/${encodeURIComponent(id)}`,
+    method: 'PATCH',
+    body: { stamp: stamp ?? '', ...(profile ? { profile } : {}) }
+  })
+}
+
 // Mirror a sidebar unread toggle to the backend read-state watermark
 // (sessions.last_read_at via SessionDB.set_session_read). Same profile
 // routing as the other session mutations: a remote session's row lives only

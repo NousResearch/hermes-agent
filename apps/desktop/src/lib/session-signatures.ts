@@ -30,7 +30,11 @@ export function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
       // frozen copy forever. An idle conversation never moves any of the
       // fields above again, which is exactly when a pin gets toggled (#76919).
       session.pinned === other.pinned &&
-      session.archived === other.archived
+      session.archived === other.archived &&
+      // Same reasoning for the stamp: an idle row's only delta is the label the
+      // user just put on it, and a page that never swaps in would keep showing
+      // the list without it.
+      session.stamp === other.stamp
     )
   })
 }

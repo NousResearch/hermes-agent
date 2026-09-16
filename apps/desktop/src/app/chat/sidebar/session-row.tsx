@@ -6,6 +6,7 @@ import type * as React from 'react'
 import { PrTag } from '@/app/chat/pr-tag'
 import { ProfileTag } from '@/app/chat/profile-tag'
 import { startSessionDrag } from '@/app/chat/session-drag'
+import { SessionStamp } from '@/app/chat/session-stamp'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { openSession } from '@/app/open-session'
 import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timestamp'
@@ -316,6 +317,7 @@ function SidebarSessionRowImpl({
         pinned={isPinned}
         profile={session.profile}
         sessionId={session.id}
+        stamp={session.stamp}
         title={title}
         unread={unread}
       >
@@ -345,6 +347,7 @@ function SidebarSessionRowImpl({
       pinned={isPinned}
       profile={session.profile}
       sessionId={session.id}
+      stamp={session.stamp}
       title={title}
       unread={unread}
     >
@@ -493,15 +496,22 @@ function SidebarSessionRowImpl({
                   {leadNode}
                   {handoffBadge}
                   <span className="min-w-0 flex-1 self-center">
-                    <OverflowTip label={title}>
-                      <SidebarRowLabel
-                        className="hover-marquee block font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
-                        onPointerEnter={armMarquee}
-                        onPointerLeave={disarmMarquee}
-                      >
-                        <span className="hover-marquee-inner">{title}</span>
-                      </SidebarRowLabel>
-                    </OverflowTip>
+                    {/* The stamp rides the TITLE LINE, inside the row's own
+                        title flex — the trailing slot is hover-covered by the
+                        kebab, and a stamp has to stay visible while the pointer
+                        moves across the list. */}
+                    <span className="flex min-w-0 items-center gap-1">
+                      <OverflowTip label={title}>
+                        <SidebarRowLabel
+                          className="hover-marquee block min-w-0 flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
+                          onPointerEnter={armMarquee}
+                          onPointerLeave={disarmMarquee}
+                        >
+                          <span className="hover-marquee-inner">{title}</span>
+                        </SidebarRowLabel>
+                      </OverflowTip>
+                      <SessionStamp className="mb-px" stamp={session.stamp} />
+                    </span>
                     {/* Session-list density (#68119): comfortable adds one
                         deterministic metadata line; detailed adds the initial
                         request preview. Compact keeps today's one-line row. */}
@@ -553,18 +563,21 @@ function SidebarSessionRowImpl({
                 {/* Title + preview: ONE grouped cell with its own tight
                     internal gap — it does not inherit the card's rhythm. */}
                 <div className="flex min-w-0 flex-col gap-[0.15rem]">
-                  <OverflowTip label={title}>
-                    <SidebarRowLabel
-                      className={cn(
-                        'hover-marquee text-[0.8125rem] font-medium text-(--ui-text-primary) group-data-[working=true]:text-foreground',
-                        SIDEBAR_TRUNCATED_LEADING
-                      )}
-                      onPointerEnter={armMarquee}
-                      onPointerLeave={disarmMarquee}
-                    >
-                      <span className="hover-marquee-inner">{title}</span>
-                    </SidebarRowLabel>
-                  </OverflowTip>
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <OverflowTip label={title}>
+                      <SidebarRowLabel
+                        className={cn(
+                          'hover-marquee min-w-0 flex-1 text-[0.8125rem] font-medium text-(--ui-text-primary) group-data-[working=true]:text-foreground',
+                          SIDEBAR_TRUNCATED_LEADING
+                        )}
+                        onPointerEnter={armMarquee}
+                        onPointerLeave={disarmMarquee}
+                      >
+                        <span className="hover-marquee-inner">{title}</span>
+                      </SidebarRowLabel>
+                    </OverflowTip>
+                    <SessionStamp stamp={session.stamp} />
+                  </span>
                   {session.preview && rowMeta.includes('preview') ? (
                     <span
                       className={cn(

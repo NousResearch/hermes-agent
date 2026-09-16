@@ -661,8 +661,13 @@ export function stackSessionTilesIntoMain(): void {
  *  updates in other sessions) — for a context menu that's almost never open.
  *  Same class as the TreeGroup fix (#72245): derive narrowly, bail out unless
  *  the derived values change. */
-function useTileMenuRow(storedSessionId: string): { pinId: string; profile?: string; title: string } {
-  const cache = useRef<{ key: string; value: { pinId: string; profile?: string; title: string } } | null>(null)
+function useTileMenuRow(
+  storedSessionId: string
+): { pinId: string; profile?: string; stamp: null | string; title: string } {
+  const cache = useRef<{
+    key: string
+    value: { pinId: string; profile?: string; stamp: null | string; title: string }
+  } | null>(null)
 
   const subscribe = useCallback((onChange: () => void) => {
     const offSessions = $sessions.listen(onChange)
@@ -679,10 +684,14 @@ function useTileMenuRow(storedSessionId: string): { pinId: string; profile?: str
     const pinId = stored ? sessionPinId(stored) : storedSessionId
     const title = tileTitle(storedSessionId)
     const profile = stored?.profile
-    const key = `${pinId}\u0000${title}\u0000${profile ?? ''}`
+    // The stamp is part of this cached payload, so it belongs in the KEY as
+    // well: a stamp set from this very menu must repaint the menu's own check
+    // mark, and nothing else about the row changes when it does.
+    const stamp = stored?.stamp ?? null
+    const key = `${pinId}\u0000${title}\u0000${profile ?? ''}\u0000${stamp ?? ''}`
 
     if (cache.current?.key !== key) {
-      cache.current = { key, value: { pinId, profile, title } }
+      cache.current = { key, value: { pinId, profile, stamp, title } }
     }
 
     return cache.current.value
@@ -710,7 +719,7 @@ export function SessionTabMenu({
   /** Layout-tree pane id — powers the Close-others/right/all verbs. */
   tabPaneId: string
 }) {
-  const { pinId, profile, title } = useTileMenuRow(storedSessionId)
+  const { pinId, profile, stamp, title } = useTileMenuRow(storedSessionId)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinned = pinnedSessionIds.includes(pinId)
 
@@ -726,6 +735,7 @@ export function SessionTabMenu({
         pinned={pinned}
         profile={profile}
         sessionId={storedSessionId}
+        stamp={stamp}
         surface="tab"
         tabPaneId={tabPaneId}
         title={title}

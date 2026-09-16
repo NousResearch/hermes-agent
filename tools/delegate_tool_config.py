@@ -225,17 +225,24 @@ def _resolve_child_credential_pool(
     if not effective_provider:
         return parent_pool
     parent_provider = getattr(parent_agent, "provider", None) or ""
+    parent_base_url = _inherit_parent_base_url(
+        parent_agent, getattr(parent_agent, "base_url", None),
+    )
     try:
         if effective_provider == "custom":
             from agent.credential_pool import get_custom_provider_pool_key
             child_key = get_custom_provider_pool_key(effective_base_url)
             if child_key is None:
                 return None
-            parent_key = get_custom_provider_pool_key(getattr(parent_agent, "base_url", None))
+            parent_key = get_custom_provider_pool_key(parent_base_url)
             if parent_pool is not None and parent_provider == "custom" and parent_key is not None and parent_key == child_key:
                 return parent_pool
             return _loaded_pool(child_key)
-        if parent_pool is not None and effective_provider == parent_provider:
+        same_endpoint = (
+            effective_base_url is None
+            or _same_custom_delegation_endpoint(parent_base_url, effective_base_url)
+        )
+        if parent_pool is not None and effective_provider == parent_provider and same_endpoint:
             return parent_pool
         return _loaded_pool(effective_provider)
     except Exception as exc:

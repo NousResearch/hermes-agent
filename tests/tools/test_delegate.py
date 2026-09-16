@@ -1264,6 +1264,57 @@ class TestDelegationCredentialResolution(unittest.TestCase):
 
         self.assertIsNone(creds["api_key"])
 
+    def test_stale_parent_pool_cannot_replace_resolved_endpoint_key(self):
+        cfg = {
+            "max_iterations": 45,
+            "model": "local-model",
+            "provider": "custom",
+            "base_url": "https://stale.example/v1",
+            "api_key": "",
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "custom"
+        parent.base_url = "https://stale.example/v1"
+        parent._client_kwargs = {"base_url": "https://live.example/v1"}
+        parent.api_key = "live-endpoint-key"
+        parent._credential_pool = MagicMock(name="live_parent_pool")
+
+        with (
+            patch("tools.delegate_tool._load_config", return_value=cfg),
+            patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                return_value={
+                    "provider": "custom",
+                    "base_url": cfg["base_url"],
+                    "api_key": "stale-endpoint-key",
+                    "api_mode": "chat_completions",
+                    "source": "env/config",
+                    "request_overrides": {},
+                },
+            ),
+            patch(
+                "agent.credential_pool.get_custom_provider_pool_key",
+                side_effect=lambda url: url,
+            ),
+            patch("agent.credential_pool.load_pool", return_value=None),
+            patch("run_agent.AIAgent") as MockAgent,
+        ):
+            child = MagicMock()
+            child._credential_pool = None
+            child.run_conversation.return_value = {
+                "final_response": "PROBE-OK",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = child
+
+            delegate_task(goal="Reply PROBE-OK", parent_agent=parent)
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["api_key"], "stale-endpoint-key")
+        self.assertIsNone(child._credential_pool)
+        parent._credential_pool.acquire_lease.assert_not_called()
+
     def test_custom_parent_named_provider_same_base_url_inherits_parent_key(self):
         """Direct-endpoint parents are stamped provider=custom; same URL may inherit.
 
@@ -1701,6 +1752,23 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
 
         result = _resolve_child_credential_pool("openrouter", parent)
         self.assertIs(result, mock_pool)
+
+    @patch("agent.credential_pool.load_pool", return_value=None)
+    @patch("agent.credential_pool.get_custom_provider_pool_key", side_effect=lambda url: url)
+    def test_custom_pool_uses_live_parent_endpoint(self, mock_pool_key, mock_load_pool):
+        parent = _make_mock_parent()
+        parent.provider = "custom"
+        parent.base_url = "https://stale.example/v1"
+        parent._client_kwargs = {"base_url": "https://live.example/v1"}
+        parent._credential_pool = MagicMock(name="parent_pool")
+
+        result = _resolve_child_credential_pool(
+            "custom", parent, "https://stale.example/v1",
+        )
+
+        self.assertIsNone(result)
+        mock_pool_key.assert_any_call("https://live.example/v1")
+        mock_load_pool.assert_called_once_with("https://stale.example/v1")
 
     # --- Custom-endpoint identity resolution (issue #7833) ---
 

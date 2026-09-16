@@ -2789,6 +2789,7 @@ class _StreamingCall(StreamingWaitMonitor):
         base_timeout, read_timeout, conn_cap = self._stream_timeouts()
         content_parts: list = []
         reasoning_parts: list = []
+        reasoning_source = None
         # OpenAI structured refusal (``delta.refusal``): the explanation streams here and
         # ``delta.content`` stays empty, so an un-accumulated refusal looks like an empty
         # stream and burns the empty-response retries (the non-streaming fix is #46013).
@@ -2861,8 +2862,15 @@ class _StreamingCall(StreamingWaitMonitor):
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
 
-            reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+            reasoning_content = getattr(delta, "reasoning_content", None)
+            reasoning = getattr(delta, "reasoning", None)
+            reasoning_text = reasoning_content or reasoning
             if reasoning_text:
+                delta_source = "reasoning_content" if reasoning_content else "reasoning"
+                if reasoning_source is None:
+                    reasoning_source = delta_source
+                elif reasoning_source != delta_source:
+                    reasoning_source = "mixed"
                 # Summary-part models omit the separator between markdown blocks; re-insert it.
                 reasoning_text = separate_glued_reasoning_blocks(
                     reasoning_parts[-1] if reasoning_parts else "", reasoning_text)
@@ -2920,7 +2928,7 @@ class _StreamingCall(StreamingWaitMonitor):
         return self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
             finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
             response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details,
-            refusal_parts=refusal_parts)
+            refusal_parts=refusal_parts, reasoning_source=reasoning_source)
 
     def _adopt_final_response(self, final_response):
         """Adapter returned a completed response for ``stream=True``: switch the
@@ -2970,7 +2978,7 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _finish_chat_stream(self, stream, role, content_parts, reasoning_parts, tool_calls_acc, finish_reason,
         model_name, usage_obj, *, flush_pending, response_id=None, upstream_provider=None, reasoning_details=None,
-        refusal_parts=None):
+        refusal_parts=None, reasoning_source=None):
         """Assemble the non-streaming-shaped response after the chunk loop. A
         stream ending with no finish_reason is a drop, not a completion: return a
         partial-stream stub so the loop fails fast instead of executing empty
@@ -3006,9 +3014,15 @@ class _StreamingCall(StreamingWaitMonitor):
         if provider_stream_error is not None:
             raise provider_stream_error
         flush_pending()
-        message = SimpleNamespace(role=role, content=full_content, tool_calls=mock_tool_calls, reasoning_content=full_reasoning,
+        message = SimpleNamespace(
+            role=role,
+            content=full_content,
+            tool_calls=mock_tool_calls,
+            reasoning=full_reasoning if reasoning_source == "reasoning" else None,
+            reasoning_content=full_reasoning if reasoning_source != "reasoning" else None,
             # ``normalize_response`` reads ``message.refusal`` — same contract as the non-streaming object.
-            refusal="".join(refusal_parts or ()) or None)
+            refusal="".join(refusal_parts or ()) or None,
+        )
         if reasoning_details:
             # Only when present: _build_assistant_message's passthrough persists them
             # for replay, and non-reasoning providers keep the attribute absent.

@@ -73,20 +73,27 @@ def finish_text_response(
         )
 
     # Reasoning-only clean stop: some reasoning parsers (vLLM nemotron_v3 past ~500K
-    # prompt tokens) file the whole answer as reasoning when the model omits the closing
-    # delimiter. ``finish_reason == "stop"`` means the provider considers generation
-    # complete, so the empty-response ladder would only re-bill the same input to arrive
-    # at a truncated preview of this text; promote the reasoning to the visible answer
-    # BEFORE the ladder. ``length`` (cut off mid-thought) stays on the continuation path,
-    # and the promoted text is persisted as ordinary content so the next turn replays it.
+    # prompt tokens) file the whole answer in the wire ``reasoning`` field when the model
+    # omits the closing delimiter. Promote only when the chat transport recorded that exact
+    # provenance. Provider-private ``reasoning_content`` and ambiguous/mirrored shapes stay
+    # on the empty-response recovery path instead of becoming durable assistant content.
+    # ``length`` (cut off mid-thought) likewise stays on the continuation path.
     _content = assistant_message.content
     if (
         finish_reason == "stop"
         and not assistant_message.tool_calls
         and (_content is None or (isinstance(_content, str) and not _content.strip()))
     ):
-        _promoted = agent._extract_reasoning(assistant_message)
-        if _promoted:
+        _provider_data = getattr(assistant_message, "provider_data", None)
+        _reasoning_source = (
+            _provider_data.get("reasoning_source") if isinstance(_provider_data, dict) else None
+        )
+        _promoted = (
+            getattr(assistant_message, "reasoning", None)
+            if _reasoning_source == "reasoning"
+            else None
+        )
+        if isinstance(_promoted, str) and _promoted.strip():
             logger.info(
                 "Reasoning-only clean stop (%d chars) — using reasoning as the final response",
                 len(_promoted),

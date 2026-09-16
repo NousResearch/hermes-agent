@@ -308,6 +308,59 @@ class TestFallbackChainAdvancement:
         assert agent.api_mode == "chat_completions"
         assert agent.client is not None
 
+    def test_moa_preset_fallback_persists_resolved_aggregator_not_preset_name(self):
+        """Regression for #112525: MoA fallback must pin the aggregator slug, not the preset.
+
+        ``resolve_provider_client`` already unwraps ``provider=moa model=default``
+        to the aggregator's real model. Activation must persist that slug instead
+        of the virtual preset name (which 404s on the aggregator's HTTP wire).
+        Provider identity is a separate follow-up (#112525 comment / sibling issue).
+        """
+        aggregator_model = "grok-4.6"
+        agent = _make_agent(fallback_model={"provider": "moa", "model": "default"})
+        with (
+            patch(
+                "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+                return_value=None,
+            ),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(base_url="https://api.x.ai/v1/"),
+                    aggregator_model,
+                ),
+            ),
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.model != "default"
+        assert agent.model == aggregator_model
+
+    def test_fallback_keeps_configured_model_when_resolution_has_no_model(self):
+        """A missing resolved slug must preserve the configured fallback model."""
+        agent = _make_agent(fallback_model={"provider": "moa", "model": "default"})
+        with (
+            patch(
+                "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+                return_value=None,
+            ),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(_mock_client(), None),
+            ),
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.model == "default"
+
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 

@@ -1904,7 +1904,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 continue
             try:
                 from hermes_cli.model_normalize import normalize_model_for_provider
-                fb_model = normalize_model_for_provider(fb_model, fb_provider)
+                # Persist the resolved slug (MoA preset → aggregator). The virtual
+                # preset name is not a wire model and 404s on the aggregator's HTTP API.
+                fb_model = normalize_model_for_provider(_resolved_fb_model or fb_model, fb_provider)
             except Exception as _norm_err:
                 logger.warning("Could not normalize fallback model %r for provider %r: %s", fb_model, fb_provider, _norm_err)
 

@@ -201,3 +201,38 @@ def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit
     assert snapshot.windows == ()
     assert "Credits balance: $74.50" in snapshot.details
     assert "API key usage: $25.50 total • $1.25 today • $4.50 this week • $18.00 this month" in snapshot.details
+
+
+def test_fetch_account_usage_opencode_go(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_runtime_provider",
+        lambda requested, explicit_base_url=None, explicit_api_key=None: {
+            "provider": "opencode-go",
+            # /v1 stripped, as anthropic_messages routing leaves it — the fetcher must not reuse this.
+            "base_url": "https://opencode.ai/zen/go",
+            "api_key": "sk-test",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=10.0: _RoutingClient(
+            {
+                "https://opencode.ai/zen/go/v1/usage": {
+                    "usage": {
+                        "rolling": {"status": "ok", "percent": 3, "resetsAt": "2026-09-16T21:44:55.176Z"},
+                        "weekly": {"status": "ok", "percent": 2, "resetsAt": "2026-09-21T00:00:00.176Z"},
+                        "monthly": {"status": "ok", "percent": 2, "resetsAt": "2026-10-13T02:13:38.176Z"},
+                    }
+                },
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("opencode-go")
+
+    assert snapshot is not None
+    assert [(w.label, w.used_percent) for w in snapshot.windows] == [
+        ("Rolling window", 3.0), ("Weekly", 2.0), ("Monthly", 2.0),
+    ]
+    assert snapshot.windows[0].reset_at == datetime(2026, 9, 16, 21, 44, 55, 176000, tzinfo=timezone.utc)
+    assert "97% remaining (3% used)" in render_account_usage_lines(snapshot)[2]

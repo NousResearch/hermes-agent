@@ -601,9 +601,31 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     return _snapshot("openrouter", "credits_api", windows, details)
 
 
+def _fetch_opencode_go_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
+    """OpenCode Go subscription windows via ``/zen/go/v1/usage`` (anomalyco/opencode#16513).
+
+    Percent-based payload ``{"usage": {"rolling"|"weekly"|"monthly": {"status", "percent", "resetsAt"}}}``;
+    no plan or credit fields are served. The runtime resolver is pool-aware, so a key that lives only in
+    the ``opencode-go`` credential pool still resolves.
+    """
+    runtime = resolve_runtime_provider(requested="opencode-go", explicit_base_url=base_url, explicit_api_key=api_key)
+    token = str(runtime.get("api_key", "") or "").strip()
+    if not token:
+        return None
+    # Literal endpoint, NOT runtime["base_url"]: that one has its /v1 suffix stripped in
+    # anthropic_messages mode (``_finalize_base_url``), and /usage only exists under /v1.
+    # Resolve it from the profile if a self-hosted Go relay ever needs supporting.
+    payload = _get_json("https://opencode.ai/zen/go/v1/usage",
+                        {"Authorization": f"Bearer {token}", "Accept": "application/json"}, timeout=10.0)
+    windows = _usage_windows(payload.get("usage") or {},
+                             (("rolling", "Rolling window"), ("weekly", "Weekly"), ("monthly", "Monthly")),
+                             "percent", "resetsAt")
+    return _snapshot("opencode-go", "go_usage_api", windows, [])
+
+
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage, "anthropic": _fetch_anthropic_account_usage,
-    "openrouter": _fetch_openrouter_account_usage,
+    "openrouter": _fetch_openrouter_account_usage, "opencode-go": _fetch_opencode_go_account_usage,
 }
 
 

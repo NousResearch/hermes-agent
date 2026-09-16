@@ -56,8 +56,7 @@ def server():
     mod._methods.update(methods)
     mod._real_stdout = real_stdout
     mod._sessions.clear()
-    mod._pending.clear()
-    mod._answers.clear()
+    __import__("tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
 
 
 @pytest.fixture()

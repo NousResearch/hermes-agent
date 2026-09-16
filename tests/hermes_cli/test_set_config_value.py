@@ -9,7 +9,6 @@ import pytest
 
 from hermes_cli.config import (
     config_command,
-    cron_model_drift_guard_enabled,
     set_config_value,
 )
 
@@ -53,6 +52,7 @@ class TestExplicitAllowlist:
         "DISCORD_BOT_TOKEN",
         "SLACK_BOT_TOKEN",
         "SLACK_APP_TOKEN",
+        "API_SERVER_KEY",
     ])
     def test_explicit_key_routes_to_env(self, key, _isolated_hermes_home):
         set_config_value(key, "test-value-123")
@@ -308,7 +308,7 @@ class TestListNavigation:
 
 
 # ---------------------------------------------------------------------------
-# Cron drift guard warning — regression tests for #59031
+# Unpinned-cron notice on a global model change (#59031, #44585)
 # ---------------------------------------------------------------------------
 
 def _write_cron_jobs(tmp_path, jobs):
@@ -320,10 +320,10 @@ def _write_cron_jobs(tmp_path, jobs):
     )
 
 
-class TestCronModelDriftConfigWarning:
-    """Warn operators before unpinned snapshot-bearing cron jobs fail closed."""
+class TestCronModelChangeNotice:
+    """A global model change tells the operator which unpinned jobs stay on their snapshot."""
 
-    def test_warning_names_the_user_owned_cli_pin_path(
+    def test_notice_says_jobs_keep_running_and_names_the_user_owned_pin_path(
         self,
         _isolated_hermes_home,
         capsys,
@@ -342,56 +342,11 @@ class TestCronModelDriftConfigWarning:
 
         set_config_value("model.default", "new-model")
 
-        warning = capsys.readouterr().out
-        assert "hermes cron edit <job_id> --provider <provider> --model <model>" in warning
-        assert "cronjob action=update" not in warning
-
-
-
-
-
-    def test_explicit_opt_out_suppresses_warning(
-        self,
-        _isolated_hermes_home,
-        capsys,
-    ):
-        _write_cron_jobs(
-            _isolated_hermes_home,
-            [
-                {
-                    "id": "model-drift-job",
-                    "enabled": True,
-                    "model": None,
-                    "model_snapshot": "old-model",
-                }
-            ],
-        )
-
-        set_config_value("cron.model_drift_guard", "false")
-        capsys.readouterr()
-        set_config_value("model.default", "new-model")
-
-        import yaml
-        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
-        captured = capsys.readouterr()
-        assert reloaded["cron"]["model_drift_guard"] is False
-        assert "Set model.default = new-model" in captured.out
-        assert "fail closed" not in captured.out
-
-
-    @pytest.mark.parametrize(
-        ("configured_value", "expected"),
-        [
-            (False, False),
-            (True, True),
-            ("false", True),
-            (0, True),
-            (None, True),
-        ],
-    )
-    def test_only_literal_false_disables_guard(self, configured_value, expected):
-        config = {"cron": {"model_drift_guard": configured_value}}
-        assert cron_model_drift_guard_enabled(config) is expected
+        notice = capsys.readouterr().out
+        assert "keeps running" in notice
+        assert "fail closed" not in notice
+        assert "hermes cron edit <job_id> --provider <provider> --model <model>" in notice
+        assert "cronjob action=update" not in notice
 
 
 # ---------------------------------------------------------------------------
@@ -495,14 +450,28 @@ class TestSecretRedactionInDisplay:
 # ---------------------------------------------------------------------------
 
 class TestSchemaValidation:
-    """#34067: ``hermes config set`` must not report bare success for
-    unrecognized keys. The key IS written (arbitrary keys are supported —
-    top-level scalars bridge into os.environ for skills/external apps), but
-    a post-write notice warns that Hermes may never read it and suggests the
-    likely-intended path. Headline case: the plausible-but-wrong
-    ``gateway.discord.gateway_restart_notification`` (correct path:
-    ``discord.gateway_restart_notification``).
+    """#34067 / #112003: an unknown path UNDER a known section is a typo and is refused before
+    anything is written (headline case ``gateway.discord.gateway_restart_notification``, correct
+    path ``discord.gateway_restart_notification``). Unknown TOP-LEVEL keys stay writable — their
+    scalars bridge into os.environ for skills/external apps — with a post-write notice.
     """
+
+    def test_unknown_subkey_under_known_section_refused_before_write(self, _isolated_hermes_home, capsys):
+        config_path = _isolated_hermes_home / "config.yaml"
+        config_path.write_text("model: gpt-4o\n", encoding="utf-8")
+
+        with pytest.raises(SystemExit):
+            set_config_value("gateway.discord.gateway_restart_notification", "true")
+
+        assert config_path.read_text(encoding="utf-8") == "model: gpt-4o\n"
+        err = capsys.readouterr().err
+        assert "nothing was written" in err
+        assert "discord.gateway_restart_notification" in err
+
+    def test_unknown_top_level_key_still_written_with_notice(self, _isolated_hermes_home, capsys):
+        set_config_value("brand_new_future_key", "value")
+        assert "brand_new_future_key" in _read_config(_isolated_hermes_home)
+        assert "not a recognized config key" in capsys.readouterr().out
 
 
 
@@ -553,7 +522,7 @@ class TestValidateConfigKey:
         assert is_known, f"Expected {key!r} to validate as known"
 
     @pytest.mark.parametrize("key,expected_in_suggestion", [
-        ("gateway.discord.gateway_restart_notification", None),  # no close suggestion
+        ("gateway.discord.gateway_restart_notification", "discord.gateway_restart_notification"),
         ("disco", "discord"),
         ("agent.max_turn", "agent.max_turns"),
     ])
@@ -754,12 +723,12 @@ class TestMalformedYAMLConfigPreservation:
         """set_config_value must raise, not overwrite the broken config."""
         self._write_broken_config(_isolated_hermes_home)
 
-        with pytest.raises(RuntimeError, match="not valid YAML"):
+        with pytest.raises(RuntimeError, match="formatting error"):
             set_config_value("agent.max_turns", "50")
 
         captured = capsys.readouterr()
         combined = captured.out + captured.err
-        assert "Failed to parse" in combined or "not valid YAML" in combined
+        assert "formatting error" in combined and "`hermes config edit`" in combined
         # Original config must remain intact
         raw = _read_config(_isolated_hermes_home)
         assert raw == self.BROKEN_CONFIG, f"Config was overwritten:\n{raw}"
@@ -770,12 +739,12 @@ class TestMalformedYAMLConfigPreservation:
 
         self._write_broken_config(_isolated_hermes_home)
 
-        with pytest.raises(RuntimeError, match="not valid YAML"):
+        with pytest.raises(RuntimeError, match="formatting error"):
             unset_config_value("model")
 
         captured = capsys.readouterr()
         combined = captured.out + captured.err
-        assert "Failed to parse" in combined or "not valid YAML" in combined
+        assert "formatting error" in combined and "`hermes config edit`" in combined
         raw = _read_config(_isolated_hermes_home)
         assert raw == self.BROKEN_CONFIG
 
@@ -901,3 +870,68 @@ class TestLiteralDotKeyEscaping:
         import yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["terminal"]["backend"] == "docker"
+
+
+class TestConfigGetRedaction:
+    """#84106 / #110758: `config get` is run by the agent from persisted sessions, so every
+    path (section dump, dotted leaf, .env-routed key) masks credentials unless ``--raw``."""
+
+    SECRET = "OPAQUEKEYVALUE12345678"
+
+    def _seed(self, home, monkeypatch):
+        (home / "config.yaml").write_text(
+            "providers:\n  gemini:\n    api_key: " + self.SECRET + "\n"
+            "mcp_servers:\n  s:\n    env:\n      MY_API_KEY: ${MY_API_KEY}\n    url: https://x.example\n",
+            encoding="utf-8")
+        (home / ".env").write_text("GEMINI_API_KEY=" + self.SECRET + "\n", encoding="utf-8")
+        monkeypatch.setenv("MY_API_KEY", self.SECRET)
+
+    @pytest.mark.parametrize("key", ["providers", "providers.gemini.api_key", "GEMINI_API_KEY",
+                                     "mcp_servers.s.env.MY_API_KEY"])
+    def test_config_get_masks_every_credential_path(self, _isolated_hermes_home, capsys, monkeypatch, key):
+        self._seed(_isolated_hermes_home, monkeypatch)
+        from hermes_cli.config import get_config_value
+
+        get_config_value(key)
+        out = capsys.readouterr().out
+        assert self.SECRET not in out
+        # Still identifies the key (mask keeps head/tail) and non-secret siblings stay readable.
+        assert self.SECRET[:4] in out
+        if key == "providers":
+            assert "gemini" in out
+
+    def test_config_get_raw_prints_the_real_value(self, _isolated_hermes_home, capsys, monkeypatch):
+        self._seed(_isolated_hermes_home, monkeypatch)
+        from hermes_cli.config import get_config_value
+
+        get_config_value("providers.gemini.api_key", raw=True)
+        assert capsys.readouterr().out.strip() == self.SECRET
+
+    @pytest.mark.parametrize("key, env_line, yaml_line, masked", [
+        # .env-routed keys are credentials unless the suffix is a known non-secret shape.
+        ("FAL_KEY", "FAL_KEY=" + SECRET, "", True),
+        ("VOICE_TOOLS_OPENAI_KEY", "VOICE_TOOLS_OPENAI_KEY=" + SECRET, "", True),
+        ("TERMINAL_SSH_HOST", "TERMINAL_SSH_HOST=" + SECRET, "", False),
+        ("mcp_servers.s.env.AWS_SECRET_ACCESS_KEY", "", "    env: {AWS_SECRET_ACCESS_KEY: " + SECRET + "}\n", True),
+        # Hyphenated header names fold to snake_case before matching (#84153 reviewer case).
+        ("mcp_servers.s.headers.X-API-Key", "", "    headers: {X-API-Key: " + SECRET + "}\n", True),
+        # Bare `auth` is the MCP transport mode enum, not a credential.
+        ("mcp_servers.s.auth", "", "    auth: oauth\n", False),
+        # An unresolved ${VAR} placeholder names the env var; masking it hides that reference.
+        ("mcp_servers.s.env.UNSET_THING_API_KEY", "", "    env: {UNSET_THING_API_KEY: '${UNSET_THING_API_KEY}'}\n", False),
+    ])
+    def test_config_get_classifies_env_header_and_enum_keys(
+            self, _isolated_hermes_home, capsys, monkeypatch, key, env_line, yaml_line, masked):
+        monkeypatch.delenv("UNSET_THING_API_KEY", raising=False)
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "mcp_servers:\n  s:\n    url: https://x.example\n" + yaml_line, encoding="utf-8")
+        (_isolated_hermes_home / ".env").write_text(env_line + "\n", encoding="utf-8")
+        from hermes_cli.config import get_config_value
+
+        get_config_value(key)
+        out = capsys.readouterr().out.strip()
+        if masked:
+            assert self.SECRET not in out and self.SECRET[:4] in out
+        else:
+            assert out == {"TERMINAL_SSH_HOST": self.SECRET, "mcp_servers.s.auth": "oauth"}.get(
+                key, "${UNSET_THING_API_KEY}")

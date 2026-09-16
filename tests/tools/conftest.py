@@ -83,6 +83,8 @@ def register_all_web_providers():
     from plugins.web.firecrawl.provider import FirecrawlWebSearchProvider
     from plugins.web.parallel.provider import ParallelWebSearchProvider
     from plugins.web.keenable.provider import KeenableWebSearchProvider
+    from plugins.web.tavily.provider import TavilyWebSearchProvider
+    from plugins.web.perplexity.provider import PerplexityWebSearchProvider
     from plugins.web.searxng.provider import SearXNGWebSearchProvider
     from plugins.web.xai.provider import XAIWebSearchProvider
 
@@ -94,10 +96,29 @@ def register_all_web_providers():
         FirecrawlWebSearchProvider,
         ParallelWebSearchProvider,
         KeenableWebSearchProvider,
+        TavilyWebSearchProvider,
+        PerplexityWebSearchProvider,
         SearXNGWebSearchProvider,
         XAIWebSearchProvider,
     ):
         register_provider(cls())
+
+
+@pytest.fixture
+def grant_computer_use_approvals(monkeypatch):
+    """Answer every computer_use approval prompt with "once" through the shared gate.
+
+    computer_use fails CLOSED when nobody can answer (no interactive user, no
+    gateway), so dispatch tests that only care about routing must present an
+    interactive CLI with a granting callback. "once" persists nothing, so no
+    grant leaks into ``tools.approval``'s session/permanent stores.
+    """
+    from tools.computer_use import tool as cu_tool
+
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    cu_tool.set_approval_callback(lambda command, description, **kw: "once")
+    yield
+    cu_tool.set_approval_callback(None)
 
 
 @pytest.fixture

@@ -19,6 +19,7 @@ from gateway.session_context import (
     set_session_vars,
 )
 from tools import approval as approval_module
+from tools import approval_context
 
 
 class _DummySessionDB:
@@ -92,9 +93,9 @@ def test_run_job_cron_execute_code_deny_does_not_pollute_later_gateway_execute_c
     """Cron deny stays scoped; a later gateway approval still reaches its user."""
     monkeypatch.setenv("HERMES_MODEL", "test-model")
     monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
-    monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
-    monkeypatch.setattr(approval_module, "_get_cron_approval_mode", lambda: "deny")
-    monkeypatch.setattr("hermes_state.SessionDB", _DummySessionDB)
+    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(approval_context, "_get_cron_approval_mode", lambda: "deny")
+    monkeypatch.setattr("hermes_state_registry.acquire", _DummySessionDB)
     monkeypatch.setattr("run_agent.AIAgent", _FakeCronAgent)
     monkeypatch.setattr(
         "hermes_constants.resolve_reasoning_config", lambda *_args, **_kwargs: None
@@ -110,7 +111,7 @@ def test_run_job_cron_execute_code_deny_does_not_pollute_later_gateway_execute_c
             "args": None,
         },
     )
-    monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", lambda: [])
+    monkeypatch.setattr("tools.mcp_tool_discovery.discover_mcp_tools", lambda: [])
     monkeypatch.setattr(cron_scheduler, "_get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(cron_scheduler, "get_fallback_chain", lambda _cfg: [])
     monkeypatch.setattr(
@@ -140,7 +141,7 @@ def test_run_job_cron_execute_code_deny_does_not_pollute_later_gateway_execute_c
     monkeypatch.delenv("HERMES_CRON_SESSION")
 
     session_key = "cron-isolation-session"
-    key_token = approval_module.set_current_session_key(session_key)
+    key_token = approval_context.set_current_session_key(session_key)
     session_tokens = set_session_vars(
         platform="discord",
         chat_id="123",
@@ -157,7 +158,7 @@ def test_run_job_cron_execute_code_deny_does_not_pollute_later_gateway_execute_c
         assert result.get("user_approved") is True
     finally:
         clear_session_vars(session_tokens)
-        approval_module.reset_current_session_key(key_token)
+        approval_context.reset_current_session_key(key_token)
         with approval_module._lock:
             approval_module._gateway_queues.pop(session_key, None)
             approval_module._gateway_notify_cbs.pop(session_key, None)

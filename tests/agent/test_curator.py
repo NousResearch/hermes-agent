@@ -76,8 +76,8 @@ def test_curator_defaults(curator_env):
     c = curator_env["curator"]
     assert c.get_interval_hours() == 24 * 7  # 7 days
     assert c.get_min_idle_hours() == 2
-    assert c.get_stale_after_days() == 30
-    assert c.get_archive_after_days() == 90
+    assert c.get_stale_after_days() == 14
+    assert c.get_archive_after_days() == 30
 
 
 
@@ -697,23 +697,15 @@ def test_review_model_auxiliary_curator_partial_override_falls_back(curator_env)
         "model": dict(base_main),
         "auxiliary": {"curator": {"provider": "openrouter", "model": ""}},
     }
-    assert curator._resolve_review_model(cfg_provider_only) == (
-        "openrouter", "openai/gpt-5.5",
-    )
+    b = curator._resolve_review_runtime(cfg_provider_only)
+    assert (b.provider, b.model) == ("openrouter", "openai/gpt-5.5")
 
     cfg_model_only = {
         "model": dict(base_main),
         "auxiliary": {"curator": {"provider": "auto", "model": "gpt-5.4-mini"}},
     }
-    assert curator._resolve_review_model(cfg_model_only) == (
-        "openrouter", "openai/gpt-5.5",
-    )
-
-
-
-
-
-
+    b = curator._resolve_review_runtime(cfg_model_only)
+    assert (b.provider, b.model) == ("openrouter", "openai/gpt-5.5")
 
 
 def test_curator_slot_is_canonical_aux_task():
@@ -724,8 +716,8 @@ def test_curator_slot_is_canonical_aux_task():
     specifically so the unification doesn't silently regress.
     """
     from hermes_cli.config import DEFAULT_CONFIG
-    from hermes_cli.main import _AUX_TASKS
-    from hermes_cli.web_server import _AUX_TASK_SLOTS
+    from hermes_cli.main_provider_setup import _AUX_TASKS
+    from hermes_cli.web_server_config import _AUX_TASK_SLOTS
 
     # 1. DEFAULT_CONFIG.auxiliary — schema source
     assert "curator" in DEFAULT_CONFIG["auxiliary"], \
@@ -846,7 +838,7 @@ def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch)
 
     assert result["error"] is None
     assert captured["model"] == "real-model-id"
-    assert captured["max_tokens"] == 1234
+    assert captured.get("max_tokens") is None
 
 
 
@@ -931,7 +923,7 @@ def test_review_fork_toolset_surface_excludes_execution_tools():
     # The incident class stays out: no command execution, no background
     # process steering (stdin is a second unguarded write sink), and no
     # generic filesystem-write tool.
-    for tool in ("terminal", "process", "write_file", "patch",
+    for tool in ("terminal", "process_manage", "write_file", "patch",
                  "execute_code", "computer_use", "browser_exec"):
         assert tool not in surface, (
             f"execution/write tool {tool!r} leaked into the curator fork's "
@@ -958,3 +950,67 @@ def test_review_prompt_does_not_steer_terminal_writes():
             "write_file/remove_file instead"
         )
         assert "&& mv" not in text
+
+
+def test_review_fork_seeds_shared_read_marks(curator_env, monkeypatch):
+    """The curator LLM fork must install a shared read-before-write marks store
+    in its own context before ``run_conversation``.
+
+    Regression for the dead-end refusal the consolidation pass hit in practice:
+    ``mark_background_review_skill_read`` auto-creates a store when the
+    ContextVar is unset, but tool workers run on COPIED contexts, so each
+    worker's marks stayed private — a ``skill_view`` in one worker never
+    satisfied the write guard in another, and every ``skill_manage`` patch was
+    refused with "current SKILL.md content has not been loaded in this review
+    turn". The background-review fork seeds a shared store up front
+    (``agent/background_review.py``); the curator fork must do the same so
+    every copied worker context shares ONE store.
+    """
+    curator = curator_env["curator"]
+    importlib.reload(curator)
+    from tools.skill_manager_guards import _background_review_read_paths
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "provider": "custom",
+            "model": "m",
+            "api_key": "k",
+            "base_url": "https://gateway.example/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+
+    observed = {}
+
+    class _StubAgent:
+        def __init__(self, **kwargs):
+            self._memory_write_origin = "assistant_tool"
+            self._memory_nudge_interval = 0
+            self._skill_nudge_interval = 0
+            self._session_messages = []
+
+        def run_conversation(self, **_kwargs):
+            observed["marks"] = _background_review_read_paths.get()
+            return {"final_response": "ok"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+    result = curator._run_llm_review("review")
+
+    assert result["error"] is None
+    assert observed["marks"] is not None, (
+        "curator LLM fork must seed a shared read-marks store before "
+        "run_conversation, or every copied tool-worker context keeps private "
+        "marks and the read-before-write guard refuses all patches"
+    )

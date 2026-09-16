@@ -101,7 +101,7 @@ def test_relay_tools_jsonable_no_warning_leak():
 
 
 def test_anthropic_to_plain_data_no_warning_leak():
-    from agent.anthropic_adapter import _to_plain_data
+    from agent.anthropic_message_convert import _to_plain_data
 
     _, snapshot = _accumulated_stop_event()
     with warnings.catch_warnings(record=True) as recorded:
@@ -126,7 +126,7 @@ def test_duck_typed_model_dump_fallback():
     """Non-pydantic objects with a bare model_dump() must still serialize."""
     from agent.relay_llm import _jsonable as rl_jsonable
     from agent.relay_tools import _jsonable as rt_jsonable
-    from agent.anthropic_adapter import _to_plain_data
+    from agent.anthropic_message_convert import _to_plain_data
 
     class Duck:
         def model_dump(self):  # no mode/warnings kwargs

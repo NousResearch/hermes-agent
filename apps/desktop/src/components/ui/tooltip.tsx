@@ -117,11 +117,12 @@ function TooltipContent({
         {/* bg-foreground/text-background auto-inverts per theme. leading-normal
             keeps lines readable; py-1 makes the cloned line-boxes overlap just
             enough to read as one continuous fill (no gaps between lines). */}
-        {/* [&>*]:!inline-flex: a block-level label child (e.g. `flex`) collapses
-            this inline decoration's geometry, so Radix measures a zero-size chip
-            and parks an empty rectangle in the corner (#62022). Force any direct
-            child inline-flex so every call site stays safe. */}
-        <span className="box-decoration-clone inline bg-foreground px-1.5 py-1 text-[11px] font-bold leading-normal text-background [font-family:Arial,sans-serif] [&>*]:!inline-flex">
+        {/* [&>*]:!inline: this decoration only paints inline FLOW. A block child
+            collapses it to zero and Radix parks an empty chip in the corner
+            (#62022); an atomic inline child (`inline-flex`) sits on the baseline
+            and hangs its extra lines below the background, dark-on-dark. Force
+            direct children inline; break lines with `<br />`. */}
+        <span className="box-decoration-clone inline bg-foreground px-1.5 py-1 text-[11px] font-bold leading-normal text-background [font-family:Arial,sans-serif] [&>*]:!inline">
           {children}
         </span>
       </TooltipPrimitive.Content>
@@ -265,8 +266,8 @@ interface TipHintLabelProps {
   hint?: string
 }
 
-/** Tooltip label with an optional trailing hotkey hint. Uses `inline-flex` so it
- *  stays safe inside Tip's decoration wrapper — prefer this over a bespoke
+/** Tooltip label with an optional trailing hotkey hint. Plain inline flow (no
+ *  flex box) so Tip's per-line background wraps it — prefer this over a bespoke
  *  flex/gap span at the call site (see #62022). */
 function TipHintLabel({ text, hint }: TipHintLabelProps) {
   if (!hint) {
@@ -274,10 +275,10 @@ function TipHintLabel({ text, hint }: TipHintLabelProps) {
   }
 
   return (
-    <span className="inline-flex items-center gap-2">
-      <span>{text}</span>
-      <span className="opacity-55">{hint}</span>
-    </span>
+    <>
+      {text}
+      <span className="ms-2 opacity-55">{hint}</span>
+    </>
   )
 }
 

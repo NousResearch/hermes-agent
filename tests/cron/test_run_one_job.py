@@ -29,7 +29,7 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         calls.append(("save", jid))
         return f"/tmp/{jid}.txt"
 
-    def fake_deliver(job, content, adapters=None, loop=None):
+    def fake_deliver(job, content, adapters=None, loop=None, **kwargs):
         calls.append(("deliver", job["id"]))
         return None
 
@@ -88,7 +88,7 @@ def test_run_one_job_exception_delivers_failure_alert(monkeypatch):
         s, "create_execution", lambda *_a, **_kw: {"id": "exec-j3"}
     )
     monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
-    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
     monkeypatch.setattr(
         s,
         "run_job",
@@ -115,9 +115,14 @@ def test_run_one_job_exception_delivers_failure_alert(monkeypatch):
     ok = s.run_one_job({"id": "j3", "name": "morning", "deliver": "telegram"})
 
     assert ok is False
-    assert delivered == [
-        ("j3", "⚠️ Cron 'morning' failed: Gemini HTTP 503 (UNAVAILABLE)")
-    ]
+    assert len(delivered) == 1 and delivered[0][0] == "j3"
+    # The notice carries the classifier verdict's gloss from the copy table (whatever its wording),
+    # never the raw HTTP code as the lead, plus a retry command.
+    from cron.scheduler_failure_copy import _provider_failure_cause, classify_cron_failure_reason
+    gloss = _provider_failure_cause(classify_cron_failure_reason("Gemini HTTP 503 (UNAVAILABLE)"))
+    assert gloss and gloss in delivered[0][1]
+    assert not delivered[0][1].lstrip("⚠️ ").startswith("Gemini HTTP 503")
+    assert "hermes cron run j3" in delivered[0][1]
     assert marked == [
         (("j3", False, "Gemini HTTP 503 (UNAVAILABLE)"), {"delivery_error": None})
     ]
@@ -141,7 +146,7 @@ def test_run_one_job_exception_records_failure_alert_delivery_error(monkeypatch)
         s, "create_execution", lambda *_a, **_kw: {"id": "exec-j4"}
     )
     monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
-    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
     monkeypatch.setattr(
         s,
         "run_job",
@@ -165,7 +170,7 @@ def _patch_escaped_failure(monkeypatch, delivered, *, exec_id, err):
     """Make run_job raise, and capture what the escape handler delivers."""
     monkeypatch.setattr(s, "create_execution", lambda *_a, **_kw: {"id": exec_id})
     monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
-    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
     monkeypatch.setattr(
         s,
         "run_job",
@@ -234,7 +239,9 @@ def test_escaped_failure_delivery_stays_quiet_below_the_threshold(monkeypatch):
     )
 
     assert ok is False
-    assert delivered == ["⚠️ Cron 'scout' failed: provider failed"]
+    assert len(delivered) == 1
+    assert delivered[0].startswith("⚠️ Cron 'scout' failed: provider failed")
+    assert "hermes cron runs j6" in delivered[0]
 
 
 def test_run_one_job_exception_after_delivery_does_not_redeliver(monkeypatch):
@@ -246,7 +253,7 @@ def test_run_one_job_exception_after_delivery_does_not_redeliver(monkeypatch):
         s, "create_execution", lambda *_a, **_kw: {"id": "exec-j5"}
     )
     monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
-    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
     monkeypatch.setattr(
         s,
         "run_job",
@@ -288,7 +295,7 @@ def test_run_one_job_keyboard_interrupt_skips_delivery_and_reraises(monkeypatch)
         s, "create_execution", lambda *_a, **_kw: {"id": "exec-j6"}
     )
     monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
-    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
     monkeypatch.setattr(
         s,
         "run_job",

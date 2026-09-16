@@ -527,14 +527,19 @@ class CLISessionMixin:
         self._resumed = False
         # An explicit -m/--model was for the previous session only.
         self._explicit_model_override = False
-        self.reasoning_config = _parse_reasoning_config(
-            CLI_CONFIG["agent"].get("reasoning_effort", ""))
         # Session-scoped overrides (/model --session, /fast, one-turn restores) don't carry over.
         # Re-derive model/provider and service tier from config.yaml so a session-only switch never leaks
         # into the next session (#48055, #23131).
         self._pending_one_turn_model_restore = None
         self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
         _reset_model_to_config_default(self, silent)
+        # Resolve reasoning_config AFTER the model reset and through the shared per-model
+        # chokepoint (per-model override > global reasoning_effort, like at startup). The
+        # previous code read the raw global agent.reasoning_effort here - ignoring
+        # agent.reasoning_overrides entirely - and used the PRE-reset model, which may be
+        # replaced a few lines above.
+        from hermes_constants import resolve_reasoning_config
+        self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
         _sync_process_session_id(self.session_id)
 
         if self.agent:

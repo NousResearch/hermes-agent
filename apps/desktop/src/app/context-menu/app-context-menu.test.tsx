@@ -398,6 +398,18 @@ describe('AppContextMenu', () => {
     expect(await screen.findByText('Settings')).toBeTruthy()
   })
 
+  it('keeps the window menu above the titlebar controls', async () => {
+    installBridge()
+    mountMenu()
+    const host = attach('<div><p>plain chrome</p></div>')
+
+    fireEvent.contextMenu(host.querySelector('p')!)
+
+    const menu = (await screen.findByText('Settings')).closest('[data-slot="dropdown-menu-content"]')
+
+    expect(menu?.classList.contains('z-[80]')).toBe(true)
+  })
+
   it('skips plain right-clicks inside a skip-marked surface, but not links in it', async () => {
     installBridge()
     mountMenu()

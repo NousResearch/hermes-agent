@@ -701,7 +701,10 @@ export function AppContextMenu() {
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="start"
-        className="w-56"
+        // The titlebar tool clusters intentionally sit at z-70. The app-wide
+        // context menu is a window-level surface, so it must stay above them
+        // when a right-click menu spans the header.
+        className="z-[80] w-56"
         onCloseAutoFocus={event => event.preventDefault()}
         portalContainer={open.kind === 'dom' ? open.target.dialogPortalContainer : undefined}
         side="bottom"

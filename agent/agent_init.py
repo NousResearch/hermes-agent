@@ -828,7 +828,11 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
     Falls through to the init-time fallback chain, then raises with the missing-key /
     no-provider diagnostic.
     """
-    from agent.auxiliary_client import resolve_provider_client
+    from agent.auxiliary_client import (
+        _normalize_aux_provider,
+        _resolve_moa_aggregator,
+        resolve_provider_client,
+    )
     _routed_client, _ = resolve_provider_client(
         agent.provider or "auto", model=agent.model, raw_codex=True)
     if _routed_client is not None:
@@ -856,7 +860,12 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
             logger.debug("Init-time fallback entry %s failed: %s", _fb.get("provider"), _fb_exc)
             continue
         if _fb_client is not None:
-            agent.provider = _fb["provider"]
+            _fb_provider = _fb["provider"]
+            if str(_fb_provider).strip().lower() == "moa":
+                _agg_provider, _ = _resolve_moa_aggregator(_fb["model"])
+                if _agg_provider:
+                    _fb_provider = _normalize_aux_provider(_agg_provider)
+            agent.provider = _fb_provider
             agent.model = _fb_model or _fb["model"]
             agent._fallback_activated = True
             return _client_kwargs_from_routed(_fb_client, _provider_timeout)

@@ -444,6 +444,21 @@ display:
   tool_progress_grouping: accumulate   # accumulate | separate
 ```
 
+### Telegram Live HUD
+
+Telegram can replace ordinary progress messages with one editable, model-free runtime status
+message. Enable it per platform:
+
+```yaml
+display:
+  platforms:
+    telegram:
+      live_hud: true
+```
+
+The feature is off by default. See [Telegram: Live runtime HUD](./telegram#live-runtime-hud) for
+display behavior, failure handling, and streaming interaction.
+
 ### `log` mode — audit file instead of chat messages
 
 Setting `display.tool_progress: log` sends **no** progress bubbles to chat. Instead, each tool call is appended as a line to `~/.hermes/logs/tool_calls.log` — a rotating audit file (5 MB × 3 backups) run through the same secret-redacting formatter as regular logs, so credentials never land on disk. Use it when you want a full tool-call trail without any chat noise.

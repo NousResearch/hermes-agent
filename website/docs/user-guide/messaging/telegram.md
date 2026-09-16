@@ -999,6 +999,26 @@ gateway:
 
 **What if a draft frame fails?** Any failure (transient network error, server-side rejection, older python-telegram-bot install) flips that response back to the edit-based path for the rest of the stream. The next response gets a fresh attempt.
 
+### Live runtime HUD
+
+The optional live HUD keeps one editable status message for a turn and shows runtime,
+generic tool categories, usage counters, and subagent counts without model-generated narration:
+
+```yaml
+display:
+  platforms:
+    telegram:
+      live_hud: true
+```
+
+It is off by default. When enabled, the HUD replaces ordinary tool-progress, status-callback, and
+long-running heartbeat messages for that turn, then finalizes the same message as complete, failed,
+interrupted, or incomplete. The normal final answer remains a separate message. HUD and edit-based
+streaming updates share Telegram's per-chat edit budget. HUD delivery is best effort: send, edit,
+formatting, and flood-control failures never fail the agent turn or create replacement HUD messages.
+The HUD never renders prompts, tool arguments or results, paths, URLs, errors, status text, or
+subagent descriptions; its output is limited to fixed labels and numeric counters.
+
 ## Rendering: Rich Messages, Tables and Link Previews
 
 **Rich Messages (Bot API 10.1).** Final replies that contain constructs the legacy MarkdownV2 path degrades — tables, task lists, collapsible `<details>`, and block math — are sent with Telegram's native [`sendRichMessage`](https://core.telegram.org/bots/api#sendrichmessage) using the agent's **raw markdown**, so they render natively with no client-side flattening. In DMs, the default `rich_drafts: false` keeps the streaming preview plain — it uses Telegram's ephemeral draft transport with legacy rendering (tables and other rich-only constructs stay as raw markdown in the preview) — then persists the completed response with `sendRichMessage`. Setting `rich_drafts: true` makes the live preview use `sendRichMessageDraft` too. Edit-based streams can finalize an existing preview in place through `editMessageText`'s `rich_message` parameter. Ordinary replies (plain prose, bold/italic, simple lists) stay on the MarkdownV2 path for consistent font weight and spacing across clients.

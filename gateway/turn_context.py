@@ -63,6 +63,8 @@ class TurnContext:
     log_mode_enabled: bool = False
     interim_assistant_messages_enabled: bool = False
     needs_progress_queue: bool = False
+    live_hud_enabled: bool = False
+    live_hud_publisher: Any = None
     AIAgent: Any = None
     resolve_display_setting: Any = None
     result_holder: list = field(default_factory=lambda: [None])

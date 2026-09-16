@@ -43,6 +43,18 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+_LIVE_HUD_CLEANUP_TIMEOUT = 7.0
+
+
+def _consume_detached_hud_task(task: "asyncio.Task") -> None:
+    """Observe a HUD task that outlived its bounded cleanup window."""
+    try:
+        task.exception()
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.debug("Detached Live HUD task failed after cleanup")
+
 
 _CONTEXT_OVERFLOW_ERROR_PHRASES = (
     "context length", "context size", "context window",
@@ -2783,7 +2795,9 @@ class GatewayTurnMixin:
         with self._profile_scope_for_source(source):
             return await self._run_agent_inner(message, context_prompt, history, source, session_id, **turn_kwargs)
 
-    def _run_agent_display_settings(self, source: SessionSource) -> "GatewayRunner._RunAgentDisplay":
+    def _run_agent_display_settings(
+        self, source: SessionSource, *, suppress_live_hud: bool = False,
+    ) -> "GatewayRunner._RunAgentDisplay":
         """Resolve per-platform display, progress, status and streaming-surface settings for a turn."""
         from gateway.run import (
             _gateway_platform_value, _has_platform_display_override, _load_gateway_config,
@@ -2844,7 +2858,25 @@ class GatewayTurnMixin:
 
         # Webhooks can't edit messages, so tool progress / log mode are off there.
         is_webhook = source.platform == Platform.WEBHOOK
-        tool_progress_enabled = progress_mode not in {"off", "log"} and not is_webhook
+        # The first consumer is Telegram. The projector/publisher is transport-neutral, but other
+        # adapters opt in only after their routed edit capability and stream contract are verified.
+        live_hud_enabled = (
+            not suppress_live_hud
+            and source.platform == Platform.TELEGRAM
+            and bool(resolve_display_setting(user_config, platform_key, "live_hud", False))
+        )
+        adapter_edit = getattr(type(adapter), "edit_message", None) if adapter is not None else None
+        if (
+            adapter_edit is None
+            or adapter_edit is BasePlatformAdapter.edit_message
+            or not bool(getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True))
+        ):
+            live_hud_enabled = False
+        # The HUD replaces ordinary text progress for its turn. Both consume the same structured
+        # callbacks; rendering both would violate the single-status-message contract.
+        tool_progress_enabled = (
+            progress_mode not in {"off", "log"} and not is_webhook and not live_hud_enabled
+        )
         # Live status for text-rendering typing indicators (Slack); independent of tool_progress.
         _live_status_mode = resolve_display_setting(user_config, platform_key, "live_status", "full")
         _live_status_adapter = (
@@ -2890,6 +2922,7 @@ class GatewayTurnMixin:
             log_queue=queue.Queue() if log_mode_enabled else None,
             interim_assistant_messages_enabled=interim_assistant_messages_enabled,
             _thinking_enabled=_thinking_enabled, _native_slack_task_cards=_native_slack_task_cards,
+            live_hud_enabled=live_hud_enabled,
             needs_progress_queue=tool_progress_enabled or _thinking_enabled or _native_slack_task_cards,
             _generic_status_phrase=_generic_status_phrase,
         )
@@ -2900,6 +2933,7 @@ class GatewayTurnMixin:
         "progress_grouping", "tool_progress_enabled", "log_queue", "resolve_display_setting",
         "user_config", "enabled_toolsets", "disabled_toolsets", "log_mode_enabled",
         "interim_assistant_messages_enabled", "needs_progress_queue", "_native_slack_task_cards",
+        "live_hud_enabled",
     )
 
     def _run_agent_build_turn_context(
@@ -3614,7 +3648,7 @@ class GatewayTurnMixin:
 
     async def _run_agent_queued_followup(
         self, turn_ctx: TurnContext, adapter: Any, pending: Optional[str], pending_event: Any,
-        response: Any, result: Any, stream_task: Any,
+        response: Any, result: Any, stream_task: Any, *, suppress_live_hud: bool = False,
     ) -> Any:
         """Run the queued / interrupting follow-up as the next turn (recursive ``_run_agent``)."""
         from gateway.platforms.base import merge_pending_message_event
@@ -3732,6 +3766,7 @@ class GatewayTurnMixin:
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,
                 channel_prompt=next_channel_prompt, message_type=next_message_type,
                 persist_user_display_kind=next_display_kind,
+                _suppress_live_hud=suppress_live_hud,
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(
@@ -3759,8 +3794,9 @@ class GatewayTurnMixin:
         return merged
 
     async def _run_agent_cleanup_turn_tasks(
-        self, turn_ctx: TurnContext, *, progress_task: Any, log_task: Any, interrupt_monitor: "asyncio.Task",
-        _notify_task: "asyncio.Task", tracking_task: "asyncio.Task", stream_task: Any,
+        self, turn_ctx: TurnContext, *, progress_task: Any, log_task: Any, hud_task: Any,
+        interrupt_monitor: "asyncio.Task", _notify_task: "asyncio.Task", tracking_task: "asyncio.Task",
+        stream_task: Any,
     ) -> None:
         """``finally`` half of a turn: cancel background tasks, flush stream, release the session slot."""
         stream_consumer_holder, session_key = turn_ctx.stream_consumer_holder, turn_ctx.session_key
@@ -3776,6 +3812,34 @@ class GatewayTurnMixin:
                     await stream_task
             else:
                 await self._await_stream_task(stream_task)
+
+        # Telegram may spend up to five seconds on a short flood-control retry after waiting for
+        # the shared edit lane. Give the terminal edit one bounded window; outer cancellation is
+        # remembered but does not orphan the HUD or skip session-ownership cleanup.
+        cancelled_during_hud = False
+        if hud_task:
+            hud_deadline = time.monotonic() + _LIVE_HUD_CLEANUP_TIMEOUT
+            try:
+                await asyncio.wait_for(asyncio.shield(hud_task), timeout=_LIVE_HUD_CLEANUP_TIMEOUT)
+            except asyncio.CancelledError:
+                cancelled_during_hud = True
+                remaining = max(0.0, hud_deadline - time.monotonic())
+                if remaining:
+                    try:
+                        await asyncio.wait_for(asyncio.shield(hud_task), timeout=remaining)
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        hud_task.cancel()
+                        hud_task.add_done_callback(_consume_detached_hud_task)
+                    except Exception:
+                        logger.debug("Live HUD cleanup wait failed")
+                else:
+                    hud_task.cancel()
+                    hud_task.add_done_callback(_consume_detached_hud_task)
+            except asyncio.TimeoutError:
+                hud_task.cancel()
+                hud_task.add_done_callback(_consume_detached_hud_task)
+            except Exception:
+                logger.debug("Live HUD cleanup wait failed")
 
         # Abort + bounded wait for streaming TTS: covers paths where normal finalisation was skipped.
         _stts_finally = turn_ctx.streaming_tts_consumer_holder[0]
@@ -3793,6 +3857,8 @@ class GatewayTurnMixin:
         if self._draining:
             self._update_runtime_status("draining")
 
+        # hud_task was already awaited within its own deadline above. Never await it again:
+        # third-party transports may suppress cancellation.
         for task in (progress_task, log_task, interrupt_monitor, tracking_task, _notify_task):
             if task:
                 try:
@@ -3802,6 +3868,8 @@ class GatewayTurnMixin:
                 except Exception:
                     # A background task that died of a real error must not abort the cleanup path.
                     logger.debug("background turn task failed during cleanup", exc_info=True)
+        if cancelled_during_hud:
+            raise asyncio.CancelledError
 
     async def _run_agent_edit_streamed_message(
         self, _sc, source, response, content, *, _sk, ok, fail_result, fail_exc,
@@ -3965,6 +4033,7 @@ class GatewayTurnMixin:
         turn_ctx._status_adapter = self._adapter_for_source(source)
         turn_ctx._status_chat_id = source.chat_id
         turn_ctx._status_thread_metadata = _status_thread_metadata
+        turn_runner.setup_live_hud()
         return _status_thread_metadata
 
     async def _run_agent_notify_long_running(
@@ -3977,6 +4046,8 @@ class GatewayTurnMixin:
         Interval: agent.gateway_notify_interval / HERMES_AGENT_NOTIFY_INTERVAL (default 180s; 0 or
         long_running_notifications=off disables)."""
         from gateway.run import _float_env, _interim_metadata, _non_conversational_metadata
+        if disp.live_hud_enabled is True:
+            return
         _notify_start = time.time()
         _NOTIFY_INTERVAL = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _long_running_mode = disp._display_surface_mode("long_running_notifications", default=True, allow_generic=True)
@@ -4051,6 +4122,7 @@ class GatewayTurnMixin:
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
+        _suppress_live_hud: bool = False,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
@@ -4064,7 +4136,7 @@ class GatewayTurnMixin:
 
         from run_agent import AIAgent
 
-        disp = self._run_agent_display_settings(source)
+        disp = self._run_agent_display_settings(source, suppress_live_hud=_suppress_live_hud)
         turn_ctx, turn_runner, _cleanup_adapter = self._run_agent_build_turn_context(
             disp, AIAgent, message=message, source=source, session_key=session_key,
             run_generation=run_generation, context_prompt=context_prompt, history=history,
@@ -4086,6 +4158,7 @@ class GatewayTurnMixin:
         # Progress sender drains BOTH tool-progress lines and thinking bubbles (needs_progress_queue).
         spawn = asyncio.create_task
         progress_task = spawn(turn_runner.send_progress_messages()) if disp.needs_progress_queue else None
+        hud_task = spawn(turn_runner.send_live_hud()) if disp.live_hud_enabled else None
         log_task = spawn(self._run_agent_write_tool_log(disp.log_queue)) if disp.log_mode_enabled else None
         # The stream consumer is created inside run_sync; this task polls for it.
         stream_task = spawn(self._run_agent_stream_consumer_task(turn_ctx.stream_consumer_holder))
@@ -4096,6 +4169,7 @@ class GatewayTurnMixin:
         _executor_task_holder: list = [None]  # bound once the executor future exists (see below)
         _notify_task = spawn(self._run_agent_notify_long_running(disp, turn_ctx, _executor_task_holder))
 
+        response = None
         try:
             # run_sync is TurnRunner.run_sync (bound method; executor call unchanged).
             worker = self._run_agent_start_turn_worker(turn_ctx, turn_runner.run_sync)
@@ -4109,15 +4183,43 @@ class GatewayTurnMixin:
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
             pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
             if pending_event or pending:
-                return await self._run_agent_queued_followup(
+                # A queued follow-up is a distinct turn and may start its own HUD. Finalize this
+                # turn's message first so two active HUDs never overlap.
+                turn_runner.complete_live_hud(response)
+                # Once an earlier cancellation-resistant HUD is detached, keep every recursive
+                # follow-up HUD-free until the queued chain unwinds.
+                suppress_followup_hud = _suppress_live_hud
+                if hud_task:
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(hud_task), timeout=_LIVE_HUD_CLEANUP_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        hud_task.cancel()
+                        hud_task.add_done_callback(_consume_detached_hud_task)
+                        suppress_followup_hud = True
+                    except Exception:
+                        logger.debug("Live HUD follow-up finalization failed")
+                queued_response = await self._run_agent_queued_followup(
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,
+                    suppress_live_hud=suppress_followup_hud,
                 )
+                return queued_response
+
+            # The streamed-delivery reconciliation reads state set by the consumer. Let it finish
+            # before declaring the turn successful; cleanup can safely await the completed task again.
+            if stream_task and turn_ctx.stream_consumer_holder[0] is not None:
+                await self._await_stream_task(stream_task)
+            await self._run_agent_mark_streamed_delivery(response, turn_ctx)
+            self._run_agent_schedule_bubble_cleanup(response, _cleanup_adapter, turn_ctx)
+            turn_runner.complete_live_hud(response)
         finally:
+            # Successful paths complete explicitly after downstream processing. Any earlier exit
+            # reaches this fallback first and must not display a successful terminal state.
+            turn_runner.complete_live_hud({"failed": True})
             await self._run_agent_cleanup_turn_tasks(
-                turn_ctx, progress_task=progress_task, log_task=log_task, interrupt_monitor=interrupt_monitor,
-                _notify_task=_notify_task, tracking_task=tracking_task, stream_task=stream_task,
+                turn_ctx, progress_task=progress_task, log_task=log_task, hud_task=hud_task,
+                interrupt_monitor=interrupt_monitor, _notify_task=_notify_task,
+                tracking_task=tracking_task, stream_task=stream_task,
             )
 
-        await self._run_agent_mark_streamed_delivery(response, turn_ctx)
-        self._run_agent_schedule_bubble_cleanup(response, _cleanup_adapter, turn_ctx)
         return response

@@ -102,6 +102,43 @@ class TurnRunner:
             while not q.empty():
                 q.get_nowait()
 
+    def setup_live_hud(self) -> None:
+        """Create the per-turn publisher after routing metadata and adapter are bound."""
+        ctx = self._ctx
+        if not ctx.live_hud_enabled or ctx.live_hud_publisher is not None or ctx._status_adapter is None:
+            return
+        try:
+            from gateway.live_hud import LiveHUDPublisher
+            ctx.live_hud_publisher = LiveHUDPublisher(
+                transport=ctx._status_adapter,
+                chat_id=ctx._status_chat_id,
+                reply_to=ctx._progress_reply_to,
+                metadata=ctx._progress_metadata,
+            )
+        except Exception:
+            ctx.live_hud_enabled = False
+            logger.debug("Live HUD setup failed")
+
+    async def send_live_hud(self) -> None:
+        """Run the optional editable HUD publisher; its failures never escape into the turn."""
+        hud = self._ctx.live_hud_publisher
+        if hud is None:
+            return
+        try:
+            await hud.run()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Live HUD publisher task failed")
+
+    def complete_live_hud(self, response: Any) -> None:
+        hud = self._ctx.live_hud_publisher
+        if hud is not None:
+            try:
+                hud.complete(response)
+            except Exception:
+                logger.debug("Live HUD completion failed")
+
     def _track_progress_result(self, result) -> None:
         """Remember a delivered progress/status message id for end-of-turn cleanup."""
         ctx = self._ctx
@@ -120,6 +157,7 @@ class TurnRunner:
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
+        self._hud_observe(event_type, tool_name, preview, args, **kwargs)
         # Failed subagent → one clean user-facing notice, handled FIRST, before every progress-queue
         # gate: platforms with tool_progress off must still hear about a dead delegation.
         if event_type == "subagent.complete":
@@ -172,9 +210,21 @@ class TurnRunner:
         if msg is not None:
             self._progress_emit(msg)
 
+    def _hud_observe(self, event_type: str, tool_name=None, preview=None, args=None, **kwargs) -> None:
+        """Tee structured runtime events to the optional HUD; telemetry is always fail-open."""
+        hud = self._ctx.live_hud_publisher
+        if not (self._ctx.live_hud_enabled and hud is not None and self._ctx._run_still_current()):
+            return
+        try:
+            hud.observe(event_type, tool_name, preview, args, **kwargs)
+        except Exception:
+            logger.debug("Live HUD event projection failed")
+
     def _progress_subagent_notice(self, preview, kwargs: dict) -> None:
         """Only terminal failure statuses render (same notice rail as credit warnings)."""
         ctx = self._ctx
+        if ctx.live_hud_enabled:
+            return
         status = kwargs.get("status")
         try:
             from tools.delegate_tool import SUBAGENT_FAILURE_STATUSES, format_subagent_failure_line
@@ -877,6 +927,9 @@ class TurnRunner:
     def _status_callback_sync(self, event_type: str, message: str) -> None:
         from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
         ctx = self._ctx
+        self._hud_observe("status", preview=message, status_key=event_type)
+        if ctx.live_hud_enabled:
+            return
         if not self._status_live():
             return
         prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message)

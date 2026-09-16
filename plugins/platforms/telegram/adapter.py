@@ -157,6 +157,10 @@ _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 # machinery (delivery ledger, streaming fallback) owns the wait instead of the coroutine pinning its worker
 # — a 97-minute penalty on the boot path froze inbound on every platform (#91969).
 _FLOOD_INLINE_WAIT_CAP_SECS = 5.0
+# Telegram applies flood control per destination, not per feature. Serialize edit-based streaming,
+# status updates, and live-HUD edits through one per-chat lane so independent consumers cannot burst.
+_MIN_MESSAGE_EDIT_INTERVAL_SECS = 0.8
+_MESSAGE_EDIT_LANE_CAP = 1024
 
 
 def _flood_cap_result(wait: float) -> "SendResult":
@@ -549,6 +553,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # bubbles owned by this adapter so subsequent calls with the same key edit the same message instead
         # of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        self._message_edit_locks: Dict[str, asyncio.Lock] = {}
+        self._message_edit_last_at: Dict[str, float] = {}
         # Last truncated mid-stream preview per (chat_id, message_id): past the 4096 cap every edit
         # truncates to the SAME text, and resending burns flood budget. Dropped on finalize.
         self._last_overflow_preview: Dict[tuple, str] = {}
@@ -1487,8 +1493,13 @@ class TelegramAdapter(BasePlatformAdapter):
         finalizes without send+delete. Same contract as :meth:`_try_send_rich`."""
         # No topic routing on edits: message_thread_id/direct_messages_topic_id make Telegram reject it.
         payload = {**self._rich_payload_base(chat_id, content), "message_id": int(message_id)}
+
+        async def _edit() -> None:
+            async with self._message_edit_slot(chat_id):
+                await self._bot.do_api_request("editMessageText", api_kwargs=payload)
+
         try:
-            await self._bot.do_api_request("editMessageText", api_kwargs=payload)
+            await _edit()
         except Exception as exc:
             # "Message is not modified" = successful no-op; skip the redundant legacy edit.
             if "not modified" in str(exc).lower():
@@ -1497,7 +1508,30 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=True, message_id=message_id)
             if self._rich_rejected(exc, "rich editMessageText", "MarkdownV2 edit"):
                 return None
-            return self._rich_transient_result(exc, "rich editMessageText")
+            retry_after = getattr(exc, "retry_after", None)
+            if retry_after is not None:
+                wait = float(retry_after)
+                if wait > _FLOOD_INLINE_WAIT_CAP_SECS:
+                    return _flood_cap_result(wait)
+                await asyncio.sleep(wait)
+                try:
+                    await _edit()
+                except Exception as retry_exc:
+                    if "not modified" in str(retry_exc).lower():
+                        return SendResult(success=True, message_id=message_id)
+                    if self._rich_rejected(
+                        retry_exc, "rich editMessageText", "MarkdownV2 edit"
+                    ):
+                        return None
+                    return self._rich_transient_result(
+                        retry_exc,
+                        "rich editMessageText retry",
+                        retry_after=getattr(retry_exc, "retry_after", None),
+                    )
+            else:
+                return self._rich_transient_result(
+                    exc, "rich editMessageText", retry_after=retry_after
+                )
         # Mirror the fresh-send index: a streamed final finalized via edit is otherwise never recorded.
         self._record_rich_sent(chat_id, message_id, content)
         return SendResult(success=True, message_id=message_id)
@@ -3530,7 +3564,60 @@ class TelegramAdapter(BasePlatformAdapter):
         kwargs: Dict[str, Any] = {"chat_id": normalize_telegram_chat_id(chat_id), "message_id": int(message_id), "text": text}
         if parse_mode is not None:
             kwargs["parse_mode"] = parse_mode
-        await self._bot.edit_message_text(**kwargs)
+        async with self._message_edit_slot(chat_id):
+            await self._bot.edit_message_text(**kwargs)
+
+    @contextlib.asynccontextmanager
+    async def _message_edit_slot(self, chat_id: str):
+        """Serialize a chat's edit request and reserve its shared flood-control budget."""
+        key = str(chat_id)
+        locks = getattr(self, "_message_edit_locks", None)
+        if locks is None:  # Compatibility with tests constructing adapters via object.__new__().
+            locks = self._message_edit_locks = {}
+            self._message_edit_last_at = {}
+
+        now = time.monotonic()
+        if key not in locks and len(locks) >= _MESSAGE_EDIT_LANE_CAP:
+            for stale_key in tuple(self._message_edit_last_at):
+                stale_lock = locks.get(stale_key)
+                stale_at = self._message_edit_last_at.get(stale_key, 0.0)
+                if stale_lock is not None and not stale_lock.locked() and now - stale_at >= _MIN_MESSAGE_EDIT_INTERVAL_SECS:
+                    self._message_edit_last_at.pop(stale_key, None)
+                    locks.pop(stale_key, None)
+                    break
+
+        overflow = key not in locks and len(locks) >= _MESSAGE_EDIT_LANE_CAP
+        if overflow:
+            lock = getattr(self, "_message_edit_overflow_lock", None)
+            if lock is None:
+                lock = self._message_edit_overflow_lock = asyncio.Lock()
+                self._message_edit_overflow_last_at = 0.0
+        else:
+            lock = locks.setdefault(key, asyncio.Lock())
+            # A chat moving out of the overflow lane inherits its conservative timestamp.
+            self._message_edit_last_at.setdefault(
+                key, getattr(self, "_message_edit_overflow_last_at", 0.0),
+            )
+
+        async with lock:
+            now = time.monotonic()
+            last_at = (
+                getattr(self, "_message_edit_overflow_last_at", 0.0)
+                if overflow else self._message_edit_last_at.get(key, 0.0)
+            )
+            remaining = _MIN_MESSAGE_EDIT_INTERVAL_SECS - (
+                now - last_at
+            )
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+            reserved_at = time.monotonic()
+            if overflow:
+                self._message_edit_overflow_last_at = reserved_at
+            else:
+                # Reinsert to keep normal dict order as an LRU order on supported Python versions.
+                self._message_edit_last_at.pop(key, None)
+                self._message_edit_last_at[key] = reserved_at
+            yield
 
     async def _edit_markdown_or_plain(self, chat_id: str, message_id: str, formatted: str, plain: str, warn_fmt: str) -> bool:
         """MarkdownV2 edit with plain-text fallback. Returns True on a "not modified" no-op (caller may
@@ -3540,6 +3627,9 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as fmt_err:
             if "not modified" in str(fmt_err).lower():
                 return True
+            # Formatting fallback must never turn a flood-control refusal into a second request.
+            if getattr(fmt_err, "retry_after", None) is not None or "retry after" in str(fmt_err).lower():
+                raise
             logger.warning(warn_fmt, self.name, _redact_telegram_error_text(fmt_err))
             await self._edit_text(chat_id, message_id, plain)
         return False

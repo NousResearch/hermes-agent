@@ -7,7 +7,11 @@ refresher and never drop identity claims that are present.
 
 from types import SimpleNamespace
 
-from blog.blog_illustrator import _codex_auth_payload, _output_shows_auth_failure
+from blog.blog_illustrator import (
+    _account_id_from_id_token,
+    _codex_auth_payload,
+    _output_shows_auth_failure,
+)
 
 
 def _entry(**overrides):
@@ -133,3 +137,44 @@ def test_output_shows_auth_failure_markers():
         "usage limit reached; try again at Aug 24th, 2026 7:45 PM")
     assert not _output_shows_auth_failure("transient 500 from backend")
     assert not _output_shows_auth_failure(None)
+
+
+def _jwt(claims: dict) -> str:
+    """Unsigned JWT with the given claims (the CLI never verifies the sig)."""
+    import base64
+    import json
+
+    def segment(obj):
+        raw = json.dumps(obj).encode()
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+    return f"{segment({'alg': 'none'})}.{segment(claims)}.sig"
+
+
+def test_account_id_derived_from_id_token():
+    """The CLI needs an explicit account_id; the id_token claim supplies it.
+
+    Without the field the websocket handshake 401s and the CLI misreports the
+    session as superseded, masking real usage-limit errors.
+    """
+    id_token = _jwt(
+        {"https://api.openai.com/auth": {"chatgpt_account_id": "acct-42"}}
+    )
+    assert _account_id_from_id_token(id_token) == "acct-42"
+    payload = _codex_auth_payload(_entry(id_token=id_token))
+    assert payload["tokens"]["account_id"] == "acct-42"
+
+
+def test_account_id_derivation_absent_when_claim_missing():
+    assert _account_id_from_id_token(_jwt({"sub": "user-1"})) is None
+    assert _account_id_from_id_token(None) is None
+    assert _account_id_from_id_token("not-a-jwt") is None
+
+
+def test_account_id_not_overwritten_when_present():
+    id_token = _jwt(
+        {"https://api.openai.com/auth": {"chatgpt_account_id": "acct-42"}}
+    )
+    entry = _entry(id_token=id_token, account_id="acct-explicit")
+    payload = _codex_auth_payload(entry)
+    assert payload["tokens"]["account_id"] == "acct-explicit"

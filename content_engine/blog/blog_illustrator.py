@@ -120,6 +120,31 @@ def _load_codex_pool():
     return load_pool("openai-codex")
 
 
+def _account_id_from_id_token(id_token: Optional[str]) -> Optional[str]:
+    """ChatGPT account id from an id_token's OpenAI auth claim, if present.
+
+    The Codex CLI requires an explicit ``account_id`` in auth.json and sends
+    it as the ChatGPT-Account-Id header; without it the websocket handshake
+    fails 401 and the CLI misreports the session as superseded. Pool entries
+    and refresh responses do not reliably carry the field, but the id_token
+    we already have does (same claim shape used for quota probes).
+    """
+    if not id_token:
+        return None
+    try:
+        from hermes_cli.auth_constants import _decode_jwt_claims
+
+        claims = _decode_jwt_claims(id_token) or {}
+    except Exception:
+        return None
+    auth_claims = claims.get("https://api.openai.com/auth")
+    if isinstance(auth_claims, dict):
+        value = auth_claims.get("chatgpt_account_id")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def _codex_auth_payload(entry, *, refresher=None) -> dict:
     """Build a Codex CLI auth payload for an isolated CODEX_HOME.
 
@@ -153,6 +178,10 @@ def _codex_auth_payload(entry, *, refresher=None) -> dict:
                 value = fresh.get(key)
                 if value:
                     tokens[key] = value
+    if not tokens.get("account_id"):
+        derived = _account_id_from_id_token(tokens.get("id_token"))
+        if derived:
+            tokens["account_id"] = derived
     return {"tokens": tokens}
 
 

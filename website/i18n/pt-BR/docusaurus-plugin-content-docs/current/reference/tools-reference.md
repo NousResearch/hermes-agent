@@ -368,4 +368,3 @@ Registrado apenas no toolset da plataforma `hermes-yuanbao`. Yuanbao é o app de
 | `yb_send_dm` | Envia uma mensagem privada/direta a um usuário em um grupo, com arquivos de mídia opcionais. | Credenciais do Yuanbao |
 | `yb_search_sticker` | Busca no catálogo de stickers embutido do Yuanbao (TIM face) por palavra-chave. | Credenciais do Yuanbao |
 | `yb_send_sticker` | Envia um sticker embutido no chat atual do Yuanbao. | Credenciais do Yuanbao |
-

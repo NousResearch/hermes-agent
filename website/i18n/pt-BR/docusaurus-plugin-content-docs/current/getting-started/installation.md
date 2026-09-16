@@ -29,7 +29,7 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
 No PowerShell:
 ```powershell
-iex (irm https://hermes-agent.nousresearch.com/install.ps1) 
+iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
 Se quiser instalar e rodar o Hermes Desktop depois de uma instalação só de CLI, basta executar

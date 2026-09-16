@@ -910,4 +910,3 @@ Deixe `everyone` e `roles` em `false`, a menos que saiba exatamente por que prec
 :::
 
 Para mais informações sobre proteger seu deployment do Hermes Agent, veja o [Guia de Segurança](../security.md).
-

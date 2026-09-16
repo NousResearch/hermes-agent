@@ -11,7 +11,7 @@ O Hermes Agent descobre e carrega automaticamente arquivos de contexto que molda
 ## Arquivos de contexto suportados {#supported-context-files}
 
 | Arquivo | Propósito | Descoberta |
-|------|---------|-----------| 
+|------|---------|-----------|
 | **.hermes.md** / **HERMES.md** | Instruções do projeto (maior prioridade) | Sobe até a raiz git |
 | **AGENTS.override.md** | Override pessoal, por diretório, de AGENTS.md (tipicamente gitignored) | CWD na inicialização + subdiretórios progressivamente |
 | **AGENTS.md** | Instruções do projeto, convenções, arquitetura | CWD na inicialização + subdiretórios progressivamente |

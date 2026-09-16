@@ -191,7 +191,7 @@ A política de grupo padrão é `disabled` para Weixin (diferente do WeCom, onde
 O adaptador recebe anexos de mídia de usuários, baixa-os do CDN WeChat, descriptografa-os e os armazena em cache localmente para processamento pelo agente:
 
 | Type | How it's handled |
-|------|-----------------| 
+|------|-----------------|
 | **Images** | Baixadas, descriptografadas com AES e armazenadas em cache como JPEG. |
 | **Video** | Baixado, descriptografado com AES e armazenado em cache como MP4. |
 | **Files** | Baixados, descriptografados com AES e armazenados em cache. Nome de arquivo original preservado. |
@@ -214,7 +214,7 @@ Nenhuma configuração é necessária — criptografia e descriptografia acontec
 
 | Method | What it sends |
 |--------|--------------|
-| `send` | Mensagens de texto com formatação Markdown | 
+| `send` | Mensagens de texto com formatação Markdown |
 | `send_image` / `send_image_file` | Mensagens de imagem nativas (via upload CDN) |
 | `send_document` | Anexos de arquivo (via upload CDN) |
 | `send_video` | Mensagens de vídeo (via upload CDN) |

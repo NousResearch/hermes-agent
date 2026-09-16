@@ -78,9 +78,52 @@ class SessionLifecycleMixin:
             return False
         return bool(row is not None and row.get("end_reason") is not None)
 
-    def _route_reset_reason(self, entry: SessionEntry) -> Optional[str]:
-        """Only explicit suspension replaces a routed conversation; time never does."""
-        return "suspended" if entry.suspended else None
+    @staticmethod
+    def _policy_reset_reason(policy, updated_at: datetime) -> Optional[str]:
+        """Return the overdue policy boundary, preferring idle when both apply."""
+        if policy.mode == "none":
+            return None
+        now = _now()
+        if policy.mode in {"idle", "both"} and now > updated_at + timedelta(minutes=policy.idle_minutes):
+            return "idle"
+        if policy.mode in {"daily", "both"}:
+            reset_at = now.replace(hour=policy.at_hour, minute=0, second=0, microsecond=0)
+            if now.hour < policy.at_hour:
+                reset_at -= timedelta(days=1)
+            if updated_at < reset_at:
+                return "daily"
+        return None
+
+    def _should_reset(self, entry: SessionEntry, source: SessionSource) -> Optional[str]:
+        """Return the configured time reset unless work is still active."""
+        session_key = self._generate_session_key(source)
+        if self._has_active_processes_safe(session_key, context="reset"):
+            logger.debug("Session reset skipped for %s — active background processes", session_key)
+            return None
+        policy = self.config.get_reset_policy(
+            platform=source.platform, session_type=source.chat_type
+        )
+        return self._policy_reset_reason(policy, entry.updated_at)
+
+    def _route_reset_reason(
+        self, entry: SessionEntry, source: SessionSource, now: datetime
+    ) -> Optional[str]:
+        """Choose explicit suspension first, then configured idle/daily boundaries."""
+        if entry.suspended:
+            return "suspended"
+        reason = self._should_reset(entry, source)
+        if reason or not entry.resume_pending:
+            return reason
+        policy = self.config.get_reset_policy(
+            platform=source.platform, session_type=source.chat_type
+        )
+        if policy.mode == "none":
+            return None
+        window = auto_continue_freshness_window()
+        ref_time = entry.last_resume_marked_at or entry.updated_at
+        if window > 0 and (now - ref_time).total_seconds() > window:
+            return "resume_pending_expired"
+        return None
 
     def _update_entry(self, session_key: str, mutate) -> bool:
         """Apply ``mutate(entry)`` under ``_lock`` and full-save; False when the entry is missing

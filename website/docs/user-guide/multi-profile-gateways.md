@@ -854,7 +854,7 @@ A standalone secondary behind any of these boundaries stops the automatic path:
 |---|---|
 | different service manager or scope | default on user systemd, a secondary on **system** systemd (or launchd), or the default detached with a service-managed secondary |
 | more than one installed unit on a profile | a user **and** a system unit for the same profile (the explicit command removes both) |
-| different UNIX user | a system unit with its own `User=`, or a live gateway owned by another uid; a system unit whose `User=` this host cannot resolve counts as unknown, never as "same user" |
+| different UNIX user | a system unit with its own `User=`, or a live gateway owned by another uid; a system unit whose `User=` this host cannot resolve — on the secondary **or** on the default — counts as unknown, never as "same user" |
 | `HERMES_HOME` outside `<default home>/profiles/` | a unit pinning `HERMES_HOME=/opt/hermes/profiles/emma` |
 
 In that case `hermes update` prints the boundary it found plus
@@ -957,13 +957,17 @@ previous value, restarts the default gateway, and reinstalls/starts every
 recorded per-profile service (a system unit comes back with the `User=` it had).
 The manifest is removed once everything is back.
 
-The forward migration is transactional in the same way: if bringing the default
-gateway up fails after the per-profile gateways were removed (for example a
-system unit that has to run as root), `--multiplex` rolls back through the
-manifest on the spot so no profile is left without a gateway. Should the
-process die between flipping the flag and starting the default, the next
-`hermes gateway migrate --multiplex` sees the manifest with no live gateway and
-resumes from it instead of reporting "already multiplexed".
+The forward migration is transactional in the same way. Failures it can see
+coming from the plan (a system unit that would have to run as root without a
+recorded `User=`, a config file it cannot rewrite) are refused before any
+per-profile gateway is stopped. Anything that fails after the manifest is
+written — the flag write, a later secondary's stop or unit removal, the
+default's install or start — rolls back through the manifest on the spot, so no
+profile is left without a gateway. Should the process die anywhere in that
+window, the next `hermes gateway migrate --multiplex` sees the flag on, the
+manifest, and no live multiplexer serving the migrated profiles (an installed
+but stopped default unit does not count) and resumes from the manifest instead
+of reporting "already multiplexed".
 If no manifest exists (you enabled multiplexing by hand), leave multiplex mode
 with `hermes config set gateway.multiplex_profiles false && hermes gateway restart`
 and reinstall the per-profile services you want.

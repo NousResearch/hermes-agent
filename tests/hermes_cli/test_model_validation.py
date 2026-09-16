@@ -897,3 +897,16 @@ class TestValidateWhitespaceInModelNames:
         assert res["accepted"] is True
         assert res["recognized"] is False
 
+    def test_lmstudio_accepts_loaded_model_with_spaces(self):
+        with patch("hermes_cli.models_local.probe_lmstudio_models", return_value=["Meta Llama 3.1 8B Instruct"]):
+            res = validate_requested_model("Meta Llama 3.1 8B Instruct", "lmstudio")
+        assert res["accepted"] is True
+        assert res["recognized"] is True
+
+    def test_ollama_accepts_model_tag_with_spaces(self):
+        with patch("hermes_cli.models_local.probe_ollama_local_models", return_value=["my model:latest"]):
+            res = validate_requested_model("my model:latest", "ollama", base_url="http://127.0.0.1:11434")
+        assert res["accepted"] is True
+        assert res["recognized"] is True
+
+

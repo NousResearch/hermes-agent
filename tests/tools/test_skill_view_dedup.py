@@ -84,18 +84,22 @@ class TestSkillViewDedup:
         assert "Step one" in r2.get("content", "")
 
     def test_session_reset_returns_full_content(self, skills_home):
-        _view("demo-dedup-skill")
-        assert _view("demo-dedup-skill").get("dedup") is True
+        previous_task = "t-svd-previous"
+        current_task = "t-svd-current"
+        for task_id in (previous_task, current_task):
+            _view("demo-dedup-skill", task=task_id)
+            assert _view("demo-dedup-skill", task=task_id).get("dedup") is True
 
         agent = AIAgent.__new__(AIAgent)
-        agent._current_task_id = "t-svd"
-        agent._process_owner_task_ids = {"t-svd"}
+        agent._current_task_id = current_task
+        agent._process_owner_task_ids = {previous_task, current_task}
         agent.context_compressor = None
         agent.reset_session_state()
 
-        r2 = _view("demo-dedup-skill")
-        assert "Step one" in r2.get("content", "")
-        assert r2.get("dedup") is None
+        for task_id in (previous_task, current_task):
+            result = _view("demo-dedup-skill", task=task_id)
+            assert "Step one" in result.get("content", "")
+            assert result.get("dedup") is None
 
     def test_no_task_id_never_dedups(self, skills_home):
         args = {"name": "demo-dedup-skill"}

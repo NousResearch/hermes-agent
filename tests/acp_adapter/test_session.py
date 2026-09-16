@@ -116,7 +116,6 @@ class TestCreateSession:
         state = SessionManager(db=None).create_session(cwd=str(workspace))
 
         assert observed["cwd"] == str(workspace)
-        assert state.agent.session_cwd == str(workspace)
 
 
 

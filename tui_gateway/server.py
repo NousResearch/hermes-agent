@@ -630,7 +630,16 @@ def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
 
 from tui_gateway import server_requests as _server_requests  # noqa: E402
 
-_server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload))
+def _client_supports_server_requests(sid: str) -> bool:
+    transport = (_sessions.get(sid) or {}).get("transport") or current_transport() or _stdio_transport
+    return bool(getattr(transport, "supports_server_requests", False))
+
+
+_server_requests.bind_sinks(
+    lambda frame: write_json(frame),
+    lambda event, sid, payload: _emit(event, sid, payload),
+    _client_supports_server_requests,
+)
 
 
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background

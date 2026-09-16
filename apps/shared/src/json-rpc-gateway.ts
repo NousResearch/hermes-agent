@@ -375,6 +375,9 @@ export class JsonRpcGatewayClient {
 
   private handleEvent(event: GatewayEvent): void {
     if (isGatewayReady(event)) {
+      // Queue this before ready observers can create/resume a session or submit a turn.
+      void this.request('client.capabilities', { server_requests: true }, 10_000).catch(() => undefined)
+
       if (event.payload?.heartbeat === true) {
         this.channel.startHeartbeat()
       }

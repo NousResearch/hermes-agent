@@ -84,11 +84,12 @@ class StdioTransport:
     """Writes JSON frames to a stream (usually ``sys.stdout``) resolved via a callable, so runtime
     monkey-patches of the stream keep working."""
 
-    __slots__ = ("_stream_getter", "_lock")
+    __slots__ = ("_stream_getter", "_lock", "supports_server_requests")
 
     def __init__(self, stream_getter: Callable[[], Any], lock: threading.Lock) -> None:
         self._stream_getter = stream_getter
         self._lock = lock
+        self.supports_server_requests = False
 
     def write(self, obj: dict) -> bool:
         """Return ``True`` on success, ``False`` ONLY when the peer is gone (see :func:`_raise_unless_peer_gone`)."""
@@ -188,6 +189,10 @@ class FanoutTransport:
     def has_transports(self, *, excluding: Transport | None = None) -> bool:
         return any(peer is not excluding for peer in self.transports())
 
+    @property
+    def supports_server_requests(self) -> bool:
+        return any(bool(getattr(peer, "supports_server_requests", False)) for peer in self.transports())
+
     def _drain(self, peer: _FanoutPeer) -> None:
         while True:
             with self._lock:
@@ -261,6 +266,10 @@ class TeeTransport:
     def __init__(self, primary: "Transport", *secondaries: "Transport") -> None:
         self._primary = primary
         self._secondaries = secondaries
+
+    @property
+    def supports_server_requests(self) -> bool:
+        return bool(getattr(self._primary, "supports_server_requests", False))
 
     def write(self, obj: dict) -> bool:
         # Primary first so a slow sidecar (WS publisher) never delays Ink/stdio.

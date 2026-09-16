@@ -28,6 +28,7 @@ def now_ns() -> int:
 class _HostTransport:
     def __init__(self, emit: Callable[[dict[str, Any]], None]) -> None:
         self._emit = emit
+        self.supports_server_requests = False
 
     def write(self, obj: dict) -> bool:
         sid = ""
@@ -218,6 +219,7 @@ class ComputeHost:
             return
         try:
             from tui_gateway import server
+            self._transport.supports_server_requests = bool(frame.get("supports_server_requests"))
             session = self._ensure_server_session(server, frame)
             text = frame["text"] if "text" in frame else frame.get("prompt", "")
             inflight = frame["text"] if "text" in frame else frame.get("prompt")

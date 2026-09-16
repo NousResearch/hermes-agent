@@ -1378,6 +1378,12 @@ export interface PingResult {
 export interface GatewayCapabilitiesResult {
   per_session_exclusive_submit: boolean
 }
+export interface ClientCapabilitiesParams {
+  server_requests: boolean
+}
+export interface ClientCapabilitiesResult {
+  accepted: boolean
+}
 /** ``word`` is the token under the cursor (``@`` prefix = context reference); ``cwd`` / ``session_id`` pick the directory the listing resolves against. */
 export interface CompletePathParams {
   profile?: string | null
@@ -4213,6 +4219,8 @@ export interface RpcMethods {
   'clarify.lock': { params: ClarifyLockParams; result: ClarifyLockResult }
   /** Run ``hermes <argv>`` non-interactively and capture its output; ``blocked`` explains a refusal. */
   'cli.exec': { params: CliExecParams; result: CliExecResult }
+  /** Advertise client protocol support before ready-triggered RPCs can start a turn. */
+  'client.capabilities': { params: ClientCapabilitiesParams; result: ClientCapabilitiesResult }
   /** Save the host clipboard image into the session and queue it for the next turn. */
   'clipboard.paste': { params: ClipboardPasteParams; result: AttachedImageResult }
   /** Run a quick/plugin/bundle/skill/built-in slash command and answer a structured directive. */
@@ -4630,6 +4638,7 @@ export const RPC_METHODS = [
   'browser.manage',
   'clarify.lock',
   'cli.exec',
+  'client.capabilities',
   'clipboard.paste',
   'command.dispatch',
   'command.resolve',

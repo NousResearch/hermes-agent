@@ -4020,6 +4020,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return
         profile = getattr(self, "_owner_profile", None)
         try:
+            if profile:
+                from gateway.run import _async_profile_runtime_scope
+                from hermes_cli.profiles import get_profile_dir
+                async with _async_profile_runtime_scope(get_profile_dir(profile)):
+                    await self._deliver_unauthorized_slash_alert(
+                        runner, profile, user_name, user_id, chan_id, guild_id, command_text, reason)
+            else:
+                await self._deliver_unauthorized_slash_alert(
+                    runner, profile, user_name, user_id, chan_id, guild_id, command_text, reason)
+        except Exception as e:
+            logger.debug("[Discord] Admin notify: profile %r scope failed: %s", profile, e)
+
+    async def _deliver_unauthorized_slash_alert(
+        self, runner, profile, user_name, user_id, chan_id, guild_id, command_text, reason,
+    ) -> None:
+        # Discovery, policy, and transport must share the same owning profile scope.
+        try:
             adapters, config = await self._alert_adapters_and_config(runner, profile)
         except Exception as e:
             logger.debug("[Discord] Admin notify: profile %r resolution failed: %s", profile, e)

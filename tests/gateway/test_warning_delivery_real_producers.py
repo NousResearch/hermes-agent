@@ -68,3 +68,46 @@ async def test_slack_actual_upload_failure_keeps_caption_and_source_log(policy, 
         assert "Couldn't deliver" in adapter.send.call_args.args[1]
     if adapter.send.await_count:
         assert adapter.send.call_args.kwargs["metadata"] == {"thread_id": "123.456"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("setting", [None, False, True])
+async def test_discord_admin_alert_uses_owner_and_logical_destination(tmp_path, monkeypatch, setting):
+    from pathlib import Path
+    from gateway.config import Platform
+    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_constants import get_hermes_home
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    root = tmp_path / ".hermes"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    (root / "config.yaml").write_text("display: {suppress_warning_notifications: false}")
+    for name, muted in [("a", setting), ("b", not bool(setting))]:
+        home = root / "profiles" / name
+        home.mkdir(parents=True)
+        display = {} if muted is None else {"suppress_warning_notifications": muted}
+        # Discord's own setting is deliberately the opposite of the alert target.
+        display["platforms"] = {"discord": {"suppress_warning_notifications": not bool(muted)}}
+        config = {"display": display, "platforms": {"telegram": {"enabled": True,
+                  "home_channel": {"platform": "telegram", "chat_id": "admin-" + name, "name": "test"}}}}
+        (home / "config.yaml").write_text(json.dumps(config))
+    wire = []
+    async def send(chat_id, text):
+        wire.append((chat_id, text, get_hermes_home()))
+        return SendResult(success=True)
+    maps = {n: {Platform.TELEGRAM: SimpleNamespace(send=send),
+                Platform.SLACK: SimpleNamespace(send=AsyncMock())} for n in ("a", "b")}
+    runner = SimpleNamespace(adapters={}, _adapters_for_profile=maps.get)
+    for name in ("a", "b", "a"):
+        adapter = DiscordAdapter(PlatformConfig())
+        adapter._owner_profile = name
+        adapter.gateway_runner = runner
+        before = len(wire)
+        await adapter._notify_unauthorized_slash("user", "123", "chan", "guild", "/test", "denied")
+        suppressed = setting is True if name == "a" else not bool(setting)
+        assert len(wire) - before == (0 if suppressed else 1)
+        if not suppressed:
+            assert wire[-1][0] == "admin-" + name
+            assert wire[-1][2] == root / "profiles" / name
+        maps[name][Platform.SLACK].send.assert_not_awaited()
+        assert get_hermes_home() == root

@@ -40,6 +40,18 @@ def render_notification(render, *, platform, diagnostic=True, user_config=None) 
     return True
 
 
+async def present_notification(present, *, platform, diagnostic=True, user_config=None) -> bool:
+    """Async twin of :func:`render_notification` for lifecycle emitters that await a send.
+
+    Return whether the presenter ran; its own receipt/exception is the caller's to interpret.
+    The caller binds the owning profile scope BEFORE calling (watchers/shutdown fan-outs).
+    """
+    if diagnostic and not warning_notifications_enabled(platform, user_config):
+        return False
+    await present()
+    return True
+
+
 def warning_notifications_enabled(platform, user_config=None) -> bool:
     """Use the turn snapshot when supplied, otherwise the active profile's effective config.
 

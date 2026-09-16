@@ -894,13 +894,12 @@ class GatewayNotificationsMixin:
                 "gateway machine, then `hermes gateway restart`."
             )
         logger.warning("Broadcasting state.db failure warning to home channels: %s", error)
-        from gateway.warning_notifications import warning_notifications_enabled
+        from gateway.warning_notifications import present_notification
         for platform, _platform_cfg, home, transport in self._home_channel_transports():
-            if not warning_notifications_enabled(platform):
-                continue
-            await self._send_home_channel_message(
-                platform, home, transport, message, "state.db warning notification failed for %s:%s: %s",
-            )
+            await present_notification(
+                lambda: self._send_home_channel_message(
+                    platform, home, transport, message, "state.db warning notification failed for %s:%s: %s"),
+                platform=platform)
 
     def _build_process_event_source(self, evt: dict):
         """Resolve the canonical source for a synthetic background-process event.
@@ -1808,9 +1807,10 @@ class GatewayNotificationsMixin:
                     message_text = self._format_process_final_message(session_id, session, notify_mode)
                     from gateway.warning_notifications import warning_notifications_enabled
                     async with self._completion_event_scope(watcher):
-                        if session.exit_code not in {0, None} and not warning_notifications_enabled(platform_name):
-                            break
-                    await self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher)
+                        # Non-zero exit is the automatic diagnostic; a clean completion is the requested result.
+                        visible = session.exit_code in {0, None} or warning_notifications_enabled(platform_name)
+                    if visible:
+                        await self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher)
                 break
             elif has_new_output and notify_mode == "all" and not agent_notify:
                 # New output — deliver a status update (only in "all" mode; agent_notify watchers

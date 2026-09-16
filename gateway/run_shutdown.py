@@ -861,9 +861,6 @@ class GatewayShutdownMixin:
                 adapter = self.adapters.get(platform)
                 if adapter is None or not self._restart_notification_allowed(platform):
                     continue
-                from gateway.warning_notifications import warning_notifications_enabled
-                if not warning_notifications_enabled(platform):
-                    continue
                 chat_id = str(target.get("chat_id"))
                 thread_id = target.get("thread_id")
                 dedup_key = (job_id, *_notice_target_key(platform.value, chat_id, thread_id))
@@ -871,11 +868,14 @@ class GatewayShutdownMixin:
                     continue
                 with _log_suppressed(logging.DEBUG, "Cron interrupt notice to %s:%s raised: %s", platform.value, chat_id):
                     metadata = self._thread_metadata_for_target(platform, chat_id, thread_id, adapter=adapter)
-                    if await self._send_notice_logged(
-                        adapter, chat_id, msg, platform.value, "Cron interrupt notice to %s:%s failed: %s",
-                        "Cron interrupt notice to %s:%s raised: %s", metadata=metadata,
-                    ):
-                        notified.add(dedup_key)
+                    async def send_notice():
+                        if await self._send_notice_logged(
+                            adapter, chat_id, msg, platform.value, "Cron interrupt notice to %s:%s failed: %s",
+                            "Cron interrupt notice to %s:%s raised: %s", metadata=metadata,
+                        ):
+                            notified.add(dedup_key)
+                    from gateway.warning_notifications import present_notification
+                    await present_notification(send_notice, platform=platform)
         if notified:
             logger.info("Shutdown: delivered %d interrupted-cron-job notice(s)", len(notified))
         return len(notified)

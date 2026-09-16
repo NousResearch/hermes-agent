@@ -444,7 +444,7 @@ def _storage_error_data(failure, raw) -> dict:
     return {"code": failure.code, "cause": failure.cause, "details": storage_failure_details(raw)}
 
 
-def _persist_session_row_for_submit(rid, session, text, *, display_kind=None, display_metadata=None):
+def _persist_session_row_for_submit(rid, session, text, *, display_kind=None):
     """Persist the lazy row AND accepted user input before the deferred agent build.
 
     ``prompt.submit`` acknowledges before that build finishes.  Leaving the user row to
@@ -468,7 +468,6 @@ def _persist_session_row_for_submit(rid, session, text, *, display_kind=None, di
             persisted_message = {
                 "role": "user", "content": persisted_content, "timestamp": time.time(),
                 **({"display_kind": display_kind} if display_kind else {}),
-                **({"display_metadata": display_metadata} if display_metadata else {}),
             }
             with _session_db(session) as db:
                 if db is None:

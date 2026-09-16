@@ -970,27 +970,34 @@ export function migrateSessionTilesProfile(oldName: string, newName: string, con
     return
   }
 
-  const belongsToRenamedProfile = (tile: StoredTile): boolean =>
-    tile.ownerRoute?.connectionId === connectionId &&
-    (tile.ownerProfile === oldProfile ||
-      tile.ownerRoute.profile === oldProfile ||
-      tile.ownerRoute.targetProfile === oldProfile)
+  const belongsToRenamedProfile = (tile: StoredTile): boolean => {
+    const route = tile.ownerRoute
+
+    return route
+      ? route.connectionId === connectionId &&
+          (tile.ownerProfile === oldProfile || route.profile === oldProfile || route.targetProfile === oldProfile)
+      : connectionId === LOCAL_CONNECTION_ID && tile.ownerProfile === oldProfile
+  }
 
   const migrateTile = (tile: StoredTile): StoredTile => {
     const route = tile.ownerRoute
 
-    if (!route || !belongsToRenamedProfile(tile)) {
+    if (!belongsToRenamedProfile(tile)) {
       return tile
     }
 
     return {
       ...tile,
       ...(tile.ownerProfile === oldProfile ? { ownerProfile: newProfile } : {}),
-      ownerRoute: {
-        ...route,
-        profile: route.profile === oldProfile ? newProfile : route.profile,
-        ...(route.targetProfile === oldProfile ? { targetProfile: newProfile } : {})
-      }
+      ...(route
+        ? {
+            ownerRoute: {
+              ...route,
+              profile: route.profile === oldProfile ? newProfile : route.profile,
+              ...(route.targetProfile === oldProfile ? { targetProfile: newProfile } : {})
+            }
+          }
+        : {})
     }
   }
 

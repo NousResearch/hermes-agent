@@ -76,6 +76,11 @@ it('re-homes every persisted session route after a profile rename', async () => 
         },
         {
           ownerProfile: oldName,
+          storedSessionId: 'legacy-local-session',
+          workspaceMode: 'sessions'
+        },
+        {
+          ownerProfile: oldName,
           ownerRoute: { connectionId: 'gateway-b', mode: 'remote', profile: oldName, targetProfile: oldName },
           storedSessionId: 'session-2',
           workspaceMode: 'sessions'
@@ -127,6 +132,11 @@ it('re-homes every persisted session route after a profile rename', async () => 
     ownerRoute: { profile: newName, targetProfile: newName },
     storedSessionId: 'session-1'
   })
+  expect(tiles[newName][1]).toMatchObject({
+    ownerProfile: newName,
+    storedSessionId: 'legacy-local-session'
+  })
+  expect(tiles[newName][1].ownerRoute).toBeUndefined()
 
   expect(session.getSessionOwnerHint('session-1', { connectionId: 'local', profile: newName })).toMatchObject({
     profile: newName,

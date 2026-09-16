@@ -46,6 +46,7 @@ describe('virtual height estimates', () => {
 
   it('counts wrapped multiline tool details instead of one row per tool', () => {
     const detail = Array.from({ length: 24 }, (_, index) => `result row ${index}`).join('\n')
+
     const msg: Msg = {
       kind: 'trail',
       role: 'assistant',

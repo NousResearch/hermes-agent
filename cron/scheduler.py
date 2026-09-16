@@ -296,6 +296,8 @@ def _upsert_incident_for_failure(
 
         incident_id, _is_new = upsert_incident(
             job["id"], str(error or ""), job_name=job.get("name"), output_file=output_file)
+        from cron.executions import bind_delivery_incident
+        bind_delivery_incident(job.get("execution_id"), incident_id)
         incident = get_incident(incident_id)
         acked = bool(incident and incident.get("state") == "closed")
         return acked, incident_id
@@ -2452,6 +2454,8 @@ def run_one_job(
         job["execution_id"] = execution["id"]
 
     execution_id = str(job["execution_id"])
+    from cron.jobs import bind_delivery_execution
+    bind_delivery_execution(job["id"], execution_id)
     external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
     if not external_owner:
         try:
@@ -2531,10 +2535,10 @@ def _classify_delivery_outcome(
     normalized_deliver: str, incident_acked: bool, success: bool,
     delivery_queued=None, notification_suppressed: bool = False,
 ) -> str:
-    if delivery_error:
-        return "failed"
     if should_deliver and delivery_queued:
         return "queued"
+    if delivery_error:
+        return "failed"
     if notification_suppressed:
         return "suppressed"
     if should_deliver and unresolved_origin:
@@ -2743,8 +2747,8 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
     """mark_job_run (owner-fenced) + execution ledger row for a run that reached delivery."""
     job = d.job
     if not d.should_deliver and job.get("last_delivery_queued"):
-        from cron.jobs import update_job
-        update_job(job["id"], {"last_delivery_queued": None})
+        from cron.jobs import update_delivery_projection
+        update_delivery_projection(job["id"], execution_id, {"last_delivery_queued": None})
         job["last_delivery_queued"] = None
     mark_kwargs: dict = {"delivery_error": d.delivery_error}
     if not d.success and job.pop("_model_unreachable", False):

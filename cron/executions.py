@@ -8,6 +8,7 @@ immutable.
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
 import threading
 import time
@@ -80,6 +81,8 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_executions_status_claimed "
         "ON executions(status, claimed_at DESC, id DESC)"
     )
+    add_column_if_missing(conn, "executions", "delivery_manifest", "delivery_manifest TEXT")
+    add_column_if_missing(conn, "executions", "incident_id", "incident_id TEXT")
     add_column_if_missing(conn, "executions", "delivery_outcome", "delivery_outcome TEXT")
     add_column_if_missing(conn, "executions", "scheduled_instant", "scheduled_instant TEXT")
     conn.execute(
@@ -252,7 +255,14 @@ def finish_execution(
     now = _hermes_now().isoformat()
     status = "completed" if success else "failed"
     detail = None if success else (str(error) if error else "unknown failure")
+    # A worker may observe a terminal receipt during its wait. Use the same durable
+    # classification as restart reconciliation, in particular unknown != failed.
     with _transaction() as conn:
+        pending = _fetch(conn, execution_id)
+        if pending and pending.get("delivery_manifest"):
+            projection = _delivery_projection(pending)
+            if projection is not None:
+                delivery_outcome = projection[0]
         cur = conn.execute(
             """UPDATE executions
                SET status=?, finished_at=?, error=?, handoff_pending=0,
@@ -266,7 +276,118 @@ def finish_execution(
         _prune_unlocked(conn)
         record = _fetch(conn, execution_id)
     _emit_execution_state(record, delivery_outcome=delivery_outcome)
+    if record and record.get("delivery_manifest"):
+        reconcile_delivery_projections()
     return record
+
+
+def bind_delivery_incident(execution_id: Optional[str], incident_id: str) -> None:
+    """Persist the producer's actual incident association, never infer it from errors."""
+    if execution_id:
+        with _transaction() as conn:
+            conn.execute("UPDATE executions SET incident_id=? WHERE id=? AND incident_id IS NULL "
+                         "AND status IN ('claimed','running') AND process_id=? AND pid=?",
+                         (incident_id, execution_id, _PROCESS_ID, os.getpid()))
+
+
+def record_delivery_manifest(execution_id: Optional[str], manifest: dict) -> None:
+    """Retain receipt identities and sibling disposition separately from the run result.
+
+    The worker may first bind the external handoff; its gateway replaces that placeholder
+    with the resolved target receipts. No payload or raw output is copied here.
+    """
+    if not execution_id:
+        return
+    with _transaction() as conn:
+        row = _fetch(conn, execution_id)
+        if row and row.get("delivery_manifest") == json.dumps({"external": True}, sort_keys=True):
+            manifest = {**manifest, "external": True}
+        conn.execute("UPDATE executions SET delivery_manifest=? WHERE id=? AND "
+                     "(delivery_manifest IS NULL OR delivery_manifest=?)",
+                     (json.dumps(manifest, sort_keys=True), execution_id,
+                      json.dumps({"external": True}, sort_keys=True)))
+
+
+def _delivery_projection(record: dict) -> Optional[tuple[str, dict]]:
+    from cron import delivery_queue, bot_chat_delivery
+    from tools.bot_live_delivery import read_delivery_result
+
+    manifest = json.loads(record["delivery_manifest"])
+    if manifest.get("external"):
+        receipt = delivery_queue.get_status(record["id"])
+        if not receipt or receipt["status"] in ("pending", "delivering"):
+            return None
+        outcome = receipt["status"]
+        if outcome in ("unknown", "failed", "suppressed") or "bot" not in manifest:
+            return outcome, {"last_delivery_queued": None, "last_delivery_unverified": None,
+                             "last_delivery_error": receipt.get("error")}
+
+    queued = {}
+    states = []
+    for target, ref in manifest.get("bot", {}).items():
+        receipt = read_delivery_result(Path(ref["home"]), ref["delivery_id"])
+        if receipt is None:
+            receipt = bot_chat_delivery.read_pending(ref["delivery_id"])
+        status = (receipt or ref)["status"]
+        if status in ("queued", "claimed", "transferred"):
+            queued[target] = {**ref, "status": status}
+        states.append(status)
+    error = manifest.get("error")
+    unverified = manifest.get("unverified")
+    if queued:
+        outcome = "queued"
+    elif "ambiguous" in states or "unknown" in states or unverified:
+        outcome = "unknown"
+    elif "failed" in states or error:
+        outcome = "failed"
+    elif manifest.get("delivered") or "settled" in states:
+        outcome = "delivered"
+    else:
+        outcome = "suppressed"
+    if outcome in ("failed", "unknown") and not error:
+        error = "Deferred delivery completion unverified; do not resend"
+    return outcome, {"last_delivery_queued": queued or None,
+                     "last_delivery_unverified": unverified or None,
+                     "last_delivery_error": error}
+
+
+def reconcile_delivery_projections() -> None:
+    """Replay durable receipts, never sends. Safe after either store write or restart.
+
+    Only delivery_outcome can change after run completion. The queued CAS and manifest
+    comparison fence racing reconcilers; execution status/error/timestamps are untouched.
+    Retaining manifests also repairs a crash between the ledger and jobs/incident writes.
+    """
+    import logging
+    from cron.jobs import update_delivery_projection
+    from cron.incidents import _initialize_schema as init_incidents
+
+    with _transaction() as conn:
+        records = [dict(row) for row in conn.execute(
+            "SELECT * FROM executions WHERE delivery_manifest IS NOT NULL "
+            "AND status IN ('completed','failed','unknown')").fetchall()]
+    for record in records:
+        try:
+            projection = _delivery_projection(record)
+            if projection is None:
+                continue
+            outcome, values = projection
+            with _transaction() as conn:
+                conn.execute("UPDATE executions SET delivery_outcome=? WHERE id=? "
+                             "AND delivery_outcome='queued' AND delivery_manifest=?",
+                             (outcome, record["id"], record["delivery_manifest"]))
+                current = _fetch(conn, record["id"])
+                if not current or current["delivery_outcome"] != outcome:
+                    continue
+                if outcome == "delivered" and record.get("incident_id"):
+                    init_incidents(conn)
+                    # Late completion cannot resurrect resolved/acked incidents.
+                    conn.execute("UPDATE cron_incidents SET state='alerted' WHERE id=? "
+                                 "AND state='detected'", (record["incident_id"],))
+            update_delivery_projection(record["job_id"], record["id"], values)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Could not reconcile cron delivery %s; durable receipt retained", record["id"])
 
 
 def recover_interrupted_executions() -> int:

@@ -720,7 +720,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
                 status = pending["status"]
                 target = f"bot-chat:{profile_label}"
                 job.setdefault("_bot_chat_delivery_receipts", {})[target] = {
-                    "status": status, "delivery_id": key}
+                    "status": status, "delivery_id": key, "home": str(home)}
                 if status == "suppressed":
                     job["_notification_all_targets_suppressed"] = True
                 return None if status in ("settled", "suppressed") else f"{target} {status} (receipt {key}): completion unverified; do not resend"
@@ -736,7 +736,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             status = receipt["status"]
             target = f"bot-chat:{profile_label}"
             receipts = job.setdefault("_bot_chat_delivery_receipts", {})
-            receipts[target] = {"status": status, "delivery_id": key}
+            receipts[target] = {"status": status, "delivery_id": key, "home": str(home)}
             logger.info("Job '%s': Bot Chat %s receipt=%s status=%s",
                         job_id, profile_label, key, status)
             if status == "settled":
@@ -1116,8 +1116,11 @@ def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
         return
     job.update(values)
     try:
-        from cron.jobs import update_job
-        update_job(job["id"], values)
+        from cron.jobs import update_delivery_projection, update_job
+        if job.get("execution_id"):
+            update_delivery_projection(job["id"], job["execution_id"], values)
+        else:
+            update_job(job["id"], values)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Job '%s': could not record delivery verification: %s", job.get("id"), exc)
 
@@ -1745,15 +1748,24 @@ def _deliver_result(
             and any(target["platform"] != BOT_CHAT_PLATFORM for target in targets)):
         from cron.delivery_queue import enqueue_and_wait
 
+        from cron.executions import record_delivery_manifest
+        record_delivery_manifest(job.get("execution_id"), {"external": True})
         _record_delivery_verification(job, [])
         error = enqueue_and_wait(external_execution, job, content, for_failure=for_failure)
         from cron.delivery_queue import get_status
         delivery_status = get_status(external_execution)
         if delivery_status and delivery_status["status"] == "suppressed":
             job["_notification_all_targets_suppressed"] = True
-        from cron.jobs import get_job
-        refreshed = get_job(job["id"]) or {}
-        job["last_delivery_queued"] = refreshed.get("last_delivery_queued")
+        from cron.executions import get_execution, _delivery_projection
+        execution = get_execution(external_execution)
+        projection = _delivery_projection(execution) if execution and execution.get("delivery_manifest") else None
+        job["last_delivery_queued"] = (
+            {"gateway": {"status": "queued", "delivery_id": external_execution}}
+            if delivery_status and delivery_status["status"] in ("pending", "delivering")
+            else projection[1]["last_delivery_queued"] if projection else None)
+        from cron.jobs import update_delivery_projection
+        update_delivery_projection(job["id"], external_execution,
+                                   {"last_delivery_queued": job["last_delivery_queued"]})
         return error
 
     from gateway.config import load_gateway_config
@@ -1860,6 +1872,19 @@ def _deliver_result(
     if not job.get("_notification_all_targets_suppressed"):
         delivery_errors.extend(policy_drop_errors)
     _record_delivery_verification(job, unverified_targets)
+    from cron.executions import record_delivery_manifest
+    bot_receipts = job.get("_bot_chat_delivery_receipts", {})
+    native_count = sum(t["platform"] != BOT_CHAT_PLATFORM for t in targets)
+    native_suppressed = sum(t["platform"] != BOT_CHAT_PLATFORM for t in job.get("_notification_suppressed_targets", []))
+    # Only deferred receipts need mutable terminal projections. Direct native
+    # sends retain legacy delivered-plus-unverified behavior when default-off.
+    if bot_receipts:
+        record_delivery_manifest(job.get("execution_id"), {
+            "bot": bot_receipts,
+            "delivered": native_count > native_suppressed or (not bot_receipts and not job.get("_notification_all_targets_suppressed")),
+            "error": "; ".join(delivery_errors) if delivery_errors else None,
+            "unverified": unverified_targets,
+        })
     return "; ".join(delivery_errors) if delivery_errors else None
 
 

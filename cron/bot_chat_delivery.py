@@ -73,6 +73,8 @@ def drain(root: Path | None = None) -> None:
     if root.is_dir():
         with _FileLock(root / ".drain.lock"):
             _drain(root)
+    from cron.executions import reconcile_delivery_projections
+    reconcile_delivery_projections()
 
 
 def _drain(root: Path) -> None:
@@ -127,6 +129,8 @@ def drain_in_background() -> None:
     home = get_hermes_home().resolve()
     root = home / "cron" / "bot_chat_pending"
     if not root.is_dir():
+        from cron.executions import reconcile_delivery_projections
+        reconcile_delivery_projections()
         return
     with _running_lock:
         if home in _running:

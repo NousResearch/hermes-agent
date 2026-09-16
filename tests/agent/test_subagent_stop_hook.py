@@ -255,7 +255,7 @@ class TestPayloadShape:
                 "argument_keys": ["content", "path", "token"],
                 "targets": {
                     "path": "/private/report.json",
-                    "url": "https://example.test:8443/upload",
+                    "url": "https://example.test:8443",
                 },
             },
             "input_bytes": 128,

@@ -172,6 +172,17 @@ Open the printed link in your browser — it opens directly in the Teams client.
 | `TEAMS_PORT` | Webhook port (default: `3978`) |
 | `TEAMS_REQUIRE_MENTION` | Set `true` to answer only @mentions / replies to the bot in channels and group chats (default: `false`; for apps with RSC message-read consent) |
 
+### Optional local homologation target
+
+Hermes includes a disabled-by-default local Playground seam for testing a near-Teams UI without changing the production Teams adapter. The repository does not verify a Microsoft 365 Agents Playground-specific protocol, so the contract is intentionally generic Bot Framework-compatible JSON: `GET /health` and `POST /api/messages` activity envelopes. Configure a local endpoint explicitly:
+
+```bash
+TEAMS_PLAYGROUND_URL=http://localhost:3979
+TEAMS_PLAYGROUND_ALLOW_PRIVATE=true
+```
+
+The dashboard validates the endpoint before showing a test or callback URL. Loopback, private, and `.local`/`.lan`/`.internal` hosts require the explicit opt-in; public hosts, credentials, query strings, cloud metadata addresses, and non-HTTP schemes are rejected. Health checks use a short timeout, send no Teams credentials, and do not restart the gateway or mutate production Teams settings when they fail.
+
 ### config.yaml
 
 Alternatively, configure via `~/.hermes/config.yaml`:

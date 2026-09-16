@@ -6168,6 +6168,24 @@ def _merge_aux_extra_body(
     return merged_extra
 
 
+def _select_structured_output_format(provider: str, model: str, extra_body: Dict[str, Any]) -> Dict[str, Any]:
+    """Downgrade ``json_schema`` to JSON mode unless the resolved model supports it."""
+    response_format = extra_body.get("response_format")
+    if not isinstance(response_format, dict) or response_format.get("type") != "json_schema":
+        return extra_body
+    try:
+        from agent.models_dev import model_supports_json_schema
+        supports_json_schema = model_supports_json_schema(provider, model)
+    except Exception as exc:
+        logger.debug("Structured-output capability lookup failed for %s/%s: %s", provider, model, exc)
+        supports_json_schema = False
+    if supports_json_schema:
+        return extra_body
+    selected = dict(extra_body)
+    selected["response_format"] = {"type": "json_object"}
+    return selected
+
+
 def _build_call_kwargs(
     provider: str, model: str, messages: list, temperature: Optional[float] = None,
     max_tokens: Optional[int] = None, tools: Optional[list] = None, timeout: float = 30.0,
@@ -6198,7 +6216,9 @@ def _build_call_kwargs(
     # ``extra_body.reasoning`` fallback.
     projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config)
     kwargs.update(projection.top_level)
-    if merged_extra := _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm):
+    merged_extra = _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm)
+    merged_extra = _select_structured_output_format(provider, model, merged_extra)
+    if merged_extra:
         kwargs["extra_body"] = merged_extra
     # Anthropic Messages adapters take reasoning via a private kwarg that plain OpenAI SDK clients
     # would reject; Portal Claude is dual-wire, so include it only when the catalog id selects

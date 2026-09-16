@@ -20,6 +20,7 @@ from agent.models_dev import (
     get_model_info,
     get_provider_info,
     lookup_models_dev_context,
+    model_supports_json_schema,
 )
 
 
@@ -1062,6 +1063,18 @@ class TestModelOverrides:
         assert caps.supports_vision is True
         assert caps.supports_reasoning is False
         assert caps.supports_tools is True
+
+    def test_structured_output_override_controls_json_schema_capability(self):
+        overrides = {
+            "deepseek": {
+                "deepseek-flash": {"supports_structured_output": True},
+            },
+        }
+        with self._setup_overrides(overrides):
+            assert model_supports_json_schema("deepseek", "deepseek-flash") is True
+
+        with self._setup_overrides({}):
+            assert model_supports_json_schema("deepseek", "deepseek-flash") is False
 
     def test_caps_override_patches_existing_catalog_entry(self):
         """Explicit override patches specific fields on a known entry (#84482)."""

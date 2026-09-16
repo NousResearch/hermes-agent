@@ -557,7 +557,7 @@ def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool 
 
 # Per-model overrides (config.yaml → model_overrides). Canonical schema (the ONLY key space consumers
 # accept): context_window, supports_tools, supports_vision, supports_reasoning,
-# model_family. ``<provider>.<model_id>`` is an explicit partial patch that always wins over the
+# supports_structured_output, model_family. ``<provider>.<model_id>`` is an explicit partial patch that always wins over the
 # catalog. ``<provider>._default`` / top-level ``_default`` are FILL-GAP defaults: they apply ONLY to
 # models the catalog does not know and never displace catalog data. Provider keys accept the Hermes
 # or models.dev id; model ids match exactly, then case-insensitively (mirroring catalog lookup).
@@ -684,7 +684,11 @@ def _override_to_catalog_shape(override: Dict[str, Any]) -> Tuple[Dict[str, Any]
     }
     if limit:
         patch["limit"] = limit
-    for override_key, catalog_key in (("supports_tools", "tool_call"), ("supports_reasoning", "reasoning")):
+    for override_key, catalog_key in (
+        ("supports_tools", "tool_call"),
+        ("supports_reasoning", "reasoning"),
+        ("supports_structured_output", "structured_output"),
+    ):
         if override_key in override:
             patch[catalog_key] = bool(override[override_key])
     vision: Optional[bool] = None
@@ -852,3 +856,23 @@ def get_model_info(provider_id: str, model_id: str, *, allow_network: bool = Fal
     # Not in catalog — an override (explicit or _default) may still provide it.
     raw = _apply_overrides(provider_id, model_id, entry)
     return _parse_model_info(mid, raw, mdev_id) if raw is not None else None
+
+
+def model_supports_json_schema(provider_id: str, model_id: str) -> bool:
+    """Whether an auxiliary request may send OpenAI ``json_schema`` response format.
+
+    An explicit per-model override is authoritative. DeepSeek's native API only implements
+    ``json_object`` even when catalog metadata describes the model as supporting structured
+    output, so its provider default is deliberately narrower. Other models must be positively
+    identified by the local catalog; unknown models use the broadly compatible JSON-object mode.
+    """
+    override = _explicit_model_override(provider_id, model_id)
+    if override is not None and "supports_structured_output" in override:
+        return bool(override["supports_structured_output"])
+    provider_key = PROVIDER_TO_MODELS_DEV.get(
+        (provider_id or "").strip(), (provider_id or "").strip()
+    ).lower()
+    if provider_key == "deepseek":
+        return False
+    info = get_model_info(provider_id, model_id, allow_network=False)
+    return bool(info and info.structured_output)

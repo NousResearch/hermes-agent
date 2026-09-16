@@ -33,6 +33,7 @@ import pytest
 from agent.auxiliary_client import (
     call_llm,
     async_call_llm,
+    _build_call_kwargs,
     _is_structured_output_rejection,
     _without_structured_output_format,
 )
@@ -245,6 +246,20 @@ class TestCallLlmStructuredOutputRetry:
                     max_tokens=64,
                 )
         assert client.chat.completions.create.call_count == 1
+
+
+def test_deepseek_uses_json_object_before_dispatch():
+    extra_body = {"response_format": dict(_TITLE_RESPONSE_FORMAT)}
+
+    kwargs = _build_call_kwargs(
+        "deepseek",
+        "deepseek-flash",
+        [{"role": "user", "content": "hi"}],
+        extra_body=extra_body,
+    )
+
+    assert kwargs["extra_body"]["response_format"] == {"type": "json_object"}
+    assert extra_body["response_format"]["type"] == "json_schema"
 
 
 class TestAsyncCallLlmStructuredOutputRetry:

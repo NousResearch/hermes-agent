@@ -17,7 +17,11 @@ export function CapabilityTabs({ value, onChange, actions }: CapabilityTabsProps
 
   return (
     <div className="flex shrink-0 items-center gap-4 px-3 py-1" data-capability-tabs>
-      <TextTab active={value === 'installed'} aria-pressed={value === 'installed'} onClick={() => onChange('installed')}>
+      <TextTab
+        active={value === 'installed'}
+        aria-pressed={value === 'installed'}
+        onClick={() => onChange('installed')}
+      >
         {t.catalog.installed}
       </TextTab>
       <TextTab active={value === 'browse'} aria-pressed={value === 'browse'} onClick={() => onChange('browse')}>

@@ -316,17 +316,33 @@ export function PluginActions({ profile }: { profile: ProfileScope }) {
   const { requestGateway } = useGatewayRequest()
   const scope = profileParam(profile)
 
-  return <>
-    <Button className="underline" onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })} size="xs" variant="text">
-      {d.installModal.installFromGit}
-    </Button>
-    <Tip label={d.openFolder}>
-      <Button aria-label={d.openFolder} onClick={() => void revealPluginsDir()} size="icon-xs" variant="ghost"><FolderOpen /></Button>
-    </Tip>
-    <Tip label={d.rescan}>
-      <Button aria-label={d.rescan} onClick={() => void rescanAll(requestGateway, scope)} size="icon-xs" variant="ghost"><RefreshCw /></Button>
-    </Tip>
-  </>
+  return (
+    <>
+      <Button
+        className="underline"
+        onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })}
+        size="xs"
+        variant="text"
+      >
+        {d.installModal.installFromGit}
+      </Button>
+      <Tip label={d.openFolder}>
+        <Button aria-label={d.openFolder} onClick={() => void revealPluginsDir()} size="icon-xs" variant="ghost">
+          <FolderOpen />
+        </Button>
+      </Tip>
+      <Tip label={d.rescan}>
+        <Button
+          aria-label={d.rescan}
+          onClick={() => void rescanAll(requestGateway, scope)}
+          size="icon-xs"
+          variant="ghost"
+        >
+          <RefreshCw />
+        </Button>
+      </Tip>
+    </>
+  )
 }
 
 /** THE plugins surface: one row per package. Each row shows its Desktop half
@@ -370,26 +386,38 @@ export const PluginsTab = memo(function PluginsTab({
   useDeepLinkHighlight({ param: 'plugin', ready: () => true, elementId: pluginElementId })
 
   const agentBusy = (row: AgentPluginRow) => busyKey === (row.key ?? row.name) || busyKey === row.name
-  const installedEntries = useMemo(() => parseCatalog('plugins', packages.map(pkg => ({
-    name: pkg.name,
-    identifier: pkg.agent?.catalog_name ?? pkg.desktop?.packageOrigin?.catalogName ?? pkg.key,
-    description: pkg.description,
-    category: pkg.kind === 'desktop' ? 'desktop' : 'general',
-    tier: pkg.agent?.catalog_tier ?? pkg.agent?.source ?? pkg.desktop?.kind ?? '',
-    repo: pkg.desktop?.packageOrigin?.repo ?? '',
-    sha: pkg.agent?.installed_sha ?? pkg.desktop?.packageOrigin?.sha ?? '',
-    version: pkg.agent?.version ?? ''
-  }))).map((entry, index) => ({ ...entry, id: `installed:${packages[index].key}` })), [packages])
-  const packageById = useMemo(() => new Map(packages.map(pkg => [`installed:${pkg.key}`, pkg])), [packages])
-  const isInstalled = (entry: CatalogEntry) => packageById.has(entry.id) || agentRows.some(row =>
-    (row.catalog_name === entry.name || row.name === entry.name) && !row.update_available
+
+  const installedEntries = useMemo(
+    () =>
+      parseCatalog(
+        'plugins',
+        packages.map(pkg => ({
+          name: pkg.name,
+          identifier: pkg.agent?.catalog_name ?? pkg.desktop?.packageOrigin?.catalogName ?? pkg.key,
+          description: pkg.description,
+          category: pkg.kind === 'desktop' ? 'desktop' : 'general',
+          tier: pkg.agent?.catalog_tier ?? pkg.agent?.source ?? pkg.desktop?.kind ?? '',
+          repo: pkg.desktop?.packageOrigin?.repo ?? '',
+          sha: pkg.agent?.installed_sha ?? pkg.desktop?.packageOrigin?.sha ?? '',
+          version: pkg.agent?.version ?? ''
+        }))
+      ).map((entry, index) => ({ ...entry, id: `installed:${packages[index].key}` })),
+    [packages]
   )
-  const install = (entry: CatalogEntry) => openPluginInstallRequest({
-    catalogName: entry.name,
-    profile: scope,
-    repo: entry.subdir ? `${entry.repo}#${entry.subdir}` : entry.repo,
-    sha: entry.sha
-  })
+
+  const packageById = useMemo(() => new Map(packages.map(pkg => [`installed:${pkg.key}`, pkg])), [packages])
+
+  const isInstalled = (entry: CatalogEntry) =>
+    packageById.has(entry.id) ||
+    agentRows.some(row => (row.catalog_name === entry.name || row.name === entry.name) && !row.update_available)
+
+  const install = (entry: CatalogEntry) =>
+    openPluginInstallRequest({
+      catalogName: entry.name,
+      profile: scope,
+      repo: entry.subdir ? `${entry.repo}#${entry.subdir}` : entry.repo,
+      sha: entry.sha
+    })
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -407,26 +435,28 @@ export const PluginsTab = memo(function PluginsTab({
             return null
           }
 
-          return <PackageRow
-            busy={pkg.agent ? agentBusy(pkg.agent) : false}
-            key={pkg.key}
-            onAgentToggle={(row, enable) => {
-              if (row.key) {
-                void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
-              }
-            }}
-            onAgentUpdate={row => {
-              void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(applied => {
-                if (applied) {
-                  notify({ kind: 'success', message: p.updated(row.name) })
-                  void rescanAll(requestGateway, scope)
+          return (
+            <PackageRow
+              busy={pkg.agent ? agentBusy(pkg.agent) : false}
+              key={pkg.key}
+              onAgentToggle={(row, enable) => {
+                if (row.key) {
+                  void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
                 }
-              })
-            }}
-            pkg={pkg}
-            scope={scope}
-            scopeLabel={label}
-          />
+              }}
+              onAgentUpdate={row => {
+                void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(applied => {
+                  if (applied) {
+                    notify({ kind: 'success', message: p.updated(row.name) })
+                    void rescanAll(requestGateway, scope)
+                  }
+                })
+              }}
+              pkg={pkg}
+              scope={scope}
+              scopeLabel={label}
+            />
+          )
         }}
         view={view}
       />

@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from hermes_cli import config as config_mod, web_deps
+from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK
 from hermes_cli.local_runtime import (
     binaries, bootstrap, catalog, context_policy, estimator, growth, hardware, hf_browse,
     load_progress, presets, supervisor,
@@ -201,9 +202,12 @@ def _runtime_section() -> dict:
 
 def _set_runtime_enabled(enabled: bool) -> dict:
     """Persist ``local_runtime.enabled`` and return the config written."""
-    config = config_mod.load_config()
-    config.setdefault("local_runtime", {})["enabled"] = enabled
-    config_mod.save_config(config)
+    # Runs on quickstart/activate/stop job threads; the RMW span races the dashboard's
+    # debounced PUT /api/config autosave without the lock.
+    with _CONFIG_MUTATION_LOCK:
+        config = config_mod.load_config()
+        config.setdefault("local_runtime", {})["enabled"] = enabled
+        config_mod.save_config(config)
     return config
 
 

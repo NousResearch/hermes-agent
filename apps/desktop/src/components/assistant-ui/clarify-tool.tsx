@@ -38,6 +38,7 @@ import {
   warnDroppedChoices
 } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
+import { reconnectAction } from '@/store/gateway-reconnect'
 import { notifyError } from '@/store/notifications'
 import { forgetServerRequest, respondToServerRequest } from '@/store/server-requests'
 import { requestForOwnedSession } from '@/store/session-states'
@@ -469,7 +470,7 @@ function ClarifyToolSinglePending({
       }
 
       if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed)
+        notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed, { action: reconnectAction() })
 
         return
       }
@@ -1016,7 +1017,7 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
 
   const confirmAll = useCallback(async () => {
     if (!request || !gateway) {
-      notifyError(new Error(request ? copy.gatewayDisconnected : copy.notReady), copy.sendFailed)
+      notifyError(new Error(request ? copy.gatewayDisconnected : copy.notReady), copy.sendFailed, request ? { action: reconnectAction() } : {})
 
       return
     }

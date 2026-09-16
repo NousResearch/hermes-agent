@@ -197,10 +197,18 @@ export function botBackendProfileScope(route: null | ProfileRoute | undefined, f
 
 /** Gateway RPC on the bot's OWN source. Source-scoped rows always use the
  * explicit descriptor, including a registered local source. */
+export interface BotRequestOptions {
+  /** 'foreground' for an explicit user gesture (roster click, Create Bot) so
+   *  a cold backend spawn takes the pool's reserved slot; leave unset for
+   *  passive roster warming. Only source-scoped routes can carry it. */
+  spawnPriority?: 'background' | 'foreground'
+}
+
 export async function requestForBot<T = unknown>(
   bot: Partial<RosterRow> | null | undefined,
   method: string,
-  params: Record<string, unknown> = {}
+  params: Record<string, unknown> = {},
+  options?: BotRequestOptions
 ): Promise<T> {
   const route = botConnectionRoute(bot)
 
@@ -210,7 +218,13 @@ export async function requestForBot<T = unknown>(
     }
 
     try {
-      return await host.requestProfile(route, method, scopedBotParams(route, method, params))
+      const routedParams = scopedBotParams(route, method, params)
+
+      // Keep the three-argument shape when no options were given so older
+      // desktop shells (and the arity-pinning tests) see the same call.
+      return await (options?.spawnPriority
+        ? host.requestProfile(route, method, routedParams, undefined, { spawnPriority: options.spawnPriority })
+        : host.requestProfile(route, method, routedParams))
     } catch (error) {
       // React 19 formats query errors with `(error.name || '').trim()`. IPC /
       // JSON-RPC rejections are often plain objects whose `name` is a number,

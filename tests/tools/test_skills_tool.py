@@ -150,6 +150,31 @@ class TestRequiredEnvironmentVariablesNormalization:
         assert _is_env_var_persisted("EMPTY_HOST_KEY", {}) is False
         assert _is_env_var_persisted("FILLED_KEY", {}) is True
 
+    def test_active_profile_secret_scope_satisfies_requirement(self):
+        """Cron workers must accept a value hydrated from this profile's vault."""
+        from agent import secret_scope
+        from tools.skills_tool import _is_env_var_persisted
+
+        secret_scope.set_multiplex_active(True)
+        token = secret_scope.set_secret_scope({"VAULT_SKILL_API_KEY": "vault-value"})
+        try:
+            assert _is_env_var_persisted("VAULT_SKILL_API_KEY", {}) is True
+        finally:
+            secret_scope.reset_secret_scope(token)
+            secret_scope.set_multiplex_active(False)
+
+    def test_unscoped_multiplex_requirement_does_not_read_process_environment(self, monkeypatch):
+        """A worker without a profile scope must keep the fail-closed boundary."""
+        from agent import secret_scope
+        from tools.skills_tool import _is_env_var_persisted
+
+        monkeypatch.setenv("OTHER_PROFILE_SKILL_API_KEY", "other-profile-value")
+        secret_scope.set_multiplex_active(True)
+        try:
+            assert _is_env_var_persisted("OTHER_PROFILE_SKILL_API_KEY", {}) is False
+        finally:
+            secret_scope.set_multiplex_active(False)
+
 
 # ---------------------------------------------------------------------------
 # _get_category_from_path
@@ -946,6 +971,42 @@ class TestSkillViewCollisionDetection:
         assert result["success"] is True
         assert result["path"] == "creative/sketch/SKILL.md"
         assert "REAL SKETCH SKILL" in result["content"]
+
+
+    def test_package_owned_markdown_does_not_collide_with_real_skill(self, tmp_path):
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        _make_skill(local_dir, "research", body="REAL RESEARCH SKILL")
+        _make_skill(local_dir, "example", category="character")
+        prompt = local_dir / "character" / "example" / "prompts" / "research.md"
+        prompt.parent.mkdir()
+        prompt.write_text("# Internal research prompt\n", encoding="utf-8")
+
+        p1, p2 = self._patch_dirs(local_dir, [])
+        with p1, p2:
+            raw = skill_view("research")
+            internal_raw = skill_view("character/example/prompts/research")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert Path(result["path"]).parts == ("research", "SKILL.md")
+        assert "REAL RESEARCH SKILL" in result["content"]
+        assert json.loads(internal_raw)["success"] is False
+
+    def test_categorized_legacy_flat_markdown_remains_loadable(self, tmp_path):
+        category = tmp_path / "legacy"
+        category.mkdir()
+        (category / "research.md").write_text(
+            "---\nname: research\ndescription: Legacy research skill.\n---\n",
+            encoding="utf-8",
+        )
+
+        p1, p2 = self._patch_dirs(tmp_path, [])
+        with p1, p2:
+            result = json.loads(skill_view("legacy/research"))
+
+        assert result["success"] is True
+        assert Path(result["path"]).parts == ("legacy", "research.md")
 
 
     def test_two_externals_same_name_also_refuse(self, tmp_path):

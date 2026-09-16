@@ -381,6 +381,7 @@ class McpRuntimeStatus(WireEnum):
     disabled = "disabled"
     connecting = "connecting"
     failed = "failed"
+    lazy = "lazy"
     configured = "configured"
 
 
@@ -530,6 +531,8 @@ class McpOauthCallbackParams(McpOauthFlowParams):
     code: str | None = None
     state: str | None = None
     error: str | None = None
+    # RFC 9207 issuer; extra="forbid" would otherwise 4000 the desktop relay that always sends it.
+    iss: str | None = None
 
 
 class McpOauthCallbackResult(Result):

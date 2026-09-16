@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
+from agent.prompt_builder import drain_truncation_warnings
 from agent.subdirectory_hints import SubdirectoryHintTracker
 
 
@@ -127,6 +128,7 @@ class TestSubdirectoryHintTracker:
         (sub / "AGENTS.md").write_text(body, encoding="utf-8")
 
         tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        drain_truncation_warnings()
         with caplog.at_level(logging.WARNING, logger="agent.prompt_builder"):
             result = tracker.check_tool_call("read_file", {"path": str(sub / "file.py")})
         assert result is not None
@@ -134,6 +136,10 @@ class TestSubdirectoryHintTracker:
         assert "truncated AGENTS.md" in result and "bigdir/AGENTS.md" in result
         assert len(result) < len(body)
         assert any("TRUNCATED" in r.message and "AGENTS.md" in r.message for r in caplog.records)
+        # A preview capped by a constant is not a context_file_max_chars problem: no chat status warning is
+        # queued and the log does not send the user to a knob that cannot raise the cap (#111772).
+        assert drain_truncation_warnings() == []
+        assert "context_file_max_chars" not in caplog.text
 
     def test_area_file_under_ceiling_is_delivered_whole(self, tmp_path):
         """An area AGENTS.md sized like ours (well under the ceiling) arrives intact — no marker."""

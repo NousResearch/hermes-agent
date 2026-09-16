@@ -402,7 +402,11 @@ DEFAULT_CONFIG = {
         # Optional name → CDP URL map. ``browser_exec(session=<name>)``, ``/browser connect <name>``,
         # ``BROWSER_CDP_ENDPOINT=<name>``, or a Hermes session id/key that matches a name bind here.
         # Unnamed calls keep ``cdp_url`` (and ``BROWSER_CDP_URL`` still wins process-wide).
+        # String values are URLs; object values may set ``stay_put: true`` (opt-in Bot Screen fence).
         "cdp_endpoints": {},
+        # Opt-in: unnamed ``cdp_url`` honours the Bot Screen lease (same ``human_has_control``
+        # fence as a stay-put named endpoint). Default false — user/cloud CDP stays unfenced.
+        "cdp_stay_put": False,
         # Consent to browse with the user's REAL logins locally: runs on a Hermes-managed SNAPSHOT
         # of the ACTIVE default-Chromium profile (Local State -> profile.last_used; cookies, logins,
         # prefs copied and re-synced per fresh session) driven by Hermes' packaged Chromium. The

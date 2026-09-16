@@ -518,7 +518,7 @@ In the CLI, use:
 /browser disconnect              # Detach and return to cloud/local mode
 ```
 
-Named endpoints (`browser.cdp_endpoints`) bind `browser_exec(session=<name>)` to a sidecar CDP without replacing the unnamed `cdp_url` default. See [Multiple CDP endpoints](cdp-endpoints.md).
+Named endpoints (`browser.cdp_endpoints`) bind `browser_exec(session=<name>)` to a sidecar CDP without replacing the unnamed `cdp_url` default. Mark a stay-put Chrome with `stay_put: true` (or `browser.cdp_stay_put` for the unnamed URL) so Bot Screen's human lease refuses agent actions against that jar. See [Multiple CDP endpoints](cdp-endpoints.md).
 
 If a browser isn't already running with remote debugging, Hermes will attempt to auto-launch a supported Chromium-family browser with `--remote-debugging-port=9222`. Detection includes Brave, Brave Origin/Nightly, Google Chrome, Chromium, and Microsoft Edge, with common Linux install paths and binary names such as `brave-origin`, `brave-origin-nightly`, `/opt/brave.com/brave-origin/brave-origin`, `/opt/brave.com/brave-origin-nightly/brave-origin`, `/opt/brave-bin/brave`, and `/snap/bin/brave`.
 

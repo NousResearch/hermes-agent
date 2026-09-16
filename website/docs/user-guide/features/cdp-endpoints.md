@@ -1,6 +1,6 @@
 ---
 title: Multiple CDP endpoints
-description: Bind named Hermes sessions to extra Chrome DevTools Protocol endpoints without a Desktop Screen button, while keeping one stay-put default CDP.
+description: Bind named Hermes sessions to extra Chrome DevTools Protocol endpoints, and optionally fence a stay-put Chrome while a human holds Bot Screen.
 sidebar_label: CDP endpoints
 sidebar_position: 5.5
 ---
@@ -22,7 +22,7 @@ This is **not** Bot Screen (PR [#108914](https://github.com/NousResearch/hermes-
    - explicit `endpoint=` / `browser_exec(session=<name>)`
    - `BROWSER_CDP_ENDPOINT`
    - exact `HERMES_SESSION_ID` / `HERMES_SESSION_KEY`, then a non-UUID last `:` `/` `.` segment
-3. **`browser.cdp_url`** — unnamed default (CapSolver stay-put on ADA: `http://127.0.0.1:9222`)
+3. **`browser.cdp_url`** — unnamed default
 
 Unknown names fall through to `cdp_url`. They do not error and they do not invent a second Chrome.
 
@@ -30,14 +30,18 @@ Unknown names fall through to `cdp_url`. They do not error and they do not inven
 
 ## Config
 
+String values are still valid. Object values add optional `stay_put` provenance:
+
 ```yaml
 browser:
   backend: off
-  cdp_url: http://127.0.0.1:9222   # default CapSolver stay-put
+  cdp_url: http://127.0.0.1:9222
+  cdp_stay_put: true          # unnamed cdp_url is stay-put
   cdp_endpoints:
-    capsolver: http://127.0.0.1:9222
-    lab2: http://127.0.0.1:9223
-    lab3: http://127.0.0.1:9224
+    primary:
+      url: http://127.0.0.1:9222
+      stay_put: true          # named session uses the same Chrome, also fenced
+    lab2: http://127.0.0.1:9223   # string form: stay_put false
 ```
 
 Leave `BROWSER_CDP_URL` unset for concurrent named sidecars. A process-global `/browser connect` URL would pin **every** session to that one Chrome.
@@ -53,42 +57,50 @@ export BROWSER_CDP_ENDPOINT=lab2
 # /browser connect lab2
 ```
 
-## ADA lab process map (do not bounce CapSolver)
+## Stay-put class (opt-in Bot Screen fence)
 
-| Role | Display | Chrome profile | CDP | RFB | noVNC | CapSolver extension |
-|------|---------|----------------|-----|-----|-------|---------------------|
-| **Stage A — primary** | Xvfb `:99` | `~/.hermes/chrome-profile` | `127.0.0.1:9222` | `127.0.0.1:5900` | Tailscale `:6080` | loaded |
-| **Stage A.5 — sidecar** | Xvfb `:2` | `…/chrome-profile-2` | `127.0.0.1:9223` | `127.0.0.1:5902` | `:6082` | **no** |
-| **Stage A.5 — sidecar** | Xvfb `:3` | `…/chrome-profile-3` | `127.0.0.1:9224` | `127.0.0.1:5903` | `:6083` | **no** |
-| **Stage B — optional** | Bot Screen Xfce + TigerVNC ([#108914](https://github.com/NousResearch/hermes-agent/pull/108914)) | stronger metal only | n/a | Unix-socket RFB into Hermes Desktop | Desktop pane | do **not** move CapSolver Chrome here in v1 |
+A **stay-put** CDP is a Chrome the agent actually uses as a long-lived shared cookie jar — often watched on a human TV — rather than a throwaway cloud browser. Bot Screen ([#108914](https://github.com/NousResearch/hermes-agent/pull/108914)) **unfences** user-supplied / cloud CDP by design (`run_fenced` skips anything without local provenance). That is correct for Browserbase and random `/browser connect` targets. It is wrong for a stay-put Chrome: a human holding the Bot Screen lease would still let the agent click the same jar.
 
-Hermes on ADA:
+Mark stay-put endpoints **opt-in**:
+
+| Knob | Default | Effect |
+|------|---------|--------|
+| `browser.cdp_endpoints.<name>.stay_put` | `false` (and all string entries) | That named URL is fenced |
+| `browser.cdp_stay_put` | `false` | The unnamed `cdp_url` is fenced |
+
+When a marked URL is the selected CDP **and** a human holds the Bot Screen lease, browser actions refuse with `code: human_has_control` — the same shape as the local bot-desktop browser fence. Unmarked endpoints stay unfenced. No surprise breaks for cloud CDP.
+
+The fence **soft-imports** `tools.bot_desktop.lease`. On `main` today that module is not present (Bot Screen is not merged): stay-put is recorded on the session, and the fence is a **no-op** (commands run). When #108914 lands, the same path lights up. Missing `bot_desktop` never crashes.
+
+This does **not** spawn displays, add a Screen button, or move Chrome onto the Bot Screen `DISPLAY`. The stay-put Chrome keeps its own display and port; the lease is only an admission gate.
+
+A CAPTCHA-solver extension sitting in that stay-put profile is one reason to mark it (shared cookies + a human watching the TV). The flag itself is generic — nothing in config or code requires a particular vendor.
+
+## Example: stay-put lab Chrome plus sidecars
+
+One long-lived Chrome on `:99` / `9222` plus light sidecar Chromes on other ports. Do not bounce the primary. Point named sessions at `9223` / `9224` via the map.
 
 ```yaml
 browser:
   backend: off
   cdp_url: http://127.0.0.1:9222
+  cdp_stay_put: true
+  cdp_endpoints:
+    primary:
+      url: http://127.0.0.1:9222
+      stay_put: true
+    lab2: http://127.0.0.1:9223
+    lab3: http://127.0.0.1:9224
 ```
 
-**Never** bounce `:99` / `9222` / `5900` / `6080`. **Never** start a second CapSolver on `9222`. Point a named session at `9223`/`9224` via the map, `BROWSER_CDP_URL`, or `/browser connect` — do not relaunch the primary.
-
-### What ADA 2012 metal can and cannot do
-
-ADA-VPS class hosts (example: MacBookPro9,2 · 2c/4t · 15.5 GiB) can hold **one** stay-put CapSolver Chrome plus a couple of **light** sidecar Xvfb+Chrome processes. They cannot comfortably run N full Bot Screen seats (Xfce + TigerVNC + another Chrome per bot). Shared CapSolver CDP is the correct primary. Bot Screen ([#108914](https://github.com/NousResearch/hermes-agent/pull/108914)) is Stage B on stronger metal.
-
-v1 fence vs Bot Screen: **do not move CapSolver Chrome onto the Bot Screen DISPLAY.** Lease-fence local/loopback CDP when a human holds Bot Screen; keep the stay-put Chrome on `:99` / `9222`.
-
-## Playwright-on-CDP footgun
-
-Playwright (and any second automation runtime) must **attach**, not **launch**, when CapSolver already owns the profile and port.
+Playwright (and any second automation runtime) must **attach**, not **launch**, when that stay-put Chrome already owns the profile and port.
 
 **Wrong** — second process on the same `user-data-dir` or the same `--remote-debugging-port=9222`:
 
 ```python
-# Do not do this against the CapSolver profile or port.
 playwright.chromium.launch_persistent_context(
-    user_data_dir="~/.hermes/chrome-profile",  # lock fight / corrupt stay-put
-    args=["--remote-debugging-port=9222"],     # port already taken
+    user_data_dir="~/.hermes/chrome-profile",
+    args=["--remote-debugging-port=9222"],
 )
 ```
 
@@ -98,4 +110,4 @@ playwright.chromium.launch_persistent_context(
 browser = playwright.chromium.connect_over_cdp("http://127.0.0.1:9222")
 ```
 
-Sidecar lab windows use a **separate** profile and port (`chrome-profile-2` + `9223`). Do not load the CapSolver extension there. Do not point Playwright at `9222` if you meant `9223`.
+Sidecar lab windows use a **separate** profile and port. Do not point Playwright at `9222` if you meant `9223`.

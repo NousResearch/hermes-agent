@@ -653,6 +653,22 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     route_err = _route_backend(env, session, task_id, bool(local))
     if route_err:
         return tool_error(route_err)
+    try:
+        from tools.browser_tool_cdp import _cdp_override_is_stay_put
+        from tools.browser_tool_session import run_fenced
+        stay_put = bool(_cdp_override_is_stay_put(session))
+    except Exception:
+        stay_put = False
+    if stay_put:
+        refused = run_fenced(
+            {"features": {"stay_put": True}},
+            lambda: {"success": True},
+        )
+        if refused.get("code") == "human_has_control":
+            return tool_error(
+                refused.get("error") or "A human has taken over this desktop.",
+                success=False, code="human_has_control",
+            )
     _attach_vault_supervisor(env, task_id)
 
     # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see

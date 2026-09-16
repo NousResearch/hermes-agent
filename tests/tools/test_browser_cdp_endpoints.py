@@ -53,6 +53,24 @@ class TestParseCdpEndpoints:
             3: LAB3,
         }) == {"lab2": LAB2, "3": LAB3}
 
+    def test_object_form_and_string_form(self):
+        raw = {
+            "primary": {"url": CAP, "stay_put": True},
+            "lab2": LAB2,
+            "lab3": {"url": LAB3, "stay_put": "yes"},
+            "empty": {"stay_put": True},
+            "bad name": {"url": CAP, "stay_put": True},
+        }
+        assert bt_cdp._parse_cdp_endpoints(raw) == {
+            "primary": CAP, "lab2": LAB2, "lab3": LAB3,
+        }
+        records = bt_cdp._parse_cdp_endpoint_records(raw)
+        assert records["primary"]["stay_put"] is True
+        assert records["lab2"]["stay_put"] is False
+        assert records["lab3"]["stay_put"] is True
+        assert "empty" not in records
+        assert "bad name" not in records
+
     def test_expand_connect_target_name_vs_url(self, monkeypatch):
         _cfg(monkeypatch)
         assert bt_cdp.expand_cdp_connect_target("lab2") == LAB2
@@ -148,6 +166,50 @@ class TestBrowserExecSessionBind:
         assert bu_cli._resolve_backend_cdp(env, "t1", session_name="lab2") is None
         assert env["BU_CDP_URL"] == CAP
         assert bu_cli._PRIVATE_BROWSER_SENTINEL not in env
+
+
+class TestStayPutProvenance:
+    def test_named_object_stay_put_and_string_sidecar(self, monkeypatch):
+        _cfg(monkeypatch, {"browser": {
+            "cdp_url": CAP,
+            "cdp_endpoints": {
+                "primary": {"url": CAP, "stay_put": True},
+                "lab2": LAB2,
+            },
+        }})
+        assert bt_cdp._cdp_override_is_stay_put(endpoint="primary") is True
+        assert bt_cdp._cdp_override_is_stay_put(endpoint="lab2") is False
+        # Same URL as the stay-put named entry is fenced even on the unnamed path.
+        assert bt_cdp._cdp_override_is_stay_put() is True
+
+    def test_cdp_stay_put_marks_unnamed_only(self, monkeypatch):
+        _cfg(monkeypatch, {"browser": {
+            "cdp_url": CAP,
+            "cdp_stay_put": True,
+            "cdp_endpoints": {"lab2": LAB2},
+        }})
+        assert bt_cdp._cdp_override_is_stay_put() is True
+        assert bt_cdp._cdp_override_is_stay_put(endpoint="lab2") is False
+
+    def test_default_is_not_stay_put(self, monkeypatch):
+        _cfg(monkeypatch)
+        assert bt_cdp._cdp_override_is_stay_put() is False
+        assert bt_cdp._cdp_override_is_stay_put(endpoint="lab2") is False
+
+    def test_session_for_key_stamps_stay_put_feature(self, monkeypatch):
+        from tools import browser_tool_session as bt_session
+        _cfg(monkeypatch, {"browser": {
+            "cdp_url": CAP,
+            "cdp_endpoints": {
+                "primary": {"url": CAP, "stay_put": True},
+                "lab2": LAB2,
+            },
+        }})
+        stay = bt_session._create_session_for_key("bu-named-primary", force_local=False)
+        assert stay["features"].get("stay_put") is True
+        sidecar = bt_session._create_session_for_key("bu-named-lab2", force_local=False)
+        assert sidecar["features"].get("stay_put") is not True
+        assert sidecar["cdp_url"] == LAB2
 
 
 class TestExpandDoesNotProbeNetwork:

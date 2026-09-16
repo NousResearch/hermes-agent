@@ -5,10 +5,11 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 import contextlib
 import os
 import re
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 from agent.proxy_bypass import loopback_request_kwargs
 from tools.browser_tool_origin import origin_module as _origin
+from utils import is_truthy_value
 
 # Same shape as browser_exec ``session=`` / BU_NAME: 1-64 letters, digits, underscore, hyphen.
 _ENDPOINT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -54,25 +55,87 @@ def _resolve_cdp_override(cdp_url: str) -> str:
     return raw
 
 
-def _parse_cdp_endpoints(value) -> Dict[str, str]:
-    """Normalize ``browser.cdp_endpoints`` to ``{name: url}``. Invalid names/URLs are dropped."""
+def _parse_cdp_endpoint_records(value) -> Dict[str, Dict[str, Any]]:
+    """Normalize ``browser.cdp_endpoints`` to ``{name: {url, stay_put}}``.
+
+    String form (``lab2: http://127.0.0.1:9223``) stays allowed and is *not* stay-put.
+    Object form (``primary: {url: ..., stay_put: true}``) opts that Chrome into the Bot
+    Screen lease fence. Invalid names / missing URLs are dropped.
+    """
     if not isinstance(value, dict):
         return {}
-    out: Dict[str, str] = {}
-    for raw_name, raw_url in value.items():
+    out: Dict[str, Dict[str, Any]] = {}
+    for raw_name, raw in value.items():
         name = str(raw_name or "").strip()
-        url = str(raw_url or "").strip()
-        if not name or not url or not _ENDPOINT_NAME_RE.match(name):
+        if not name or not _ENDPOINT_NAME_RE.match(name):
             continue
-        out[name] = url
+        if isinstance(raw, dict):
+            url = str(raw.get("url") or "").strip()
+            stay_put = is_truthy_value(raw.get("stay_put"), default=False)
+        else:
+            url = str(raw or "").strip()
+            stay_put = False
+        if not url:
+            continue
+        out[name] = {"url": url, "stay_put": stay_put}
     return out
+
+
+def _parse_cdp_endpoints(value) -> Dict[str, str]:
+    """Normalize ``browser.cdp_endpoints`` to ``{name: url}``. Invalid names/URLs are dropped."""
+    return {name: rec["url"] for name, rec in _parse_cdp_endpoint_records(value).items()}
+
+
+def _cdp_endpoint_records() -> Dict[str, Dict[str, Any]]:
+    """``browser.cdp_endpoints`` records from config, or ``{}``. No network I/O."""
+    return _origin()._browser_cfg(
+        "cdp_endpoints", {}, _parse_cdp_endpoint_records, "browser.cdp_endpoints from config"
+    )
 
 
 def _cdp_endpoints_map() -> Dict[str, str]:
     """``browser.cdp_endpoints`` from config, or ``{}``. No network I/O."""
+    return {name: rec["url"] for name, rec in _cdp_endpoint_records().items()}
+
+
+def _unnamed_cdp_url() -> str:
+    return _origin()._browser_cfg("cdp_url", "", lambda v: str(v or "").strip(), "browser.cdp_url from config")
+
+
+def _unnamed_cdp_is_stay_put() -> bool:
+    """``browser.cdp_stay_put`` — opt-in fence for the unnamed ``cdp_url`` default."""
     return _origin()._browser_cfg(
-        "cdp_endpoints", {}, _parse_cdp_endpoints, "browser.cdp_endpoints from config"
+        "cdp_stay_put", False, lambda v: is_truthy_value(v, default=False), "browser.cdp_stay_put from config"
     )
+
+
+def _cdp_urls_equal(left: str, right: str) -> bool:
+    return (left or "").rstrip("/") == (right or "").rstrip("/")
+
+
+def _url_is_stay_put(url: str) -> bool:
+    """True when ``url`` is a stay-put CDP (named ``stay_put: true`` or unnamed ``cdp_stay_put``)."""
+    url = (url or "").strip()
+    if not url:
+        return False
+    for rec in _cdp_endpoint_records().values():
+        if rec["stay_put"] and _cdp_urls_equal(rec["url"], url):
+            return True
+    unnamed = _unnamed_cdp_url()
+    return bool(unnamed and _cdp_urls_equal(unnamed, url) and _unnamed_cdp_is_stay_put())
+
+
+def _cdp_override_is_stay_put(endpoint: Optional[str] = None) -> bool:
+    """True when the CDP that ``_get_cdp_override_raw`` would select is marked stay-put.
+
+    Unmarked user/cloud CDP stays unfenced (#108914). Opt-in only — a random Browserbase
+    URL is never fenced just because some other endpoint is stay-put.
+    """
+    try:
+        raw = _get_cdp_override_raw(endpoint=endpoint)
+    except TypeError:
+        raw = _get_cdp_override_raw()
+    return _url_is_stay_put(raw)
 
 
 def _cdp_url_for_endpoint_name(name: str) -> str:
@@ -154,7 +217,7 @@ def _get_cdp_override_raw(endpoint: Optional[str] = None) -> str:
     Precedence:
       1. ``BROWSER_CDP_URL`` env (live ``/browser connect`` URL — process-global)
       2. ``browser.cdp_endpoints`` hit for ``endpoint`` / ``BROWSER_CDP_ENDPOINT`` / Hermes session identity
-      3. ``browser.cdp_url`` (unnamed default; CapSolver stay-put on ADA)
+      3. ``browser.cdp_url`` (unnamed default)
 
     Is-it-configured gates (check_fns, ``_is_local_mode`` / ``_is_local_backend``, ``hermes doctor``)
     MUST use this, not :func:`_get_cdp_override`: its 10s HTTP discovery against a stale ``cdp_url``
@@ -166,7 +229,7 @@ def _get_cdp_override_raw(endpoint: Optional[str] = None) -> str:
     mapped = _lookup_cdp_endpoint(endpoint)
     if mapped:
         return mapped
-    return _origin()._browser_cfg("cdp_url", "", lambda v: str(v or "").strip(), "browser.cdp_url from config")
+    return _unnamed_cdp_url()
 
 
 def _get_cdp_override(endpoint: Optional[str] = None) -> str:

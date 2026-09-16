@@ -851,29 +851,51 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
     for _fb in _fallback_entries(fallback_model):
         try:
             from hermes_cli.fallback_config import resolve_entry_api_key
+            _fb_provider = str(_fb["provider"]).strip().lower()
+            _fb_is_moa = _fb_provider == "moa"
+            _fb_model_hint = _fb["model"]
+            _fb_base_url = _fb.get("base_url")
             _fb_explicit_key = resolve_entry_api_key(_fb)
+            if _fb_is_moa:
+                _agg_provider, _agg_model = _resolve_moa_aggregator(_fb_model_hint)
+                if not _agg_provider or not _agg_model:
+                    logger.warning(
+                        "Init-time fallback to MoA preset %s failed: aggregator not configured",
+                        _fb_model_hint,
+                    )
+                    continue
+                _fb_provider = _normalize_aux_provider(_agg_provider)
+                _fb_model_hint = _agg_model
+                if _fb_base_url and str(_fb_base_url).lower().startswith("moa://"):
+                    _fb_base_url = _fb_explicit_key = None
             _fb_client, _fb_model = resolve_provider_client(
-                _fb["provider"], model=_fb["model"], raw_codex=True,
-                explicit_base_url=_fb.get("base_url"), explicit_api_key=_fb_explicit_key,
+                _fb_provider, model=_fb_model_hint, raw_codex=True,
+                explicit_base_url=_fb_base_url, explicit_api_key=_fb_explicit_key,
             )
         except Exception as _fb_exc:
             logger.debug("Init-time fallback entry %s failed: %s", _fb.get("provider"), _fb_exc)
             continue
         if _fb_client is not None:
-            _fb_provider = _fb["provider"]
-            _fb_is_moa = str(_fb_provider).strip().lower() == "moa"
+            agent.provider = _fb_provider
+            agent.model = _fb_model or _fb_model_hint
             if _fb_is_moa:
-                _agg_provider, _ = _resolve_moa_aggregator(_fb["model"])
-                if _agg_provider:
-                    _fb_provider = _normalize_aux_provider(_agg_provider)
-            agent.provider = agent.requested_provider = _fb_provider
-            agent.model = _fb_model or _fb["model"]
-            if _fb_is_moa:
+                agent.requested_provider = _fb_provider
                 from agent.chat_completion_helpers import _fallback_api_mode_resolved
                 agent.api_mode = _fallback_api_mode_resolved(
                     agent, agent.provider, agent.model, str(_fb_client.base_url)
                 )
             agent._fallback_activated = True
+            if _fb_is_moa and agent.api_mode == "anthropic_messages":
+                _init_anthropic_client(
+                    agent,
+                    getattr(_fb_client, "api_key", ""),
+                    str(_fb_client.base_url),
+                    _provider_timeout,
+                )
+                return None
+            if _fb_is_moa and agent.api_mode == "bedrock_converse":
+                _init_bedrock_client(agent, str(_fb_client.base_url))
+                return None
             return _client_kwargs_from_routed(_fb_client, _provider_timeout)
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.
@@ -934,6 +956,8 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
         client_kwargs = _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout)
     else:
         client_kwargs = _routed_client_kwargs(agent, fallback_model, _provider_timeout)
+        if client_kwargs is None:
+            return
     from hermes_cli.providers import is_actual_route
     if is_actual_route(agent.provider, client_kwargs.get("base_url", "")):
         agent.api_mode = "chat_completions"

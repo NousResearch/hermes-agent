@@ -209,7 +209,27 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
   let started = false
   const queue: string[] = []
   let synthesizing = false
-  let playing: HTMLAudioElement | null = null
+
+  // Web Audio: a single AudioContext with sample-accurate buffer scheduling
+  // eliminates the DC-offset click between discrete HTMLAudioElement instances.
+  let audioCtx: AudioContext | null = null
+  let nextStartAt = 0
+  let stopSources: Array<{ stop: () => void }> = []
+
+  const ensureCtx = (): AudioContext | null => {
+    const Ctor =
+      window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    if (!Ctor) {
+      return null
+    }
+    if (!audioCtx) {
+      audioCtx = new Ctor()
+    }
+    if (audioCtx.state === 'suspended') {
+      void audioCtx.resume().catch(() => undefined)
+    }
+    return audioCtx
+  }
 
   let settle: (value: 'done' | 'fallback') => void = () => undefined
 
@@ -222,11 +242,15 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
       settled = true
       currentStop = null
 
-      if (playing) {
-        playing.pause()
-        playing.src = ''
-        playing = null
+      // Cut all scheduled-but-unstarted sources now.
+      for (const src of stopSources) {
+        try {
+          src.stop()
+        } catch {
+          // already stopped
+        }
       }
+      stopSources = []
 
       resolve(value)
     }
@@ -262,29 +286,105 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
           return
         }
 
+        const ctx = ensureCtx()
+
+        if (!ctx) {
+          // No Web Audio API — fall back to the old per-sentence element path
+          // (still better than nothing, and preserves the fallback contract).
+          const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }))
+          try {
+            await new Promise<void>((resolve, reject) => {
+              const audio = new Audio(url)
+              audio.addEventListener('ended', () => resolve(), { once: true })
+              audio.addEventListener('error', () => reject(new Error('Playback failed')), { once: true })
+              void audio.play().catch(reject)
+            })
+          } finally {
+            URL.revokeObjectURL(url)
+          }
+          if (!started) {
+            started = true
+            setVoicePlaybackState(currentState('speaking', options))
+          }
+          continue
+        }
+
+        // Decode the MP3 bytes into an AudioBuffer and schedule it
+        // sample-accurately after the previous sentence.
+        let audioBuffer: AudioBuffer
+        try {
+          audioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
+            ctx.decodeAudioData(bytes.slice(0), resolve, reject)
+          })
+        } catch {
+          settle(started ? 'done' : 'fallback')
+          return
+        }
+
+        if (settled) {
+          return
+        }
+
         if (!started) {
           started = true
           setVoicePlaybackState(currentState('speaking', options))
         }
 
-        const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }))
+        // Click removal: high-pass filter to remove DC offset + longer fades
+        // to smooth sentence boundaries. Deepgram synthesis can produce
+        // non-zero-crossing audio; these two techniques eliminate the pop.
+        const FADE_MS = 15
+        const fadeSec = FADE_MS / 1000
+        const source = ctx.createBufferSource()
+        source.buffer = audioBuffer
 
-        try {
-          await new Promise<void>((resolve, reject) => {
-            const audio = new Audio(url)
-            playing = audio
-            audio.addEventListener('ended', () => resolve(), { once: true })
-            audio.addEventListener('error', () => reject(new Error('Playback failed')), { once: true })
-            void audio.play().catch(reject)
-          })
-        } catch {
-          settle(started ? 'done' : 'fallback')
+        // High-pass filter at 20 Hz removes DC offset (the low-frequency
+        // "thump" that causes clicks at start/end of each sentence).
+        const highpass = ctx.createBiquadFilter()
+        highpass.type = 'highpass'
+        highpass.frequency.value = 20
+        highpass.Q.value = 0.7
 
-          return
-        } finally {
-          playing = null
-          URL.revokeObjectURL(url)
+        // Gain node for fade envelope.
+        const gain = ctx.createGain()
+        source.connect(highpass)
+        highpass.connect(gain)
+        gain.connect(ctx.destination)
+
+        // Start the next sentence exactly when the previous one ends
+        // (no gap, no overlap — the fades handle the transition).
+        const startAt = Math.max(ctx.currentTime, nextStartAt)
+        const duration = audioBuffer.duration
+
+        if (duration > fadeSec * 2) {
+          gain.gain.setValueAtTime(0, startAt)
+          gain.gain.linearRampToValueAtTime(1, startAt + fadeSec)
+          gain.gain.setValueAtTime(1, startAt + duration - fadeSec)
+          gain.gain.linearRampToValueAtTime(0, startAt + duration)
+        } else {
+          gain.gain.setValueAtTime(1, startAt)
         }
+
+        source.start(startAt, 0, duration)
+        source.stop(startAt + duration)
+        nextStartAt = startAt + duration
+
+        // Track so stopVoicePlayback() can cut it immediately.
+        stopSources.push({
+          stop: () => {
+            try {
+              source.stop()
+            } catch {
+              // already stopped
+            }
+          }
+        })
+
+        // Wait until this buffer finishes before scheduling the next one
+        // (keeps the queue FIFO and avoids overlapping sentences).
+        await new Promise<void>(resolve => {
+          source.addEventListener('ended', () => resolve(), { once: true })
+        })
       }
 
       if (finished && queue.length === 0 && !settled) {

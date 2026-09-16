@@ -28,6 +28,7 @@ STT_WIRE_XAI = "xai-stt"
 STT_WIRE_ELEVENLABS = "elevenlabs-stt"
 TTS_WIRE_OPENAI = "openai-speech"
 TTS_WIRE_ELEVENLABS = "elevenlabs-tts"
+TTS_WIRE_DEEPGRAM = "deepgram-tts"
 
 
 def _client_direct_enabled() -> bool:
@@ -195,6 +196,16 @@ def _resolve_tts_client_config() -> Dict[str, Any]:
             return _relay("no deepinfra tts model")
         return _direct(TTS_WIRE_OPENAI, "deepinfra", deepinfra_base_url(di), api_key, model,
                        voice=di.get("voice") or "af_bella", speed=None)
+    if provider == "deepgram":
+        api_key = _resolve_key("DEEPGRAM_API_KEY", "deepgram")
+        if not api_key:
+            return _relay("no credentials")
+        dg = _section(tts_config, "deepgram")
+        model = dg.get("model") or "aura-2-hermes-en"
+        return _direct(TTS_WIRE_DEEPGRAM, "deepgram",
+                       str(dg.get("base_url") or "https://api.deepgram.com/v1").rstrip("/"),
+                       api_key, model, voice=None, speed=None,
+                       encoding=dg.get("encoding") or "opus")
     # edge / minimax / xai / mistral / gemini / neutts / kittentts / piper: server-host-only
     # engines or wire shapes the desktop doesn't speak yet; the relay path serves them.
     return _relay(f"provider {provider!r} has no client wire")

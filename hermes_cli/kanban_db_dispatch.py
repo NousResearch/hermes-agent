@@ -1225,8 +1225,15 @@ def _prev_worker_alive_probe(pid: Optional[int]) -> bool:
     at module load), so patching ``kb._pid_alive``/``kbd._pid_alive``
     elsewhere still cannot silence this guard; only a direct patch of
     ``gateway.status._pid_exists`` itself would, and nothing here does that.
-    Falls back to a bare ``os.kill(pid, 0)`` existence probe on other
-    (POSIX, non-Linux) platforms.
+    Falls back to ``psutil.pid_exists(pid)`` on other (POSIX, non-Linux,
+    e.g. macOS/BSD) platforms -- a real existence check that does not
+    signal the target, unlike a bare ``os.kill(pid, 0)``. ``psutil`` is a
+    core dependency (per the windows-footguns checker's own suggested
+    remedy) so it is always importable; it is imported fresh on every call
+    here too, so patching ``kb._pid_alive`` still cannot silence this
+    guard. Fail-safe direction: if the probe cannot decide (psutil raises
+    unexpectedly), report ALIVE so a live worker is never reclaimed or
+    respawned over.
     """
     if not pid or pid <= 0:
         return False
@@ -1244,14 +1251,10 @@ def _prev_worker_alive_probe(pid: Optional[int]) -> bool:
         from gateway.status import _pid_exists
         return _pid_exists(pid)
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # exists, owned by someone else
-    except OSError:
-        return False
-    return True
+        import psutil
+        return psutil.pid_exists(pid)
+    except Exception:
+        return True
 
 
 _PREV_WORKER_IDENTITY_TIME_TOLERANCE_SECONDS = 600

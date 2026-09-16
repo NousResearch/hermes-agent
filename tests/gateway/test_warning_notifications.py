@@ -15,10 +15,14 @@ from gateway.session import SessionSource
 from gateway.turn_context import TurnContext
 
 
-class RecordingAdapter:
+from tests.gateway.test_session_hygiene import HygieneCaptureAdapter
+
+
+class RecordingAdapter(HygieneCaptureAdapter):
     config = SimpleNamespace(extra={})
 
     def __init__(self):
+        super().__init__()
         self.sent = []
 
     async def send(self, chat_id, content, **kwargs):

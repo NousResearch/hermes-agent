@@ -401,9 +401,9 @@ def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
         _notif_log_failure("kanban notification poll failed", exc)
         texts = []
     for text in texts:
-        from gateway.warning_notifications import DiagnosticText, warning_notifications_enabled
-        if not isinstance(text, DiagnosticText) or warning_notifications_enabled("tui"):
-            _emit("status.update", sid, {"kind": "process", "text": text})
+        from gateway.warning_notifications import DiagnosticText, render_notification
+        render_notification(lambda: _emit("status.update", sid, {"kind": "process", "text": text}),
+                            platform="tui", diagnostic=isinstance(text, DiagnosticText))
     if texts:
         session.setdefault("_kanban_pending", []).extend(texts)
     if not session.get("_kanban_pending") or not _notif_claim_turn(session):
@@ -478,9 +478,9 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
         display_text = (async_delegation_display_text(evt) if is_delegation
                         else process_completion_display_text([evt]) if evt_type == "completion" else text)
         from agent.notification_presentation import diagnostic_process_event
-        from gateway.warning_notifications import warning_notifications_enabled
-        if not diagnostic_process_event(evt) or warning_notifications_enabled("tui"):
-            _emit("status.update", sid, {"kind": "process", "text": display_text})
+        from gateway.warning_notifications import render_notification
+        render_notification(lambda: _emit("status.update", sid, {"kind": "process", "text": display_text}),
+                            platform="tui", diagnostic=diagnostic_process_event(evt))
         emitted.add(dedup_key)
     if evt_type == "completion" and completions is not None:
         completions.append((evt, text))

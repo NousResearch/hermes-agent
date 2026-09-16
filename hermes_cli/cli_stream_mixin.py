@@ -73,12 +73,13 @@ class CLIStreamMixin:
             if not text:
                 return
             level = getattr(notice, "level", "info") or "info"
-            from gateway.warning_notifications import warning_notifications_enabled
-            if level in {"warn", "error"} and not warning_notifications_enabled("cli", getattr(getattr(self, "agent", None), "_notification_config", None)):
-                return
-            if not hasattr(self, "_pending_credit_notices"):
-                self._pending_credit_notices = []
-            self._pending_credit_notices.append((level, text))
+            from gateway.warning_notifications import render_notification
+            def queue_notice():
+                if not hasattr(self, "_pending_credit_notices"):
+                    self._pending_credit_notices = []
+                self._pending_credit_notices.append((level, text))
+            render_notification(queue_notice, platform="cli", diagnostic=level in {"warn", "error"},
+                                user_config=getattr(getattr(self, "agent", None), "_notification_config", None))
         except Exception:
             pass
 
@@ -222,10 +223,9 @@ class CLIStreamMixin:
         from cli import ChatConsole, _accent_hex
         from tools.process_registry_notifications import TimelineNotification
         if isinstance(user_input, TimelineNotification):
-            from gateway.warning_notifications import warning_notifications_enabled
-            if user_input.notification_category == "diagnostic" and not warning_notifications_enabled("cli"):
-                return
-            ChatConsole().print(f"[dim]◈ {_escape(user_input.display_text)}[/dim]")
+            from gateway.warning_notifications import render_notification
+            render_notification(lambda: ChatConsole().print(f"[dim]◈ {_escape(user_input.display_text)}[/dim]"),
+                                platform="cli", diagnostic=user_input.notification_category == "diagnostic")
             return
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         text = str(user_input or "")

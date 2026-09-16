@@ -27,6 +27,19 @@ def diagnostic_wake_muted(event, user_config=None) -> bool:
     )
 
 
+def render_notification(render, *, platform, diagnostic=True, user_config=None) -> bool:
+    """Invoke a synchronous UI renderer only when its classified content is visible.
+
+    Return whether the renderer ran, not whether a transport delivered anything.
+    Call only at a presentation sink, never around producer callbacks or persistence.
+    The caller supplies the owning scope/turn snapshot; exceptions remain its policy.
+    """
+    if diagnostic and not warning_notifications_enabled(platform, user_config):
+        return False
+    render()
+    return True
+
+
 def warning_notifications_enabled(platform, user_config=None) -> bool:
     """Use the turn snapshot when supplied, otherwise the active profile's effective config.
 

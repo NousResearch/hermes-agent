@@ -93,7 +93,9 @@ def test_profile_config_isolated_for_callbacks_and_direct_warnings(tmp_path, mon
         with _profile_runtime_scope(home, prepared_secret_scope={}):
             config = _load_gateway_config()
             assert warning_notifications_enabled(source.platform, config) is expected
-            adapter = SimpleNamespace(send=AsyncMock())
+            from tests.gateway.test_warning_notifications import RecordingAdapter
+            adapter = RecordingAdapter()
+            adapter.send = AsyncMock()
             gateway = object.__new__(GatewayRunner)
             gateway._adapter_for_source = lambda source: adapter
             asyncio.run(gateway._hmwa_hygiene_notify(source, {}, "Compression failed", "failure"))

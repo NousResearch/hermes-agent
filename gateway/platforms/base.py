@@ -2958,8 +2958,6 @@ class BasePlatformAdapter(ABC):
         subsequent upload returns ``success=False`` (for example Discord accepted the message but attached
         nothing), the user must see a failure notice instead of a silent drop (#66797).
         """
-        if not self.warning_notifications_enabled(chat_id=chat_id, metadata=metadata):
-            return
         ext = Path(media_path).suffix.lower()
         if is_voice or should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
             text = _media_failure_text("audio")
@@ -2968,9 +2966,9 @@ class BasePlatformAdapter(ABC):
         else:
             text = _media_failure_text("file", os.path.basename(media_path))
         try:
-            notice = await self.send(chat_id=chat_id, content=text,
-                                     metadata={**(metadata or {}), "_interim_send": True})
-            problem = None if notice.success else notice.error
+            notice = await self.emit_warning(chat_id, text,
+                                             metadata={**(metadata or {}), "_interim_send": True})
+            problem = None if notice is None or notice.success else notice.error
         except Exception as notify_err:
             problem = notify_err
         if problem is not None:

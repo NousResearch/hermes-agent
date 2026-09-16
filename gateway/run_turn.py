@@ -3312,19 +3312,16 @@ class GatewayTurnMixin:
     async def _run_agent_inactivity_warning(self, worker, source, _status_thread_metadata) -> None:
         """Staged one-shot warning before the inactivity timeout escalates."""
         from gateway.run import _interim_metadata
-        from gateway.warning_notifications import warning_notifications_enabled
-        if not warning_notifications_enabled(source.platform):
-            return
         _warn_adapter = self._adapter_for_source(source)
         if not _warn_adapter:
             return
         try:
-            await _warn_adapter.send(
+            await _warn_adapter.emit_warning(
                 source.chat_id, f"⚠️ I seem to be stuck (no activity for {int(worker.agent_warning // 60) or 1} min). "
                 "If nothing happens in the next "
                 f"{int((worker.agent_timeout - worker.agent_warning) // 60) or 1} min I'll give up on this task. "
                 "You can keep waiting, send /stop to cancel it, or /new to start a fresh conversation.",
-                metadata=_interim_metadata(_status_thread_metadata),
+                metadata=_interim_metadata(_status_thread_metadata), logical_platform=source.platform,
             )
         except Exception as _warn_err:
             logger.debug("Inactivity warning send error: %s", _warn_err)

@@ -87,11 +87,28 @@ def _route_rejection(route: dict, requirements: dict, quality: str, excluded_mak
     if missing_caps:
         return "missing_capabilities"
     needed_tokens = requirements["input_tokens"] + requirements["reserve_tokens"]
-    if needed_tokens > route["verified_input_budget"]:
+    budget = route["verified_input_budget"]
+    # A null/non-numeric budget is an UNVERIFIED route -- a roster-discovery
+    # candidate that has never been curated, not a route with "no limit".
+    # Treat it identically to "does not fit": fail closed, never let a raw
+    # comparison against None escape as a TypeError and never silently
+    # admit an unverified route as fitting any request.
+    if not isinstance(budget, int) or isinstance(budget, bool) or budget < 0:
+        return "input_too_large"
+    if needed_tokens > budget:
         return "input_too_large"
     if requirements["reasoning"] not in route["allowed_reasoning"]:
         return "reasoning_unsupported"
-    if quality not in route["qualifications"]:
+    qualifications = route["qualifications"]
+    # A roster-discovery/candidate artifact stores `qualifications` as an
+    # assessment OBJECT (e.g. {"disposition": "qualified", ...}), not the
+    # approved schema's list of satisfied task-class strings. `in` against a
+    # dict would silently check its KEYS, which happens to look plausible
+    # but is not the approved contract -- fail closed instead of accepting
+    # publication shape as if it were curated qualification.
+    if not isinstance(qualifications, (list, tuple, set)):
+        return "qualification_unmet"
+    if quality not in qualifications:
         return "qualification_unmet"
     return None
 

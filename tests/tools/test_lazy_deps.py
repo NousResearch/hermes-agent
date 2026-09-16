@@ -199,8 +199,8 @@ class TestIsSatisfiedVersionAware:
         monkeypatch.setattr(_md, "version", _version)
 
     def test_exact_pin_match_returns_true(self, monkeypatch):
-        self._fake_version(monkeypatch, {"honcho-ai": "2.2.0"})
-        assert ld._is_satisfied("honcho-ai==2.2.0") is True
+        self._fake_version(monkeypatch, {"honcho-ai": "2.4.0"})
+        assert ld._is_satisfied("honcho-ai==2.4.0") is True
 
 
     def test_range_within_returns_true(self, monkeypatch):
@@ -465,7 +465,7 @@ class TestInstallSpecs:
             ld, "_venv_pip_install",
             lambda *a, **kw: pytest.fail("pip should not be called"),
         )
-        result = ld.install_specs(["honcho-ai==2.2.0", "pkg; rm -rf /"])
+        result = ld.install_specs(["honcho-ai==2.4.0", "pkg; rm -rf /"])
         assert result.blocked is True
 
 
@@ -480,7 +480,7 @@ class TestInstallSpecs:
         def boom(specs, **kw):
             raise RuntimeError("disk on fire")
         monkeypatch.setattr(ld, "_venv_pip_install", boom)
-        result = ld.install_specs(["honcho-ai==2.2.0"])
+        result = ld.install_specs(["honcho-ai==2.4.0"])
         assert result.ok is False
         assert "disk on fire" in result.stderr
 

@@ -54,12 +54,16 @@ export function useTimelineHistory() {
   }, [key, storedId, runtimeId, view])
 
   useEffect(() => {
+    if (!storedId) {
+      return
+    }
+
     const timer = window.setTimeout(() => {
       void loadMore()
     }, 200)
 
     return () => window.clearTimeout(timer)
-  }, [loadMore])
+  }, [loadMore, storedId])
 
   const value = index?.key === key ? index.value : cachedTimelineIndex(key)
 

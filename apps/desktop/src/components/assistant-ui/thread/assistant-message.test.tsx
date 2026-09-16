@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
 import { $displayTimestamps } from '@/store/display-timestamps'
+import { $showReasoning } from '@/store/reasoning-disclosure'
 
 import { stubThreadEnvironment } from '../test-utils'
 
@@ -33,6 +34,7 @@ vi.mock('@/store/onboarding', async importOriginal => ({
 
 // Timeline timestamps render only when `display.timestamps` is enabled.
 $displayTimestamps.set(true)
+$showReasoning.set(true)
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
 const completedAt = createdAt.getTime() / 1000 + 1.25
@@ -377,5 +379,15 @@ describe('message timeline timestamps', () => {
     )
 
     expect(stamps.filter(stamp => stamp === formatTimelineRange(startedAt, completedAt))).toHaveLength(1)
+  })
+})
+
+describe('answer-only transcript (#85110 / #49664)', () => {
+  it('hides thinking chrome when display.show_reasoning is off', async () => {
+    $showReasoning.set(false)
+    render(<Harness />)
+    await screen.findByText('done')
+    expect(screen.queryByText('checked carefully')).toBeNull()
+    $showReasoning.set(true)
   })
 })

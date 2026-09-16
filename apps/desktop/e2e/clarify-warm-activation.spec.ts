@@ -6,7 +6,7 @@
 import type { Agent, ClientRequest, RequestOptions } from 'node:http'
 
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
-import { BLOCKING_CLARIFY_QUESTION, BLOCKING_CLARIFY_TRIGGER, MOCK_REPLY } from './mock-server'
+import { BLOCKING_CLARIFY_QUESTION, BLOCKING_CLARIFY_TRIGGER, MOCK_REPLY } from '../../../tests-js/scripts/mock-server'
 import { expect, type Page, test } from './test'
 
 const OTHER_SESSION_PROMPT = 'E2E ordinary session for warm clarification activation.'

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from agent import auxiliary_client as aux
@@ -60,3 +62,36 @@ def test_auxiliary_calls_share_the_main_turn_session_key():
         assert "x-opencode-session" not in (other.get("extra_headers") or {})
     finally:
         aux._RUNTIME_MAIN_CONTEXT.reset(token)
+
+
+def test_auxiliary_call_uses_explicit_main_runtime_session(monkeypatch):
+    captured = {}
+
+    class Completions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+                model="glm-5",
+            )
+
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=Completions()),
+        base_url="https://opencode.ai/zen/v1",
+    )
+    monkeypatch.setattr(
+        aux,
+        "_resolve_task_provider_model",
+        lambda *_args, **_kwargs: (
+            "opencode-zen", "glm-5", "https://opencode.ai/zen/v1", "test-key", None,
+        ),
+    )
+    monkeypatch.setattr(aux, "_get_cached_client", lambda *_args, **_kwargs: (client, "glm-5"))
+
+    aux.call_llm(
+        task="title_generation",
+        messages=_MSGS,
+        main_runtime={"session_id": "sess-explicit-2"},
+    )
+
+    assert captured["extra_headers"]["x-opencode-session"] == "sess-explicit-2"

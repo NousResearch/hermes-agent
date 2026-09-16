@@ -4,9 +4,10 @@ noVNC's ``viewOnly`` is a UI hint; anyone holding the socket could still inject 
 parses the client stream and forwards only non-input messages from viewers that do not hold the
 lease. RFB messages do not align with WebSocket frames, so this is a stateful stream parser fed
 arbitrary chunks (RFC 6143 §7.5 layouts; TigerVNC's EnableContinuousUpdates 150, Fence 248 and
-SetDesktopSize 251 — Xvnc runs -AcceptSetDesktopSize so the viewer can fit the screen to its pane — pass
-through untouched since they carry no input; QEMU Extended KeyEvent 255 is keyboard input — noVNC
-switches to it as soon as Xvnc advertises the pseudo-encoding — so it is gated like KeyEvent).
+SetDesktopSize 251 are framed too. 150 and 248 pass through untouched since they carry no input; QEMU
+Extended KeyEvent 255 is keyboard input — noVNC switches to it as soon as Xvnc advertises the
+pseudo-encoding — so it is gated like KeyEvent; SetDesktopSize resizes the bot's framebuffer under the
+agent (Xvnc runs -AcceptSetDesktopSize), so it is gated like input: only the lease holder may send it).
 
 Xvnc runs ``-SecurityTypes None``, so the handshake is fixed-size: 12-byte version, 1-byte security
 choice, then ``ClientInit`` (1 byte). ``ServerInit`` is server→client and never crosses this filter.
@@ -16,7 +17,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-_INPUT_TYPES = {4, 5, 6, 255}  # KeyEvent, PointerEvent, ClientCutText, QEMU Extended KeyEvent
+_INPUT_TYPES = {4, 5, 6, 251, 255}  # KeyEvent, PointerEvent, ClientCutText, SetDesktopSize, QEMU Extended KeyEvent
 
 # Fixed-length client messages: type -> total length including the type byte.
 _FIXED = {

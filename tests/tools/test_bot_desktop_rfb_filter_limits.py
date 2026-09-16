@@ -34,18 +34,20 @@ def set_desktop_size(width, height, screens=1):
 
 
 @pytest.mark.parametrize("holder", [False, True])
-def test_set_desktop_size_is_framed_and_forwarded_even_to_a_watcher(holder):
-    """Regression for #110039: launcher.sh passes -AcceptSetDesktopSize (the viewer fits the screen to its
-    pane), but the filter had no frame for client message 251 and killed the stream with 'unknown RFB client
-    message type'. It carries no input, so it passes through like SetEncodings, lease or not."""
+def test_set_desktop_size_is_framed_and_gated_like_input(holder):
+    """Regression for #110039: launcher.sh passes -AcceptSetDesktopSize, but the filter had no frame for client
+    message 251 and killed the stream with 'unknown RFB client message type'. It is framed now, and because it
+    resizes the bot's framebuffer under a working agent it is treated like input: the lease holder's resize
+    is forwarded, a watcher's is dropped while the stream (and the request that follows) stays intact."""
     parser = RfbClientFilter(lambda: holder)
     parser.feed(_HANDSHAKE)
-    msg = set_desktop_size(1280, 800) + b"\x03\x00" + b"\x00" * 8  # followed by a FramebufferUpdateRequest
-    assert parser.feed(msg) == msg
+    resize = set_desktop_size(1280, 800)
+    update_request = b"\x03\x00" + b"\x00" * 8
+    assert parser.feed(resize + update_request) == (resize if holder else b"") + update_request
 
 
 def test_truncated_set_desktop_size_waits_for_the_rest():
-    parser = RfbClientFilter(lambda: False)
+    parser = RfbClientFilter(lambda: True)
     parser.feed(_HANDSHAKE)
     msg = set_desktop_size(1280, 800, screens=2)
     for byte in msg[:-1]:

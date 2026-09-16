@@ -55,7 +55,7 @@ def test_init_moa_fallback_persists_native_aggregator_identity():
 
     def fake_resolve(provider, model=None, raw_codex=False,
                      explicit_base_url=None, explicit_api_key=None):
-        if provider == "moa":
+        if provider == "openai-codex":
             return fb, "gpt-5.6-sol"
         return None, None
 

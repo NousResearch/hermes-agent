@@ -163,6 +163,13 @@ import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
+import {
+  createDesktopProfilePreferences,
+  DESKTOP_PROFILE_NAME_RE,
+  type DesktopProfileRoute,
+  resolveDesktopConnectionRequest,
+  resolveDesktopWindowRoute
+} from './desktop-profile'
 import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 import {
   buildPosixCleanupScript,
@@ -879,7 +886,7 @@ const DESKTOP_MANAGED_SSH_RECOVERY_PATH = path.join(app.getPath('userData'), 'ma
 const DESKTOP_PROFILE_CONFIG_PATH = path.join(app.getPath('userData'), 'active-profile.json')
 // Mirrors hermes_cli.profiles._PROFILE_ID_RE so we never hand the backend a
 // value its profile resolver would reject and exit on.
-const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+const PROFILE_NAME_RE = DESKTOP_PROFILE_NAME_RE
 // Branch we track for self-update. The GUI work has merged to main, so this
 // tracks main. User can also override at runtime via
 // hermesDesktop.updates.setBranch().
@@ -9727,36 +9734,34 @@ async function saveRegistryConnection(input: any = {}) {
   return sanitizeRegistryConnection(entry)
 }
 
-// Returns the desktop's chosen profile name, or null when unset. "default" is
-// a valid stored value (pins the root HERMES_HOME explicitly); null means "no
-// preference" and preserves the legacy launch (no --profile flag).
-function readActiveDesktopProfile() {
-  try {
-    const raw = fs.readFileSync(DESKTOP_PROFILE_CONFIG_PATH, 'utf8')
-    const parsed = JSON.parse(raw)
-    const name = parsed && typeof parsed.profile === 'string' ? parsed.profile.trim() : ''
-
-    if (name && (name === 'default' || PROFILE_NAME_RE.test(name))) {
-      return name
+// Last-used profile and explicit app-wide default share the existing desktop
+// preference file, but only the explicit action changes the default route.
+const desktopProfilePreferences = createDesktopProfilePreferences(DESKTOP_PROFILE_CONFIG_PATH, {
+  validateRoute: validateDesktopProfileRoute,
+  onDefaultChanged: route => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.webContents.isDestroyed()) {
+        win.webContents.send('hermes:profile:default:changed', route)
+      }
     }
-  } catch {
-    // Missing or malformed → no preference.
   }
+})
 
-  return null
+function validateDesktopProfileRoute(route: DesktopProfileRoute) {
+  if (
+    route.connectionId &&
+    !readDesktopConnectionsRegistry().connections.some((source: { id: string }) => source.id === route.connectionId)
+  ) {
+    throw new Error(`No connection with id "${route.connectionId}".`)
+  }
+}
+
+function readActiveDesktopProfile() {
+  return desktopProfilePreferences.readActive()
 }
 
 function writeActiveDesktopProfile(name) {
-  const value = typeof name === 'string' ? name.trim() : ''
-
-  if (value && value !== 'default' && !PROFILE_NAME_RE.test(value)) {
-    throw new Error(`Invalid profile name: ${value}`)
-  }
-
-  fs.mkdirSync(path.dirname(DESKTOP_PROFILE_CONFIG_PATH), { recursive: true })
-  writeFileAtomic(DESKTOP_PROFILE_CONFIG_PATH, JSON.stringify({ profile: value || null }, null, 2))
-
-  return value || null
+  return desktopProfilePreferences.remember(name)
 }
 
 // True when the given pid belongs to a running process whose command line
@@ -13705,8 +13710,7 @@ const instanceWindows = new Set<any>()
 // exactly on top of its source. Falls back to the persisted primary geometry
 // when there's no live source window (e.g. all windows closed on macOS). The
 // pure cascade math lives in session-windows.ts (instanceWindowBounds).
-function nextInstanceBounds() {
-  const source = BrowserWindow.getFocusedWindow() || mainWindow
+function nextInstanceBounds(source: BrowserWindow | null = BrowserWindow.getFocusedWindow() || mainWindow) {
   const fallback = computeWindowOptions(readWindowState(), screen.getAllDisplays())
   const base = source && !source.isDestroyed() ? source.getBounds() : null
 
@@ -13716,14 +13720,22 @@ function nextInstanceBounds() {
 // Open a new full-chrome instance window. Mirrors createWindow()'s window
 // options (shared chatWindowWebPreferences + streamThrottle registration so a
 // streamed answer never stalls in the background) but is a peer, not the
-// primary: it never overwrites the mainWindow global, doesn't start the backend
-// (the renderer's getConnection() joins the already-running one), and loads the
-// plain renderer URL so the full app renders.
-function createInstanceWindow() {
+// primary: it never overwrites mainWindow or re-homes the source. Its renderer
+// joins the requested pooled backend through its own connection/profile route.
+function createInstanceWindow(
+  options?: DesktopProfileRoute,
+  source: BrowserWindow | null = BrowserWindow.getFocusedWindow() || mainWindow
+) {
+  const route = resolveDesktopWindowRoute(
+    options,
+    source && !source.isDestroyed() ? windowConnectionRoutes.get(source.webContents.id) : null,
+    { connectionId: null, profile: primaryProfileKey() }
+  )
+  validateDesktopProfileRoute(route)
   const icon = getAppIconPath()
 
   const win = new BrowserWindow({
-    ...nextInstanceBounds(),
+    ...nextInstanceBounds(source),
     minWidth: WINDOW_MIN_WIDTH,
     minHeight: WINDOW_MIN_HEIGHT,
     title: 'Hermes',
@@ -13737,6 +13749,7 @@ function createInstanceWindow() {
   })
 
   instanceWindows.add(win)
+  recordWindowConnectionRoute(win.webContents, { ...route, registryScoped: route.connectionId !== null })
 
   // Chat-surface registration: see applyWindowTranslucency.
   translucencyBackedWindows.add(win)
@@ -13779,6 +13792,7 @@ function createInstanceWindow() {
   loadWindowUrl(
     win,
     buildInstanceWindowUrl({
+      ...route,
       devServer: DEV_SERVER,
       rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
     }),
@@ -14735,6 +14749,14 @@ function createWindow() {
   })
 
   const createdMainWindow = mainWindow
+  const defaultRoute = desktopProfilePreferences.getDefault()
+
+  if (defaultRoute) {
+    recordWindowConnectionRoute(mainWindow.webContents, {
+      ...defaultRoute,
+      registryScoped: defaultRoute.connectionId !== null
+    })
+  }
 
   // Chat-surface registration: see applyWindowTranslucency.
   translucencyBackedWindows.add(mainWindow)
@@ -14950,7 +14972,8 @@ function createWindow() {
   // shared (backendConnectionState), so the renderer's getConnection() joins
   // this in-flight boot instead of duplicating it; early boot-progress events
   // the renderer misses are recovered by its getBootProgress() pull on mount.
-  startHermes().catch(error => rememberLog(error.stack || error.message))
+  const startup = defaultRoute ? connectDesktopProfileRoute(defaultRoute) : startHermes()
+  startup.catch(error => rememberLog(error.stack || error.message))
 
   mainWindow.webContents.once('did-finish-load', () => {
     // Zoom restore is handled by wireCommonWindowHandlers (shared with session
@@ -14960,31 +14983,48 @@ function createWindow() {
   })
 }
 
-ipcMain.handle('hermes:connection', async (_event, profile, extra) => {
+ipcMain.handle('hermes:connection', async (event, profile, extra) => {
+  const route = resolveDesktopConnectionRequest(
+    profile,
+    windowConnectionRoutes.get(event.sender.id),
+    primaryProfileKey()
+  )
+
+  return connectDesktopProfileRoute(route, spawnPriorityFrom(extra?.priority))
+})
+
+async function connectDesktopProfileRoute(
+  route: DesktopProfileRoute,
+  spawnPriority: LocalBackendSpawnPriority = 'foreground'
+) {
   // Coalesce concurrent renderer dials for one profile scope (#90812): the
   // renderer-side reconnect lock is per-window, so two windows waking at once
   // both land here. The claim key mirrors ensureBackend()'s own profile
   // normalization so every spelling of the primary coalesces onto one dial.
-  const profileKey = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
-  // A user click may join an in-flight hydration claim; the foreground intent
-  // is applied to that claim so its slot wait can take the reserved slot.
-  const spawnPriority = spawnPriorityFrom(extra?.priority)
-
-  const scopeKey = backendScopeKey(null, profileKey)
+  const scopeKey = backendScopeKey(route.connectionId, route.profile)
   const clearSpawnPriority = applySpawnPriority(scopeKey, spawnPriority)
 
   let connection
 
   try {
-    connection = await backendDialClaims.run(scopeKey, () => ensureBackend(profile, { spawnPriority }))
+    connection = await backendDialClaims.run(scopeKey, () =>
+      route.connectionId
+        ? ensureRegistryBackend(route.connectionId, route.profile, '', { spawnPriority })
+        : ensureBackend(route.profile, { spawnPriority })
+    )
   } finally {
     clearSpawnPriority()
+  }
+
+  if (route.connectionId) {
+    return { ...connection, connectionId: route.connectionId, registryScoped: true }
   }
 
   const connectionId = resolvedConnectionId(readDesktopConnectionsRegistry(), connection)
 
   return connectionId ? { ...connection, connectionId } : connection
-})
+}
+
 // Registry-scoped variant: resolve a backend for (connectionId, profile).
 // connectionId '' / 'local' / the registry primary all behave sensibly; the
 // local kind delegates to ensureBackend when the v1 route is local, and
@@ -14996,28 +15036,14 @@ ipcMain.handle('hermes:connection:for', async (_event, payload) => {
   const id = String(connectionId || '').trim() || registry.primary
   const spawnPriority = spawnPriorityFrom(priority)
 
-  // Same single-owner claim as 'hermes:connection', keyed by the composite
-  // (connectionId, profile) scope (#90812): concurrent registry dials for one
-  // scope share the first spawn instead of bootstrapping duplicate remotes.
-  const scopeKey = backendScopeKey(id, profile)
-  const clearSpawnPriority = applySpawnPriority(scopeKey, spawnPriority)
-
-  let connection
-
-  try {
-    connection = await backendDialClaims.run(scopeKey, () => ensureRegistryBackend(id, profile, '', { spawnPriority }))
-  } finally {
-    clearSpawnPriority()
-  }
-
-  return { ...connection, connectionId: id, registryScoped: true }
+  return connectDesktopProfileRoute({ connectionId: id, profile: String(profile ?? '').trim() || 'default' }, spawnPriority)
 })
 
 const windowConnectionRoutes = new WindowConnectionRouteRegistry()
 const windowConnectionRouteOwners = new Set<number>()
 
-ipcMain.on('hermes:connection:active-route', (event, route) => {
-  const id = event.sender.id
+function recordWindowConnectionRoute(sender: Electron.WebContents, route: unknown) {
+  const id = sender.id
   const previous = windowConnectionRoutes.get(id)
   const next = windowConnectionRoutes.set(id, route)
 
@@ -15031,13 +15057,15 @@ ipcMain.on('hermes:connection:active-route', (event, route) => {
 
   if (!windowConnectionRouteOwners.has(id)) {
     windowConnectionRouteOwners.add(id)
-    event.sender.once('destroyed', () => {
+    sender.once('destroyed', () => {
       windowConnectionRoutes.delete(id)
       windowConnectionRouteOwners.delete(id)
       void resetPreviewReach(id)
     })
   }
-})
+}
+
+ipcMain.on('hermes:connection:active-route', (event, route) => recordWindowConnectionRoute(event.sender, route))
 // Reconnect-after-wake recovery. A REMOTE primary backend has no child process,
 // so the 'exit'/'error' handlers that would clear a dead connection promise never
 // fire — once the remote becomes unreachable across a sleep/wake the renderer
@@ -15177,8 +15205,8 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
 
   return { ok: true }
 })
-ipcMain.handle('hermes:window:openInstance', async () => {
-  createInstanceWindow()
+ipcMain.handle('hermes:window:openInstance', async (event, options) => {
+  createInstanceWindow(options, BrowserWindow.fromWebContents(event.sender))
 
   return { ok: true }
 })
@@ -15551,6 +15579,7 @@ ipcMain.handle('hermes:connections:remove', async (_event, id) => {
   // removed connection keep their WebSocket open (remote/cloud have no local
   // process to kill) and stream ghost events until page reload.
   broadcastConnectionsChanged({ connectionId: key, reason: 'removed' })
+  desktopProfilePreferences.connectionRemoved(key)
 
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
 })
@@ -16320,11 +16349,12 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 
+ipcMain.handle('hermes:profile:default:get', async () => desktopProfilePreferences.getDefault())
+ipcMain.handle('hermes:profile:default:set', async (_event, route) => desktopProfilePreferences.setDefault(route))
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
 // Persistence-only sibling of hermes:profile:set: records the profile the
-// Desktop should boot into next launch WITHOUT tearing down the backend or
-// reloading the window — the rail's live workspace switch already re-homed
-// the gateway (#79886).
+// Desktop last used WITHOUT tearing down the backend or reloading the window.
+// An explicit default route wins at launch and is never replaced here.
 ipcMain.handle('hermes:profile:remember', async (_event, name) => ({
   profile: writeActiveDesktopProfile(name)
 }))
@@ -16770,7 +16800,10 @@ async function handleHermesApiRequest(request) {
   const registryConnectionId = apiRequestRegistryConnectionId(request)
 
   if (registryConnectionId) {
-    return dispatchRegistryApiRequest(request, registryConnectionId)
+    const response = await dispatchRegistryApiRequest(request, registryConnectionId)
+    desktopProfilePreferences.afterProfileRequest(registryConnectionId, request, response)
+
+    return response
   }
 
   // Remote-profile session requests would otherwise hit the local primary off
@@ -16832,7 +16865,11 @@ async function handleHermesApiRequest(request) {
     throw error
   }
 
-  await profileRename?.complete()
+  try {
+    desktopProfilePreferences.afterProfileRequest(null, request, response)
+  } finally {
+    await profileRename?.complete()
+  }
 
   return response
 }
@@ -16846,7 +16883,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   const registryConnectionId = apiRequestRegistryConnectionId(request)
 
   if (deletingProfile && registryConnectionId) {
-    return dispatchConnectionScopedProfileDelete(request, {
+    const response = await dispatchConnectionScopedProfileDelete(request, {
       acquire: profile => profileDeletionGate.acquire(profile),
       connectionKind: connectionId => registryConnectionKind(connectionId),
       dispatch: routeProfile =>
@@ -16856,6 +16893,9 @@ ipcMain.handle('hermes:api', async (_event, request) => {
       prepareLocal: localRequest => prepareProfileDeleteRequest(localRequest).then(() => undefined),
       teardownConnection: (connectionId, profile) => teardownConnectionScopedProfileBackend(connectionId, profile)
     })
+    desktopProfilePreferences.afterProfileRequest(registryConnectionId, request, response)
+
+    return response
   }
 
   if (!mutatingProfile) {

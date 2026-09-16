@@ -1916,6 +1916,12 @@ export const ja = defineLocale({
 
     color: 'カラー…',
     colorFor: 'カラー',
+    openInNewWindow: '新しいウィンドウで開く',
+    setAsDefault: 'デフォルトに設定',
+    defaultProfile: 'デフォルトのプロファイル',
+    defaultSet: name => `${name} をデフォルトに設定しました`,
+    defaultDescription: 'Hermes の起動時と新しいチャットに使用します。既存のセッションのプロファイルは変わりません。',
+    failedSetDefault: 'デフォルトのプロファイルを設定できませんでした',
     setColor: color => `カラー ${color} に設定`,
     autoColor: '自動',
     noProfiles: 'プロファイルが見つかりません。',

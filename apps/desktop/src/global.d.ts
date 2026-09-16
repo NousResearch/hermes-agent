@@ -78,9 +78,9 @@ declare global {
         opts?: { cwd?: string; profile?: string }
       ) => Promise<{ ok: boolean; error?: string }>
       // Open a new full-chrome app window — a peer instance of the primary that
-      // renders the complete app against the shared backend, so the user can run
-      // multiple GUI windows at once.
-      openWindow: () => Promise<{ ok: boolean; error?: string }>
+      // renders the complete app on an explicit connection/profile, or inherits
+      // the calling window's route when no options are supplied.
+      openWindow: (options?: DesktopProfileRoute) => Promise<{ ok: boolean; error?: string }>
       // Pop the in-app Browser (webview + address bar) into its own OS window.
       // `tabId` is the `$previewTabs` id; closing the window fires
       // `onBrowserPopoutClosed` so the caller can dock the tab again.
@@ -252,9 +252,12 @@ declare global {
         agentSignIn: (dashboardUrl: string) => Promise<DesktopCloudAgentSignInResult>
       }
       profile: {
+        getDefault: () => Promise<DesktopProfileRoute | null>
+        setDefault: (route: DesktopProfileRoute) => Promise<DesktopProfileRoute>
+        onDefaultChanged: (callback: (route: DesktopProfileRoute | null) => void) => () => void
         get: () => Promise<DesktopActiveProfile>
-        // Persists the profile used on the next Desktop launch without
-        // interrupting the live gateway workspace switch.
+        // Remembers last use without interrupting a live workspace switch or
+        // replacing an explicit default route.
         remember: (name: string | null) => Promise<DesktopActiveProfile>
         // Persists the desktop's profile choice and relaunches the local
         // backend under the new HERMES_HOME (reloads the window). Pass null to
@@ -861,6 +864,11 @@ export interface HermesWindowState {
   isVisible?: boolean
   nativeOverlayWidth: number
   windowButtonPosition: { x: number; y: number } | null
+}
+
+export interface DesktopProfileRoute {
+  connectionId: null | string
+  profile: string
 }
 
 export interface DesktopActiveProfile {

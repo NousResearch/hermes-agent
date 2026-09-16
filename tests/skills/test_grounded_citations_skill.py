@@ -604,3 +604,37 @@ def test_stats_reports_provenance_total_matching_coverage(sources_mod, ledger: P
     stats = warnings[0]
     # 4 sentences, 3 with provenance (the both-marked sentence counts once).
     assert "4 prose sentence(s), 3 with declared provenance (75%)" in stats
+
+
+# ---------------------------------------------------------------------------
+# Trailing Sources disambiguation (regression for #88660)
+# ---------------------------------------------------------------------------
+
+
+def test_replace_in_preserves_author_prose_sources_section(sources_mod) -> None:
+    """An author-written prose section titled Sources is not a generated block."""
+    draft = (
+        "# Water report\n\nWater expands when it freezes.\n\n## Sources\n\n"
+        "Our figures come from the NIST steam tables and from lab notebooks kept\n"
+        "during the 2024 replication attempt. Neither is available online, so the\n"
+        "provenance is described here in prose rather than as links.\n"
+    )
+    assert sources_mod._strip_sources_block(draft) == draft
+
+
+def test_replace_in_still_strips_generated_block(sources_mod) -> None:
+    """A real generated block is still removed so render stays idempotent."""
+    body = sources_mod._strip_sources_block(
+        "Water expands when it freezes.[1]\n\n## Sources\n\n[1] https://a.example\n"
+    )
+    assert "## Sources" not in body
+    assert "[1] https://a.example" not in body
+    assert "Water expands when it freezes.[1]" in body
+
+
+def test_trailing_marker_stays_with_its_sentence(sources_mod) -> None:
+    """A [n] glued to a period annotates that sentence, not the next one."""
+    assert sources_mod._sentences("Water expands when it freezes.[1] Ice sinks in ethanol.") == [
+        "Water expands when it freezes.[1]",
+        "Ice sinks in ethanol.",
+    ]

@@ -356,6 +356,7 @@ class RollbackCheckpoint(Result):
 class RollbackListResult(Result):
     enabled: bool
     checkpoints: list[RollbackCheckpoint] = Field(default_factory=list)
+    unavailable_reason: str | None = None
 
 
 method("rollback.list", params=RollbackListParams, result=RollbackListResult,
@@ -401,6 +402,7 @@ class RollbackDiffResult(Result):
     stat: str = ""
     diff: str = ""
     rendered: str | None = None
+    error: str | None = None
 
 
 method("rollback.diff", params=RollbackDiffParams, result=RollbackDiffResult,

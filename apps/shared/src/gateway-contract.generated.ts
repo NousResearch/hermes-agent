@@ -3167,6 +3167,7 @@ export interface RollbackListParams {
 export interface RollbackListResult {
   enabled: boolean
   checkpoints?: RollbackCheckpoint[]
+  unavailable_reason?: string | null
 }
 export interface RollbackCheckpoint {
   hash?: string
@@ -3204,6 +3205,7 @@ export interface RollbackDiffResult {
   stat?: string
   diff?: string
   rendered?: string | null
+  error?: string | null
 }
 export interface CronManageParams {
   action?: CronAction

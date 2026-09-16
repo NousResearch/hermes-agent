@@ -80,6 +80,9 @@ def _ensure_file_checkpoint(agent, function_name: str, function_args: dict, effe
     file_path = function_args.get("path", "")
     if not file_path:
         return
+    from tools.checkpoint_manager import checkpoint_unavailable_reason
+    if checkpoint_unavailable_reason(effective_task_id or "default"):
+        return
     from agent.file_safety import is_nt_namespace_path
     from tools.file_tools_paths import _resolve_path_for_task
 
@@ -963,6 +966,9 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
     if not agent._checkpoint_mgr.enabled:
         return
     with contextlib.suppress(Exception):
+        from tools.checkpoint_manager import checkpoint_unavailable_reason
+        if checkpoint_unavailable_reason(effective_task_id or "default"):
+            return
         if function_name in {"write_file", "patch"}:
             _ensure_file_checkpoint(agent, function_name, function_args, effective_task_id)
         elif function_name == "terminal":

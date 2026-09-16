@@ -22658,6 +22658,18 @@
             ],
             "default": null,
             "title": "Rendered"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
           }
         },
         "title": "RollbackDiffResult",
@@ -22702,6 +22714,18 @@
             },
             "title": "Checkpoints",
             "type": "array"
+          },
+          "unavailable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Unavailable Reason"
           }
         },
         "required": [

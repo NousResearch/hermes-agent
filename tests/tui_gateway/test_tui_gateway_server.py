@@ -12069,6 +12069,34 @@ def test_rollback_restore_resolves_number_and_file_path():
     assert calls["args"][2] == "src/app.tsx"
 
 
+def test_rollback_rpcs_refuse_container_session_before_store_access(monkeypatch):
+    class _Mgr:
+        enabled = True
+
+        def __getattr__(self, name):
+            raise AssertionError(f"container session called checkpoint manager {name}")
+
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    server._sessions["sid"] = _session(agent=types.SimpleNamespace(_checkpoint_mgr=_Mgr()))
+
+    listed = server.handle_request({
+        "id": "list", "method": "rollback.list", "params": {"session_id": "sid"},
+    })
+    restored = server.handle_request({
+        "id": "restore", "method": "rollback.restore",
+        "params": {"session_id": "sid", "hash": "abc123"},
+    })
+    diffed = server.handle_request({
+        "id": "diff", "method": "rollback.diff",
+        "params": {"session_id": "sid", "hash": "abc123"},
+    })
+
+    reason = listed["result"]["unavailable_reason"]
+    assert listed["result"]["enabled"] is False
+    assert restored["result"] == {"success": False, "error": reason}
+    assert diffed["result"]["error"] == reason
+
+
 def test_rollback_restore_truncates_from_real_user_turn_not_marker(monkeypatch):
     """rollback.restore must truncate from the last *real* user turn,
     not a display_kind timeline marker (same bug class as /undo).

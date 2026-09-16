@@ -616,6 +616,9 @@ class CLICommandsMixin:
         mgr = self.agent._checkpoint_mgr
         if not mgr.enabled:
             return _pr(*disabled_lines)
+        from tools.checkpoint_manager import checkpoint_unavailable_reason
+        if reason := checkpoint_unavailable_reason(getattr(self, "session_id", "") or "default"):
+            return print(f"  {reason}")
         return mgr
 
     def _handle_rollback_command(self, command: str):

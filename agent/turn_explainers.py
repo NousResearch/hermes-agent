@@ -252,9 +252,14 @@ class TurnExplainersMixin:
             # Hermes-authored content from later user hand-edits.
             mgr = getattr(self, "_checkpoint_mgr", None)
             if mgr is not None and getattr(mgr, "enabled", False):
-                for _p in landed_paths:
-                    with suppress(Exception):
-                        mgr.record_agent_write(_p)
+                checkpoints_available = False
+                with suppress(Exception):
+                    from tools.checkpoint_manager import checkpoint_unavailable_reason
+                    checkpoints_available = not checkpoint_unavailable_reason(task_id or "default")
+                if checkpoints_available:
+                    for _p in landed_paths:
+                        with suppress(Exception):
+                            mgr.record_agent_write(_p)
         if is_error and not landed:
             # Keep the FIRST error per path unless a later success replaces it.
             preview = _extract_error_preview(result)

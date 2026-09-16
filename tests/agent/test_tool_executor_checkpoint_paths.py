@@ -2,7 +2,10 @@
 
 from types import SimpleNamespace
 
+import json
+
 from agent.tool_executor import _ensure_file_checkpoint
+from agent.turn_explainers import TurnExplainersMixin
 from tools.checkpoint_manager import CheckpointManager
 
 
@@ -38,3 +41,36 @@ def test_relative_file_checkpoint_uses_task_workspace(tmp_path, monkeypatch):
 
     assert manager.list_checkpoints(str(workspace_cwd))
     assert manager.list_checkpoints(str(process_cwd)) == []
+
+
+def test_container_file_mutations_never_touch_host_checkpoint_state(tmp_path, monkeypatch):
+    class _Manager:
+        enabled = True
+
+        def ensure_checkpoint(self, *_args, **_kwargs):
+            raise AssertionError("container path reached host checkpoint store")
+
+        def get_working_dir_for_path(self, *_args, **_kwargs):
+            raise AssertionError("container path reached host checkpoint root lookup")
+
+        def record_agent_write(self, *_args, **_kwargs):
+            raise AssertionError("container path reached host write ledger")
+
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    agent = SimpleNamespace(
+        _checkpoint_mgr=_Manager(),
+        _turn_failed_file_mutations={},
+        _turn_file_mutation_paths=set(),
+    )
+
+    _ensure_file_checkpoint(agent, "write_file", {"path": "/workspace/app.py"}, "container-session")
+    TurnExplainersMixin._record_file_mutation_result(
+        agent,
+        "write_file",
+        {"path": "/workspace/app.py", "content": "updated"},
+        json.dumps({"bytes_written": 7}),
+        False,
+        task_id="container-session",
+    )
+
+    assert agent._turn_file_mutation_paths == {"/workspace/app.py"}

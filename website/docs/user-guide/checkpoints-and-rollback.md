@@ -120,6 +120,10 @@ checkpoints:
 
 When `enabled: false`, the Checkpoint Manager is a no-op and never attempts git operations. When `auto_prune: false`, the store grows until you run `hermes checkpoints prune` manually.
 
+:::note Container terminal backends
+Checkpoints and `/rollback` are unavailable in Docker, Singularity, Modal, Daytona, Vercel Sandbox, and plugin backends that declare themselves as containers. Their paths belong to the container and cannot be mapped safely to the host-side checkpoint store. Hermes therefore skips snapshots and the agent-write ledger, and refuses checkpoint listing, diffs, and restores for those sessions. Local and SSH terminal backends are unaffected.
+:::
+
 ## Listing Checkpoints
 
 From a CLI session:

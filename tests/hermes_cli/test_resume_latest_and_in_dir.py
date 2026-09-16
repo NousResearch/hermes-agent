@@ -112,12 +112,16 @@ def test_resume_latest_resolves_to_mru_session(main_mod, launched, monkeypatch):
     assert launched["resume"] == "20260807_120000_abc123"
 
 
-def test_resume_latest_tui_falls_back_to_cli_source(main_mod, launched, monkeypatch):
+def test_resume_latest_tui_family_can_fall_back_to_cli_source(main_mod, launched, monkeypatch):
     calls = []
 
     def fake_resolve(source="cli"):
         calls.append(source)
-        return "cli_session_1" if source == "cli" else None
+        # TUI-mode launches ask the whole local family in one call; a cli
+        # session is the tail of the family fallback.
+        return "cli_session_1" if source == "cli" or (
+            isinstance(source, tuple) and "cli" in source
+        ) else None
 
     monkeypatch.setattr(main_mod, "_resolve_last_session", fake_resolve)
     monkeypatch.setattr(main_mod, "_resolve_session_by_name_or_id", lambda v: v)
@@ -125,7 +129,7 @@ def test_resume_latest_tui_falls_back_to_cli_source(main_mod, launched, monkeypa
     with pytest.raises(SystemExit) as exc:
         main_mod.cmd_chat(_args(resume="latest"))
     assert exc.value.code == 0
-    assert calls == ["tui", "cli"]
+    assert calls == [("tui", "webui", "cli")]
     assert launched["resume"] == "cli_session_1"
 
 

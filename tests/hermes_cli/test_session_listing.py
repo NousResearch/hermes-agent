@@ -76,6 +76,108 @@ class TestQuerySessionListingSearch:
         assert rows[0]["is_current_session"] is True
 
 
+class TestSessionVisibilityPolicy:
+    """One shared automation deny-list across every resume surface.
+
+    The local classic CLI caller passes source="cli" with no gateway lane
+    (see cli_session_mixin._list_recent_sessions). Shared policy must treat
+    that local ``cli`` label as provenance: the listing becomes cross-source
+    and denies the reviewed automation set (cron/tool/kanban/subagent)
+    without hiding ACP/webhook/custom, while a gateway caller constrained by
+    source + session_key is never widened.
+    """
+
+    @pytest.fixture
+    def db(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "local.db")
+        human_sources = ("cli", "tui", "webui", "acp", "webhook", "custom-human")
+        for source in human_sources:
+            sid = f"human_{source}"
+            db.create_session(sid, source)
+            db.set_session_title(sid, f"Human {source}")
+        automation_sources = ("cron", "tool", "kanban", "subagent")
+        for source in automation_sources:
+            sid = f"automation_{source}"
+            db.create_session(sid, source)
+            db.set_session_title(sid, f"Automation {source}")
+        yield db
+        db.close()
+
+    def test_classic_cli_is_cross_source_but_denies_automation(self, db):
+        """The CLISessionMixin call shape (source="cli", no lane): the shared
+        policy widens the local cli label to provenance and hides every
+        automation source, while ACP/webhook/custom stay visible. Caller
+        exclusions are additive — a narrower legacy list still ends up denying
+        the full automation set."""
+        from hermes_cli.session_listing import AUTOMATION_SOURCES
+
+        rows = query_session_listing(
+            db,
+            source="cli",
+            current_session_id="human_cli",
+            include_all_sources=False,
+            include_unnamed=True,
+            limit=50,
+            exclude_sources=["kanban", "tool"],
+        )
+        ids = {row["id"] for row in rows}
+
+        assert "human_cli" not in ids  # current session excluded
+        assert {
+            "human_tui",
+            "human_webui",
+            "human_acp",
+            "human_webhook",
+            "human_custom-human",
+        }.issubset(ids)
+        assert ids.isdisjoint({f"automation_{source}" for source in AUTOMATION_SOURCES})
+
+    def test_gateway_lane_scope_is_not_widened(self, db):
+        """Cross-source local discovery must not become gateway authority."""
+        db.create_session(
+            "telegram_lane",
+            "telegram",
+            session_key="agent:main:telegram:dm:1",
+            user_id="u",
+            chat_id="1",
+        )
+        db.set_session_title("telegram_lane", "Telegram lane")
+
+        rows = query_session_listing(
+            db,
+            source="telegram",
+            session_key="agent:main:telegram:dm:1",
+            include_unnamed=True,
+            limit=50,
+        )
+
+        assert [row["id"] for row in rows] == ["telegram_lane"]
+
+    def test_gateway_all_sources_path_denies_automation(self, db):
+        """The gateway admin ``/sessions all`` shape (include_all_sources)
+        passes the shared constant as its exclusion, so automation sources are
+        hidden there too."""
+        from hermes_cli.session_listing import AUTOMATION_SOURCES
+
+        rows = query_session_listing(
+            db,
+            source="telegram",
+            session_key=None,
+            include_all_sources=True,
+            include_unnamed=True,
+            limit=50,
+            exclude_sources=sorted(AUTOMATION_SOURCES),
+        )
+        ids = {row["id"] for row in rows}
+
+        assert "human_cli" in ids
+        assert "human_acp" in ids
+        assert "human_webhook" in ids
+        assert ids.isdisjoint({f"automation_{source}" for source in AUTOMATION_SOURCES})
+
+
 class TestFormatGatewaySessionListing:
     def test_marks_current_session(self):
         listing = format_gateway_session_listing(

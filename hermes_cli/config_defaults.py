@@ -2363,6 +2363,9 @@ DEFAULT_CONFIG = {
         "repo_scan_enabled": True,
         "repo_scan_roots": [],
         "repo_scan_exclude_paths": [],
+        # Render bare `#123` refs in the desktop transcript as github.com links to the
+        # session's repo (resolved where the gateway runs via git.repo_refs).
+        "autolink_issue_refs": True,
         # Extra Electron flags per launch, e.g. ["--ozone-platform=x11"] or GPU workarounds. List of
         # strings; a single string is shell-split.
         "electron_flags": [],

@@ -1,5 +1,6 @@
 import { normalizeMathDelimiters } from '@assistant-ui/react-streamdown'
 
+import { linkifyGhIssueRefs } from '@/lib/gh-refs'
 import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
 import { clampHtmlNestingDepth } from '@/lib/markdown-html-depth'
 import { mediaKind, mediaMarkdownHref } from '@/lib/media'
@@ -203,10 +204,12 @@ function routeFileLinksToPreview(text: string): string {
 }
 
 function rewriteProseSegment(segment: string): string {
-  return linkifySessionRefs(
-    autoLinkRawUrls(
-      routeFileLinksToPreview(
-        segment.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+  return linkifyGhIssueRefs(
+    linkifySessionRefs(
+      autoLinkRawUrls(
+        routeFileLinksToPreview(
+          segment.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+        )
       )
     )
   )

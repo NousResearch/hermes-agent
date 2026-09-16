@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
@@ -127,6 +127,57 @@ describe('ComposerDirectiveActions', () => {
     vi.advanceTimersByTime(500)
 
     expect(pillValue()).toBe('https://example.com')
+  })
+
+  it('keeps the pill up through a slow diagonal transit to it', () => {
+    vi.useFakeTimers()
+
+    const editor = mountEditor([{ kind: 'url', value: 'https://example.com' }])
+    const chip = chips(editor, 'url')[0]!
+
+    hover(chip)
+    fireEvent.pointerOut(chip, { relatedTarget: null })
+    // The pointer is still in the gap between chip and pill — beyond the old
+    // 120 ms window, not yet on the pill's own hover.
+    act(() => {
+      vi.advanceTimersByTime(300)
+    })
+    expect(pillValue()).toBe('https://example.com')
+
+    fireEvent.mouseEnter(screen.getByRole('button').parentElement!)
+    act(() => {
+      vi.advanceTimersByTime(500)
+    })
+
+    expect(pillValue()).toBe('https://example.com')
+
+    const button = screen.getByRole('button')
+    fireEvent.pointerOut(button, { relatedTarget: button.firstElementChild })
+    act(() => {
+      vi.advanceTimersByTime(750)
+    })
+    expect(pillValue()).toBe('https://example.com')
+  })
+
+  it('still hides shortly after the pointer leaves the pill for good', () => {
+    vi.useFakeTimers()
+
+    const editor = mountEditor([{ kind: 'url', value: 'https://example.com' }])
+    const chip = chips(editor, 'url')[0]!
+
+    hover(chip)
+    fireEvent.pointerOut(chip, { relatedTarget: null })
+    fireEvent.mouseEnter(screen.getByRole('button').parentElement!)
+    fireEvent.mouseLeave(screen.getByRole('button').parentElement!)
+    act(() => {
+      vi.advanceTimersByTime(300)
+    })
+    fireEvent.pointerOut(document.body, { relatedTarget: document.documentElement })
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+
+    expect(pillValue()).toBeNull()
   })
 
   it('binds to the document so a late-attached editor still gets the affordance', () => {

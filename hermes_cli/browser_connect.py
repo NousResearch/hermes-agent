@@ -26,6 +26,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agent.proxy_bypass import is_loopback_host
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -393,28 +394,28 @@ _SQLITE_AUTH_DBS = frozenset({"Cookies", "Login Data", "Login Data For Account",
 
 
 def _copy_auth_file(src_file: str, dst_file: str) -> bool:
-    """Copy one auth file, lock-aware; True on success. SQLite DBs use the online-backup API (works
-    under a Windows write lock), falling through to a raw copy; failure only if BOTH fail."""
+    """Copy auth state; refuse a DB that cannot be snapshotted consistently within five seconds."""
     os.makedirs(os.path.dirname(dst_file), exist_ok=True)
-    if os.path.basename(src_file) in _SQLITE_AUTH_DBS:
-        # With a live Chrome on macOS, mode=ro WITHOUT immutable=1 can hang connect/backup
-        # forever (blocked inside lock negotiation, so the busy-timeout never fires).
-        # immutable=1 reads instantly and is correct: we want a committed snapshot, not
-        # coordinated writes. A torn read raises → next mode, then the plain-copy fallback.
-        for uri in (f"file:{src_file}?mode=ro&immutable=1", f"file:{src_file}?mode=ro"):
-            try:
-                # Short busy timeout so a truly wedged DB fails fast rather than hanging.
-                with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=5)) as source:
-                    with contextlib.closing(sqlite3.connect(dst_file)) as out, out:
-                        source.backup(out)
-                return True
-            except Exception as e:
-                logger.debug("real-profile: sqlite-backup of %s failed (%s); trying next mode",
-                             src_file, e)
     try:
-        shutil.copy2(src_file, dst_file)
+        if os.path.basename(src_file) in _SQLITE_AUTH_DBS:
+            deadline = time.monotonic() + 5.0
+
+            def check_deadline(_status: int, _remaining: int, _total: int) -> None:
+                if _status != sqlite3.SQLITE_DONE and time.monotonic() >= deadline:
+                    raise TimeoutError("auth database backup exceeded five seconds")
+
+            # SQLite must coordinate both ends: immutable ignores committed source WAL,
+            # while replacing only the destination file can replay its abandoned WAL.
+            # Connection busy timeouts do not bound backup's retry loop; its callback does.
+            with contextlib.closing(sqlite3.connect(
+                    Path(src_file).resolve().as_uri() + "?mode=ro", uri=True, timeout=0.0)) as source:
+                with contextlib.closing(sqlite3.connect(dst_file, timeout=0.0)) as out:
+                    source.backup(out, pages=256, progress=check_deadline, sleep=0.1)
+        else:
+            shutil.copy2(src_file, dst_file)
         return True
-    except OSError as e:
+    except (OSError, sqlite3.Error) as e:
+        # A raw DB copy can lose committed WAL or overwrite a locked destination.
         logger.debug("real-profile: could not copy %s: %s", src_file, e)
         return False
 
@@ -661,7 +662,7 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
         failed_dbs = _mirror_profile_auth(src, dst, source_profile)
         if failed_dbs:  # even online-backup failed: never launch a silently signed-out session
             return None, (f"could not read the '{browser}' profile's login data ({failed_dbs} "
-                          f"database(s) locked). Close {browser} and retry, or turn "
+                          f"database(s) unavailable). Close {browser} and retry, or turn "
                           "browser.use_real_profile off.")
         # Never carry live-instance leftovers into the copy.
         for leftover in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
@@ -751,9 +752,12 @@ def is_browser_debug_ready(url: str, timeout: float = 1.0) -> bool:
     if scheme not in {"http", "https"} or not parsed.netloc:
         return False
     root = f"{scheme}://{parsed.netloc}".rstrip("/")
+    # Loopback readiness must not route through getproxies() (env or macOS system proxy, #110565).
+    handlers = [urllib.request.ProxyHandler({})] if is_loopback_host(parsed.hostname) else []
+    opener = urllib.request.build_opener(*handlers)
     for probe in (f"{root}/json/version", f"{root}/json"):
         try:
-            with urllib.request.urlopen(probe, timeout=timeout) as resp:
+            with opener.open(probe, timeout=timeout) as resp:
                 if 200 <= getattr(resp, "status", 200) < 300:
                     return True
         except Exception:

@@ -550,13 +550,17 @@ def scan_sessions(limit: Optional[int] = None, progress_callback: Optional[Any] 
     """
     try:
         from hermes_state import SessionDB
+
+        # The scan only reads. A writable open here was a second writer connection (schema
+        # init, write lock, close-time checkpoint) beside the dashboard's own store on every
+        # scan, and counted toward the "live SessionDB handles" precursor (#100896).
+        db = SessionDB(read_only=True)
     except Exception as exc:
-        return {"sessions": [], "aggregate": {}, "error": f"Could not import SessionDB: {exc}", "scan_meta": _scan_meta("failed", 0)}
+        return {"sessions": [], "aggregate": {}, "error": f"Could not open SessionDB: {exc}", "scan_meta": _scan_meta("failed", 0)}
 
     previous_sessions = load_checkpoint()["sessions"]  # load_checkpoint guarantees a dict
     reused = rescanned = 0
     db_limit = -1 if (limit is None or limit <= 0) else int(limit)
-    db = SessionDB()
     try:
         sessions_meta = db.list_sessions_rich(limit=db_limit, include_children=True, project_compression_tips=False)
         total_sessions = len(sessions_meta)

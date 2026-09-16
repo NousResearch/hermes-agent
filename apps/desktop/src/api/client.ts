@@ -86,6 +86,25 @@ export function connectionScoped(): { connectionId?: string } {
   return _apiConnectionId ? { connectionId: _apiConnectionId } : {}
 }
 
+// Whether the window's primary connection is the local pool. Pushed from
+// store/session's setConnection (same no-store-import contract as _apiProfile)
+// so api/ helpers can name the backend an UNTAGGED request lands on without
+// importing the heavy session store — which would close a module cycle
+// through @/hermes.
+let _apiLocalMode = false
+
+export function setApiRequestLocalMode(local: boolean): void {
+  _apiLocalMode = local
+}
+
+/** The connection an ambient (untagged) request is served by: the registry
+ *  tag when one is active, else `'local'` for the local pool. Identity only —
+ *  never send this as a request pin (an explicit `'local'` bypasses Electron's
+ *  legacy per-profile remote overrides). */
+export function ambientOwnerConnectionId(): string | undefined {
+  return _apiConnectionId ?? (_apiLocalMode ? 'local' : undefined)
+}
+
 /** Send a REST request to the renderer's active registry source. Request-level
  *  routing may override the active source for an explicitly-owned resource.
  *
@@ -134,6 +153,15 @@ export function capabilityScoped(scope?: ProfileScope): { connectionId?: string;
   }
 
   return { ...profileScoped(scope), ...connectionScoped() }
+}
+
+/** Spawn priority for a REST call that may cold-start a pooled backend. An
+ *  explicit scope is a user pointing a scope selector (Settings "Applies to",
+ *  Capabilities) at another profile — a visible action that may take the
+ *  pool's reserved foreground slot (#111651). The ambient path stays untagged,
+ *  main's background default, so hydration cannot consume that slot. */
+export function scopedDialPriority(scope?: ProfileScope): { priority?: 'foreground' } {
+  return scope == null ? {} : { priority: 'foreground' }
 }
 
 /** Stable cache-key for a capability scope: `profile` for the ambient/legacy

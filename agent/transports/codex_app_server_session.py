@@ -21,6 +21,7 @@ from agent.codex_responses_adapter import _format_responses_error
 from agent.redact import redact_sensitive_text
 from agent.transports.codex_app_server import CodexAppServerClient, CodexAppServerError
 from agent.transports.codex_event_projector import CodexEventProjector, ProjectionResult
+from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,8 @@ class TurnResult:
     error: Optional[str] = None  # non-recoverable turn error
     turn_id: Optional[str] = None
     thread_id: Optional[str] = None
+    # Exact turn/start text distinguishes the input echo from a new user event.
+    submitted_user_text: Optional[str] = None
     token_usage_last: Optional[dict[str, Any]] = None
     model_context_window: Optional[int] = None
     compacted: bool = False
@@ -341,9 +344,10 @@ class CodexAppServerSession:
             if self._interrupt_event.is_set():
                 result.interrupted = True
             else:
+                result.submitted_user_text = _coerce_turn_input_text(user_input)
                 ts = self._request_for(
                     result, "turn/start",
-                    {"threadId": self._thread_id, "input": [{"type": "text", "text": _coerce_turn_input_text(user_input)}]},
+                    {"threadId": self._thread_id, "input": [{"type": "text", "text": result.submitted_user_text}]},
                     "turn/start",
                 )
                 if ts is not None:
@@ -566,7 +570,7 @@ class CodexAppServerSession:
     def _respond_elicitation(self, params: dict) -> dict:
         """MCP elicitation: auto-accept our own hermes-tools server (opted in by enabling the runtime;
         exposes nothing codex's shell can't do); decline others so the user opts in via codex's own flow."""
-        action = "accept" if (params.get("serverName") or "") == "hermes-tools" else "decline"
+        action = "accept" if (params.get("serverName") or "") == HERMES_TOOLS_MCP_SERVER_NAME else "decline"
         return {"action": action, "content": None, "_meta": None}
 
     _SERVER_REQUEST_HANDLERS: dict[str, Callable[..., dict]] = {

@@ -45,6 +45,7 @@ interface ThreadProps {
   onRestoreToMessage?: (messageId: string, target?: RestoreMessageTarget) => Promise<void> | void
   sessionId?: string | null
   sessionKey?: string | null
+  scrollProfile?: string
 }
 
 // memo'd on purpose, and load-bearing for session-switch cost. ChatView
@@ -65,6 +66,7 @@ export const Thread = memo(function Thread({
   onDismissError,
   onRestoreToMessage,
   sessionId = null,
+  scrollProfile,
   sessionKey
 }: ThreadProps) {
   const { t } = useI18n()
@@ -175,6 +177,7 @@ export const Thread = memo(function Thread({
           components={messageComponents}
           emptyPlaceholder={emptyPlaceholder}
           loadingIndicator={loadingIndicator}
+          scrollProfile={scrollProfile}
           sessionId={sessionId}
           sessionKey={sessionKey}
         />

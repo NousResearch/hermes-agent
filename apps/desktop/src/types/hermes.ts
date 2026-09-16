@@ -1,3 +1,5 @@
+import type { ConnectionRequestPayload } from '@hermes/shared'
+
 export interface ConfigFieldSchema {
   category?: string
   description?: string
@@ -56,8 +58,15 @@ export interface ElevenLabsVoicesResponse {
 }
 
 export interface OAuthProviderStatus {
+  /** Nous only: the tier name the token resolves to, when the backend knows
+   *  one. Null for a free-tier identity and for older backends. */
+  account_tier?: null | string
   error?: string
   expires_at?: null | string
+  /** Nous only: true when the stored token belongs to a free-tier identity
+   *  rather than a signed-in account. `logged_in` stays true either way — a
+   *  token exists — so this is the only way to tell the two apart. */
+  free_tier?: boolean
   has_refresh_token?: boolean
   last_refresh?: null | string
   logged_in: boolean
@@ -107,10 +116,52 @@ export interface OAuthSubmitResponse {
 }
 
 export interface OAuthPollResponse {
+  /** Approved sign-ins only: the account the tokens now belong to. Null when
+   *  the backend has no address for it. */
+  account_email?: null | string
   error_message?: null | string
   expires_at?: null | number
+  /** Approved sign-ins only: the default model the backend settled on. Null
+   *  when the config already pointed at the user's own model and was left
+   *  alone. */
+  model?: null | string
+  /** Why a non-approved terminal status ended that way: `user_declined`
+   *  (status `denied`), or `superseded` / `account_retired` /
+   *  `account_not_anonymous` / `account_busy` / `timeout` (status `error`).
+   *  `error_message` carries the matching user-facing text. */
+  reason?: null | string
+  /** Failed sign-ins over a free-tier identity: the seconds the account service
+   *  asked the client to wait before trying again (0 or absent when none). */
+  retry_after?: null | number
+  /** Failed sign-ins over a free-tier identity: whether a later attempt can succeed. */
+  retryable?: boolean | null
   session_id: string
   status: 'approved' | 'denied' | 'error' | 'expired' | 'pending'
+}
+
+/** Result of the `free_tier.status` RPC. Pull-only: it reads local auth state
+ *  and makes no network call, so it is safe to refresh on the ambient status
+ *  cadence. */
+export interface FreeTierStatus {
+  /** An identity exists AND the free tier is on: connectors ride on it, and so
+   *  does inference when nothing else carries it. Whether inference actually
+   *  runs on it is the ROUTE's answer (`setup.runtime_check.free_tier`). */
+  available: boolean
+  enabled: boolean
+  has_guest: boolean
+  /** Display name for the route, e.g. "Nous · free tier". */
+  label: string
+  model: string
+  /** True until the one-time introduction has been acknowledged. */
+  notice_pending: boolean
+  /** Present only while `enabled` and no identity exists: why the last attempt
+   *  to create one failed. `error_code` is one of the backend's `anon_*` codes
+   *  (`hermes_cli/anon_auth.py`), `error` its sentence, `retryable` whether a
+   *  later attempt can succeed, `retry_after` the seconds still to wait. */
+  error?: string
+  error_code?: string
+  retryable?: boolean
+  retry_after?: number
 }
 
 export interface MemoryProviderOAuthStatus {
@@ -244,6 +295,9 @@ export interface MessagingPlatformInfo {
   gateway_running: boolean
   home_channel?: MessagingHomeChannel | null
   id: string
+  /** Served secondary under a multiplexed gateway: the /p/<profile>/ URL on the shared listener
+   *  the client (or vendor console) must call. Null for standalone and default-profile platforms. */
+  ingress_url?: null | string
   name: string
   state?: null | string
   updated_at?: null | string
@@ -278,6 +332,35 @@ export interface MessagingPlatformTestResponse {
   message: string
   ok: boolean
   state?: null | string
+}
+
+// -- Telegram QR onboarding ---------------------------------------------------
+// The Nous pairing service mints a bot on the user's behalf: the desktop shows
+// a QR/deep link, Telegram confirms, the backend receives the token and writes
+// it (plus the allowlist) into the target profile's .env, then restarts the
+// gateway best-effort.
+
+export interface TelegramOnboardingStartResponse {
+  deep_link: string
+  expires_at: string
+  pairing_id: string
+  qr_payload: string
+  suggested_username: string
+}
+
+export type TelegramOnboardingStatusResponse =
+  | { bot_username: null | string; expires_at: string; owner_user_id?: null | string; status: 'ready' }
+  | { expires_at: string; status: 'waiting' }
+
+export interface TelegramOnboardingApplyResponse {
+  bot_username?: null | string
+  needs_restart: boolean
+  ok: boolean
+  platform: 'telegram'
+  restart_action?: string
+  restart_error?: string
+  restart_pid?: null | number
+  restart_started?: boolean
 }
 
 // -- Webhooks (subscription CRUD) --------------------------------------------
@@ -332,10 +415,6 @@ export interface WebhookEnableResponse {
   restart_started?: boolean
 }
 
-export interface GatewayReadyPayload {
-  skin?: unknown
-}
-
 export interface HermesConfig {
   agent?: {
     reasoning_effort?: string
@@ -349,6 +428,7 @@ export interface HermesConfig {
     timestamps?: boolean
   }
   desktop?: {
+    font_family?: string
     repo_scan_enabled?: boolean
     repo_scan_roots?: string[]
     repo_scan_exclude_paths?: string[]
@@ -379,83 +459,6 @@ export interface ModelInfoResponse {
   provider: string
 }
 
-export interface ModelPricing {
-  /** Formatted $/Mtok input price, e.g. "$3.00", or "free", or "" if unknown. */
-  input: string
-  /** Formatted $/Mtok output price. */
-  output: string
-  /** Formatted $/Mtok cached-input price, or null when the model has none. */
-  cache: string | null
-  /** True when the model costs nothing (free tier eligible). */
-  free: boolean
-  /** Sale: rounded percent off list when gateway sends pricing.original. */
-  discount_percent?: number
-  /** Sale: formatted pre-discount input $/Mtok ("was"). */
-  was_input?: string
-  /** Sale: formatted pre-discount output $/Mtok ("was"). */
-  was_output?: string
-}
-
-export interface ModelOptionProvider {
-  is_current?: boolean
-  models?: string[]
-  name: string
-  slug: string
-  total_models?: number
-  warning?: string
-  /** Curated shortlist (one flagship per lab) the picker shows by default for
-   *  aggregator providers that serve dozens of models across many labs. Empty
-   *  for providers with no manifest entry — the picker falls back to top-N.
-   *  The rest of `models` stays reachable via search / Edit Models. */
-  featured_models?: string[]
-  /** True when the provider has usable credentials. False for canonical
-   *  providers surfaced by `include_unconfigured` that the user hasn't set up
-   *  yet — render these with a setup affordance instead of hiding them. */
-  authenticated?: boolean
-  /** Auth flow for an unconfigured provider: "api_key" can be activated inline
-   *  by pasting `key_env`; anything else (oauth_*, external, aws_sdk, …) needs
-   *  the `hermes model` CLI / onboarding OAuth flow. */
-  auth_type?: string
-  /** Env var to paste an API key into, for unconfigured `api_key` providers. */
-  key_env?: string
-  /** True for providers defined via the user's `providers:` config block. */
-  is_user_defined?: boolean
-  /** User-defined providers only: every accepted identity for this endpoint
-   *  (bare config key, `custom:<key>`, normalized display name, …). A session's
-   *  `model.options` reports the canonical `custom:<key>` form, so "is this row
-   *  the current provider?" must check membership here, not slug equality. */
-  aliases?: string[]
-  /** OpenAI-compatible endpoint for a user-defined provider. The backend
-   *  exposes this as `api_url`; model assignments send it back as `base_url`
-   *  so switching providers does not discard the selected local endpoint. */
-  api_url?: string
-  /** Per-model pricing keyed by model id (present when the picker requested
-   *  pricing and the provider supports live pricing). */
-  pricing?: Record<string, ModelPricing>
-  /** Nous only: whether the current account is on the free tier. */
-  free_tier?: boolean
-  /** Nous only: paid models a free-tier user cannot select (shown disabled). */
-  unavailable_models?: string[]
-  /** Per-model option support, keyed by model id (present when the picker
-   *  requested capabilities). Lets the UI gate fast/reasoning controls. */
-  capabilities?: Record<string, ModelCapabilities>
-}
-
-export interface ModelCapabilities {
-  /** False when the route rejects a reasoning disable ("mandatory" in the
-   *  provider catalog), so the Thinking toggle must not be offered. Absent
-   *  when the catalog doesn't say. */
-  can_disable_reasoning?: boolean
-  fast: boolean
-  reasoning: boolean
-}
-
-export interface ModelOptionsResponse {
-  model?: string
-  provider?: string
-  providers?: ModelOptionProvider[]
-}
-
 export interface PaginatedSessions {
   limit: number
   offset: number
@@ -469,16 +472,6 @@ export interface PaginatedSessions {
   /** Per-profile read failures from the cross-profile aggregator (e.g. a locked
    *  or corrupt state.db). Present only on `/api/profiles/sessions`. */
   errors?: Array<{ profile: string; error: string }>
-}
-
-export interface RpcEvent<T = unknown> {
-  payload?: T
-  profile?: string
-  /** Registry connection whose socket delivered the event (renderer-side tag;
-   * absent for the local/legacy primary path). */
-  connectionId?: string
-  session_id?: string
-  type: string
 }
 
 export interface SessionCreateResponse {
@@ -572,7 +565,9 @@ export type TimelineDisplayMetadata =
       completed_count?: number
       failed_count?: number
       duration_seconds?: number
+      display_text?: string
     }
+  | { display_text: string }
   | { reactions: MessageReaction[] }
 
 /** One emoji reaction on a message. One per author, iOS-Tapback style. */
@@ -591,6 +586,9 @@ export interface SessionMessage {
    */
   args?: unknown
   codex_reasoning_items?: unknown
+  /** Responses-API assistant message items; text parts here are the
+   *  user-visible reply when `content` persisted empty (#68321). */
+  codex_message_items?: unknown
   content: unknown
   /** Backend-projected user-visible content when a physical row also carries internal model scaffolding. */
   display_content?: unknown
@@ -600,7 +598,14 @@ export interface SessionMessage {
   reasoning_content?: null | string
   reasoning_details?: unknown
   display_kind?:
-    'async_delegation_complete' | 'auto_continue' | 'hidden' | 'model_switch' | 'personality_switch' | string
+    | 'async_delegation_complete'
+    | 'auto_continue'
+    | 'hidden'
+    | 'model_switch'
+    | 'personality_switch'
+    | 'process_complete'
+    | 'steer'
+    | string
   /**
    * A backend older than this app can still serve this as unparsed JSON text,
    * so readers must narrow before indexing into it.
@@ -626,6 +631,9 @@ export interface SessionMessage {
 }
 
 export interface SessionMessagesResponse {
+  /** Profile the page was read from (the serving process's own when the
+   *  request named none). Absent on backends that predate the field. */
+  profile?: string
   messages: SessionMessage[]
   pagination?: {
     limit: number
@@ -636,7 +644,7 @@ export interface SessionMessagesResponse {
   session_id: string
 }
 
-export interface SessionResumeResponse {
+export interface SessionResumeResult {
   /** Present when the backend found a fresh crash-interrupted turn and
    *  scheduled its automatic continuation; the turn arrives as a normal
    *  message.start stream right after this resume. */
@@ -681,17 +689,13 @@ export interface SessionResumeResponse {
     request_id?: string
     smart_denied?: boolean
   }
-  // The clarify question still blocking this session, if any. Same replay
-  // class as pending_approval: emitted-while-detached prompts are restored
-  // from the resume snapshot instead of being lost until server-side timeout.
-  pending_clarify?: {
-    answers?: Record<string, unknown>
-    choices?: null | string[]
-    multi_select?: boolean
-    question?: string
-    questions?: unknown
-    request_id?: string
-  }
+  // Server→client requests still unanswered for this session (clarify, sudo,
+  // vault prompts, …). The shared channel re-delivers them to the request
+  // handlers before this response resolves; listed here so resume can tell an
+  // authoritative "nothing pending" from a request the handler declined.
+  open_requests?: Array<{ id: string; method: string; params: Record<string, unknown> & { session_id?: string } }>
+  // The connection operation still blocking this session; resume restores the backend-owned card projection.
+  pending_connection?: ConnectionRequestPayload
   info?: SessionRuntimeInfo
   message_count: number
   messages: SessionMessage[]
@@ -742,6 +746,8 @@ export interface UsageStats {
   calls: number
   context_max?: number
   context_percent?: number
+  context_estimated?: boolean
+  context_source?: string
   context_used?: number
   cost_usd?: number
   input: number
@@ -797,13 +803,25 @@ export interface ContextUsageCategory {
   tokens: number
 }
 
+export interface ContextFileSource {
+  label: string
+  path: string
+  chars: number
+  est_tokens: number
+  loaded: boolean
+  status: string
+}
+
 export interface ContextBreakdown {
   categories: ContextUsageCategory[]
   context_max: number
   context_percent: number
+  context_estimated?: boolean
+  context_source?: string
   context_used: number
   estimated_total: number
   model?: string
+  context_files?: ContextFileSource[]
 }
 
 export interface AnalyticsDailyEntry {
@@ -1252,6 +1270,9 @@ export interface StatusResponse {
   gateway_pid: number | null
   gateway_platforms: Record<string, PlatformStatus>
   gateway_running: boolean
+  /** Every profile the gateway process serves when the polled profile is carried by the shared
+   *  multiplexer (e.g. ['default', 'alpha', 'beta']); null/absent for a standalone gateway. */
+  gateway_shared_with?: string[] | null
   gateway_state: string | null
   gateway_updated_at: string | null
   hermes_home: string
@@ -1406,8 +1427,14 @@ export interface BackendUpdateCheckResponse {
 
 export interface AuxiliaryTaskAssignment {
   base_url: string
+  /** Backend verdict (`agent/model_metadata.py::is_local_endpoint`) that `base_url`
+   *  is a loopback/LAN/mDNS endpoint. Absent on older backends. */
+  local_endpoint?: boolean
   model: string
   provider: string
+  /** Task-level effort override (`auxiliary.<task>.reasoning_effort`); null/absent
+   *  means the task inherits the main agent's effort. */
+  reasoning_effort?: null | string
   task: string
 }
 
@@ -1434,11 +1461,10 @@ export interface MoaConfigResponse {
       aggregator_temperature: number
       degraded_reference_policy: 'loud' | 'silent'
       enabled: boolean
-      max_tokens: number
+
       reference_models: MoaModelSlot[]
       reference_temperature: number
-      /** Optional advisor output cap — round-tripped, not edited here. */
-      reference_max_tokens?: number | null
+
       /** Fan-out cadence (user_turn default | per_iteration | every_n:N) — round-tripped. */
       fanout?: string
       reference_timeout: number | null
@@ -1448,7 +1474,7 @@ export interface MoaConfigResponse {
   aggregator_temperature: number
   degraded_reference_policy: 'loud' | 'silent'
   enabled: boolean
-  max_tokens: number
+
   reference_models: MoaModelSlot[]
   reference_temperature: number
   reference_timeout: number | null
@@ -1466,6 +1492,9 @@ export interface ModelAssignmentRequest {
   confirm_expensive_model?: boolean
   model: string
   provider: string
+  /** Auxiliary only. Omitted → leave the task's override alone; null → clear it
+   *  (inherit); a level → set it. */
+  reasoning_effort?: null | string
   scope: 'main' | 'auxiliary'
   task?: string
 }
@@ -1488,7 +1517,6 @@ export interface CronModelImpactJob {
 
 export interface CronModelImpact {
   available: boolean
-  guard_enabled: boolean
   affected_count: number
   truncated: boolean
   jobs: CronModelImpactJob[]

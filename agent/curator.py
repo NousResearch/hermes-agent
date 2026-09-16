@@ -26,7 +26,7 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 DEFAULT_INTERVAL_HOURS, DEFAULT_MIN_IDLE_HOURS = 24 * 7, 2  # 7 days
-DEFAULT_STALE_AFTER_DAYS, DEFAULT_ARCHIVE_AFTER_DAYS = 30, 90
+DEFAULT_STALE_AFTER_DAYS, DEFAULT_ARCHIVE_AFTER_DAYS = 14, 30
 # The LLM consolidation fork is opt-in; the deterministic inactivity prune
 # (apply_automatic_transitions) always runs when the curator is enabled.
 DEFAULT_CONSOLIDATE = False
@@ -398,9 +398,11 @@ CURATOR_REVIEW_PROMPT = (
     "or scripts/ file under an existing skill (the skill must already "
     "exist)\n"
     "  - skill_manage action=delete     — archive a skill. MUST pass "
-    "`absorbed_into=<umbrella>` when you've merged its content into another "
-    "skill, or `absorbed_into=\"\"` when you're truly pruning with no "
-    "forwarding target. This drives cron-job skill-reference migration — "
+    "`absorbed_into=<umbrella>` naming the skill you merged its content "
+    "into (the umbrella must already exist). Deletes without a verified "
+    "forwarding target are refused — pruning with no absorption target is "
+    "the deterministic staleness pass's job, never this one's. "
+    "`absorbed_into` drives cron-job skill-reference migration — "
     "guessing from your YAML summary after the fact is fragile.\n"
     "  You have NO terminal access in this pass — every filesystem mutation "
     "goes through skill_manage above so it is ledgered and rollback-able "
@@ -1023,7 +1025,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     result_meta["model"], result_meta["provider"] = model_name, provider or ""
     review_agent = None
     try:
-        agent_kwargs: Dict[str, Any] = {"max_tokens": rp["max_output_tokens"]} if isinstance(rp.get("max_output_tokens"), int) else {}
+        agent_kwargs: Dict[str, Any] = {}
         acp_command = rp.get("command")
         if isinstance(acp_command, str) and acp_command:
             agent_kwargs.update(acp_command=acp_command, acp_args=list(rp.get("args") or []))
@@ -1047,6 +1049,15 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # write guards (external/bundled/hub) fire; turn_context binds this onto
         # the write-origin ContextVar at turn start.
         review_agent._memory_write_origin = "background_review"
+        # Seed a shared read-before-write marks store in THIS context before any
+        # tool worker spawns: workers run on copied contexts, so a store
+        # auto-created later stays private to one worker and every patch is
+        # refused ("content has not been loaded in this review turn") even after
+        # a fresh skill_view. Same seeding as agent/background_review.py.
+        with contextlib.suppress(Exception):
+            from tools.skill_manager_guards import _reset_background_review_read_marks
+
+            _reset_background_review_read_marks()
         # Silence the fork's tool-call chatter (CLI synchronous foreground runs).
         with open(os.devnull, "w", encoding="utf-8") as devnull, \
              contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):

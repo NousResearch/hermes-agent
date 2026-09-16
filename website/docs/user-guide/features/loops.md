@@ -83,7 +83,7 @@ Examples:
 | `/loop stop` | End the loop. |
 | `/proactive …` | Alias for `/loop` (Claude Code parity). |
 
-Works on the CLI, the TUI (`hermes --tui`), the web dashboard chat, the desktop app, and every gateway platform (Telegram, Discord, Slack, WhatsApp, …). On messaging platforms the gateway fires wakeups even between your messages — the loop belongs to the chat's session, and its results arrive as ordinary replies.
+Works on the CLI, the TUI (`hermes --tui`), the web dashboard chat, the desktop app, and every gateway platform (Telegram, Discord, Slack, WhatsApp, …). On messaging platforms the gateway fires wakeups even between your messages — the loop belongs to the chat's session, and its results arrive as ordinary replies — also when that session is open in the TUI / Desktop app, which leaves the routed wakeup to the gateway.
 
 ## Mixing with `/goal`
 
@@ -110,7 +110,7 @@ loops:
   self_paced_ceiling_seconds: 900  # self-paced max backoff
 ```
 
-The `--until` judge routes through the `goal_judge` auxiliary task, so `auxiliary.goal_judge.*` overrides (provider, model, max_tokens) apply to loop conditions too.
+The `--until` judge routes through the `goal_judge` auxiliary task, so `auxiliary.goal_judge.*` routing overrides (provider, model) apply to loop conditions too.
 
 ## `/loop` vs `/goal` vs cron
 

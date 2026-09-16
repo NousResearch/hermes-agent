@@ -724,6 +724,42 @@ class TestBuildCodexClient:
         assert mock_openai.call_args.kwargs["api_key"] == "codex-auth-token"
         assert mock_openai.call_args.kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
 
+    def test_profile_codex_base_url_overrides_pool_endpoint(self, monkeypatch):
+        """Auxiliary Codex calls use the same profile endpoint override as the main client."""
+        entry = SimpleNamespace(
+            runtime_api_key="codex-pool-token",
+            runtime_base_url="https://chatgpt.com/backend-api/codex",
+        )
+        with (
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(True, entry)),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/v1")
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import _build_codex_client
+
+            client, model = _build_codex_client("gpt-5.4")
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert mock_openai.call_args.kwargs["base_url"] == "http://127.0.0.1:8787/v1"
+
+    def test_profile_codex_base_url_applies_to_raw_codex_client(self, monkeypatch):
+        """The main agent's raw Codex client honours the same endpoint override."""
+        with (
+            patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-auth-token"),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/v1")
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client("openai-codex", "gpt-5.4", raw_codex=True)
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert mock_openai.call_args.kwargs["base_url"] == "http://127.0.0.1:8787/v1"
+
     def test_rejects_missing_model(self):
         """Callers must pass an explicit model; no hardcoded default."""
         from agent.auxiliary_client import _build_codex_client
@@ -1596,10 +1632,12 @@ class TestTryPaymentFallback:
         _aux_unhealthy_logged_at.clear()
 
     def test_skips_failed_provider(self):
+        """Discovery only walks with no selected main provider (``auto``); a selected provider that
+        fails never hops to another logged-in account (test_auxiliary_auto_never_guesses_provider)."""
         mock_client = MagicMock()
         with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
              patch("agent.auxiliary_client._try_nous", return_value=(mock_client, "nous-model")), \
-             patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"):
+             patch("agent.auxiliary_client._read_main_provider", return_value="auto"):
             client, model, label = _try_payment_fallback("openrouter", task="compression")
         assert client is mock_client
         assert model == "nous-model"
@@ -1617,7 +1655,7 @@ class TestTryPaymentFallback:
              patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
              patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
              patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
-             patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"):
+             patch("agent.auxiliary_client._read_main_provider", return_value="auto"):
             client, model, label = _try_payment_fallback("openrouter")
         assert client is None
         assert model is None
@@ -1724,6 +1762,7 @@ class TestStaleFallbackCandidateSkip:
 
         stale_fb = MagicMock()
         stale_fb.base_url = "https://api.anthropic.com"
+        stale_fb.api_key = "expired-anthropic-token"
         stale_fb.chat.completions.create.side_effect = _AuxAuth401("Invalid bearer token")
 
         fresh_fb = MagicMock()
@@ -1752,7 +1791,7 @@ class TestStaleFallbackCandidateSkip:
             )
 
         assert result.choices[0].message.content == "fresh-fallback"
-        mock_refresh.assert_called_once_with("anthropic")
+        mock_refresh.assert_called_once_with("anthropic", failed_api_key=stale_fb.api_key)
         assert stale_fb.chat.completions.create.call_count == 1
         assert fresh_fb.chat.completions.create.call_count == 1
 
@@ -1797,7 +1836,9 @@ class TestStaleFallbackCandidateSkip:
         assert result.choices[0].message.content == "openrouter-serves"
         assert mock_fb.call_count == 2
         assert mock_fb.call_args_list[1].kwargs.get("reason") == "stale fallback credential"
-        mock_mark.assert_called_once_with("anthropic")
+        mock_mark.assert_called_once_with(
+            "anthropic", base_url="https://api.anthropic.com",
+        )
         assert stale_fb.chat.completions.create.call_count == 1
         assert healthy_fb.chat.completions.create.call_count == 1
 
@@ -2458,6 +2499,71 @@ class TestStaleBaseUrlWarning:
 
 
 class TestAuxiliaryTaskExtraBody:
+    @pytest.mark.parametrize("task", ["session_search", "moa_reference", "moa_aggregator"])
+    def test_generic_reasoning_fallback_clamps_ultra_for_auxiliary_and_moa_calls(self, task, monkeypatch):
+        """The OpenAI-compatible fallback must never put Hermes-only ``ultra`` on the wire."""
+        from agent.auxiliary_client import _ProfileProjection, _build_call_kwargs
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._project_provider_profile",
+            lambda *_args: _ProfileProjection({}, {}, {}, False),
+        )
+
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="test-model",
+            messages=[{"role": "user", "content": "hello"}],
+            reasoning_config={"enabled": True, "effort": "ultra"},
+            task=task,
+        )
+
+        assert kwargs["extra_body"]["reasoning"] == {"enabled": True, "effort": "max"}
+
+    def test_task_extra_body_reasoning_effort_ultra_is_clamped(self, monkeypatch):
+        """``auxiliary.<task>.reasoning_effort: ultra`` folds into ``extra_body.reasoning`` (the path
+        compression/title/vision/... use, with no reasoning_config) and must take the same clamp."""
+        import agent.auxiliary_client as aux
+        from agent.auxiliary_client import _build_call_kwargs, _get_task_extra_body
+
+        monkeypatch.setattr(aux, "_get_auxiliary_task_config", lambda task: {"reasoning_effort": "ultra"})
+        monkeypatch.setattr(aux, "_project_provider_profile", lambda *_args: aux._ProfileProjection({}, {}, {}, False))
+
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="test-model",
+            messages=[{"role": "user", "content": "hello"}],
+            extra_body=_get_task_extra_body("session_search"),
+            reasoning_config=None,
+            task="session_search",
+        )
+
+        assert kwargs["extra_body"]["reasoning"] == {"enabled": True, "effort": "max"}
+
+    def test_profile_projection_receives_wire_clamped_effort(self, monkeypatch):
+        """Profiles clamp only against their own narrower sets (or a catalog that may be cold), so
+        ``ultra`` must already be a wire level when the projection sees it — the MoA aggregator on
+        an OpenRouter/Nous slot 400'd otherwise (#112010)."""
+        import agent.auxiliary_client as aux
+
+        seen = {}
+        real = aux._project_provider_profile
+
+        def spy(provider, provider_norm, model, effective_base, reasoning_config):
+            seen["config"] = reasoning_config
+            return real(provider, provider_norm, model, effective_base, reasoning_config)
+
+        monkeypatch.setattr(aux, "_project_provider_profile", spy)
+        kwargs = aux._build_call_kwargs(
+            provider="openrouter",
+            model="deepseek/deepseek-v4.1-flash",
+            messages=[{"role": "user", "content": "hello"}],
+            reasoning_config={"enabled": True, "effort": "ultra"},
+            task="moa_aggregator",
+        )
+
+        assert seen["config"] == {"enabled": True, "effort": "max"}
+        assert "ultra" not in json.dumps(kwargs.get("extra_body")) and kwargs.get("reasoning_effort") != "ultra"
+
     def test_sync_call_merges_task_extra_body_from_config(self):
         client = MagicMock()
         client.base_url = "https://api.example.com/v1"
@@ -2626,6 +2732,17 @@ class TestAuxiliaryTaskExtraBody:
         assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
             "Should NOT warn when provider is 'custom'"
 
+    def test_bare_custom_auth_error_does_not_fall_back_to_env_base_url(self, monkeypatch):
+        """Bare 'custom' with nothing configured: the main resolver raises AuthError; aux must
+        return no endpoint rather than route to a stale env OPENAI_BASE_URL with a placeholder key."""
+        from hermes_cli.auth import AuthError
+        from agent.auxiliary_client import _resolve_custom_runtime
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://old-proxy.example/v1")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   side_effect=AuthError("no creds", provider="custom", code="missing_api_key")):
+            assert _resolve_custom_runtime() == (None, None, None)
+
 
 
 # ---------------------------------------------------------------------------
@@ -2770,7 +2887,7 @@ class TestAuxiliaryAuthRefreshRetry:
         ):
             from agent.auxiliary_client import _refresh_provider_credentials
 
-            assert _refresh_provider_credentials("anthropic") is True
+            assert _refresh_provider_credentials("anthropic", failed_api_key="expired-token") is True
 
         mock_refresh_oauth.assert_called_once_with("refresh-token", use_json=False)
         mock_write.assert_called_once_with("fresh-token", "refresh-token-2", 9999999999999)
@@ -2940,6 +3057,37 @@ class TestAnthropicAuxiliaryReasoningTranslation:
             base_url="https://example.test/v1",
         )
         assert "_reasoning_config" not in openai_wire_kwargs
+
+    def test_anthropic_messages_profile_keeps_reasoning_reachable(self):
+        # commandcode-anthropic: OpenAI-shaped URL, anthropic_messages api_mode, and a profile
+        # class that overrides build_api_kwargs_extras (so the generic extra_body.reasoning
+        # fallback the adapter used to read is suppressed). The adapter must still be told.
+        import model_tools  # noqa: F401 — triggers provider discovery
+        import providers
+
+        assert providers.get_provider_profile("commandcode-anthropic") is not None
+        rc = {"enabled": False}
+        kwargs = _build_call_kwargs(
+            "commandcode-anthropic", "claude-haiku-4-5-20251001", [{"role": "user", "content": "hi"}],
+            reasoning_config=rc, base_url="https://api.commandcode.ai/provider/v1",
+        )
+        assert kwargs["_reasoning_config"] == rc
+        chat_kwargs = _build_call_kwargs(
+            "commandcode", "Qwen/Qwen3.7-Max", [{"role": "user", "content": "hi"}],
+            reasoning_config=rc, base_url="https://api.commandcode.ai/provider/v1",
+        )
+        assert "_reasoning_config" not in chat_kwargs
+
+    def test_anthropic_messages_profile_resolves_to_messages_adapter(self, monkeypatch):
+        # Bare ``provider: commandcode-anthropic`` (no api_mode) must wrap the client on the
+        # profile's declared wire, or the ``_reasoning_config`` kwarg above would reach a plain
+        # OpenAI client and TypeError.
+        import model_tools  # noqa: F401
+        from agent.auxiliary_client import AnthropicAuxiliaryClient, resolve_provider_client
+
+        monkeypatch.setenv("COMMANDCODE_API_KEY", "sk-test-" + "x" * 20)
+        client, _ = resolve_provider_client("commandcode-anthropic", model="claude-haiku-4-5-20251001")
+        assert isinstance(client, AnthropicAuxiliaryClient)
 
 
 class TestAuxiliaryProviderProfileReasoning:
@@ -3180,6 +3328,29 @@ class TestCodexAdapterPromptCacheKey:
             {"role": "user", "content": "hi"},
         ])
         assert "prompt_cache_retention" not in captured
+
+    def test_astra_auxiliary_request_uses_official_contract(self):
+        adapter, captured = self._build_adapter(
+            base_url="https://api.openai.com/v1",
+            model="gpt-6-astra",
+        )
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": "none"}},
+        )
+        assert captured["reasoning"]["effort"] == "low"
+        assert "prompt_cache_retention" not in captured
+
+    def test_astra_auxiliary_proxy_keeps_legacy_effort_contract(self):
+        adapter, captured = self._build_adapter(
+            base_url="https://responses.example.com/v1",
+            model="gpt-6-astra",
+        )
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": "none"}},
+        )
+        assert captured["reasoning"]["effort"] == "none"
 
     def test_codex_backend_forwards_auxiliary_service_tier(self):
         adapter, captured = self._build_adapter(
@@ -3615,6 +3786,22 @@ class TestCodexAuxiliaryToolMessageConversion:
         assert "user" in roles and "assistant" in roles
         assert not any(it.get("role") == "tool" for it in input_items)
         assert kwargs["instructions"] == "sys"
+
+    def test_video_input_fails_before_responses_request(self):
+        responses = MagicMock()
+        adapter = _CodexCompletionsAdapter(SimpleNamespace(responses=responses), "gpt-5.5")
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AAAA"}},
+                {"type": "text", "text": "Describe the video"},
+            ],
+        }]
+
+        with pytest.raises(ValueError, match="does not support video_url input"):
+            adapter.create(messages=messages)
+
+        responses.create.assert_not_called()
 
 
 class TestCodexAuxiliaryAdapterNullOutputRecovery:
@@ -4126,7 +4313,7 @@ class TestAuxUnhealthyCache:
         # Mark BOTH the failed provider (openrouter) and a sibling (custom)
         # unhealthy. The chain should still find nous.
         _mark_provider_unhealthy("local/custom")
-        with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+        with patch("agent.auxiliary_client._read_main_provider", return_value="auto"), \
              patch("agent.auxiliary_client._try_openrouter") as or_try, \
              patch("agent.auxiliary_client._try_nous", return_value=(nous_client, "n-model")), \
              patch("agent.auxiliary_client._try_custom_endpoint") as custom_try, \
@@ -4137,6 +4324,19 @@ class TestAuxUnhealthyCache:
         # OR is skipped via skip_chain_labels (failed provider), custom via unhealthy cache.
         or_try.assert_not_called()
         custom_try.assert_not_called()
+
+    def test_custom_health_url_identity_preserves_path_and_query_case(self):
+        from agent.auxiliary_client import _is_provider_unhealthy, _mark_provider_unhealthy
+
+        _mark_provider_unhealthy("custom", base_url="https://Example.test/API/v1/")
+
+        assert _is_provider_unhealthy("custom", "https://example.TEST/API/v1") is True
+        assert _is_provider_unhealthy("custom", "https://example.test/api/v1") is False
+
+        _mark_provider_unhealthy("custom", base_url="https://example.test/API/v1?token=AbC")
+        assert _is_provider_unhealthy(
+            "custom", "https://example.test/API/v1?token=abc",
+        ) is False
 
     def test_call_llm_marks_provider_unhealthy_on_402(self, monkeypatch):
         """A 402 from call_llm causes the provider to be marked unhealthy
@@ -4176,6 +4376,84 @@ class TestAuxUnhealthyCache:
             )
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
+
+    def test_custom_billing_failure_keeps_distinct_endpoint_eligible(self):
+        """A hosted custom endpoint's billing state must not quarantine a local custom endpoint."""
+        from agent.auxiliary_client import call_llm, _is_provider_unhealthy
+
+        hosted_url = "https://hosted.example/v1"
+        local_url = "http://127.0.0.1:8080/v1"
+        payment_error = Exception("Payment Required: weekly usage limit")
+        payment_error.status_code = 402
+
+        hosted_client = MagicMock(base_url=hosted_url)
+        hosted_client.chat.completions.create.side_effect = payment_error
+        local_client = MagicMock(base_url=local_url)
+        local_client.chat.completions.create.return_value = _DummyResponse("local-ok")
+        fallback_entry = {
+            "provider": "custom", "model": "local-model", "base_url": local_url,
+            "api_key": "local",
+        }
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("custom", "hosted-model", hosted_url, "hosted", None),
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(hosted_client, "hosted-model"),
+        ), patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value={"fallback_chain": [fallback_entry]},
+        ), patch(
+            "agent.auxiliary_client._resolve_fallback_entry",
+            return_value=(local_client, "local-model"),
+        ):
+            response = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert response.choices[0].message.content == "local-ok"
+        assert _is_provider_unhealthy("custom", hosted_url) is True
+        assert _is_provider_unhealthy("custom", local_url) is False
+        assert hosted_client.chat.completions.create.call_count == 1
+        assert local_client.chat.completions.create.call_count == 1
+
+    def test_custom_fallback_auth_failure_quarantines_failed_endpoint(self):
+        """Terminal auth failure quarantines the fallback URL, not the active custom URL."""
+        from agent.auxiliary_client import (
+            _call_fallback_candidate_sync,
+            _is_provider_unhealthy,
+        )
+
+        hosted_url = "https://hosted.example/v1"
+        local_url = "http://127.0.0.1:8080/v1"
+        hosted_client = MagicMock(base_url=hosted_url)
+        hosted_client.chat.completions.create.side_effect = _AuxAuth401("expired hosted key")
+
+        with patch(
+            "agent.auxiliary_client._current_custom_base_url", return_value=local_url,
+        ), patch(
+            "agent.auxiliary_client._refresh_provider_credentials", return_value=False,
+        ):
+            result = _call_fallback_candidate_sync(
+                hosted_client,
+                "hosted-model",
+                "fallback_chain[0](custom)",
+                task="session_search",
+                messages=[{"role": "user", "content": "search"}],
+                temperature=None,
+                max_tokens=None,
+                tools=None,
+                effective_timeout=30.0,
+                effective_extra_body={},
+                reasoning_config=None,
+            )
+
+        assert result is None
+        assert _is_provider_unhealthy("custom", hosted_url) is True
+        assert _is_provider_unhealthy("custom", local_url) is False
+
 
 
 # ── auxiliary_max_tokens_param ──────────────────────────────────────────────

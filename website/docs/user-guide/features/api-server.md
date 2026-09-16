@@ -108,6 +108,8 @@ Uploaded files (`file` / `input_file` / `file_id`) and non-image `data:` URLs re
 
 **Streaming** (`"stream": true`): Returns Server-Sent Events (SSE) with token-by-token response chunks. For **Chat Completions**, the stream uses standard `chat.completion.chunk` events plus Hermes' custom `hermes.tool.progress` event for tool-start UX. For **Responses**, the stream uses OpenAI Responses event types such as `response.created`, `response.output_text.delta`, `response.output_item.added`, `response.output_item.done`, and `response.completed`.
 
+All SSE streams (Chat Completions, Responses, `/api/sessions/{id}/chat/stream`, `/v1/runs/{id}/events`) emit a `: keepalive` comment line whenever no event has been sent for 10 seconds, so long tool calls do not trip client idle timeouts. Standard SSE clients ignore comment lines; custom parsers must skip lines that start with `:`.
+
 **Tool progress in streams**:
 - **Chat Completions**: Hermes emits `event: hermes.tool.progress` for tool-start visibility without polluting persisted assistant text.
 - **Responses**: Hermes emits spec-native `function_call` and `function_call_output` output items during the SSE stream, so clients can render structured tool UI in real time.
@@ -473,6 +475,15 @@ Statuses are retained briefly after terminal states (`completed`, `failed`, or `
 
 Server-Sent Events stream of the run's tool-call progress, token deltas, and lifecycle events. Designed for dashboards and thick clients that want to attach/detach without losing state.
 
+Tool lifecycle events carry `tool.started` (`tool`, `preview` of the arguments) and
+`tool.completed` (`tool`, `duration` in seconds, `error`, and a `preview` of the result). The
+`error` flag reflects the tool's own outcome — a non-zero terminal `exit_code`, a structured
+`{"error": ...}` result, a denied approval — whether the result arrives as a JSON string or an
+already-parsed object. The completion `preview` is the result text (structured results are
+JSON-encoded), passed through forced secret redaction and then truncated to 500 characters, so a
+client can tell an approval refusal (`BLOCKED: ...`) from an ordinary failure without receiving
+the unbounded tool payload.
+
 When the agent delegates work to background subagents, the stream also carries
 `subagent.start` and `subagent.complete` lifecycle events, so clients can
 observe delegation outcomes — including timeouts and failures — instead of the
@@ -483,7 +494,32 @@ belongs to (so concurrent or nested fan-outs stay distinguishable); free-text fi
 redaction before leaving the process. Per-tool child events
 (`subagent.tool`, progress ticks) are intentionally **not** forwarded — they
 are high-volume UI noise; use the per-child live transcript files for
-play-by-play.
+play-by-play. These events are available while the parent stream is open; a
+late detached completion does not reopen a finished run's SSE stream or change
+its terminal status.
+
+#### Detached results and session history
+
+Background delegation requires a continuation that reads server-side session
+history: an explicit `X-Hermes-Session-Id` on Chat Completions, a native
+`/api/sessions/{id}/chat` request, or a Runs request using session history.
+Header-less Chat Completions, Responses chains, and Runs requests with
+`previous_response_id` or caller-supplied history instead execute delegation
+synchronously, returning the result in the original turn. Merely deriving a
+session ID from request content does not enable detached delivery.
+
+For resumable requests, the completion is persisted once per delegation unit.
+It is available through `GET /api/sessions/{id}/messages` and in the next real
+client turn's session history. Retries do not insert the same result again;
+interim task-failure notices have separate identities. Delivery waits while a
+client turn owns the session lease and follows compression continuations.
+Chat Completions echoes the explicit session ID you supplied in both JSON and
+streaming responses; keep sending that ID even after compression.
+
+A completion **never starts an unsolicited model turn** or bypasses a pending
+human confirmation. The client owns the next turn. Clients that continue using
+their own history snapshots should use synchronous delegation rather than
+expecting a server-side delivery row to be merged into those snapshots.
 
 Unconsumed event buffers expire after five minutes so a detached client cannot
 grow memory indefinitely. This expires transport state only: a run that is
@@ -501,6 +537,8 @@ running.
 ### POST /v1/runs/\{run_id\}/approval
 
 Resolve a pending approval for a run that is waiting on a human decision (for example, a tool call gated behind an approval policy). The body carries the approval decision; the run resumes once the decision is recorded. This endpoint is advertised in `/v1/capabilities` as the `run_approval` feature so external UIs can detect support before surfacing an approval prompt.
+
+MCP trust-gate consent — a write-capable tool on a server configured `trust: untrusted` — surfaces the same way: the run emits an `approval.request` event and parks in `waiting_for_approval` until this endpoint resolves it (`once` runs the tool, `deny` blocks it).
 
 ## Jobs API (background scheduled work)
 
@@ -552,7 +590,7 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | `GET` | `/api/sessions/{id}/messages` | Message history for a session |
 | `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |
 | `POST` | `/api/sessions/{id}/chat` | Run one synchronous agent turn |
-| `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `tool.started`, `tool.completed`, `run.completed` events |
+| `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `tool.started`, `tool.completed`, then a terminal `run.completed` / `run.failed` / `run.cancelled` event that matches how the turn ended (see [Terminal run status](../../developer-guide/programmatic-integration.md#terminal-run-status)) |
 
 `/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
 
@@ -699,6 +737,7 @@ API_SERVER_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 When CORS is enabled:
 - **Preflight responses** include `Access-Control-Max-Age: 600` (10 minute cache)
 - **SSE streaming responses** include CORS headers so browser EventSource clients work correctly
+- **`X-Hermes-Session-Id`** is an allowed request header, so browsers on an allowlisted origin can request session continuation.
 - **`Idempotency-Key`** is an allowed request header — clients can send it for deduplication (responses are cached by key for 5 minutes)
 
 Most documented frontends such as Open WebUI connect server-to-server and do not need CORS at all.

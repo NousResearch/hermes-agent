@@ -178,8 +178,9 @@ export function ProfileRail() {
   const connections = registry?.connections
 
   const restGroups = useMemo(
-    () => (multipleConnections ? buildRestGroups({ activeConnectionId, connections: connections ?? [], roster }) : []),
-    [activeConnectionId, connections, multipleConnections, roster]
+    () =>
+      multipleConnections ? buildRestGroups({ activeConnectionId, connections: connections ?? [], order, roster }) : [],
+    [activeConnectionId, connections, multipleConnections, order, roster]
   )
 
   // Fleet mode needs something to show beside the active gateway. Two

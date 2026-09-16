@@ -5,7 +5,10 @@ terminal provider-failure classes (broken pipe, overload, usage-limit wall)
 without parsing message text."""
 
 import errno
+import json
 import os
+
+import pytest
 
 from agent.turn_recovery import (
     _errno_of, _failure_discriminators, max_retries_exhausted_result, nonretryable_client_error_result,
@@ -125,6 +128,38 @@ class TestFailureDiscriminators:
 
     def test_empty_when_nothing_to_say(self):
         assert _failure_discriminators(ValueError("x"), _classified()) == {}
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "invalid request\nSYNTHETIC-DIAGNOSTIC account@example.invalid",
+            "account@example.invalid",
+            "x" * 129,
+        ],
+    )
+    def test_provider_code_omits_malformed_value_from_result_and_usage_report(self, tmp_path, code):
+        """A provider's code field is not trusted diagnostic text."""
+        from hermes_cli.oneshot import _write_usage_file
+
+        result = _run_max_retries(
+            _BodyError("synthetic provider diagnostic", body={"error": {"code": code}}),
+            _classified(FailoverReason.billing, 400, retryable=False),
+        )
+        path = tmp_path / "usage.json"
+        _write_usage_file(str(path), result)
+        report = json.loads(path.read_text())
+
+        assert "failure_provider_code" not in result
+        assert "failure_provider_code" not in report
+        assert code not in json.dumps(report)
+
+    @pytest.mark.parametrize("code", ["FutureProvider:v2.unknown-code_7", "x" * 128])
+    def test_provider_code_preserves_valid_unknown_identifier(self, code):
+        out = _failure_discriminators(
+            _BodyError("limit", body={"error": {"code": code}}),
+            _classified(FailoverReason.billing, 429, retryable=False),
+        )
+        assert out["failure_provider_code"] == code
 
 
 def _run_max_retries(api_error, classified):

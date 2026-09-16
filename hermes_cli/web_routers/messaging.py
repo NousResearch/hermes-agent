@@ -285,7 +285,10 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     # so the two surfaces cannot disagree. Unscoped, the profile is the process's own home (a pooled
     # ``hermes --profile X serve``); the default home resolves to a name the multiplexer never serves.
     own_home = scoped_dir if scoped_dir is not None else get_process_hermes_home()
-    if runtime is None or get_runtime_status_running_pid(runtime, expected_home=own_home) is None:
+    if (
+        runtime is None
+        or get_runtime_status_running_pid(runtime, expected_home=own_home) is None
+    ):
         served = multiplexer_liveness_for_profile(own_home)
         if served is not None:
             runtime = {**served[1], "platforms": profile_platforms_from_multiplexer(served[1], own_home.name)}

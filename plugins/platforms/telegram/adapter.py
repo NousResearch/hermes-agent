@@ -12,7 +12,7 @@ import re
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set, cast
 from hermes_cli import setup_platforms
 
 logger = logging.getLogger(__name__)
@@ -361,6 +361,51 @@ _POLLING_STALL_TIMEOUT = 150.0
 # to hear the attachment failed, so kept modest.
 _MEDIA_SEND_READ_TIMEOUT = 60.0
 _POLLING_GENERATION_CONTEXT: ContextVar[Optional[int]] = ContextVar("telegram_polling_generation", default=None)
+
+
+class TelegramFreshEditFilter:
+    """PTB-compatible filter: ordinary messages, plus edits made within ``max_age_seconds`` of the send.
+
+    Telegram re-delivers an edited message as a fresh update carrying both the original ``date`` and the
+    ``edit_date``, so the delta bounds how late a correction may still start a turn: a resident fixing a
+    message they just sent still reaches the bot, while an edit to a long-past message cannot wake it.
+
+    Deliberately not a ``filters.MessageFilter`` subclass — this module is imported before
+    python-telegram-bot is lazy-installed, so an import-time base would be captured as ``object`` and the
+    filter could not then be composed with the handler filters. Filter composition only reads
+    ``check_update`` and ``data_filter`` off each operand, so this object is interface-compatible at use
+    time regardless of when the SDK arrives.
+    """
+
+    __slots__ = ("_max_age_seconds",)
+
+    data_filter = False
+    name = "telegram_fresh_edit_message"
+
+    def __init__(self, max_age_seconds: float):
+        self._max_age_seconds = float(max_age_seconds)
+
+    def __repr__(self) -> str:
+        # Composed filters are logged/repr'd (``filters.TEXT & ~filters.COMMAND & <this>``); without it
+        # the operand shows as a bare object address.
+        return self.name
+
+    def check_update(self, update) -> bool:
+        message = getattr(update, "effective_message", None)
+        return bool(message is not None and self.filter(message))
+
+    def filter(self, message: "Message") -> bool:
+        edit_date = getattr(message, "edit_date", None)
+        if edit_date is None:
+            return True
+        sent_at = getattr(message, "date", None)
+        if sent_at is None:
+            return False
+        try:
+            return (edit_date - sent_at).total_seconds() <= self._max_age_seconds
+        except (AttributeError, TypeError, ValueError):
+            # Non-date payloads: fail closed rather than admitting an edit we cannot age.
+            return False
 
 
 class _PollingLifecycleAbort(RuntimeError):
@@ -2685,7 +2730,10 @@ class TelegramAdapter(BasePlatformAdapter):
         """Register every PTB handler on ``app`` (initial connect and the transient-init rebuild)."""
         # Telegram emits edits as fresh updates with the original message id. This is opt-in because
         # existing bots may deliberately process edits; enabled profiles must never start a second turn.
-        inbound_filter = ~filters.UpdateType.EDITED if self._telegram_ignore_edited_messages() else filters.ALL
+        # A profile that wants recent corrections to still reach the bot sets ``edited_message_max_age_sec``
+        # instead: then only edits made within that window of the original send are admitted, so an edit to
+        # a long-past message can never wake the bot.
+        inbound_filter = self._telegram_inbound_update_filter()
         app.add_handler(TelegramMessageHandler(filters.TEXT & ~filters.COMMAND & inbound_filter, self._handle_text_message))
         app.add_handler(TelegramMessageHandler(filters.COMMAND & inbound_filter, self._handle_command))
         app.add_handler(TelegramMessageHandler(
@@ -5052,9 +5100,15 @@ class TelegramAdapter(BasePlatformAdapter):
             "observe_unmentioned_group_messages", "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES", "false",
             "ingest_unmentioned_group_messages")
 
-    def _telegram_ignore_edited_messages(self) -> bool:
-        """Whether this profile discards Telegram edits instead of treating them as new inbound messages."""
-        return self._extra_bool("ignore_edited_messages", "TELEGRAM_IGNORE_EDITED_MESSAGES", "false")
+    def _telegram_inject_observed_group_context(self) -> bool:
+        """Return whether observed group chatter is injected into the agent prompt (@mention turns).
+
+        Default True preserves the historical behavior (observed messages prepended to the addressed
+        turn). Local stopgap (upstream PR #100961 pending) — opt-out for tenants that only want the
+        transcript/RAG copy without prompt injection.
+        """
+        return self._extra_bool(
+            "inject_observed_group_context", "TELEGRAM_INJECT_OBSERVED_GROUP_CONTEXT", "true")
 
     def _telegram_guest_mode(self) -> bool:
         """Return whether non-allowlisted groups may trigger via direct @mention."""
@@ -5070,6 +5124,42 @@ class TelegramAdapter(BasePlatformAdapter):
         return self._extra_bool(
             "bots_require_mention", "TELEGRAM_BOTS_REQUIRE_MENTION", "false"
         )
+
+    def _telegram_ignore_edited_messages(self) -> bool:
+        """Whether this profile discards Telegram edits instead of treating them as new inbound messages."""
+        return self._extra_bool("ignore_edited_messages", "TELEGRAM_IGNORE_EDITED_MESSAGES", "false")
+
+    def _telegram_edited_message_max_age_seconds(self) -> Optional[float]:
+        """Freshness ceiling (seconds) for edited messages; ``None`` = no ceiling (every edit counts).
+
+        Unset preserves upstream behavior for every profile. A profile that wants a recent correction —
+        typically a resident adding the bot mention to a question they just sent — to still reach the bot
+        opts in explicitly, so an edit to a long-past message can never start a new turn.
+        """
+        raw = self.config.extra.get("edited_message_max_age_sec")
+        if raw is None:
+            raw = _scoped_gate_env("TELEGRAM_EDITED_MESSAGE_MAX_AGE_SEC", "")
+        if isinstance(raw, bool):
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    def _telegram_inbound_update_filter(self):
+        """Filter for the four normal inbound handlers: how Telegram edits are treated.
+
+        ``ignore_edited_messages`` drops them outright; otherwise a configured freshness ceiling keeps
+        only edits made within that window of the original send; with neither, upstream behavior
+        (every edit is an ordinary inbound message) stands.
+        """
+        if self._telegram_ignore_edited_messages():
+            return ~filters.UpdateType.EDITED
+        max_age = self._telegram_edited_message_max_age_seconds()
+        # The filter satisfies the interface PTB composition consumes; the cast only satisfies the
+        # library's base-class annotations (the base cannot be inherited at import time, see the class).
+        return cast("filters.BaseFilter", TelegramFreshEditFilter(max_age)) if max_age else filters.ALL
 
     def _telegram_free_response_chats(self) -> set[str]:
         return self._extra_str_set("free_response_chats", "TELEGRAM_FREE_RESPONSE_CHATS")
@@ -6035,7 +6125,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
-        msg = update.message
+        # ``update.message`` is None for an edited update: read the edited payload too, otherwise a media
+        # edit the inbound filter admitted (``edited_message_max_age_sec``) is dropped here while the
+        # text/command/location handlers accept it. Only the edited forms are added: switching to
+        # ``_effective_update_message`` would newly admit non-edited channel/business/guest posts.
+        msg = (update.message or update.edited_message or update.edited_channel_post
+               or update.edited_business_message)
         if not msg:
             return
         if not self._is_user_authorized_from_message(msg):
@@ -6511,6 +6606,10 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
 
     if "disable_topic_auto_rename" in telegram_cfg:
         extras.setdefault("disable_topic_auto_rename", telegram_cfg["disable_topic_auto_rename"])
+    if "ignore_edited_messages" in telegram_cfg:
+        extras.setdefault("ignore_edited_messages", telegram_cfg["ignore_edited_messages"])
+    if "edited_message_max_age_sec" in telegram_cfg:
+        extras.setdefault("edited_message_max_age_sec", telegram_cfg["edited_message_max_age_sec"])
     _effective_rm = telegram_cfg.get("require_mention", yaml_cfg.get("require_mention"))
     if _effective_rm is not None:
         _set_env("TELEGRAM_REQUIRE_MENTION", str(_effective_rm).lower())
@@ -6519,8 +6618,7 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     for key, env in (
         ("exclusive_bot_mentions", "TELEGRAM_EXCLUSIVE_BOT_MENTIONS"), ("allow_bots", "TELEGRAM_ALLOW_BOTS"),
         ("bots_require_mention", "TELEGRAM_BOTS_REQUIRE_MENTION"),
-        ("guest_mode", "TELEGRAM_GUEST_MODE", ), ("observe_unmentioned_group_messages", "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES"),
-        ("ignore_edited_messages", "TELEGRAM_IGNORE_EDITED_MESSAGES")):
+        ("guest_mode", "TELEGRAM_GUEST_MODE", ), ("observe_unmentioned_group_messages", "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES")):
         _bridge_lower(key, env)
     # No extras seed for allowed_chats / allowed_topics / group_allowed_chats: the shared-key loop already
     # bridges them with their original type and this merge would clobber it.
@@ -6543,7 +6641,7 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         "group_allowed_chats", "TELEGRAM_GROUP_ALLOWED_CHATS",
         telegram_cfg.get("group_allowed_chats") or _telegram_extra.get("group_allowed_chats"))
     for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages",
-                 "ignore_edited_messages", "free_response_topics"):
+                 "inject_observed_group_context", "free_response_topics"):
         if _key in telegram_cfg:
             extras.setdefault(_key, telegram_cfg[_key])
     # Pass through telegram-specific extra keys but EXCLUDE generic shared-config keys: _merge_platform_map

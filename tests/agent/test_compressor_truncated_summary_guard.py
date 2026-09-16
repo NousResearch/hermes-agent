@@ -136,6 +136,33 @@ class TestGenerateSummaryTruncationGuard:
         assert calls[1]["provider"] == "main-provider"
         assert calls[1]["model"] == "main-model"
         assert calls[1]["base_url"] == "https://main.example/v1"
+        assert calls[1]["bypass_task_route"] is True
+
+    def test_same_model_on_different_aux_provider_still_falls_back(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="shared-model", provider="main-provider", quiet_mode=True)
+
+        calls = []
+
+        def _call(**kwargs):
+            calls.append(kwargs)
+            kwargs["route_info"].update(
+                provider="main-provider" if kwargs.get("bypass_task_route") else "aux-provider",
+                model="shared-model",
+            )
+            return _mock_response(
+                "full summary" if kwargs.get("bypass_task_route") else "partial summary",
+                "stop" if kwargs.get("bypass_task_route") else "length",
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=_call):
+            result = c._generate_summary(_msgs(2))
+
+        assert result is not None
+        assert len(calls) == 2
+        assert calls[1]["provider"] == "main-provider"
+        assert calls[1]["model"] == "shared-model"
+        assert calls[1]["bypass_task_route"] is True
 
     def test_stop_finish_reason_still_succeeds(self):
         """Control: a normal stop-terminated summary is accepted unchanged."""

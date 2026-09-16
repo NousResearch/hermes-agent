@@ -3243,11 +3243,11 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             # (thinking models burn it on reasoning). Timeout comes from call_llm config.
         }
         if self._summary_force_main_route:
-            # Explicit args outrank auxiliary.compression.*, so this retry cannot resolve back to
-            # the same configured route that just produced a deterministic truncated response.
+            # Keep compression timeout/telemetry while bypassing every task-specific route field,
+            # so an auto main runtime or empty base URL cannot inherit the failed aux endpoint.
             call_kwargs.update({
                 "provider": self.provider, "model": self.model, "base_url": self.base_url,
-                "api_key": self.api_key, "api_mode": self.api_mode,
+                "api_key": self.api_key, "api_mode": self.api_mode, "bypass_task_route": True,
             })
         elif self.summary_model:
             call_kwargs["model"] = self.summary_model
@@ -3538,9 +3538,11 @@ Write only the summary body. Do not include any preamble or prefix."""
         # legacy override; route_info covers auxiliary.compression.{provider,model}, which otherwise
         # resolves identically on every retry (#113322).
         routed_model = getattr(self, "_last_summary_route_model", "")
+        routed_provider = getattr(self, "_last_summary_route_provider", "")
         distinct_aux_route = (
             bool(self.summary_model and self.summary_model != self.model)
             or bool(routed_model and routed_model != self.model)
+            or bool(routed_provider and routed_provider != (self.provider or "auto"))
         )
         if distinct_aux_route and not getattr(self, "_summary_model_fallen_back", False):
             self._fallback_to_main_for_compression(e, kind.fallback_reason(), routed_model)

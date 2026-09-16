@@ -51,6 +51,7 @@ export function quiesceKanbanWorkersForUpdate(
       stdio: ['ignore', 'pipe', 'pipe'],
       encoding: 'utf8'
     } as ExecFileSyncOptionsWithStringEncoding)
+
     const parsed = JSON.parse(String(raw))
 
     if (!parsed || typeof parsed !== 'object' || typeof parsed.ok !== 'boolean') {

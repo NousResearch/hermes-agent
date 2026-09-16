@@ -237,6 +237,7 @@ import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { createIntroRevealWindowController } from './intro-reveal-window'
+import { quiesceKanbanWorkersForUpdate } from './kanban-quiesce-before-update'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { ensureMainWindow } from './main-window-lifecycle'
@@ -394,7 +395,6 @@ import {
 } from './translucency'
 import { branchTipApiUrl, cacheIsFresh, compareApiUrl, githubRepoSlug, parseCompare } from './update-api-check'
 import { waitForUpdateClearance } from './update-gate'
-import { quiesceKanbanWorkersForUpdate } from './kanban-quiesce-before-update'
 import {
   readLiveUpdateMarker,
   removeUpdateMarkerIfOwned,
@@ -4087,6 +4087,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     // recovery re-dispatching a worker the updater intentionally stopped.
     // Preserve compatibility with staged updaters too old to adopt a marker.
     const scriptHandoffAvailable = Boolean(resolveUpdateScriptHandoff(updateRoot))
+
     const canCoordinateKanban =
       IS_WINDOWS && (scriptHandoffAvailable || Boolean(updater && stagedUpdaterSupportsPrewrittenMarker(updater)))
 
@@ -4125,6 +4126,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       // user close the holder and retry. Restart our own backend so the app
       // keeps working after the failed attempt.
       const scanOutcome = await scanVenvBlockers(updateRoot)
+
       const message =
         scanOutcome.kind === 'blocked'
           ? formatBlockerMessage(scanOutcome.result)
@@ -4359,6 +4361,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     if (preflightMarkerOwned) {
       removeUpdateMarkerIfOwned(HERMES_HOME, process.pid)
     }
+
     updateInFlight = false
   }
 }

@@ -87,6 +87,57 @@ def test_start_server_applies_process_local_ssh_bootstrap_state(monkeypatch):
     assert captured["port"] == 0
 
 
+def test_start_server_configures_native_tls(monkeypatch, capsys):
+    captured = _stub_uvicorn(monkeypatch)
+    registered = {}
+    monkeypatch.setattr(
+        "hermes_cli.process_identity.register_self",
+        lambda purpose, detail: registered.update(purpose=purpose, detail=detail),
+    )
+
+    web_server.start_server(
+        host="127.0.0.1",
+        port=0,
+        open_browser=False,
+        ssl_certfile="/run/hermes-dashboard/fullchain.pem",
+        ssl_keyfile="/run/hermes-dashboard/privkey.pem",
+    )
+
+    assert captured["ssl_certfile"] == "/run/hermes-dashboard/fullchain.pem"
+    assert captured["ssl_keyfile"] == "/run/hermes-dashboard/privkey.pem"
+    assert registered["detail"]["ssl_certfile"] == "/run/hermes-dashboard/fullchain.pem"
+    assert registered["detail"]["ssl_keyfile"] == "/run/hermes-dashboard/privkey.pem"
+    output = capsys.readouterr()
+    assert "Hermes Web UI → https://127.0.0.1:" in output.out + output.err
+
+
+@pytest.mark.parametrize(
+    ("ssl_certfile", "ssl_keyfile"),
+    [("/run/hermes-dashboard/combined.pem", None), (None, "/run/hermes-dashboard/key.pem")],
+)
+def test_start_server_rejects_partial_tls_before_runtime_setup(
+    monkeypatch, ssl_certfile, ssl_keyfile
+):
+    configured = False
+
+    def configure(*_args, **_kwargs):
+        nonlocal configured
+        configured = True
+
+    monkeypatch.setattr(web_server, "_configure_auth_gate", configure)
+
+    with pytest.raises(SystemExit, match="ssl_certfile and ssl_keyfile must be supplied together"):
+        web_server.start_server(
+            host="127.0.0.1",
+            port=0,
+            open_browser=False,
+            ssl_certfile=ssl_certfile,
+            ssl_keyfile=ssl_keyfile,
+        )
+
+    assert configured is False
+
+
 def test_start_server_disables_ws_ping_on_loopback(monkeypatch):
     """Loopback binds (the Desktop case) MUST disable uvicorn's protocol-level
     keepalive ping so an event-loop stall can never trigger a false disconnect.

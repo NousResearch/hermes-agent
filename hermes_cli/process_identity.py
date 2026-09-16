@@ -123,6 +123,8 @@ class LedgerEntry:
     host: str = ""
     port: Optional[int] = None
     profile: str = ""
+    ssl_certfile: str = ""
+    ssl_keyfile: str = ""
 
 
 def _ledger_path() -> Path:
@@ -205,6 +207,8 @@ def register_self(purpose: str, *, project_root: Optional[Path] = None, detail: 
             entry.host = str(detail.get("host") or "")
             entry.port = int(detail["port"]) if detail.get("port") is not None else None
             entry.profile = str(detail.get("profile") or "")
+            entry.ssl_certfile = str(detail.get("ssl_certfile") or "")
+            entry.ssl_keyfile = str(detail.get("ssl_keyfile") or "")
         except (TypeError, ValueError):
             pass
     try:

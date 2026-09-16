@@ -2408,6 +2408,13 @@ def _dashboard_lifecycle_flags(args, token_file) -> None:
 
 def _dashboard_validate_serve_args(args, headless_backend, token_file):
     """Headless-serve argument checks -> ssh_owner_nonce (or None)."""
+    ssl_certfile = getattr(args, "ssl_certfile", None)
+    ssl_keyfile = getattr(args, "ssl_keyfile", None)
+    if bool(ssl_certfile) != bool(ssl_keyfile):
+        raise SystemExit("--ssl-certfile and --ssl-keyfile must be supplied together")
+    if ssl_certfile and ssl_keyfile:
+        args.ssl_certfile = str(Path(ssl_certfile).expanduser().resolve(strict=False))
+        args.ssl_keyfile = str(Path(ssl_keyfile).expanduser().resolve(strict=False))
     # `hermes serve` is headless/non-interactive: fail closed on a corrupt
     # config.yaml instead of silently starting on defaults where provider
     # auto-detection can adopt unnamed .env credentials (issue #81952).
@@ -2587,6 +2594,8 @@ def cmd_dashboard(args):
         ssh_session_token=_ssh_session_token,
         ssh_owner_nonce=_ssh_owner_nonce,
         start_mcp_discovery_after_bind=_mcp_discovery_after_bind,
+        ssl_certfile=getattr(args, "ssl_certfile", None),
+        ssl_keyfile=getattr(args, "ssl_keyfile", None),
     )
 
 

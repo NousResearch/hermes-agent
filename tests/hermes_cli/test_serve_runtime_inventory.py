@@ -33,6 +33,8 @@ def _ledger_entry(**over):
         "host": "100.94.65.93",
         "port": 9119,
         "profile": "",
+        "ssl_certfile": "",
+        "ssl_keyfile": "",
     }
     entry.update(over)
     return entry
@@ -49,7 +51,14 @@ def test_register_self_records_structured_detail(tmp_path, monkeypatch):
     monkeypatch.setattr(pi, "_ledger_path", lambda: tmp_path / "ledger.json")
     monkeypatch.setattr(pi, "install_id", lambda *a, **k: "inst")
     assert pi.register_self(
-        "serve", detail={"host": "100.94.65.93", "port": 9119, "profile": "work"}
+        "serve",
+        detail={
+            "host": "100.94.65.93",
+            "port": 9119,
+            "profile": "work",
+            "ssl_certfile": "/run/hermes-dashboard/fullchain.pem",
+            "ssl_keyfile": "/run/hermes-dashboard/privkey.pem",
+        },
     )
     entries = [
         e
@@ -61,6 +70,8 @@ def test_register_self_records_structured_detail(tmp_path, monkeypatch):
     assert e["host"] == "100.94.65.93"
     assert e["port"] == 9119
     assert e["profile"] == "work"
+    assert e["ssl_certfile"] == "/run/hermes-dashboard/fullchain.pem"
+    assert e["ssl_keyfile"] == "/run/hermes-dashboard/privkey.pem"
 
 
 def test_register_self_without_detail_stays_backward_compatible(
@@ -146,16 +157,24 @@ def test_serve_relaunch_commands_built_from_structured_identity(monkeypatch):
     monkeypatch.setattr(cli_main, "_venv_scripts_dir", lambda: None)
     monkeypatch.setattr(main_install_repair, "_venv_scripts_dir", lambda: None)
     entries = [
-        _ledger_entry(),                                  # default profile
+        _ledger_entry(
+            ssl_certfile="/run/hermes-dashboard/fullchain.pem",
+            ssl_keyfile="/run/hermes-dashboard/privkey.pem",
+        ),                                                # default profile
         _ledger_entry(pid=5000, profile="work", port=9200, host=""),
         _ledger_entry(pid=6000, port=None),               # no port → skipped
         _ledger_entry(pid=7000, purpose="dashboard", host="0.0.0.0", port=9300),
+        _ledger_entry(pid=8000, ssl_certfile="/run/hermes-dashboard/combined.pem"),
     ]
     cmds = update_cmd._serve_relaunch_commands(entries)
-    assert ["hermes", "serve", "--host", "100.94.65.93", "--port", "9119"] in cmds
+    assert [
+        "hermes", "serve", "--host", "100.94.65.93", "--port", "9119",
+        "--ssl-certfile", "/run/hermes-dashboard/fullchain.pem",
+        "--ssl-keyfile", "/run/hermes-dashboard/privkey.pem",
+    ] in cmds
     assert ["hermes", "--profile", "work", "serve", "--port", "9200"] in cmds
     assert ["hermes", "dashboard", "--host", "0.0.0.0", "--port", "9300"] in cmds
-    assert len(cmds) == 3  # the port-less entry is skipped
+    assert len(cmds) == 3  # port-less and partial-TLS entries are skipped
 
 
 def test_relaunch_stopped_serves_is_idempotent(monkeypatch):

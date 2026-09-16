@@ -1719,6 +1719,8 @@ Launch the web dashboard — a browser-based UI for managing configuration, API 
 |--------|---------|-------------|
 | `--port` | `9119` | Port to run the web server on |
 | `--host` | `127.0.0.1` | Bind address |
+| `--ssl-certfile` / `--tls-certfile` | — | Serve HTTPS directly with this PEM certificate chain. Requires `--ssl-keyfile`. |
+| `--ssl-keyfile` / `--tls-keyfile` | — | PEM private key for native HTTPS. Requires `--ssl-certfile`. |
 | `--no-open` | — | Don't auto-open the browser |
 | `--insecure` | off | **Deprecated / no-op.** Formerly bypassed auth on a non-loopback bind. Since the June 2026 hardening a public bind *always* requires an auth provider (password or OAuth). Bind `127.0.0.1` and tunnel to keep it local. |
 | `--skip-build` | off | Skip the web UI build step and serve the existing `dist` directly. Useful for non-interactive contexts (Windows Scheduled Tasks, CI) where npm isn't available. Pre-build with `cd web && npm run build`. |

@@ -216,7 +216,14 @@ def _write_dashboard_ready_file(actual_port: int) -> None:
         _log.warning("Failed to write dashboard ready file %r: %s", target, exc)
 
 
-def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial_profile: str) -> None:
+def _maybe_open_browser(
+    host: str,
+    actual_port: int,
+    open_browser: bool,
+    initial_profile: str,
+    *,
+    scheme: str = "http",
+) -> None:
     """Open the dashboard URL in the user's browser if appropriate.
 
     Skips headless Linux (no DISPLAY/WAYLAND_DISPLAY) so a TUI browser can't
@@ -236,7 +243,7 @@ def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial
         return
 
     _display_host = host if host not in ("0.0.0.0", "::") else "127.0.0.1"
-    _open_url = f"http://{_display_host}:{actual_port}"
+    _open_url = f"{scheme}://{_display_host}:{actual_port}"
     if initial_profile:
         from urllib.parse import quote
         _open_url += f"/?profile={quote(initial_profile)}"

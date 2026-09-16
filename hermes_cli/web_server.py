@@ -1127,7 +1127,14 @@ def _configure_auth_gate(
         )
 
 
-def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
+def _build_uvicorn_server(
+    host: str,
+    port: int,
+    *,
+    ssh_isolated: bool = False,
+    ssl_certfile: Optional[str] = None,
+    ssl_keyfile: Optional[str] = None,
+):
     """Build the uvicorn ``Config`` + ``Server`` for this bind (reads ``app.state.auth_required``).
 
     uvicorn.Server is driven directly (not uvicorn.run) so startup is split from
@@ -1174,9 +1181,12 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
 
     config = uvicorn.Config(
         served_app, host=host, port=port, log_level="warning",
+        ssl_certfile=ssl_certfile,
+        ssl_keyfile=ssl_keyfile,
         # Off by default so _ws_client_is_allowed sees the real peer, not
-        # X-Forwarded-For. Gated mode runs behind a TLS terminator and needs
-        # X-Forwarded-Proto for cookie Secure flags.
+        # X-Forwarded-For. A gated deployment behind a TLS terminator needs
+        # X-Forwarded-Proto for cookie Secure flags; native TLS does not depend
+        # on forwarded headers.
         proxy_headers=bool(app.state.auth_required),
         # Loopback-only unless the operator trusts a bounded upstream proxy, so
         # spoofed X-Forwarded-* from arbitrary callers is never honoured.
@@ -1205,6 +1215,9 @@ def _on_server_started(
     open_browser: bool,
     initial_profile: str,
     start_mcp_discovery_after_bind: bool,
+    scheme: str = "http",
+    ssl_certfile: Optional[str] = None,
+    ssl_keyfile: Optional[str] = None,
 ) -> None:
     """Post-bind arming on the serving loop right after ``server.startup()``.
 
@@ -1256,7 +1269,13 @@ def _on_server_started(
 
         register_self(
             "serve" if headless else "dashboard",
-            detail={"host": host, "port": actual_port, "profile": initial_profile or ""},
+            detail={
+                "host": host,
+                "port": actual_port,
+                "profile": initial_profile or "",
+                "ssl_certfile": ssl_certfile or "",
+                "ssl_keyfile": ssl_keyfile or "",
+            },
         )
         attach_self_to_kill_on_close_job()
 
@@ -1273,8 +1292,8 @@ def _on_server_started(
         # a piped stdout otherwise surfaces this minutes after the sentinel.
         print(f"  Hermes backend listening on {host}:{actual_port}", flush=True)
     else:
-        print(f"  Hermes Web UI → http://{host}:{actual_port}")
-    _maybe_open_browser(host, actual_port, open_browser, initial_profile)
+        print(f"  Hermes Web UI → {scheme}://{host}:{actual_port}")
+    _maybe_open_browser(host, actual_port, open_browser, initial_profile, scheme=scheme)
 
     if start_mcp_discovery_after_bind:
         # Desktop `serve`: the ~350ms `mcp` SDK import holds the GIL while the
@@ -1372,6 +1391,8 @@ def start_server(
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
     start_mcp_discovery_after_bind: bool = False,
+    ssl_certfile: Optional[str] = None,
+    ssl_keyfile: Optional[str] = None,
 ):
     """Start the web UI server.
 
@@ -1384,6 +1405,9 @@ def start_server(
     until the ready sentinel is written so its SDK import can't hold the GIL
     against the pre-bind path.
     """
+    if bool(ssl_certfile) != bool(ssl_keyfile):
+        raise SystemExit("ssl_certfile and ssl_keyfile must be supplied together")
+
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
 
@@ -1408,7 +1432,13 @@ def start_server(
     # GHSA-ppp5-vxwm-4cf7).
     app.state.bound_host = host
 
-    config, server = _build_uvicorn_server(host, port, ssh_isolated=bool(ssh_session_token))
+    config, server = _build_uvicorn_server(
+        host,
+        port,
+        ssh_isolated=bool(ssh_session_token),
+        ssl_certfile=ssl_certfile,
+        ssl_keyfile=ssl_keyfile,
+    )
 
     # Flush-on-kill guard (#94724): chaining SIGTERM/SIGINT handlers persist
     # in-memory transcripts to state.db before shutdown. Installed BEFORE
@@ -1447,6 +1477,9 @@ def start_server(
                 open_browser=open_browser,
                 initial_profile=initial_profile,
                 start_mcp_discovery_after_bind=start_mcp_discovery_after_bind,
+                scheme="https" if ssl_certfile else "http",
+                ssl_certfile=ssl_certfile,
+                ssl_keyfile=ssl_keyfile,
             )
 
             await server.main_loop()

@@ -417,6 +417,36 @@ def _dashboard_listening(host: str, port: int) -> bool:
         return False
 
 
+def _dashboard_bind_match_score(requested_host: str | None, bound_host: str | None) -> int:
+    """Rank how well a ledger bind address matches the endpoint probed by this invocation."""
+    import socket
+
+    requested = (requested_host or "127.0.0.1").strip().strip("[]") or "127.0.0.1"
+    bound = (bound_host or "").strip().strip("[]")
+    if not bound:
+        return -1
+    if requested == bound:
+        return 3
+
+    def _addresses(host: str) -> set[tuple[int, str]]:
+        probe_host = _dashboard_probe_host(host)
+        try:
+            return {
+                (int(family), str(sockaddr[0]))
+                for family, _socktype, _proto, _canonname, sockaddr
+                in socket.getaddrinfo(probe_host, None, type=socket.SOCK_STREAM)
+            }
+        except OSError:
+            return set()
+
+    requested_addresses = _addresses(requested)
+    if bound == "0.0.0.0":
+        return 1 if any(family == socket.AF_INET for family, _address in requested_addresses) else -1
+    if bound == "::":
+        return 1 if any(family == socket.AF_INET6 for family, _address in requested_addresses) else -1
+    return 2 if requested_addresses & _addresses(bound) else -1
+
+
 def _cancel(message: str = "  Cancelled.") -> NoReturn:
     print(message)
     sys.exit(1)
@@ -656,8 +686,45 @@ def _route_named_profile_dashboard(
     ):
         return
 
-    url = f"http://{args.host or '127.0.0.1'}:{args.port}/?profile={_launch_profile}"
     if _dashboard_listening(args.host, args.port):
+        from hermes_cli.process_identity import ledger_entries
+
+        matching_entries = [
+            (score, entry) for entry in ledger_entries()
+            if entry.get("purpose") in {"dashboard", "serve"}
+            and entry.get("port") == args.port
+            and (score := _dashboard_bind_match_score(args.host, entry.get("host"))) >= 0
+        ]
+        if not matching_entries:
+            raise SystemExit(
+                f"Port {args.port} is listening but has no verified Hermes dashboard identity; "
+                "refusing to open an unverified service."
+            )
+        best_score = max(score for score, _entry in matching_entries)
+        best_entries = [entry for score, entry in matching_entries if score == best_score]
+        schemes = {
+            "https" if entry.get("ssl_certfile") and entry.get("ssl_keyfile") else "http"
+            for entry in best_entries
+            if bool(entry.get("ssl_certfile")) == bool(entry.get("ssl_keyfile"))
+        }
+        if len(schemes) != 1 or any(
+            bool(entry.get("ssl_certfile")) != bool(entry.get("ssl_keyfile"))
+            for entry in best_entries
+        ):
+            raise SystemExit(
+                f"Hermes dashboard identities on port {args.port} have ambiguous TLS state; "
+                "refusing to guess the URL scheme."
+            )
+        entry = max(best_entries, key=lambda item: float(item.get("registered_at") or 0))
+        ssl_certfile = str(entry.get("ssl_certfile") or "")
+        ssl_keyfile = str(entry.get("ssl_keyfile") or "")
+        if bool(ssl_certfile) != bool(ssl_keyfile):
+            raise SystemExit(
+                f"Hermes dashboard identity on port {args.port} has incomplete TLS state; "
+                "refusing to guess its URL scheme."
+            )
+        scheme = "https" if ssl_certfile else "http"
+        url = f"{scheme}://{args.host or '127.0.0.1'}:{args.port}/?profile={_launch_profile}"
         print(f"Machine dashboard already running on port {args.port}.")
         print(f"  Managing profile '{_launch_profile}': {url}")
         if not args.no_open:
@@ -684,7 +751,9 @@ def _route_named_profile_dashboard(
         (_token_file, ["--ssh-session-token-file", _token_file]),
         (args.no_open, ["--no-open"]),
         (getattr(args, "insecure", False), ["--insecure"]),
-        (getattr(args, "skip_build", False), ["--skip-build"])):
+        (getattr(args, "skip_build", False), ["--skip-build"]),
+        (getattr(args, "ssl_certfile", None), ["--ssl-certfile", getattr(args, "ssl_certfile", None)]),
+        (getattr(args, "ssl_keyfile", None), ["--ssl-keyfile", getattr(args, "ssl_keyfile", None)])):
         if enabled:
             reexec_argv.extend(extra)
     from tools.environments.local import build_subprocess_env

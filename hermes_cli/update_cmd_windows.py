@@ -391,10 +391,20 @@ def _serve_relaunch_commands(entries: list[dict]) -> list[list[str]]:
         if not isinstance(port, int) or port <= 0:
             continue
         profile, host = str(entry.get("profile") or ""), str(entry.get("host") or "")
-        commands.append(
+        command = (
             [hermes] + (["--profile", profile] if profile and profile != "default" else [])
             + [str(entry.get("purpose"))] + (["--host", host] if host else []) + ["--port", str(port)]
         )
+        ssl_certfile = str(entry.get("ssl_certfile") or "")
+        ssl_keyfile = str(entry.get("ssl_keyfile") or "")
+        if bool(ssl_certfile) != bool(ssl_keyfile):
+            continue
+        if ssl_certfile and ssl_keyfile:
+            command.extend([
+                "--ssl-certfile", ssl_certfile,
+                "--ssl-keyfile", ssl_keyfile,
+            ])
+        commands.append(command)
     return commands
 
 

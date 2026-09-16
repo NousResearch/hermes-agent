@@ -15,6 +15,8 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+from hermes_cli import main as cli_main
+from hermes_cli import main_dashboard
 from hermes_cli.main import cmd_dashboard
 
 
@@ -22,7 +24,7 @@ def _ns(**kw):
     """Build an argparse.Namespace with dashboard defaults plus overrides."""
     defaults = dict(
         port=9119, host="127.0.0.1", no_open=False, insecure=False,
-        stop=False, status=False,
+        stop=False, status=False, ssl_certfile=None, ssl_keyfile=None,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -151,9 +153,147 @@ class TestLifecycleFlagsTakePrecedence:
         assert called["start"] is False
 
 
+@pytest.mark.parametrize(
+    ("entry_tls", "invocation_tls", "expected_scheme"),
+    [(True, False, "https"), (False, True, "http")],
+)
+def test_named_profile_existing_dashboard_uses_verified_ledger_scheme(
+    monkeypatch, entry_tls, invocation_tls, expected_scheme
+):
+    args = _ns(
+        ssl_certfile="/run/hermes-dashboard/fullchain.pem" if invocation_tls else None,
+        ssl_keyfile="/run/hermes-dashboard/privkey.pem" if invocation_tls else None,
+    )
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "work")
+    entry = {"purpose": "dashboard", "host": "127.0.0.1", "port": 9119}
+    if entry_tls:
+        entry.update(
+            ssl_certfile="/run/hermes-dashboard/fullchain.pem",
+            ssl_keyfile="/run/hermes-dashboard/privkey.pem",
+        )
+    monkeypatch.setattr("hermes_cli.process_identity.ledger_entries", lambda: [entry])
+    opened = []
+    monkeypatch.setattr("webbrowser.open", opened.append)
+    monkeypatch.setattr(main_dashboard, "_dashboard_listening", lambda *_a: True)
+
+    with pytest.raises(SystemExit, match="0"):
+        main_dashboard._route_named_profile_dashboard(args, False, "", "")
+
+    assert opened == [f"{expected_scheme}://127.0.0.1:9119/?profile=work"]
+
+
+def test_named_profile_existing_dashboard_matches_requested_bind_address(monkeypatch):
+    args = _ns(host="127.0.0.1")
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "work")
+    monkeypatch.setattr(
+        "hermes_cli.process_identity.ledger_entries",
+        lambda: [
+            {
+                "purpose": "dashboard", "host": "127.0.0.1", "port": 9119,
+                "registered_at": 1,
+            },
+            {
+                "purpose": "dashboard", "host": "10.100.1.73", "port": 9119,
+                "registered_at": 2,
+                "ssl_certfile": "/run/hermes-dashboard/fullchain.pem",
+                "ssl_keyfile": "/run/hermes-dashboard/privkey.pem",
+            },
+        ],
+    )
+    opened = []
+    monkeypatch.setattr("webbrowser.open", opened.append)
+    monkeypatch.setattr(main_dashboard, "_dashboard_listening", lambda *_a: True)
+
+    with pytest.raises(SystemExit, match="0"):
+        main_dashboard._route_named_profile_dashboard(args, False, "", "")
+
+    assert opened == ["http://127.0.0.1:9119/?profile=work"]
+
+
+def test_native_tls_survives_named_profile_reexec(monkeypatch):
+    args = _ns(
+        ssl_certfile="/run/hermes-dashboard/fullchain.pem",
+        ssl_keyfile="/run/hermes-dashboard/privkey.pem",
+    )
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "work")
+
+    monkeypatch.setattr(main_dashboard, "_dashboard_listening", lambda *_a: False)
+    monkeypatch.setattr(
+        "tools.environments.local.build_subprocess_env", lambda **_kw: {}
+    )
+    reexec = {}
+
+    def capture_exec(_executable, argv, _env):
+        reexec["argv"] = argv
+        raise RuntimeError("captured re-exec")
+
+    monkeypatch.setattr(main_dashboard.os, "execvpe", capture_exec)
+    with pytest.raises(RuntimeError, match="captured re-exec"):
+        main_dashboard._route_named_profile_dashboard(args, False, "", "")
+
+    assert reexec["argv"][-4:] == [
+        "--ssl-certfile",
+        "/run/hermes-dashboard/fullchain.pem",
+        "--ssl-keyfile",
+        "/run/hermes-dashboard/privkey.pem",
+    ]
+
+
+def test_native_tls_pair_is_validated_before_runtime_side_effects(monkeypatch):
+    runtime_prepared = False
+
+    def prepare_runtime(*_args):
+        nonlocal runtime_prepared
+        runtime_prepared = True
+
+    monkeypatch.setattr(cli_main, "_dashboard_prepare_runtime", prepare_runtime)
+
+    with pytest.raises(SystemExit, match="--ssl-certfile and --ssl-keyfile must be supplied together"):
+        cmd_dashboard(_ns(ssl_certfile="/run/hermes-dashboard/fullchain.pem"))
+
+    assert runtime_prepared is False
+
+
+def test_native_tls_paths_are_normalized_before_routing(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    args = _ns(ssl_certfile="certs/fullchain.pem", ssl_keyfile="certs/privkey.pem")
+
+    cli_main._dashboard_validate_serve_args(args, False, None)
+
+    assert args.ssl_certfile == str(tmp_path / "certs/fullchain.pem")
+    assert args.ssl_keyfile == str(tmp_path / "certs/privkey.pem")
+
+
 class TestArgparseWiring:
     """Confirm the flags are exposed via the real argparse tree so
     ``hermes dashboard --stop`` / ``--status`` actually parse."""
+
+    def test_native_tls_flags_are_registered(self):
+        from hermes_cli.subcommands.dashboard import build_dashboard_parser, build_serve_parser
+
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="command")
+        build_dashboard_parser(
+            subparsers,
+            cmd_dashboard=lambda args: None,
+            cmd_dashboard_register=lambda args: None,
+        )
+
+        args = parser.parse_args([
+            "dashboard",
+            "--ssl-certfile", "/run/hermes-dashboard/fullchain.pem",
+            "--ssl-keyfile", "/run/hermes-dashboard/privkey.pem",
+        ])
+
+        assert args.ssl_certfile == "/run/hermes-dashboard/fullchain.pem"
+        assert args.ssl_keyfile == "/run/hermes-dashboard/privkey.pem"
+
+        serve_args = build_serve_parser(cmd_dashboard=lambda args: None).parse_args([
+            "--ssl-certfile", "/run/hermes-dashboard/fullchain.pem",
+            "--ssl-keyfile", "/run/hermes-dashboard/privkey.pem",
+        ])
+        assert serve_args.ssl_certfile == args.ssl_certfile
+        assert serve_args.ssl_keyfile == args.ssl_keyfile
 
     def test_flags_are_registered(self):
         from hermes_cli.main import main as _cli_main  # noqa: F401

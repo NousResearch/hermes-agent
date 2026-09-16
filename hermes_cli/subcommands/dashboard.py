@@ -18,6 +18,12 @@ def _add_server_runtime_args(parser) -> None:
         "--port", type=int, default=9119, help="Port (default 9119, 0 for auto-assign by OS)")
     parser.add_argument("--host", default="127.0.0.1", help="Host (default 127.0.0.1)")
     parser.add_argument(
+        "--ssl-certfile", "--tls-certfile", dest="ssl_certfile", default=None,
+        help="TLS certificate chain file (PEM); use with --ssl-keyfile")
+    parser.add_argument(
+        "--ssl-keyfile", "--tls-keyfile", dest="ssl_keyfile", default=None,
+        help="TLS private-key file (PEM); use with --ssl-certfile")
+    parser.add_argument(
         "--insecure", action="store_true",
         help="DEPRECATED / NO-OP. Formerly bypassed auth on a non-loopback "
             "bind. As of the June 2026 hardening it no longer disables "

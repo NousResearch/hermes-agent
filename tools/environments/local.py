@@ -337,6 +337,56 @@ def build_subprocess_env(
     return delegated_child_subprocess_env(env)
 
 
+def served_profile_child_env(
+    base: "Mapping[str, str] | None" = None, *, target_home: "str | Path | None" = None,
+    inherit_credentials: bool = False,
+) -> dict[str, str]:
+    """Child env for a process that acts FOR the active (possibly served) profile: ``hermes -p X``
+    workers, ``key_cmd`` helpers, browser drivers. The process env is the LAUNCH profile's, so its
+    ``.env`` residue and bridged ``TERMINAL_*`` are dropped (``strip_launch_profile_env``; no-op
+    outside multiplex) and the target home is pinned. ``inherit_credentials=True`` is for children
+    that legitimately run with the profile's credentials (they run the agent or mint its token): the
+    target profile's own secrets (its ``.env`` + hydrated sources, i.e. what a standalone
+    ``hermes -p X`` loads itself) are overlaid — never a sibling profile's. ``False`` keeps the
+    provider scrub; the caller re-adds the few keys the child needs via ``get_secret``.
+    ``target_home`` defaults to the active override; ``base`` replaces the ``hermes_subprocess_env``
+    snapshot."""
+    from agent.secret_scope import build_profile_secret_scope, current_secret_scope
+    from hermes_constants import get_hermes_home_override
+    env = dict(base) if base is not None else hermes_subprocess_env(inherit_credentials=inherit_credentials)
+    target = str(target_home or get_hermes_home_override() or "")
+    if target:
+        env["HERMES_HOME"] = target
+        strip_launch_profile_env(env, target)
+    if inherit_credentials:
+        secrets = build_profile_secret_scope(Path(target)) if target else (current_secret_scope() or {})
+        env.update((k, v) for k, v in secrets.items() if v is not None)
+    return env
+
+
+def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None) -> dict:
+    """Drop the LAUNCH profile's residue from a child env built for another served profile.
+    ``os.environ`` holds the default profile's ``.env`` and its bridged ``TERMINAL_*`` settings;
+    the secret scrub removes credentials but not settings (``HERMES_MODEL``, ``TERMINAL_ENV``,
+    ``HERMES_LANGUAGE``...), so a standalone ``hermes -p X`` worker and a served one saw different
+    envs. The child re-loads X's own ``.env`` and bridges X's config itself. ``target_home``
+    defaults to the active home override; no-op outside multiplex or when the target IS the
+    launch profile."""
+    from agent.secret_scope import _is_global_env, is_multiplex_active, load_env_file
+    from hermes_constants import get_hermes_home_override, get_process_hermes_home
+    target = target_home or get_hermes_home_override()
+    if not is_multiplex_active() or not target:
+        return env
+    launch_home = get_process_hermes_home()
+    if Path(target).resolve() == launch_home.resolve():
+        return env
+    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+    for key in set(load_env_file(launch_home / ".env")) | set(TERMINAL_CONFIG_ENV_MAP.values()):
+        if not _is_global_env(key) or key.startswith("TERMINAL_"):
+            env.pop(key, None)
+    return env
+
+
 # --- Shell discovery ---
 def _windows_bash_candidates(custom: "str | None") -> list[str]:
     """Ordered bash.exe candidates on Windows: HERMES_GIT_BASH_PATH, our portable Git
@@ -502,16 +552,33 @@ def _managed_runtime_path_entries() -> list[str]:
         return []
 
 
+def _user_local_bin_entries() -> list[str]:
+    """``~/.local/bin`` when it exists — the pip --user / pipx / uv-tool install
+    target. A backend launched by a non-interactive SSH session, systemd or a GUI
+    launcher inherits a PATH without it (only the login shell adds it), so CLIs
+    installed there were ``command not found`` from the terminal tool (#111778)."""
+    local_bin = Path.home() / ".local" / "bin"
+    try:
+        return [str(local_bin)] if local_bin.is_dir() else []
+    except OSError:
+        # HOME can point at a directory this process may not traverse (CI runs
+        # with HOME=/root as an unprivileged user); such a home has no usable
+        # ~/.local/bin either.
+        return []
+
+
 def _append_missing_sane_path_entries(existing_path: str) -> str:
     """Normalised POSIX PATH with missing sane entries appended: empty entries
     dropped (shells read them as cwd), duplicates collapsed (first wins), then
-    missing ``_SANE_PATH`` / managed-runtime dirs appended so user entries keep
-    precedence. Windows is a no-op passthrough (native ``;`` PATH untouched)."""
+    missing ``_SANE_PATH`` / managed-runtime / ``~/.local/bin`` dirs appended so
+    user entries keep precedence. Windows is a no-op passthrough (native ``;``
+    PATH untouched)."""
     if _IS_WINDOWS:
         return existing_path
     # dict preserves first-occurrence order; empty entries dropped.
     ordered = dict.fromkeys(entry for entry in existing_path.split(":") if entry)
-    ordered.update(dict.fromkeys([*_SANE_PATH.split(":"), *_managed_runtime_path_entries()]))
+    ordered.update(dict.fromkeys([*_SANE_PATH.split(":"), *_managed_runtime_path_entries(),
+                                  *_user_local_bin_entries()]))
     return ":".join(ordered)
 
 
@@ -687,6 +754,7 @@ class LocalEnvironment(BaseEnvironment):
     the session snapshot preserves env vars across calls; CWD persists via the
     stdout marker."""
 
+    _sudo_nopasswd_probe_supported = True
     _profile_scoped_passthrough = True
     # Commands run on the Hermes host itself — controller-side platform behavior
     # (macOS TCC pruning, etc.) legitimately applies here.

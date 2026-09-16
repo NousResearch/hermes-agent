@@ -404,6 +404,18 @@ def _display_after_install(plugin_dir: Path, identifier: str) -> None:
     console.print()
 
 
+def _clone_failure_message(git_url: str, git_error: str) -> str:
+    """Plain-words clone failure: what to check (address, network, private repo), raw git text last.
+
+    The text reaches ``_fail`` -> Rich ``console.print``: escape the git output so ``[...]`` in it is
+    not parsed as markup."""
+    from rich.markup import escape
+    return (f"Could not download the plugin from {git_url}. Check the address (browse the catalog "
+            "with `hermes plugins search`), check your internet connection, or, if the repository "
+            "is private, sign in first with `gh auth login` (or set GITHUB_TOKEN in your .env).\n"
+            f"Details: {escape(git_error.strip())}")
+
+
 def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
     """The plugin path if it exists; else exit 1 (invalid name, or a listing of installed plugins)."""
     try:
@@ -411,9 +423,17 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
     except ValueError as e:
         _fail(console, f"[red]Error:[/red] {e}")
     if not target.exists():
-        installed = ", ".join(d.name for d in plugins_dir.iterdir() if d.is_dir()) or "(none)"
-        _fail(console, f"[red]Error:[/red] Plugin '{name}' not found in {plugins_dir}.\nInstalled plugins: {installed}")
+        _fail(console, _unknown_plugin_message(name, downloaded_only=True))
     return target
+
+
+def _unknown_plugin_message(name: str, *, downloaded_only: bool = False) -> str:
+    """``No plugin named ...`` with the exact-name rule and the two commands that resolve it."""
+    scope = (" This command only works on downloaded plugins; bundled ones can only be enabled or disabled."
+             if downloaded_only else " Bundled plugins can only be enabled or disabled.")
+    return (f"[red]No plugin named '{name}'.[/red] Run `hermes plugins list` to see the exact names "
+            f"(nested plugins use their full key, e.g. web/firecrawl).{scope} "
+            "To add one: `hermes plugins install <owner/repo>`.")
 
 
 # ── Install metadata + git plumbing ─────────────────────────────────────────────────────────
@@ -569,12 +589,7 @@ def _clone_plugin_repo(tmp_clone: Path, git_url: str, revision: Optional[str]) -
     except subprocess.TimeoutExpired as e:
         raise PluginOperationError("Git clone timed out after 60 seconds.") from e
     if result.returncode != 0:
-        error = _safe_git_error(result, git_url)
-        if re.search(r"could not read Username|Authentication failed|Repository not found", error):
-            error += (
-                "\n\nIf this repository is private, authenticate first: run `gh auth login`, set GITHUB_TOKEN "
-                "(or GH_TOKEN) in your .env, or store a credential in git's credential helper for this host.")
-        raise PluginOperationError(f"Git clone failed:\n{error}")
+        raise PluginOperationError(_clone_failure_message(git_url, _safe_git_error(result, git_url)))
     _scrub_cloned_origin(tmp_clone, git_exe, git_url)
     if revision:
         _checkout_exact_revision(tmp_clone, git_exe, revision, source_url=git_url)
@@ -594,6 +609,43 @@ def _read_manifest_for_install(plugin_dir: Path) -> dict:
     for diagnostic in diagnostics:
         logger.warning("Agent Plugin install: %s", diagnostic.message)
     return manifest
+
+
+def _probe_readable(path: Path) -> None:
+    """Raise ``OSError`` unless *path* can actually be listed (dir) or opened for reading (file)."""
+    if path.is_dir():
+        os.listdir(path)
+    else:
+        with open(path, "rb"):
+            pass
+
+
+def _ensure_tree_readable(root: Path, plugins_dir: Path) -> None:
+    """Refuse to ship a tree Hermes cannot read back. A clone can land unreadable (Windows ACL
+    inheritance -> WinError 5, a mode-000 file) and discovery would then skip the plugin forever
+    (#111804); repair ``u+rX`` where the OS supports it, otherwise fail before anything moves."""
+    paths = [root]
+    for dirpath, dirnames, filenames in os.walk(root):
+        paths.extend(Path(dirpath) / name for name in (*dirnames, *filenames))
+    for path in paths:
+        try:
+            _probe_readable(path)
+            continue
+        except OSError:
+            if os.name != "nt":  # chmod only toggles the read-only bit on Windows; ACLs need icacls
+                try:
+                    os.chmod(path, os.stat(path).st_mode | (0o500 if path.is_dir() else 0o400))
+                except OSError:
+                    pass
+        try:
+            _probe_readable(path)
+        except OSError as exc:
+            fix = (f'icacls "{plugins_dir}" /grant:r "%USERNAME%":(OI)(CI)F /T' if os.name == "nt"
+                   else f"chmod -R u+rX {plugins_dir}")
+            raise PluginOperationError(
+                f"Installed file {path.relative_to(root)} is not readable ({exc.strerror or exc}); "
+                f"nothing was installed. Fix permissions on {plugins_dir} (e.g. `{fix}`) and retry."
+            ) from exc
 
 
 def _swap_in_plugin(tmp_target: Path, target: Path, backup: Path, old_metadata: dict, new_metadata: dict) -> None:
@@ -646,6 +698,7 @@ def _install_plugin_core(
         tmp_clone = Path(tmp) / "plugin"
         installed_revision = _clone_plugin_repo(tmp_clone, git_url, requested_revision)
         tmp_target = _resolve_subdir_within(tmp_clone, subdir) if subdir else tmp_clone
+        _ensure_tree_readable(tmp_target, plugins_dir)
         manifest = _read_manifest_for_install(tmp_target)
         plugin_name = manifest.get("name") or (
             subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _repo_name_from_url(git_url))
@@ -1006,7 +1059,7 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     _refuse_legacy_relay(name)
     resolved = _resolve_plugin_key_and_source(name)
     if resolved is None:
-        _fail(console, f"[red]Plugin '{name}' is not installed or bundled.[/red]")
+        _fail(console, _unknown_plugin_message(name))
     key, source = resolved
     _refuse_legacy_relay(key)
 
@@ -1137,7 +1190,7 @@ def cmd_capabilities(name: Optional[str] = None) -> None:
         rows.append((key, entry[3], declared, granted, effective))
 
     if name is not None and not rows:
-        _fail(console, f"[red]Plugin '{name}' is not installed or bundled.[/red]")
+        _fail(console, _unknown_plugin_message(name))
     if not rows:
         console.print("[dim]No plugins declare or hold capabilities.[/dim]")
         return
@@ -1188,7 +1241,7 @@ def cmd_disable(name: str) -> None:
     console = _console()
     key = _resolve_plugin_key(name)
     if key is None:
-        _fail(console, f"[red]Plugin '{name}' is not installed or bundled.[/red]")
+        _fail(console, _unknown_plugin_message(name))
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
     if key not in enabled and key in disabled:
@@ -1259,9 +1312,14 @@ def _scan_level(base: Path, source: str, skip_names: set, prefix: str, depth: in
     if not base.is_dir():
         return
     for d in sorted(base.iterdir()):
-        if not d.is_dir() or (depth == 0 and skip_names and d.name in skip_names):
+        try:
+            if not d.is_dir() or (depth == 0 and skip_names and d.name in skip_names):
+                continue
+            info = _read_manifest_info(d, prefix)
+        except OSError as exc:
+            # Mirrors scan_directory: an unsearchable plugin dir (WinError 5 / mode 000) is skipped, not fatal.
+            logger.warning("Skipping unreadable plugin directory %s: %s", d, exc)
             continue
-        info = _read_manifest_info(d, prefix)
         if info is None:
             if depth == 0:
                 _scan_level(d, source, set(), f"{prefix}/{d.name}" if prefix else d.name, 1, seen)

@@ -1,3 +1,4 @@
+import type { ModelOptionProvider } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import {
@@ -17,7 +18,8 @@ import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/run
 import { setMainModelAssignment } from '@/store/cron-model-impact'
 import { ackFreeTierNotice, freeTierReadyPending, refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
 import { notify, notifyError } from '@/store/notifications'
-import type { ModelOptionProvider, OAuthProvider, OAuthStartResponse } from '@/types/hermes'
+import { guidedOnboardingActive } from '@/store/onboarding-gate'
+import type { OAuthProvider, OAuthStartResponse } from '@/types/hermes'
 
 type PkceStart = Extract<OAuthStartResponse, { flow: 'pkce' }>
 type DeviceStart = Extract<OAuthStartResponse, { flow: 'device_code' }>
@@ -46,7 +48,7 @@ export type OnboardingFlow =
       saving: boolean
       status: 'confirming_model'
     }
-  | { message: string; provider?: OAuthProvider; start?: OAuthStartResponse; status: 'error' }
+  | { detail?: string; message: string; provider?: OAuthProvider; start?: OAuthStartResponse; status: 'error' }
 
 export interface DesktopOnboardingState {
   /** null until the first runtime check resolves. Seeded from localStorage so
@@ -174,6 +176,14 @@ let pollTimer: number | null = null
 let providersRefreshPromise: null | Promise<void> = null
 
 const errMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+// One plain sentence for every way a provider sign-in can fail (start, poll,
+// code exchange); the raw error text rides along as `detail` (desktop-09).
+function signInDidNotFinish(provider: OAuthProvider, raw: unknown): { message: string; detail?: string } {
+  const detail = raw instanceof Error ? errMessage(raw) : typeof raw === 'string' ? raw.trim() : ''
+
+  return { message: translateNow('onboarding.signInDidNotFinish', provider.name), detail: detail || undefined }
+}
 
 const patch = (update: Partial<DesktopOnboardingState>) =>
   $desktopOnboarding.set({ ...$desktopOnboarding.get(), ...update })
@@ -484,6 +494,15 @@ async function refreshProviders() {
 }
 
 export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
+  // Not during the guided first launch. The free tier carries inference
+  // there, and a credential probe that fires anyway (a free-tier token mid
+  // refresh, a setup-profile session before its runtime settles) would drop
+  // the provider picker over the guide the user is in the middle of. Sign-in
+  // is offered where the guide chooses to, on its own ready screen.
+  if (guidedOnboardingActive()) {
+    return
+  }
+
   patch({ reason: reason.trim() || DEFAULT_ONBOARDING_REASON, requested: true })
 }
 
@@ -501,7 +520,7 @@ let pendingCredentialWarning: null | string = null
 export function requestDesktopOnboardingForCredentialWarning(reason: null | string | undefined) {
   const warning = reason?.trim()
 
-  if (!warning || !isProviderSetupErrorMessage(warning)) {
+  if (!warning || !isProviderSetupErrorMessage(warning) || guidedOnboardingActive()) {
     pendingCredentialWarning = null
 
     return
@@ -599,7 +618,14 @@ export function closeManualOnboarding() {
   providersRefreshPromise = null
   pendingProviderOAuthId = null
 
-  patch({ targetProfile: undefined, manual: false, requested: false, localEndpoint: false, freeTierReady: false, flow: { status: 'idle' } })
+  patch({
+    targetProfile: undefined,
+    manual: false,
+    requested: false,
+    localEndpoint: false,
+    freeTierReady: false,
+    flow: { status: 'idle' }
+  })
 }
 
 export function completeDesktopOnboarding() {
@@ -645,7 +671,13 @@ export function setOnboardingMode(mode: OnboardingMode) {
   patch({ mode })
 }
 
-export async function refreshOnboarding(ctx: OnboardingContext) {
+/**
+ * `stillWanted`, when given, is re-asked after the readiness round: a background
+ * caller (the `setup.ready` listener) passes it so a user action that started
+ * during the round — opening the API-key form, picking a provider — is never
+ * dismissed by a late "ready".
+ */
+export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: () => boolean) {
   // Manual mode (user opened the selector from a working app): never
   // auto-dismiss on runtime-ready — the whole point is to let them add /
   // switch a provider while already configured. Just ensure the provider
@@ -657,6 +689,10 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
   }
 
   const runtime = await checkRuntime(ctx)
+
+  if (stillWanted && !stillWanted()) {
+    return false
+  }
 
   if (runtime.ready) {
     completeDesktopOnboarding()
@@ -713,6 +749,15 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
 async function applyFreeTierIntro(ctx: OnboardingContext, runtime: RuntimeReadinessResult) {
   setFreeTierRoute(runtime.freeTier)
   const status = await refreshFreeTierStatus(ctx.requestGateway)
+
+  // The guided first launch IS the introduction. Raising the ready screen on
+  // top of it (a readiness round fires when the layout pick assembles the
+  // window) covered the guide mid-conversation, and dismissing it remounted
+  // the card the user had just answered. The guide acks the notice itself
+  // when it hands off.
+  if (guidedOnboardingActive()) {
+    return
+  }
 
   if (freeTierReadyPending(status, runtime.freeTier ?? null)) {
     patch({ freeTierReady: true })
@@ -805,7 +850,7 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
       return
     }
 
-    setFlow({ status: 'error', provider, message: `Could not start sign-in: ${errMessage(error)}` })
+    setFlow({ status: 'error', provider, ...signInDidNotFinish(provider, error) })
   }
 }
 
@@ -830,7 +875,7 @@ async function pollSession(provider: OAuthProvider, start: DeviceStart, ctx: Onb
       )
     } else if (status !== 'pending') {
       clearPoll()
-      setFlow({ status: 'error', provider, start, message: error_message || `Sign-in ${status}.` })
+      setFlow({ status: 'error', provider, start, ...signInDidNotFinish(provider, error_message || status) })
     }
   } catch (error) {
     if (generation !== flowGeneration) {
@@ -838,7 +883,7 @@ async function pollSession(provider: OAuthProvider, start: DeviceStart, ctx: Onb
     }
 
     clearPoll()
-    setFlow({ status: 'error', provider, start, message: `Polling failed: ${errMessage(error)}` })
+    setFlow({ status: 'error', provider, start, ...signInDidNotFinish(provider, error) })
   }
 }
 
@@ -880,14 +925,14 @@ export async function submitOnboardingCode(ctx: OnboardingContext) {
         })
       )
     } else {
-      setFlow({ status: 'error', provider, start, message: resp.message || 'Token exchange failed.' })
+      setFlow({ status: 'error', provider, start, ...signInDidNotFinish(provider, resp.message) })
     }
   } catch (error) {
     if (generation !== flowGeneration) {
       return
     }
 
-    setFlow({ status: 'error', provider, start, message: errMessage(error) })
+    setFlow({ status: 'error', provider, start, ...signInDidNotFinish(provider, error) })
   }
 }
 

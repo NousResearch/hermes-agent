@@ -14,9 +14,10 @@ can install by name with a single command:
 hermes plugins install <name>
 ```
 
-Browse it visually at **[/docs/plugins](/plugins)** — search, tier filters
-(Official / Community), capability chips, and copyable install commands for
-every entry.
+Browse it visually at **[/docs/plugins](/plugins)** — entries are shelved by
+category (Memory, Desktop, Platforms, Web & Browser, Tools, Voice, Automation,
+Models), with search, tier filters (Official / Community), capability chips, and
+copyable install commands for every entry.
 
 The catalog complements — it does not replace — the existing
 [plugin system](plugins.md). Anything you can install from the catalog is a
@@ -35,6 +36,7 @@ directory of the hermes-agent repository, declaring:
 | `repo` | The plugin's public git repository |
 | `sha` | The **exact 40-hex commit** that was reviewed — installs check out this pin, not a branch tip |
 | `tier` | `official` (maintained by NousResearch) or `community` |
+| `category` | Browse shelf: `desktop` (default), `memory`, `platform`, `web`, `tools`, `voice`, `automation`, `models` or `general` |
 | `maintainer` | Who owns the plugin |
 | `capabilities` | Declared tools, hooks, middleware, and required env vars |
 | `requires_hermes` | Minimum Hermes version, e.g. `>=0.19` (optional) |
@@ -81,6 +83,28 @@ hermes plugins enable <name>
 The install prompt shows the entry's capability summary — declared tools,
 hooks, and required env vars — before anything is cloned.
 
+The catalog name and the plugin's own manifest name can differ; `hermes
+plugins install` prints the installed name, and `enable` takes that one. For
+example the `touchdesigner` entry (a portable Agent Plugins v1 package that
+bundles the twozero MCP server with the `touchdesigner-mcp` skill) installs as
+`td`, kept short so its generated MCP tool names stay under provider
+function-name limits:
+
+```bash
+hermes plugins install touchdesigner
+hermes plugins enable td
+```
+
+Portable packages can also carry a stdio MCP server. The `snyk` entry pins the
+Snyk CLI (`npx -y snyk@<version> mcp`) and bundles the `snyk-security-scan`
+skill, so one install gives Hermes code, dependency, container and IaC scanning
+plus the workflow for using it; the catalog name and manifest name match:
+
+```bash
+hermes plugins install snyk
+hermes plugins enable snyk
+```
+
 ### Updating a catalog install
 
 `hermes plugins update <name>` never runs `git pull` for catalog installs —
@@ -124,12 +148,16 @@ The full checklist lives in the
 in short, an entry must be:
 
 1. **Owner-submitted** — the PR author owns or maintains the plugin repo.
+   Maintainers also add batches of community plugins from a reviewed sweep
+   (each pin validated and scanned at the pinned commit); if yours was swept
+   in and you want it changed or removed, open a PR on your entry.
 2. **A public repository** — the `repo` URL is publicly cloneable.
 3. **Released** — the repo has real releases/tags, not just a default branch.
 4. **Passing validation** — the catalog validation GitHub Action is green on
    the PR (schema, SHA format, reachability).
-5. **Pinned to settled code** — the pinned SHA is at least **2 weeks old**, so
-   the catalog never points at code pushed moments before review.
+5. **Not self-updating** — the catalog build must not download and replace
+   its own files; the pinned SHA is the only update path (a SHA-bump PR plus
+   `hermes plugins update <name>`).
 
 Pin updates (bumping `sha` to a newer commit) follow the same PR + review
 process.

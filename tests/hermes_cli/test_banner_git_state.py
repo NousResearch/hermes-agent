@@ -64,7 +64,7 @@ def test_check_via_local_git_ssh_fastpath_ahead_not_behind(tmp_path):
 
     with (
         patch.object(banner, "_git_stdout", side_effect=fake_git_stdout),
-        patch.object(banner, "_upstream_main_sha", return_value="a" * 40),
+        patch.object(banner, "_github_branch_tip", return_value="a" * 40),
         # merge-base --is-ancestor exits 0: upstream tip IS an ancestor of HEAD
         patch.object(banner.subprocess, "run", return_value=MagicMock(returncode=0)),
     ):
@@ -91,7 +91,7 @@ def test_check_via_local_git_ssh_fastpath_genuinely_behind(tmp_path):
 
     with (
         patch.object(banner, "_git_stdout", side_effect=fake_git_stdout),
-        patch.object(banner, "_upstream_main_sha", return_value="a" * 40),
+        patch.object(banner, "_github_branch_tip", return_value="a" * 40),
         # merge-base --is-ancestor exits 1: not an ancestor -> genuinely behind
         patch.object(banner.subprocess, "run", return_value=MagicMock(returncode=1)),
         patch.object(banner, "_github_compare_behind", return_value=3),
@@ -119,7 +119,7 @@ def test_check_via_local_git_ssh_fastpath_offline_keeps_sentinel(tmp_path):
 
     with (
         patch.object(banner, "_git_stdout", side_effect=fake_git_stdout),
-        patch.object(banner, "_upstream_main_sha", return_value="a" * 40),
+        patch.object(banner, "_github_branch_tip", return_value="a" * 40),
         patch.object(banner.subprocess, "run", return_value=MagicMock(returncode=1)),
         patch.object(banner, "_github_compare_behind", return_value=None),
     ):

@@ -98,6 +98,7 @@ vi.mock('@/store/gateway', async () => {
   const { atom } = await import('nanostores')
 
   return {
+    $activeGatewayRoute: atom('default'),
     $gateway: atom(null),
     activeGateway: vi.fn(() => null),
     activeGatewayConnectionId: vi.fn(() => 'local'),

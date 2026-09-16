@@ -28,7 +28,15 @@ logger = logging.getLogger(__name__)
 
 _MEMORY_PLUGINS_DIR = Path(__file__).parent
 ENTRY_POINTS_GROUP = "hermes_agent.memory_providers"
-_REGISTERED_MEMORY_PROVIDER_SKILLS: dict[str, Path] = {}
+# Per Hermes home (plugin managers are per home too): pruning under one multiplexed profile must
+# only retract that profile's provider skills, never a sibling profile's.
+_REGISTERED_MEMORY_PROVIDER_SKILLS: dict[str, dict[str, Path]] = {}
+
+
+def _registered_skills_for_active_home() -> dict[str, Path]:
+    from hermes_constants import hermes_home_key
+
+    return _REGISTERED_MEMORY_PROVIDER_SKILLS.setdefault(hermes_home_key(), {})
 
 # Synthetic parent package so user-installed providers don't collide with bundled ones.
 _USER_NAMESPACE = "_hermes_user_memory"
@@ -54,12 +62,13 @@ def _get_project_plugins_dir() -> Optional[Path]:
 def _is_memory_provider_dir(path: Path) -> bool:
     """Cheap text heuristic (no import): ``__init__.py`` mentions the memory provider contract."""
     init_file = path / "__init__.py"
-    if not init_file.exists():
-        return False
     try:
+        if not init_file.exists():
+            return False
         source = init_file.read_text(errors="replace", encoding="utf-8")[:8192]
         return "register_memory_provider" in source or "MemoryProvider" in source
-    except Exception:
+    except OSError as exc:  # one mode-000 / ACL-denied child must not abort discovery
+        logger.warning("Skipping unreadable plugin directory %s: %s", path, exc)
         return False
 
 
@@ -330,7 +339,7 @@ class _ProviderCollector:
 
             registered_path = get_plugin_manager().find_plugin_skill(qualified_name)
             if registered_path is not None:
-                _REGISTERED_MEMORY_PROVIDER_SKILLS[qualified_name] = registered_path
+                _registered_skills_for_active_home()[qualified_name] = registered_path
         except Exception as exc:
             logger.debug("Memory provider '%s' failed to register skill: %s", self.name, exc)
 
@@ -383,12 +392,13 @@ def _prune_inactive_memory_provider_skills(active_provider: Optional[str] = None
     from hermes_cli.plugins import get_plugin_manager
 
     manager = get_plugin_manager()
-    for qualified_name, registered_path in list(_REGISTERED_MEMORY_PROVIDER_SKILLS.items()):
+    registered = _registered_skills_for_active_home()
+    for qualified_name, registered_path in list(registered.items()):
         if qualified_name.partition(":")[0] == active_provider:
             continue
         if manager.find_plugin_skill(qualified_name) == registered_path:
             manager.remove_plugin_skill(qualified_name)
-        _REGISTERED_MEMORY_PROVIDER_SKILLS.pop(qualified_name, None)
+        registered.pop(qualified_name, None)
 
 
 def discover_plugin_cli_commands() -> List[dict]:

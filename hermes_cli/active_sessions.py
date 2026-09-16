@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from hermes_constants import get_default_hermes_root, get_hermes_home
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -148,15 +149,17 @@ def _is_same_writer(entry: dict[str, Any], metadata: Optional[dict[str, Any]]) -
 
 
 def session_already_owned_message(session_id: str, entry: dict[str, Any]) -> str:
+    """Refusal text for a session another live process holds.
+
+    Contract shared with the TUI/Desktop surfaces: the FIRST line is the plain user sentence
+    (no lease/pid/owner jargon); the second line is ``Details: ...`` for logs and bug reports.
+    """
     surface = str(entry.get("surface") or "another surface")
-    pid = entry.get("pid")
     started = _optional_float(entry.get("started_at"))
-    age = f", lease age {format_age(time.time() - started)}" if started else ""
+    age = f" {format_age(time.time() - started)} ago" if started else ""
     return (
-        f"Session {session_id} already has a live owner ({surface}, pid {pid}{age}). "
-        "Its turn activity is unknown; an open lease does not mean a turn is running. "
-        "Attach through a compatible owner, or close the session in its owning surface "
-        "before resuming here. Do not delete a live owner's lease to force a takeover."
+        "This chat is open in another Hermes window/terminal. Use it there, or start a new chat here.\n"
+        f"Details: session {session_id} opened by {surface}{age}."
     )
 
 
@@ -287,17 +290,7 @@ def _valid_process_start(v: Any) -> bool:
 
 
 def _write_entries(path: Path, entries: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    try:
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"entries": entries}, fh, sort_keys=True)
-        os.replace(tmp, path)
-    finally:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
+    atomic_json_write(path, {"entries": entries}, indent=None, sort_keys=True)
 
 
 def _process_start_time(pid: int) -> Optional[float]:

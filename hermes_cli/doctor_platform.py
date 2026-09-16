@@ -90,10 +90,14 @@ def _format_db_size(db_path: Path) -> str:
 
 
 def _report_database_journal_modes(hermes_home: Path | None = None, version_info: tuple[int, ...] | None = None) -> None:
-    """List each database's journal mode; warn on WAL under a vulnerable SQLite."""
+    """List each database's journal mode; warn on WAL under a vulnerable SQLite, and on a configured
+    ``database.journal_mode: delete`` that never took effect."""
     from hermes_cli.doctor import HERMES_HOME
-    from hermes_state_wal import _wal_reset_repair_hint, is_sqlite_wal_reset_vulnerable
+    from hermes_state_wal import (
+        _path_on_cross_vm_fs, _wal_reset_repair_hint, is_sqlite_wal_reset_vulnerable, resolve_journal_mode,
+    )
     vulnerable = is_sqlite_wal_reset_vulnerable(version_info)
+    configured = resolve_journal_mode()
     try:
         databases = _hermes_database_paths(hermes_home if hermes_home is not None else HERMES_HOME)
     except Exception as exc:
@@ -105,11 +109,34 @@ def _report_database_journal_modes(hermes_home: Path | None = None, version_info
             continue
         mode, error = _read_journal_mode(path)
         size = _format_db_size(path)
-        if error is not None:
+        if error is None and mode == "wal" and configured == "delete":
+            # The operator configured `delete` because WAL is unsafe on their filesystem, but the runtime never
+            # live-downgrades an existing WAL database (#68545: a downgrade under open connections corrupts it)
+            # and says so only once per process in the gateway log (#85608). Doctor is the surface they check;
+            # a plain "WAL journal mode" line here reads as protected. Outranks the sibling WAL messages: the
+            # cross-VM hint's remedy ("set journal_mode: delete") is already applied.
+            if vulnerable:
+                exposed.append(name)
+            check_warn(f"{name} is in WAL mode ({size}) despite database.journal_mode=delete",
+                       "(the setting never applied: an existing WAL database is never live-downgraded"
+                       + ("; also exposed to the WAL-reset bug" if vulnerable else "")
+                       + ". Stop every Hermes process for this profile, then run a one-time offline "
+                       "'PRAGMA journal_mode=DELETE' on the file)")
+        elif error is not None:
             if vulnerable:
                 check_warn(f"{name}: journal mode could not be read", f"({error}; cannot rule out WAL exposure)")
             else:
                 check_info(f"{name}: journal mode could not be read ({error})")
+        elif mode == "wal" and _path_on_cross_vm_fs(str(path)):
+            # #110848: WAL shared-memory is not coherent across a virtiofs/9p bind mount; startup only refuses WAL
+            # for FRESH databases, so an existing WAL file here keeps corrupting until the operator converts it.
+            # Checked before the WAL-reset exposure: active cross-VM corruption outranks a latent bug class.
+            if vulnerable:
+                exposed.append(name)
+            check_warn(f"{name} is in WAL mode on a cross-VM filesystem (virtiofs/9p, {size})",
+                       "(WAL can silently corrupt across the VM boundary; stop every Hermes process and run a one-time "
+                       "offline 'PRAGMA journal_mode=DELETE' on the file, then set `database.journal_mode: delete` — "
+                       "or move the database onto a native/named volume)")
         elif mode == "wal" and vulnerable:
             exposed.append(name)
             check_warn(f"{name} is in WAL mode ({size})", "(exposed to the WAL-reset bug until SQLite is upgraded)")

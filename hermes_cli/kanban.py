@@ -233,12 +233,9 @@ def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
             return False
     elif action not in _DELEGATED_CHILD_DENIED_ACTIONS:
         return False
-    try:
-        from agent.delegation_context import is_delegated_child_process_context
+    from agent.delegation_context import kanban_path_is_fenced
 
-        return is_delegated_child_process_context()
-    except Exception:
-        return bool(os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
+    return kanban_path_is_fenced(kb.kanban_home()) or kanban_path_is_fenced(kb.kanban_db_path())
 
 
 def _joined_words(words) -> Optional[str]:
@@ -698,8 +695,16 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
 
 def _cmd_link(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
-        kb.link_tasks(conn, args.parent_id, args.child_id)
+        gated = kb.link_tasks(conn, args.parent_id, args.child_id)
     print(f"Linked {args.parent_id} -> {args.child_id}")
+    if gated:
+        print(
+            f"Note: {args.child_id} was ready and is now todo — parent "
+            f"{args.parent_id} is not done yet. The ready -> running claim "
+            f"re-checks parents, so the child only runs after the parent "
+            f"completes; use `hermes kanban unlink {args.parent_id} {args.child_id}` "
+            f"to run it now."
+        )
     return 0
 
 
@@ -880,8 +885,15 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 fail_msg[tid] = gate_err
                 return False
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
-            return kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
-                                    expected_run_id=_worker_run_id_for(tid))
+            try:
+                return kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
+                                        expected_run_id=_worker_run_id_for(tid),
+                                        force=bool(getattr(args, "force", False)))
+            except kb.LiveClaimError:
+                fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
+                                 f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
+                                 f"--force to close its run and complete anyway.")
+                return False
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
 
@@ -919,7 +931,9 @@ def _cmd_block(args: argparse.Namespace) -> int:
             if where == "todo":
                 return f"{tid} → todo (dependency wait){suffix}"
             if where == "triage":
-                return f"{tid} → triage (unblock loop detected — needs a human decision){suffix}"
+                # Only a typed owner-input block carries a question for a human.
+                verdict = "needs a human decision" if kind == "needs_input" else "orchestration attention needed"
+                return f"{tid} → triage (unblock loop detected — {verdict}){suffix}"
             return f"Blocked {tid}{suffix}"
 
         op = _commented(conn, reason, author, "BLOCKED", lambda tid: kb.block_task(
@@ -1074,6 +1088,14 @@ def _cmd_stats(args: argparse.Namespace) -> int:
 
 
 def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
+    delivery_metadata = {
+        key: value
+        for key, value in (
+            ("parent_chat_id", getattr(args, "parent_chat_id", None)),
+            ("guild_id", getattr(args, "guild_id", None)),
+        )
+        if value
+    }
     with kbc.connect_closing() as conn:
         if kb.get_task(conn, args.task_id) is None:
             return _err(f"no such task: {args.task_id}")
@@ -1083,6 +1105,7 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
             user_id_alt=getattr(args, "user_id_alt", None),
             notifier_profile=args.notifier_profile or _profile_author(),
             delivery_mode=getattr(args, "delivery_mode", None),
+            delivery_metadata=delivery_metadata or None,
         )
     print(f"Subscribed {args.platform}:{args.chat_id}" + (f":{args.thread_id}" if args.thread_id else "")
           + f" to {args.task_id}")

@@ -14,7 +14,14 @@ import type {
   StatusResponse
 } from '@/types/hermes'
 
-import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, STARTUP_REQUEST_TIMEOUT_MS } from './client'
+import {
+  capabilityScoped,
+  hermesApi,
+  type ProfileScope,
+  profileScoped,
+  scopedDialPriority,
+  STARTUP_REQUEST_TIMEOUT_MS
+} from './client'
 
 export function getStatus(): Promise<StatusResponse> {
   return hermesApi<StatusResponse>({
@@ -68,10 +75,14 @@ export function getHermesConfig(profile?: string): Promise<HermesConfig> {
   })
 }
 
-export function getHermesConfigRecord(profile?: ProfileScope): Promise<HermesConfigRecord> {
+export function getHermesConfigRecord(
+  profile?: ProfileScope,
+  { includeDefaults = true }: { includeDefaults?: boolean } = {}
+): Promise<HermesConfigRecord> {
   return window.hermesDesktop.api<HermesConfigRecord>({
     ...capabilityScoped(profile),
-    path: '/api/config'
+    ...scopedDialPriority(profile),
+    path: includeDefaults ? '/api/config' : '/api/config?include_defaults=false'
   })
 }
 
@@ -86,14 +97,20 @@ export function getHermesConfigDefaults(): Promise<HermesConfigRecord> {
 export function getHermesConfigSchema(profile?: null | string): Promise<ConfigSchemaResponse> {
   return hermesApi<ConfigSchemaResponse>({
     ...profileScoped(profile),
+    ...scopedDialPriority(profile),
     path: '/api/config/schema'
   })
 }
 
-export function saveHermesConfig(config: HermesConfigRecord, profile?: null | string): Promise<{ ok: boolean }> {
+export function saveHermesConfig(
+  config: HermesConfigRecord,
+  profile?: null | string,
+  { preserveLanguage = false }: { preserveLanguage?: boolean } = {}
+): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
     ...profileScoped(profile),
-    path: '/api/config',
+    ...scopedDialPriority(profile),
+    path: preserveLanguage ? '/api/config?preserve_language=true' : '/api/config',
     method: 'PUT',
     body: { config }
   })
@@ -105,6 +122,7 @@ export function saveHermesConfig(config: HermesConfigRecord, profile?: null | st
 export function saveHermesConfigRecord(config: HermesConfigRecord, profile?: ProfileScope): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     ...capabilityScoped(profile),
+    ...scopedDialPriority(profile),
     path: '/api/config',
     method: 'PUT',
     body: { config }
@@ -114,6 +132,7 @@ export function saveHermesConfigRecord(config: HermesConfigRecord, profile?: Pro
 export function getEnvVars(profile?: null | string): Promise<Record<string, EnvVarInfo>> {
   return hermesApi<Record<string, EnvVarInfo>>({
     ...profileScoped(profile),
+    ...scopedDialPriority(profile),
     path: '/api/env'
   })
 }
@@ -121,6 +140,7 @@ export function getEnvVars(profile?: null | string): Promise<Record<string, EnvV
 export function setEnvVar(key: string, value: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     ...capabilityScoped(profile),
+    ...scopedDialPriority(profile),
     path: '/api/env',
     method: 'PUT',
     body: { key, value }
@@ -130,6 +150,7 @@ export function setEnvVar(key: string, value: string, profile?: ProfileScope): P
 export function deleteEnvVar(key: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     ...capabilityScoped(profile),
+    ...scopedDialPriority(profile),
     path: '/api/env',
     method: 'DELETE',
     body: { key }
@@ -139,6 +160,7 @@ export function deleteEnvVar(key: string, profile?: ProfileScope): Promise<{ ok:
 export function revealEnvVar(key: string, profile?: ProfileScope): Promise<{ key: string; value: string }> {
   return window.hermesDesktop.api<{ key: string; value: string }>({
     ...capabilityScoped(profile),
+    ...scopedDialPriority(profile),
     path: '/api/env/reveal',
     method: 'POST',
     body: { key }
@@ -201,6 +223,7 @@ export function deleteCustomEndpoint(id: string): Promise<CustomEndpointsRespons
 export function listOAuthProviders(profile?: null | string): Promise<OAuthProvidersResponse> {
   return hermesApi<OAuthProvidersResponse>({
     ...profileScoped(profile),
+    ...scopedDialPriority(profile),
     path: '/api/providers/oauth'
   })
 }
@@ -211,6 +234,7 @@ export function disconnectOAuthProvider(
 ): Promise<{ ok: boolean; provider: string }> {
   return hermesApi<{ ok: boolean; provider: string }>({
     ...profileScoped(profile),
+    ...scopedDialPriority(profile),
     path: `/api/providers/oauth/${encodeURIComponent(providerId)}`,
     method: 'DELETE'
   })
@@ -219,6 +243,7 @@ export function disconnectOAuthProvider(
 export function startOAuthLogin(providerId: string, profile?: ProfileScope): Promise<OAuthStartResponse> {
   return window.hermesDesktop.api<OAuthStartResponse>({
     ...capabilityScoped(profile),
+    ...scopedDialPriority(profile),
     path: `/api/providers/oauth/${encodeURIComponent(providerId)}/start`,
     method: 'POST',
     body: {}
@@ -233,6 +258,7 @@ export function submitOAuthCode(
 ): Promise<OAuthSubmitResponse> {
   return hermesApi<OAuthSubmitResponse>({
     ...profileScoped(profile),
+    ...scopedDialPriority(profile),
     path: `/api/providers/oauth/${encodeURIComponent(providerId)}/submit`,
     method: 'POST',
     body: { session_id: sessionId, code }
@@ -246,6 +272,7 @@ export function pollOAuthSession(
 ): Promise<OAuthPollResponse> {
   return window.hermesDesktop.api<OAuthPollResponse>({
     ...capabilityScoped(profile),
+    ...scopedDialPriority(profile),
     path: `/api/providers/oauth/${encodeURIComponent(providerId)}/poll/${encodeURIComponent(sessionId)}`
   })
 }
@@ -253,6 +280,7 @@ export function pollOAuthSession(
 export function cancelOAuthSession(sessionId: string, profile?: null | string): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
     ...profileScoped(profile),
+    ...scopedDialPriority(profile),
     path: `/api/providers/oauth/sessions/${encodeURIComponent(sessionId)}`,
     method: 'DELETE'
   })

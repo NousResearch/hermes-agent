@@ -8,7 +8,7 @@ import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { setPluginEnabled } from '@/contrib/plugins-store'
-import { registry } from '@/contrib/registry'
+import { $registryVersion, registry } from '@/contrib/registry'
 import { translateNow } from '@/i18n'
 import { readJson, readKey, writeJson, writeKey } from '@/lib/storage'
 import { notify } from '@/store/notifications'
@@ -43,7 +43,6 @@ import {
 } from './model'
 import { FLOATING_PLACEMENT } from './renderer/floating-rect'
 import { tabStripVisibleForZone } from './renderer/strip-visibility'
-import { rootChildSide } from './renderer/track-model'
 
 // v2: v1 trees were saved against placeholder panes with index-order zone
 // assignment (chat could land in a corner cell). Retire them wholesale.
@@ -209,6 +208,28 @@ function setDismissed(paneId: string, dismissed: boolean) {
   const next = toggledSet($dismissedPanes.get(), paneId, dismissed)
 
   if (next) {
+    saveDismissed(next)
+  }
+}
+
+/**
+ * Clear dismissal records for panes a NEW layout declares, without touching
+ * the tree or anyone's active tab (`revealTreePane` fronts, which would bury
+ * whatever the user is looking at).
+ *
+ * A dismissal outlives the layout that caused it. Switching to a layout that
+ * wants a previously dismissed pane back would otherwise place it in the tree
+ * and leave it invisible — the layout half-applies.
+ */
+export function undismissTreePanes(paneIds: Iterable<string>): void {
+  const dismissed = $dismissedPanes.get()
+  const next = new Set(dismissed)
+
+  for (const paneId of paneIds) {
+    next.delete(paneId)
+  }
+
+  if (next.size !== dismissed.size) {
     saveDismissed(next)
   }
 }
@@ -709,7 +730,7 @@ export const $newSessionTabAction = atom<(() => void) | null>(null)
  * the raw array made ⌘2 land on what the strip called tab 1 after a hidden
  * pane sat earlier in the list (classic after-⌘W-shift offset).
  */
-function shownPanesInGroup(group: { panes: readonly string[] }): string[] {
+export function shownPanesInGroup(group: { panes: readonly string[] }): string[] {
   const hidden = $hiddenTreePanes.get()
   const registered = registry.getArea('panes')
   const paneFor = (id: string) => registered.find(c => c.id === id)
@@ -739,19 +760,36 @@ function shownPanesInGroup(group: { panes: readonly string[] }): string[] {
   })
 }
 
+/** How many zones currently show a MAIN tile (a chat, a page, a preview). A
+ *  count, not a list, so it notifies only when a main zone appears or goes —
+ *  every TreeGroup reads it, and a sash drag rewrites the tree once per frame.
+ *  Registry-versioned because a freshly adopted session tile is in the tree
+ *  before its contribution registers `placement: 'main'`. */
+export const $mainTileZoneCount = computed(
+  [$layoutTree, $hiddenTreePanes, $registryVersion],
+  (tree: LayoutNode | null) =>
+    tree
+      ? groupLeafIds(tree).filter(id =>
+          shownPanesInGroup({ panes: findGroup(tree, id)?.panes ?? [] }).some(isMainStripPane)
+        ).length
+      : 0
+)
+
 /** Is this zone showing a tab strip right now? The store's adapter over the
  *  shared resolver — TreeGroup answers the same question from its own render
  *  inputs, so the toggle command and the strip on screen cannot disagree about
  *  which way "toggle" points. */
 export function tabStripVisibleForGroup(group: GroupNode): boolean {
   const registered = registry.getArea('panes')
+  const shown = shownPanesInGroup(group)
 
   return tabStripVisibleForZone({
     active: group.active,
     isCollapsePane,
     mode: group.tabStrip,
     paneFor: (id: string) => registered.find(c => c.id === id),
-    shown: shownPanesInGroup(group)
+    shown,
+    siblingMainZone: $mainTileZoneCount.get() > (shown.some(isMainStripPane) ? 1 : 0)
   })
 }
 
@@ -872,9 +910,23 @@ export function paneRootSide(paneId: string): null | TreeSide {
   }
 
   const panes = registry.getArea('panes')
-  const child = row.children.find(c => allPaneIds(c).includes(paneId))
+  const index = row.children.findIndex(c => allPaneIds(c).includes(paneId))
 
-  return child ? rootChildSide(child, id => panes.find(p => p.id === id)) : null
+  const mainIndices = row.children.flatMap((child, i) =>
+    allPaneIds(child).some(
+      id =>
+        id === 'workspace' ||
+        (panes.find(p => p.id === id)?.data as { placement?: string } | undefined)?.placement === 'main'
+    )
+      ? [i]
+      : []
+  )
+
+  if (index < 0 || mainIndices.length === 0) {
+    return null
+  }
+
+  return index < mainIndices[0] ? 'left' : index > mainIndices[mainIndices.length - 1] ? 'right' : null
 }
 
 /** The closer-less Close: dismiss the pane (removed + remembered; reveal
@@ -963,11 +1015,52 @@ export function setTreeSideCollapsed(side: TreeSide, collapsed: boolean) {
   }
 }
 
+/** Explicit side-open also recovers hide-only tabs, without fronting over Bots. */
+export function restoreHiddenTreeSideTabs(side: TreeSide): void {
+  for (const paneId of [...$hiddenStripTabs.get()]) {
+    if (paneRootSide(paneId) === side) {
+      setStripTabHidden(paneId, false)
+    }
+  }
+}
+
+/** Restore minimized zones without changing their active tab (including Bots). */
+export function restoreMinimizedTreeSide(side: TreeSide): boolean {
+  const tree = $layoutTree.get()
+  const row = rootRow()
+
+  if (!tree || !row) {
+    return false
+  }
+
+  let next = tree
+
+  for (const child of row.children) {
+    if (paneRootSide(allPaneIds(child)[0]) !== side) {
+      continue
+    }
+
+    for (const id of groupLeafIds(child)) {
+      if (findGroup(next, id)?.minimized) {
+        next = setGroupMinimized(next, id, false)
+      }
+    }
+  }
+
+  if (next === tree) {
+    return false
+  }
+
+  commit(next)
+
+  return true
+}
+
 /**
  * Does the layout have a collapsible root side of `side`? ⌘J's normal target is
  * the right sidebar; a layout without one (e.g. a terminal-on-bottom preset)
- * lets callers fall back to the terminal so ⌘J is never a dead key. Semantic —
- * reuses `rootChildSide`, so it tracks a ⌘\ flip / drag like the toggles do.
+ * lets callers fall back to the terminal so ⌘J is never a dead key. Tracks
+ * physical position through a ⌘\ flip / drag, just like the toggles.
  */
 export function layoutHasRootSide(side: TreeSide): boolean {
   const row = rootRow()
@@ -976,9 +1069,7 @@ export function layoutHasRootSide(side: TreeSide): boolean {
     return false
   }
 
-  const panes = registry.getArea('panes')
-
-  return row.children.some(child => rootChildSide(child, id => panes.find(p => p.id === id)) === side)
+  return row.children.some(child => paneRootSide(allPaneIds(child)[0]) === side)
 }
 
 /**
@@ -1027,33 +1118,9 @@ export function bindTreeSideVisibility(
   $open.listen(open => setTreeSideCollapsed(side, !open))
 }
 
-/** The chrome toggle owning `paneId`'s root-row column — SEMANTIC, matching
- *  the renderer's `rootChildSide`: ⌘B ⇔ the sessions column (left-placement
- *  panes) wherever it sits, ⌘J ⇔ the other side columns. Null for the main
- *  column (never side-collapsed). */
+/** The physical column's chrome toggle; main columns never side-collapse. */
 export function treeSideOfPane(paneId: string): TreeSide | null {
-  const row = rootRow()
-
-  if (!row) {
-    return null
-  }
-
-  const child = row.children.find(node => allPaneIds(node).includes(paneId))
-
-  if (!child) {
-    return null
-  }
-
-  const placementOf = (id: string) =>
-    (registry.getArea('panes').find(c => c.id === id)?.data as { placement?: string } | undefined)?.placement
-
-  const placements = allPaneIds(child).map(placementOf)
-
-  if (placements.includes('main')) {
-    return null
-  }
-
-  return placements.includes('left') ? 'left' : 'right'
+  return paneRootSide(paneId)
 }
 
 /**
@@ -1272,6 +1339,20 @@ writeKey('hermes.desktop.paneDockHeals.v1', null)
 const enforcedDocksThisBoot = new Set<string>()
 
 /**
+ * Reopen the enforcement window. The ledger protects a user's mid-session
+ * drags, but a wholesale tree replacement has no drags left to protect — and
+ * a pass that ran against a DIFFERENT tree burned the entry for nothing. That
+ * is how the guided onboarding shipped Bots as a tab over the chat: the boot
+ * pass fired while the solo tree had no sessions column to anchor to, so the
+ * assembled layout's pass was skipped as already-done.
+ *
+ * Only call this when replacing the tree wholesale.
+ */
+export function resetEnforcedDocks(): void {
+  enforcedDocksThisBoot.clear()
+}
+
+/**
  * A `panes` contribution whose dock hint carries `enforce: true` is re-homed
  * onto the hint's anchor at every boot's first adoption pass when it isn't
  * already docked there. Unlike the retired one-time heal, nothing
@@ -1347,7 +1428,7 @@ function enforceDockedPanes(
   return next
 }
 
-function adoptContributedPanes(): void {
+export function adoptContributedPanes(): void {
   const tree = $layoutTree.get()
 
   if (!tree) {

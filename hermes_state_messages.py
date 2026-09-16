@@ -12,9 +12,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.context_compressor import _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, split_user_originated_turn
 from agent.memory_manager import sanitize_context
 from agent.message_sanitization import _sanitize_surrogates
+from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
-    _legacy_reset_child_sql, _placeholders)
+    _legacy_reset_child_sql, _placeholders, _sql_json_extract)
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -54,18 +55,15 @@ def _json_or(raw: Any, fallback: Any, warning: str) -> Any:
 
 
 def _coerce_timestamp(value: Any, default: float) -> float:
-    """Explicit message timestamp (datetime or number) or *default* when invalid."""
-    if value is None:
+    """Explicit message timestamp (datetime or number) or *default* when invalid or outside the sane
+    epoch window — the write-side twin of the readers' ``coerce_epoch``: a bad row is never persisted."""
+    result = coerce_epoch(value, field="message timestamp")
+    if result is None:
         return default
-    try:
-        result = float(value.timestamp()) if hasattr(value, "timestamp") else float(value)
-        # SQLite reads both signed zero spellings back as 0.0. Hash the value
-        # in that stored form so -0.0 and 0.0 retain the historical SQL/Python
-        # identity equality.
-        return 0.0 if result == 0.0 else result
-    except (TypeError, ValueError):
-        logger.debug("Ignoring invalid explicit message timestamp: %r", value)
-        return default
+    # SQLite reads both signed zero spellings back as 0.0. Hash the value
+    # in that stored form so -0.0 and 0.0 retain the historical SQL/Python
+    # identity equality.
+    return 0.0 if result == 0.0 else result
 
 
 def _parse_tool_calls(tool_calls: Any) -> Any:
@@ -460,6 +458,15 @@ class SessionMessagesMixin:
             (session_id, role, int(offset)))
         return row[0] if row else None
 
+    def latest_conversation_role(self, session_id: str) -> Optional[str]:
+        """Role of the newest active user/assistant/tool row, or ``None``. ``session_meta`` /
+        ``system`` rows are transcript bookkeeping stripped before the model sees history, so
+        they must not hide an open user tail from the failed-turn boundary check."""
+        row = self._read_one(
+            "SELECT role FROM messages WHERE session_id = ? AND active = 1 "
+            "AND role NOT IN ('session_meta', 'system') ORDER BY id DESC LIMIT 1", (session_id,))
+        return row[0] if row else None
+
     def get_message_role(self, session_id: str, row_id: int) -> Optional[str]:
         """Role of the active message at *row_id* in *session_id*, or ``None``."""
         if not session_id:
@@ -727,21 +734,72 @@ class SessionMessagesMixin:
             missing = conn.execute(missing_sql, (session_id,)).fetchone()
             if missing is None:
                 return True
-            rows = conn.execute(
-                "SELECT * FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1) ORDER BY id",
-                (session_id,)).fetchall()
-            first_id: Dict[Tuple[Any, ...], int] = {}
-            keyed_rows = []
-            for row in rows:
-                key = self._display_dedupe_key(row)
-                first_id[key] = min(first_id.get(key, row["id"]), row["id"])
-                keyed_rows.append((row["id"], key))
-            conn.executemany(
-                "UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?",
-                [(first_id[key], self._display_identity(key), row_id) for row_id, key in keyed_rows])
+            first_id: Dict[bytes, int] = {}
+            last_id = 0
+            while True:
+                rows = conn.execute(
+                    "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, "
+                    "display_kind, display_metadata, display_order, display_identity "
+                    "FROM messages INDEXED BY idx_messages_session_id "
+                    "WHERE session_id = ? AND id > ? AND (active = 1 OR compacted = 1) "
+                    "ORDER BY id LIMIT 1000",
+                    (session_id, last_id))
+                batch_start = last_id
+                updates = []
+                for row in rows:
+                    last_id = row["id"]
+                    identity = self._display_identity(self._display_dedupe_key(row))
+                    order = first_id.setdefault(identity, last_id)
+                    if order != row["display_order"] or identity != row["display_identity"]:
+                        updates.append((order, identity, last_id))
+                rows.close()
+                if last_id == batch_start:
+                    break
+                conn.executemany(
+                    "UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?", updates)
             return True
 
         return bool(self._execute_write(_do))
+
+    def _legacy_display_page(self, session_id: str, *, active_clause: str, limit: Optional[int], offset: int,
+                             latest: bool) -> List[Any]:
+        """Project a legacy read-only display page without retaining transcript payloads."""
+        representatives: Dict[bytes, Tuple[int, int]] = {}
+        with self._read_ctx() as conn:
+            conn.execute("BEGIN")
+            try:
+                has_session_index = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+                    ("idx_messages_session_id",),
+                ).fetchone() is not None
+                index_hint = "INDEXED BY idx_messages_session_id" if has_session_index else "NOT INDEXED"
+                rows = conn.execute(
+                    "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, active, "
+                    f"display_kind, display_metadata FROM messages {index_hint} "
+                    f"WHERE session_id = ?{active_clause} ORDER BY id ASC",
+                    (session_id,))
+                for row in rows:
+                    identity = self._display_identity(self._display_dedupe_key(row))
+                    current = representatives.get(identity)
+                    candidate = (row["active"], row["id"])
+                    if current is None or candidate > current:
+                        representatives[identity] = candidate
+                rows.close()
+
+                identities = list(representatives)
+                identities = identities[::-1][offset:][:limit][::-1] if latest else identities[offset:][:limit]
+                selected_ids = [representatives[identity][1] for identity in identities]
+                selected = {}
+                for start in range(0, len(selected_ids), 900):
+                    chunk = selected_ids[start:start + 900]
+                    selected.update({row["id"]: row for row in conn.execute(
+                        f"SELECT * FROM messages WHERE session_id = ?{active_clause} "
+                        f"AND id IN ({_placeholders(chunk)})",
+                        (session_id, *chunk))})
+                return [selected[row_id] for row_id in selected_ids if row_id in selected]
+            finally:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
 
     def _row_to_message_dict(self, row, *, warn_context: str, summary_flag: bool) -> Dict[str, Any]:
         """``dict(row)`` with content/tool_calls/display_metadata decoded; *summary_flag* keeps
@@ -794,10 +852,10 @@ class SessionMessagesMixin:
                 ORDER BY page.display_order ASC"""
             rows = self._read_all(sql, [session_id, -1 if limit is None else limit, offset, session_id])
         elif include_compacted:
-            # Read-only legacy stores cannot persist display identities; retain the exact old projection.
-            rows = self._dedupe_display_generations(self._read_all(
-                "SELECT * FROM messages WHERE session_id = ?" + active_clause + " ORDER BY id ASC", [session_id]))
-            rows = rows[::-1][offset:][:limit][::-1] if latest else rows[offset:][:limit]
+            # Read-only legacy stores cannot persist display identities; keep only fixed-width
+            # identities and representative ids while scanning, then fetch the selected payloads.
+            rows = self._legacy_display_page(
+                session_id, active_clause=active_clause, limit=limit, offset=offset, latest=latest)
         else:
             sql = (f"SELECT * FROM messages WHERE session_id = ?{active_clause}"
                 f"{' AND id > ?' if after_id is not None else ''} ORDER BY id {'DESC' if latest else 'ASC'}")
@@ -868,9 +926,9 @@ class SessionMessagesMixin:
                         best = current
                     child_row = conn.execute(
                         "SELECT id FROM sessions AS child WHERE child.parent_session_id = ? "
-                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL "
-                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL "
-                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._reset_from') IS NULL "
+                        f"  AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL "
+                        f"  AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL "
+                        f"  AND {_sql_json_extract('child.model_config', '$._reset_from')} IS NULL "
                         f"  AND NOT {_legacy_reset_child_sql('child', _RESET_END_REASONS_SQL)} "
                         "  AND COALESCE(child.source, '') != 'tool' "
                         "ORDER BY child.started_at DESC, child.id DESC LIMIT 1", (current,)).fetchone()

@@ -177,6 +177,14 @@ Notes:
 `warn`, `destructive`, `outline`, `solid` (primary fill — icon-corner counts).
 Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 
+## Context-sensitive dialogs
+
+Sudo password dialogs keep the backdrop unblurred (`DialogContent`'s
+`blurBackdrop={false}`) and show the complete, selectable command before the
+password field. Long commands wrap and scroll; missing backend context is
+explicit, never inferred from another tool row. Other dialogs retain the shared
+blurred backdrop.
+
 ## Form controls
 
 - **`controlVariants`** (`src/components/ui/control.ts`) is the shared shape for
@@ -206,7 +214,11 @@ Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 
 Top-edge panels extend into the native titlebar band. Their tab strips remain
 inside their own zones so tab drops, focus, and split boundaries use the same
-geometry. Lower panels keep local headers. Empty header space moves the window;
+geometry. Panels without room beside the measured window controls place their
+tabs on a full-width row below the controls. Minimized row groups use vertical
+restore rails, including groups with multiple tabs. Sidebar buttons and shortcuts
+restore minimized or fully hidden side groups without changing the selected tab.
+Lower panels keep local headers. Empty header space moves the window;
 tabs and actions remain no-drag, with native-control space reserved from the
 existing traffic-light and Window Controls Overlay measurements.
 
@@ -216,9 +228,13 @@ Holding Cmd (Ctrl off macOS) reveals small slot numbers over the target strip's
 status dots after 400ms, without changing tab widths. Hints follow the same
 binding and hovered/focused-zone resolver as the number shortcuts.
 
-Sticky user messages mask scrolling content with the opaque chat surface,
-including the gap above them. Use `data-glass-opaque` so Glass cannot clear the
-mask; no gradient or backdrop blur.
+Tab close buttons fade the label with a content mask, not a painted gradient.
+The tab reads its surface token directly so glass tint is painted only once.
+
+Sticky user messages clip covered scrolling content, including the gap above
+them. Their wrappers stay unpainted; only the rounded user bubble owns a fill.
+Clipping follows the pinned prompt and its live height without changing layout,
+so glass and message-bubble transparency do not reveal scrolling text.
 
 ## Feedback & empty/error/loading states
 
@@ -263,6 +279,10 @@ mask; no gradient or backdrop blur.
   from the chip to the floating pill; leaving both dismisses it.
 - A tool result may expose an inline action that opens a preview. It must not
   open the rail automatically.
+- Tool rows reserve destructive red for explicit failures. Missing read paths and
+  ambiguous exit-1 results use neutral notices, with details still available.
+  Errors described inside returned data are not tool failures. Expanded failures
+  show the actual explanation; supporting output keeps its normal text color.
 - Composer status groups start collapsed except todos. Progress updates and queue
   pause/resume preserve the user's disclosure choice. Error banners meet the
   stack's top edge without a blank padding strip. File and preview links remain

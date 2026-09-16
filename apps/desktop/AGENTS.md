@@ -134,6 +134,11 @@ Two auth-flavored corollaries worth naming because they are easy to get wrong:
 - **A connection test must exercise the leg you'll actually use.** An HTTP
   status probe passing while the WebSocket/auth leg fails is a false positive
   that ships as "it said connected but nothing works."
+- **Cookie-jar partition names contain nothing Electron percent-escapes.** A
+  `persist:` partition becomes a `Partitions/<escaped name>` folder; a folder
+  name with `%3A` (an escaped `:`) gets a cookie store Windows can neither read
+  nor write, so the session silently never persists. `electron/oauth-partition.ts`
+  pins the invariant; renaming a partition signs its users out once — say so.
 
 ## Compatibility without carrying the past forever
 
@@ -195,6 +200,14 @@ at a seam — resolver precedence and its failure rungs, identity and scope
 boundaries, optimistic rollback and stale-response ordering, and both sides of a
 local/remote adapter with its profile routing intact. Match how the suite is
 actually run rather than inventing a command; when in doubt, read the scripts.
+
+## Rehearsing the guided onboarding
+
+From `apps/desktop`, use a fresh temporary directory for each rehearsal and run
+`env -u NODE_ENV HERMES_GUEST_ONBOARDING=1 HERMES_HOME=<tmp>/.hermes HERMES_DESKTOP_USER_DATA_DIR=<tmp>/electron-user-data npm run dev`
+(replace `<tmp>` with that directory). To use the portal stand-in, add
+`HERMES_PORTAL_BASE_URL=http://127.0.0.1:8765 HERMES_ANON_API_SECRET=test-secret HERMES_SHARED_AUTH_DIR=<tmp>/.hermes/shared`
+before `npm run dev`. Stop Electron and its dev server after the run.
 
 ## The taste test before you hand off
 

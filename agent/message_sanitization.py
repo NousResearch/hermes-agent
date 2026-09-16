@@ -95,6 +95,19 @@ _sanitize_messages_non_ascii = partial(_sanitize_messages, fix=_strip_non_ascii,
 _sanitize_tools_non_ascii = _sanitize_structure_non_ascii
 
 
+def sanitize_outbound_kwargs(agent: Any, api_kwargs: dict) -> None:
+    """Outbound-request chokepoint for every built kwargs dict (main loop and iteration summary).
+
+    Tool descriptions, extra_body and kwargs strings can carry invalid code points that
+    providers reject with a non-retryable 400 (#50959); one in-place walk makes the whole
+    payload json.dumps()-safe. The ASCII strip is opt-in via the recovery flag set after an
+    ASCII-codec rejection.
+    """
+    _sanitize_structure_surrogates(api_kwargs)
+    if agent._force_ascii_payload:
+        _sanitize_structure_non_ascii(api_kwargs)
+
+
 def _escape_invalid_chars_in_json_strings(raw: str) -> str:
     """Escape literal control chars (0x00-0x1F) inside JSON string values as ``\\uXXXX``
     (for llama.cpp-style output mixing control chars with other malformations)."""
@@ -197,6 +210,32 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None) 
     return True
 
 
+# finish_reason wire normalization. Some OpenAI-compatible gateways fronting
+# Gemini backends emit the native uppercase reasons (STOP, MAX_TOKENS); every
+# downstream comparison uses the lowercase OpenAI literals, so an uppercase
+# reason silently skips stop handling and length recovery. Single owner —
+# call at wire intake (transport normalize_response, stream chunk capture),
+# never re-fold at comparison sites.
+_FINISH_REASON_ALIASES = {
+    "max_tokens": "length",  # Gemini-native / Anthropic-style cap reason
+    "end": "stop",  # some gateways' clean-completion spelling
+    "function_call": "tool_calls",  # OpenAI legacy pre-tools spelling
+}
+
+
+def normalize_finish_reason(raw: Any) -> Any:
+    """Fold a wire ``finish_reason`` to the lowercase OpenAI contract value.
+
+    Non-string and empty values pass through unchanged (callers keep their
+    ``or "stop"`` defaults and the Poolside int-reason path); contract values
+    are returned byte-identical.
+    """
+    if not isinstance(raw, str) or not raw:
+        return raw
+    lowered = raw.lower()
+    return _FINISH_REASON_ALIASES.get(lowered, lowered)
+
+
 def serialized_messages_bytes(messages: list) -> int:
     """Exact serialized byte size of ``messages`` (HTTP 413 is a BYTE-size error the token
     estimator, pricing images flat, cannot score). Non-serializable values fall back to
@@ -289,7 +328,7 @@ __all__ = [
     "_sanitize_surrogates", "_sanitize_structure_surrogates", "_sanitize_messages_surrogates",
     "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
     "_strip_non_ascii", "_sanitize_messages_non_ascii", "_sanitize_tools_non_ascii",
-    "_strip_images_from_messages", "_sanitize_structure_non_ascii",
+    "_strip_images_from_messages", "_sanitize_structure_non_ascii", "sanitize_outbound_kwargs",
     # call_id policy owners
     "deterministic_call_id", "coalesce_tool_call_id", "tool_call_id_variants",
     "tool_result_id_variants", "uniquify_tool_call_ids",

@@ -53,6 +53,7 @@ class SSHEnvironment(BaseEnvironment):
     # Passthrough values are re-forwarded on every command (see _run_bash), so like docker/local
     # they stay out of the remote snapshot under multiplex.
     _profile_scoped_passthrough = True
+    _sudo_nopasswd_probe_supported = True
 
     def __init__(self, host: str, user: str, cwd: str = "~",
                  timeout: int = 60, port: int = 22, key_path: str = "",
@@ -136,15 +137,15 @@ class SSHEnvironment(BaseEnvironment):
         except subprocess.TimeoutExpired:
             raise EnvironmentConnectionError(
                 f"SSH connection to {self.user}@{self.host} timed out",
-                retry_hint=(f"Check network connectivity to {self.host}:{self.port} "
-                            "and that sshd is accepting connections, then retry."))
+                retry_hint=(f"Check that {self.host} is up and reachable on port {self.port} "
+                            "and that sshd is running, then retry."))
         if result.returncode != 0:
             error_msg = result.stderr.strip() or result.stdout.strip()
             raise EnvironmentConnectionError(
                 f"SSH connection failed: {error_msg}",
-                retry_hint=(f"Verify {self.user}@{self.host}:{self.port} is reachable "
-                            "(host up, sshd running, key/agent auth working), then "
-                            "retry — the connection is re-established automatically."))
+                retry_hint=(f"Check that {self.host} is up, sshd is running on port {self.port}, and "
+                            f"{self.user} can log in with the configured key, then retry — "
+                            "the connection is re-established automatically."))
 
     def _detect_remote_home(self) -> str:
         """Detect the remote user's home directory."""

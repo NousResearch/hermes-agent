@@ -1238,10 +1238,16 @@ export const GROUP_CHAT_MAX_MEMBERS = 6
  *  Bot meta is persisted under the route-qualified key (botMetaKey), so a
  *  keyed caller resolves through the exact roster row + botRosterMeta — the
  *  same pipeline the Bots tab renders — and a raw name resolves the same
- *  way when exactly one roster row carries it. Same-named members on two
- *  connections that resolve to the same label get their connection label
- *  appended, so two failing `default`s are never one anonymous "Hermes". */
-export function groupSpeakerLabel(name?: null | string) {
+ *  way when exactly one roster row carries it. Same-named members that
+ *  resolve to the same label get their connection label appended, so two
+ *  failing `default`s are never one anonymous "Hermes" — judged against the
+ *  ROOM's seats when the caller names the room (#94869: a room whose only
+ *  `reviewer` is local reads plain "Reviewer" however many other connections
+ *  expose one), against the whole roster otherwise. A key with no roster row
+ *  ($lastRoster is empty until the Bots pane mounts; the owning connection
+ *  may be gone) still resolves through the route-keyed meta and the profile
+ *  segment — a keyed caller never renders the raw key. */
+export function groupSpeakerLabel(name?: null | string, group?: null | string) {
   const trimmed = (name || '').trim()
 
   if (!trimmed) {
@@ -1257,9 +1263,23 @@ export function groupSpeakerLabel(name?: null | string) {
 
   if (exact) {
     const label = friendly(exact)
-    const twin = rows.some(bot => bot !== exact && bot.name === exact.name && friendly(bot) === label)
+    const seats = group ? new Set(($groupChats.get()[group]?.members || []).map(botRosterKey)) : null
+    const peers = seats?.size ? rows.filter(bot => seats.has(botRosterKey(bot))) : rows
+    const twin = peers.some(bot => bot !== exact && bot.name === exact.name && friendly(bot) === label)
 
     return twin ? `${label} · ${exact.connectionLabel || exact.connectionId}` : label
+  }
+
+  const boundary = trimmed.indexOf('::')
+
+  if (boundary !== -1) {
+    const connection = trimmed.slice(0, boundary)
+    const profile = trimmed.slice(boundary + 2)
+    const title = String(meta?.[trimmed]?.title || meta?.[profile]?.title || '').trim()
+    const label = title || (profile.toLowerCase() === 'default' ? 'Hermes' : profile)
+
+    // Another connection still exposes this name: keep them tellable apart.
+    return rows.some(bot => bot.name === profile) ? `${label} · ${connection}` : label
   }
 
   // A raw `default` names the ACTIVE gateway's primary profile — it must

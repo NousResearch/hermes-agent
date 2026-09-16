@@ -797,7 +797,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           <Codicon className="shrink-0 text-[0.65rem]" name={activityOpen ? 'chevron-down' : 'chevron-right'} />
           <span className="shrink-0 font-medium">{b.group.activity}</span>
           {summaryActivity ? (
-            <span className={cn('min-w-0 flex-1 truncate', groupActivityTone(summaryActivity.kind))}>{`${groupActivityLabel(summaryActivity)} · ${relativeTime(summaryActivity.at)}`}</span>
+            <span className={cn('min-w-0 flex-1 truncate', groupActivityTone(summaryActivity.kind))}>{`${groupActivityLabel(summaryActivity, group)} · ${relativeTime(summaryActivity.at)}`}</span>
           ) : null}
         </RowButton>
         {room.running ? (
@@ -824,7 +824,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
                   name={GROUP_ACTIVITY_GLYPHS[event.kind] || 'circle-outline'}
                 />
                 <span className={cn('min-w-0 flex-1 truncate', groupActivityTone(event.kind))}>
-                  {groupActivityLabel(event)}
+                  {groupActivityLabel(event, group)}
                 </span>
                 <span className="shrink-0 text-[0.625rem] text-(--ui-text-quaternary)">{relativeTime(event.at)}</span>
                 {event.kind === 'working' ? (

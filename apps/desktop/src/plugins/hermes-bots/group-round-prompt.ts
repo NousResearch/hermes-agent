@@ -24,7 +24,7 @@ export type GroupChatLineViewer =
 
 /** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
  *  `Name (you): …`. */
-export function formatGroupChatLine(entry: GroupMessage, viewer: GroupChatLineViewer) {
+export function formatGroupChatLine(entry: GroupMessage, viewer: GroupChatLineViewer, group?: null | string) {
   // Attachments are staged into each member's session as real payloads; the
   // transcript line names them so the delta text and the bytes line up.
   const attached =
@@ -47,7 +47,7 @@ export function formatGroupChatLine(entry: GroupMessage, viewer: GroupChatLineVi
   // two machines stay tellable apart in every member's transcript.
   const source = entry.from.source ? ` [${entry.from.source}]` : ''
 
-  return `${groupSpeakerLabel(entry.from.name)}${suffix}${source}: ${relabelMemberControlFrames(entry.text)}${attached}`
+  return `${groupSpeakerLabel(entry.from.name, group)}${suffix}${source}: ${relabelMemberControlFrames(entry.text)}${attached}`
 }
 
 function viewerNameOf(viewer: GroupChatLineViewer): string {

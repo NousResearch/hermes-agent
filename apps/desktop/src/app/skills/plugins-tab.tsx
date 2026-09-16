@@ -395,21 +395,25 @@ export const PluginsTab = memo(function PluginsTab({
     <div className="flex h-full min-h-0 flex-col">
       <CatalogBrowser
         installedEntries={installedEntries}
-        view={view}
-        query={query}
-        onQueryChange={onQueryChange}
         isInstalled={isInstalled}
         kind="plugins"
         onInstall={install}
+        onQueryChange={onQueryChange}
+        query={query}
         renderInstalledDetail={entry => {
           const pkg = packageById.get(entry.id)
-          if (!pkg) return null
+
+          if (!pkg) {
+            return null
+          }
 
           return <PackageRow
             busy={pkg.agent ? agentBusy(pkg.agent) : false}
             key={pkg.key}
             onAgentToggle={(row, enable) => {
-              if (row.key) void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
+              if (row.key) {
+                void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
+              }
             }}
             onAgentUpdate={row => {
               void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(applied => {
@@ -424,6 +428,7 @@ export const PluginsTab = memo(function PluginsTab({
             scopeLabel={label}
           />
         }}
+        view={view}
       />
     </div>
   )

@@ -153,7 +153,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
         ) : (
           <div className={cn('h-full min-h-0', detailOpen ? '[&_aside]:max-sm:hidden' : '[&_main]:max-sm:hidden')}>
             <MasterDetail resizeId="capabilities-split" split="wide">
-              <ListColumn key={`${source}:${category}:${deferredQuery}`} header={<ListStrip left={<ListStripLabel>{c.results(filtered.length)}</ListStripLabel>} />}>
+              <ListColumn header={<ListStrip left={<ListStripLabel>{c.results(filtered.length)}</ListStripLabel>} />} key={`${source}:${category}:${deferredQuery}`}>
                 {filtered.slice(0, limit).map(entry => (
                   <RowButton
                     aria-pressed={entry.id === selected.id}

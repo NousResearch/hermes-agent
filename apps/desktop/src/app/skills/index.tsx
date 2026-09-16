@@ -32,7 +32,6 @@ import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
-import { cn } from '@/lib/utils'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -804,11 +803,11 @@ export function SkillsView({
               // reloads the agent list.
               <PluginsTab
                 key={`plugins-${scopeKey}`}
+                onQueryChange={setQuery}
                 profile={scopeProfile}
+                query={query}
                 scopeLabel={scopeLabel}
                 view={capabilityView}
-                query={query}
-                onQueryChange={setQuery}
               />
             ) : mode === 'mcp' ? (
               // The gateway instance backs ONLY the live `reload.mcp` RPC, and
@@ -818,7 +817,7 @@ export function SkillsView({
               // apply on that backend's next session).
               <McpTab gateway={crossBackendScope ? null : gateway} key={`mcp-${scopeKey}`} profile={scopeProfile} />
             ) : mode === 'skills' && capabilityView === 'browse' ? (
-              <SkillCatalog installedNames={installedSkillNames} key={scopeKey} profile={scopeProfile} query={query} onQueryChange={setQuery} />
+              <SkillCatalog installedNames={installedSkillNames} key={scopeKey} onQueryChange={setQuery} profile={scopeProfile} query={query} />
             ) : (skillsFailed || toolsetsFailed) && (!skills || !toolsets) ? (
               <PanelEmpty
                 action={

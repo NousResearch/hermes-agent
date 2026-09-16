@@ -19,7 +19,7 @@ import type { ComponentType, CSSProperties } from 'react'
 
 import type { FaceMood } from './types'
 
-type BlobatarProps = {
+export type BlobatarProps = {
   name: string
   size?: number
   animate?: 'always' | 'hover'
@@ -39,23 +39,26 @@ let cached: BlobatarModule | null | undefined
 /** Feature-detected once: the animated component + the expression roster.
  *  Null = this build of the SDK predates the motion layer; every caller then
  *  renders the static path unchanged. */
-function loadBlobatarMotion(): BlobatarModule | null {
+async function loadBlobatarMotion(): Promise<BlobatarModule | null> {
   if (cached !== undefined) {
     return cached
   }
 
   try {
-    // Resolved lazily so a bundle without the react subpath still imports this
-    // module (the static path must never break for an older SDK).
-    // eslint-disable-next-line @typescript-eslint/no-require-imports -- feature detection, see docstring
-    const react = require('blobatar/react') as { Blobatar: ComponentType<BlobatarProps> }
+    // Dynamic import (not require): the renderer is an ESM vite bundle, where
+    // require() is undefined at runtime. Both subpaths are published by
+    // blobatar 2.0.0 and the import graph resolves them at build time; the
+    // try/catch only guards an SDK that stops publishing them.
+    const [react, expression] = await Promise.all([
+      import('blobatar/react'),
+      import('blobatar/expression')
+    ])
 
-    // eslint-disable-next-line @typescript-eslint/no-require-imports -- see above
-    const expression = require('blobatar/expression') as Record<string, unknown>
+    const BlobatarComponent = react?.Blobatar as ComponentType<BlobatarProps> | undefined
 
     cached =
-      react?.Blobatar && expression
-        ? { Blobatar: react.Blobatar, expressions: expression }
+      BlobatarComponent && expression
+        ? { Blobatar: BlobatarComponent, expressions: expression as Record<string, unknown> }
         : null
   } catch {
     cached = null
@@ -66,8 +69,8 @@ function loadBlobatarMotion(): BlobatarModule | null {
 
 /** True when the running bundle carries the motion layer (classes + vars +
  *  expressions). Tests and callers use this to pin which path rendered. */
-export function blobatarMotionAvailable(): boolean {
-  return loadBlobatarMotion() !== null
+export async function blobatarMotionAvailable(): Promise<boolean> {
+  return (await loadBlobatarMotion()) !== null
 }
 
 /** Bot mood -> blobatar expression name. `idle` keeps the plain idle loop
@@ -89,8 +92,8 @@ export function mapBotMoodToExpression(mood: FaceMood | string): string | undefi
 /** The expression object for a mood, or undefined when unavailable — the
  *  caller then renders the animated face without a pose (still breathing,
  *  blinking and glancing: the idle loop needs no expression). */
-export function blobatarExpressionFor(mood: FaceMood | string): unknown {
-  const mod = loadBlobatarMotion()
+export async function blobatarExpressionFor(mood: FaceMood | string): Promise<unknown> {
+  const mod = await loadBlobatarMotion()
 
   if (!mod?.expressions) {
     return undefined
@@ -103,6 +106,6 @@ export function blobatarExpressionFor(mood: FaceMood | string): unknown {
 
 /** The animated Blobatar component, or null on an SDK without the motion
  *  layer (callers fall back to the static string renderer). */
-export function blobatarMotionComponent(): ComponentType<BlobatarProps> | null {
-  return loadBlobatarMotion()?.Blobatar ?? null
+export async function blobatarMotionComponent(): Promise<ComponentType<BlobatarProps> | null> {
+  return (await loadBlobatarMotion())?.Blobatar ?? null
 }

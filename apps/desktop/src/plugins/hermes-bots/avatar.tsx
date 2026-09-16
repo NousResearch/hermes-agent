@@ -6,10 +6,11 @@
  * Render-only. The editor UI that picks these lives in `avatar-picker.tsx`.
  */
 
+import { useEffect, useState, type ComponentType } from 'react'
 import * as sdk from '@hermes/plugin-sdk'
 import { profileColor } from '@hermes/plugin-sdk'
 
-import { blobatarExpressionFor, blobatarMotionComponent } from './avatar-motion'
+import { blobatarExpressionFor, blobatarMotionComponent, type BlobatarProps } from './avatar-motion'
 import type { AvatarAppearance, AvatarShape, BotMeta, FaceMood } from './types'
 
 // Deterministic blob avatars (name → face). Feature-detected: older SDKs
@@ -1020,12 +1021,39 @@ export function BotFace({ shape, color, image, size = 36, name = 'agent', mood =
   // breathe, bob; zero JS per frame) plus the mood's expression pose — through
   // the same `data-bot-face` hook the roster PNG backfill queries. Falls back
   // to the static string renderer (identical face, no motion) on an older SDK.
+  // The layer resolves once via a dynamic import; the first paint may take the
+  // static path and the effect flips subsequent renders to animated — for a
+  // 34px avatar the one-frame static flash is invisible, while the cached
+  // promise keeps every later face synchronous.
+  const [motion, setMotion] = useState<{
+    Face: ComponentType<BlobatarProps> | null
+    expression: unknown
+  }>({ Face: null, expression: undefined })
+
+  useEffect(() => {
+    if (!isBlobShape(shape)) {
+      return
+    }
+
+    let cancelled = false
+
+    void Promise.all([blobatarMotionComponent(), blobatarExpressionFor(mood)]).then(
+      ([Face, expression]) => {
+        if (!cancelled) {
+          setMotion({ expression, Face })
+        }
+      }
+    )
+
+    return () => {
+      cancelled = true
+    }
+  }, [isBlobShape(shape), mood])
+
   if (isBlobShape(shape)) {
-    const MotionFace = blobatarMotionComponent()
+    const { Face: MotionFace, expression } = motion
 
     if (MotionFace) {
-      const expression = blobatarExpressionFor(mood)
-
       // data-bot-face rides through to the library's own <svg> (it spreads
       // unknown props), keeping the roster PNG backfill query working on the
       // animated path exactly as the static one did.

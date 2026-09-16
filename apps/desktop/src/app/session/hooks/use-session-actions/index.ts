@@ -297,7 +297,7 @@ async function desktopSessionCreateParams(
   capturedRoute = resolveNewChatOwnerRoute(),
   requestedProfile?: string,
   legacyProfileIntent = false,
-  includeComposerModel = true
+  includeComposerSelection = true
 ): Promise<Record<string, unknown>> {
   // Treat Send as the linearization point for the visible selector state. The
   // profile handshake below can yield long enough for background config/model
@@ -332,11 +332,15 @@ async function desktopSessionCreateParams(
     source: 'desktop',
     ...(cwd && { cwd }),
     ...(profile ? { profile: capturedRoute?.targetProfile || profile } : {}),
-    ...(includeComposerModel && selection.model
-      ? { model: selection.model, ...(selection.provider ? { provider: selection.provider } : {}) }
-      : {}),
-    ...(selection.effort ? { reasoning_effort: selection.effort } : {}),
-    fast: selection.fast
+    ...(includeComposerSelection
+      ? {
+          ...(selection.model
+            ? { model: selection.model, ...(selection.provider ? { provider: selection.provider } : {}) }
+            : {}),
+          ...(selection.effort ? { reasoning_effort: selection.effort } : {}),
+          fast: selection.fast
+        }
+      : {})
   }
 }
 
@@ -844,9 +848,10 @@ export function useSessionActions({
 
         // Bot-workspace tabs target an agent profile without switching the
         // window's ambient composer. Do not leak that unrelated session's
-        // manual model/provider into the bot's chat; omitting both lets the
-        // selected profile supply its configured default. Ordinary Sessions
-        // tiles keep the sticky composer override.
+        // composer selection (manual model/provider, reasoning effort, fast
+        // flag) into the bot's chat; omitting them lets the selected profile
+        // supply its configured defaults. Ordinary Sessions tiles keep the
+        // sticky composer override.
         const params = {
           ...(await desktopSessionCreateParams(
             cwd,

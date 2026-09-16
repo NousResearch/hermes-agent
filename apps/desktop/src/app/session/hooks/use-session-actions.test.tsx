@@ -4538,10 +4538,12 @@ describe('openNewSessionTile workspace target', () => {
     expect(createParams).not.toHaveProperty('cwd')
   })
 
-  it('omits the manual ambient composer model from a Bot-workspace tile so the bot profile default applies', async () => {
+  it('omits the manual ambient composer selection from a Bot-workspace tile so the bot profile defaults apply', async () => {
     setCurrentModel('ambient-model')
     setCurrentProvider('ambient-provider')
     setCurrentModelSource('manual')
+    setCurrentReasoningEffort('high')
+    setCurrentFastMode(true)
 
     let createParams: Record<string, unknown> | undefined
 
@@ -4576,11 +4578,20 @@ describe('openNewSessionTile workspace target', () => {
       })
     } finally {
       setCurrentModelSource('')
+      setCurrentModel('')
+      setCurrentProvider('')
+      setCurrentReasoningEffort('')
+      setCurrentFastMode(false)
+      // The hoisted agent-route mock keeps its call log across tests (restoreAllMocks only
+      // restores spies); the next test asserts it was never called.
+      vi.mocked(requestGatewayForAgent).mockReset()
     }
 
     expect(createParams).toMatchObject({ hidden: true, profile: 'writer' })
     expect(createParams).not.toHaveProperty('model')
     expect(createParams).not.toHaveProperty('provider')
+    expect(createParams).not.toHaveProperty('reasoning_effort')
+    expect(createParams).not.toHaveProperty('fast')
   })
 
   it('keeps an unlisted named local legacy-profile tile owned by its bare profile', async () => {

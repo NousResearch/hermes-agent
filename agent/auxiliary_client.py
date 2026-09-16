@@ -3288,7 +3288,8 @@ def _evict_cached_clients(provider: str) -> None:
     """Drop cached auxiliary clients for a provider so fresh creds are used."""
     normalized = _normalize_aux_provider(provider)
     with _client_cache_lock:
-        for key in [key for key in _client_cache if _normalize_aux_provider(str(key[0])) == normalized]:
+        # Cache keys begin with the profile home; the provider is the second component.
+        for key in [key for key in _client_cache if _normalize_aux_provider(str(key[1])) == normalized]:
             client = _client_cache.get(key, (None, None, None))[0]
             if client is not None:
                 _close_cached_client(client)

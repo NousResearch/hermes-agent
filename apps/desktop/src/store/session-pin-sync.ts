@@ -7,9 +7,10 @@
  * server-side and would otherwise hide a pinned chat, and a second Desktop app
  * pointed at the same gateway has its own, separate localStorage.
  *
- * Push: PATCH `pinned` whenever the local set changes, and re-assert the whole
- * set at boot — which transparently migrates pre-existing pins with no user
- * action.
+ * Push: PATCH `pinned` whenever the local set changes. Pins restored from
+ * machine-local storage wait for their first server row: a boolean flag seeds
+ * from backend truth, while a row with no flag identifies a legacy backend and
+ * keeps the old transparent migration path.
  *
  * Pull: session rows now carry `pinned`, and the list endpoints back-fill
  * pinned conversations past their LIMIT, so a row's absence from a page no
@@ -34,6 +35,17 @@ import type { SessionInfo } from '@/types/hermes'
 const mirrored = new Set<string>()
 // pin ids awaiting their row so we can resolve the owning profile before PATCH.
 const pending = new Set<string>()
+// Fresh unpins of restored boot pins whose row has not loaded yet. Unlike a
+// restored membership, this absence is user intent and must survive until the
+// row identifies the owning profile.
+const pendingUnpins = new Set<string>()
+// Pins restored from machine-local storage have no fresh user intent behind
+// them. Do not push them until their first row establishes whether this backend
+// has authoritative pin state; otherwise a second device can resurrect a pin
+// already removed elsewhere.
+const unseededLocalPins = new Set<string>()
+let observedLocalPins = new Set<string>()
+let captureScopedPinSnapshot = false
 // Writes we've issued, id -> the value we wrote and when. A list page already
 // in flight when we PATCH still carries the OLD value, and it can land after
 // our ack — so the ack is not proof the page we're reading is newer than the
@@ -59,6 +71,19 @@ export const $unconfirmedPinWrites = atom<ReadonlySet<string>>(new Set())
 // enough to cover a list request issued just before the PATCH (those are the
 // slow ones), short enough that a genuine server-side change still wins.
 const WRITE_GUARD_MS = 10_000
+
+function captureScopedPins(): void {
+  const current = new Set($pinnedSessionIds.get())
+
+  unseededLocalPins.clear()
+
+  for (const id of current) {
+    unseededLocalPins.add(id)
+  }
+
+  observedLocalPins = current
+  captureScopedPinSnapshot = false
+}
 
 function publishUnconfirmed(): void {
   const published = $unconfirmedPinWrites.get()
@@ -124,6 +149,11 @@ function rowsByPinId(rows: readonly SessionInfo[]): Map<string, SessionInfo> {
   return byId
 }
 
+function forgetUnseededAliases(row: SessionInfo): void {
+  unseededLocalPins.delete(sessionPinId(row))
+  unseededLocalPins.delete(row.id)
+}
+
 /** PATCH the flag, guarding reads against pages that predate the write. */
 function writePin(id: string, pinned: boolean, profile?: null | string): Promise<void> {
   unconfirmed.set(id, { at: Date.now(), value: pinned })
@@ -168,6 +198,11 @@ function pullRemotePins(): void {
     const pinId = sessionPinId(row)
     const heldLocally = local.has(pinId) || local.has(row.id)
 
+    // This is the first authoritative answer for a pin restored at boot. Drop
+    // the local-only hold before adopting it, so `pinned=false` can remove the
+    // stale cache without first being turned into our own guarded write.
+    forgetUnseededAliases(row)
+
     // A write of ours this page may predate. Confirmed (page agrees) → release
     // the guard, the server has caught up. Contradicted but still inside the
     // cooldown → the page was almost certainly issued before our PATCH, so our
@@ -192,7 +227,11 @@ function pullRemotePins(): void {
       continue
     }
 
-    if (row.pinned && !heldLocally) {
+    if (row.pinned && heldLocally) {
+      // The backend confirms a restored local pin. It is mirrored already;
+      // recording that prevents a redundant PATCH on the next refresh.
+      mirrored.add(pinId)
+    } else if (row.pinned) {
       // Mark mirrored first: pinSession fires the pin listener synchronously,
       // and the nested reconcile must not see this as a new pin to PATCH.
       mirrored.add(pinId)
@@ -240,6 +279,15 @@ function reconcileInner(): void {
     return
   }
 
+  // A row without `pinned` comes from a backend predating authoritative pin
+  // state. Preserve the old boot migration there: once the row identifies that
+  // compatibility case, its restored local pin may enter the push pass below.
+  for (const row of rowsByPinId(loadedSessionRows()).values()) {
+    if (typeof row.pinned !== 'boolean') {
+      forgetUnseededAliases(row)
+    }
+  }
+
   // Push before pull. The pin listener fires synchronously on a local toggle,
   // so this reconcile runs before the PATCH for that toggle exists anywhere.
   // The push pass below records the intent (`pending`, then `unconfirmed` via
@@ -258,9 +306,23 @@ function reconcileInner(): void {
 
   // Newly pinned: hold until we can resolve the row (for its profile).
   for (const id of current) {
-    if (!mirrored.has(id)) {
+    if (!mirrored.has(id) && !unseededLocalPins.has(id)) {
       pending.add(id)
     }
+  }
+
+  // A restored pin can be removed before its row loads. Keep that negative
+  // intent explicitly: absence from `current` alone cannot distinguish it from
+  // a pin that was never present in this scope.
+  for (const id of [...pendingUnpins]) {
+    const row = loadedRowFor(id)
+
+    if (!row) {
+      continue
+    }
+
+    pendingUnpins.delete(id)
+    void writePin(id, false, row.profile).catch(() => pendingUnpins.add(id))
   }
 
   // Flush whatever we can resolve now; unresolved ids (row not loaded yet)
@@ -289,9 +351,47 @@ export function watchSessionPins(): void {
   // A connection rescope repaints $pinnedSessionIds from the new backend's
   // storage scope; the mirrored/pending/unconfirmed bookkeeping describes
   // the PREVIOUS backend and must reset before that reload reconciles.
-  onConnectionScopeChange(resetSessionPinMirror)
+  resetSessionPinMirror()
+  onConnectionScopeChange(() => {
+    resetSessionPinMirror()
+    // Scope listeners run before connection-scoped atoms reload. Treat the
+    // next pin-set emission as the new backend's boot cache, not a user toggle.
+    captureScopedPinSnapshot = true
+
+    // A missing key loads the atom's fallback. Two empty scopes therefore
+    // reuse the same array reference and nanostores emits nothing; consume the
+    // snapshot explicitly once every scoped atom has finished reloading.
+    return () => {
+      if (captureScopedPinSnapshot) {
+        captureScopedPins()
+      }
+    }
+  })
   reconcile()
-  $pinnedSessionIds.listen(reconcile)
+  $pinnedSessionIds.listen(() => {
+    const current = new Set($pinnedSessionIds.get())
+
+    if (captureScopedPinSnapshot) {
+      captureScopedPins()
+    } else {
+      // Any membership change after the boot snapshot is fresh local intent.
+      // This includes toggling a restored pin off and back on before rows load.
+      for (const id of new Set([...observedLocalPins, ...current])) {
+        if (observedLocalPins.has(id) !== current.has(id)) {
+          if (unseededLocalPins.has(id) && !current.has(id)) {
+            pendingUnpins.add(id)
+          } else if (current.has(id)) {
+            pendingUnpins.delete(id)
+          }
+
+          unseededLocalPins.delete(id)
+        }
+      }
+    }
+
+    observedLocalPins = new Set($pinnedSessionIds.get())
+    reconcile()
+  })
   $sessions.listen(reconcile)
   $cronSessions.listen(reconcile)
   $messagingSessions.listen(reconcile)
@@ -311,6 +411,15 @@ export function watchSessionPins(): void {
 export function resetSessionPinMirror(): void {
   mirrored.clear()
   pending.clear()
+  pendingUnpins.clear()
   unconfirmed.clear()
+  unseededLocalPins.clear()
+
+  for (const id of $pinnedSessionIds.get()) {
+    unseededLocalPins.add(id)
+  }
+
+  observedLocalPins = new Set($pinnedSessionIds.get())
+  captureScopedPinSnapshot = false
   publishUnconfirmed()
 }

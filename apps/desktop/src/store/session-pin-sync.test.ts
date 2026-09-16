@@ -186,6 +186,48 @@ describe('watchSessionPins remote pull', () => {
     expect($pinnedSessionIds.get()).not.toContain('gone')
   })
 
+  it('adopts the first authoritative page before pushing a stale boot pin from another device', async () => {
+    // Device A has already unpinned this session in the shared backend. Device B
+    // now boots with the old pin still cached in its machine-local storage.
+    $pinnedSessionIds.set(['screen-time-fix'])
+    await flush()
+    // A real boot begins with localStorage already loaded before pin sync starts.
+    resetSessionPinMirror()
+    patch.mockClear()
+
+    $sessions.set([
+      row('screen-time-fix', {
+        archived: false,
+        pinned: false,
+        title: 'Fix Apple Screen Time resets'
+      })
+    ])
+    await flush()
+
+    expect($pinnedSessionIds.get()).not.toContain('screen-time-fix')
+    expect(patch).not.toHaveBeenCalledWith('screen-time-fix', true, undefined)
+  })
+
+  it('retains a fresh unpin of a restored boot pin until its row resolves', async () => {
+    $pinnedSessionIds.set(['restored'])
+    await flush()
+    resetSessionPinMirror()
+    patch.mockClear()
+
+    // The user acts before any row identifies the owning profile.
+    $pinnedSessionIds.set([])
+    await flush()
+    expect(patch).not.toHaveBeenCalled()
+
+    // The delayed row is older than the user's unpin and must not be re-adopted.
+    $sessions.set([row('restored', { pinned: true, profile: 'work' })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).not.toContain('restored')
+    expect(patch).toHaveBeenCalledTimes(1)
+    expect(patch).toHaveBeenCalledWith('restored', false, 'work')
+  })
+
   it('leaves the local set alone when the backend omits the flag', async () => {
     $pinnedSessionIds.set(['legacy'])
     // No `pinned` key at all — a runtime predating the column.

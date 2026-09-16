@@ -78,6 +78,8 @@ interface ScopedEntry<T> {
   /** True while a rescope is applying a loaded value — the persistence
    *  subscriber must not echo that read back into storage. */
   applying: boolean
+  /** Subscriber failures deferred until every rescope phase has completed. */
+  listenerErrors: unknown[]
 }
 
 let activeConnection: ConnectionScopeDescriptor | null | undefined
@@ -85,7 +87,9 @@ let activeSuffix = ''
 let activeGatewaySuffix = ''
 
 const registry: ScopedEntry<any>[] = []
-const scopeListeners = new Set<() => void>()
+type ScopeListener = () => (() => void) | void
+
+const scopeListeners = new Set<ScopeListener>()
 
 function suffixFor(entry: Pick<ScopedEntry<unknown>, 'includeProfile'>): string {
   return connectionScopeSuffix(activeConnection, entry.includeProfile)
@@ -96,10 +100,11 @@ export function activeConnectionScopeSuffix(): string {
   return activeSuffix
 }
 
-/** Observe gateway-identity changes (fires BEFORE scoped atoms that
- *  follow the connection reload, so pin-sync bookkeeping can reset).
+/** Observe gateway-identity changes. The listener fires BEFORE scoped atoms
+ *  reload so bookkeeping can reset; it may return a callback that runs AFTER
+ *  every scoped atom has reloaded, including when no atom emitted a change.
  *  Profile-only switches do not fire: pin state is gateway-wide. */
-export function onConnectionScopeChange(listener: () => void): () => void {
+export function onConnectionScopeChange(listener: ScopeListener): () => void {
   scopeListeners.add(listener)
 
   return () => void scopeListeners.delete(listener)
@@ -131,16 +136,37 @@ export function connectionScopedAtom<T>(
   options?: ConnectionScopeOptions
 ): WritableAtom<T> {
   const includeProfile = options?.includeProfile !== false
+  const $value = atom<T>(fallback)
 
   const entry: ScopedEntry<T> = {
-    $value: atom<T>(fallback),
+    $value,
     applying: false,
     codec,
     fallback,
     includeProfile,
     key,
+    listenerErrors: [],
     suffix: connectionScopeSuffix(activeConnection, includeProfile)
   }
+
+  // Nano Stores leaves its shared listener queue armed when a subscriber
+  // throws. During a rescope, defer those failures instead: this lets later
+  // stores and after-reload cleanup run, then rescope rethrows below. Outside
+  // that narrow transaction subscribers retain Nano Stores' normal semantics.
+  const listen = $value.listen.bind($value)
+
+  $value.listen = listener =>
+    listen((value, oldValue) => {
+      try {
+        listener(value, oldValue)
+      } catch (error) {
+        if (!entry.applying) {
+          throw error
+        }
+
+        entry.listenerErrors.push(error)
+      }
+    })
 
   entry.$value.set(loadEntry(entry))
   registry.push(entry)
@@ -189,6 +215,8 @@ export function rescopeConnectionScopedStores(connection: ConnectionScopeDescrip
 
   activeConnection = connection
   activeSuffix = next
+  const afterReload: (() => void)[] = []
+  const errors: unknown[] = []
 
   // Pin-sync's mirrored/pending sets describe the PREVIOUS gateway. Fire
   // only when the connection (not the profile) changes — pins are
@@ -198,7 +226,15 @@ export function rescopeConnectionScopedStores(connection: ConnectionScopeDescrip
     activeGatewaySuffix = nextGateway
 
     for (const listener of scopeListeners) {
-      listener()
+      try {
+        const callback = listener()
+
+        if (callback) {
+          afterReload.push(callback)
+        }
+      } catch (error) {
+        errors.push(error)
+      }
     }
   }
 
@@ -211,11 +247,35 @@ export function rescopeConnectionScopedStores(connection: ConnectionScopeDescrip
 
     entry.suffix = entrySuffix
     entry.applying = true
+    entry.listenerErrors.length = 0
 
     try {
       entry.$value.set(loadEntry(entry))
+      errors.push(...entry.listenerErrors)
+    } catch (error) {
+      // One subscriber must not strand later scoped stores or after-reload
+      // cleanup. Preserve the failure and rethrow it after every phase runs.
+      errors.push(error)
     } finally {
       entry.applying = false
     }
+  }
+
+  for (const callback of afterReload) {
+    try {
+      callback()
+    } catch (error) {
+      // Cleanup callbacks are independent: run all of them, then surface every
+      // failure instead of letting the first one mask the rest.
+      errors.push(error)
+    }
+  }
+
+  if (errors.length === 1) {
+    throw errors[0]
+  }
+
+  if (errors.length > 1) {
+    throw new AggregateError(errors, 'Connection-scoped store rescope failed')
   }
 }

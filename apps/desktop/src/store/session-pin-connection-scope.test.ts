@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConnection } from '@/global'
-import { connectionScopeSuffix } from '@/lib/connection-scoped'
+import { connectionScopedAtom, connectionScopeSuffix } from '@/lib/connection-scoped'
 import { readKey, storedStringArray, writeKey } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -84,6 +84,73 @@ describe('desktop pin list is connection-scoped, not profile-scoped', () => {
 
     setConnection(remote('default', 'https://gw-b.example'))
     expect($pinnedSessionIds.get()).toEqual(['b-1'])
+  })
+
+  it('keeps a fresh pin made after switching between empty gateways', async () => {
+    setConnection(remote('default', 'https://empty-a.example'))
+    expect($pinnedSessionIds.get()).toEqual([])
+
+    // Both scopes miss their storage key, so the scoped atom reuses its []
+    // fallback and emits nothing for this second switch.
+    setConnection(remote('default', 'https://empty-b.example'))
+    patch.mockClear()
+
+    pinSession('fresh-after-switch')
+    await flush()
+    expect(patch).not.toHaveBeenCalled()
+
+    // The first row predates the local pin. It must be fenced by the fresh
+    // intent, not mistaken for authoritative boot state from the empty scope.
+    $sessions.set([row('fresh-after-switch', { pinned: false, profile: 'default' })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toContain('fresh-after-switch')
+    expect(patch).toHaveBeenCalledWith('fresh-after-switch', true, 'default')
+  })
+
+  it('finishes pin snapshot cleanup when another scoped subscriber throws during an empty rescope', async () => {
+    const first = remote('default', 'https://throw-a.example')
+    const second = remote('default', 'https://throw-b.example')
+
+    setConnection(first)
+    expect($pinnedSessionIds.get()).toEqual([])
+
+    const key = 'hermes.desktop.test.throwingScopedStore'
+    const $throwingStore = connectionScopedAtom(key, 'first')
+    const subscriberError = new Error('scoped subscriber failed')
+    let shouldThrow = false
+
+    const unsubscribe = $throwingStore.subscribe(() => {
+      if (shouldThrow) {
+        throw subscriberError
+      }
+    })
+
+    writeKey(`${key}${connectionScopeSuffix(second)}`, JSON.stringify('second'))
+    shouldThrow = true
+
+    let thrown: unknown
+
+    try {
+      setConnection(second)
+    } catch (error) {
+      thrown = error
+    } finally {
+      shouldThrow = false
+      unsubscribe()
+    }
+
+    // Preserve the original subscriber failure, but only after after-reload
+    // cleanup has consumed the pin atom's empty -> empty snapshot.
+    expect(thrown).toBe(subscriberError)
+
+    pinSession('fresh-after-throw')
+    await flush()
+    $sessions.set([row('fresh-after-throw', { pinned: false, profile: 'default' })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toContain('fresh-after-throw')
+    expect(patch).toHaveBeenCalledWith('fresh-after-throw', true, 'default')
   })
 
   it('lets an unpin survive a profile rescope instead of flushing pin=true', async () => {

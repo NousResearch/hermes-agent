@@ -107,6 +107,39 @@ class TestAuxiliaryMaxTokensParam:
 
 
 class TestResolveTaskProviderModel:
+    def test_omitting_task_bypasses_same_provider_task_endpoint(self):
+        task_config = {
+            "provider": "main-provider",
+            "model": "aux-model",
+            "base_url": "https://aux.example/v1",
+            "api_key": "aux-key",
+        }
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=task_config):
+            configured = _resolve_task_provider_model(
+                task="compression", provider="main-provider", model="main-model",
+            )
+            bypassed = _resolve_task_provider_model(
+                task=None, provider="main-provider", model="main-model",
+            )
+
+        assert configured[:4] == (
+            "main-provider", "main-model", "https://aux.example/v1", "aux-key",
+        )
+        assert bypassed[:4] == ("main-provider", "main-model", None, None)
+
+    def test_omitting_task_keeps_empty_provider_on_auto_route(self):
+        task_config = {"provider": "aux-provider", "model": "aux-model"}
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=task_config):
+            configured = _resolve_task_provider_model(
+                task="compression", provider="", model="main-model",
+            )
+            bypassed = _resolve_task_provider_model(
+                task=None, provider="", model="main-model",
+            )
+
+        assert configured[:2] == ("aux-provider", "main-model")
+        assert bypassed[:2] == ("auto", "main-model")
+
     @pytest.mark.parametrize(
         "provider",
         [

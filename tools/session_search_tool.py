@@ -15,6 +15,7 @@ import time
 from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional, Union
 
+from agent.redact import redact_derived_text
 from hermes_state_common import _BOUNDARY_END_REASONS
 from hermes_time import safe_strftime
 
@@ -93,7 +94,7 @@ def _get_session_meta(db, session_id: str) -> dict:
 
 def _session_meta_block(meta: dict[str, Any]) -> dict[str, Any]:
     return {"when": _format_timestamp(meta.get("started_at")), "source": meta.get("source"),
-            "model": meta.get("model"), "title": meta.get("title")}
+            "model": meta.get("model"), "title": redact_derived_text(meta.get("title"))}
 
 
 def _ok(**payload) -> str:
@@ -294,7 +295,7 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
     view = {} if anchor_id is None else _quiet(
         lambda: db.get_anchored_view(session_id, anchor_id, window=5, bookend=3), {},
         "get_anchored_view failed for title match %s/%s", session_id, anchor_id)
-    title = session_meta.get("title") or title_query
+    title = redact_derived_text(session_meta.get("title") or title_query)
     # Same caps as FTS hits (_bookend / _hydrate_hit): a title match is a discovery entry too.
     def shape(key, fallback, anchor=None, max_content_len=1200):
         return [_shape_message(m, anchor_id=anchor, max_content_len=max_content_len)
@@ -341,8 +342,9 @@ def _hydrate_hit(db, lineage_root: str, match_info: dict[str, Any], result_detai
         when=_format_timestamp(session_meta.get("started_at") or match_info.get("session_started")),
         source=session_meta.get("source") or match_info.get("source", "unknown"),
         model=session_meta.get("model") or match_info.get("model") or "unknown",
-        title=session_meta.get("title") or None, matched_role=match_info.get("role"),
-        match_message_id=msg_id, snippet=match_info.get("snippet") or "",
+        title=redact_derived_text(session_meta.get("title")) or None,
+        matched_role=match_info.get("role"), match_message_id=msg_id,
+        snippet=redact_derived_text(match_info.get("snippet")),
         bookend_start=_bookend(view, "bookend_start") if full else [],
         messages=[_shape_message(m, anchor_id=msg_id, max_content_len=4000)
                   for m in (view.get("window") or []) if full or m.get("id") == msg_id],
@@ -528,8 +530,10 @@ def _list_recent_sessions(db, limit: int, current_session_id: str | None = None,
         hidden = {current_session_id, current_root if has_compression_hop and current_root else None}
         results = [{
             "session_id": s.get("id", ""), "link": _session_link(s.get("id", ""), link_profile),
-            "title": s.get("title") or None, **{k: s.get(k, "") for k in ("source", "started_at", "last_active")},
-            "message_count": s.get("message_count", 0), "preview": s.get("preview", "")}
+            "title": redact_derived_text(s.get("title")) or None,
+            **{k: s.get(k, "") for k in ("source", "started_at", "last_active")},
+            "message_count": s.get("message_count", 0),
+            "preview": redact_derived_text(s.get("preview"))}
             for s in [x for x in sessions if x.get("id", "") not in hidden][:limit]]
         return _ok(mode="browse", results=results, count=len(results), message=(
             f"Showing {len(results)} most recent sessions. Pass a query= to search, "

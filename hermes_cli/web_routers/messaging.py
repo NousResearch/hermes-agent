@@ -278,11 +278,17 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     HERMES_HOME contextvar; the gateway status readers do not, hence the explicit path)."""
     env_on_disk = load_env()
     runtime = read_runtime_status(path=scoped_dir / "gateway_state.json") if scoped_dir is not None else read_runtime_status()
-    if runtime is None:
-        # A profile served by the multiplexer writes no record of its own; its adapters live in the
-        # multiplexer's record under ``<profile>:<platform>``. Unscoped, the profile is the process's
-        # own home (a pooled ``hermes --profile X serve``); the default home resolves to None here.
-        own_home = scoped_dir if scoped_dir is not None else get_process_hermes_home()
+    # A profile served by the multiplexer writes no live record of its own; its adapters live in the
+    # multiplexer's record under ``<profile>:<platform>``. A leftover ``gateway_state.json`` from the
+    # profile's standalone days outranks nothing: only a record proving a live own gateway does —
+    # the same rung order ``resolve_gateway_liveness`` uses (own runtime PID before the multiplexer),
+    # so the two surfaces cannot disagree. Unscoped, the profile is the process's own home (a pooled
+    # ``hermes --profile X serve``); the default home resolves to a name the multiplexer never serves.
+    own_home = scoped_dir if scoped_dir is not None else get_process_hermes_home()
+    if (
+        runtime is None
+        or get_runtime_status_running_pid(runtime, expected_home=own_home) is None
+    ):
         served = multiplexer_liveness_for_profile(own_home)
         if served is not None:
             runtime = {**served[1], "platforms": profile_platforms_from_multiplexer(served[1], own_home.name)}

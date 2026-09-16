@@ -9,13 +9,16 @@ import ...` in the restart phase raised ImportError, the whole phase
 aborted, and the running gateway kept serving pre-update code.
 
 The old mitigation (_UPDATE_RUNTIME_RELOAD_MODULES) reloaded 3 hardcoded
-modules — re-fixed per symptom. The purge evicts EVERY cached module under
-the Hermes package prefixes so later imports rebuild a self-consistent
-module graph from the updated checkout.
+modules — re-fixed per symptom. The purge evicts EVERY cached module whose
+top-level name is a ``.py`` file or package in the checkout root (minus
+``tests``) so later imports rebuild a self-consistent module graph from the
+updated checkout.
 """
 
 from __future__ import annotations
 
+import importlib
+import json
 import sys
 import types
 
@@ -82,6 +85,31 @@ def test_purge_protects_executing_modules():
     assert "hermes_cli" in sys.modules
 
 
+def test_purge_preserves_active_update_receipt(tmp_path, monkeypatch):
+    """A receipt begun before the post-pull purge must still be finalizable."""
+    import hermes_cli.update_receipt as receipt
+
+    receipt_dir = tmp_path / "update_receipts"
+    monkeypatch.setattr(receipt, "_receipt_dir", lambda: receipt_dir)
+    receipt._current = None
+    post_purge_receipt = receipt
+    try:
+        receipt.begin_update_receipt()
+        receipt.record_step("git_pull", True, "updated checkout")
+
+        cli_main._purge_stale_hermes_modules()
+        post_purge_receipt = importlib.import_module("hermes_cli.update_receipt")
+        path = post_purge_receipt.finalize_update_receipt("success")
+
+        assert path is not None and path.is_file()
+        latest = json.loads((receipt_dir / "latest.json").read_text(encoding="utf-8"))
+        assert latest["outcome"] == "success"
+        assert latest["steps"][0]["name"] == "git_pull"
+    finally:
+        receipt._current = None
+        post_purge_receipt._current = None
+
+
 def test_purge_leaves_prefix_lookalikes_alone():
     # `gateway_foo` starts with the string prefix "gateway" but is NOT the
     # gateway package — the root-segment check must spare it.
@@ -134,3 +162,53 @@ def test_stale_symbol_scenario_end_to_end():
         sys.modules.pop(name, None)
         if real is not None:
             sys.modules[name] = real
+
+
+def test_purge_keeps_plan_record_class_identity():
+    # The pre-update plan is built BEFORE the purge; reconciliation after it filters with
+    # ``isinstance(r, RuntimeRecord)``. An evicted ``update_inventory`` yields a fresh class,
+    # every record fails the check, and the plan-vs-execution report goes silently empty.
+    from hermes_cli.update_inventory import RuntimeRecord as before
+
+    cli_main._purge_stale_hermes_modules()
+    from hermes_cli.update_inventory import RuntimeRecord as after
+    assert after is before
+
+
+def test_stale_top_level_utils_scenario_end_to_end():
+    """The 2026-09-12 field failure: `hermes update` from a pre-`base_url_origin`
+    checkout kept the old top-level `utils` cached, and the restart phase's import of
+    `hermes_cli.gateway` died on `from utils import base_url_origin`."""
+    stale = types.ModuleType("utils")
+    real = sys.modules.get("utils")
+    sys.modules["utils"] = stale
+    try:
+        try:
+            from utils import base_url_origin  # noqa: F401
+            raised = False
+        except ImportError:
+            raised = True
+        assert raised, "precondition: stale utils must lack base_url_origin"
+
+        cli_main._purge_stale_hermes_modules()
+
+        from utils import base_url_origin  # noqa: F401
+    finally:
+        sys.modules.pop("utils", None)
+        if real is not None:
+            sys.modules["utils"] = real
+
+
+def test_purge_protects_hermes_logging():
+    # A second copy of hermes_logging starts a second QueueListener over the same log
+    # files while the first keeps running: its listener/handler state is module-global.
+    real = sys.modules.get("hermes_logging")
+    sentinel = _fake_module("hermes_logging")
+    sys.modules["hermes_logging"] = sentinel
+    try:
+        cli_main._purge_stale_hermes_modules()
+        assert sys.modules.get("hermes_logging") is sentinel
+    finally:
+        sys.modules.pop("hermes_logging", None)
+        if real is not None:
+            sys.modules["hermes_logging"] = real

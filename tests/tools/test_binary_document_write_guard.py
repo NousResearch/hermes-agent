@@ -14,11 +14,8 @@ from tools.binary_extensions import (
     has_opaque_document_extension,
     is_pdf_path,
 )
-from tools.file_tools import (
-    _check_binary_document_write,
-    patch_tool,
-    write_file_tool,
-)
+from tools.file_tools import patch_tool, write_file_tool
+from tools.file_tools_write_guards import _check_binary_document_write
 
 
 def _make_minimal_docx(path: Path) -> None:

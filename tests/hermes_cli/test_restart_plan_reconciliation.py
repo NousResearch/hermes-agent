@@ -133,6 +133,37 @@ def test_restarted_service_unit_matches_profile():
     assert outcomes[0]["outcome"] == "restarted"
 
 
+def test_launchd_default_gateway_restarted_via_ai_hermes_label():
+    """macOS restart bookkeeping records ``ai.hermes.gateway``, which does not
+    contain the substring ``hermes-gateway``. The default-profile gateway must
+    still count as restarted — otherwise every Desktop update on launchd
+    exits 1 after a successful kickstart (receipt outcome=partial, tripwire
+    'never touched')."""
+    outcomes = match_runtime_outcomes(
+        _plan(_rt("default", 400, supervisor="launchd")),
+        restarted_services=["ai.hermes.gateway"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    assert outcomes[0]["outcome"] == "restarted"
+    assert report_unaccounted_runtimes(outcomes) is False
+
+
+def test_launchd_named_profile_and_failed_label():
+    restarted = match_runtime_outcomes(
+        _plan(_rt("work", 401, supervisor="launchd")),
+        restarted_services=["ai.hermes.gateway-work"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    assert restarted[0]["outcome"] == "restarted"
+    failed = match_runtime_outcomes(
+        _plan(_rt("default", 402, supervisor="launchd")),
+        restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(),
+        failed_units=["ai.hermes.gateway"],
+    )
+    assert failed[0]["outcome"] == "failed"
+
+
 def test_untouched_runtime_is_unaccounted_and_escalates(capsys):
     """The tripwire: plan saw it, NO bookkeeping mentions it."""
     outcomes = match_runtime_outcomes(
@@ -157,6 +188,124 @@ def test_external_supervisor_counts_as_restarted():
         failed_units=[],
     )
     assert outcomes[0]["outcome"] == "restarted"
+
+
+def test_unmanaged_serve_runtime_under_default_profile_is_unaccounted():
+    """#100479: an sshd-spawned `serve --isolated` has no systemd unit and
+    shares the default profile with the gateway. A gateway-only restart
+    must not be read as covering it — it must trip the tripwire instead."""
+    serve_runtime = RuntimeRecord(
+        kind="serve",
+        profile="default",
+        pid=900,
+        supervisor="manual-serve",
+        restart_via=_restart_mechanism("manual-serve", "default"),
+    )
+    outcomes = match_runtime_outcomes(
+        _plan(_rt("default", 100, supervisor="systemd"), serve_runtime),
+        restarted_services=["hermes-gateway"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    by_pid = {o["pid"]: o["outcome"] for o in outcomes}
+    assert by_pid[100] == "restarted"
+    assert by_pid[900] == "unaccounted"
+    assert report_unaccounted_runtimes(outcomes) is True
+
+
+def _serve(profile: str, pid: int, kind: str = "serve") -> RuntimeRecord:
+    return RuntimeRecord(
+        kind=kind,
+        profile=profile,
+        pid=pid,
+        supervisor="manual-serve",
+        restart_via=_restart_mechanism("manual-serve", profile),
+    )
+
+
+def test_serve_never_borrows_relaunched_or_external_gateway_profile():
+    """Sibling site of #100479: the relaunched_profiles / external-supervisor
+    bookkeeping is gateway vocabulary too. A manual gateway relaunch under
+    ``default`` (or a named profile) says nothing about a serve that shares
+    the profile name."""
+    outcomes = match_runtime_outcomes(
+        _plan(_rt("default", 100), _serve("default", 900),
+              _rt("work", 101), _serve("work", 901, kind="dashboard")),
+        restarted_services=[], relaunched_profiles=["default"],
+        externally_supervised_profiles=["work"], killed_pids=set(), failed_units=[],
+    )
+    by_pid = {o["pid"]: o["outcome"] for o in outcomes}
+    assert by_pid == {
+        100: "restarted", 900: "unaccounted", 101: "restarted", 901: "unaccounted"
+    }
+
+
+def test_named_profile_serve_does_not_match_gateway_profile_unit():
+    """``hermes-gateway-work.service`` restarted must not credit the ``work``
+    serve — the old substring match (``"work" in unit``) did exactly that."""
+    outcomes = match_runtime_outcomes(
+        _plan(_rt("work", 101, supervisor="systemd"), _serve("work", 901)),
+        restarted_services=["hermes-gateway-work.service"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    by_pid = {o["pid"]: o["outcome"] for o in outcomes}
+    assert by_pid == {101: "restarted", 901: "unaccounted"}
+
+
+def test_serve_reconciles_against_its_own_unit_vocabulary():
+    """A serve IS covered when a ``hermes-serve*`` unit for its profile was
+    restarted (or failed) — scope-qualified identities included."""
+    outcomes = match_runtime_outcomes(
+        _plan(_serve("default", 900), _serve("work", 901),
+              _serve("ops", 902, kind="dashboard"), _serve("qa", 903)),
+        restarted_services=["hermes-gateway", "user/hermes-serve",
+                            "hermes-serve-work.service", "hermes-dashboard-ops"],
+        relaunched_profiles=[], externally_supervised_profiles=[],
+        killed_pids=set(), failed_units=["hermes-serve-qa.service"],
+    )
+    by_pid = {o["pid"]: o["outcome"] for o in outcomes}
+    assert by_pid == {900: "restarted", 901: "restarted", 902: "restarted", 903: "failed"}
+    # exact names: ``work`` must not claim ``hermes-serve-workbench``
+    outcomes = match_runtime_outcomes(
+        _plan(_serve("work", 901)),
+        restarted_services=["hermes-serve-workbench.service"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    assert outcomes[0]["outcome"] == "unaccounted"
+
+
+def test_serve_outcome_follows_incarnation_probe_when_provided():
+    """With the (pid, create_time) survivor probe result, liveness decides:
+    a pre-update serve that is gone was replaced (restarted); one still
+    alive is unaccounted — even when a hermes-serve unit was restarted."""
+    plan = _plan(_serve("default", 900), _serve("default", 901, kind="dashboard"))
+    outcomes = match_runtime_outcomes(
+        plan, restarted_services=["hermes-serve.service"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+        stale_serve_pids={900},
+    )
+    by_pid = {o["pid"]: o["outcome"] for o in outcomes}
+    assert by_pid == {900: "unaccounted", 901: "restarted"}
+    # killed pid still wins as "stopped"; probe None => fail closed
+    outcomes = match_runtime_outcomes(
+        plan, restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids={901}, failed_units=[],
+        stale_serve_pids=None,
+    )
+    by_pid = {o["pid"]: o["outcome"] for o in outcomes}
+    assert by_pid == {900: "unaccounted", 901: "stopped"}
+
+
+def test_unaccounted_serve_report_names_serve_remedy_not_gateway_restart(capsys):
+    outcomes = match_runtime_outcomes(
+        _plan(_serve("default", 900)),
+        restarted_services=["hermes-gateway"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    assert report_unaccounted_runtimes(outcomes) is True
+    out = capsys.readouterr().out
+    assert "serve [default] pid 900" in out
+    assert "hermes-serve.service" in out
+    assert "hermes gateway restart" not in out
 
 
 def test_mixed_fleet_only_the_missed_one_escalates(capsys):

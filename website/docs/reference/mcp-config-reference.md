@@ -67,7 +67,7 @@ mcp_servers:
 | `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
 | `elicitation` | mapping | both | Server-initiated user-input requests. `enabled` (default `true`) and `timeout` in seconds (default `300`). Form-mode requests route through the approval surface; URL-mode is declined (see MCP guide) |
-| `trust` | string | both | Trust tier: `full` (default) or `untrusted`. On an `untrusted` server, every write-capable tool call (any tool without a `readOnlyHint: true` annotation) requires user approval through the standard approval surface before it runs. `readOnlyHint` is a server-supplied *hint* — a lying server can at most skip approval for tools it claims are read-only, never gain extra access — so mark any server you don't fully control as `untrusted`. Unrecognized values are treated as `untrusted` (fail-closed) |
+| `trust` | string | both | Trust tier: `full` (default) or `untrusted`. On an `untrusted` server, every write-capable tool call (any tool without a `readOnlyHint: true` annotation) requires user approval through the standard approval surface before it runs. `readOnlyHint` is a server-supplied *hint* — a lying server can at most skip approval for tools it claims are read-only, never gain extra access — so mark any server you don't fully control as `untrusted`. The same hint decides whether a call is transparently retried after the transport session expires mid-call: only `readOnlyHint: true` tools are replayed, while unannotated (write-capable) tools return an `outcome_uncertain` error — on a Streamable-HTTP server that expires idle sessions this means the first unannotated call after an idle period may fail and must be verified before re-invoking. Unrecognized values are treated as `untrusted` (fail-closed) |
 
 ## Environment variable references
 
@@ -333,9 +333,42 @@ mcp_servers:
 Behavior:
 - Hermes uses the MCP SDK's OAuth 2.1 PKCE flow (metadata discovery, client identification, token exchange, and refresh)
 - On first connect, a browser window opens for authorization
-- Tokens are persisted to `~/.hermes/mcp-tokens/<server>.json` and reused across sessions
+- Tokens are persisted to `~/.hermes/mcp-tokens/<server>.json` (a named profile uses `~/.hermes/profiles/<name>/mcp-tokens/`) and reused across sessions
 - Token refresh is automatic; re-authorization only happens when refresh fails
 - Only applies to HTTP/StreamableHTTP transport (`url`-based servers)
+- Under a [multiplexed gateway](/user-guide/multi-profile-gateways), an OAuth connection is never shared across profiles: each profile authenticates with its own token and opens its own connection, even when the `mcp_servers` entries are identical
+
+### Device-code login (RFC 8628)
+
+For an authorization server advertising `device_authorization_endpoint`, explicitly choose
+device authorization from a terminal on the machine running Hermes:
+
+```bash
+hermes mcp login protected_api --flow device
+```
+
+Open the printed verification URL on any device and enter the displayed user code.
+Hermes polls for approval, respects `authorization_pending` and `slow_down`, and stops
+on denial or expiry. No browser is launched and no callback listener is needed.
+`oauth.timeout` bounds the approval wait (default 300 seconds), also limited by the code's lifetime.
+
+Set `oauth.flow: device` on the server to make `hermes mcp login` and `hermes mcp reauth`
+(including `reauth --all`) use device authorization. `login --flow browser` overrides that
+setting for one login; browser PKCE remains the default. Unsupported metadata produces
+an actionable error rather than silently falling back to a different flow.
+
+Device login requests the device and refresh grants during dynamic registration, or uses
+your configured `oauth.client_id`, `oauth.client_secret`, and `oauth.token_endpoint_auth_method`.
+The registered client must permit device authorization. The browser CIMD document is not used.
+`oauth.scope` is sent on the device authorization request; `oauth.user_agent` also applies
+to token polling. Tokens, registration, and issuer metadata stay in the active profile's
+MCP token store and the existing runtime refresh path reuses them after a restart.
+Failed device grants do not replace previously saved credentials.
+
+Initial device login is terminal-only: dashboard/browser callbacks and background reconnects
+do not start device authorization. Run the login command against the **same profile and host**
+as the gateway. An expired/rejected device grant without a usable refresh token requires
+another explicit login.
 
 ### Client identification: CIMD and DCR
 

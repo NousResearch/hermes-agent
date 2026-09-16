@@ -26,6 +26,7 @@ import {
   openForward,
   ownershipDirectory,
   pidIsOurDashboard,
+  probeHermesVersion,
   probeRemotePlatform,
   PROTOCOL_VERSION,
   readLockfile,
@@ -476,7 +477,9 @@ test('connect() fails closed on lockfile schema/ownership skew: skips reap, touc
       `${label}: connect must refuse with remote-lockfile-skew`
     )
     assert.ok(
-      !ssh.calls.some(c => /(^|[^-\d])kill -?9? ?\d/.test(c) && !/kill -0/.test(c)),
+      // Any signal, a literal pid: the probe watchdog's `kill -9 $__htp`
+      // targets its own child, not a lockfile pid.
+      !ssh.calls.some(c => /(^|[^-\d])kill(?: -\w+)? \d/.test(c) && !/kill -0/.test(c)),
       `${label}: must not kill any pid`
     )
     assert.ok(!ssh.calls.some(c => /rm -f/.test(c)), `${label}: must not remove any remote file`)
@@ -913,6 +916,8 @@ test('spawnRemoteDashboard always spawns serve (legacy dashboard path removed)',
 test('READY_RE accepts both serve and dashboard sentinels', () => {
   assert.equal(READY_RE.exec('HERMES_BACKEND_READY port=4321')?.[1], '4321')
   assert.equal(READY_RE.exec('HERMES_DASHBOARD_READY port=8765')?.[1], '8765')
+  // The remote log is `>> log 2>&1`, so a stderr chunk without a newline can be spliced onto the sentinel.
+  assert.equal(READY_RE.exec('INFO  Started server process [4711]HERMES_BACKEND_READY port=65238')?.[1], '65238')
 })
 
 test('spawnRemoteDashboard rejects when no pid is returned', async () => {
@@ -997,7 +1002,14 @@ test('connect() spawns fresh when there is no lockfile, adopts the served token'
     [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=51999\n']
   ])
 
-  const result = await connect(connectDeps(ssh, { adoptServedToken: async () => 'the-served-token' }))
+  const result = await connect(
+    connectDeps(ssh, {
+      adoptServedToken: async () => 'the-served-token',
+      platform: { os: 'Linux', arch: 'x86_64' }
+    })
+  )
+
+  assert.equal(ssh.calls.filter(command => command === 'uname -s; uname -m').length, 0)
   assert.equal(result.reused, false)
   assert.equal(result.remotePort, 51999)
   assert.equal(result.localPort, 50001)
@@ -1801,6 +1813,41 @@ test('remote SSH ownership capability requires both secure bootstrap flags', asy
   assert.equal(await remoteSupportsSshOwnership(unsupported, '/x/hermes'), false)
 })
 
+test('probes run under the remote watchdog so a hung CLI cannot orphan (#110478)', async () => {
+  let versionProbe = ''
+
+  const versionSsh = fakeSsh([
+    [
+      /--version/,
+      (cmd: string) => {
+        versionProbe = cmd
+
+        return 'Hermes Agent v0.18.2 (abc123)\n'
+      }
+    ]
+  ])
+
+  assert.equal(await probeHermesVersion(versionSsh, '/x/hermes'), 'Hermes Agent v0.18.2 (abc123)')
+  assert.ok(versionProbe.includes('kill -9'), 'version probe wrapped in the remote watchdog')
+
+  let helpProbe = ''
+
+  const helpSsh = fakeSsh([
+    [
+      /serve --help/,
+      (cmd: string) => {
+        helpProbe = cmd
+
+        return 'YES\n'
+      }
+    ]
+  ])
+
+  assert.equal(await remoteSupportsSshOwnership(helpSsh, '/x/hermes'), true)
+  assert.ok(helpProbe.includes('kill -9'), 'ownership probe wrapped in the remote watchdog')
+  assert.ok(/\$\(.*\(.*serve --help.*\) <\/dev\/null &/.test(helpProbe), 'watchdog nested around the inner serve --help')
+})
+
 test('cleanupStale escalates to SIGKILL when the backend survives the graceful wait (#91668 quit-during-active-turn)', async () => {
   // A serve mid-turn (in-flight LLM call, live MCP children) can ride out
   // SIGTERM well past the 5s graceful wait. Before-quit races the whole
@@ -1849,3 +1896,66 @@ test('cleanupStale keeps the lockfile when even SIGKILL cannot confirm the pid d
   // The record must survive so the next connect's reap pass retries.
   assert.ok(!ssh.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)))
 })
+test.skipIf(process.platform === 'win32')(
+  'buildSpawnCommand quotes expandRemotePath fragments exactly once (real sh parse)',
+  async () => {
+    // expandRemotePath() output is pre-quoted; a second shq() ships literal quote
+    // characters to the remote python. Parse the composed command with a real sh,
+    // as the remote login shell does, and require every path to come out clean.
+    const cmd = buildSpawnCommand('/x/hermes', 'work', {
+      hermesHome: '~/.hermes',
+      logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+      ownershipId: OWNERSHIP_ID,
+      reservationNonce: SPAWN_NONCE,
+      spawnNonce: SPAWN_NONCE,
+      tokenFilePath: spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE),
+      lockMetadata: { ownershipId: OWNERSHIP_ID, spawnNonce: SPAWN_NONCE }
+    })
+
+    // Capture the argv a remote shell would hand to python3, via a shim on PATH.
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-argv-shim-'))
+
+    try {
+      const shimDir = path.join(root, 'shim')
+      const fakeHome = path.join(root, 'home')
+      await mkdir(shimDir)
+      await mkdir(fakeHome)
+      const argvFile = path.join(shimDir, 'argv')
+      await writeFile(path.join(shimDir, 'python3'), `#!/bin/sh\nprintf '%s\\0' "$@" > '${argvFile}'\n`, {
+        mode: 0o755
+      })
+      await exec(cmd, {
+        env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}`, HOME: fakeHome }
+      })
+      const argv = (await readFile(argvFile, 'utf8')).split('\0')
+
+      // argv: ['-c', <mutex script>, <mutex path>, <payload>]
+      assert.equal(
+        argv[2],
+        `${fakeHome}/.hermes/.hermes-update-in-progress.mutex`,
+        'mutex path must reach python fully expanded, with no quote characters'
+      )
+
+      // The payload assigns reservation/lock/owner_file before its mkdir loop.
+      // Evaluate only that prefix the way the remote sh does; never the loop itself.
+      const payload = argv[3]
+      const loopStart = payload.indexOf('i=0;')
+      assert.ok(loopStart > 0, 'payload prefix sentinel missing')
+
+      const { stdout } = await exec(
+        `${payload.slice(0, loopStart)} printf '%s\\n' "$reservation" "$lock" "$owner_file"`,
+        {
+          env: { ...process.env, HOME: fakeHome }
+        }
+      )
+
+      const [reservation, lock, ownerFile] = stdout.split('\n')
+      const base = `${fakeHome}/.hermes/desktop-ssh/${OWNERSHIP_ID}`
+      assert.equal(reservation, `${base}/.connect.lock`)
+      assert.equal(lock, `${base}/backend.lock.json`)
+      assert.equal(ownerFile, `${base}/.connect.lock/owner`)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+)

@@ -21,9 +21,13 @@ class TestExactMatch:
         assert new == content  # untouched
 
     def test_empty_old_string_rejected(self):
+        """The rejection must carry a recovery path — a bare "cannot be empty"
+        leaves models re-sending the identical call until the loop detector
+        kills the run (cline/cline#13970)."""
         new, count, _, err = fuzzy_find_and_replace("abc", "", "x")
         assert count == 0
         assert err is not None
+        assert "read the file" in err and "write_file" in err
 
     def test_identical_strings(self):
         new, count, _, err = fuzzy_find_and_replace("abc", "abc", "abc")

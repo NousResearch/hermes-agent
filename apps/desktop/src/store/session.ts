@@ -1,6 +1,7 @@
 import type { ConnectionState } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
+import { setApiRequestLocalMode } from '@/api/client'
 import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
@@ -14,6 +15,7 @@ import { persistBoolean, persistString, readJson, storedBoolean, storedString, w
 import { syncCronModelImpactConnection } from '@/store/cron-model-impact-scope'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
+import { isSessionRemovalPending } from './session-removal'
 import type { SessionOwnerRoute, SessionOwnerScope } from './session-request-router'
 import { clearUnreadOnOpen } from './session-unread-remote'
 
@@ -359,16 +361,19 @@ export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id
  *  the live id or the stable lineage root (see sessionPinId). The one place the
  *  "same conversation across compression" test lives. */
 export const sessionMatchesStoredId = (
-  session: Pick<SessionInfo, '_lineage_root_id' | 'id'>,
+  session: Pick<SessionInfo, '_lineage_ids' | '_lineage_root_id' | 'id'>,
   storedSessionId: string
-): boolean => session.id === storedSessionId || session._lineage_root_id === storedSessionId
+): boolean =>
+  session.id === storedSessionId ||
+  session._lineage_root_id === storedSessionId ||
+  Boolean(session._lineage_ids?.includes(storedSessionId))
 
 // Alias lookup, memoized per sessions-list reference. `lineageAliases` runs
 // per cached session state per status projection per message delta — an
 // O(sessions) scan there multiplies out to states × sessions × ~30Hz per busy
 // session, which is what made a populated recents list drag every stream. The
 // list is replaced wholesale (never mutated), so its reference is the cache key.
-type LineageRow = Pick<SessionInfo, '_lineage_root_id' | 'id'>
+type LineageRow = Pick<SessionInfo, '_lineage_ids' | '_lineage_root_id' | 'id'>
 const lineageIndexBySessions = new WeakMap<readonly LineageRow[], Map<string, string[]>>()
 
 function lineageIndex(sessions: readonly LineageRow[]): Map<string, string[]> {
@@ -397,6 +402,21 @@ function lineageIndex(sessions: readonly LineageRow[]): Map<string, string[]> {
       add(session.id, session._lineage_root_id)
       add(session._lineage_root_id, session.id)
       add(session._lineage_root_id, session._lineage_root_id)
+    }
+
+    // Chains three+ segments deep: the projected row carries every id the
+    // conversation has answered to, so a surface keyed to a MIDDLE segment
+    // (it was the tip when the surface opened) still aliases to the rest.
+    // Without this, only tip↔root connect and such a surface reads as a
+    // different conversation — one chat open twice after a compaction.
+    const ids = session._lineage_ids
+
+    if (ids && ids.length > 1) {
+      for (const a of ids) {
+        for (const b of ids) {
+          add(a, b)
+        }
+      }
     }
   }
 
@@ -629,6 +649,85 @@ export function mergeSessionPage(
   return interleaved
 }
 
+function sidebarProfileKey(session: Pick<SessionInfo, 'profile'>): string {
+  return (session.profile ?? '').trim() || 'default'
+}
+
+function sessionListIdentity(session: Pick<SessionInfo, 'id' | 'profile'>): string {
+  return `${sidebarProfileKey(session)}::${session.id}`
+}
+
+/**
+ * Re-attach previous rows for profiles whose sidebar slice failed this refresh.
+ *
+ * The batched sidebar endpoint reports a disk I/O / lock failure as HTTP 200
+ * with `recents: []` and `errors: [{ profile }]`. `mergeSessionPage` only keeps
+ * working / pinned / selected ids, so idle Yesterday / This-week rows would
+ * otherwise vanish until a later successful scan (#73847, #88528).
+ *
+ * Successful profiles are left alone: their incoming page is still authoritative.
+ */
+export function carryForwardFailedProfileSessions(
+  previous: SessionInfo[],
+  incoming: SessionInfo[],
+  errors: Array<{ profile?: string; error?: string }> | undefined | null
+): SessionInfo[] {
+  if (!errors?.length || previous.length === 0) {
+    return incoming
+  }
+
+  const failed = new Set(errors.map(error => (error.profile ?? '').trim() || 'default'))
+  const incomingIds = new Set(incoming.map(sessionListIdentity))
+  const carried: SessionInfo[] = []
+
+  for (const session of previous) {
+    if (!failed.has(sidebarProfileKey(session)) || incomingIds.has(sessionListIdentity(session))) {
+      continue
+    }
+
+    carried.push(session)
+  }
+
+  if (carried.length === 0) {
+    return incoming
+  }
+
+  // Incoming-first concat parks the failed profile at the tail of an
+  // all-profiles list. Re-rank by the same recency key the backend uses.
+  const recency = (session: SessionInfo): number => Math.max(session.last_active || 0, session.started_at || 0)
+
+  return [...incoming, ...carried].sort((a, b) => recency(b) - recency(a))
+}
+
+/** Keep previous per-profile sidebar meta for profiles whose slice failed.
+ *
+ *  A failed scan returns `{}` / falsey truncated flags. Applying those
+ *  would zero usage and hide Load more under a list we just carried forward.
+ */
+export function keepFailedProfileMeta<T>(
+  previous: Record<string, T>,
+  incoming: Record<string, T>,
+  errors: Array<{ profile?: string; error?: string }> | undefined | null
+): Record<string, T> {
+  if (!errors?.length) {
+    return incoming
+  }
+
+  const next = { ...incoming }
+
+  for (const error of errors) {
+    const key = (error.profile ?? '').trim() || 'default'
+
+    if (Object.prototype.hasOwnProperty.call(previous, key)) {
+      next[key] = previous[key]
+    } else {
+      delete next[key]
+    }
+  }
+
+  return next
+}
+
 /** Raise a session in recents on user send (before stream / turn resolve). */
 export function touchSessionActivity(
   sessionId: string | null | undefined,
@@ -694,6 +793,44 @@ export const $messagingPlatformTotals = atom<Record<string, number>>({})
 export const $messagingTruncated = atom<boolean>(false)
 
 /**
+ * Ownership stubs for UNLISTED draft tiles (the tab-strip "+" / project
+ * sidebar "+" with `listed: false`, see `openNewSessionTile`). A brand-new
+ * backend session is in-memory only until its first turn persists a row, so
+ * these drafts have no row in any sidebar slice — yet the tile's immediate
+ * `session.resume` must still name the backend that minted them. Without a
+ * stub, a draft minted on the legacy ambient route (null owner route: local
+ * source + named profile) records its owner NOWHERE — no tile route, no hint,
+ * no row — and every session-scoped RPC fails closed with
+ * SessionOwnerResolutionError on multi-profile installs (#102792).
+ *
+ * Stubs carry the SAME owner stamps an optimistic row would (ambient profile
+ * when the create was unrouted, exact connection tag when routed) but live
+ * outside $sessions so the drafts stay out of the visible sidebar list. Real
+ * rows always outrank stubs (shadow-filtered below); the first send replaces
+ * the stub via the normal optimistic upsert.
+ */
+export const $unlistedSessionOwnerRows = atom<SessionInfo[]>([])
+
+/** Drop stubs shadowed by a real row `id` already present in `rows`. Returns
+ *  `rows` untouched (same reference) when there is nothing to append, so
+ *  per-list memo caches keyed on the array identity still hit. */
+function withUnlistedOwnerStubs(rows: SessionInfo[], stubs: readonly SessionInfo[]): SessionInfo[] {
+  if (!stubs.length) {
+    return rows
+  }
+
+  const listed = new Set<string>()
+
+  for (const row of rows) {
+    listed.add(row.id)
+  }
+
+  const visible = stubs.filter(stub => !listed.has(stub.id))
+
+  return visible.length ? [...rows, ...visible] : rows
+}
+
+/**
  * Every session row the renderer knows, for OWNER lookups. The sidebar splits
  * its fetch into three source-scoped slices ($sessions / $cronSessions /
  * $messagingSessions), and each slice's rows carry the same `profile` (and,
@@ -703,19 +840,22 @@ export const $messagingTruncated = atom<boolean>(false)
  * install failed closed with SessionOwnerResolutionError even though the row
  * naming its owner was already in memory, one atom over. Concatenation order
  * mirrors lookup priority: recents first (they can carry fresher optimistic
- * connection tags), then the cron and messaging slices.
+ * connection tags), then the cron and messaging slices. Unlisted-draft stubs
+ * ($unlistedSessionOwnerRows) ride last: a real row for the same id always
+ * shadows its stub, so a listed session never resolves off a stale stamp.
  */
 export function ownerLookupSessionRows(): SessionInfo[] {
   const cron = $cronSessions.get()
   const messaging = $messagingSessions.get()
+  const stubs = $unlistedSessionOwnerRows.get()
 
   // Recents-only stays the common case; keep its array identity (no copy) so
   // per-list memo caches (lineageAliases) keyed on the reference still hit.
   if (!cron.length && !messaging.length) {
-    return $sessions.get()
+    return withUnlistedOwnerStubs($sessions.get(), stubs)
   }
 
-  return [...$sessions.get(), ...cron, ...messaging]
+  return withUnlistedOwnerStubs([...$sessions.get(), ...cron, ...messaging], stubs)
 }
 
 // Whether a profile's last session page was CAPPED by the request limit, keyed
@@ -1078,11 +1218,21 @@ export const setConnection = (next: Updater<HermesConnection | null>) => {
   // keeps the current scope.
   rescopeConnectionScopedStores($connection.get())
   syncCronModelImpactConnection($connection.get())
+
+  // Null descriptor = reconnect blip; keep the last resolved mode (same
+  // contract as rescopeConnectionScopedStores above).
+  const mode = $connection.get()?.mode
+
+  if (mode) {
+    setApiRequestLocalMode(mode === 'local')
+  }
+
   rescopeComposerSelection(composerScopeForConnection($connection.get()))
 }
 
 export const setGatewayState = (next: Updater<ConnectionState>) => updateAtom($gatewayState, next)
 export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
+export const setUnlistedSessionOwnerRows = (next: Updater<SessionInfo[]>) => updateAtom($unlistedSessionOwnerRows, next)
 export const setCronSessions = (next: Updater<SessionInfo[]>) => updateAtom($cronSessions, next)
 export const setMessagingSessions = (next: Updater<SessionInfo[]>) => updateAtom($messagingSessions, next)
 export const setMessagingPlatformTotals = (next: Updater<Record<string, number>>) =>
@@ -1183,6 +1333,16 @@ export const requestSessionResume = (sessionId: string, ownerRoute?: SessionOwne
   const id = sessionId.trim()
 
   if (!id) {
+    return
+  }
+
+  // A chat on its way out must never be re-selected. The push path
+  // (markRuntimeGone) and the RPC seam both queue a resume off a 4001, and an
+  // idle reap can land one in the same tick as a delete — that queued request
+  // then resumes a tombstoned id, 404s, and toasts "Resume failed / Session
+  // not found" for a chat the user deliberately removed. Filtering at the
+  // producer means no consumer has to re-derive "is this id doomed".
+  if (isSessionRemovalPending(id)) {
     return
   }
 
@@ -1349,16 +1509,19 @@ export const setNewChatWorkspaceTarget = (next: NewChatWorkspaceTarget): number 
 }
 
 export const workspaceCwdForNewSession = (): string => {
-  if ($connection.get()?.mode === 'remote') {
-    return getRememberedWorkspaceCwd()
-  }
-
   // A bare new chat starts DETACHED — no inherited cwd, so the composer's coding
   // rail (which keys off $currentCwd) shows no branch and the first message runs
   // in the gateway's default rather than silently in the last repo you touched.
   // Only an explicit default-project-dir setting pre-attaches. Entering a
   // project/worktree attaches its cwd directly (startSessionInWorkspace), so the
   // "remember where I was when I'm in a project" case is unaffected.
+  //
+  // This must behave identically in local and remote mode: the remembered CWD
+  // under the remote-keyed workspaceCwdKey() can be from a *different* project
+  // than the one the user is currently scoped into, and bare-new-session in
+  // the wrong workspace was the #57911 symptom. Resume/restore still reads
+  // the remembered cwd via ensureDefaultWorkspaceCwd (where it remains
+  // remote-keyed and intentionally sticky).
   return getConfiguredDefaultProjectDir()
 }
 

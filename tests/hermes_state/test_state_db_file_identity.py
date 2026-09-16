@@ -190,3 +190,110 @@ def test_divert_session_transcript_jsonl_appends(tmp_path, monkeypatch):
 def _stat_changed(path: Path, recorded) -> bool:
     st = os.stat(path)
     return (st.st_dev, st.st_ino) != recorded
+
+
+# ---------------------------------------------------------------------------
+# Lock safety of the identity probe itself (#100368 / howtocorrupt §2.2).
+#
+# _read_sqlite_application_id runs on EVERY write against the LIVE state.db.
+# Before the _pread_db_header fix it did open("rb")/read/close, and that
+# close() cancelled every POSIX advisory lock this process held on the file
+# — including the WAL-mode DMS shared lock of the writer connection.  These
+# tests measure the actual kernel lock table (/proc/locks), so they are
+# Linux-only; the hazard itself is POSIX-only.
+# ---------------------------------------------------------------------------
+
+def _posix_locks_on(paths):
+    """Set of (inode, type, mode, start, end) locks held by this pid."""
+    import sys as _sys
+    if not _sys.platform.startswith("linux"):
+        pytest.skip("lock-table probe requires /proc/locks (Linux)")
+    inodes = {}
+    for p in paths:
+        try:
+            inodes[os.stat(p).st_ino] = str(p)
+        except OSError:
+            continue
+    pid = os.getpid()
+    held = set()
+    for line in Path("/proc/locks").read_text().splitlines():
+        parts = line.split()
+        try:
+            lpid = int(parts[4])
+            ino = int(parts[5].split(":")[2])
+        except (IndexError, ValueError):
+            continue
+        if lpid == pid and ino in inodes:
+            held.add((ino, parts[1], parts[3], parts[6], parts[7]))
+    return held
+
+
+def test_identity_probe_does_not_cancel_live_posix_locks(tmp_path):
+    """The on-write header probe must not drop the writer's DMS lock."""
+    from hermes_state import _read_sqlite_application_id
+
+    live = tmp_path / "state.db"
+    db = _make_db(live, "probe-sess", "seed")
+    try:
+        sidecars = [live, Path(str(live) + "-shm")]
+        # Hold an open write transaction: that is when the connection holds
+        # POSIX range locks on the main db file, and exactly the state a
+        # concurrent _raise_if_db_replaced probe (another thread, same
+        # process) can destroy.
+        db._conn.execute("BEGIN IMMEDIATE")
+        db._conn.execute(
+            "UPDATE sessions SET source = source WHERE id = 'probe-sess'"
+        )
+        before = _posix_locks_on(sidecars)
+        assert before, "expected in-transaction WAL connection to hold POSIX locks"
+
+        for _ in range(3):
+            _read_sqlite_application_id(live)
+
+        after = _posix_locks_on(sidecars)
+        db._conn.rollback()
+        lost = before - after
+        assert not lost, (
+            "identity probe cancelled POSIX locks held by the live "
+            f"connection (howtocorrupt §2.2): {lost}"
+        )
+        # The decisive check: the WAL DMS shared lock on the MAIN db file
+        # must survive.  With the pre-fix open/read/close probe the close()
+        # cancels it (it is already gone by the time the connection has run
+        # its first identity check in __init__), leaving other processes
+        # free to treat this writer as dead and rerun WAL-index recovery
+        # underneath it.
+        db_ino = os.stat(live).st_ino
+        main_db_locks = {lk for lk in after if lk[0] == db_ino}
+        assert main_db_locks, (
+            "live writer connection holds no POSIX lock on state.db itself — "
+            "the WAL DMS lock was cancelled by a raw open/close probe "
+            "(howtocorrupt §2.2)"
+        )
+        # The connection must still be able to commit.
+        db.append_message("probe-sess", role="user", content="post-probe")
+    finally:
+        db.close()
+
+
+def test_identity_probe_still_detects_replacement_after_fd_cache(tmp_path):
+    """The cached-fd probe rebinds when the path names a new inode."""
+    from hermes_state import _read_sqlite_application_id
+
+    live = tmp_path / "state.db"
+    other = tmp_path / "other.db"
+    db = _make_db(live, "live-sess", "original")
+    _require_identity(db)
+    first = _read_sqlite_application_id(live)  # populates the fd cache
+    db.close()
+
+    alt = _make_db(other, "other-sess", "replacement")
+    alt.close()
+    os.replace(other, live)
+
+    second = _read_sqlite_application_id(live)
+    assert second is not None
+    assert second != first, (
+        "probe kept reading the retired inode instead of rebinding to the "
+        "replacement file"
+    )

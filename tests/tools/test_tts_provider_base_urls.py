@@ -32,8 +32,10 @@ def _fake_elevenlabs_environment_module(captured: dict):
 
 
 def test_elevenlabs_no_base_url_uses_sdk_default_environment():
-    assert tts._elevenlabs_environment_kwargs({}) == {}
-    assert tts._elevenlabs_environment_kwargs({"base_url": ""}) == {}
+    from tools.tts_tool_providers import _elevenlabs_environment_kwargs
+
+    assert _elevenlabs_environment_kwargs({}) == {}
+    assert _elevenlabs_environment_kwargs({"base_url": ""}) == {}
 
 
 # ── Mistral: tts.mistral.base_url → SDK server_url ────────────────────────
@@ -60,7 +62,7 @@ def test_mistral_no_base_url_omits_server_url(tmp_path):
 
     out = tmp_path / "out.mp3"
     with patch.object(tts, "_import_mistral_client", return_value=_FakeMistral), \
-         patch.object(tts, "get_env_value", lambda k, *a: "key" if k == "MISTRAL_API_KEY" else None):
+         patch("hermes_cli.config.get_env_value", lambda k, *a: "key" if k == "MISTRAL_API_KEY" else None):
         tts._generate_mistral_tts("hi", str(out), {"mistral": {}})
 
     assert "server_url" not in captured

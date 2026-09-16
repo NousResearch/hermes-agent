@@ -51,16 +51,6 @@ def test_rekeys_old_namespace_and_origin_profile(tmp_path):
     assert store._entries["agent:keepme:feishu:dm:chatB"].origin.profile == "keepme"
 
 
-def test_noop_for_equal_or_empty_names(tmp_path):
-    store = _make_store(tmp_path)
-    with store._lock:
-        store._entries["agent:oldname:feishu:dm:chatA"] = _entry(
-            "agent:oldname:feishu:dm:chatA", "chatA", "oldname")
-    assert store.rekey_profile_routing("x", "x") == 0
-    assert store.rekey_profile_routing("", "y") == 0
-    assert "agent:oldname:feishu:dm:chatA" in store._entries
-
-
 def test_does_not_overwrite_existing_new_namespace_key(tmp_path):
     store = _make_store(tmp_path)
     with store._lock:

@@ -440,7 +440,7 @@ def _profile_migrate_identity(args):
     """Retry the identity migration of a rename that already completed. Exits non-zero when a
     live gateway would not migrate (it still owns the routing index in memory), or when a
     database rejected the rewrite (collision, lock, partial failure)."""
-    from hermes_cli.profiles import migrate_profile_identity
+    from hermes_cli.profile_identity import migrate_profile_identity
     try:
         migrated = migrate_profile_identity(args.old_name, args.new_name)
     except (ValueError, FileNotFoundError) as e:

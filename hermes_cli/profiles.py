@@ -1867,110 +1867,13 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # 6. Migrate profile-name-keyed session/routing state (session keys, profile_name, heartbeats,
     # delivery + routing index) from the old name to the new one. A stale ``agent:<old>:*`` routing
     # key otherwise resolves to a profile that no longer exists on every inbound event.
+    from hermes_cli.profile_identity import _migrate_profile_identity
     _migrate_profile_identity(old_canon, new_canon, live_mux)
 
     # 7. Hot-serve the renamed profile now (mirrors create; a missed signal only delays it).
     if live_mux:
         _notify_multiplexer(new_canon)
     return new_dir
-
-
-def migrate_profile_identity(old_name: str, new_name: str) -> bool:
-    """Retry the session/routing identity migration of a rename that already completed.
-
-    ``rename_profile`` runs the migration itself; this is the standalone retry behind
-    ``hermes profile migrate-identity <old> <new>`` for when that attempt failed. The rename
-    cannot simply be repeated — ``profiles/<old>`` is gone — and the identity to migrate is read
-    from the DB rows that still name *old*, so only the new profile has to exist here.
-
-    A live multiplexer holds the routing index in memory and therefore stays the owner of the
-    migration (the CLI delegates to its control verb); with no live multiplexer the durable
-    rewrite is safe because nothing else holds the store. Idempotent: re-running a completed
-    migration succeeds with nothing left to rekey. Returns True when the identity was migrated,
-    False when a live gateway would not do it — the caller reports that as a failure.
-    """
-    old_canon = _canon_valid(old_name)
-    new_canon = _canon_valid(new_name)
-    if "default" in (old_canon, new_canon):
-        raise ValueError("Identity migration applies to named profiles only.")
-    if not get_profile_dir(new_canon).is_dir():
-        raise _unknown_profile_error(new_canon)
-    return _migrate_profile_identity(old_canon, new_canon, _live_default_multiplexer())
-
-
-def _control_answer_failure(answer) -> str:
-    """Why a control-socket answer is not a success. Keeps the raw answer when the payload carries
-    no reason field, so a malformed or old-gateway response stays diagnosable instead of
-    collapsing into a generic warning."""
-    if isinstance(answer, dict):
-        failure = answer.get("error") or answer.get("message") or answer.get("detail")
-        return str(failure) if failure else repr(answer)
-    if answer is not None:
-        return repr(answer)
-    return "no response from gateway control socket"
-
-
-def _gateway_accepts_profile_identity_verb(root: Path) -> bool:
-    """True when the gateway at *root* answers a verb it has always had. Distinguishes a failed
-    migration verb caused by an older gateway process from one caused by no gateway at all."""
-    try:
-        from gateway.control_socket import identify_gateway
-        return identify_gateway(root) is not None
-    except Exception:
-        return False
-
-
-def _migrate_profile_identity(old_canon: str, new_canon: str, live_mux: bool) -> bool:
-    """Rekey renamed-profile identity without racing a live gateway's in-memory routing index.
-
-    Returns True when the identity was migrated — by the gateway's control verb, or by this
-    process's durable rewrite when no gateway holds the store — and False when a live gateway did
-    not accept it. Never fatal to the rename, which has already happened by this point.
-    """
-    if live_mux:
-        from hermes_constants import get_default_hermes_root
-        root = get_default_hermes_root()
-        try:
-            from gateway.control_socket import migrate_gateway_profile_identity
-            answer = migrate_gateway_profile_identity(root, old_canon, new_canon)
-        except Exception as exc:
-            reason = f"{type(exc).__name__}: {exc}"
-        else:
-            if isinstance(answer, dict) and answer.get("ok") is True:
-                return True
-            reason = _control_answer_failure(answer)
-            if answer is None and _gateway_accepts_profile_identity_verb(root):
-                reason += (" — the gateway is running but does not implement "
-                           "'migrate-profile-identity' (an older process than this CLI)")
-        print(
-            "⚠ Profile was renamed, but the live gateway could not migrate session identity"
-            f" ({reason}). Restart the gateway, then run:\n"
-            f"    hermes profile migrate-identity {old_canon} {new_canon}",
-            file=sys.stderr)
-        return False
-
-    from hermes_state_registry import acquire, release_or_close
-    from hermes_constants import get_default_hermes_root
-    root = get_default_hermes_root()
-    migrated = True
-    for db_path in (root / "state.db", get_profile_dir(new_canon) / "state.db"):
-        if not db_path.exists():
-            continue
-        db = None
-        try:
-            db = acquire(db_path)
-            db.rekey_profile_state(old_canon, new_canon)
-        except Exception as exc:
-            migrated = False
-            print(
-                f"⚠ Profile was renamed, but identity migration failed for {db_path}: "
-                f"{type(exc).__name__}: {exc}",
-                file=sys.stderr)
-        finally:
-            if db is not None:
-                with contextlib.suppress(Exception):
-                    release_or_close(db)
-    return migrated
 
 
 # Profile env resolution (called from _apply_profile_override)

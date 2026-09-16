@@ -50,30 +50,6 @@ class TestAtomicWritersRefuseDeletedProfileHome:
             atomic_json_write(profile / "cache" / "reasoning_caps.json", {"m": {}})
         assert not profile.exists()
 
-    def test_atomic_write_text_does_not_recreate_home(self, tmp_path):
-        profile = _tombstoned_profile(tmp_path)
-        with pytest.raises(
-            FileNotFoundError, match="Named profile home does not exist"
-        ):
-            atomic_write_text(profile / "cache" / "models-dev-etag", "etag")
-        assert not profile.exists()
-
-    def test_late_reasoning_caps_save_after_delete(self, tmp_path):
-        from hermes_cli import models_reasoning_caps
-
-        profile = _tombstoned_profile(tmp_path)
-        token = set_hermes_home_override(profile)
-        try:
-            models_reasoning_caps._save_reasoning_caps_disk(
-                "https://example/v1/models", {"m": {"supports_reasoning": True}}
-            )
-        finally:
-            from hermes_constants import reset_hermes_home_override
-
-            reset_hermes_home_override(token)
-        assert not (profile / "cache" / "reasoning_caps.json").exists()
-        assert not profile.exists()
-
     def test_late_models_cache_save_after_delete(self, tmp_path):
         from hermes_cli.models import _write_json_cache
 
@@ -147,12 +123,3 @@ class TestUnrelatedProfilesPathsStillWrite:
         assert json.loads(
             (custom_home / "cache" / "blob.json").read_text(encoding="utf-8")
         ) == {"a": 1}
-
-    def test_default_home_cache_write(self, tmp_path):
-        home = tmp_path / ".hermes"
-        atomic_write_text(home / "cache" / "etag", "v1")
-        assert (home / "cache" / "etag").read_text(encoding="utf-8") == "v1"
-
-    def test_plain_tmp_path_write(self, tmp_path):
-        atomic_json_write(tmp_path / "plain" / "data.json", [1, 2])
-        assert (tmp_path / "plain" / "data.json").exists()

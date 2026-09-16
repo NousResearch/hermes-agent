@@ -993,33 +993,6 @@ class TestRenameProfile:
         assert "agent:newname:feishu:dm:chatA" in routing
         root_db2.close()
 
-    def test_migrate_identity_reports_the_raw_answer_and_exits_nonzero(self, profile_env, capsys):
-        """A live gateway that answers with something unusable must fail loudly — exit non-zero,
-        name the retry command, and quote the raw answer (a non-dict payload used to print a
-        reason-less warning). The live gateway keeps ownership: no direct DB rewrite."""
-        from hermes_cli.profile_cmd import cmd_profile
-        from argparse import Namespace
-        create_profile("oldname", no_alias=True)
-        create_profile("newname", no_alias=True)  # the rename already happened; only <new> must exist
-
-        with patch("hermes_cli.profiles._live_default_multiplexer", return_value=True), \
-             patch("gateway.control_socket.migrate_gateway_profile_identity",
-                   return_value="<html>not a control answer</html>"), \
-             patch("hermes_state_registry.acquire") as acquire:
-            with pytest.raises(SystemExit) as excinfo:
-                cmd_profile(Namespace(profile_action="migrate-identity",
-                                      old_name="oldname", new_name="newname"))
-
-        assert excinfo.value.code != 0
-        err = capsys.readouterr().err
-        assert "not a control answer" in err
-        assert "hermes profile migrate-identity oldname newname" in err
-        acquire.assert_not_called()
-
-
-# ===================================================================
-# TestExportImport
-# ===================================================================
 
 class TestExportImport:
     """Tests for export_profile() / import_profile()."""

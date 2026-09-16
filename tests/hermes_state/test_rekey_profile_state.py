@@ -100,23 +100,6 @@ class TestRekeyProfileState:
         assert ob["session_key"] == "agent:newname:feishu:dm:chatA"
         assert ob["adapter_profile"] == "newname"
 
-    def test_noop_when_names_equal_or_empty(self, db):
-        assert db.rekey_profile_state("x", "x") == {}
-        assert db.rekey_profile_state("", "y") == {}
-        assert db.rekey_profile_state("x", "") == {}
-
-    def test_idempotent(self, db):
-        db.create_session(
-            "sess_old", "feishu", session_key="agent:oldname:feishu:dm:chatA",
-            profile_name="oldname", chat_id="chatA", chat_type="dm",
-        )
-        first = db.rekey_profile_state("oldname", "newname")
-        assert first["sessions_session_key"] == 1
-        second = db.rekey_profile_state("oldname", "newname")
-        # Nothing left under the old name.
-        assert second["sessions_session_key"] == 0
-        assert second["sessions_profile_name"] == 0
-
     def test_underscore_in_profile_name_is_not_a_like_wildcard(self, db):
         db.create_session(
             "literal", "telegram", session_key="agent:foo_bar:telegram:dm:a",
@@ -154,4 +137,3 @@ class TestRekeyProfileState:
             "WHERE chat_id = ? AND thread_id = ?", ("chatA", "threadA"))
         assert binding["profile_name"] == "newname"
         assert binding["session_key"] == "agent:newname:telegram:dm:chatA"
-

@@ -24,6 +24,8 @@ def test_explicit_unblock_supersedes_pr_comment_but_not_new_publication(board):
         assert kb.unblock_task(conn, tid)
         assert kbd.check_respawn_guard(conn, tid) is None
         assert kbd.respawn_guard_diagnostic(conn, tid, 'ready') is None
+        kb.add_comment(conn, tid, author='operator', body='Please use the PR finding as context')
+        assert kbd.check_respawn_guard(conn, tid) is None
         # All operations may have the same second timestamp; event order matters.
         kb.add_comment(conn, tid, author='worker', body='Opened https://github.com/example/repo/pull/124')
         assert kbd.check_respawn_guard(conn, tid) == 'active_pr'

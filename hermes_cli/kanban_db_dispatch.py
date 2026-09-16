@@ -1450,7 +1450,8 @@ def check_respawn_guard(
     latest_event = conn.execute(
         "SELECT kind FROM task_events WHERE task_id = ? "
         "AND kind IN ('commented', 'status', 'promoted', 'promoted_manual', 'unblocked', 'reclaimed', 'changes_requested') "
-        "ORDER BY id DESC LIMIT 1", (task_id,),
+        "AND (kind != 'commented' OR json_extract(payload, '$.author') IN (?, 'worker')) "
+        "ORDER BY id DESC LIMIT 1", (task_id, row["assignee"]),
     ).fetchone()
     if latest_event is not None and latest_event["kind"] != "commented":
         return None

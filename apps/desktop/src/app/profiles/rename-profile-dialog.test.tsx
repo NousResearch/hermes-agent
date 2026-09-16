@@ -62,6 +62,11 @@ it('retires the old-name local gateways before issuing the rename', async () => 
 
   await waitFor(() => expect(renameProfile).toHaveBeenCalledWith('selena', 'renamed'))
   expect(retireLocalProfileGateways).toHaveBeenCalledWith('selena')
+  expect(stageProfileRenameState).toHaveBeenCalledWith('selena', 'renamed', {
+    connectionId: 'local',
+    oldNavigationSuffix: '',
+    newNavigationSuffix: ''
+  })
   expect(order).toEqual(['retire', 'rename'])
 })
 

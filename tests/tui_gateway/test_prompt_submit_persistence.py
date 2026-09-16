@@ -92,3 +92,31 @@ def test_compute_host_dispatch_transfers_the_durable_user_marker(monkeypatch):
     assert "prepersisted_user_message" not in server._compute_host_turn_frame(
         "next", "sid", session, "queued second turn"
     )
+
+
+def test_compute_host_dispatch_failure_restores_the_durable_user_marker(monkeypatch):
+    marker = {
+        "role": "user",
+        "content": "fall back inline",
+        "timestamp": 123.0,
+        _DB_PERSISTED_MARKER: True,
+    }
+    session = {
+        "_prepersisted_user_message": marker,
+        "attached_images": [],
+        "history": [],
+        "history_lock": threading.Lock(),
+        "session_key": "stored-first-turn",
+    }
+
+    class _FailingSupervisor:
+        def submit_turn(self, frame, *, on_complete):
+            raise OSError("pipe closed")
+
+    monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", lambda: {})
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg: _FailingSupervisor())
+
+    response = server._submit_prompt_to_compute_host("rid", "sid", session, "fall back inline")
+
+    assert response["error"]["code"] == 5019
+    assert session["_prepersisted_user_message"] is marker

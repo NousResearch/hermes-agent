@@ -98,6 +98,26 @@ describe('rehydrateLiveSessionStatuses — seeding a turn the renderer never saw
     expect($unreadFinishedSessionIds.get()).toContain('stored-race')
   })
 
+  it('retries absence reconciliation after a newer live event', () => {
+    rehydrateLiveSessionStatuses({
+      sessions: [{ id: 'runtime-race', session_key: 'stored-race', status: 'working' }]
+    })
+    const stateAtRequest = $sessionStates.get()
+
+    publishSessionState('runtime-race', {
+      ...createClientSessionState('stored-race'),
+      busy: true,
+      sawAssistantPayload: true,
+      turnLive: true
+    })
+
+    rehydrateLiveSessionStatuses({ sessions: [] }, Date.now(), 'default', stateAtRequest)
+    expect($workingSessionIds.get()).toContain('stored-race')
+
+    rehydrateLiveSessionStatuses({ sessions: [] })
+    expect($workingSessionIds.get()).not.toContain('stored-race')
+  })
+
   it('shows the spinner when a runtime id is recycled onto a new stored session', () => {
     // A respawned backend can mint the same runtime id for a different stored
     // session. The row for the NEW stored id must light up, not the stale one.

@@ -16,6 +16,7 @@ Hermes integrates with Buzz three ways. Pick by where Hermes runs and what you w
 | **Hermes runs** | On your desktop, launched by Buzz | On a server, launched by `buzz-acp` | In your own gateway, alongside Telegram/Discord/etc. |
 | **Best for** | Trying Hermes inside Buzz Desktop with zero config | A hosted agent identity when Buzz owns the transport | Full Hermes: memory, skills, approvals, cron, sessions |
 | **Inbound** | ACP stdio | ACP stdio (via relay WebSocket) | NIP-42-authenticated Nostr WebSocket (poll fallback) |
+| **Owner Activity** | Managed by Desktop | `BUZZ_ACP_RELAY_OBSERVER` | Optional encrypted native Gateway Activity over the authenticated WebSocket |
 | **Setup** | Automatic discovery | `buzz-acp` env vars | `hermes gateway setup` → Buzz |
 
 ## ① Buzz Desktop managed runtime
@@ -36,7 +37,7 @@ The spawned Hermes uses the same config, credentials, memory, and skills as `her
 
 ## ③ Native gateway platform (recommended for full Hermes)
 
-The bundled `buzz` platform plugin makes Buzz a normal Hermes messaging platform — channels, DMs, mention gating, threaded replies, reactions, images, and cron delivery (`deliver=buzz`), with Hermes' own approvals, memory, and session management intact. Inbound arrives over a persistent NIP-42-authenticated Nostr WebSocket (dependency-free BIP-340 signing) with automatic fallback to CLI polling; outbound goes through the `buzz` CLI.
+The bundled `buzz` platform plugin makes Buzz a normal Hermes messaging platform — channels, DMs, mention gating, threaded replies, reactions, images, and cron delivery (`deliver=buzz`), with Hermes' own approvals, memory, and session management intact. Inbound arrives over a persistent NIP-42-authenticated Nostr WebSocket (dependency-free BIP-340 signing) with automatic fallback to CLI polling; outbound goes through the `buzz` CLI. Native Gateway turns can also publish optional, owner-encrypted NIP-AO Activity on that authenticated WebSocket, without routing execution through ACP.
 
 ```bash
 hermes gateway setup   # pick Buzz

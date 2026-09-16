@@ -71,9 +71,10 @@ class _ExecApprovalDeclined(RuntimeError):
 class TurnRunner:
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
 
-    def __init__(self, runner: "GatewayRunner", ctx: TurnContext) -> None:
+    def __init__(self, runner: "GatewayRunner", ctx: TurnContext, observer=None) -> None:
         self._runner = runner
         self._ctx = ctx
+        self._observer = observer
 
     # ── shared thread→loop plumbing ─────────────────────────────────────────────────────────
 
@@ -753,6 +754,43 @@ class TurnRunner:
 
     # ── ID-bearing lifecycle callbacks (agent thread) ───────────────────────────────────────
 
+    @staticmethod
+    def _compose_callbacks(existing, *callbacks):
+        """Compose structured callbacks with sibling failure isolation."""
+
+        if getattr(existing, "_gateway_turn_fanout", False):
+            existing = getattr(existing, "_gateway_prior_callback", None)
+        new_callbacks = [callback for callback in callbacks if callable(callback)]
+        if not new_callbacks:
+            return existing if callable(existing) else None
+        ordered = [callback for callback in (existing, *new_callbacks) if callable(callback)]
+        if not ordered:
+            return None
+
+        def fanout(*args, **kwargs):
+            for callback in ordered:
+                try:
+                    callback(*args, **kwargs)
+                except Exception:
+                    logger.debug("Structured tool callback failed open", exc_info=True)
+
+        fanout._gateway_turn_fanout = True
+        fanout._gateway_prior_callback = existing
+        return fanout
+
+    def wire_structured_tool_callbacks(self, agent) -> None:
+        """Add observation without replacing current native/voice callbacks."""
+        observer = self._observer
+        active = observer is not None and observer.active
+        agent.tool_start_callback = self._compose_callbacks(
+            getattr(agent, "tool_start_callback", None),
+            observer.tool_started if active else None,
+        )
+        agent.tool_complete_callback = self._compose_callbacks(
+            getattr(agent, "tool_complete_callback", None),
+            observer.tool_finished if active else None,
+        )
+
     def voice_ack_callback(self, call_id, tool_name, args):
         """tool_start_callback: speak a one-time ack in the voice channel."""
         ctx = self._ctx
@@ -1224,6 +1262,8 @@ class TurnRunner:
             if (ctx._voice_ack_guild[0] is not None or ctx._native_slack_task_cards) else None
         )
         agent.tool_complete_callback = ctx.native_tool_complete_callback if ctx._native_slack_task_cards else None
+        if getattr(self, "_observer", None) is not None:
+            self.wire_structured_tool_callbacks(agent)
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
         agent.stream_delta_callback = stream_delta_cb
         agent.interim_assistant_callback = interim_assistant_cb if want_interim_messages else None

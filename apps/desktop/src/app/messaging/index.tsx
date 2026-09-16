@@ -22,8 +22,8 @@ import {
   type MessagingPlatformUpdate,
   type PairingUser,
   revokePairing,
-  testTeamsPlayground,
   type TelegramOnboardingApplyResponse,
+  testTeamsPlayground,
   updateMessagingPlatform
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'

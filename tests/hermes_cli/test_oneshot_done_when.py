@@ -110,3 +110,31 @@ class TestRunDoneWhenLoop:
         assert result["done_when_passed"] is False
         assert len(calls) == 1
         assert agent.prompts == []
+
+    def test_repair_turn_budget_label_counts_down(self, monkeypatch):
+        """Regression: the `repair turn(s) left` label must report turns REMAINING.
+
+        A review caught that the message was built from `retries - attempts_left`
+        (turns USED, counting up 1,2,3) after the decrement — telling the repair
+        agent "3 left" on its final turn, exactly backwards as a budget signal.
+        Under the old code the first prompt said "1 repair turn(s) left", so this
+        test asserting "2 left" could not have passed before the fix.
+        """
+        monkeypatch.setattr(
+            "hermes_cli.oneshot._run_done_when_gate",
+            lambda command: (False, 1, "still red"),
+        )
+        agent = _StubAgent(
+            [
+                {"final_response": "a1"},
+                {"final_response": "a2"},
+                {"final_response": "a3"},
+            ]
+        )
+        result = {"final_response": "original"}
+        _run_done_when_loop(agent, result, "pytest -q", retries=3)
+        assert len(agent.prompts) == 3
+        budgets = [p.split("repair turn(s) left")[0].rsplit(", ", 1)[1].strip() for p in agent.prompts]
+        assert budgets == ["2", "1", "0"], f"expected countdown 2,1,0 — got {budgets}"
+        for prompt in agent.prompts:
+            assert "still red" in prompt and "pytest -q" in prompt

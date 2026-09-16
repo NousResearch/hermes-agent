@@ -665,7 +665,7 @@ def _run_done_when_loop(agent, result: dict, command: str, retries: int) -> None
         attempts_left -= 1
         feedback = (
             f"[done-when gate failed — exit {exit_code}, "
-            f"{retries - attempts_left} repair turn(s) left]\n"
+            f"{attempts_left} repair turn(s) left]\n"
             f"$ {command}\n\n{tail or '(no output)'}\n\n"
             "The command above must exit 0 before this run counts as done. "
             "Fix the failure it reports; do not merely explain it."

@@ -30,11 +30,6 @@ suggest:
     - wireframe
   hosts:
     - figma.com
-  applications: []
-  examples:
-    - Turn a Figma frame into a working UI
-    - Extract colors and spacing from a Figma design
-    - Create a user-flow diagram in FigJam
 
 post_install: |
   On first connection Hermes opens a browser to authorize with Figma

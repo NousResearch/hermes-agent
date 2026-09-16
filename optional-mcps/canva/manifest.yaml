@@ -26,16 +26,8 @@ suggest:
     - design
   hosts:
     - canva.com
-  applications: []
-  examples:
-    - Create a Canva presentation from my outline
-    - Design a social post in Canva
-    - Export my Canva presentation as a PDF
 
 post_install: |
   On first connection Hermes opens a browser to authorize with
   Canva (or run `hermes mcp login canva`). Approve access,
   then restart the session so tools load.
-  Canva also requires client redirect-URI approval. If authorization is
-  blocked, check the integration access requirements at canva.dev/docs/mcp/;
-  installing the catalog entry does not grant Canva account or client access.

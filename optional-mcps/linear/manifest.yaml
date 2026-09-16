@@ -36,11 +36,6 @@ suggest:
     - linear
   hosts:
     - linear.app
-  applications: []
-  examples:
-    - Turn a project brief into Linear issues
-    - Summarize blockers across my Linear projects
-    - Add standup updates to my Linear issues
 
 post_install: |
   On first connection, Hermes will open a browser to authenticate with Linear.

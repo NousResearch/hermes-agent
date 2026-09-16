@@ -26,11 +26,6 @@ suggest:
     - vercel
   hosts:
     - vercel.com
-  applications: []
-  examples:
-    - Explain why my Vercel deployment failed
-    - Summarize errors from my Vercel runtime logs
-    - Check the status of my Vercel deployments
 
 post_install: |
   On first connection Hermes opens a browser to authorize with

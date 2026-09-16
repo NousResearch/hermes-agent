@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import stat
+import tempfile
 import zipfile
 from argparse import Namespace
 from pathlib import Path
@@ -53,6 +54,19 @@ def _advance_backup_clock(seconds: float = 1.1) -> None:
     else:
         shim = _backup.datetime
     shim._offset += _dt.timedelta(seconds=seconds)
+
+
+def _assert_staged_in_system_temp(staged_dirs, out_dir: Path) -> None:
+    """Every SQLite staging call must resolve to the system temp dir, never the
+    output zip's directory: the output may live in a cloud-synced folder (e.g. a
+    Drive mount), which would then upload the GB-scale staging scratch."""
+    system_tmp = Path(tempfile.gettempdir()).resolve()
+    out_resolved = Path(out_dir).resolve()
+    assert system_tmp != out_resolved, "test setup: system temp dir == output dir"
+    assert staged_dirs, "no SQLite snapshot was staged"
+    for staged in staged_dirs:
+        resolved = system_tmp if staged is None else Path(staged).resolve()
+        assert resolved == system_tmp, staged_dirs
 
 
 def _make_hermes_tree(root: Path) -> None:
@@ -254,10 +268,10 @@ class TestIterBackupFiles:
 class TestBackup:
 
 
-    def test_db_snapshots_staged_beside_output_zip(self, tmp_path, monkeypatch):
-        """SQLite staging temp files must be created on the output zip's
-        filesystem (dir=out_path.parent), NOT the system /tmp default — a
-        small tmpfs there silently drops large DBs from the backup (#35376)."""
+    def test_db_snapshots_staged_in_system_temp_dir(self, tmp_path, monkeypatch):
+        """SQLite staging temp files must be created in the system temp dir, NOT
+        beside the output zip — when the output lives in a cloud-synced folder
+        (e.g. a Drive mount), staging beside it uploads the GB-scale scratch."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         _make_hermes_tree(hermes_home)
@@ -281,14 +295,11 @@ class TestBackup:
         monkeypatch.setattr(backup_mod.tempfile, "NamedTemporaryFile", _spy)
         backup_mod.run_backup(args)
 
-        # At least one .db was staged, and every staging call targeted the
-        # output zip's directory rather than the system temp default.
-        assert staged_dirs, "no SQLite snapshot was staged"
-        assert all(d == str(out_dir) for d in staged_dirs), staged_dirs
+        _assert_staged_in_system_temp(staged_dirs, out_dir)
 
-    def test_pre_update_db_snapshots_staged_beside_output_zip(self, tmp_path, monkeypatch):
+    def test_pre_update_db_snapshots_staged_in_system_temp_dir(self, tmp_path, monkeypatch):
         """The pre-update/pre-migration zip path (_write_full_zip_backup) must
-        also stage SQLite snapshots beside its output zip, not in /tmp."""
+        also stage SQLite snapshots in the system temp dir, not beside its output."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         _make_hermes_tree(hermes_home)
@@ -311,8 +322,7 @@ class TestBackup:
         result = backup_mod._write_full_zip_backup(out_zip, hermes_home)
 
         assert result is not None
-        assert staged_dirs, "no SQLite snapshot was staged"
-        assert all(d == str(out_zip.parent) for d in staged_dirs), staged_dirs
+        _assert_staged_in_system_temp(staged_dirs, out_zip.parent)
 
 
 

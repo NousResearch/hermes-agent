@@ -517,12 +517,13 @@ def _unlink_move_restore_db(src: Path, dst: Path) -> bool:
         return False
 
 
-def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, out_path: Path) -> Optional[int]:
+def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path) -> Optional[int]:
     """Add a WAL-safe snapshot of *abs_path* to *zf*; return its byte size, or None on failure.
 
-    Staged beside the output zip: /tmp may be a small tmpfs that cannot hold large databases.
+    Staged in the system temp directory: staging beside the output zip would sync this
+    GB-scale scratch data into a cloud-synced output directory (e.g. a Drive mount).
     """
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=str(out_path.parent)) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
         tmp_db = Path(tmp.name)
     try:
         if not _safe_copy_db(abs_path, tmp_db):
@@ -534,7 +535,7 @@ def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, ou
 
 
 def _write_zip_entries(
-    zf: zipfile.ZipFile, files_to_add: List[Tuple[Path, Path]], out_path: Path,
+    zf: zipfile.ZipFile, files_to_add: List[Tuple[Path, Path]],
     *, on_db_failure, on_error, on_progress, track_bytes: bool) -> int:
     """Add every ``(abs_path, rel_path)`` to *zf*, WAL-safe for ``*.db``; return bytes archived.
 
@@ -546,7 +547,7 @@ def _write_zip_entries(
     for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
         try:
             if abs_path.suffix == ".db":
-                size = _zip_sqlite_snapshot(zf, abs_path, rel_path, out_path)
+                size = _zip_sqlite_snapshot(zf, abs_path, rel_path)
                 if size is None:
                     on_db_failure(rel_path)
                     continue
@@ -662,7 +663,7 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
     with _atomic_output_path(out_path) as archive_path, zipfile.ZipFile(
             archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         total_bytes = _write_zip_entries(
-            zf, files_to_add, out_path, on_progress=_progress, track_bytes=True,
+            zf, files_to_add, on_progress=_progress, track_bytes=True,
             on_db_failure=lambda rel: errors.append(f"{rel}: SQLite safe copy failed"),
             on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"))
         # External memory-provider state never includes ``.db`` files in practice, so a
@@ -1575,7 +1576,7 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
         with _atomic_output_path(out_path) as archive_path, zipfile.ZipFile(
                 archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
             _write_zip_entries(
-                zf, files_to_add, out_path, on_db_failure=_db_failure, track_bytes=False,
+                zf, files_to_add, on_db_failure=_db_failure, track_bytes=False,
                 on_error=lambda rel, exc: logger.debug("Skipping %s in zip backup: %s", rel, exc),
                 on_progress=lambda i: logger.info(
                     "automatic backup phase=archive status=progress completed=%d total=%d", i, len(files_to_add)))

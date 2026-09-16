@@ -2080,3 +2080,273 @@ def test_sanitation_bridge_is_status_narrow(
         assert _without_persistence_markers(returned) == [
             {"role": "user", "content": "generic salvage"}
         ]
+
+
+# ---------------------------------------------------------------------------
+# Round-6 review findings
+# ---------------------------------------------------------------------------
+
+
+def test_sanitation_missing_watermark_retains_retry(tmp_path, monkeypatch, caplog):
+    """A transient watermark-read failure must retain the validated candidate.
+
+    The engine's one-shot sanitation claim is consumed by the compress() invocation that
+    produced the candidate; if the missing-watermark refusal threw the candidate away, the
+    next attempt re-claims an invocation that can never happen again and the secret stays
+    in SQLite/FTS indefinitely.
+    """
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+    durable_before = harness.db.get_messages_as_conversation(
+        harness.agent.session_id
+    )
+
+    def _watermark_raises(session_id):
+        raise RuntimeError("transient watermark read failure")
+
+    monkeypatch.setattr(
+        harness.db, "get_active_message_watermark", _watermark_raises
+    )
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+    assert returned is harness.messages
+    assert (
+        harness.db.get_messages_as_conversation(harness.agent.session_id)
+        == durable_before
+    )
+    assert "terminal_result=refused_missing_watermark" in caplog.text
+
+    # The failure was TRANSIENT: the read recovers before the retry.
+    monkeypatch.undo()
+    harness.agent.context_compressor.current_operation = None
+    retried, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    # The retained candidate is applied WITHOUT a second engine invocation: the
+    # one-shot claim was already spent on the first attempt.
+    assert harness.agent.context_compressor.calls == 1
+    assert harness.memory.pre_compress_calls == 0
+    assert _without_persistence_markers(retried) == _without_persistence_markers(
+        harness.candidate
+    )
+    assert _without_persistence_markers(
+        harness.db.get_messages_as_conversation(harness.agent.session_id)
+    ) == _without_persistence_markers(harness.candidate)
+
+
+def test_sanitation_rejects_multimodal_control_redactions():
+    """Control fields inside content blocks are request shape, not content (round-6 finding).
+
+    ``detail`` / ``cache_control`` / media types ride along INSIDE content blocks, so the old
+    generic payload branch accepted their redaction: the placeholder text passes declared-growth
+    validation, commits durably, and the provider then rejects every replayed request. Only
+    content-bearing fields may carry placeholders. (The tool-call ``id`` leg is pinned too: the
+    new control routing must keep the structural classification it already had.)
+    """
+    secret = "abcdefghijkl"
+    placeholder = _placeholder("api_key", secret)
+
+    def _multimodal_original():
+        return [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"api_key={secret}"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "https://example.com/x.png",
+                            "detail": "high",
+                        },
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                ],
+            }
+        ]
+
+    def _apply(mutate):
+        original = _multimodal_original()
+        candidate = copy.deepcopy(original)
+        candidate[0]["content"][0]["text"] = f"api_key={placeholder}"
+        mutate(candidate[0]["content"][1])
+        assert validate_sanitation_candidate(original, candidate) is None
+
+    def _mutate_detail(part):
+        part["image_url"]["detail"] = _placeholder("api_key", "high")
+
+    def _mutate_cache_control(part):
+        part["cache_control"] = {
+            "type": "ephemeral",
+            "id": _placeholder("api_key", "ephemeral"),
+        }
+
+    def _mutate_key(part):
+        # Renaming a control KEY to a placeholder string is indistinguishable from
+        # ADDING a control field — also refused inside content parts.
+        del part["image_url"]["detail"]
+        part["image_url"][_placeholder("api_key", "high")] = "high"
+
+    for mutate in (_mutate_detail, _mutate_cache_control, _mutate_key):
+        _apply(mutate)
+
+    # Media type inside an Anthropic-style source envelope.
+    original = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": f"api_key={secret}"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "AAAA",
+                    },
+                },
+            ],
+        }
+    ]
+    media_type_redacted = copy.deepcopy(original)
+    media_type_redacted[0]["content"][0]["text"] = f"api_key={placeholder}"
+    media_type_redacted[0]["content"][1]["source"]["media_type"] = _placeholder(
+        "api_key", "image/png"
+    )
+    assert validate_sanitation_candidate(original, media_type_redacted) is None
+
+    # Tool identity stays verbatim.
+    original_tool = [
+        {
+            "role": "assistant",
+            "tool_call_id": "call-real",
+            "content": [{"type": "text", "text": f"api_key={secret}"}],
+            "tool_calls": [
+                {
+                    "id": "call-real",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                }
+            ],
+        }
+    ]
+    tool_id_redacted = copy.deepcopy(original_tool)
+    tool_id_redacted[0]["content"][0]["text"] = f"api_key={placeholder}"
+    tool_id_redacted[0]["tool_calls"][0]["id"] = _placeholder("api_key", "call-real")
+    assert validate_sanitation_candidate(original_tool, tool_id_redacted) is None
+
+
+def test_sanitation_accepts_multimodal_content_redaction_with_control_intact():
+    """The legitimate case still commits: content redacted, every control field verbatim."""
+    secret = "abcdefghijkl"
+    placeholder = _placeholder("api_key", secret)
+    original = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": f"api_key={secret}"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "https://example.com/x.png", "detail": "high"},
+                    "cache_control": {"type": "ephemeral"},
+                },
+            ],
+        }
+    ]
+    candidate = copy.deepcopy(original)
+    candidate[0]["content"][0]["text"] = f"api_key={placeholder}"
+    changes = validate_sanitation_candidate(original, candidate)
+    assert changes is not None
+    assert changes.placeholders == 1
+    assert candidate[0]["content"][1]["image_url"]["detail"] == "high"
+    assert candidate[0]["content"][1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_sanitation_e2e_purges_secret_in_row_absorbed_by_alternation_repair(
+    tmp_path,
+):
+    """E2E (round-6 finding): a resume-repaired transcript must carry merged row membership.
+
+    The durable transcript holds a user;user wedge; the repair-alternation resume merges the
+    pair into one live message. Sanitation redacts that merged message. If commit membership
+    came only from surviving ``_row_id``s, the absorbed source row would be unrepresented and
+    re-cloned byte-exact — the secret stays in SQLite and stays FTS-indexed.
+    """
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("sess1", source="test")
+    db.append_message("sess1", role="user", content="first ask")
+    db.append_message("sess1", role="assistant", content="first reply")
+    db.append_message("sess1", role="user", content="unanswered turn")
+    secret_row = db.append_message(
+        "sess1", role="user", content="password=hostpw7"
+    )
+    db.append_message("sess1", role="assistant", content="next reply")
+
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        agent = cast(
+            Any,
+            AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                session_db=db,
+                session_id="sess1",
+                skip_context_files=True,
+                skip_memory=True,
+            ),
+        )
+    agent.compression_in_place = True
+    agent._compression_feasibility_checked = True
+    agent._ensure_db_session()
+
+    # The resume boundary load (turn_facade_lease shape): repaired, row ids on.
+    messages = db.get_messages_as_conversation(
+        "sess1", repair_alternation=True, include_row_ids=True
+    )
+    assert len(messages) == 4  # the user;user wedge was merged
+    placeholder = _placeholder("password_assignment", "hostpw7")
+    candidate = copy.deepcopy(messages)
+    candidate[2]["content"] = candidate[2]["content"].replace(
+        "hostpw7", placeholder
+    )
+    engine = _ExternalEngine(
+        candidate,
+        "sanitized",
+        current_operation="sanitize",
+        updates_status=False,
+    )
+    engine._result_status = "sanitized"
+    engine.expected_messages = copy.deepcopy(messages)
+    engine.expected_session_id = "sess1"
+    agent.context_compressor = engine
+
+    import agent.conversation_compression as compression
+
+    returned, _ = compression.compress_context(
+        agent,
+        messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert engine.calls == 1
+    durable_rows = db.get_messages("sess1")
+    contents = [row["content"] for row in durable_rows]
+    assert len(contents) == 4
+    assert "hostpw7" not in "".join(contents)
+    assert placeholder in contents[2]
+    assert db.search_messages("hostpw7", include_inactive=True) == []
+    assert db.search_messages("hostpw7", include_inactive=False) == []
+    assert secret_row not in [row["id"] for row in durable_rows]

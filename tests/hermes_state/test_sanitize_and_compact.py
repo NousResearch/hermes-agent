@@ -303,3 +303,82 @@ def test_sanitation_live_cleared_display_fields_replace_stale_candidate(
     published = db.get_messages_as_conversation("sess1")[0]
     assert published.get("display_kind") is None
     assert published.get("display_metadata") is None
+
+
+def test_sanitation_represents_merged_rows_from_durable_membership(db: SessionDB) -> None:
+    """Alternation repair merged two durable rows: BOTH must be represented (round-6 finding).
+
+    The live candidate is a stale witness — if membership came from it, a candidate that dropped
+    the merged message would leave the second source row unrepresented and its byte-exact
+    UNSANITIZED content would be re-cloned (secret intact, FTS re-indexed).
+    """
+    db.append_message("sess1", role="user", content="first ask")
+    db.append_message("sess1", role="assistant", content="reply")
+    merged_first = db.append_message(
+        "sess1", role="user", content="unanswered turn"
+    )
+    secret_row = db.append_message(
+        "sess1", role="user", content="password=hostpw7"
+    )
+    db.append_message("sess1", role="assistant", content="next reply")
+    assert db.try_acquire_compression_lock("sess1", "sanitizer")
+
+    # The LIVE candidate dropped the merged message entirely (stale witness shape).
+    db.sanitize_and_compact(
+        "sess1",
+        [
+            {"role": "user", "content": "first ask"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "assistant", "content": "next reply"},
+        ],
+        watermark=secret_row,
+        represented_row_ids=(1, 2, merged_first, secret_row, secret_row + 1),
+        member_row_ids=((1,), (2,), (merged_first, secret_row), (secret_row + 1,)),
+        lock_holder="sanitizer",
+    )
+
+    contents = [row["content"] for row in db.get_messages("sess1")]
+    assert "password=hostpw7" not in "".join(contents)
+    assert len(db.search_messages("hostpw7", include_inactive=True)) == 0
+
+
+def test_sanitation_member_groups_fall_back_to_snapshot_ids_per_slot(db: SessionDB) -> None:
+    """A group with no still-active ids falls back to the slot's snapshot id (per-slot)."""
+    only = db.append_message("sess1", role="user", content="represented")
+    concurrent = db.append_message("sess1", role="assistant", content="concurrent")
+    assert db.try_acquire_compression_lock("sess1", "sanitizer")
+
+    db.sanitize_and_compact(
+        "sess1",
+        [{"role": "user", "content": "clean"}],
+        watermark=only,
+        represented_row_ids=(only,),
+        member_row_ids=((999,),),  # stale id no longer active
+        lock_holder="sanitizer",
+    )
+
+    contents = [row["content"] for row in db.get_messages("sess1")]
+    # The stale group must NOT orphan the snapshot row: it is still represented...
+    assert "represented" not in contents[0] or contents[0] == "clean"
+    # ...the concurrent row is re-cloned after the candidate as usual...
+    assert contents[-1] == "concurrent"
+    assert db.search_messages("represented", include_inactive=True) == []
+
+
+def test_repaired_transcript_row_ids_carry_merged_membership(db) -> None:
+    """A repair-alternation restore publishes which rows each survivor MERGED (round-6 finding)."""
+    db.append_message("sess1", role="user", content="first ask")
+    db.append_message("sess1", role="assistant", content="first reply")
+    merged_first = db.append_message("sess1", role="user", content="unanswered turn")
+    merged_second = db.append_message(
+        "sess1", role="user", content="password=hostpw7 and next turn"
+    )
+    db.append_message("sess1", role="assistant", content="next reply")
+
+    messages = db.get_messages_as_conversation(
+        "sess1", repair_alternation=True, include_row_ids=True
+    )
+    assert [m["role"] for m in messages] == ["user", "assistant", "user", "assistant"]
+    merged = messages[2]
+    assert merged["_row_id"] == merged_first
+    assert merged["_merged_row_ids"] == [merged_first, merged_second]

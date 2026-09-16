@@ -58,6 +58,27 @@ _REPLAY_ENVELOPE_FIELDS = frozenset(
     }
 )
 
+# Keys a provider reads to interpret a content block structurally (request shape), never as user
+# content. Redacting one (e.g. ``detail`` -> a redaction placeholder) passes this module's declared-
+# growth validation but the provider then hard-rejects the request. Only content-bearing fields may
+# carry placeholders; control keys stay verbatim (or refuse the candidate).
+_PROVIDER_CONTROL_FIELDS = frozenset(
+    {
+        "detail",
+        "cache_control",
+        "id",
+        "name",
+        "tool_call_id",
+        "tool_use_id",
+        "call_id",
+        "source",
+        "image_url",
+        "file",
+        "media_type",
+    }
+)
+_CONTENT_PART_TYPE_FIELDS = frozenset({"type", "source", "media_type"})
+
 
 @dataclasses.dataclass(frozen=True)
 class SanitationChanges:
@@ -90,6 +111,7 @@ class SanitationCommitPlan:
     changes: Optional[SanitationChanges]
     watermark: Optional[int]
     represented_row_ids: tuple[int, ...]
+    member_row_ids: Optional[tuple[tuple[int, ...], ...]] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -104,9 +126,16 @@ def _strip_persistence_marker(messages: Any) -> Any:
 
     if not isinstance(messages, list):
         return messages
+    # ``_merged_row_ids`` is repair-provenance bookkeeping (``_rows_to_conversation``), never
+    # content: an engine that drops it must not fail structural validation, and the retry
+    # transcript comparison must not treat it as part of the content shape.
     return [
         (
-            {key: value for key, value in message.items() if key != _DB_PERSISTED_MARKER}
+            {
+                key: value
+                for key, value in message.items()
+                if key not in (_DB_PERSISTED_MARKER, "_merged_row_ids")
+            }
             if isinstance(message, dict)
             else message
         )
@@ -136,6 +165,28 @@ def sanitation_snapshot_row_ids(messages: Any) -> tuple[int, ...]:
         and isinstance(message.get("_row_id"), int)
         and not isinstance(message.get("_row_id"), bool)
         and message["_row_id"] > 0
+    )
+
+
+def sanitation_snapshot_member_row_ids(messages: Any) -> tuple[tuple[int, ...], ...]:
+    """Row ids each message of a snapshot REPRESENTS, positionally.
+
+    Durably REPAIRED snapshots (``get_messages_as_conversation(repair_alternation=True)``) can hold
+    one message that merged two source rows (repair_message_sequence), so a single ``_row_id`` per
+    position under-represents membership: the omitted source row would be re-cloned byte-exact
+    (secret intact, FTS re-indexed) by the absent-from-snapshot branch. Extra ``_row_ids`` live in
+    a ``_merged_row_ids`` list; without any, the message represents exactly its own id.
+    """
+    if not isinstance(messages, list):
+        return ()
+    return tuple(
+        (
+            *(row_id for row_id in [message.get("_row_id")] if isinstance(row_id, int) and not isinstance(row_id, bool) and row_id > 0),
+            *(extra_id for extra_id in (message.get("_merged_row_ids") or ()) if isinstance(extra_id, int) and not isinstance(extra_id, bool) and extra_id > 0),
+        )
+        if isinstance(message, dict)
+        else ()
+        for message in messages
     )
 
 
@@ -318,8 +369,17 @@ def _child_context(context: str, key: Any) -> tuple[str, bool]:
             if key == "arguments"
             else ("structural", False)
         )
-    if context == "content_part" and key == "type":
-        return "structural", False
+    if context == "content_part":
+        # Multimodal-block routing (round-6 multimodal finding): provider-control keys ride along
+        # inside content lists; redacting one (``detail`` -> placeholder) passes declared-growth
+        # validation but the provider then rejects the whole request. ``type``/media-type fields
+        # are structural; identity/behavior fields are control (verbatim); everything else is
+        # content and may carry placeholders.
+        if key in _CONTENT_PART_TYPE_FIELDS:
+            return "structural", False
+        if key in _PROVIDER_CONTROL_FIELDS:
+            return "control", False
+        return "payload", False
     if context in {"payload", "content_part"}:
         return "payload", False
     return "structural", False
@@ -337,6 +397,11 @@ def _validate_sanitized_value(
 ) -> Optional[SanitationChanges]:
     if context == "replay_envelope":
         return SanitationChanges() if _same_typed_value(original, candidate) else None
+    if context == "control":
+        # Provider-control field (round-6 multimodal finding): the provider reads this verbatim to
+        # shape the request. Placeholders here are undetectable at validation time (they redact
+        # nothing secret) but break the request at replay — require byte-identical values.
+        return SanitationChanges() if _same_typed_value(original, candidate) else None
     if (
         allow_structured_externalization
         and not isinstance(original, str)
@@ -349,7 +414,7 @@ def _validate_sanitized_value(
             role=externalized_role,
         )
     if isinstance(original, str) and isinstance(candidate, str):
-        if context == "structural":
+        if context in {"structural", "control"}:
             return SanitationChanges() if original == candidate else None
         return _validate_sanitized_string(
             original,
@@ -382,6 +447,10 @@ def _validate_sanitized_value(
             return None
         changes = SanitationChanges()
         context = _dict_context(context, original)
+        if context == "control":
+            # Control fields (``cache_control``, ``image_url`` envelopes, tool identity) stay
+            # verbatim: no key redaction, no nested placeholder (round-6 multimodal finding).
+            return SanitationChanges() if _same_typed_value(original, candidate) else None
         available_candidate_keys = list(candidate)
         matched_keys: list[tuple[Any, Any]] = []
         unmatched_original = []
@@ -404,6 +473,11 @@ def _validate_sanitized_value(
                 context,
                 original_key,
             )
+            if child_context == "control" and candidate_key != original_key:
+                # Round-6 multimodal finding: control keys are request shape. A redacted key
+                # (``detail`` -> a placeholder) survives declared-growth validation but the
+                # provider then rejects the whole request — refuse instead.
+                return None
             role = (
                 str(original.get("role"))
                 if (
@@ -443,7 +517,11 @@ def _validate_sanitized_value(
             return None
         if unmatched_original and context not in {"payload", "content_part"}:
             return None
-
+        # Round-6 multimodal finding: in a content part a redacted key is indistinguishable from
+        # an added control key ("detail" -> placeholder reads as a NEW control field). Only
+        # content-bearing (payload) redactions may rename keys here.
+        if unmatched_candidate and context == "content_part":
+            return None
         available = list(unmatched_candidate)
         for original_key in unmatched_original:
             if not isinstance(original_key, str):
@@ -781,6 +859,7 @@ def prepare_sanitation_commit(
     """Remove replay-unsafe sidecars and derive one validation/metrics snapshot."""
     _drop_stale_api_content(original, candidate)
     represented_row_ids = sanitation_snapshot_row_ids(watermark_messages)
+    member_row_ids = sanitation_snapshot_member_row_ids(watermark_messages)
     plan_original = copy.deepcopy(original)
     plan_candidate = copy.deepcopy(candidate)
     return SanitationCommitPlan(
@@ -795,6 +874,7 @@ def prepare_sanitation_commit(
         ),
         watermark=max(represented_row_ids, default=0),
         represented_row_ids=represented_row_ids,
+        member_row_ids=member_row_ids,
     )
 
 

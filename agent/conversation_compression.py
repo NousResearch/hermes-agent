@@ -3456,12 +3456,19 @@ def _commit_compaction(
             ),
             agent.session_id or "none",
         )
+        _emit_aborted_attempt_telemetry(agent, attempt.started_at, "sanitation_missing_watermark")
+        # Retain the validated candidate for the retry path (round-6 watermark finding). Without
+        # this, the next attempt re-claims a one-shot sanitation invocation that will never come —
+        # the claim was consumed to produce this candidate — so a transient watermark-read error
+        # leaves the secret in SQLite/FTS indefinitely. Same retention contract as the
+        # commit-fence-cancelled and rollback branches.
+        if sanitation_plan is not None:
+            sanitation.remember_sanitation_retry(agent, sanitation_plan)
         with contextlib.suppress(Exception):
             agent._emit_warning(
                 "⚠️ Sanitation refused because the durable message watermark could not be captured. "
                 "No messages were changed."
             )
-        _emit_aborted_attempt_telemetry(agent, attempt.started_at, "sanitation_missing_watermark")
         _restore_prune_rearm_tokens(agent.context_compressor, attempt.snapshot)
         agent._last_compaction_in_place = False
         _restore_messages_snapshot(messages, messages_before_compression)
@@ -3518,6 +3525,7 @@ def _commit_compaction(
                         compressed,
                         watermark=sanitation_plan.watermark,
                         represented_row_ids=sanitation_plan.represented_row_ids,
+                        member_row_ids=sanitation_plan.member_row_ids,
                         lock_holder=lease.holder,
                     )
                 else:

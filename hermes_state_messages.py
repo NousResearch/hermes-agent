@@ -18,6 +18,70 @@ from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
     _legacy_reset_child_sql, _placeholders, _sql_json_extract)
 
+
+def _group_row_ids(index, member_row_ids, represented) -> Tuple[int, ...]:
+    """Validated int row ids the candidate slot at *index* represents.
+
+    Member groups are untrusted host input: an int id is one row, a tuple/list of ints is a
+    merged-row group, anything else (or a group that validates to empty) falls back to the
+    snapshot's own id at that position so a stale group cannot orphan its row.
+    """
+    raw: Any = None
+    if index < len(member_row_ids):
+        group = member_row_ids[index]
+        if isinstance(group, (tuple, list)):
+            raw = tuple(
+                item for item in group
+                if isinstance(item, int) and not isinstance(item, bool)
+            )
+        elif isinstance(group, int) and not isinstance(group, bool):
+            raw = (group,)
+    if not raw:
+        raw = represented[index : index + 1]
+    return tuple(
+        row_id for row_id in raw
+        if isinstance(row_id, int) and not isinstance(row_id, bool)
+    )
+
+
+def _carry_repair_row_ids(messages: List[Dict[str, Any]], pre_repair_row_ids: List[Any]) -> None:
+    """After an in-place alternation repair, publish which source rows each survivor MERGED.
+
+    ``repair_message_sequence`` rewrites ``messages`` in place, so survivors keep identity but
+    absorbed/dropped neighbors vanish with their ``_row_id``. Survivors are position-aligned with
+    the pre-repair id list (repair only merges/drops, never reorders), so a forward walk attaches
+    every pre-repair row id to the survivor preceding it: the survivor's own id, then each id that
+    differs from the NEXT survivor's own id. Only positions with more than one id get
+    ``_merged_row_ids``, keeping the marker off untouched transcripts. Nothing is stamped when
+    alignment fails (a rewrite other than repair ran) — an unmarked transcript over-clones, which
+    is the safe direction.
+    """
+    dict_messages = [m for m in messages if isinstance(m, dict)]
+    stamps: List[Tuple[Dict[str, Any], List[int]]] = []
+    consumed = 0
+    total = len(pre_repair_row_ids)
+    for index, message in enumerate(dict_messages):
+        own_id = message.get("_row_id")
+        if consumed >= total or pre_repair_row_ids[consumed] != own_id:
+            return  # alignment lost — stamp nothing
+        consumed += 1
+        next_own_id = (
+            dict_messages[index + 1].get("_row_id") if index + 1 < len(dict_messages) else None
+        )
+        merged_ids: List[int] = []
+        if isinstance(own_id, int) and not isinstance(own_id, bool) and own_id > 0:
+            merged_ids.append(own_id)
+        while consumed < total and pre_repair_row_ids[consumed] != next_own_id:
+            absorbed = pre_repair_row_ids[consumed]
+            if isinstance(absorbed, int) and not isinstance(absorbed, bool) and absorbed > 0:
+                merged_ids.append(absorbed)
+            consumed += 1
+        if len(merged_ids) > 1:
+            stamps.append((message, merged_ids))
+    for message, merged_ids in stamps:
+        message["_merged_row_ids"] = merged_ids
+
+
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
 # One INSERT shape for every message writer (append, batch, replace, compact, import).
@@ -567,7 +631,8 @@ class SessionMessagesMixin:
 
     def sanitize_and_compact(self, session_id: str, sanitized_messages: List[Dict[str, Any]],
         *, watermark: int, lock_holder: str,
-        represented_row_ids: Optional[Tuple[int, ...]] = None) -> int:
+        represented_row_ids: Optional[Tuple[int, ...]] = None,
+        member_row_ids: Optional[Tuple[Tuple[int, ...], ...]] = None) -> int:
         """Destructively publish a sanitized transcript under a lease and watermark.
 
         Unlike ordinary compaction, sanitation must remove superseded rows and their
@@ -577,6 +642,14 @@ class SessionMessagesMixin:
         they arrived later. Concurrent display metadata on represented rows is merged
         onto the replacement before insert. The earlier display generation is deleted
         in the same transaction.
+
+        *member_row_ids* is positional membership: row ids each candidate slot
+        REPRESENTS. A durably repaired transcript may hold one merged message for two
+        source rows — both must be represented here, or the unrepresented row is
+        re-cloned byte-exact (secret intact, FTS re-indexed). Each group is filtered
+        to currently active rows like the snapshot ids themselves, so membership
+        always derives from the DURABLE state, never from the possibly stale live
+        candidate.
         """
         from agent.session_persistence import _is_ephemeral_scaffolding
         from hermes_state import SessionCompressionInProgressError
@@ -652,11 +725,40 @@ class SessionMessagesMixin:
                     for row in active_rows
                     if int(row["id"]) <= int(watermark)
                 )
+            # Membership (round-6 repair finding): derive from the DURABLE read above, not the
+            # possibly stale live candidate. Each positional group filters to rows still active
+            # right now, so a repaired (merged) message represents BOTH of its source rows even
+            # when the live candidate dropped one — the dropped source row is sanitized content,
+            # not an unrepresented secret.
+            member_groups: Optional[List[Tuple[int, ...]]] = None
+            if member_row_ids is not None:
+                member_groups = []
+                for index in range(max(len(member_row_ids), len(represented))):
+                    active_group = tuple(
+                        row_id
+                        for row_id in _group_row_ids(index, member_row_ids, represented)
+                        if row_id > 0 and row_id in active_ids
+                    )
+                    # A group filtered to empty (all its ids inactive) would orphan the slot's
+                    # snapshot row entirely: fall back to that id when it is still active.
+                    if not active_group and index < len(represented) and represented[index] in active_ids:
+                        active_group = (represented[index],)
+                    member_groups.append(active_group)
+                represented = tuple(
+                    row_id for group in member_groups for row_id in group
+                )
             represented_set = set(represented)
             represented_sorted = sorted(represented_set)
             current_by_id = {int(row["id"]): dict(row) for row in active_rows}
-            for message, row_id in zip(durable_messages, represented):
-                live = current_by_id.get(row_id)
+            # Display metadata merges from each slot's PRIMARY source row (the group's first id —
+            # the surviving row itself), preserving the one-row-per-slot behavior everywhere the
+            # transcript was not repaired.
+            merge_sources = (
+                member_groups if member_groups is not None
+                else [(row_id,) for row_id in represented]
+            )
+            for message, group in zip(durable_messages, merge_sources):
+                live = current_by_id.get(group[0]) if group else None
                 if live is None:
                     continue
                 if live["display_kind"] is None:
@@ -1137,8 +1239,15 @@ class SessionMessagesMixin:
         messages = _strip_stale_tool_call_markers(_strip_background_review_harness(messages))
         if repair_alternation and messages:
             from agent.agent_runtime_helpers import repair_message_sequence
+            # Snapshot row ids BEFORE repair: repair_message_sequence merges same-role neighbors,
+            # dropping the second source row's `_row_id`. Sanitation commits derive row membership
+            # from these ids, so an omitted source row would be re-cloned byte-exact (secret intact,
+            # FTS re-indexed) as "unrepresented". The survivors carry the union in `_merged_row_ids`
+            # (underscore-prefixed: stripped by transports before the wire, like `_row_id`).
+            _pre_repair_row_ids = [m.get("_row_id") for m in messages if isinstance(m, dict)]
             repaired = repair_message_sequence(None, messages)
             if repaired:
+                _carry_repair_row_ids(messages, _pre_repair_row_ids)
                 logger.info("Repaired %d message-alternation violation(s) while "
                     "restoring session %s — durable transcript kept them, "
                     "see repair_message_sequence", repaired, session_id)

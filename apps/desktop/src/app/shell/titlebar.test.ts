@@ -6,8 +6,11 @@ import {
   TITLEBAR_CONTROL_SIZE,
   TITLEBAR_EDGE_INSET,
   TITLEBAR_FALLBACK_WINDOW_BUTTON_X,
+  TITLEBAR_HEIGHT,
   TITLEBAR_ICON_SIZE,
   TITLEBAR_MAC_TRAFFIC_LIGHTS_Y_NUDGE,
+  TITLEBAR_TABS_GAP,
+  TITLEBAR_TABS_HEIGHT,
   titlebarControlsPosition,
   titlebarControlsYNudge,
   titlebarIconSizeCss,
@@ -16,6 +19,11 @@ import {
 } from './titlebar'
 
 describe('titlebar sizing', () => {
+  it('uses an equal-height tab band with no extra gap below the controls', () => {
+    expect(TITLEBAR_TABS_GAP).toBe(0)
+    expect(TITLEBAR_TABS_HEIGHT).toBe(TITLEBAR_HEIGHT)
+  })
+
   it('uses 24×24 hit targets and 13.9px glyphs', () => {
     expect(TITLEBAR_CONTROL_SIZE).toBe(24)
     expect(TITLEBAR_ICON_SIZE).toBe(13.9)

@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { TITLEBAR_HEIGHT, TITLEBAR_TABS_GAP } from '@/app/shell/titlebar'
+import { TITLEBAR_HEIGHT, TITLEBAR_TABS_GAP, TITLEBAR_TABS_HEIGHT } from '@/app/shell/titlebar'
 import { registry } from '@/contrib/registry'
 
 import { group, type GroupNode, split } from '../model'
@@ -116,8 +116,8 @@ describe('Sessions/Bots strip — #91223', () => {
     const right = document.createElement('div')
     left.dataset.titlebarCluster = 'left'
     right.dataset.titlebarCluster = 'right'
-    left.getBoundingClientRect = () => ({ left: 0, right: 70 } as DOMRect)
-    right.getBoundingClientRect = () => ({ left: 1000, right: 1100 } as DOMRect)
+    left.getBoundingClientRect = () => ({ left: 0, right: 70 }) as DOMRect
+    right.getBoundingClientRect = () => ({ left: 1000, right: 1100 }) as DOMRect
     document.body.append(left, right)
 
     try {
@@ -125,11 +125,14 @@ describe('Sessions/Bots strip — #91223', () => {
       const zone = container.querySelector<HTMLElement>('[data-tree-group]')!
       const header = container.querySelector<HTMLElement>('[data-panel-header]')!
       let width = 237
-      zone.getBoundingClientRect = () => ({ left: 0, right: width, width } as DOMRect)
+      zone.getBoundingClientRect = () => ({ left: 0, right: width, width }) as DOMRect
 
       for (width of [237, 500, 237]) {
         act(() => window.dispatchEvent(new Event('resize')))
-        expect(header.style.height).toBe(`${TITLEBAR_HEIGHT + 28 + TITLEBAR_TABS_GAP}px`)
+        expect(header.style.height).toBe(`${TITLEBAR_HEIGHT + TITLEBAR_TABS_HEIGHT + TITLEBAR_TABS_GAP}px`)
+        expect(container.querySelector('[data-zone-tabstrip]')?.getAttribute('style')).toContain(
+          `height: ${TITLEBAR_TABS_HEIGHT}px`
+        )
         expect(container.querySelector('[data-zone-tabstrip]')?.classList.contains('absolute')).toBe(true)
       }
     } finally {

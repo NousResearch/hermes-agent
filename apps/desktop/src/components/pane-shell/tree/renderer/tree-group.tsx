@@ -12,7 +12,7 @@
 import { useStore } from '@nanostores/react'
 import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 
-import { TITLEBAR_HEIGHT, TITLEBAR_TABS_GAP } from '@/app/shell/titlebar'
+import { TITLEBAR_HEIGHT, TITLEBAR_TABS_GAP, TITLEBAR_TABS_HEIGHT } from '@/app/shell/titlebar'
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { DecodeText } from '@/components/ui/decode-text'
@@ -518,7 +518,10 @@ export function TreeGroup({
           data-panel-header=""
           style={
             topEdge
-              ? { height: TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? 28 + titlebarTabsGap : 0) }
+              ? {
+                  height:
+                    TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? TITLEBAR_TABS_HEIGHT + titlebarTabsGap : 0)
+                }
               : undefined
           }
         >
@@ -545,7 +548,13 @@ export function TreeGroup({
                   }
                 }}
                 ref={stripRef}
-                style={{ cursor: 'grab', WebkitAppRegion: dragging ? 'no-drag' : undefined } as CSSProperties}
+                style={
+                  {
+                    cursor: 'grab',
+                    height: tabsBelowControls ? TITLEBAR_TABS_HEIGHT : undefined,
+                    WebkitAppRegion: dragging ? 'no-drag' : undefined
+                  } as CSSProperties
+                }
                 titlebar={tabsInTitlebar}
                 trailing={
                   <>
@@ -789,7 +798,7 @@ export function TreeGroup({
             onPointerDown={e => startPaneDrag(activeId, e, undefined, undefined, active?.title ?? activeId)}
             style={{
               top: topEdge
-                ? TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? 28 + titlebarTabsGap : 0)
+                ? TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? TITLEBAR_TABS_HEIGHT + titlebarTabsGap : 0)
                 : headerVisible
                   ? 28
                   : 0,

@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
-import { TITLEBAR_HEIGHT, TITLEBAR_TABS_GAP } from '@/app/shell/titlebar'
+import { TITLEBAR_HEIGHT, TITLEBAR_TABS_GAP, TITLEBAR_TABS_HEIGHT } from '@/app/shell/titlebar'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { registry } from '@/contrib/registry'
 import { stubResizeObserver } from '@/test/jsdom'
@@ -71,6 +71,9 @@ describe('narrow overlay of a stacked zone', () => {
     const overlay = document.querySelector<HTMLElement>('[data-glass-opaque]')
     expect(overlay?.style.top).toBe('0px')
     expect(overlay?.style.paddingTop).toBe(`${TITLEBAR_HEIGHT + TITLEBAR_TABS_GAP}px`)
+    expect(
+      overlay?.querySelector('[data-narrow-overlay-tab]')?.parentElement?.parentElement?.getAttribute('style')
+    ).toContain(`height: ${TITLEBAR_TABS_HEIGHT}px`)
   })
 
   it('keeps the controls-to-tabs spacing constant when UI scale increases', () => {

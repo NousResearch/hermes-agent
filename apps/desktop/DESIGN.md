@@ -63,6 +63,13 @@ one-off at the call site.
 - **Projects own workspace cwd.** Use Sidebar → Projects for local folders and
   worktrees; do not reintroduce a per-session/right-sidebar folder-picker flow.
 
+Profile icons and condensed profile rows offer **Open in new window** and
+**Set as default** in their existing context menus. Opening a profile creates a
+full peer window without switching the source window. The desktop default
+applies at startup and to generic new chats; explicit profile/project actions
+and profile-specific windows keep their own destinations. Changing the default
+does not move existing sessions or replace the active conversation.
+
 Navigation must preserve context. A background session finishing, a tool result
 arriving, or a project refresh may update badges and cached data; it must not
 replace the foreground transcript or steal focus.

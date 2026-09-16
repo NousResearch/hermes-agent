@@ -943,14 +943,9 @@ function authModeFromStatus(statusBody) {
 }
 
 /**
- * Classify a backend's runtime from its public `/api/status` body.
- *
- * Validate-at-the-boundary: only the two exact literals the gateway declares are
- * accepted. A missing field (a gateway older than `runtime_kind`), an unrecognised
- * value, or a non-object all yield `undefined` — meaning "unknown", which renders no
- * indicator. Never infer 'native' from absence: a wrong badge is worse than none.
- *
- * Returns 'container' | 'native' | undefined.
+ * 'container' | 'native' from a public `/api/status` body, else undefined (unknown, no
+ * indicator). Absence is never read as 'native': a gateway older than the field would
+ * otherwise wear a confident, wrong badge.
  */
 function runtimeKindFromStatus(statusBody) {
   const kind = statusBody && typeof statusBody === 'object' ? statusBody.runtime_kind : undefined

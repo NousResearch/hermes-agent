@@ -1006,10 +1006,8 @@ export interface DesktopRegistryConnection {
   // connections sharing it are one physical backend registered under two
   // addresses (display-only "Same backend as …" hint in Settings).
   installId?: string
-  // Runtime the backend reports on /api/status (`runtime_kind`): supervised
-  // inside a container, or native to the host. Display-only, present once a
-  // probe has seen it. Absent on older backends — render nothing, and never
-  // read absence as 'native'.
+  // What the backend's /api/status reports once probed; absent on older backends, and
+  // absence is unknown, never 'native'.
   runtimeKind?: 'container' | 'native'
 }
 

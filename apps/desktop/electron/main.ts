@@ -15585,9 +15585,8 @@ async function probeConnectionInstallId(connectionId: string, descriptor: any): 
       return cached.id
     }
 
-    // Cache the id MISS, but carry any known runtimeKind forward: both facts are
-    // static per backend, and a backend whose install_id is unpersistable would
-    // otherwise lose its runtime kind on every probe.
+    // Cache the id miss but keep the runtime kind: a backend whose install_id is
+    // unpersistable would otherwise lose it on every probe.
     connectionInstallIds.set(connectionId, {
       id: undefined,
       runtimeKind: cached?.runtimeKind,

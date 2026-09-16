@@ -85,46 +85,23 @@ describe('ConnectionsRegistrySection', () => {
     }
   })
 
-  it('renders a runtime pill only for backends that declared one', async () => {
-    // 'homelab' declared container; 'local' declared nothing (an older backend, or one
-    // never probed). Absence must render NO pill — never a confident, wrong "Native".
+  it('renders a runtime pill only for the backends that declared one, never native by default', async () => {
+    // 'local' declared nothing (an older backend, or one never probed): no pill, not "Native".
     list.mockResolvedValue({
       ...registry,
       connections: [
         registry.connections[0],
-        { ...registry.connections[1], runtimeKind: 'container' as const }
+        { ...registry.connections[1], runtimeKind: 'container' as const },
+        { ...registry.connections[1], id: 'studio', label: 'Studio', runtimeKind: 'native' as const, url: 'http://studio.lan:9119' }
       ]
     })
 
-    render(<ConnectionsRegistrySection />)
+    const { container } = render(<ConnectionsRegistrySection />)
 
-    await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
-    expect(screen.getByText('Container')).toBeTruthy()
-    expect(screen.queryByText('Native')).toBeNull()
-  })
-
-  it('renders the native pill when a backend declares native', async () => {
-    list.mockResolvedValue({
-      ...registry,
-      connections: [
-        registry.connections[0],
-        { ...registry.connections[1], runtimeKind: 'native' as const }
-      ]
-    })
-
-    render(<ConnectionsRegistrySection />)
-
-    await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
-    expect(screen.getByText('Native')).toBeTruthy()
-    expect(screen.queryByText('Container')).toBeNull()
-  })
-
-  it('renders no runtime pill when nothing declared one', async () => {
-    render(<ConnectionsRegistrySection />)
-
-    await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
-    expect(screen.queryByText('Container')).toBeNull()
-    expect(screen.queryByText('Native')).toBeNull()
+    await waitFor(() => expect(screen.getByText('Studio')).toBeTruthy())
+    expect(screen.getByText('Container').closest('[data-runtime-kind]')?.getAttribute('data-runtime-kind')).toBe('container')
+    expect(screen.getByText('Native').closest('[data-runtime-kind]')?.getAttribute('data-runtime-kind')).toBe('native')
+    expect(container.querySelectorAll('[data-runtime-kind]')).toHaveLength(2)
   })
 
   it('distinguishes the current connection from the registry primary', async () => {

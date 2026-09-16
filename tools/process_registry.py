@@ -362,6 +362,29 @@ def _stop_systemd_unit(unit_name: str) -> bool:
         return False
 
 
+KANBAN_TASK_ENV = "HERMES_KANBAN_TASK"
+
+
+def resolve_kanban_task_binding(env_vars: Optional[dict] = None) -> str:
+    """The board card the child process will actually run under.
+
+    Read from the env the child really gets: the per-spawn overrides first
+    (``env_vars``), then this process's own environment, which the child
+    inherits. That is the same value ``tools/kanban_tools.py`` reads to scope a
+    worker to its task and to refuse mutations of any other card, so recording
+    it grants no authority — it only makes an existing binding legible to
+    readers of the checkpoint.
+
+    Never derived from the command string: prompts and argv routinely name
+    cards the process must NOT touch.
+    """
+    if isinstance(env_vars, dict):
+        declared = env_vars.get(KANBAN_TASK_ENV)
+        if declared not in (None, ""):
+            return str(declared).strip()
+    return str(os.environ.get(KANBAN_TASK_ENV) or "").strip()
+
+
 def format_uptime_short(seconds: int) -> str:
     s = max(0, int(seconds))
     if s < 60:
@@ -379,6 +402,13 @@ class ProcessSession:
     id: str                                     # Unique session ID ("proc_xxxxxxxxxxxx")
     command: str                                 # Original command string
     task_id: str = ""                           # Task/sandbox isolation key
+    # Board card this process runs under, read at spawn from the child's OWN
+    # kanban pin (``HERMES_KANBAN_TASK``) — the runtime's existing structured
+    # worker→card binding, which ``tools/kanban_tools.py`` already treats as
+    # authoritative for scoping and ownership refusal. Persisted so a reader of
+    # the checkpoint can tell WHICH card a background process belongs to
+    # without parsing its free-text command line. "" = no declared card.
+    kanban_task_id: str = ""
     session_key: str = ""                       # Gateway session key (for reset protection)
     pid: Optional[int] = None                   # OS process ID
     process: Optional[subprocess.Popen] = None  # Popen handle (local only)
@@ -1062,6 +1092,7 @@ class ProcessRegistry:
             id=f"proc_{uuid.uuid4().hex[:12]}",
             command=command,
             task_id=task_id,
+            kanban_task_id=resolve_kanban_task_binding(env_vars),
             session_key=session_key,
             cwd=_resolve_safe_cwd(cwd or os.getcwd()),
             started_at=time.time(),
@@ -1292,6 +1323,7 @@ class ProcessRegistry:
             id=f"proc_{uuid.uuid4().hex[:12]}",
             command=command,
             task_id=task_id,
+            kanban_task_id=resolve_kanban_task_binding(None),
             session_key=session_key,
             cwd=cwd,
             started_at=time.time(),
@@ -2801,6 +2833,7 @@ class ProcessRegistry:
                             "cwd": s.cwd,
                             "started_at": s.started_at,
                             "task_id": s.task_id,
+                            "kanban_task_id": s.kanban_task_id,
                             "session_key": s.session_key,
                             "watcher_platform": s.watcher_platform,
                             "watcher_chat_id": s.watcher_chat_id,
@@ -2891,6 +2924,7 @@ class ProcessRegistry:
                 id=entry["session_id"],
                 command=entry.get("command", "unknown"),
                 task_id=entry.get("task_id", ""),
+                kanban_task_id=entry.get("kanban_task_id", ""),
                 session_key=entry.get("session_key", ""),
                 pid=pid,
                 host_start_time=recorded_start,

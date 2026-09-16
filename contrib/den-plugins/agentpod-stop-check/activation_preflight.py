@@ -54,7 +54,9 @@ CAPABILITY = "pre_verify_on_no_edit_turns"
 _PROBE = r"""
 import json, sys
 out = {"import_error": None, "resolver": False, "call_site": False,
-       "default_off": None, "revision": None}
+       "default_off": None, "revision": None,
+       "verdict_api": False, "verdict_enforced": False, "verdict_inert": None,
+       "registry_binding": False}
 try:
     import agent.verify_hooks as vh
     out["resolver"] = hasattr(vh, "CAPABILITY_NAME")
@@ -63,6 +65,34 @@ try:
         fn = getattr(vh, "CAPABILITY_NAME")
         out["default_off"] = (fn({}) is False
                               and fn({"agent": {"CAPABILITY_NAME": False}}) is False)
+    # Enforced-verdict contract: the API exists, the finalizer calls it, and it
+    # is inert with nothing pending.
+    out["verdict_api"] = (hasattr(vh, "apply_pre_verify_verdict")
+                          and hasattr(vh, "record_pre_verify_verdict"))
+    if out["verdict_api"]:
+        class _A:
+            pass
+        out["verdict_inert"] = (
+            vh.apply_pre_verify_verdict(_A(), "untouched") == "untouched"
+        )
+    import agent.turn_finalizer as tf
+    seen, stack = set(), [tf.finalize_turn.__code__]
+    while stack:
+        code = stack.pop()
+        if id(code) in seen:
+            continue
+        seen.add(id(code))
+        if "apply_pre_verify_verdict" in (code.co_names + code.co_varnames):
+            out["verdict_enforced"] = True
+            break
+        for const in code.co_consts:
+            if hasattr(const, "co_names"):
+                stack.append(const)
+    import dataclasses
+    from tools.process_registry import ProcessSession
+    out["registry_binding"] = any(
+        f.name == "kanban_task_id" for f in dataclasses.fields(ProcessSession)
+    )
     import agent.conversation_loop as cl
     seen, stack = set(), [cl.run_conversation.__code__]
     while stack:
@@ -165,6 +195,31 @@ def probe_core(core_root: Path, gate: Gate) -> None:
         "resolver returns False when absent and when explicitly false"
         if data.get("default_off") is True
         else "default-off could not be confirmed — do not stage against this core",
+    )
+    gate.check(
+        bool(data.get("verdict_api")) and data.get("verdict_inert") is True,
+        "enforced-verdict contract",
+        "agent.verify_hooks.apply_pre_verify_verdict is present and inert with "
+        "nothing pending"
+        if data.get("verdict_api") and data.get("verdict_inert") is True
+        else "MISSING or not inert — without it a spent continuation budget can "
+             "still end a supervision turn quietly",
+    )
+    gate.check(
+        bool(data.get("verdict_enforced")),
+        "enforced-verdict call site",
+        "finalize_turn applies the verdict after the output transforms"
+        if data.get("verdict_enforced")
+        else "finalize_turn does NOT apply it — enforcement would depend on "
+             "transform ordering again",
+    )
+    gate.check(
+        bool(data.get("registry_binding")),
+        "process-registry card binding",
+        "ProcessSession records kanban_task_id at spawn"
+        if data.get("registry_binding")
+        else "ProcessSession has no kanban_task_id — real workers would be "
+             "owner_unknown even when correctly pinned",
     )
 
 

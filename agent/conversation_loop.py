@@ -8288,9 +8288,10 @@ def run_conversation(
                     from agent.verify_hooks import (
                         max_verify_nudges,
                         pre_verify_on_no_edit_turns,
+                        record_pre_verify_verdict,
                     )
                     from hermes_cli.lifecycle import has_hook
-                    from hermes_cli.plugins import get_pre_verify_continue_message
+                    from hermes_cli.plugins import get_pre_verify_directive
 
                     # Default: edited-code turns only (shipped behaviour). With
                     # `agent.pre_verify_on_no_edit_turns: true` the same gate
@@ -8305,7 +8306,7 @@ def run_conversation(
                             from agent.coding_context import is_coding_context
                             coding = bool(is_coding_context(platform=getattr(agent, "platform", "") or ""))
                             agent._resolved_is_coding = coding
-                        _verify_nudge2 = get_pre_verify_continue_message(
+                        _directive = get_pre_verify_directive(
                             session_id=getattr(agent, "session_id", None) or "",
                             platform=getattr(agent, "platform", "") or "",
                             model=getattr(agent, "model", "") or "",
@@ -8314,6 +8315,15 @@ def run_conversation(
                             final_response=final_response,
                             changed_paths=_edited,
                         )
+                        _verify_nudge2 = _directive.get("message") or None
+                        # Same directive's enforced half: the text this turn may
+                        # not end without. Recorded (and REPLACED) on every
+                        # evaluation, delivered by the finalizer after all
+                        # output transforms — so neither an earlier-sorting
+                        # transform nor a model that ignores the last
+                        # continuation can ship a quiet ending. Empty when no
+                        # hook asks for one: unchanged behaviour.
+                        record_pre_verify_verdict(agent, _directive.get("final_verdict"))
                 except Exception:
                     logger.debug("pre_verify hook check failed", exc_info=True)
                     _verify_nudge2 = None

@@ -11,33 +11,39 @@ How, using only supported runtime lifecycle:
    unrelated question is untouched no matter how it is phrased, and a
    same-session "stop / forget it / different topic" message wins immediately.
 
-2. ``pre_verify`` — the REAL continuation. Returns
-   ``{"action": "continue", "message": ...}`` so the agent keeps working the
-   board in the same turn (it can call tools and actually act), bounded by the
-   runtime's ``agent.max_verify_nudges`` AND a cross-process ledger under
-   ``$HERMES_HOME``. On turns that edited no files this needs
+2. ``pre_verify`` — the REAL enforcement. Returns
+   ``{"action": "continue", "message": ..., "final_verdict": ...}`` so the
+   agent keeps working the board in the same turn (it can call tools and
+   actually act), bounded by the runtime's ``agent.max_verify_nudges`` AND a
+   cross-process ledger under ``$HERMES_HOME`` — and, in the same directive,
+   states the verdict the turn may not end without. The runtime applies that
+   verdict to the delivered answer AFTER every output transform, so the
+   outcome is ordering-independent and survives the model ignoring the last
+   instruction or the iteration budget running out. When the continuation
+   budget is spent the directive becomes verdict-only (``action: final``).
+   On turns that edited no files this needs
    ``agent.pre_verify_on_no_edit_turns: true`` (a general, default-off core
    setting) — the supervision sweeps this exists for rarely edit files.
 
-3. ``transform_llm_output`` — FALLBACK only, after the bounded continuations
-   are spent: the quiet answer is **replaced** (not appended to) with a short
-   factual blocker sized to the platform budget, so nothing downstream needs to
-   shorten it.
+3. ``transform_llm_output`` — legacy fallback, kept so the plugin still
+   degrades usefully on a runtime without the enforced-verdict contract: the
+   quiet answer is **replaced** with a short factual blocker sized to the
+   platform budget.
 
 Honest limits (tested, stated in the README, not papered over):
 
 * The gate **dispatches nothing**. It does not spawn, claim, write to the
   board, or kill anything. "Requested" and "executed" are never conflated.
-* Enforcement is ordering-independent — ``pre_verify`` runs before any
-  transform, and the LAST continuation in a window carries the fail-explicit
-  demand. The ``transform_llm_output`` **fallback** after the budget is spent
-  is not: it is first-non-empty-wins in ``agent/turn_finalizer.py`` with no
-  priority surface, so an earlier-sorting transform plugin can preempt it.
+* Enforcement is ordering-independent: the ``pre_verify`` directive carries
+  both the continuation and the verdict, and the runtime stamps the verdict
+  onto the delivered answer after every ``transform_llm_output`` hook has run.
+  An earlier-sorting transform plugin can still replace the model's own text,
+  but it can no longer make the turn end quiet.
+* Ownership requires a structural binding (the child's own kanban pin recorded
+  at spawn, or the card's own recorded workspace). A worker launched without
+  one is ``owner_unknown``: actionable, never quiet.
 * Verified owners prove **liveness**, not progress — and only buy silence when
   a completion handle or a recorded, verified wake covers their exit.
-* Ownership requires a structural binding (registry ``task_id`` or the card's
-  own recorded workspace). A worker launched without one is ``owner_unknown``:
-  actionable, never quiet.
 
 Scope: inert unless ``agentpod_stop_check.enabled`` is true AND the turn's
 ``session_id`` is listed in ``agentpod_stop_check.session_ids``. Only the
@@ -326,7 +332,16 @@ def on_pre_verify(
     changed_paths: Optional[list] = None,
     **_: Any,
 ) -> Optional[dict]:
-    """PRIMARY enforcement: real, bounded continuation of the same turn."""
+    """PRIMARY enforcement: real, bounded continuation + an enforced verdict.
+
+    Every directive carries ``final_verdict`` — the text the turn may not end
+    without. The runtime applies it to the DELIVERED answer after all output
+    transforms (``agent.verify_hooks.apply_pre_verify_verdict``), so the
+    outcome no longer depends on the model obeying the last continuation, on
+    how much budget is left, or on which transform plugin sorts first. When the
+    continuation budget is spent the directive is verdict-only: stop, but stop
+    LOUD.
+    """
     try:
         cfg = _cfg()
         if not _in_scope(cfg, session_id) or not _supervision_turn(cfg, session_id):
@@ -336,9 +351,17 @@ def on_pre_verify(
             return None
         if _already_reports(final_response or "", verdict):
             return None
+        enforced = stopcheck.render_report(
+            verdict, max_chars=int(cfg.get("max_report_chars", 700))
+        )
         granted, terminal = _grant_continuation(session_id, verdict.fingerprint(), cfg)
         if not granted:
-            return None
+            logger.warning(
+                "[%s] continuation budget spent; enforcing terminal verdict "
+                "(session=%s ok=%s findings=%d)",
+                PLUGIN_ID, session_id, verdict.ok, len(verdict.findings),
+            )
+            return {"action": "final", "message": enforced}
         logger.warning(
             "[%s] continuing supervision turn (session=%s ok=%s findings=%d terminal=%s)",
             PLUGIN_ID, session_id, verdict.ok, len(verdict.findings), terminal,
@@ -351,6 +374,9 @@ def on_pre_verify(
                 terminal=terminal,
                 max_chars=int(cfg.get("max_continuation_chars", 2000)),
             ),
+            # Same directive, enforced half: if the agent stops anyway — now or
+            # after the budget runs out — this is what ships.
+            "final_verdict": enforced,
         }
     except Exception:
         logger.exception("[%s] pre_verify stop-check failed", PLUGIN_ID)

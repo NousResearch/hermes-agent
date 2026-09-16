@@ -621,6 +621,20 @@ def finalize_turn(
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
 
+    # pre_verify enforced verdict (agent/verify_hooks.py).
+    # Runs AFTER the transforms on purpose: a hook that declared text this turn
+    # may not end without gets it into the DELIVERED answer regardless of
+    # transform ordering or of the model ignoring the last continuation.
+    # No-op (and no attribute) unless a pre_verify hook asked for one.
+    try:
+        from agent.verify_hooks import apply_pre_verify_verdict
+
+        final_response = apply_pre_verify_verdict(
+            agent, final_response, interrupted=interrupted
+        )
+    except Exception as exc:
+        logger.warning("pre_verify verdict enforcement failed: %s", exc)
+
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can use this to persist conversation data (e.g. sync

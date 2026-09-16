@@ -11,7 +11,9 @@ This module reads that registry **read-only** and converts an entry into
 evidence only when BOTH of the following hold:
 
 1. **The row is bound to the card by structure, never by prose.** Either the
-   registry recorded the card id as the row's own ``task_id`` at spawn, or the
+   spawn recorded the card the process runs under (``kanban_task_id`` — the
+   child's own ``HERMES_KANBAN_TASK`` pin, which the runtime's kanban tools
+   already read as that worker's task scope), or the
    row's ``cwd`` is inside the workspace path the *board row itself* carries —
    and only when that workspace path belongs to exactly one card in the sweep.
    A free-text ``command`` is never a binding: supervisor and reviewer prompts
@@ -235,10 +237,13 @@ def binding_for(entry: dict, task: Any, *, ambiguous: frozenset = frozenset()) -
     Only two authoritative relationships, both recorded by the runtime/board
     rather than written into a prompt:
 
-    * ``registry task_id`` — the spawn recorded this card id as the process's
-      own task binding (``ProcessSession.task_id``, persisted in the
-      checkpoint). Exact match; a session/rollout id that merely contains the
-      card id does not count.
+    * ``registry kanban pin`` — the spawn recorded the card the process runs
+      under, read from the child's own ``HERMES_KANBAN_TASK`` env pin and
+      persisted by ``tools/process_registry.py`` as ``kanban_task_id``. That is
+      the same value the runtime's kanban tools use to scope a worker and to
+      refuse mutations of any other card, so it is a real binding, not a label
+      this plugin invented. Exact match; the rollout/sandbox ``task_id`` on the
+      same row is NOT a card and is never consulted.
     * ``canonical workspace`` — the process cwd is inside the workspace path
       the BOARD row carries, and that path belongs to this card alone.
 
@@ -247,8 +252,8 @@ def binding_for(entry: dict, task: Any, *, ambiguous: frozenset = frozenset()) -
     tid = str(getattr(task, "id", "") or "")
     if not tid:
         return ""
-    if str(entry.get("task_id") or "").strip() == tid:
-        return "registry task_id"
+    if str(entry.get("kanban_task_id") or "").strip() == tid:
+        return "registry kanban pin"
     kind = str(getattr(task, "workspace_kind", "") or "").strip().lower()
     ws = _norm(getattr(task, "workspace_path", None))
     if ws and kind in CANONICAL_WORKSPACE_KINDS and ws not in ambiguous:

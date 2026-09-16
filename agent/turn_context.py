@@ -1353,6 +1353,8 @@ def build_turn_context(
     agent._turn_file_mutation_paths = set()
     agent._verification_stop_nudges = 0
     agent._pre_verify_nudges = 0
+    # Pending enforced pre_verify verdict is per-turn (agent/verify_hooks.py).
+    agent._pre_verify_final_verdict = ""
 
     # Record the execution thread so interrupt()/clear_interrupt() can scope
     # the tool-level interrupt signal to THIS agent's thread only.

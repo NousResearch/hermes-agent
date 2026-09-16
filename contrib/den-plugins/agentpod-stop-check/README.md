@@ -11,8 +11,9 @@ Not installed by default. Opt-in via `config.yaml`, inert everywhere else.
 | Hook | Role | Guarantee |
 |---|---|---|
 | `pre_llm_call` (observer) | records this turn's **user message** | supervision context comes from the user, never from the model's own answer |
-| `pre_verify` | **primary enforcement** — `{"action": "continue", …}` | the agent really keeps working the turn (it can call tools and act), bounded by `agent.max_verify_nudges` and a cross-process ledger |
-| `transform_llm_output` | **fallback only** | a still-quiet answer is **replaced** (never appended to) by a short blocker sized to the platform budget |
+| `pre_verify` | **primary enforcement** — `{"action": "continue", "message": …, "final_verdict": …}` | the agent really keeps working the turn (it can call tools and act), bounded by `agent.max_verify_nudges` and a cross-process ledger; the same directive states the verdict the turn may not end without |
+| core finalizer (`apply_pre_verify_verdict`) | **terminal enforcement** | the declared verdict is applied to the **delivered** answer *after* every `transform_llm_output` hook — so an earlier-sorting transform, a model that ignores the last instruction, or an exhausted budget can no longer produce a quiet ending |
+| `transform_llm_output` | legacy fallback | on a runtime without the enforced-verdict contract, a still-quiet answer is **replaced** by a short blocker sized to the platform budget |
 
 On turns that edited no files — which is what a supervision sweep usually is —
 `pre_verify` only fires when the general core setting
@@ -28,9 +29,13 @@ Attendance requires **observable, verifiable** evidence:
 * **Verified external owner** — a row in the runtime process registry
   (`$HERMES_HOME/processes.json`) that is **structurally bound** to the card and
   whose identity verifies **exactly**:
-  * *binding* is either the registry's own `task_id` recorded at spawn, or a cwd
+  * *binding* is either the card the process itself runs under — the child's own
+    `HERMES_KANBAN_TASK` pin, recorded at spawn by `tools/process_registry.py`
+    as `kanban_task_id` and already the runtime's own worker→card scope — or a
+    cwd
     inside the workspace path the **board row** carries, and only when that
-    workspace belongs to exactly one card. A card id appearing in the process's
+    workspace belongs to exactly one card. The row's rollout/sandbox `task_id`
+    is NOT a card and is never read. A card id appearing in the process's
     `command` is **never** a binding — supervisor/reviewer prompts routinely
     name cards they must not touch, and a shared checkout is not ownership of
     every card that ever pointed at it. (On the real board five unfinished cards
@@ -82,17 +87,18 @@ disable the gate while the config reads as if it were on.
 
 ## Honest limitations
 
-* **Enforcement is ordering-independent; the fallback text is not.** The
-  bounded continuations run in `pre_verify`, before any transform, so they are
-  unaffected by plugin order — and the **last** continuation in a window carries
-  the fail-explicit demand ("a quiet ending is not permitted"), so the
-  fail-loud step is delivered through that ordering-independent path
-  (`test_29`, both orders). What remains preemptable is only the
-  `transform_llm_output` **fallback** after the budget is spent:
-  `agent/turn_finalizer.py` is first-non-empty-wins in directory-name order and
-  exposes no priority, so a transform plugin sorting earlier can replace that
-  text. Combined with an exhausted budget, a quiet answer can still reach the
-  user in that configuration. This is a real, disclosed gap, not a covered one.
+* **Enforcement no longer depends on plugin ordering — including after the cap.**
+  The bounded continuations run in `pre_verify`, and the *same* directive
+  carries a `final_verdict`. The core applies that verdict to the delivered
+  answer in `agent/turn_finalizer.py` **after** every `transform_llm_output`
+  hook, so what the user receives is fail-explicit even when a transform plugin
+  sorting earlier rewrote the answer wholesale, when the model ignored the last
+  continuation, or when the iteration budget ran out (`test_34`, both orders,
+  asserted on the delivered `final_response` of a real `run_conversation`).
+  What a competing transform can still do is replace the *model's own* text —
+  it cannot remove the verdict or restore a quiet ending. The verdict is
+  applied exactly once and is skipped verbatim-deduplicated when the plugin's
+  own fallback already emitted it (`test_35`).
 * **The continuation cap is per `(session, board-fingerprint)` per rolling
   `continuation_window_seconds`** — rate-bounded, not one-shot-forever. An
   unchanged board buys at most `max_continuations` per window and each window's
@@ -106,11 +112,55 @@ disable the gate while the config reads as if it were on.
 * The continuation bound is a real cross-process ledger under `$HERMES_HOME`
   (`test_21` proves a separate OS process is denied). It bounds
   **continuations**, not dispatches — there are no dispatches to duplicate.
-* **Precision moved in the safe direction.** Ownership now requires a
-  structural binding, so external workers launched without one (no registry
-  `task_id`, cwd outside the card's recorded workspace) classify as
-  `owner_unknown` — actionable, never quiet. That is deliberate: the previous
+* **Precision moved in the safe direction.** Ownership requires a structural
+  binding, so external workers launched without one (no `HERMES_KANBAN_TASK`
+  pin, cwd outside the card's recorded workspace) classify as
+  `owner_unknown` — actionable, never quiet (`test_39`, driven through the real
+  `terminal` tool). That is deliberate: the previous
   rule attended cards on the strength of a prompt mentioning them.
+* **Measured against a frozen read-only copy** of a real board + process
+  checkpoint (copy only; the live DB was never opened for write): 13 unfinished
+  cards evaluated → 10 unattended findings (`owner_stopped`, `idle_card`,
+  `stale_hold`), 3 attended, and all 3 attended for one reason — a qualified
+  `human_gate`. No card was attended on cwd alone. Note the report is **capped**
+  (`max_findings`, default 5): that run reported 5 and recorded
+  `truncated=5`, so a reader must add `truncated` to get the true total.
+  On that same snapshot **0 of 2 registry rows carried a `kanban_task_id`
+  pin** — today's real external owners are started outside the pinned path, so
+  the pin route is a *supported* binding, not one already in use. Until such
+  owners are launched with the pin (or inside the card's recorded
+  `workspace_path`), they will correctly classify as `owner_unknown`
+  rather than attended. This is the known remaining acceptance gap.
+
+## Launching a worker so the gate can see it
+
+The gate reads only what the runtime itself records. Today's `terminal` tool
+emits both supported bindings, and **either** is enough:
+
+1. **Kanban pin (preferred).** A worker spawned while `HERMES_KANBAN_TASK` names
+   the card — every dispatcher-spawned worker already is — has that card
+   persisted on its registry row as `kanban_task_id`. Setting the pin grants no
+   authority: `tools/kanban_tools.py` uses it to *restrict* a worker to its own
+   card (`_enforce_worker_task_ownership`) and still requires dispatcher
+   ownership before exposing the lifecycle tools.
+2. **The card's own workspace.** `terminal(background=true, workdir=…)` where
+   `workdir` is the `workspace_path` the **board row** carries. This needs no
+   env at all, but the card's recorded `workspace_path` and the directory the
+   worker actually runs in must be the same path.
+
+Supervisor launches that use a `.worktrees/…` directory while the card records
+a `~/.hermes/kanban/workspaces/…` path satisfy neither, and are reported as
+`owner_unknown`. Two sanctioned ways to fix that — both for the supervisor to
+apply, never this plugin:
+
+* launch with `workdir` = the card's recorded `workspace_path`; or
+* update the card's workspace metadata to the directory the worker really uses
+  (`hermes kanban` update + read it back with `hermes kanban show <id>` before
+  relying on it).
+
+A model-visible `terminal` parameter for the card id was deliberately **not**
+added: it would put a per-plugin field in the core tool schema on every API
+call, and the two channels above already carry the binding.
 
 ## Configuration
 
@@ -185,12 +235,16 @@ scripts/run_tests.sh contrib/den-plugins/agentpod-stop-check/test_stop_check.py 
 scripts/run_tests.sh tests/run_agent/test_pre_verify_no_edit_turns.py tests/agent/test_verify_hooks.py -q
 ```
 
-24 tests: the 10 acceptance scenarios, the first independent review's
-adversarial findings as invariants (`test_11`–`test_23`), and the re-review's
-R1–R8 as invariants (`test_24`–`test_33`) — including a real
-`AIAgent.run_conversation` run whose post-continuation tool call is dispatched
-through the **unpatched** `handle_function_call` into the real `terminal` tool
-(`test_33`), and a controlled start-time fixture showing the fingerprint is
-stable across reads and interpreters (`test_27`). Test 10 is a mutation
-control. Red-green: check the previous plugin revision out over this directory
-and re-run (command in the receipt).
+40 tests: the 10 acceptance scenarios, the first independent review's
+adversarial findings as invariants (`test_11`–`test_23`), the re-review's
+R1–R8 as invariants (`test_24`–`test_33`), and this round's two acceptance
+blockers (`test_34`–`test_39`): the delivered post-cap answer under both
+plugin orders with a hostile transform and a 20 000-char quiet draft, verdict
+de-duplication and budget, user stop / interrupt / topic-change precedence,
+default-off inertness for every other plugin, and the real `terminal`
+background launch whose registry row binds a real process to a real card (and
+the unpinned launch that binds nothing). `test_33` drives a real
+`AIAgent.run_conversation` whose post-continuation tool call is dispatched
+through the **unpatched** `handle_function_call` into the real `terminal` tool;
+`test_27` is a controlled start-time fixture. Test 10 is a mutation
+control. Red-green and the three guard mutations: see the receipt.
